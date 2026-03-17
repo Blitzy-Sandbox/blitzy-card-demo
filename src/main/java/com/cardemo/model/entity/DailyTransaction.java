@@ -4,8 +4,10 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
 
 import java.math.BigDecimal;
+import java.sql.Types;
 import java.time.LocalDateTime;
 import java.util.Objects;
 
@@ -73,7 +75,8 @@ public class DailyTransaction {
      * Maps COBOL field {@code DALYTRAN-TYPE-CD PIC X(02)}.
      * Examples: "SA" (Sale), "RE" (Return).
      */
-    @Column(name = "type_cd", length = 2)
+    @Column(name = "type_cd", columnDefinition = "CHAR(2)")
+    @JdbcTypeCode(Types.CHAR)
     private String dalytranTypeCd;
 
     /**

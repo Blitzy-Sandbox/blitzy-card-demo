@@ -5,8 +5,10 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
 
 import java.math.BigDecimal;
+import java.sql.Types;
 import java.time.LocalDateTime;
 import java.util.Objects;
 
@@ -77,7 +79,8 @@ public class Transaction {
      * Transaction type code. Maps COBOL TRAN-TYPE-CD PIC X(02).
      * Logical FK reference to TransactionType.tranType.
      */
-    @Column(name = "type_cd", length = 2)
+    @Column(name = "type_cd", columnDefinition = "CHAR(2)")
+    @JdbcTypeCode(Types.CHAR)
     private String tranTypeCd;
 
     /**

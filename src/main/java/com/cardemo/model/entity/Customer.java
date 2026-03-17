@@ -4,7 +4,9 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
 
+import java.sql.Types;
 import java.time.LocalDate;
 import java.util.Objects;
 
@@ -91,11 +93,13 @@ public class Customer {
      * US state abbreviation — maps COBOL {@code CUST-ADDR-STATE-CD PIC X(02)}.
      * Validated against US state abbreviation lookup table (from CSLKPCDY.cpy).
      */
-    @Column(name = "addr_state_cd", length = 2)
+    @Column(name = "addr_state_cd", columnDefinition = "CHAR(2)")
+    @JdbcTypeCode(Types.CHAR)
     private String custAddrStateCd;
 
     /** Country code — maps COBOL {@code CUST-ADDR-COUNTRY-CD PIC X(03)}. */
-    @Column(name = "addr_country_cd", length = 3)
+    @Column(name = "addr_country_cd", columnDefinition = "CHAR(3)")
+    @JdbcTypeCode(Types.CHAR)
     private String custAddrCountryCd;
 
     /**
@@ -160,16 +164,17 @@ public class Customer {
      * Primary card holder indicator — maps COBOL {@code CUST-PRI-CARD-HOLDER-IND PIC X(01)}.
      * Typically 'Y' or 'N'.
      */
-    @Column(name = "pri_card_holder_ind", length = 1)
+    @Column(name = "pri_card_holder_ind", columnDefinition = "CHAR(1)")
+    @JdbcTypeCode(Types.CHAR)
     private String custPriCardHolderInd;
 
     /**
      * FICO credit score — maps COBOL {@code CUST-FICO-CREDIT-SCORE PIC 9(03)}.
      * Display-only 3-digit score (range 300-850). No decimal positions, no sign —
-     * Integer is acceptable for this non-financial, non-calculation field.
+     * Short matches DDL SMALLINT for this non-financial, non-calculation field.
      */
     @Column(name = "fico_credit_score")
-    private Integer custFicoCreditScore;
+    private Short custFicoCreditScore;
 
     // FILLER PIC X(168) — not mapped (padding only)
 
@@ -212,7 +217,7 @@ public class Customer {
                     String custAddrZip, String custPhoneNum1, String custPhoneNum2,
                     String custSsn, String custGovtIssuedId, LocalDate custDob,
                     String custEftAccountId, String custPriCardHolderInd,
-                    Integer custFicoCreditScore) {
+                    Short custFicoCreditScore) {
         this.custId = custId;
         this.custFirstName = custFirstName;
         this.custMiddleName = custMiddleName;
@@ -373,11 +378,11 @@ public class Customer {
         this.custPriCardHolderInd = custPriCardHolderInd;
     }
 
-    public Integer getCustFicoCreditScore() {
+    public Short getCustFicoCreditScore() {
         return custFicoCreditScore;
     }
 
-    public void setCustFicoCreditScore(Integer custFicoCreditScore) {
+    public void setCustFicoCreditScore(Short custFicoCreditScore) {
         this.custFicoCreditScore = custFicoCreditScore;
     }
 

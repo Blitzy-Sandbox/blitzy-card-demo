@@ -5,7 +5,9 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
+import org.hibernate.annotations.JdbcTypeCode;
 import java.math.BigDecimal;
+import java.sql.Types;
 import java.time.LocalDate;
 import java.util.Objects;
 
@@ -63,7 +65,8 @@ public class Account {
      * Account active status — maps ACCT-ACTIVE-STATUS PIC X(01).
      * Values: 'Y' (active) or 'N' (inactive).
      */
-    @Column(name = "active_status", length = 1)
+    @Column(name = "active_status", columnDefinition = "CHAR(1)")
+    @JdbcTypeCode(Types.CHAR)
     private String acctActiveStatus;
 
     /**
@@ -156,7 +159,7 @@ public class Account {
      */
     @Version
     @Column(name = "version")
-    private Long version;
+    private Integer version;
 
     // -------------------------------------------------------------------------
     // Constructors
@@ -433,7 +436,7 @@ public class Account {
      *
      * @return version number managed by JPA
      */
-    public Long getVersion() {
+    public Integer getVersion() {
         return version;
     }
 
@@ -443,7 +446,7 @@ public class Account {
      *
      * @param version version number
      */
-    public void setVersion(Long version) {
+    public void setVersion(Integer version) {
         this.version = version;
     }
 

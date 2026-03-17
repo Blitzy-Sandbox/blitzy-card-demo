@@ -1,0 +1,150 @@
+# =============================================================================
+# CardDemo — Docker Compose for Local Development
+# =============================================================================
+#
+# Orchestrates the complete local development environment for the CardDemo
+# application migrated from COBOL/CICS/VSAM to Java 25 / Spring Boot 3.x.
+#
+# Services:
+#   postgres   — PostgreSQL 16 database (replaces VSAM KSDS datasets)
+#   localstack — LocalStack Pro (replaces AWS S3, SQS, SNS)
+#   app        — CardDemo Spring Boot application
+#
+# Usage:
+#   docker compose up -d postgres localstack   # Start infrastructure only
+#   docker compose up -d                       # Start all services
+#   docker compose down -v                     # Stop and remove volumes
+#
+# Prerequisites:
+#   - Docker and Docker Compose v2+
+#   - LOCALSTACK_AUTH_TOKEN environment variable set
+#
+# AAP Reference: §0.4.1 (Target Structure), §0.7.7 (LocalStack Verification)
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 — Replaces VSAM KSDS Datasets
+  # ---------------------------------------------------------------------------
+  # Hosts all 11 CardDemo tables migrated from VSAM:
+  #   accounts, cards, customers, card_cross_references, transactions,
+  #   daily_transactions, user_security, transaction_types,
+  #   transaction_categories, transaction_category_balances, disclosure_groups
+  #
+  # Schema managed by Flyway migrations (V1-V3) on application startup.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: carddemo-postgres
+    environment:
+      POSTGRES_DB: carddemo
+      POSTGRES_USER: carddemo
+      POSTGRES_PASSWORD: carddemo
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carddemo -d carddemo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # LocalStack Pro — Replaces AWS S3, SQS, SNS
+  # ---------------------------------------------------------------------------
+  # Provides local AWS service emulation for:
+  #   S3  — Batch file staging (replaces GDG generations)
+  #   SQS — Report submission queue (replaces CICS TDQ WRITEQ)
+  #   SNS — Alert/notification publishing
+  #
+  # Init script (localstack-init/init-aws.sh) provisions:
+  #   - S3 buckets: carddemo-batch-input, carddemo-batch-output, carddemo-statements
+  #   - SQS FIFO queue: carddemo-report-jobs.fifo
+  #   - SNS topic: carddemo-alerts
+  #
+  # Per AAP §0.7.7: Zero live AWS dependencies — all interactions verified
+  # against LocalStack with no real AWS credentials required.
+  # ---------------------------------------------------------------------------
+  localstack:
+    image: localstack/localstack-pro:latest
+    container_name: carddemo-localstack
+    environment:
+      - SERVICES=s3,sqs,sns
+      - DEBUG=0
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN}
+      - AWS_DEFAULT_REGION=us-east-1
+    ports:
+      - "4566:4566"
+      - "4510-4559:4510-4559"
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./localstack-init:/etc/localstack/init/ready.d
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health | grep -q '\"s3\": \"\\(available\\|running\\)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 15s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # CardDemo Application — Spring Boot 3.x
+  # ---------------------------------------------------------------------------
+  # The migrated CardDemo application running with the 'local' Spring profile.
+  # Connects to the postgres and localstack services defined above.
+  #
+  # Exposes:
+  #   8080  — REST API endpoints and Spring Boot Actuator
+  #
+  # Health checks verify the /actuator/health endpoint responds with status UP,
+  # confirming database connectivity, S3 bucket access, and SQS queue availability.
+  # ---------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: carddemo-app
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: carddemo
+      DATABASE_USER: carddemo
+      DATABASE_PASSWORD: carddemo
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/carddemo
+      SPRING_DATASOURCE_USERNAME: carddemo
+      SPRING_DATASOURCE_PASSWORD: carddemo
+      AWS_S3_ENDPOINT: http://localstack:4566
+      AWS_SQS_ENDPOINT: http://localstack:4566
+      AWS_SNS_ENDPOINT: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+# =============================================================================
+# Named Volumes
+# =============================================================================
+volumes:
+  postgres_data:
+    driver: local
+  localstack_data:
+    driver: local

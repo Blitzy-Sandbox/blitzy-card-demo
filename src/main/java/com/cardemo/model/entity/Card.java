@@ -5,7 +5,9 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
+import org.hibernate.annotations.JdbcTypeCode;
 
+import java.sql.Types;
 import java.time.LocalDate;
 import java.util.Objects;
 
@@ -123,7 +125,8 @@ public class Card {
      * Single character: {@code 'Y'} for active, {@code 'N'} for inactive.
      * Used by batch validation (CBTRN02C) to reject transactions on inactive cards.
      */
-    @Column(name = "active_status", length = 1)
+    @Column(name = "active_status", columnDefinition = "CHAR(1)")
+    @JdbcTypeCode(Types.CHAR)
     private String cardActiveStatus;
 
     // -----------------------------------------------------------------------
@@ -143,7 +146,7 @@ public class Card {
      */
     @Version
     @Column(name = "version")
-    private Long version;
+    private Integer version;
 
     // -----------------------------------------------------------------------
     // Constructors
@@ -302,7 +305,7 @@ public class Card {
      *
      * @return the current version number, or {@code null} for new entities
      */
-    public Long getVersion() {
+    public Integer getVersion() {
         return version;
     }
 
@@ -313,7 +316,7 @@ public class Card {
      *
      * @param version the version number
      */
-    public void setVersion(Long version) {
+    public void setVersion(Integer version) {
         this.version = version;
     }
 

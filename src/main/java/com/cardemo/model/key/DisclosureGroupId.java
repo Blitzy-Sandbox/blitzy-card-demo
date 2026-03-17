@@ -2,8 +2,10 @@ package com.cardemo.model.key;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
+import org.hibernate.annotations.JdbcTypeCode;
 import java.io.Serial;
 import java.io.Serializable;
+import java.sql.Types;
 import java.util.Objects;
 
 /**
@@ -49,7 +51,8 @@ public class DisclosureGroupId implements Serializable {
      * Maps from COBOL {@code DIS-TRAN-TYPE-CD PIC X(02)}.
      * Examples: {@code "01"}, {@code "02"}.
      */
-    @Column(name = "type_cd", length = 2, nullable = false)
+    @Column(name = "type_cd", columnDefinition = "CHAR(2)", nullable = false)
+    @JdbcTypeCode(Types.CHAR)
     private String typeCode;
 
     /**
