@@ -68,6 +68,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.filter.CommonsRequestLoggingFilter;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -501,6 +502,36 @@ public class WebConfig implements WebMvcConfigurer {
                     HttpStatus.INTERNAL_SERVER_ERROR, ex.getMessage(),
                     ex.getErrorCode(), null, request);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
+        }
+
+        /**
+         * Handles {@link NoResourceFoundException} — returned by Spring MVC when
+         * no handler mapping is found for a request URI.
+         *
+         * <p>Returns HTTP 404 (Not Found) with a descriptive message indicating
+         * the requested resource does not exist. This handler is necessary because
+         * {@code NoResourceFoundException} (a {@link org.springframework.web.servlet.resource.NoResourceFoundException})
+         * would otherwise be caught by the generic {@code Exception.class} handler
+         * and incorrectly returned as HTTP 500.</p>
+         *
+         * <p>This has no direct COBOL equivalent — in the BMS 3270 architecture,
+         * invalid transaction IDs were handled by the CICS transaction routing
+         * mechanism, which displayed a "Transaction not found" message on the
+         * terminal. In the REST API target, this maps to standard HTTP 404
+         * semantics for non-existent endpoints.</p>
+         *
+         * @param ex      the NoResourceFoundException from Spring MVC
+         * @param request the HTTP request for URI extraction
+         * @return HTTP 404 response with descriptive error message
+         */
+        @ExceptionHandler(NoResourceFoundException.class)
+        public ResponseEntity<ErrorResponse> handleNoResourceFoundException(
+                NoResourceFoundException ex, HttpServletRequest request) {
+            log.warn("Resource not found: {} {}", request.getMethod(), request.getRequestURI());
+            ErrorResponse response = buildErrorResponse(
+                    HttpStatus.NOT_FOUND, ex.getMessage(),
+                    "RESOURCE_NOT_FOUND", null, request);
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
         }
 
         /**
