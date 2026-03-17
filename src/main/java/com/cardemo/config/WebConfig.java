@@ -61,6 +61,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.filter.CommonsRequestLoggingFilter;
@@ -426,6 +428,48 @@ public class WebConfig implements WebMvcConfigurer {
                         entry.put("rejectedValue",
                                 invalidValue != null ? String.valueOf(invalidValue) : null);
                         entry.put("message", violation.getMessage());
+                        return entry;
+                    })
+                    .toList();
+            List<Map<String, String>> errors = fieldErrorList.isEmpty() ? null : fieldErrorList;
+            ErrorResponse response = buildErrorResponse(
+                    HttpStatus.BAD_REQUEST, "Validation failed", "VALID",
+                    errors, request);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+        }
+
+        /**
+         * Handles {@link MethodArgumentNotValidException} — Spring MVC {@code @Valid}
+         * annotation failures on {@code @RequestBody} DTOs.
+         *
+         * <p>Returns HTTP 400 (Bad Request) with per-field error details extracted from
+         * the {@link org.springframework.validation.BindingResult}. This handler covers
+         * the standard Spring MVC validation path for request body deserialization, which
+         * is distinct from the {@link ConstraintViolationException} handler (which covers
+         * {@code @Validated} on path/query parameters).</p>
+         *
+         * <p>Without this handler, Spring's default exception resolution would intercept
+         * {@code MethodArgumentNotValidException} and return a 400 response without
+         * the structured {@link ErrorResponse} format, breaking the API contract defined
+         * in {@code docs/api-contracts.md} section 1.6.</p>
+         *
+         * @param ex      the method argument validation exception from Spring MVC
+         * @param request the HTTP request for URI extraction
+         * @return HTTP 400 response with structured fieldErrors array
+         */
+        @ExceptionHandler(MethodArgumentNotValidException.class)
+        public ResponseEntity<ErrorResponse> handleMethodArgumentNotValidException(
+                MethodArgumentNotValidException ex, HttpServletRequest request) {
+            log.warn("Method argument validation failed: {}", ex.getMessage());
+            List<Map<String, String>> fieldErrorList = ex.getBindingResult()
+                    .getFieldErrors().stream()
+                    .map(fieldError -> {
+                        Map<String, String> entry = new HashMap<>();
+                        entry.put("field", fieldError.getField());
+                        Object rejectedValue = fieldError.getRejectedValue();
+                        entry.put("rejectedValue",
+                                rejectedValue != null ? String.valueOf(rejectedValue) : null);
+                        entry.put("message", fieldError.getDefaultMessage());
                         return entry;
                     })
                     .toList();

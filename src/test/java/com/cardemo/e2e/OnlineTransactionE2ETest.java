@@ -22,8 +22,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.localstack.LocalStackContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -69,7 +67,6 @@ import com.cardemo.model.enums.UserType;
  * <p>Source mapping: All 18 COBOL online programs (CO*.cbl) + corresponding BMS
  * screens (app/bms/*.bms) migrated to REST API endpoints.
  */
-@Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -81,18 +78,24 @@ public class OnlineTransactionE2ETest {
     private static final ParameterizedTypeReference<List<Map<String, Object>>> LIST_MAP_TYPE =
             new ParameterizedTypeReference<List<Map<String, Object>>>() {};
 
-    // ── Testcontainers ──────────────────────────────────────────────────────────
-    @Container
+    // ── Testcontainers (manual lifecycle — started in static block to ensure
+    //    containers are running before @DynamicPropertySource evaluation,
+    //    which occurs during Spring context creation in PER_CLASS lifecycle) ──
+    @SuppressWarnings("resource")
     static PostgreSQLContainer postgres = new PostgreSQLContainer(
             DockerImageName.parse("postgres:16-alpine"))
             .withDatabaseName("carddemo_test")
             .withUsername("test")
             .withPassword("test");
 
-    @Container
     static LocalStackContainer localstack = new LocalStackContainer(
             DockerImageName.parse("localstack/localstack:latest"))
             .withServices("s3", "sqs");
+
+    static {
+        postgres.start();
+        localstack.start();
+    }
 
     // ── Dynamic property wiring ─────────────────────────────────────────────────
     @DynamicPropertySource

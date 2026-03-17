@@ -33,15 +33,17 @@
  */
 package com.cardemo.model.entity;
 
+import com.cardemo.model.converter.UserTypeConverter;
 import com.cardemo.model.enums.UserType;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
 
+import java.sql.Types;
 import java.util.Objects;
 
 /**
@@ -54,7 +56,9 @@ import java.util.Objects;
  * <p>Field mapping preserves exact COBOL PIC clause semantics for alphanumeric
  * fields. The password field is upgraded from plaintext (PIC X(08)) to BCrypt
  * hash storage (72 chars). The user type field uses the {@link UserType} enum
- * with {@code @Enumerated(EnumType.STRING)} for readable database values.</p>
+ * with a JPA {@code @Convert(converter = UserTypeConverter.class)} that maps
+ * enum values to their single-character database codes ('A'/'U') via
+ * {@link UserType#getCode()} and {@link UserType#fromCode(String)}.</p>
  *
  * <p>The 23-byte FILLER at the end of the COBOL record is not mapped — it
  * served only as padding to reach the 80-byte record length.</p>
@@ -130,12 +134,15 @@ public class UserSecurity {
      *       access (COMEN01C routing)</li>
      * </ul>
      *
-     * <p>Stored as the enum name string ({@code "ADMIN"} or {@code "USER"}) in
-     * PostgreSQL via {@code @Enumerated(EnumType.STRING)}. The column length of
-     * 10 accommodates both enum name strings with margin.</p>
+     * <p>Stored as the single-character code ({@code 'A'} or {@code 'U'}) in
+     * PostgreSQL via {@link UserTypeConverter}. The converter delegates to
+     * {@link UserType#getCode()} and {@link UserType#fromCode(String)} to map
+     * between the Java enum and the CHAR(1) database column, matching the
+     * COBOL PIC X(01) layout and the DDL CHECK constraint.</p>
      */
-    @Enumerated(EnumType.STRING)
-    @Column(name = "usr_type", length = 1)
+    @Convert(converter = UserTypeConverter.class)
+    @Column(name = "usr_type", columnDefinition = "CHAR(1)", nullable = false)
+    @JdbcTypeCode(Types.CHAR)
     private UserType secUsrType;
 
     // -----------------------------------------------------------------------

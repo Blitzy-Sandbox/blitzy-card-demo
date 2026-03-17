@@ -22,6 +22,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
+import jakarta.annotation.PostConstruct;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -36,6 +38,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.GetQueueUrlRequest;
 import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
 import software.amazon.awssdk.services.sqs.model.SqsException;
 
@@ -135,12 +138,20 @@ public class ReportSubmissionService {
     private final ObjectMapper objectMapper;
 
     /**
-     * SQS queue URL injected from application.yml property
-     * {@code carddemo.aws.sqs.report-queue-url}.
+     * SQS queue name injected from application.yml property
+     * {@code carddemo.aws.sqs.report-queue}. This is the queue NAME, not URL.
+     * The actual URL is resolved at startup via {@link #resolveQueueUrl()}.
      * Configured per environment: LocalStack for local/test, real AWS for production.
      * No hardcoded queue URLs per AAP requirements.
      */
-    @Value("${carddemo.aws.sqs.report-queue-url:}")
+    @Value("${carddemo.aws.sqs.report-queue:carddemo-report-jobs.fifo}")
+    private String reportQueueName;
+
+    /**
+     * Resolved SQS queue URL. Populated by {@link #resolveQueueUrl()} during
+     * bean initialization. This is the full URL required by the SQS SendMessage API,
+     * resolved from the queue name via the SQS GetQueueUrl operation.
+     */
     private String reportQueueUrl;
 
     /**
@@ -157,6 +168,66 @@ public class ReportSubmissionService {
         this.sqsClient = sqsClient;
         this.dateValidationService = dateValidationService;
         this.objectMapper = objectMapper;
+    }
+
+    /**
+     * Resolves the SQS queue URL from the configured queue name at bean initialization.
+     *
+     * <p>The SQS SendMessage API requires a full queue URL (e.g.,
+     * {@code http://localhost:4566/000000000000/carddemo-report-jobs.fifo} for LocalStack
+     * or {@code https://sqs.us-east-1.amazonaws.com/123456789012/carddemo-report-jobs.fifo}
+     * for real AWS). Rather than hardcoding or manually constructing the URL, this method
+     * uses the SQS {@code GetQueueUrl} API to resolve it from the queue name.</p>
+     *
+     * <p>This approach is self-resolving across environments: LocalStack, staging, and
+     * production all return the correct URL for their respective endpoints.</p>
+     *
+     * <p>If the queue does not yet exist (e.g., during integration testing where the
+     * queue is created in {@code @BeforeAll} after the Spring context loads), the
+     * resolution is deferred to the first message send via {@link #ensureQueueUrl()}.</p>
+     */
+    @PostConstruct
+    void resolveQueueUrl() {
+        try {
+            this.reportQueueUrl = sqsClient.getQueueUrl(
+                    GetQueueUrlRequest.builder()
+                            .queueName(reportQueueName)
+                            .build()
+            ).queueUrl();
+            log.info("Resolved SQS queue URL for '{}': {}", reportQueueName, reportQueueUrl);
+        } catch (SqsException e) {
+            log.warn("SQS queue '{}' not available at startup — URL will be resolved lazily on first use. "
+                    + "This is expected in test environments where the queue is created after context initialization. "
+                    + "Error: {}", reportQueueName, e.getMessage());
+        }
+    }
+
+    /**
+     * Ensures the SQS queue URL is resolved before sending a message.
+     * If the URL was not resolved during {@code @PostConstruct} (e.g., queue did not
+     * exist at startup), it is resolved now.
+     *
+     * @return the resolved SQS queue URL
+     * @throws CardDemoException if the queue URL cannot be resolved
+     */
+    private String ensureQueueUrl() {
+        if (reportQueueUrl != null && !reportQueueUrl.isBlank()) {
+            return reportQueueUrl;
+        }
+        try {
+            this.reportQueueUrl = sqsClient.getQueueUrl(
+                    GetQueueUrlRequest.builder()
+                            .queueName(reportQueueName)
+                            .build()
+            ).queueUrl();
+            log.info("Lazily resolved SQS queue URL for '{}': {}", reportQueueName, reportQueueUrl);
+            return reportQueueUrl;
+        } catch (SqsException e) {
+            log.error("Failed to resolve SQS queue URL for '{}': {}",
+                    reportQueueName, e.getMessage(), e);
+            throw new CardDemoException(
+                    "Failed to resolve SQS report queue URL for queue: " + reportQueueName);
+        }
     }
 
     /**
@@ -307,7 +378,7 @@ public class ReportSubmissionService {
             // messageGroupId ensures FIFO ordering within the report-submissions group
             // messageDeduplicationId ensures each submission is unique (required for FIFO queues)
             SendMessageRequest sendRequest = SendMessageRequest.builder()
-                    .queueUrl(reportQueueUrl)
+                    .queueUrl(ensureQueueUrl())
                     .messageBody(messageBody)
                     .messageGroupId(MESSAGE_GROUP_ID)
                     .messageDeduplicationId(UUID.randomUUID().toString())

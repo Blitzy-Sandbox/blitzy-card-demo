@@ -228,8 +228,8 @@ public class RejectWriter implements ItemWriter<DailyTransaction> {
      */
     public RejectWriter(
             S3Client s3Client,
-            @Value("${carddemo.s3.output-bucket:carddemo-batch-output}") String outputBucket,
-            @Value("${carddemo.s3.reject-prefix:rejections/}") String rejectPrefix) {
+            @Value("${carddemo.aws.s3.batch-output-bucket:carddemo-batch-output}") String outputBucket,
+            @Value("${carddemo.aws.s3.reject-prefix:rejections/}") String rejectPrefix) {
         this.s3Client = s3Client;
         this.outputBucket = outputBucket;
         this.rejectPrefix = rejectPrefix;

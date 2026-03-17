@@ -278,6 +278,7 @@ carddemo:
       statements-bucket: ${S3_STATEMENTS_BUCKET:carddemo-statements}
       statement-text-prefix: ${S3_STATEMENT_TEXT_PREFIX:text/}
       statement-html-prefix: ${S3_STATEMENT_HTML_PREFIX:html/}
+      reject-prefix: ${S3_REJECT_PREFIX:rejections/}
     sqs:
       report-queue: ${SQS_REPORT_QUEUE:carddemo-report-jobs.fifo}
   # Batch pipeline configuration
