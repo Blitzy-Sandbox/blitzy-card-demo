@@ -283,11 +283,12 @@ class ValidationLookupServiceTest {
     }
 
     @Test
-    @DisplayName("isValidStateCode: 'ca' — lowercase → true (service uppercases input)")
+    @DisplayName("isValidStateCode: 'ca' — lowercase → false (case-sensitive per COBOL EBCDIC semantics)")
     void testInvalidStateCode_Lowercase() {
-        // ValidationLookupService.isValidStateCode() calls toUpperCase() on trimmed input,
-        // so lowercase 'ca' becomes 'CA' and matches the lookup table.
-        assertThat(validationLookupService.isValidStateCode("ca")).isTrue();
+        // COBOL CSLKPCDY.cpy stores state codes as uppercase only (EBCDIC).
+        // Per AAP requirement for 100% behavioral parity, the service does NOT
+        // convert to uppercase — lowercase 'ca' does not match 'CA' in the lookup table.
+        assertThat(validationLookupService.isValidStateCode("ca")).isFalse();
     }
 
     @Test

@@ -144,7 +144,7 @@ public class ValidationLookupService {
      * condition on {@code US-STATE-CODE-TO-EDIT} (PIC X(2)). The COBOL condition checks
      * membership against 56 valid state/territory codes.
      *
-     * @param stateCode 2-character state code (case-insensitive; will be uppercased)
+     * @param stateCode 2-character uppercase state code (case-sensitive per COBOL semantics)
      * @return {@code true} if the state code is valid; {@code false} if null, blank,
      *         wrong length, or not in the table
      */
@@ -152,7 +152,7 @@ public class ValidationLookupService {
         if (stateCode == null || stateCode.isBlank()) {
             return false;
         }
-        String trimmed = stateCode.trim().toUpperCase();
+        String trimmed = stateCode.trim();
         if (trimmed.length() != 2) {
             return false;
         }
@@ -172,7 +172,7 @@ public class ValidationLookupService {
      * ZIP code into a 4-character key ({@code US-STATE-AND-FIRST-ZIP2 PIC X(4)}) and checks
      * the 88-level condition for membership in the 240-entry lookup table.
      *
-     * @param stateCode 2-character state code (case-insensitive)
+     * @param stateCode 2-character uppercase state code (case-sensitive per COBOL semantics)
      * @param zipCode full ZIP code string (only the first 2 digits are used for lookup)
      * @return {@code true} if the state/ZIP prefix combination is geographically valid;
      *         {@code false} if either parameter is null/blank, or the combination is not
@@ -185,7 +185,7 @@ public class ValidationLookupService {
         if (zipCode == null || zipCode.isBlank()) {
             return false;
         }
-        String trimmedState = stateCode.trim().toUpperCase();
+        String trimmedState = stateCode.trim();
         String trimmedZip = zipCode.trim();
         if (trimmedState.length() != 2) {
             return false;
@@ -207,7 +207,7 @@ public class ValidationLookupService {
      * already performed the concatenation.
      *
      * @param combinedKey 4-character combined key (stateCode + first 2 ZIP digits),
-     *                    case-insensitive
+     *                    case-sensitive per COBOL semantics — must be uppercase
      * @return {@code true} if the combination is valid; {@code false} if null, blank,
      *         wrong length, or not in the table
      */
@@ -215,7 +215,7 @@ public class ValidationLookupService {
         if (combinedKey == null || combinedKey.isBlank()) {
             return false;
         }
-        String trimmed = combinedKey.trim().toUpperCase();
+        String trimmed = combinedKey.trim();
         if (trimmed.length() != 4) {
             return false;
         }
