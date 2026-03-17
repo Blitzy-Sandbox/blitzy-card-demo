@@ -1,0 +1,51 @@
+# =============================================================================
+# Prometheus Scrape Configuration — CardDemo Application
+# =============================================================================
+#
+# Scrapes metrics from the CardDemo Spring Boot application's Actuator
+# Prometheus endpoint (/actuator/prometheus) and the Prometheus server itself.
+#
+# Custom business metrics scraped from the CardDemo application:
+#   carddemo_batch_records_processed_total  — batch records processed (counter)
+#   carddemo_batch_records_rejected_total   — batch records rejected (counter)
+#   carddemo_auth_attempts_total            — authentication attempts (counter)
+#   carddemo_transaction_amount_total       — transaction amounts (summary)
+#
+# Standard Spring Boot Actuator metrics also scraped:
+#   http_server_requests_seconds_*          — HTTP request metrics
+#   jvm_memory_used_bytes                   — JVM memory metrics
+#   jvm_gc_pause_seconds_*                  — GC metrics
+#   hikaricp_connections_*                  — Connection pool metrics
+#
+# AAP Reference: §0.7.1 — Observability Stack Requirements
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # -------------------------------------------------------------------------
+  # Prometheus self-monitoring
+  # -------------------------------------------------------------------------
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # -------------------------------------------------------------------------
+  # CardDemo Spring Boot Application
+  # -------------------------------------------------------------------------
+  # Scrapes the Spring Boot Actuator Prometheus endpoint.
+  # The 'app' target uses the Docker Compose service name for DNS resolution.
+  # When the app service is not running (profiles not activated), Prometheus
+  # will log scrape failures but continue operating normally.
+  # -------------------------------------------------------------------------
+  - job_name: "carddemo"
+    metrics_path: "/actuator/prometheus"
+    scrape_interval: 10s
+    static_configs:
+      - targets: ["app:8080"]
+        labels:
+          application: "carddemo"
+          environment: "local"

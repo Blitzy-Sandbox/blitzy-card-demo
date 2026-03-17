@@ -1,25 +1,43 @@
 # =============================================================================
-# CardDemo — Docker Compose for Local Development
+# CardDemo — Docker Compose for Local Development Infrastructure
 # =============================================================================
 #
-# Orchestrates the complete local development environment for the CardDemo
-# application migrated from COBOL/CICS/VSAM to Java 25 / Spring Boot 3.x.
+# Provisions the complete local development environment for the CardDemo
+# application migrated from COBOL/CICS/VSAM/JCL to Java 25 / Spring Boot 3.x.
+#
+# Source Mapping (Mainframe → Containers):
+#   VSAM KSDS Datasets (10)       → PostgreSQL 16 (Flyway-managed schema)
+#   VSAM AIX/PATH (2)             → PostgreSQL indexes
+#   GDG Bases (DEFGDGB.jcl, 6)    → S3 buckets with versioning (via LocalStack)
+#   CICS TDQ 'JOBS' Queue         → SQS FIFO queue (via LocalStack)
+#   USRSEC.PS (DUSRSECJ.jcl)      → Flyway V3 seed migration (10 users → BCrypt)
+#   (no observability equivalent)  → Jaeger + Prometheus + Grafana stack
 #
 # Services:
-#   postgres   — PostgreSQL 16 database (replaces VSAM KSDS datasets)
-#   localstack — LocalStack Pro (replaces AWS S3, SQS, SNS)
-#   app        — CardDemo Spring Boot application
+#   postgres   — PostgreSQL 16 database (replaces 10 VSAM KSDS datasets)
+#   localstack — AWS S3/SQS/SNS emulation (replaces GDG bases + CICS TDQ)
+#   jaeger     — Distributed tracing UI (OpenTelemetry OTLP collector)
+#   prometheus — Metrics scraping (Spring Boot Actuator /actuator/prometheus)
+#   grafana    — Dashboard visualization (custom CardDemo dashboards)
+#   app        — CardDemo Spring Boot application (profile-activated)
 #
 # Usage:
-#   docker compose up -d postgres localstack   # Start infrastructure only
-#   docker compose up -d                       # Start all services
-#   docker compose down -v                     # Stop and remove volumes
+#   docker compose up -d                              # Start infrastructure
+#   docker compose up -d postgres localstack           # Core services only
+#   docker compose --profile app up -d                 # Include application
+#   docker compose down                                # Stop all services
+#   docker compose down -v                             # Stop and remove volumes
 #
 # Prerequisites:
-#   - Docker and Docker Compose v2+
-#   - LOCALSTACK_AUTH_TOKEN environment variable set
+#   - Docker Engine 24+ and Docker Compose v2
+#   - LOCALSTACK_AUTH_TOKEN environment variable set (for LocalStack Pro)
 #
-# AAP Reference: §0.4.1 (Target Structure), §0.7.7 (LocalStack Verification)
+# AAP References:
+#   §0.4.1 — Target structure and service definitions
+#   §0.5.1 — docker-compose.yml transformation mapping
+#   §0.7.1 — Observability stack requirements (Jaeger, Prometheus, Grafana)
+#   §0.7.7 — LocalStack verification (zero live AWS dependencies)
+#   §0.8.1 — No hardcoded credentials (${VAR:-default} pattern)
 # =============================================================================
 
 services:
@@ -32,21 +50,27 @@ services:
   #   daily_transactions, user_security, transaction_types,
   #   transaction_categories, transaction_category_balances, disclosure_groups
   #
-  # Schema managed by Flyway migrations (V1-V3) on application startup.
+  # Source: DUSRSECJ.jcl defines USRSEC VSAM KSDS (KEYS(8,0), RECORDSIZE(80,80))
+  #   → PostgreSQL user_security table with 10 seed users via Flyway V3 migration
+  #
+  # Schema managed by Flyway migrations (V1-V3) on application startup:
+  #   V1__create_schema.sql   — All 11 tables DDL
+  #   V2__create_indexes.sql  — Primary + alternate indexes
+  #   V3__seed_data.sql       — 9 ASCII fixture files as INSERT statements
   # ---------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
     container_name: carddemo-postgres
     environment:
-      POSTGRES_DB: carddemo
-      POSTGRES_USER: carddemo
-      POSTGRES_PASSWORD: carddemo
+      POSTGRES_DB: ${POSTGRES_DB:-carddemo}
+      POSTGRES_USER: ${POSTGRES_USER:-carddemo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U carddemo -d carddemo"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-carddemo} -d ${POSTGRES_DB:-carddemo}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -54,17 +78,22 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # LocalStack Pro — Replaces AWS S3, SQS, SNS
+  # LocalStack Pro — Replaces AWS S3, SQS, SNS (GDG + TDQ + Notifications)
   # ---------------------------------------------------------------------------
   # Provides local AWS service emulation for:
-  #   S3  — Batch file staging (replaces GDG generations)
-  #   SQS — Report submission queue (replaces CICS TDQ WRITEQ)
+  #   S3  — Batch file staging (replaces 6 GDG bases from DEFGDGB.jcl)
+  #   SQS — Report submission queue (replaces CICS TDQ WRITEQ from CORPT00C.cbl)
   #   SNS — Alert/notification publishing
   #
-  # Init script (localstack-init/init-aws.sh) provisions:
-  #   - S3 buckets: carddemo-batch-input, carddemo-batch-output, carddemo-statements
-  #   - SQS FIFO queue: carddemo-report-jobs.fifo
-  #   - SNS topic: carddemo-alerts
+  # Init script (localstack-init/init-aws.sh) provisions on container ready:
+  #   S3 Buckets:
+  #     - carddemo-batch-input    — Daily transaction file staging (← DALYTRAN.PS)
+  #     - carddemo-batch-output   — All batch output (← 6 GDG bases, LIMIT 5 SCRATCH)
+  #     - carddemo-statements     — Statement files text + HTML (← CREASTMT.JCL)
+  #   SQS Queues:
+  #     - carddemo-report-jobs.fifo — Online-to-batch bridge (← CICS TDQ 'JOBS')
+  #   SNS Topics:
+  #     - carddemo-alerts         — Application alert fan-out
   #
   # Per AAP §0.7.7: Zero live AWS dependencies — all interactions verified
   # against LocalStack with no real AWS credentials required.
@@ -73,19 +102,19 @@ services:
     image: localstack/localstack-pro:latest
     container_name: carddemo-localstack
     environment:
-      - SERVICES=s3,sqs,sns
-      - DEBUG=0
-      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN}
-      - AWS_DEFAULT_REGION=us-east-1
+      SERVICES: s3,sqs,sns
+      DEBUG: ${LOCALSTACK_DEBUG:-0}
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
     ports:
       - "4566:4566"
       - "4510-4559:4510-4559"
     volumes:
-      - localstack_data:/var/lib/localstack
+      - localstack-data:/var/lib/localstack
       - /var/run/docker.sock:/var/run/docker.sock
       - ./localstack-init:/etc/localstack/init/ready.d
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health | grep -q '\"s3\": \"\\(available\\|running\\)\"'"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health | grep -q '\"s3\"' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 15
@@ -93,38 +122,136 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # CardDemo Application — Spring Boot 3.x
+  # Jaeger — Distributed Tracing (Observability Stack)
+  # ---------------------------------------------------------------------------
+  # Receives OpenTelemetry trace data from the CardDemo application via
+  # Micrometer Tracing with the OpenTelemetry bridge (micrometer-tracing-bridge-otel).
+  #
+  # Instruments all Spring MVC controller endpoints, JPA repository calls,
+  # S3/SQS operations, and Spring Batch step executions.
+  #
+  # Endpoints:
+  #   16686 — Jaeger Query UI (trace visualization)
+  #   4317  — OTLP gRPC receiver (primary trace ingestion)
+  #   4318  — OTLP HTTP receiver (alternative trace ingestion)
+  #
+  # Per AAP §0.7.1: Observability ships with initial implementation.
+  # ---------------------------------------------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: carddemo-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — Metrics Scraping (Observability Stack)
+  # ---------------------------------------------------------------------------
+  # Scrapes Spring Boot Actuator metrics from the CardDemo application at
+  # /actuator/prometheus (Micrometer + Prometheus registry).
+  #
+  # Custom business metrics scraped:
+  #   carddemo.batch.records.processed  — counter, per job
+  #   carddemo.batch.records.rejected   — counter, with reason tag
+  #   carddemo.auth.attempts            — counter, with success/failure tag
+  #   carddemo.transaction.amount.total — distribution summary
+  #
+  # Configuration: ./docs/prometheus.yml defines scrape targets.
+  # Per AAP §0.7.1: All observability components exercisable locally.
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: carddemo-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-lifecycle"
+    depends_on:
+      - jaeger
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Grafana — Dashboard Visualization (Observability Stack)
+  # ---------------------------------------------------------------------------
+  # Provides dashboard visualization for CardDemo application metrics,
+  # traces, and system health. Connects to Prometheus as the primary data source.
+  #
+  # Default access: http://localhost:3000 (admin / ${GF_ADMIN_PASSWORD:-admin})
+  #
+  # Dashboard template available at docs/grafana-dashboard.json with panels for:
+  #   - Request rate, error rate, response latency (p50/p95/p99)
+  #   - Batch job throughput and rejection rates
+  #   - JVM memory and GC metrics
+  #
+  # Per AAP §0.7.1: Dashboard template is a required deliverable.
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: carddemo-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # CardDemo Application — Spring Boot 3.x (Profile-Activated)
   # ---------------------------------------------------------------------------
   # The migrated CardDemo application running with the 'local' Spring profile.
-  # Connects to the postgres and localstack services defined above.
+  # Connects to postgres and localstack services, exports traces to jaeger.
+  #
+  # This service uses Docker Compose profiles and is NOT started by default.
+  # Start explicitly with: docker compose --profile app up -d
+  #
+  # For local development without Docker, run the application directly:
+  #   ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
   #
   # Exposes:
-  #   8080  — REST API endpoints and Spring Boot Actuator
+  #   8080 — REST API endpoints and Spring Boot Actuator
   #
-  # Health checks verify the /actuator/health endpoint responds with status UP,
-  # confirming database connectivity, S3 bucket access, and SQS queue availability.
+  # Depends on postgres (healthy) and localstack (healthy) to ensure:
+  #   - Database is accepting connections before Flyway runs migrations
+  #   - S3 buckets, SQS queues, and SNS topics are provisioned via init-aws.sh
   # ---------------------------------------------------------------------------
   app:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: carddemo-app
+    profiles:
+      - app
     environment:
       SPRING_PROFILES_ACTIVE: local
-      DATABASE_HOST: postgres
-      DATABASE_PORT: 5432
-      DATABASE_NAME: carddemo
-      DATABASE_USER: carddemo
-      DATABASE_PASSWORD: carddemo
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/carddemo
-      SPRING_DATASOURCE_USERNAME: carddemo
-      SPRING_DATASOURCE_PASSWORD: carddemo
-      AWS_S3_ENDPOINT: http://localstack:4566
-      AWS_SQS_ENDPOINT: http://localstack:4566
-      AWS_SNS_ENDPOINT: http://localstack:4566
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      AWS_DEFAULT_REGION: us-east-1
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-carddemo}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-carddemo}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+      SPRING_CLOUD_AWS_S3_ENDPOINT: http://localstack:4566
+      SPRING_CLOUD_AWS_SQS_ENDPOINT: http://localstack:4566
+      SPRING_CLOUD_AWS_SNS_ENDPOINT: http://localstack:4566
+      SPRING_CLOUD_AWS_CREDENTIALS_ACCESS_KEY: ${AWS_ACCESS_KEY_ID:-test}
+      SPRING_CLOUD_AWS_CREDENTIALS_SECRET_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      SPRING_CLOUD_AWS_REGION_STATIC: ${AWS_DEFAULT_REGION:-us-east-1}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      OTEL_SERVICE_NAME: carddemo
+      MANAGEMENT_OTLP_TRACING_ENDPOINT: http://jaeger:4318/v1/traces
     ports:
       - "8080:8080"
     depends_on:
@@ -137,14 +264,23 @@ services:
       interval: 15s
       timeout: 10s
       retries: 10
-      start_period: 30s
+      start_period: 45s
     restart: unless-stopped
 
 # =============================================================================
 # Named Volumes
 # =============================================================================
+# postgres-data   — Persistent PostgreSQL data across container restarts
+# localstack-data — LocalStack internal state persistence
+# prometheus-data — Prometheus time-series data retention (7-day default)
+# grafana-data    — Grafana configuration, dashboards, and data source state
+# =============================================================================
 volumes:
-  postgres_data:
+  postgres-data:
     driver: local
-  localstack_data:
+  localstack-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
     driver: local
