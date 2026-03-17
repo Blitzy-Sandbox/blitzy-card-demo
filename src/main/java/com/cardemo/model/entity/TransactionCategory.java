@@ -54,7 +54,7 @@ import java.util.Objects;
  * @see TransactionCategoryId
  */
 @Entity
-@Table(name = "tran_cat")
+@Table(name = "transaction_categories")
 public class TransactionCategory {
 
     /**
@@ -77,7 +77,7 @@ public class TransactionCategory {
      *
      * <p>Examples: "Regular Sales Draft", "Cash Advance", "Balance Transfer".</p>
      */
-    @Column(name = "tran_cat_type_desc", length = 50)
+    @Column(name = "cat_desc", length = 50)
     private String tranCatTypeDesc;
 
     /**

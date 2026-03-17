@@ -62,7 +62,7 @@ import java.util.Objects;
  * @see DisclosureGroupId
  */
 @Entity
-@Table(name = "dis_group")
+@Table(name = "disclosure_groups")
 public class DisclosureGroup {
 
     /**
@@ -100,7 +100,7 @@ public class DisclosureGroup {
      * <p>COBOL FILLER PIC X(28) from the original 50-byte record is NOT
      * mapped — it represents padding only.</p>
      */
-    @Column(name = "dis_int_rate", precision = 6, scale = 2)
+    @Column(name = "int_rate", precision = 6, scale = 2)
     private BigDecimal disIntRate;
 
     /**

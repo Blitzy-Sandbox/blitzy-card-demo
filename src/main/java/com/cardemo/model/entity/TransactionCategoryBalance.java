@@ -61,7 +61,7 @@ import java.util.Objects;
  * @see TransactionCategoryBalanceId
  */
 @Entity
-@Table(name = "tran_cat_bal")
+@Table(name = "transaction_category_balances")
 public class TransactionCategoryBalance {
 
     /**
@@ -93,7 +93,7 @@ public class TransactionCategoryBalance {
      * For comparisons in business logic, always use {@code compareTo()} rather
      * than {@code equals()}, as {@code BigDecimal.equals()} is scale-sensitive.</p>
      */
-    @Column(name = "tran_cat_bal", precision = 11, scale = 2)
+    @Column(name = "balance", precision = 11, scale = 2)
     private BigDecimal tranCatBal;
 
     /**

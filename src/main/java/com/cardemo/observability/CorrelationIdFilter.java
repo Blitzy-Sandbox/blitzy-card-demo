@@ -46,7 +46,6 @@ import org.slf4j.MDC;
 
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
-import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.util.UUID;
@@ -82,7 +81,6 @@ import java.util.UUID;
  * @see org.slf4j.MDC
  * @see jakarta.servlet.Filter
  */
-@Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public class CorrelationIdFilter implements Filter {
 

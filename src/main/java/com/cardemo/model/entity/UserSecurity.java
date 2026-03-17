@@ -60,7 +60,7 @@ import java.util.Objects;
  * served only as padding to reach the 80-byte record length.</p>
  */
 @Entity
-@Table(name = "usr_sec")
+@Table(name = "user_security")
 public class UserSecurity {
 
     // -----------------------------------------------------------------------
@@ -77,7 +77,7 @@ public class UserSecurity {
      * <p>Examples: {@code "ADMIN001"}, {@code "USER0001"}.</p>
      */
     @Id
-    @Column(name = "sec_usr_id", length = 8, nullable = false)
+    @Column(name = "usr_id", length = 8, nullable = false)
     private String secUsrId;
 
     // -----------------------------------------------------------------------
@@ -90,7 +90,7 @@ public class UserSecurity {
      * <p>Up to 20 characters for the user's first (given) name. Displayed
      * in the user list (COUSR00C) and user detail screens (COUSR01C-03C).</p>
      */
-    @Column(name = "sec_usr_fname", length = 20)
+    @Column(name = "usr_fname", length = 20)
     private String secUsrFname;
 
     /**
@@ -99,7 +99,7 @@ public class UserSecurity {
      * <p>Up to 20 characters for the user's last (family) name. Displayed
      * in the user list (COUSR00C) and user detail screens (COUSR01C-03C).</p>
      */
-    @Column(name = "sec_usr_lname", length = 20)
+    @Column(name = "usr_lname", length = 20)
     private String secUsrLname;
 
     /**
@@ -115,7 +115,7 @@ public class UserSecurity {
      * using {@code BCryptPasswordEncoder.matches()}. This field must NEVER
      * contain a plaintext password.</p>
      */
-    @Column(name = "sec_usr_pwd", length = 72, nullable = false)
+    @Column(name = "password_hash", length = 60, nullable = false)
     private String secUsrPwd;
 
     /**
@@ -135,7 +135,7 @@ public class UserSecurity {
      * 10 accommodates both enum name strings with margin.</p>
      */
     @Enumerated(EnumType.STRING)
-    @Column(name = "sec_usr_type", length = 10)
+    @Column(name = "usr_type", length = 1)
     private UserType secUsrType;
 
     // -----------------------------------------------------------------------
