@@ -1,0 +1,212 @@
+# =============================================================================
+# CardDemo Application — Test Profile (Testcontainers)
+# =============================================================================
+# Activated by: -Dspring.profiles.active=test  (or SPRING_PROFILES_ACTIVE=test)
+#
+# This profile configures the CardDemo application for integration and E2E
+# tests that use Testcontainers to manage ephemeral infrastructure:
+#   - PostgreSQL 16 via Testcontainers JDBC URL (auto-managed lifecycle)
+#   - LocalStack via Testcontainers (S3, SQS, SNS — dynamically bound ports)
+#
+# Overrides the base application.yml with test-specific settings:
+#   - Testcontainers JDBC URL (jdbc:tc:postgresql:16:///carddemo) replaces
+#     static datasource connection — container starts on first JDBC connection
+#   - Random server port (server.port: 0) prevents port conflicts in CI
+#   - Minimal actuator endpoint exposure (health, info only)
+#   - Debug logging for application code and Spring Batch processing
+#   - All AWS endpoints point to LocalStack at localhost:4566; Testcontainer
+#     test code may override these dynamically via @DynamicPropertySource
+#
+# COBOL Source Reference: aws-samples/carddemo commit 27d6c6f
+#
+# The Testcontainers-managed PostgreSQL hosts all 11 migrated VSAM tables:
+#   ACCTDATA  (KEYS 11,0  RECSIZE 300) → accounts table
+#   CARDDATA  (KEYS 16,0  RECSIZE 150) → cards table
+#   CUSTDATA  (KEYS 9,0   RECSIZE 500) → customers table
+#   CARDXREF  (KEYS 16,0  RECSIZE 50)  → card_cross_references table
+#   TRANSACT  (KEYS 16,0  RECSIZE 350) → transactions table
+#   USRSEC    (KEYS 8,0   RECSIZE 80)  → user_security table
+#   TCATBALF  (KEYS 17,0  RECSIZE 50)  → transaction_category_balances table
+#   DISCGRP   (KEYS 16,0  RECSIZE 50)  → disclosure_groups table
+#   TRANCATG  (KEYS 6,0   RECSIZE 60)  → transaction_categories table
+#   TRANTYPE  (KEYS 2,0   RECSIZE 60)  → transaction_types table
+#   DALYTRAN  (sequential PS)           → daily_transactions staging table
+#
+# Testcontainers Resource Lifecycle (AAP §0.7.7):
+#   @BeforeAll: Containers started automatically by Testcontainers
+#   Test execution: Real service code exercises against ephemeral containers
+#   @AfterAll: Containers destroyed — no residual state between test runs
+#
+# No live AWS credentials required (AAP §0.3.2, §0.8.6).
+# =============================================================================
+
+spring:
+  config:
+    activate:
+      on-profile: test
+
+  # ---------------------------------------------------------------------------
+  # Datasource — Testcontainers PostgreSQL 16 (Auto-Managed)
+  # ---------------------------------------------------------------------------
+  # The jdbc:tc: URL prefix triggers Testcontainers JDBC support:
+  #   1. Testcontainers starts a PostgreSQL 16 container on first connection
+  #   2. Container lifecycle is managed automatically (started/stopped per JVM)
+  #   3. No manual container setup or Docker Compose required
+  #
+  # The ContainerDatabaseDriver intercepts JDBC connection requests and
+  # delegates to the real PostgreSQL driver inside the container.
+  #
+  # Credentials are test-only defaults — no real database is involved.
+  # VSAM origin: ACCTFILE.jcl (DEFINE CLUSTER KEYS(11,0) RECORDSIZE(300,300)),
+  #              DUSRSECJ.jcl (DEFINE CLUSTER KEYS(8,0) RECORDSIZE(80,80))
+  # ---------------------------------------------------------------------------
+  datasource:
+    url: jdbc:tc:postgresql:16:///carddemo
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+    username: test
+    password: test
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate — Validate Mode with SQL Logging
+  # ---------------------------------------------------------------------------
+  # Flyway manages schema creation via migration scripts; Hibernate validates
+  # that entity mappings align with the Flyway-created tables.
+  # show-sql: true aids debugging of integration test failures by printing
+  # all SQL statements to stdout.
+  # ---------------------------------------------------------------------------
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+  # ---------------------------------------------------------------------------
+  # Flyway — Database Migration (Test)
+  # ---------------------------------------------------------------------------
+  # Flyway runs automatically in the Testcontainers PostgreSQL instance to
+  # provision the schema and seed data before tests execute.
+  # Migration scripts:
+  #   V1__create_schema.sql  — 11 tables DDL from VSAM DEFINE CLUSTER specs
+  #   V2__create_indexes.sql — Alternate indexes (CXACAIX, TRANSACT AIX)
+  #   V3__seed_data.sql      — 9 ASCII fixture files as INSERT statements
+  # ---------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch — Test Metadata Initialization
+  # ---------------------------------------------------------------------------
+  # Spring Batch metadata tables (BATCH_JOB_INSTANCE, BATCH_JOB_EXECUTION,
+  # BATCH_STEP_EXECUTION, etc.) are auto-created in the Testcontainers
+  # PostgreSQL database. This ensures batch job integration tests have the
+  # required infrastructure tables.
+  #
+  # Jobs are NOT auto-triggered (job.enabled: false inherited from base config).
+  # Batch integration tests launch jobs explicitly via JobLauncherTestUtils.
+  #
+  # JCL-to-Spring Batch mapping exercised in tests:
+  #   POSTTRAN.jcl  → DailyTransactionPostingJob  (CBTRN02C 4-stage validation)
+  #   INTCALC.jcl   → InterestCalculationJob      (CBACT04C rate computation)
+  #   COMBTRAN.jcl  → CombineTransactionsJob       (DFSORT + REPRO merge)
+  #   CREASTMT.JCL  → StatementGenerationJob       (CBSTM03A/B dual-format)
+  #   TRANREPT.jcl  → TransactionReportJob          (CBTRN03C date filtering)
+  # ---------------------------------------------------------------------------
+  batch:
+    jdbc:
+      initialize-schema: always
+
+  # ---------------------------------------------------------------------------
+  # AWS Services — LocalStack Endpoints (S3, SQS, SNS)
+  # ---------------------------------------------------------------------------
+  # Default LocalStack endpoints for tests. Integration tests using
+  # Testcontainers LocalStack module should override these dynamically
+  # via @DynamicPropertySource to bind to the actual mapped port.
+  #
+  # CRITICAL: path-style-access-enabled MUST be true for LocalStack S3
+  # compatibility (same as local profile — AAP §0.7.6 documented pitfall).
+  #
+  # LocalStack test resources (created/destroyed per test class):
+  #   S3:  carddemo-batch-input, carddemo-batch-output, carddemo-statements
+  #   SQS: carddemo-report-jobs.fifo (FIFO queue for report job submissions)
+  #
+  # Credentials are test-only — no live AWS access (AAP §0.7.7).
+  # ---------------------------------------------------------------------------
+  cloud:
+    aws:
+      region:
+        static: us-east-1
+      credentials:
+        access-key: test
+        secret-key: test
+      s3:
+        endpoint: http://localhost:4566
+        path-style-access-enabled: true
+      sqs:
+        endpoint: http://localhost:4566
+      sns:
+        endpoint: http://localhost:4566
+
+# -----------------------------------------------------------------------------
+# Actuator and Observability — Minimal for Tests
+# -----------------------------------------------------------------------------
+# Integration tests only need health and info endpoints. Full observability
+# endpoints (prometheus, metrics, env, beans) are not required in test context
+# and are excluded to reduce noise and startup overhead.
+#
+# Health check details are shown unconditionally (always) to aid debugging
+# when tests fail due to infrastructure connectivity issues.
+# -----------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
+# -----------------------------------------------------------------------------
+# Server Configuration — Random Port for Test Isolation
+# -----------------------------------------------------------------------------
+# server.port: 0 instructs Spring Boot to select a random available port.
+# This prevents port conflicts when running multiple test classes in parallel
+# or when CI builds execute tests concurrently.
+#
+# Tests retrieve the actual port via @LocalServerPort or
+# @Autowired TestRestTemplate (which auto-resolves the random port).
+# -----------------------------------------------------------------------------
+server:
+  port: 0
+
+# -----------------------------------------------------------------------------
+# Logging — Debug Levels for Test Diagnostics
+# -----------------------------------------------------------------------------
+# Verbose logging for application code and Spring Batch aids root-cause
+# analysis of test failures. Testcontainers logs at INFO to show container
+# startup/shutdown without flooding the output.
+#
+# Hibernate SQL logging (show-sql: true above + org.hibernate.SQL: DEBUG)
+# provides full visibility into database operations during integration tests.
+#
+# Flyway logs at INFO to show migration progress without excessive detail.
+# Spring Security logs at DEBUG to trace authentication/authorization flows.
+# -----------------------------------------------------------------------------
+logging:
+  level:
+    com.cardemo: DEBUG
+    org.springframework.batch: DEBUG
+    org.testcontainers: INFO
+    org.hibernate.SQL: DEBUG
+    org.hibernate.orm.jdbc.bind: TRACE
+    org.springframework.security: DEBUG
+    org.flywaydb: INFO
