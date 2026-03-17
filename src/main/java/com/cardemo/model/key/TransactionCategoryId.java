@@ -17,15 +17,15 @@ import java.util.Objects;
  *      10  TRAN-CAT-CD        PIC 9(04).
  * </pre>
  *
- * <p>Both fields are stored as {@link String} to preserve exact COBOL byte-level semantics,
- * including leading zeros in the numeric {@code TRAN-CAT-CD} field ({@code PIC 9(04)}).
- * The total composite key length is 6 bytes (2 + 4).
+ * <p>The {@code typeCode} field is stored as {@link String} to preserve COBOL byte-level
+ * semantics for the 2-character alphanumeric code. The {@code catCode} field is stored
+ * as {@link Short} to match the DDL {@code SMALLINT} column type.
  *
  * <p>This is the simplest of the three composite key classes in the CardDemo migration.
  * The same {@code typeCode} and {@code catCode} field pattern appears as a subset within
  * {@code TransactionCategoryBalanceId} (which adds {@code acctId}) and
  * {@code DisclosureGroupId} (which adds {@code groupId}). All three key classes share
- * the same snake_case column naming convention derived from the COBOL field names.
+ * the same snake_case column naming convention matching the DDL schema.
  *
  * @see com.cardemo.model.entity.TransactionCategory
  */
@@ -39,16 +39,15 @@ public class TransactionCategoryId implements Serializable {
      * Transaction type code — maps from COBOL {@code TRAN-TYPE-CD PIC X(02)}.
      * A 2-character alphanumeric code identifying the transaction type.
      */
-    @Column(name = "tran_type_cd", length = 2, nullable = false)
+    @Column(name = "type_cd", length = 2, nullable = false)
     private String typeCode;
 
     /**
      * Transaction category code — maps from COBOL {@code TRAN-CAT-CD PIC 9(04)}.
-     * A 4-character numeric display field stored as {@link String} to preserve
-     * leading zeros (e.g., "0001", "0042").
+     * Stored as {@link Short} to match the DDL {@code SMALLINT} column type.
      */
-    @Column(name = "tran_cat_cd", length = 4, nullable = false)
-    private String catCode;
+    @Column(name = "cat_cd", nullable = false)
+    private Short catCode;
 
     /**
      * No-args constructor required by the JPA specification for entity and
@@ -62,9 +61,9 @@ public class TransactionCategoryId implements Serializable {
      * All-args constructor for programmatic key creation.
      *
      * @param typeCode the 2-character transaction type code (TRAN-TYPE-CD)
-     * @param catCode  the 4-character transaction category code (TRAN-CAT-CD)
+     * @param catCode  the transaction category code as SMALLINT (TRAN-CAT-CD)
      */
-    public TransactionCategoryId(String typeCode, String catCode) {
+    public TransactionCategoryId(String typeCode, Short catCode) {
         this.typeCode = typeCode;
         this.catCode = catCode;
     }
@@ -90,18 +89,18 @@ public class TransactionCategoryId implements Serializable {
     /**
      * Returns the transaction category code.
      *
-     * @return the 4-character category code
+     * @return the category code as Short
      */
-    public String getCatCode() {
+    public Short getCatCode() {
         return catCode;
     }
 
     /**
      * Sets the transaction category code.
      *
-     * @param catCode the 4-character category code (TRAN-CAT-CD)
+     * @param catCode the category code as SMALLINT (TRAN-CAT-CD)
      */
-    public void setCatCode(String catCode) {
+    public void setCatCode(Short catCode) {
         this.catCode = catCode;
     }
 
@@ -145,13 +144,13 @@ public class TransactionCategoryId implements Serializable {
      * Returns a human-readable string representation of this composite key,
      * including both field values for diagnostic and logging purposes.
      *
-     * @return string in the format {@code TransactionCategoryId{typeCode='XX', catCode='YYYY'}}
+     * @return string in the format {@code TransactionCategoryId{typeCode='XX', catCode=YYYY}}
      */
     @Override
     public String toString() {
         return "TransactionCategoryId{"
                 + "typeCode='" + typeCode + '\''
-                + ", catCode='" + catCode + '\''
+                + ", catCode=" + catCode
                 + '}';
     }
 }

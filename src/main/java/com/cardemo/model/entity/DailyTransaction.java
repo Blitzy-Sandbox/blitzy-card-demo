@@ -49,7 +49,7 @@ import java.util.Objects;
  * @see com.cardemo.model.entity.Transaction
  */
 @Entity
-@Table(name = "daily_transaction")
+@Table(name = "daily_transactions")
 public class DailyTransaction {
 
     // -------------------------------------------------------------------------
@@ -61,7 +61,7 @@ public class DailyTransaction {
      * Maps COBOL field {@code DALYTRAN-ID PIC X(16)}.
      */
     @Id
-    @Column(name = "dalytran_id", length = 16, nullable = false)
+    @Column(name = "tran_id", length = 16, nullable = false)
     private String dalytranId;
 
     // -------------------------------------------------------------------------
@@ -73,16 +73,15 @@ public class DailyTransaction {
      * Maps COBOL field {@code DALYTRAN-TYPE-CD PIC X(02)}.
      * Examples: "SA" (Sale), "RE" (Return).
      */
-    @Column(name = "dalytran_type_cd", length = 2)
+    @Column(name = "type_cd", length = 2)
     private String dalytranTypeCd;
 
     /**
-     * Transaction category code (4 characters, numeric with leading zeros).
-     * Maps COBOL field {@code DALYTRAN-CAT-CD PIC 9(04)}.
-     * Stored as String to preserve leading zeros (e.g., "0001").
+     * Transaction category code. Maps COBOL field {@code DALYTRAN-CAT-CD PIC 9(04)}.
+     * Stored as {@link Short} to match the DDL {@code SMALLINT} column type.
      */
-    @Column(name = "dalytran_cat_cd", length = 4)
-    private String dalytranCatCd;
+    @Column(name = "cat_cd")
+    private Short dalytranCatCd;
 
     // -------------------------------------------------------------------------
     // Source and Description Fields
@@ -93,14 +92,14 @@ public class DailyTransaction {
      * Maps COBOL field {@code DALYTRAN-SOURCE PIC X(10)}.
      * Examples: "POS TERM", "OPERATOR", "ONLINE", "ATM".
      */
-    @Column(name = "dalytran_source", length = 10)
+    @Column(name = "source", length = 10)
     private String dalytranSource;
 
     /**
      * Transaction description (100 characters).
      * Maps COBOL field {@code DALYTRAN-DESC PIC X(100)}.
      */
-    @Column(name = "dalytran_desc", length = 100)
+    @Column(name = "description", length = 100)
     private String dalytranDesc;
 
     // -------------------------------------------------------------------------
@@ -115,7 +114,7 @@ public class DailyTransaction {
      * {@code float} or {@code double}. Precision 11 = 9 integer digits + 2
      * decimal digits. Signed (S) — values can be negative for credits.</p>
      */
-    @Column(name = "dalytran_amt", precision = 11, scale = 2)
+    @Column(name = "amount", precision = 11, scale = 2)
     private BigDecimal dalytranAmt;
 
     // -------------------------------------------------------------------------
@@ -127,28 +126,28 @@ public class DailyTransaction {
      * Maps COBOL field {@code DALYTRAN-MERCHANT-ID PIC 9(09)}.
      * Stored as String to preserve leading zeros.
      */
-    @Column(name = "dalytran_merchant_id", length = 9)
+    @Column(name = "merchant_id", length = 9)
     private String dalytranMerchantId;
 
     /**
      * Merchant name (50 characters).
      * Maps COBOL field {@code DALYTRAN-MERCHANT-NAME PIC X(50)}.
      */
-    @Column(name = "dalytran_merchant_name", length = 50)
+    @Column(name = "merchant_name", length = 50)
     private String dalytranMerchantName;
 
     /**
      * Merchant city (50 characters).
      * Maps COBOL field {@code DALYTRAN-MERCHANT-CITY PIC X(50)}.
      */
-    @Column(name = "dalytran_merchant_city", length = 50)
+    @Column(name = "merchant_city", length = 50)
     private String dalytranMerchantCity;
 
     /**
      * Merchant ZIP code (10 characters).
      * Maps COBOL field {@code DALYTRAN-MERCHANT-ZIP PIC X(10)}.
      */
-    @Column(name = "dalytran_merchant_zip", length = 10)
+    @Column(name = "merchant_zip", length = 10)
     private String dalytranMerchantZip;
 
     // -------------------------------------------------------------------------
@@ -162,7 +161,7 @@ public class DailyTransaction {
      * <p>During batch posting, this field is used to perform XREF lookup
      * to resolve the card-to-account mapping. Reject code 100 if lookup fails.</p>
      */
-    @Column(name = "dalytran_card_num", length = 16)
+    @Column(name = "card_num", length = 16)
     private String dalytranCardNum;
 
     // -------------------------------------------------------------------------
@@ -175,7 +174,7 @@ public class DailyTransaction {
      * COBOL stores as 26-character timestamp string; Java uses proper
      * {@link LocalDateTime} temporal type.
      */
-    @Column(name = "dalytran_orig_ts")
+    @Column(name = "orig_ts")
     private LocalDateTime dalytranOrigTs;
 
     /**
@@ -184,7 +183,7 @@ public class DailyTransaction {
      * COBOL stores as 26-character timestamp string; Java uses proper
      * {@link LocalDateTime} temporal type.
      */
-    @Column(name = "dalytran_proc_ts")
+    @Column(name = "proc_ts")
     private LocalDateTime dalytranProcTs;
 
     // FILLER PIC X(20) — not mapped (COBOL record padding)
@@ -205,7 +204,7 @@ public class DailyTransaction {
      *
      * @param dalytranId           transaction identifier (16 chars)
      * @param dalytranTypeCd       transaction type code (2 chars)
-     * @param dalytranCatCd        transaction category code (4 chars, leading zeros)
+     * @param dalytranCatCd        transaction category code (SMALLINT)
      * @param dalytranSource       transaction source (10 chars)
      * @param dalytranDesc         transaction description (100 chars)
      * @param dalytranAmt          transaction amount (BigDecimal, precision 11, scale 2)
@@ -219,7 +218,7 @@ public class DailyTransaction {
      */
     public DailyTransaction(String dalytranId,
                             String dalytranTypeCd,
-                            String dalytranCatCd,
+                            Short dalytranCatCd,
                             String dalytranSource,
                             String dalytranDesc,
                             BigDecimal dalytranAmt,
@@ -265,11 +264,11 @@ public class DailyTransaction {
         this.dalytranTypeCd = dalytranTypeCd;
     }
 
-    public String getDalytranCatCd() {
+    public Short getDalytranCatCd() {
         return dalytranCatCd;
     }
 
-    public void setDalytranCatCd(String dalytranCatCd) {
+    public void setDalytranCatCd(Short dalytranCatCd) {
         this.dalytranCatCd = dalytranCatCd;
     }
 
@@ -397,7 +396,7 @@ public class DailyTransaction {
         return "DailyTransaction{" +
                 "dalytranId='" + dalytranId + '\'' +
                 ", dalytranTypeCd='" + dalytranTypeCd + '\'' +
-                ", dalytranCatCd='" + dalytranCatCd + '\'' +
+                ", dalytranCatCd=" + dalytranCatCd +
                 ", dalytranSource='" + dalytranSource + '\'' +
                 ", dalytranAmt=" + dalytranAmt +
                 ", dalytranMerchantId='" + dalytranMerchantId + '\'' +

@@ -328,17 +328,17 @@ The PostgreSQL 16+ schema is managed by **Flyway** migrations and maps all 11 VS
 
 | Table | Source VSAM Dataset | Entity Class | Description |
 |:---|:---|:---|:---|
-| `account` | ACCTDAT | `Account` | Account master — balance, credit limit, status |
-| `card` | CARDDAT | `Card` | Credit card records — number, expiry, status |
-| `customer` | CUSTDAT | `Customer` | Customer demographics — name, address, SSN, FICO |
-| `card_cross_reference` | CARDXREF + CXACAIX | `CardCrossReference` | Card ↔ Account ↔ Customer cross-reference |
-| `transaction` | TRANSACT + TRANIDX AIX | `Transaction` | Transaction master — amount, type, timestamp |
+| `accounts` | ACCTDAT | `Account` | Account master — balance, credit limit, status |
+| `cards` | CARDDAT | `Card` | Credit card records — number, expiry, status |
+| `customers` | CUSTDAT | `Customer` | Customer demographics — name, address, SSN, FICO |
+| `card_cross_references` | CARDXREF + CXACAIX | `CardCrossReference` | Card ↔ Account ↔ Customer cross-reference |
+| `transactions` | TRANSACT + TRANIDX AIX | `Transaction` | Transaction master — amount, type, timestamp |
 | `user_security` | USRSEC | `UserSecurity` | User credentials and roles (BCrypt hashed) |
-| `transaction_category_balance` | TCATBALF | `TransactionCategoryBalance` | Category-level balance tracking (composite PK) |
-| `disclosure_group` | DISCGRP | `DisclosureGroup` | Interest rate disclosure groups (composite PK) |
-| `transaction_type` | TRANTYPE | `TransactionType` | Transaction type reference data |
-| `transaction_category` | TRANCATG | `TransactionCategory` | Transaction category reference data (composite PK) |
-| `daily_transaction` | DALYTRAN | `DailyTransaction` | Batch staging table for daily transaction files |
+| `transaction_category_balances` | TCATBALF | `TransactionCategoryBalance` | Category-level balance tracking (composite PK) |
+| `disclosure_groups` | DISCGRP | `DisclosureGroup` | Interest rate disclosure groups (composite PK) |
+| `transaction_types` | TRANTYPE | `TransactionType` | Transaction type reference data |
+| `transaction_categories` | TRANCATG | `TransactionCategory` | Transaction category reference data (composite PK) |
+| `daily_transactions` | DALYTRAN | `DailyTransaction` | Batch staging table for daily transaction files |
 
 ### Flyway Migrations
 

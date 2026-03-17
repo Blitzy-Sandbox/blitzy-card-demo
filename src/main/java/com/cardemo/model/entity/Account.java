@@ -47,7 +47,7 @@ import java.util.Objects;
  *      CVACT01Y.cpy</a>
  */
 @Entity
-@Table(name = "account")
+@Table(name = "accounts")
 public class Account {
 
     /**
@@ -63,7 +63,7 @@ public class Account {
      * Account active status — maps ACCT-ACTIVE-STATUS PIC X(01).
      * Values: 'Y' (active) or 'N' (inactive).
      */
-    @Column(name = "acct_active_status", length = 1)
+    @Column(name = "active_status", length = 1)
     private String acctActiveStatus;
 
     /**
@@ -72,28 +72,28 @@ public class Account {
      * semantics. Updated by bill payment (COBIL00C) and batch transaction posting
      * (CBTRN02C).
      */
-    @Column(name = "acct_curr_bal", precision = 12, scale = 2)
+    @Column(name = "curr_bal", precision = 12, scale = 2)
     private BigDecimal acctCurrBal;
 
     /**
      * Credit limit — maps ACCT-CREDIT-LIMIT PIC S9(10)V99.
      * Used by CBTRN02C for transaction validation (reject code 102 if exceeded).
      */
-    @Column(name = "acct_credit_limit", precision = 12, scale = 2)
+    @Column(name = "credit_limit", precision = 12, scale = 2)
     private BigDecimal acctCreditLimit;
 
     /**
      * Cash credit limit — maps ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99.
      * Separate limit for cash advance transactions.
      */
-    @Column(name = "acct_cash_credit_limit", precision = 12, scale = 2)
+    @Column(name = "cash_credit_limit", precision = 12, scale = 2)
     private BigDecimal acctCashCreditLimit;
 
     /**
      * Account open date — maps ACCT-OPEN-DATE PIC X(10).
      * COBOL stores as 'YYYY-MM-DD' string; Java uses proper temporal type.
      */
-    @Column(name = "acct_open_date")
+    @Column(name = "open_date")
     private LocalDate acctOpenDate;
 
     /**
@@ -102,35 +102,35 @@ public class Account {
      * "EXPIRATION"). The Java field name corrects this to {@code acctExpDate}.
      * Used by CBTRN02C for expired card validation (reject code 103).
      */
-    @Column(name = "acct_exp_date")
+    @Column(name = "expiration_date")
     private LocalDate acctExpDate;
 
     /**
      * Account reissue date — maps ACCT-REISSUE-DATE PIC X(10).
      * Date when the account card was last reissued.
      */
-    @Column(name = "acct_reissue_date")
+    @Column(name = "reissue_date")
     private LocalDate acctReissueDate;
 
     /**
      * Current cycle credit total — maps ACCT-CURR-CYC-CREDIT PIC S9(10)V99.
      * Accumulated credit (payment) amount for the current billing cycle.
      */
-    @Column(name = "acct_curr_cyc_credit", precision = 12, scale = 2)
+    @Column(name = "curr_cyc_credit", precision = 12, scale = 2)
     private BigDecimal acctCurrCycCredit;
 
     /**
      * Current cycle debit total — maps ACCT-CURR-CYC-DEBIT PIC S9(10)V99.
      * Accumulated debit (charge) amount for the current billing cycle.
      */
-    @Column(name = "acct_curr_cyc_debit", precision = 12, scale = 2)
+    @Column(name = "curr_cyc_debit", precision = 12, scale = 2)
     private BigDecimal acctCurrCycDebit;
 
     /**
      * Account address ZIP code — maps ACCT-ADDR-ZIP PIC X(10).
      * Used for address validation (links to CSLKPCDY state/ZIP prefix lookup).
      */
-    @Column(name = "acct_addr_zip", length = 10)
+    @Column(name = "addr_zip", length = 10)
     private String acctAddrZip;
 
     /**
@@ -138,7 +138,7 @@ public class Account {
      * Used for disclosure group interest rate lookup in CBACT04C.
      * Links to the DisclosureGroup entity's groupId for rate determination.
      */
-    @Column(name = "acct_group_id", length = 10)
+    @Column(name = "group_id", length = 10)
     private String acctGroupId;
 
     // FILLER PIC X(178) — COBOL record padding only, not mapped to any Java field.

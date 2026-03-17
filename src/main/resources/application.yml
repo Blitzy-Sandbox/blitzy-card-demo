@@ -276,6 +276,8 @@ carddemo:
       batch-input-bucket: ${S3_BATCH_INPUT_BUCKET:carddemo-batch-input}
       batch-output-bucket: ${S3_BATCH_OUTPUT_BUCKET:carddemo-batch-output}
       statements-bucket: ${S3_STATEMENTS_BUCKET:carddemo-statements}
+      statement-text-prefix: ${S3_STATEMENT_TEXT_PREFIX:text/}
+      statement-html-prefix: ${S3_STATEMENT_HTML_PREFIX:html/}
     sqs:
       report-queue: ${SQS_REPORT_QUEUE:carddemo-report-jobs.fifo}
   # Batch pipeline configuration

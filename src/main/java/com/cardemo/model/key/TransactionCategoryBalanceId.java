@@ -21,9 +21,9 @@ import java.util.Objects;
  *    10 TRANCAT-CD          PIC 9(04).
  * }</pre>
  *
- * <p>All three key fields are mapped as {@code String} to preserve exact COBOL
- * byte-level semantics, including leading zeros for {@code PIC 9(n)} fields.
- * The total composite key length is 17 bytes (11 + 2 + 4).</p>
+ * <p>The {@code acctId} and {@code typeCode} fields are mapped as {@code String}
+ * to preserve COBOL byte-level semantics. The {@code catCode} field is mapped as
+ * {@link Short} to match the DDL {@code SMALLINT} column type.</p>
  *
  * <p>This class is used with {@code @EmbeddedId} in the
  * {@code TransactionCategoryBalance} entity. JPA requires that composite key
@@ -45,7 +45,7 @@ public class TransactionCategoryBalanceId implements Serializable {
      * leading zeros that are significant in the original COBOL record layout.
      * For example, account {@code "00000000001"} must remain 11 characters.</p>
      */
-    @Column(name = "trancat_acct_id", length = 11, nullable = false)
+    @Column(name = "acct_id", length = 11, nullable = false)
     private String acctId;
 
     /**
@@ -54,18 +54,16 @@ public class TransactionCategoryBalanceId implements Serializable {
      * <p>Alphanumeric 2-character code identifying the transaction type.
      * {@code PIC X} indicates alphanumeric content, stored as-is.</p>
      */
-    @Column(name = "trancat_type_cd", length = 2, nullable = false)
+    @Column(name = "type_cd", length = 2, nullable = false)
     private String typeCode;
 
     /**
      * Transaction category code — maps from {@code TRANCAT-CD PIC 9(04)}.
      *
-     * <p>Stored as {@code String} (not {@code int}) to preserve leading zeros
-     * from the original {@code PIC 9(4)} COBOL definition. For example,
-     * category {@code "0001"} must remain 4 characters.</p>
+     * <p>Stored as {@link Short} to match the DDL {@code SMALLINT} column type.</p>
      */
-    @Column(name = "trancat_cd", length = 4, nullable = false)
-    private String catCode;
+    @Column(name = "cat_cd", nullable = false)
+    private Short catCode;
 
     /**
      * No-args constructor required by the JPA specification for all
@@ -80,9 +78,9 @@ public class TransactionCategoryBalanceId implements Serializable {
      *
      * @param acctId   the 11-character account identifier (leading zeros preserved)
      * @param typeCode the 2-character transaction type code
-     * @param catCode  the 4-character transaction category code (leading zeros preserved)
+     * @param catCode  the transaction category code as SMALLINT
      */
-    public TransactionCategoryBalanceId(String acctId, String typeCode, String catCode) {
+    public TransactionCategoryBalanceId(String acctId, String typeCode, Short catCode) {
         this.acctId = acctId;
         this.typeCode = typeCode;
         this.catCode = catCode;
@@ -127,18 +125,18 @@ public class TransactionCategoryBalanceId implements Serializable {
     /**
      * Returns the transaction category code.
      *
-     * @return the 4-character category code, including leading zeros
+     * @return the category code as Short
      */
-    public String getCatCode() {
+    public Short getCatCode() {
         return catCode;
     }
 
     /**
      * Sets the transaction category code.
      *
-     * @param catCode the 4-character category code (leading zeros preserved)
+     * @param catCode the category code as SMALLINT
      */
-    public void setCatCode(String catCode) {
+    public void setCatCode(Short catCode) {
         this.catCode = catCode;
     }
 
@@ -184,14 +182,14 @@ public class TransactionCategoryBalanceId implements Serializable {
      * Returns a human-readable string representation of this composite key.
      *
      * @return a string in the form
-     *         {@code TransactionCategoryBalanceId{acctId='...', typeCode='...', catCode='...'}}
+     *         {@code TransactionCategoryBalanceId{acctId='...', typeCode='...', catCode=...}}
      */
     @Override
     public String toString() {
         return "TransactionCategoryBalanceId{"
                 + "acctId='" + acctId + '\''
                 + ", typeCode='" + typeCode + '\''
-                + ", catCode='" + catCode + '\''
+                + ", catCode=" + catCode
                 + '}';
     }
 }

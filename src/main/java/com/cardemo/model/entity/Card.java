@@ -56,7 +56,7 @@ import java.util.Objects;
  * @see com.cardemo.repository.CardRepository
  */
 @Entity
-@Table(name = "card")
+@Table(name = "cards")
 public class Card {
 
     // -----------------------------------------------------------------------
@@ -114,7 +114,7 @@ public class Card {
      * In Java, this is mapped to {@link LocalDate} for proper temporal operations
      * including expiration checks in batch validation (CBTRN02C reject code 103).</p>
      */
-    @Column(name = "card_exp_date")
+    @Column(name = "expiration_date")
     private LocalDate cardExpDate;
 
     /**
@@ -123,7 +123,7 @@ public class Card {
      * Single character: {@code 'Y'} for active, {@code 'N'} for inactive.
      * Used by batch validation (CBTRN02C) to reject transactions on inactive cards.
      */
-    @Column(name = "card_active_status", length = 1)
+    @Column(name = "active_status", length = 1)
     private String cardActiveStatus;
 
     // -----------------------------------------------------------------------

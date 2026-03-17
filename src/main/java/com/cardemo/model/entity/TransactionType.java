@@ -37,7 +37,7 @@ import java.util.Objects;
  * @see com.cardemo.model.entity.DailyTransaction
  */
 @Entity
-@Table(name = "tran_type")
+@Table(name = "transaction_types")
 public class TransactionType {
 
     /**
@@ -50,7 +50,7 @@ public class TransactionType {
      * "DB" (Debit), "PA" (Payment).</p>
      */
     @Id
-    @Column(name = "tran_type", length = 2, nullable = false)
+    @Column(name = "type_cd", length = 2, nullable = false)
     private String tranType;
 
     /**
@@ -60,7 +60,7 @@ public class TransactionType {
      * Used for display enrichment in transaction list views, detail screens,
      * and batch report generation.</p>
      */
-    @Column(name = "tran_type_desc", length = 50)
+    @Column(name = "type_desc", length = 50)
     private String tranTypeDesc;
 
     /**

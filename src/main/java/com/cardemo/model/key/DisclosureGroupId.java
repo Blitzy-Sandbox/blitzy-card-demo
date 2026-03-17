@@ -20,10 +20,9 @@ import java.util.Objects;
  *      10 DIS-TRAN-CAT-CD     PIC 9(04).   → catCode  ( 4 chars)
  * </pre>
  *
- * <p>All three fields are stored as {@code String} to preserve exact COBOL byte-level
- * semantics. In particular, {@code DIS-TRAN-CAT-CD PIC 9(04)} is a numeric display
- * field that retains leading zeros (e.g., {@code "0005"}) — mapping to {@code int}
- * would lose that precision.</p>
+ * <p>The {@code groupId} and {@code typeCode} fields are stored as {@code String} to
+ * preserve COBOL byte-level semantics. The {@code catCode} field is stored as
+ * {@link Short} to match the DDL {@code SMALLINT} column type.</p>
  *
  * <p>The {@code equals()} and {@code hashCode()} methods are critical for JPA entity
  * identity and for the DEFAULT group fallback lookup logic used during interest
@@ -42,7 +41,7 @@ public class DisclosureGroupId implements Serializable {
      * Maps from COBOL {@code DIS-ACCT-GROUP-ID PIC X(10)}.
      * Examples: {@code "0000000001"}, {@code "DEFAULT   "}.
      */
-    @Column(name = "dis_acct_group_id", length = 10, nullable = false)
+    @Column(name = "group_id", length = 10, nullable = false)
     private String groupId;
 
     /**
@@ -50,16 +49,16 @@ public class DisclosureGroupId implements Serializable {
      * Maps from COBOL {@code DIS-TRAN-TYPE-CD PIC X(02)}.
      * Examples: {@code "01"}, {@code "02"}.
      */
-    @Column(name = "dis_tran_type_cd", length = 2, nullable = false)
+    @Column(name = "type_cd", length = 2, nullable = false)
     private String typeCode;
 
     /**
      * Transaction category code within the disclosure group.
      * Maps from COBOL {@code DIS-TRAN-CAT-CD PIC 9(04)}.
-     * Stored as String to preserve leading zeros (e.g., {@code "0005"}).
+     * Stored as {@link Short} to match the DDL {@code SMALLINT} column type.
      */
-    @Column(name = "dis_tran_cat_cd", length = 4, nullable = false)
-    private String catCode;
+    @Column(name = "cat_cd", nullable = false)
+    private Short catCode;
 
     /**
      * No-args constructor required by the JPA specification for embeddable classes.
@@ -73,9 +72,9 @@ public class DisclosureGroupId implements Serializable {
      *
      * @param groupId  the account group identifier (up to 10 characters)
      * @param typeCode the transaction type code (up to 2 characters)
-     * @param catCode  the transaction category code (up to 4 characters, numeric display)
+     * @param catCode  the transaction category code as SMALLINT
      */
-    public DisclosureGroupId(String groupId, String typeCode, String catCode) {
+    public DisclosureGroupId(String groupId, String typeCode, Short catCode) {
         this.groupId = groupId;
         this.typeCode = typeCode;
         this.catCode = catCode;
@@ -120,18 +119,18 @@ public class DisclosureGroupId implements Serializable {
     /**
      * Returns the transaction category code.
      *
-     * @return the category code (up to 4 characters, numeric display preserving leading zeros)
+     * @return the category code as Short
      */
-    public String getCatCode() {
+    public Short getCatCode() {
         return catCode;
     }
 
     /**
      * Sets the transaction category code.
      *
-     * @param catCode the category code to set (up to 4 characters, numeric display)
+     * @param catCode the category code as SMALLINT
      */
-    public void setCatCode(String catCode) {
+    public void setCatCode(Short catCode) {
         this.catCode = catCode;
     }
 
@@ -177,14 +176,14 @@ public class DisclosureGroupId implements Serializable {
      * Returns a human-readable string representation of this composite key.
      *
      * @return a string in the format
-     *         {@code DisclosureGroupId{groupId='...', typeCode='...', catCode='...'}}
+     *         {@code DisclosureGroupId{groupId='...', typeCode='...', catCode=...}}
      */
     @Override
     public String toString() {
         return "DisclosureGroupId{"
                 + "groupId='" + groupId + '\''
                 + ", typeCode='" + typeCode + '\''
-                + ", catCode='" + catCode + '\''
+                + ", catCode=" + catCode
                 + '}';
     }
 }

@@ -98,9 +98,9 @@ public class StatementWriter implements ItemWriter<StatementWriter.StatementOutp
      */
     public StatementWriter(
             S3Client s3Client,
-            @Value("${carddemo.s3.statement-bucket:carddemo-statements}") String statementBucket,
-            @Value("${carddemo.s3.statement-text-prefix:text/}") String textPrefix,
-            @Value("${carddemo.s3.statement-html-prefix:html/}") String htmlPrefix) {
+            @Value("${carddemo.aws.s3.statements-bucket:carddemo-statements}") String statementBucket,
+            @Value("${carddemo.aws.s3.statement-text-prefix:text/}") String textPrefix,
+            @Value("${carddemo.aws.s3.statement-html-prefix:html/}") String htmlPrefix) {
         this.s3Client = s3Client;
         this.statementBucket = statementBucket;
         this.textPrefix = textPrefix;

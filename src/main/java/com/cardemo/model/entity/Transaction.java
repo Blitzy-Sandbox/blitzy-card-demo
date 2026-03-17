@@ -50,9 +50,9 @@ import java.util.Objects;
  */
 @Entity
 @Table(
-    name = "transaction",
+    name = "transactions",
     indexes = {
-        @Index(name = "idx_tran_card_num", columnList = "tran_card_num")
+        @Index(name = "idx_tran_card_num", columnList = "card_num")
     }
 )
 public class Transaction {
@@ -77,15 +77,15 @@ public class Transaction {
      * Transaction type code. Maps COBOL TRAN-TYPE-CD PIC X(02).
      * Logical FK reference to TransactionType.tranType.
      */
-    @Column(name = "tran_type_cd", length = 2)
+    @Column(name = "type_cd", length = 2)
     private String tranTypeCd;
 
     /**
      * Transaction category code. Maps COBOL TRAN-CAT-CD PIC 9(04).
-     * Stored as String to preserve leading zeros (e.g., "0001").
+     * Stored as {@link Short} to match the DDL {@code SMALLINT} column type.
      */
-    @Column(name = "tran_cat_cd", length = 4)
-    private String tranCatCd;
+    @Column(name = "cat_cd")
+    private Short tranCatCd;
 
     // -----------------------------------------------------------------------
     // Source and Description Fields
@@ -95,13 +95,13 @@ public class Transaction {
      * Transaction source identifier. Maps COBOL TRAN-SOURCE PIC X(10).
      * Values include "POS TERM", "OPERATOR", "ONLINE", "ATM", etc.
      */
-    @Column(name = "tran_source", length = 10)
+    @Column(name = "source", length = 10)
     private String tranSource;
 
     /**
      * Transaction description text. Maps COBOL TRAN-DESC PIC X(100).
      */
-    @Column(name = "tran_desc", length = 100)
+    @Column(name = "description", length = 100)
     private String tranDesc;
 
     // -----------------------------------------------------------------------
@@ -118,7 +118,7 @@ public class Transaction {
      * <p>For comparisons, always use {@code compareTo()}, NEVER {@code equals()}
      * (which is scale-sensitive in BigDecimal).
      */
-    @Column(name = "tran_amt", precision = 11, scale = 2)
+    @Column(name = "amount", precision = 11, scale = 2)
     private BigDecimal tranAmt;
 
     // -----------------------------------------------------------------------
@@ -129,25 +129,25 @@ public class Transaction {
      * Merchant identifier. Maps COBOL TRAN-MERCHANT-ID PIC 9(09).
      * Stored as String to preserve leading zeros.
      */
-    @Column(name = "tran_merchant_id", length = 9)
+    @Column(name = "merchant_id", length = 9)
     private String tranMerchantId;
 
     /**
      * Merchant name. Maps COBOL TRAN-MERCHANT-NAME PIC X(50).
      */
-    @Column(name = "tran_merchant_name", length = 50)
+    @Column(name = "merchant_name", length = 50)
     private String tranMerchantName;
 
     /**
      * Merchant city. Maps COBOL TRAN-MERCHANT-CITY PIC X(50).
      */
-    @Column(name = "tran_merchant_city", length = 50)
+    @Column(name = "merchant_city", length = 50)
     private String tranMerchantCity;
 
     /**
      * Merchant ZIP code. Maps COBOL TRAN-MERCHANT-ZIP PIC X(10).
      */
-    @Column(name = "tran_merchant_zip", length = 10)
+    @Column(name = "merchant_zip", length = 10)
     private String tranMerchantZip;
 
     // -----------------------------------------------------------------------
@@ -162,7 +162,7 @@ public class Transaction {
      * modeled as {@code @Index(name = "idx_tran_card_num")} on the table definition.
      * Logical FK reference to Card.cardNum.
      */
-    @Column(name = "tran_card_num", length = 16)
+    @Column(name = "card_num", length = 16)
     private String tranCardNum;
 
     // -----------------------------------------------------------------------
@@ -174,7 +174,7 @@ public class Transaction {
      * Maps COBOL TRAN-ORIG-TS PIC X(26) (format: YYYY-MM-DD-HH.MM.SS.NNNNNN).
      * Java uses proper {@link LocalDateTime} type instead of a 26-character string.
      */
-    @Column(name = "tran_orig_ts")
+    @Column(name = "orig_ts")
     private LocalDateTime tranOrigTs;
 
     /**
@@ -182,7 +182,7 @@ public class Transaction {
      * Maps COBOL TRAN-PROC-TS PIC X(26) (format: YYYY-MM-DD-HH.MM.SS.NNNNNN).
      * Java uses proper {@link LocalDateTime} type instead of a 26-character string.
      */
-    @Column(name = "tran_proc_ts")
+    @Column(name = "proc_ts")
     private LocalDateTime tranProcTs;
 
     // Note: COBOL FILLER PIC X(20) is NOT mapped — padding only.
@@ -203,7 +203,7 @@ public class Transaction {
      *
      * @param tranId           transaction identifier (16 chars)
      * @param tranTypeCd       transaction type code (2 chars)
-     * @param tranCatCd        transaction category code (4 chars, leading zeros preserved)
+     * @param tranCatCd        transaction category code (SMALLINT)
      * @param tranSource       transaction source (10 chars)
      * @param tranDesc         transaction description (100 chars)
      * @param tranAmt          transaction amount (BigDecimal, precision=11, scale=2)
@@ -215,7 +215,7 @@ public class Transaction {
      * @param tranOrigTs       origination timestamp
      * @param tranProcTs       processing timestamp
      */
-    public Transaction(String tranId, String tranTypeCd, String tranCatCd,
+    public Transaction(String tranId, String tranTypeCd, Short tranCatCd,
                        String tranSource, String tranDesc, BigDecimal tranAmt,
                        String tranMerchantId, String tranMerchantName,
                        String tranMerchantCity, String tranMerchantZip,
@@ -256,11 +256,11 @@ public class Transaction {
         this.tranTypeCd = tranTypeCd;
     }
 
-    public String getTranCatCd() {
+    public Short getTranCatCd() {
         return tranCatCd;
     }
 
-    public void setTranCatCd(String tranCatCd) {
+    public void setTranCatCd(Short tranCatCd) {
         this.tranCatCd = tranCatCd;
     }
 

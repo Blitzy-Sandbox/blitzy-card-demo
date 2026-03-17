@@ -41,9 +41,9 @@ import java.util.Objects;
  */
 @Entity
 @Table(
-    name = "card_xref",
+    name = "card_cross_references",
     indexes = {
-        @Index(name = "idx_xref_acct_id", columnList = "xref_acct_id")
+        @Index(name = "idx_xref_acct_id", columnList = "account_id")
     }
 )
 public class CardCrossReference {
@@ -55,7 +55,7 @@ public class CardCrossReference {
      * unique identifier for cross-reference lookups.
      */
     @Id
-    @Column(name = "xref_card_num", length = 16, nullable = false)
+    @Column(name = "card_num", length = 16, nullable = false)
     private String xrefCardNum;
 
     /**
@@ -65,7 +65,7 @@ public class CardCrossReference {
      * the COBOL numeric display format. COBOL VSAM does not enforce
      * referential integrity; this is a logical relationship only.
      */
-    @Column(name = "xref_cust_id", length = 9)
+    @Column(name = "cust_id", length = 9)
     private String xrefCustId;
 
     /**
@@ -76,7 +76,7 @@ public class CardCrossReference {
      * {@code idx_xref_acct_id} is declared on the {@code @Table} annotation.
      * Stored as String to preserve leading zeros per COBOL PIC 9(11) format.
      */
-    @Column(name = "xref_acct_id", length = 11)
+    @Column(name = "account_id", length = 11)
     private String xrefAcctId;
 
     // FILLER PIC X(14) is intentionally NOT mapped — padding bytes only.
