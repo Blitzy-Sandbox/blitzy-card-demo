@@ -1,0 +1,188 @@
+# =============================================================================
+# CardDemo Application — Local Development Profile
+# =============================================================================
+# Activated by: -Dspring.profiles.active=local  (or SPRING_PROFILES_ACTIVE=local)
+#
+# This profile configures the CardDemo application for local development using
+# Docker Compose services:
+#   - PostgreSQL 16 on localhost:5432
+#   - LocalStack on localhost:4566 (S3, SQS, SNS)
+#   - Jaeger OTLP collector on localhost:4318 (distributed tracing)
+#   - Prometheus on localhost:9090 (metrics scraping)
+#   - Grafana on localhost:3000 (dashboard visualization)
+#
+# Overrides the base application.yml with local-specific settings:
+#   - Direct localhost endpoints (no environment variable indirection)
+#   - S3 path-style access enabled (critical for LocalStack compatibility)
+#   - 100% trace sampling for full observability during development
+#   - Verbose SQL logging and formatted output for debugging
+#   - Expanded actuator endpoint exposure for development introspection
+#
+# COBOL Source Reference: aws-samples/carddemo commit 27d6c6f
+#
+# LocalStack S3 Buckets (created by localstack-init/init-aws.sh):
+#   carddemo-batch-input    — Batch file staging (replaces GDG TRANSACT.DALY)
+#   carddemo-batch-output   — Batch output (replaces GDG TRANREPT, DALYREJS,
+#                              TRANSACT.BKUP, SYSTRAN, TRANSACT.COMBINED)
+#   carddemo-statements     — Statement output (replaces CREASTMT statement files)
+#
+# LocalStack SQS Queues (created by localstack-init/init-aws.sh):
+#   carddemo-report-jobs.fifo — Online-to-batch bridge (replaces CICS TDQ JOBS
+#                                queue from CORPT00C.cbl report submission)
+# =============================================================================
+
+spring:
+  config:
+    activate:
+      on-profile: local
+
+  # ---------------------------------------------------------------------------
+  # Datasource — Local PostgreSQL 16 (Docker Compose)
+  # ---------------------------------------------------------------------------
+  # Connects to the PostgreSQL instance started by docker-compose.yml.
+  # Credentials are local-dev-only defaults; production uses environment
+  # variables (AAP §0.8.1 — no hardcoded credentials in production).
+  # ---------------------------------------------------------------------------
+  datasource:
+    url: jdbc:postgresql://localhost:5432/carddemo
+    username: carddemo
+    password: carddemo
+    driver-class-name: org.postgresql.Driver
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate — Verbose Mode for Local Development
+  # ---------------------------------------------------------------------------
+  # show-sql + format_sql provide readable SQL output in the console for
+  # debugging entity queries during development. Hibernate validates schema
+  # against Flyway-managed tables (ddl-auto: validate).
+  # ---------------------------------------------------------------------------
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+  # ---------------------------------------------------------------------------
+  # Flyway — Database Migration (Local)
+  # ---------------------------------------------------------------------------
+  # Flyway runs automatically on startup to provision schema and seed data.
+  # Migration scripts:
+  #   V1__create_schema.sql  — 11 tables from VSAM DEFINE CLUSTER specs
+  #   V2__create_indexes.sql — Alternate indexes (CXACAIX, TRANSACT AIX)
+  #   V3__seed_data.sql      — 9 ASCII fixture files as INSERT statements
+  # ---------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch — Local Metadata Initialization
+  # ---------------------------------------------------------------------------
+  # Spring Batch metadata tables (BATCH_JOB_INSTANCE, BATCH_JOB_EXECUTION,
+  # etc.) are auto-created in the local PostgreSQL database.
+  # Jobs are NOT auto-triggered (job.enabled: false inherited from base config).
+  # ---------------------------------------------------------------------------
+  batch:
+    jdbc:
+      initialize-schema: always
+
+  # ---------------------------------------------------------------------------
+  # AWS Services — LocalStack Endpoints (S3, SQS, SNS)
+  # ---------------------------------------------------------------------------
+  # All AWS service calls route to LocalStack at localhost:4566.
+  # CRITICAL: path-style-access-enabled MUST be true for LocalStack S3
+  # compatibility (AAP §0.7.6 documented pitfall). Without this setting,
+  # S3 operations fail with DNS resolution errors for virtual-hosted buckets.
+  #
+  # LocalStack resources are provisioned by localstack-init/init-aws.sh:
+  #   S3:  carddemo-batch-input, carddemo-batch-output, carddemo-statements
+  #   SQS: carddemo-report-jobs.fifo (FIFO queue for report job submissions)
+  #
+  # Credentials use environment variable defaults with 'test' fallback.
+  # No live AWS credentials are required for local development (AAP §0.7.7).
+  # ---------------------------------------------------------------------------
+  cloud:
+    aws:
+      region:
+        static: us-east-1
+      credentials:
+        access-key: ${AWS_ACCESS_KEY_ID:test}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+      s3:
+        endpoint: http://localhost:4566
+        path-style-access-enabled: true
+      sqs:
+        endpoint: http://localhost:4566
+      sns:
+        endpoint: http://localhost:4566
+
+# -----------------------------------------------------------------------------
+# Actuator and Observability — Expanded for Local Development
+# -----------------------------------------------------------------------------
+# Local development exposes additional actuator endpoints (env, beans,
+# configprops, mappings) for introspection and debugging. Production
+# restricts to health, info, prometheus, metrics only.
+#
+# Health details are shown unconditionally (always) for local debugging;
+# production requires authorization (when_authorized in base config).
+#
+# Kubernetes-style liveness and readiness probes are enabled:
+#   GET /actuator/health/liveness   — Application liveness check
+#   GET /actuator/health/readiness  — Application readiness check
+# -----------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics,env,beans,configprops,mappings
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  # ---------------------------------------------------------------------------
+  # Distributed Tracing — 100% Sampling for Local Dev
+  # ---------------------------------------------------------------------------
+  # Full trace sampling during local development captures every request for
+  # end-to-end observability. Production uses 10% sampling (base config).
+  # Traces export via OTLP to the Jaeger collector in Docker Compose.
+  # ---------------------------------------------------------------------------
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: http://localhost:4318/v1/traces
+
+# -----------------------------------------------------------------------------
+# Server Configuration — Local Development
+# -----------------------------------------------------------------------------
+server:
+  port: 8080
+
+# -----------------------------------------------------------------------------
+# Logging — Verbose Levels for Local Development
+# -----------------------------------------------------------------------------
+# DEBUG logging for application code and Hibernate SQL provides detailed
+# output during development. Spring Batch remains at INFO to reduce noise
+# from batch metadata operations.
+#
+# Hibernate SQL logging levels:
+#   org.hibernate.SQL: DEBUG        — Logs all SQL statements
+#   org.hibernate.orm.jdbc.bind: TRACE — Logs bound parameter values
+# -----------------------------------------------------------------------------
+logging:
+  level:
+    com.cardemo: DEBUG
+    org.springframework.batch: INFO
+    org.hibernate.SQL: DEBUG
+    org.hibernate.orm.jdbc.bind: TRACE
+    org.springframework.security: DEBUG
+    org.flywaydb: INFO
