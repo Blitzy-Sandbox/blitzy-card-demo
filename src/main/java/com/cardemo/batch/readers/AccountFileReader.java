@@ -44,6 +44,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Iterator;
+import java.util.List;
 
 /**
  * Spring Batch {@link ItemReader} that reads all {@link Account} records from
@@ -138,7 +139,9 @@ public class AccountFileReader implements ItemReader<Account> {
             log.info("START OF EXECUTION OF PROGRAM {}", COBOL_PROGRAM_ID);
             log.info("Opening account dataset — fetching all records from repository");
             try {
-                iterator = accountRepository.findAll().iterator();
+                List<Account> accounts = accountRepository.findAll();
+                log.info("Opened account file, found {} records", accounts.size());
+                iterator = accounts.iterator();
                 initialized = true;
                 recordCount = 0;
             } catch (DataAccessException ex) {
