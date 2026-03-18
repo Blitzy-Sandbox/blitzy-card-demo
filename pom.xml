@@ -182,6 +182,7 @@
                     <excludes>
                         <exclude>**/*IT.java</exclude>
                         <exclude>**/*E2E.java</exclude>
+                        <exclude>**/*E2ETest.java</exclude>
                     </excludes>
                 </configuration>
             </plugin>
@@ -193,6 +194,7 @@
                     <includes>
                         <include>**/*IT.java</include>
                         <include>**/*E2E.java</include>
+                        <include>**/*E2ETest.java</include>
                     </includes>
                 </configuration>
                 <executions>
