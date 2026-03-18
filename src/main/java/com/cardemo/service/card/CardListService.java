@@ -257,9 +257,11 @@ public class CardListService {
             candidates = new ArrayList<>(
                     cardRepository.findByCardAcctId(acctIdFilter.trim()));
         } else {
-            // No account filter — load all cards for card number filtering.
+            // No account filter — load cards for card number filtering.
             // Maps COCRDLIC sequential READNEXT browse through entire CARD-FILE.
-            Pageable allCards = PageRequest.of(0, Integer.MAX_VALUE,
+            // Capped at 1000 records to prevent unbounded memory consumption;
+            // COBOL equivalent was bounded by physical VSAM dataset size.
+            Pageable allCards = PageRequest.of(0, 1000,
                     Sort.by("cardNum").ascending());
             candidates = new ArrayList<>(
                     cardRepository.findAll(allCards).getContent());

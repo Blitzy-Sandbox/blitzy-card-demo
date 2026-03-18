@@ -280,19 +280,25 @@ public class TransactionReportProcessor implements ItemProcessor<Transaction, Tr
         }
 
         // ---------------------------------------------------------------
-        // Step 4: TRANTYPE Enrichment Lookup
+        // Step 4: TRANTYPE Existence Validation
         // Maps paragraph 1500-B-LOOKUP-TRANTYPE (lines 494-502):
         //   MOVE TRAN-TYPE-CD TO FD-TRAN-TYPE
         //   READ TRANTYPE-FILE INTO TRAN-TYPE-RECORD
+        // The COBOL original uses INVALID KEY / DISPLAY for validation
+        // diagnostics — these lookups validate referential integrity and
+        // log warnings for missing references. The fetched data is NOT
+        // applied to the output item; the transaction is passed through
+        // unchanged regardless of lookup success/failure.
         // ---------------------------------------------------------------
         performTransactionTypeLookup(item.getTranTypeCd());
 
         // ---------------------------------------------------------------
-        // Step 5: TRANCATG Enrichment Lookup
+        // Step 5: TRANCATG Existence Validation
         // Maps paragraph 1500-C-LOOKUP-TRANCATG (lines 504-512):
         //   MOVE TRAN-TYPE-CD TO FD-TRAN-TYPE-CD
         //   MOVE TRAN-CAT-CD  TO FD-TRAN-CAT-CD
         //   READ TRANCATG-FILE INTO TRAN-CAT-RECORD
+        // Same existence-validation pattern as TRANTYPE above.
         // ---------------------------------------------------------------
         performTransactionCategoryLookup(item.getTranTypeCd(), item.getTranCatCd());
 
@@ -338,12 +344,19 @@ public class TransactionReportProcessor implements ItemProcessor<Transaction, Tr
                 item.getTranId(), amount, cardNum,
                 pageTotal, accountTotal, grandTotal);
 
-        // Return the enriched Transaction item (non-null = included in report)
+        // Return the validated Transaction item unchanged (non-null = included in report).
+        // Lookups above are existence-validation only (COBOL INVALID KEY diagnostics);
+        // they do not modify the item. The item's original fields are sufficient for
+        // the report writer to produce the CBTRN03C-equivalent output.
         return item;
     }
 
     // -----------------------------------------------------------------------
-    // Private Enrichment Lookup Methods
+    // Private Existence-Validation Lookup Methods
+    // These methods validate referential integrity against lookup tables and
+    // log diagnostic warnings for missing references (COBOL INVALID KEY
+    // pattern). Fetched data is used only for diagnostic logging, not for
+    // modifying the processed Transaction item.
     // -----------------------------------------------------------------------
 
     /**

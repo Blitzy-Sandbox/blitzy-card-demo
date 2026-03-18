@@ -504,6 +504,16 @@ public class TransactionAddService {
      * <p>Java equivalent uses {@code SELECT MAX(t.tranId) FROM Transaction t} via
      * {@link TransactionRepository#findMaxTransactionId()}.</p>
      *
+     * <p><strong>Concurrency Note:</strong> This method is not atomic — concurrent calls
+     * may read the same max ID and generate duplicates. This is behavioral parity with
+     * the COBOL COTRN02C pattern which also uses non-atomic STARTBR/READPREV under CICS
+     * single-threading. In the higher-concurrency Java environment, the primary key unique
+     * constraint on {@code tran_id} provides safety: duplicate attempts will trigger a
+     * {@link com.cardemo.exception.DuplicateRecordException} via
+     * {@link org.springframework.dao.DataIntegrityViolationException}, which the caller
+     * handles gracefully. For production environments with high concurrency, consider
+     * replacing with a database sequence or {@code SELECT ... FOR UPDATE} pattern.</p>
+     *
      * @return 16-character zero-padded transaction ID string (PIC 9(16))
      * @throws CardDemoException if the existing max ID is corrupted and cannot be parsed
      */

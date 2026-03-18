@@ -11,6 +11,7 @@ import com.cardemo.repository.CustomerRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -36,8 +37,8 @@ import java.util.List;
  *
  * <p><strong>Key Design Decisions:</strong>
  * <ul>
- *   <li>No {@code @Transactional} annotation — this is a read-only service;
- *       Spring Data JPA handles individual reads within their own transactions.</li>
+ *   <li>{@code @Transactional(readOnly = true)} on the read method ensures
+ *       read consistency across the multi-dataset join and enables connection reuse.</li>
  *   <li>All monetary fields (balance, limits, credits, debits) use {@link java.math.BigDecimal}
  *       with zero floating-point substitution per AAP §0.8.2.</li>
  *   <li>{@link RecordNotFoundException} maps COBOL FILE STATUS 23 (INVALID KEY / NOTFND)
@@ -116,6 +117,7 @@ public class AccountViewService {
      * @throws RecordNotFoundException   if the card cross-reference, account, or customer
      *                                    record is not found in the database
      */
+    @Transactional(readOnly = true)
     public AccountDto getAccountView(String acctId) {
         logger.debug("Entering getAccountView for account ID: {}", acctId);
 

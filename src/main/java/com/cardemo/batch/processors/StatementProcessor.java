@@ -199,6 +199,13 @@ public class StatementProcessor
         //              IF XREF-CARD-NUM = WS-CARD-NUM(CR-JMP)
         //                PERFORM 6000-WRITE-TRANS
         //                ADD TRNX-AMT TO WS-TOTAL-AMT
+        //
+        // Behavioral parity note: The COBOL CBSTM03A uses sequential READNEXT
+        // through a physical TRNXFILE bounded by the sorted file size. The JPA
+        // query here is unbounded (no date range filter). This preserves COBOL
+        // semantics where all transactions for a card are included in the
+        // statement. For production environments with large transaction histories,
+        // consider adding a statement-period date range filter to bound the query.
         // ---------------------------------------------------------------
         List<Transaction> transactions =
                 transactionRepository.findByTranCardNum(item.getXrefCardNum());

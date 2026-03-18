@@ -185,11 +185,13 @@ public class ReportController {
                 request.getConfirm());
 
         // Confirmation check — mirrors COBOL CORPT00C.cbl SUBMIT-JOB-TO-INTRDR
-        // paragraph (lines 462-510). In COBOL, if CONFIRMI is SPACES/LOW-VALUES or
-        // 'N'/'n', the submission is cancelled and fields are reinitialized.
-        // In the REST pattern, null/blank/N all result in a cancellation response.
+        // paragraph (lines 462-510). In COBOL, the confirmation field is checked
+        // for 'Y'/'y' explicitly; any other value (SPACES, LOW-VALUES, 'N', etc.)
+        // cancels the submission and reinitializes the screen fields.
+        // The REST equivalent requires an explicit 'Y' to proceed, matching the
+        // COBOL behavioral parity requirement.
         String confirm = request.getConfirm();
-        if (confirm == null || confirm.isBlank() || "N".equalsIgnoreCase(confirm)) {
+        if (!"Y".equalsIgnoreCase(confirm)) {
             logger.info("Report submission cancelled by user (confirm='{}')", confirm);
             return ResponseEntity.ok("Report submission cancelled");
         }

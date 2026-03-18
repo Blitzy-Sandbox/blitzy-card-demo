@@ -12,6 +12,7 @@ import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.TransactionCategoryBalanceRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.stereotype.Component;
 
@@ -65,6 +66,23 @@ import java.util.Optional;
  * Rejection details are stored in an internal list accessible via
  * {@link #getRejections()} for the {@code RejectWriter} to consume.</p>
  *
+ * <p><strong>IMPORTANT: chunk-size=1 requirement.</strong> This processor performs
+ * direct database writes (account balance updates, TCATBAL updates) within the
+ * {@link #process(DailyTransaction)} method, which is atypical for a Spring Batch
+ * {@code ItemProcessor}. Normally, processors only transform items and writers
+ * perform I/O. However, this design preserves the CBTRN02C record-by-record
+ * processing model where each transaction's validation and posting is a single
+ * atomic operation. The step MUST be configured with {@code chunk(1)} to ensure
+ * each transaction is fully processed and committed before the next one begins.
+ * Using larger chunk sizes would cause validation state to leak between items
+ * and could lead to incorrect balance updates.</p>
+ *
+ * <p>This processor uses mutable instance fields ({@code goodTranCount},
+ * {@code badTranCount}, {@code rejections}) that mirror COBOL working storage.
+ * The COBOL CBTRN02C runs single-threaded; concurrent execution of this
+ * processor is not supported. The {@code @StepScope} annotation or single-step
+ * configuration should be used to ensure isolation.</p>
+ *
  * <h3>COBOL Source Reference</h3>
  * <ul>
  *   <li>{@code app/cbl/CBTRN02C.cbl} — Daily Transaction Posting Engine</li>
@@ -76,6 +94,7 @@ import java.util.Optional;
  * @see RejectCode
  */
 @Component
+@StepScope
 public class TransactionPostingProcessor implements ItemProcessor<DailyTransaction, Transaction> {
 
     private static final Logger log = LoggerFactory.getLogger(TransactionPostingProcessor.class);

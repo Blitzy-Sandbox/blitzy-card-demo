@@ -5,28 +5,46 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
+
+import com.cardemo.model.entity.UserSecurity;
+import com.cardemo.model.enums.UserType;
+import com.cardemo.repository.UserSecurityRepository;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Spring Security configuration for the CardDemo application.
  *
- * <p>Maps from the COBOL sign-on logic in {@code COSGN00C.cbl} and the user
- * security record layout in {@code CSUSR01Y.cpy}. The original COBOL
- * application used plaintext password comparison against the USRSEC VSAM
- * dataset; the Java target upgrades to BCrypt password hashing while
- * preserving the same authentication flow semantics.</p>
+ * <p>Migrated from COBOL COSGN00C.cbl sign-on program and CSUSR01Y.cpy user security
+ * record layout. The original COBOL application used plaintext password comparison
+ * against the USRSEC VSAM dataset; this implementation upgrades to BCrypt hashing
+ * per AAP §0.8.1 security improvement requirement.</p>
  *
- * <p>At this infrastructure checkpoint the full AuthenticationService and
- * UserDetailsService backed by the {@code user_security} table are not yet
- * wired. The filter chain therefore permits all requests so that actuator
- * health, metrics, and API endpoints are reachable for verification. When
- * the authentication service layer is implemented the chain will be
- * tightened to enforce role-based access (ADMIN vs USER) per the AAP.</p>
+ * <h3>Authentication Model</h3>
+ * <p>The COBOL COSGN00C.cbl program reads SEC-USR-ID and SEC-USR-PWD from the USRSEC
+ * VSAM KSDS dataset and compares passwords in plaintext. The Java equivalent uses
+ * Spring Security's {@link UserDetailsService} backed by {@link UserSecurityRepository}
+ * with BCrypt password encoding. The SEC-USR-TYPE field ('A' for admin, 'U' for regular
+ * user) maps to Spring Security roles: ROLE_ADMIN and ROLE_USER respectively.</p>
+ *
+ * <h3>Authorization Rules</h3>
+ * <p>Endpoint security mirrors the COBOL program routing logic:</p>
+ * <ul>
+ *     <li>{@code /api/auth/**} — Publicly accessible (sign-on equivalent)</li>
+ *     <li>{@code /api/admin/**} — Requires ROLE_ADMIN (COADM01C admin menu access)</li>
+ *     <li>{@code /api/**} — Requires authentication (any authenticated user)</li>
+ *     <li>{@code /actuator/health/**} — Public health check endpoints</li>
+ *     <li>{@code /actuator/**} — Requires ROLE_ADMIN for sensitive actuator endpoints</li>
+ * </ul>
  *
  * <h3>Design Decisions (see DECISION_LOG.md D-002)</h3>
  * <ul>
@@ -38,23 +56,25 @@ import org.springframework.security.web.SecurityFilterChain;
  * </ul>
  *
  * @see com.cardemo.model.entity.UserSecurity
+ * @see com.cardemo.repository.UserSecurityRepository
  */
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
 
     /**
-     * Configures the HTTP security filter chain.
+     * Configures the HTTP security filter chain with role-based access control.
      *
-     * <p>Current checkpoint configuration permits all requests to enable
-     * infrastructure verification. Production-ready configuration will
-     * restrict endpoints based on authenticated roles:
+     * <p>Endpoint security mirrors the COBOL program routing logic where
+     * COSGN00C validates credentials before routing to COMEN01C (regular menu)
+     * or COADM01C (admin menu) based on SEC-USR-TYPE. The Spring Security
+     * equivalent enforces this at the HTTP layer:</p>
      * <ul>
-     *   <li>{@code /api/admin/**} — ADMIN role only</li>
-     *   <li>{@code /api/**} — authenticated users (ADMIN or USER)</li>
-     *   <li>{@code /actuator/health/**} — public (readiness/liveness)</li>
-     *   <li>{@code /actuator/**} — ADMIN role only</li>
-     *   <li>{@code /api/auth/signin} — public</li>
+     *   <li>{@code /api/auth/**} — Public (sign-on equivalent)</li>
+     *   <li>{@code /api/admin/**} — ROLE_ADMIN only (COADM01C admin access)</li>
+     *   <li>{@code /actuator/health/**} — Public (readiness/liveness probes)</li>
+     *   <li>{@code /actuator/**} — ROLE_ADMIN only (sensitive management endpoints)</li>
+     *   <li>All other requests — Authenticated (any valid user)</li>
      * </ul>
      *
      * @param http the {@link HttpSecurity} builder provided by Spring Security
@@ -71,18 +91,22 @@ public class SecurityConfig {
             .sessionManagement(session ->
                 session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 
-            // Endpoint authorization rules
+            // HTTP Basic authentication for REST API access
+            .httpBasic(basic -> {})
+
+            // Endpoint authorization rules — mirrors COBOL COSGN00C routing
             .authorizeHttpRequests(auth -> auth
-                // Actuator health endpoints are always public
+                // Actuator health/info endpoints are always public (readiness/liveness probes)
                 .requestMatchers("/actuator/health/**").permitAll()
                 .requestMatchers("/actuator/info").permitAll()
-                // Authentication endpoint is public
+                // Authentication endpoint is public (sign-on equivalent)
                 .requestMatchers("/api/auth/**").permitAll()
-                // Actuator management endpoints (prometheus, etc.)
-                .requestMatchers("/actuator/**").permitAll()
-                // All API endpoints — permit all during infrastructure phase;
-                // will require authentication once AuthenticationService is wired
-                .anyRequest().permitAll()
+                // Admin endpoints require ADMIN role (COADM01C admin menu access)
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                // Sensitive actuator endpoints require ADMIN role
+                .requestMatchers("/actuator/**").hasRole("ADMIN")
+                // All other API endpoints require authentication (any authenticated user)
+                .anyRequest().authenticated()
             );
 
         return http.build();
@@ -108,30 +132,48 @@ public class SecurityConfig {
     }
 
     /**
-     * Provides a {@link UserDetailsService} bean to suppress Spring Boot's
-     * {@code UserDetailsServiceAutoConfiguration}.
+     * Provides a {@link UserDetailsService} backed by the {@code user_security}
+     * PostgreSQL table via {@link UserSecurityRepository}.
      *
-     * <p>At this infrastructure checkpoint the full {@code AuthenticationService}
-     * backed by the {@code user_security} table is not yet wired. This
-     * in-memory implementation provides a bootstrap admin account so the
-     * Spring Security context initializes without errors. When the
-     * database-backed {@code AuthenticationService} is implemented it will
-     * define its own {@code UserDetailsService} and this bean will be
-     * replaced or removed.</p>
+     * <p>Replaces the COBOL COSGN00C.cbl authentication flow where SEC-USR-ID is
+     * used to READ the USRSEC VSAM KSDS dataset and SEC-USR-PWD is compared in
+     * plaintext. The Spring Security equivalent queries the {@code user_security}
+     * table by user ID and delegates password verification to BCrypt.</p>
      *
-     * @return an {@link InMemoryUserDetailsManager} with a bootstrap admin user
+     * <h3>Role Mapping (SEC-USR-TYPE → Spring Security Roles)</h3>
+     * <ul>
+     *   <li>{@code 'A'} (ADMIN) → {@code ROLE_ADMIN} — routes to COADM01C admin menu</li>
+     *   <li>{@code 'U'} (USER)  → {@code ROLE_USER}  — routes to COMEN01C main menu</li>
+     * </ul>
+     *
+     * @param userSecurityRepository the JPA repository for user_security table access
+     * @return a {@link UserDetailsService} that authenticates against the database
      */
     @Bean
-    public UserDetailsService userDetailsService() {
-        // Bootstrap admin account — suppresses UserDetailsServiceAutoConfiguration.
-        // Will be replaced by database-backed UserDetailsService when
-        // AuthenticationService is implemented.
-        return new InMemoryUserDetailsManager(
-            User.builder()
-                .username("admin")
-                .password(passwordEncoder().encode("admin"))
-                .roles("ADMIN")
-                .build()
-        );
+    public UserDetailsService userDetailsService(UserSecurityRepository userSecurityRepository) {
+        return username -> {
+            // Read USRSEC record by SEC-USR-ID — mirrors COSGN00C READ on USRSEC
+            UserSecurity userSecurity = userSecurityRepository.findBySecUsrId(username)
+                    .orElseThrow(() -> new UsernameNotFoundException(
+                            "User not found: " + username));
+
+            // Map SEC-USR-TYPE to Spring Security granted authorities
+            // 'A' (ADMIN) → ROLE_ADMIN (COADM01C admin menu routing)
+            // 'U' (USER)  → ROLE_USER  (COMEN01C regular menu routing)
+            List<SimpleGrantedAuthority> authorities = new ArrayList<>();
+            if (userSecurity.getSecUsrType() == UserType.ADMIN) {
+                authorities.add(new SimpleGrantedAuthority("ROLE_ADMIN"));
+            } else {
+                authorities.add(new SimpleGrantedAuthority("ROLE_USER"));
+            }
+
+            // Return Spring Security UserDetails with BCrypt password hash
+            // Password verification is delegated to BCryptPasswordEncoder
+            return new User(
+                    userSecurity.getSecUsrId(),
+                    userSecurity.getSecUsrPwd(),
+                    authorities
+            );
+        };
     }
 }

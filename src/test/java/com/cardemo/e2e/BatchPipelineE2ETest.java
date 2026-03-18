@@ -13,6 +13,7 @@ import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -201,6 +202,10 @@ public class BatchPipelineE2ETest {
 
     @Autowired
     private JobLauncher jobLauncher;
+
+    /** Job explorer for refreshing {@link JobExecution} state during polling. */
+    @Autowired
+    private JobExplorer jobExplorer;
 
     // Individual batch job beans (from respective @Configuration classes)
     @Autowired
@@ -598,10 +603,12 @@ public class BatchPipelineE2ETest {
                 .as("Transactions must exist after combine stage")
                 .isNotEmpty();
 
-        // Extract transaction IDs and verify strictly ascending order
+        // Extract transaction IDs in DB-returned order (without re-sorting) and verify
+        // they are already in ascending order — this validates the CombineTransactionsJob
+        // actually sorted the data. Re-sorting the stream would make this assertion
+        // tautological (always true).
         List<String> tranIds = allTransactions.stream()
                 .map(Transaction::getTranId)
-                .sorted()
                 .toList();
 
         for (int i = 1; i < tranIds.size(); i++) {
@@ -919,6 +926,14 @@ public class BatchPipelineE2ETest {
      * asynchronous {@link JobLauncher} configured in BatchConfig by polling
      * {@link JobExecution#isRunning()} until the job finishes or times out.
      *
+     * <p>The {@link JobExplorer} is used to refresh the {@link JobExecution}
+     * instance on each poll iteration. This is necessary because the original
+     * {@code JobExecution} object returned by {@code jobLauncher.run()} may
+     * not reflect updates made by the job thread when using an asynchronous
+     * {@code TaskExecutor}. Refreshing via {@code jobExplorer.getJobExecution()}
+     * reads the current state from the {@code JobRepository} (BATCH_JOB_EXECUTION
+     * table), ensuring accurate status detection.</p>
+     *
      * @param job    the Spring Batch Job to launch
      * @param params the JobParameters for this execution
      * @return the final JobExecution with terminal status
@@ -931,6 +946,11 @@ public class BatchPipelineE2ETest {
         while (execution.isRunning() && waitedSeconds < JOB_TIMEOUT_SECONDS) {
             Thread.sleep(1000);
             waitedSeconds++;
+            // Refresh execution state from JobRepository via JobExplorer to detect
+            // completion when using asynchronous TaskExecutor. Without this refresh,
+            // the in-memory JobExecution object may remain stale and never reflect
+            // the terminal status set by the job thread.
+            execution = jobExplorer.getJobExecution(execution.getId());
         }
 
         if (execution.isRunning()) {
@@ -944,25 +964,93 @@ public class BatchPipelineE2ETest {
     }
 
     /**
-     * Builds sample daily transaction data for S3 input. Represents the
-     * GDG generation file (AWS.M2.CARDDEMO.TRANSACT.DALY) uploaded to S3
-     * as the batch input source for Stage 1 (DailyTransactionPostingJob).
+     * Builds sample daily transaction data for S3 input as properly formatted
+     * LRECL=350 fixed-width records matching the COBOL {@code DALYTRAN-RECORD}
+     * layout defined in {@code CVTRA06Y.cpy}. These records exercise the
+     * {@code DailyTransactionReader}'s fixed-width parsing and COBOL
+     * zoned-decimal overpunch decoding paths end-to-end.
      *
-     * <p>In practice, the primary data source is the Flyway V3 seed migration
-     * which populates the DailyTransaction staging table from dailytran.txt.
-     * This S3 file provides the file-based input channel for batch readers.
+     * <p>Record layout (350 bytes total):</p>
+     * <pre>
+     * ID(16) + TYPE(2) + CAT(4) + SOURCE(10) + DESC(100) + AMT(11)
+     *   + MERCHANT_ID(9) + MERCHANT_NAME(50) + CITY(50) + ZIP(10)
+     *   + CARD_NUM(16) + ORIG_TS(26) + PROC_TS(26) + FILLER(20) = 350
+     * </pre>
      *
-     * @return sample daily transaction content
+     * <p>COBOL zoned-decimal overpunch encoding for {@code DALYTRAN-AMT}
+     * (PIC S9(09)V99 DISPLAY format): the trailing character encodes both
+     * the last digit and the sign. Positive: {@code {=0, A=1, ... I=9}.
+     * Negative: {@code }=0, J=1, ... R=9}.</p>
+     *
+     * <p>The Flyway V3 migration (dailytran.txt → DailyTransaction table) is
+     * the primary data source for Stage 1; this S3 file supplements it by
+     * verifying the file-based S3 input channel.</p>
+     *
+     * @return 3 fixed-width records as a newline-delimited string
      */
     private static String buildDailyTransactionInputData() {
-        // Minimal daily transaction sample data for S3 input channel.
-        // The Flyway V3 migration (dailytran.txt → DailyTransaction table)
-        // is the primary data source; this S3 file supplements it.
         StringBuilder sb = new StringBuilder();
-        sb.append("# CardDemo Daily Transaction Batch Input File\n");
-        sb.append("# Source: POSTTRAN.jcl DALYTRAN DD\n");
-        sb.append("# Format: Fixed-width 350-byte records per CVTRA06Y.cpy\n");
+
+        // Record 1: +$50.00 grocery purchase (overpunch '{' = positive trailing zero)
+        // AMT: 000000050.00 → digits 00000005000 → last digit '0' positive → '{'
+        sb.append(buildFixedWidthRecord(
+                "0000000000090001", "01", "0005", "POS TERM",
+                "Grocery store purchase",
+                "0000000500{",
+                "123456789", "Grocery Mart", "New York", "10001",
+                "4111111111111111",
+                "2025-01-15 10:30:00.000000",
+                "2025-01-15 10:30:01.000000"));
+        sb.append('\n');
+
+        // Record 2: +$125.50 online purchase (overpunch '{' = positive trailing zero)
+        // AMT: 000000125.50 → digits 00000012550 → last digit '0' positive → '{'
+        sb.append(buildFixedWidthRecord(
+                "0000000000090002", "01", "0005", "OPERATOR",
+                "Online electronics purchase",
+                "0000001255{",
+                "987654321", "Online Shop", "Seattle", "98101",
+                "4111111111111111",
+                "2025-01-16 14:22:00.000000",
+                "2025-01-16 14:22:01.000000"));
+        sb.append('\n');
+
+        // Record 3: -$30.00 refund (overpunch '}' = negative trailing zero)
+        // AMT: -000000030.00 → digits 00000003000 → last digit '0' negative → '}'
+        sb.append(buildFixedWidthRecord(
+                "0000000000090003", "03", "0005", "POS TERM",
+                "Return defective item",
+                "0000000300}",
+                "123456789", "Grocery Mart", "New York", "10001",
+                "4111111111111111",
+                "2025-01-17 09:15:00.000000",
+                "2025-01-17 09:15:01.000000"));
+        sb.append('\n');
+
         return sb.toString();
+    }
+
+    /**
+     * Builds a single LRECL=350 fixed-width record by left-justifying and
+     * space-padding each field to its COBOL PIC width, matching the
+     * {@code DALYTRAN-RECORD} layout from {@code CVTRA06Y.cpy}.
+     *
+     * <p>Uses {@link String#format} with left-justified width specifiers
+     * ({@code %-Ns}) to pad each field to its exact COBOL byte width.
+     * The total formatted length is exactly 350 characters.</p>
+     *
+     * @return a 350-character fixed-width record string
+     */
+    private static String buildFixedWidthRecord(
+            String id, String typeCd, String catCd, String source, String desc,
+            String amt, String merchantId, String merchantName, String merchantCity,
+            String merchantZip, String cardNum, String origTs, String procTs) {
+        // Field widths: 16+2+4+10+100+11+9+50+50+10+16+26+26+20 = 350
+        return String.format(
+                "%-16s%-2s%-4s%-10s%-100s%-11s%-9s%-50s%-50s%-10s%-16s%-26s%-26s%-20s",
+                id, typeCd, catCd, source, desc, amt, merchantId,
+                merchantName, merchantCity, merchantZip,
+                cardNum, origTs, procTs, "");
     }
 
     /**

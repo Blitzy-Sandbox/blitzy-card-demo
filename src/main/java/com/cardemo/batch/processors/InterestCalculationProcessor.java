@@ -39,6 +39,7 @@ import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.annotation.AfterStep;
 import org.springframework.batch.core.annotation.BeforeStep;
+import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.stereotype.Component;
 
@@ -75,6 +76,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li>{@code RoundingMode.HALF_EVEN} (banker's rounding) matches COBOL default</li>
  *   <li>Formula preserved without algebraic simplification per AAP §0.8.5</li>
  *   <li>DEFAULT group fallback matches COBOL 1200-A-GET-DEFAULT-INT-RATE exactly</li>
+ *   <li>{@code @StepScope} ensures a fresh instance per step execution, providing
+ *       thread safety for the mutable account-break detection state fields
+ *       ({@code currentAccountId}, {@code accountBalance}, etc.). This mirrors
+ *       the COBOL CBACT04C single-threaded working storage model.</li>
  * </ul>
  *
  * @see TransactionCategoryBalance
@@ -86,6 +91,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *      INTCALC.jcl — Interest calculation JCL job</a>
  */
 @Component
+@StepScope
 public class InterestCalculationProcessor
         implements ItemProcessor<TransactionCategoryBalance, Transaction> {
 
