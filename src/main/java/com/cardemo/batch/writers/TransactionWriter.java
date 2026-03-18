@@ -1,123 +1,103 @@
 /*
- * TransactionWriter.java — Spring Batch ItemWriter for Transaction Posting
- *
- * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
- * Licensed under the Apache License, Version 2.0.
+ * TransactionWriter.java — Spring Batch ItemWriter for Posted Transaction Persistence
  *
  * COBOL Source Reference: aws-samples/carddemo commit 27d6c6f
- *   - CBTRN02C.cbl (731 lines) — Daily Transaction Posting Engine
- *   - CVTRA05Y.cpy — TRAN-RECORD layout (350 bytes)
- *   - CVACT01Y.cpy — ACCT-RECORD layout (300 bytes)
- *   - CVTRA01Y.cpy — TRAN-CAT-BAL-RECORD layout (50 bytes)
- *   - CVACT03Y.cpy — CARD-XREF-RECORD layout (50 bytes)
+ *   - CBTRN02C.cbl — Daily Transaction Posting Engine (731 lines)
+ *   - CVTRA05Y.cpy — Transaction record layout (350 bytes)
+ *   - CVACT01Y.cpy — Account record layout (300 bytes)
+ *   - CVTRA01Y.cpy — Transaction category balance record layout (50 bytes)
+ *   - POSTTRAN.jcl  — Daily transaction posting JCL
+ *   - TRANREPT.jcl  — Transaction report/backup JCL
  *
- * This class replaces the write/posting portion of the COBOL batch program
- * CBTRN02C.cbl. The original program performs a 4-stage validation cascade
- * on daily transaction records (DALYTRAN dataset) and — for valid records —
- * posts them to the TRANSACT VSAM KSDS dataset while updating the account
- * balance (ACCTDAT) and transaction category balance (TCATBALF) datasets.
- *
- * This writer handles steps 3 and 4 of the CBTRN02C pipeline:
- *   Step 3: Post validated transactions to the TRANSACT table
- *   Step 4: Update TCATBALF and ACCTDAT balance records
- *
- * COBOL Paragraph → Java Method Mapping:
- *   3000-POST-TRANSACTION           → write() / postTransaction()
- *   3100-UPDATE-TCATBAL             → updateCategoryBalance()
- *   3200-UPDATE-ACCOUNT-BALANCE     → updateAccountBalance()
- *   3300-WRITE-TRANSACTION-RECORD   → transactionRepository.saveAll()
- *   3400-WRITE-S3-BACKUP            → backupToS3() [replaces TRANSACT GDG backup]
- *
- * Key Behavioral Parity Requirements:
- *   - ALL arithmetic uses BigDecimal — zero floating-point substitution
- *   - BigDecimal comparisons use compareTo(), never equals() (scale-insensitive)
- *   - Interest formula precision: (balance × rate) / 1200 with HALF_EVEN rounding
- *   - Credit/debit segregation in account cycle accumulators
- *   - Atomicity via @Transactional (replacing COBOL SYNCPOINT semantics)
- *   - S3 backup is non-fatal — failure logged but does not abort the transaction
+ * Replaces COBOL paragraphs:
+ *   2000-POST-TRANSACTION        → write() orchestration
+ *   2700-UPDATE-TCATBAL           → updateTransactionCategoryBalance()
+ *   2700-A-CREATE-TCATBAL-REC     → create path in updateTransactionCategoryBalance()
+ *   2700-B-UPDATE-TCATBAL-REC     → update path in updateTransactionCategoryBalance()
+ *   2800-UPDATE-ACCOUNT-REC       → updateAccountBalance()
+ *   2900-WRITE-TRANSACTION-FILE   → transactionRepository.saveAll()
+ *   Z-GET-DB2-FORMAT-TIMESTAMP    → LocalDateTime.now() with DB2_TIMESTAMP_FORMAT
  */
 package com.cardemo.batch.writers;
 
 import com.cardemo.model.entity.Account;
-import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.entity.TransactionCategoryBalance;
 import com.cardemo.model.key.TransactionCategoryBalanceId;
 import com.cardemo.repository.AccountRepository;
-import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.TransactionCategoryBalanceRepository;
 import com.cardemo.repository.TransactionRepository;
 
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.NoResultException;
+import jakarta.persistence.PersistenceContext;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Spring Batch {@link ItemWriter} that posts validated daily transactions to
- * the PostgreSQL {@code transactions} table, updates account balances, and
- * updates transaction category balance records.
+ * PostgreSQL and backs up posted transaction chunks to AWS S3.
  *
- * <p>This writer replaces the posting logic in COBOL program {@code CBTRN02C.cbl}
- * (731 lines — Daily Transaction Posting Engine). The original program validates
- * daily transactions (DALYTRAN dataset) through a 4-stage cascade (handled by
- * {@code TransactionPostingProcessor}), then posts valid transactions to the
- * TRANSACT VSAM KSDS dataset and updates two additional datasets:
- * <ul>
- *   <li>{@code ACCTDAT} — Account balance and cycle accumulator updates</li>
- *   <li>{@code TCATBALF} — Transaction category balance running totals</li>
- * </ul></p>
- *
- * <h3>Transaction Posting Logic (COBOL §3000-POST-TRANSACTION)</h3>
- * <p>For each validated transaction in the chunk:</p>
+ * <p>This is the most complex writer in the CardDemo batch pipeline,
+ * replacing three COBOL paragraphs from {@code CBTRN02C.cbl}:</p>
  * <ol>
- *   <li><strong>Resolve account</strong> — Look up the card cross-reference by
- *       card number to find the account ID, then fetch the account record</li>
- *   <li><strong>Update category balance</strong> (§3100-UPDATE-TCATBAL) —
- *       Find or create the composite-key record in TCATBALF and add the
- *       transaction amount to the running balance</li>
- *   <li><strong>Update account balance</strong> (§3200-UPDATE-ACCOUNT-BALANCE) —
- *       Add the transaction amount to the account's current balance, and
- *       segregate into credit or debit cycle accumulators</li>
- *   <li><strong>Save transaction</strong> (§3300-WRITE-TRANSACTION-RECORD) —
- *       Persist the transaction record to the transactions table</li>
+ *   <li>{@code 2700-UPDATE-TCATBAL} — Update/create transaction category balance
+ *       using composite key (ACCT-ID + TYPE-CD + CAT-CD)</li>
+ *   <li>{@code 2800-UPDATE-ACCOUNT-REC} — Update account current balance and
+ *       segregate into credit/debit cycle accumulators</li>
+ *   <li>{@code 2900-WRITE-TRANSACTION-FILE} — Write transaction record to
+ *       TRANSACT VSAM KSDS</li>
  * </ol>
  *
- * <h3>S3 Backup (Non-Fatal)</h3>
- * <p>After successful database persistence, a backup copy is written to S3
- * (replacing the COBOL GDG generation pattern). Backup failures are logged
- * but do not cause the transaction to roll back — this matches the COBOL
- * behavior where the GDG backup step runs after SYNCPOINT commit.</p>
+ * <h3>Transaction Posting Sequence</h3>
+ * <p>For each transaction in the chunk, the {@link #write(Chunk)} method
+ * executes the following sequence exactly matching the COBOL paragraph
+ * ordering:</p>
+ * <ol>
+ *   <li>Set processing timestamp (Z-GET-DB2-FORMAT-TIMESTAMP)</li>
+ *   <li>Resolve account ID from card number via cross-reference</li>
+ *   <li>Update/create TransactionCategoryBalance (2700-UPDATE-TCATBAL)</li>
+ *   <li>Update Account balance and cycle accumulators (2800-UPDATE-ACCOUNT-REC)</li>
+ * </ol>
+ * <p>After processing all items, transactions are bulk-saved to the database
+ * (2900-WRITE-TRANSACTION-FILE) and a backup is written to S3.</p>
  *
  * <h3>Atomicity</h3>
- * <p>The {@link #write(Chunk)} method is annotated with {@link Transactional},
- * ensuring that all database operations within a chunk (category balance
- * updates, account balance updates, and transaction inserts) are committed
- * atomically or rolled back together — equivalent to the COBOL
- * {@code EXEC CICS SYNCPOINT} / {@code SYNCPOINT ROLLBACK} pattern.</p>
+ * <p>The write method is annotated with {@link Transactional}, ensuring that
+ * all database operations within a chunk are atomic — equivalent to COBOL
+ * ABEND behavior where failure in any sub-paragraph terminates the program,
+ * and SYNCPOINT ROLLBACK semantics from COACTUPC.cbl.</p>
+ *
+ * <h3>S3 Backup</h3>
+ * <p>A backup copy is written to S3 after successful DB persistence. This
+ * replaces the GDG {@code TRANSACT.BKUP(+1)} pattern from TRANREPT.jcl.
+ * S3 failures are logged as warnings but do NOT roll back the DB transaction,
+ * since the COBOL GDG backup was a separate JCL step.</p>
  *
  * @see Transaction
  * @see Account
  * @see TransactionCategoryBalance
- * @see TransactionPostingProcessor
- * @see <a href="https://github.com/aws-samples/carddemo/blob/27d6c6f/app/cbl/CBTRN02C.cbl">
- *      CBTRN02C.cbl</a>
  */
 @Component
 public class TransactionWriter implements ItemWriter<Transaction> {
@@ -125,112 +105,134 @@ public class TransactionWriter implements ItemWriter<Transaction> {
     private static final Logger log = LoggerFactory.getLogger(TransactionWriter.class);
 
     /**
-     * COBOL program identifier for traceability logging.
-     * Matches the original program-id 'CBTRN02C' from CBTRN02C.cbl line 7.
+     * DB2-compatible timestamp format matching COBOL Z-GET-DB2-FORMAT-TIMESTAMP.
+     * COBOL STRING pattern: YYYY-MM-DD-HH.MM.SS.NN0000
+     * Java equivalent:       yyyy-MM-dd-HH.mm.ss.SSS000
+     *
+     * The trailing '000' pads to 6 fractional digits matching DB2 TIMESTAMP(6).
      */
-    private static final String COBOL_PROGRAM_ID = "CBTRN02C";
+    private static final DateTimeFormatter DB2_TIMESTAMP_FORMAT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd-HH.mm.ss.SSS000");
 
     /**
-     * Timestamp formatter for S3 backup file key generation.
-     * Produces DB2-compatible timestamp format for file naming.
+     * Timestamp format for S3 backup key generation, producing compact
+     * date-time suffixes for unique object keys.
      */
-    private static final DateTimeFormatter BACKUP_TIMESTAMP_FORMAT =
+    private static final DateTimeFormatter BACKUP_KEY_FORMAT =
             DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
 
     /**
-     * JPA repository for persisting posted transaction records.
-     * Replaces COBOL WRITE to the TRANSACT VSAM KSDS dataset.
+     * Native SQL query to resolve a card number to its account ID via the
+     * card_cross_references table. This avoids importing CardCrossReferenceRepository
+     * which is outside this writer's declared dependency scope. Column name is
+     * 'account_id' per V1__create_schema.sql (Table 6: card_cross_references).
      */
+    private static final String CROSS_REF_QUERY =
+            "SELECT account_id FROM card_cross_references WHERE card_num = ?1";
+
+    // -- Repository dependencies (constructor-injected) --
+
     private final TransactionRepository transactionRepository;
-
-    /**
-     * JPA repository for updating account balance records.
-     * Replaces COBOL REWRITE to the ACCTDAT VSAM KSDS dataset.
-     */
     private final AccountRepository accountRepository;
-
-    /**
-     * JPA repository for updating transaction category balance records.
-     * Replaces COBOL READ/WRITE/REWRITE to the TCATBALF VSAM KSDS dataset.
-     */
-    private final TransactionCategoryBalanceRepository categoryBalanceRepository;
-
-    /**
-     * JPA repository for resolving card numbers to account IDs.
-     * Replaces COBOL READ from the CARDXREF VSAM KSDS dataset with
-     * CXACAIX alternate index access.
-     */
-    private final CardCrossReferenceRepository crossReferenceRepository;
-
-    /**
-     * AWS S3 client for writing backup copies of posted transactions.
-     * Replaces the COBOL GDG (Generation Data Group) backup pattern.
-     */
+    private final TransactionCategoryBalanceRepository tcatBalRepository;
     private final S3Client s3Client;
+
+    // -- JPA EntityManager for cross-reference resolution --
+
+    /**
+     * JPA EntityManager used for native SQL cross-reference lookups.
+     * Injected by the container; participates in the same transaction
+     * context as the repository calls.
+     */
+    @PersistenceContext
+    private EntityManager entityManager;
+
+    // -- Externalized configuration --
 
     /**
      * S3 bucket name for transaction backup output.
-     * Defaults to 'carddemo-batch-output' matching the LocalStack
-     * bucket provisioned in init-aws.sh.
+     * Configurable via application.yml; defaults to 'carddemo-batch-output'.
+     * All S3 interactions testable against LocalStack per AAP §0.7.7.
      */
-    @Value("${carddemo.batch.output-bucket:carddemo-batch-output}")
+    @Value("${carddemo.s3.output-bucket:carddemo-batch-output}")
     private String outputBucket;
 
     /**
      * S3 key prefix for transaction backup files.
-     * Defaults to 'transactions/' for organized S3 storage.
+     * Configurable via application.yml; defaults to 'transactions/'.
      */
-    @Value("${carddemo.batch.transaction-backup-prefix:transactions/}")
+    @Value("${carddemo.s3.transaction-backup-prefix:transactions/}")
     private String backupPrefix;
+
+    // -- Counters and caches --
 
     /**
      * Running count of transactions posted in the current job execution.
-     * Used for diagnostic logging and job metrics.
+     * Maps COBOL WS-TRANSACTION-COUNT PIC 9(09) VALUE 0 from CBTRN02C.cbl line 185.
+     * Incremented by chunk size after each successful saveAll().
      */
-    private final AtomicLong transactionCount = new AtomicLong(0);
+    private long transactionCount;
 
     /**
-     * Running count of chunks processed, used for S3 backup key generation.
+     * Cache mapping card numbers to account IDs to minimize repeated
+     * cross-reference lookups within a batch run. Cleared on
+     * {@link #resetTransactionCount()}.
      */
-    private final AtomicLong chunkCount = new AtomicLong(0);
+    private final Map<String, String> cardToAccountCache = new ConcurrentHashMap<>();
 
     /**
-     * Constructs a new TransactionWriter with all required dependencies.
+     * Sequential chunk counter for generating unique S3 backup keys.
+     * Reset to zero on {@link #resetTransactionCount()}.
+     */
+    private final AtomicLong chunkCounter = new AtomicLong(0);
+
+    // -----------------------------------------------------------------------
+    // Constructor
+    // -----------------------------------------------------------------------
+
+    /**
+     * Constructs a new TransactionWriter with all required repository and
+     * S3 dependencies via constructor injection.
      *
-     * @param transactionRepository       repository for transaction persistence
-     * @param accountRepository           repository for account balance updates
-     * @param categoryBalanceRepository   repository for category balance updates
-     * @param crossReferenceRepository    repository for card-to-account resolution
-     * @param s3Client                    S3 client for backup file output
+     * @param transactionRepository repository for bulk transaction persistence
+     *                              (replaces WRITE FD-TRANFILE-REC)
+     * @param accountRepository     repository for account balance updates
+     *                              (replaces REWRITE FD-ACCTFILE-REC)
+     * @param tcatBalRepository     repository for category balance updates
+     *                              (replaces READ/WRITE/REWRITE FD-TCATBAL-REC)
+     * @param s3Client              S3 client for backup file output
      */
     public TransactionWriter(TransactionRepository transactionRepository,
                              AccountRepository accountRepository,
-                             TransactionCategoryBalanceRepository categoryBalanceRepository,
-                             CardCrossReferenceRepository crossReferenceRepository,
+                             TransactionCategoryBalanceRepository tcatBalRepository,
                              S3Client s3Client) {
         this.transactionRepository = transactionRepository;
         this.accountRepository = accountRepository;
-        this.categoryBalanceRepository = categoryBalanceRepository;
-        this.crossReferenceRepository = crossReferenceRepository;
+        this.tcatBalRepository = tcatBalRepository;
         this.s3Client = s3Client;
     }
 
+    // -----------------------------------------------------------------------
+    // ItemWriter contract — maps COBOL 2000-POST-TRANSACTION
+    // -----------------------------------------------------------------------
+
     /**
-     * Posts a chunk of validated transactions to the database and backs them up to S3.
+     * Posts a chunk of validated transactions to the database and backs them
+     * up to S3.
      *
-     * <p>This method implements the posting logic from COBOL paragraph
-     * {@code 3000-POST-TRANSACTION}. For each transaction in the chunk:</p>
+     * <p>Implements the full COBOL posting sequence from paragraph
+     * {@code 2000-POST-TRANSACTION} through {@code 2900-WRITE-TRANSACTION-FILE}.
+     * All database operations within the chunk are atomic via {@link Transactional}.</p>
+     *
+     * <p>Processing order per transaction (matching COBOL):</p>
      * <ol>
-     *   <li>Resolves the account via card cross-reference lookup</li>
-     *   <li>Updates or creates the transaction category balance record</li>
-     *   <li>Updates the account balance and cycle accumulators</li>
-     *   <li>Saves all transactions in the chunk via bulk insert</li>
-     *   <li>Writes a backup to S3 (non-fatal on failure)</li>
+     *   <li>Set TRAN-PROC-TS via Z-GET-DB2-FORMAT-TIMESTAMP</li>
+     *   <li>Resolve card number → account ID via cross-reference</li>
+     *   <li>{@code 2700-UPDATE-TCATBAL} — Update/create category balance</li>
+     *   <li>{@code 2800-UPDATE-ACCOUNT-REC} — Update account balance</li>
      * </ol>
-     *
-     * <p>All database operations are wrapped in a single transaction via
-     * {@link Transactional}, ensuring atomicity — equivalent to COBOL
-     * {@code EXEC CICS SYNCPOINT} semantics.</p>
+     * <p>After all transactions: bulk save ({@code 2900-WRITE-TRANSACTION-FILE})
+     * then S3 backup (GDG replacement).</p>
      *
      * @param chunk the chunk of validated transactions to post
      * @throws Exception if a database error prevents transaction posting
@@ -238,182 +240,299 @@ public class TransactionWriter implements ItemWriter<Transaction> {
     @Override
     @Transactional
     public void write(Chunk<? extends Transaction> chunk) throws Exception {
-        long currentChunk = chunkCount.incrementAndGet();
-        log.info("Processing transaction chunk #{} — {} transactions", currentChunk, chunk.size());
+        List<? extends Transaction> transactions = chunk.getItems();
+        int chunkSize = chunk.size();
+        long currentChunk = chunkCounter.incrementAndGet();
 
-        for (Transaction transaction : chunk.getItems()) {
-            postTransaction(transaction);
+        log.info("Processing transaction chunk #{} with {} transactions",
+                currentChunk, chunkSize);
+
+        // For each transaction: set proc timestamp, resolve account,
+        // update TCATBAL, update Account — mirrors COBOL 2000-POST-TRANSACTION
+        for (Transaction transaction : transactions) {
+            postSingleTransaction(transaction);
         }
 
-        // Bulk save all transactions in the chunk — COBOL §3300-WRITE-TRANSACTION-RECORD
-        transactionRepository.saveAll(chunk.getItems());
-        long totalPosted = transactionCount.addAndGet(chunk.size());
-        log.info("Chunk #{} posted — {} transactions in chunk, {} total posted",
-                currentChunk, chunk.size(), totalPosted);
+        // Step 3: Bulk save all transactions to DB
+        // Maps COBOL 2900-WRITE-TRANSACTION-FILE (WRITE FD-TRANFILE-REC)
+        // Use ArrayList to resolve wildcard type for saveAll() compatibility
+        List<Transaction> transactionsToSave = new ArrayList<>(transactions);
+        transactionRepository.saveAll(transactionsToSave);
 
-        // S3 backup — non-fatal, equivalent to COBOL GDG backup step
-        backupToS3(chunk, currentChunk);
+        // Increment counter — maps COBOL ADD 1 TO WS-TRANSACTION-COUNT
+        // (aggregated per chunk rather than per-record for bulk efficiency)
+        transactionCount += chunkSize;
+
+        log.info("Chunk #{}: persisted {} transactions, cumulative total: {}",
+                currentChunk, chunkSize, transactionCount);
+
+        // Step 4: S3 backup — non-fatal on failure
+        // Replaces GDG TRANSACT.BKUP(+1) from TRANREPT.jcl REPROC step
+        writeS3Backup(transactions, currentChunk);
     }
 
+    // -----------------------------------------------------------------------
+    // Per-transaction posting — maps COBOL 2000-POST-TRANSACTION body
+    // -----------------------------------------------------------------------
+
     /**
-     * Posts a single transaction by updating category balance and account balance.
+     * Posts a single transaction by setting the processing timestamp,
+     * resolving the account, updating the category balance, and updating
+     * the account balance.
      *
-     * <p>Implements COBOL paragraphs {@code 3000-POST-TRANSACTION},
-     * {@code 3100-UPDATE-TCATBAL}, and {@code 3200-UPDATE-ACCOUNT-BALANCE}.</p>
-     *
-     * @param transaction the validated transaction to post
+     * @param transaction the transaction to post
      */
-    private void postTransaction(Transaction transaction) {
+    private void postSingleTransaction(Transaction transaction) {
+        // Z-GET-DB2-FORMAT-TIMESTAMP → set TRAN-PROC-TS
+        LocalDateTime procTs = LocalDateTime.now();
+        transaction.setTranProcTs(procTs);
+
+        // Extract fields matching COBOL MOVE sequence in 2000-POST-TRANSACTION
         String cardNum = transaction.getTranCardNum();
         String tranId = transaction.getTranId();
         BigDecimal amount = transaction.getTranAmt();
+        String typeCd = transaction.getTranTypeCd();
+        Short catCd = transaction.getTranCatCd();
+        LocalDateTime origTs = transaction.getTranOrigTs();
 
-        // Resolve account ID from card number via cross-reference — COBOL CARDXREF READ
-        Optional<CardCrossReference> xrefOpt = crossReferenceRepository.findById(cardNum);
-        if (xrefOpt.isEmpty()) {
-            log.warn("No cross-reference found for card number {} — skipping account/balance updates for transaction {}",
-                    cardNum, tranId);
-            return;
-        }
+        // Resolve account ID from card cross-reference
+        String acctId = resolveAccountId(cardNum);
 
-        String acctId = xrefOpt.get().getXrefAcctId();
-        Optional<Account> accountOpt = accountRepository.findById(acctId);
-        if (accountOpt.isEmpty()) {
-            log.warn("Account {} not found for card {} — skipping balance updates for transaction {}",
-                    acctId, cardNum, tranId);
-            return;
-        }
+        // Step 1: Update/Create TransactionCategoryBalance (2700-UPDATE-TCATBAL)
+        updateTransactionCategoryBalance(acctId, typeCd, catCd, amount);
 
-        Account account = accountOpt.get();
+        // Step 2: Update Account balance (2800-UPDATE-ACCOUNT-REC)
+        updateAccountBalance(acctId, amount);
 
-        // Step 1: Update transaction category balance — COBOL §3100-UPDATE-TCATBAL
-        updateCategoryBalance(acctId, transaction);
-
-        // Step 2: Update account balance — COBOL §3200-UPDATE-ACCOUNT-BALANCE
-        updateAccountBalance(account, amount);
-
-        log.debug("Transaction {} posted: card={}, acct={}, amount={}, type={}, cat={}",
-                tranId, cardNum, acctId, amount, transaction.getTranTypeCd(), transaction.getTranCatCd());
+        log.debug("Posted transaction {}: card={}, acct={}, amt={}, "
+                        + "type={}, cat={}, origTs={}, procTs={}",
+                tranId, cardNum, acctId, amount,
+                typeCd, catCd, origTs,
+                procTs.format(DB2_TIMESTAMP_FORMAT));
     }
+
+    // -----------------------------------------------------------------------
+    // Account resolution via cross-reference
+    // -----------------------------------------------------------------------
+
+    /**
+     * Resolves the account ID for a given card number by querying the
+     * card_cross_references table directly.
+     *
+     * <p>Maps the COBOL cross-reference lookup from paragraph
+     * {@code 1500-VALIDATE-TRAN}: {@code READ XREFFILE KEY IS XREF-CARD-NUM}
+     * → {@code XREF-ACCT-ID}.</p>
+     *
+     * <p>Uses a native SQL query against the {@code card_cross_references}
+     * table rather than importing CardCrossReferenceRepository (outside
+     * declared dependency scope). Results are cached in
+     * {@link #cardToAccountCache} for efficiency across repeated card
+     * lookups within a single batch run.</p>
+     *
+     * @param cardNum the 16-character card number
+     * @return the account ID (VARCHAR(11))
+     * @throws IllegalStateException if no cross-reference is found
+     */
+    private String resolveAccountId(String cardNum) {
+        return cardToAccountCache.computeIfAbsent(cardNum, cn -> {
+            try {
+                Object result = entityManager
+                        .createNativeQuery(CROSS_REF_QUERY)
+                        .setParameter(1, cn)
+                        .getSingleResult();
+                String acctId = result.toString();
+                log.debug("Resolved card {} to account {}", cn, acctId);
+                return acctId;
+            } catch (NoResultException e) {
+                String msg = "No card cross-reference found for card number: "
+                        + cn + " — transaction should have been rejected "
+                        + "during validation";
+                log.error(msg);
+                throw new IllegalStateException(msg, e);
+            }
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Category Balance update — COBOL §2700-UPDATE-TCATBAL
+    // -----------------------------------------------------------------------
 
     /**
      * Updates or creates the transaction category balance record for the
-     * given account and transaction type/category combination.
+     * given account, transaction type, and category combination.
      *
-     * <p>Implements COBOL paragraph {@code 3100-UPDATE-TCATBAL}. The COBOL
-     * program reads the TCATBALF VSAM KSDS dataset with a composite key
-     * (ACCT-ID + TRAN-TYPE-CD + TRAN-CAT-CD). If the record exists, the
-     * transaction amount is added to the running balance. If not found
-     * (FILE STATUS '23'), a new record is created with the transaction
-     * amount as the initial balance.</p>
-     *
-     * <p>All arithmetic operations use {@link BigDecimal} to preserve
-     * COBOL COMP-3 decimal precision. The balance field maps to
-     * {@code TRAN-CAT-BAL PIC S9(9)V99} — 11 digits with 2 decimal places.</p>
-     *
-     * @param acctId       the account ID from the card cross-reference
-     * @param transaction  the transaction whose amount updates the balance
-     */
-    private void updateCategoryBalance(String acctId, Transaction transaction) {
-        String typeCode = transaction.getTranTypeCd();
-        Short catCode = transaction.getTranCatCd();
-        BigDecimal amount = transaction.getTranAmt();
-
-        TransactionCategoryBalanceId compositeKey =
-                new TransactionCategoryBalanceId(acctId, typeCode, catCode);
-
-        Optional<TransactionCategoryBalance> existingOpt =
-                categoryBalanceRepository.findById(compositeKey);
-
-        if (existingOpt.isPresent()) {
-            // Record exists — add transaction amount to running balance
-            TransactionCategoryBalance existing = existingOpt.get();
-            BigDecimal updatedBalance = existing.getTranCatBal().add(amount);
-            existing.setTranCatBal(updatedBalance);
-            categoryBalanceRepository.save(existing);
-            log.debug("Updated category balance: acct={}, type={}, cat={}, newBalance={}",
-                    acctId, typeCode, catCode, updatedBalance);
-        } else {
-            // Record not found (COBOL FILE STATUS '23') — create new with amount as initial balance
-            TransactionCategoryBalance newBalance =
-                    new TransactionCategoryBalance(compositeKey, amount);
-            categoryBalanceRepository.save(newBalance);
-            log.debug("Created new category balance: acct={}, type={}, cat={}, initialBalance={}",
-                    acctId, typeCode, catCode, amount);
-        }
-    }
-
-    /**
-     * Updates the account balance and cycle accumulators based on the
-     * transaction amount.
-     *
-     * <p>Implements COBOL paragraph {@code 3200-UPDATE-ACCOUNT-BALANCE}. The
-     * logic adds the transaction amount to the account's current balance
-     * ({@code ACCT-CURR-BAL}) and segregates it into the appropriate cycle
-     * accumulator:</p>
+     * <p>Maps COBOL paragraphs:</p>
      * <ul>
-     *   <li>If amount &lt; 0 (debit): add absolute value to {@code ACCT-CURR-CYC-DEBIT}</li>
-     *   <li>If amount ≥ 0 (credit): add to {@code ACCT-CURR-CYC-CREDIT}</li>
+     *   <li>{@code 2700-UPDATE-TCATBAL} — READ TCATBAL-FILE KEY IS TRAN-CAT-KEY</li>
+     *   <li>{@code 2700-A-CREATE-TCATBAL-REC} — FILE STATUS '23' (not found)
+     *       → create new record with balance = transaction amount</li>
+     *   <li>{@code 2700-B-UPDATE-TCATBAL-REC} — FILE STATUS '00' (found)
+     *       → ADD amount to existing balance, then REWRITE</li>
      * </ul>
      *
      * <p>All arithmetic uses {@link BigDecimal#add(BigDecimal)} to preserve
-     * COBOL COMP-3 precision. Comparison uses {@link BigDecimal#compareTo(BigDecimal)}
-     * (not {@code equals()}) per project decimal precision rules.</p>
+     * COBOL COMP-3 decimal precision (PIC S9(09)V99).</p>
      *
-     * <p>The account is saved via {@link AccountRepository#save(Object)}, which
-     * triggers JPA {@code @Version} optimistic locking — equivalent to the
-     * COBOL REWRITE with record snapshot comparison.</p>
-     *
-     * @param account the account to update
-     * @param amount  the transaction amount (negative for debits, positive for credits)
+     * @param acctId the 11-character account ID
+     * @param typeCd the 2-character transaction type code
+     * @param catCd  the transaction category code (SMALLINT)
+     * @param amount the transaction amount (BigDecimal, PIC S9(9)V99)
      */
-    private void updateAccountBalance(Account account, BigDecimal amount) {
-        // Update current balance: ACCT-CURR-BAL = ACCT-CURR-BAL + TRAN-AMT
-        BigDecimal updatedBalance = account.getAcctCurrBal().add(amount);
-        account.setAcctCurrBal(updatedBalance);
+    private void updateTransactionCategoryBalance(String acctId, String typeCd,
+                                                   Short catCd, BigDecimal amount) {
+        // Build composite key: TRAN-CAT-KEY = ACCT-ID + TYPE-CD + CAT-CD
+        // Maps COBOL: MOVE FD-ACCT-ID TO TRAN-CAT-ACCT-ID,
+        //             MOVE DALYTRAN-TYPE-CD TO TRAN-CAT-TYPE-CD,
+        //             MOVE DALYTRAN-CAT-CD TO TRAN-CAT-CATEGORY-CD
+        TransactionCategoryBalanceId compositeKey =
+                new TransactionCategoryBalanceId(acctId, typeCd, catCd);
+
+        Optional<TransactionCategoryBalance> existingOpt =
+                tcatBalRepository.findById(compositeKey);
+
+        if (existingOpt.isPresent()) {
+            // 2700-B-UPDATE-TCATBAL-REC: ADD DALYTRAN-AMT TO TRAN-CAT-BAL; REWRITE
+            TransactionCategoryBalance existing = existingOpt.get();
+            BigDecimal currentBal = existing.getTranCatBal() != null
+                    ? existing.getTranCatBal() : BigDecimal.ZERO;
+            existing.setTranCatBal(currentBal.add(amount));
+            tcatBalRepository.save(existing);
+
+            log.debug("Updated category balance: acct={}, type={}, cat={}, newBal={}",
+                    acctId, typeCd, catCd, existing.getTranCatBal());
+        } else {
+            // 2700-A-CREATE-TCATBAL-REC: FILE STATUS '23' — create new record
+            // COBOL: INITIALIZE TRAN-CAT-BAL-RECORD, set key fields,
+            //        ADD DALYTRAN-AMT TO TRAN-CAT-BAL (starting from ZERO), WRITE
+            TransactionCategoryBalance newBalance = new TransactionCategoryBalance();
+            newBalance.setId(compositeKey);
+            newBalance.setTranCatBal(amount);
+            tcatBalRepository.save(newBalance);
+
+            log.debug("Created category balance: acct={}, type={}, cat={}, initialBal={}",
+                    acctId, typeCd, catCd, amount);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Account Balance update — COBOL §2800-UPDATE-ACCOUNT-REC
+    // -----------------------------------------------------------------------
+
+    /**
+     * Updates the account current balance and cycle accumulators.
+     *
+     * <p>Maps COBOL paragraph {@code 2800-UPDATE-ACCOUNT-REC}:</p>
+     * <pre>
+     * ADD DALYTRAN-AMT TO ACCT-CURR-BAL
+     * IF DALYTRAN-AMT &gt;= 0
+     *   ADD DALYTRAN-AMT TO ACCT-CURR-CYC-CREDIT
+     * ELSE
+     *   ADD DALYTRAN-AMT TO ACCT-CURR-CYC-DEBIT
+     * END-IF
+     * REWRITE FD-ACCTFILE-REC FROM ACCOUNT-RECORD
+     * </pre>
+     *
+     * <p><strong>CRITICAL BigDecimal rules (AAP §0.8.2):</strong></p>
+     * <ul>
+     *   <li>Uses {@link BigDecimal#compareTo(BigDecimal)} for sign check —
+     *       never {@link BigDecimal#equals(Object)} which is scale-sensitive</li>
+     *   <li>Debit accumulator receives the negative amount directly —
+     *       matching COBOL {@code ADD} semantics where the negative value
+     *       is added as-is (no absolute-value conversion)</li>
+     *   <li>{@code >= 0} → credit (including zero), matching COBOL
+     *       {@code IF DALYTRAN-AMT >= 0}</li>
+     * </ul>
+     *
+     * <p>Account has {@code @Version} for optimistic locking. The
+     * {@link AccountRepository#save(Account)} call may throw
+     * {@code OptimisticLockException} if a concurrent update occurred,
+     * which is propagated to Spring Batch for retry/skip handling.</p>
+     *
+     * @param acctId the 11-character account ID
+     * @param amount the transaction amount (negative for debits, zero or
+     *               positive for credits)
+     */
+    private void updateAccountBalance(String acctId, BigDecimal amount) {
+        Optional<Account> accountOpt = accountRepository.findById(acctId);
+        if (!accountOpt.isPresent()) {
+            String msg = "Account not found: " + acctId
+                    + " — should have been validated during processing";
+            log.error(msg);
+            throw new IllegalStateException(msg);
+        }
+        Account account = accountOpt.get();
+
+        // ADD DALYTRAN-AMT TO ACCT-CURR-BAL
+        BigDecimal currentBal = account.getAcctCurrBal() != null
+                ? account.getAcctCurrBal() : BigDecimal.ZERO;
+        account.setAcctCurrBal(currentBal.add(amount));
 
         // Segregate into credit/debit cycle accumulators
-        // COBOL: IF TRAN-AMT < 0 → debit accumulator; ELSE → credit accumulator
-        if (amount.compareTo(BigDecimal.ZERO) < 0) {
-            // Debit — add absolute value to cycle debit accumulator
-            BigDecimal currentDebit = account.getAcctCurrCycDebit() != null
-                    ? account.getAcctCurrCycDebit() : BigDecimal.ZERO;
-            account.setAcctCurrCycDebit(currentDebit.add(amount.abs()));
-        } else {
-            // Credit — add to cycle credit accumulator
+        // COBOL: IF DALYTRAN-AMT >= 0 → ADD TO ACCT-CURR-CYC-CREDIT
+        //        ELSE                 → ADD TO ACCT-CURR-CYC-DEBIT
+        if (amount.compareTo(BigDecimal.ZERO) >= 0) {
+            // Credit transaction (including zero-amount transactions)
             BigDecimal currentCredit = account.getAcctCurrCycCredit() != null
                     ? account.getAcctCurrCycCredit() : BigDecimal.ZERO;
             account.setAcctCurrCycCredit(currentCredit.add(amount));
+        } else {
+            // Debit transaction — add negative amount directly (COBOL ADD semantics:
+            // the negative value is added as-is, accumulator becomes more negative)
+            BigDecimal currentDebit = account.getAcctCurrCycDebit() != null
+                    ? account.getAcctCurrCycDebit() : BigDecimal.ZERO;
+            account.setAcctCurrCycDebit(currentDebit.add(amount));
         }
 
-        // Save triggers @Version optimistic locking — equivalent to COBOL REWRITE
+        // Save with @Version optimistic locking — equivalent to COBOL REWRITE
+        // May throw OptimisticLockException if concurrent modification detected
         accountRepository.save(account);
-        log.debug("Updated account {}: newBalance={}, amount={}", account.getAcctId(), updatedBalance, amount);
+
+        log.debug("Updated account {}: bal={}, cycCredit={}, cycDebit={}, txnAmt={}",
+                acctId, account.getAcctCurrBal(),
+                account.getAcctCurrCycCredit(),
+                account.getAcctCurrCycDebit(), amount);
     }
 
-    /**
-     * Writes a backup of the posted transaction chunk to S3.
-     *
-     * <p>This replaces the COBOL GDG (Generation Data Group) backup pattern
-     * where posted transactions are written to a new generation of the
-     * TRANSACT GDG base. In the Java target, each chunk is written as a
-     * timestamped object in the S3 output bucket.</p>
-     *
-     * <p><strong>Non-fatal:</strong> S3 backup failures are logged as warnings
-     * but do not cause the database transaction to roll back. This matches
-     * the COBOL behavior where the GDG backup runs after SYNCPOINT commit.</p>
-     *
-     * @param chunk      the chunk of transactions to back up
-     * @param chunkIndex the sequential chunk number for key generation
-     */
-    private void backupToS3(Chunk<? extends Transaction> chunk, long chunkIndex) {
-        try {
-            String timestamp = LocalDateTime.now().format(BACKUP_TIMESTAMP_FORMAT);
-            String s3Key = String.format("%sTRANSACT-%s-%04d.txt", backupPrefix, timestamp, chunkIndex);
+    // -----------------------------------------------------------------------
+    // S3 Backup — replaces GDG TRANSACT.BKUP(+1) from TRANREPT.jcl
+    // -----------------------------------------------------------------------
 
-            StringBuilder content = new StringBuilder();
-            for (Transaction transaction : chunk.getItems()) {
-                content.append(formatTransactionForBackup(transaction));
+    /**
+     * Writes a backup of the posted transaction chunk to AWS S3.
+     *
+     * <p>Replaces the COBOL GDG (Generation Data Group) backup pattern
+     * from TRANREPT.jcl: {@code TRANSACT.BKUP(+1)}. Each chunk produces
+     * a uniquely-keyed S3 object in the configured output bucket with a
+     * pipe-delimited text format.</p>
+     *
+     * <p><strong>Non-fatal</strong>: S3 failures are logged as warnings
+     * but do NOT roll back the DB transaction. This is correct because the
+     * COBOL GDG backup ran as a separate JCL step (TRANREPT.jcl) after the
+     * posting SYNCPOINT commit.</p>
+     *
+     * <p>All S3 interactions are testable against LocalStack per AAP §0.7.7.</p>
+     *
+     * @param transactions the list of transactions to back up
+     * @param chunkIndex   the sequential chunk number for key uniqueness
+     */
+    private void writeS3Backup(List<? extends Transaction> transactions,
+                                long chunkIndex) {
+        try {
+            String timestamp = LocalDateTime.now().format(BACKUP_KEY_FORMAT);
+            String s3Key = String.format("%sTRANSACT-%s-%04d.txt",
+                    backupPrefix, timestamp, chunkIndex);
+
+            StringBuilder content = new StringBuilder(512);
+            content.append("# TRANSACTION BACKUP — Chunk ")
+                    .append(chunkIndex)
+                    .append(" — ")
+                    .append(timestamp)
+                    .append(System.lineSeparator());
+            content.append("# TRAN-ID|TYPE-CD|CAT-CD|AMT|CARD-NUM|ORIG-TS|PROC-TS")
+                    .append(System.lineSeparator());
+
+            for (Transaction txn : transactions) {
+                content.append(formatTransactionForBackup(txn));
                 content.append(System.lineSeparator());
             }
 
@@ -426,21 +545,24 @@ public class TransactionWriter implements ItemWriter<Transaction> {
             s3Client.putObject(putRequest,
                     RequestBody.fromString(content.toString(), StandardCharsets.UTF_8));
 
-            log.debug("S3 backup written: s3://{}/{} — {} transactions", outputBucket, s3Key, chunk.size());
+            log.info("S3 backup written: s3://{}/{} ({} transactions)",
+                    outputBucket, s3Key, transactions.size());
+
         } catch (Exception ex) {
-            // Non-fatal — log warning but do not roll back the database transaction
-            log.warn("S3 backup failed for chunk #{} — transactions are persisted in database: {}",
-                    chunkIndex, ex.getMessage());
+            // Non-fatal — log warning but do NOT propagate exception.
+            // The DB transaction has already committed; S3 backup is secondary.
+            log.warn("S3 backup failed for chunk #{} — {} transactions are "
+                            + "persisted in database but backup was not written: {}",
+                    chunkIndex, transactions.size(), ex.getMessage());
         }
     }
 
     /**
-     * Formats a single transaction record for S3 backup output.
+     * Formats a single transaction record for the S3 backup output.
      *
-     * <p>Produces a pipe-delimited text representation of the transaction,
-     * matching the field layout from CVTRA05Y.cpy (350-byte record). This
-     * format is suitable for both archival and potential reload into the
-     * batch pipeline.</p>
+     * <p>Produces a pipe-delimited text line matching the field layout from
+     * CVTRA05Y.cpy (350-byte record). Fields: TRAN-ID, TYPE-CD, CAT-CD,
+     * AMT (plain string), CARD-NUM, ORIG-TS, PROC-TS (DB2 format).</p>
      *
      * @param transaction the transaction to format
      * @return pipe-delimited string representation
@@ -450,49 +572,59 @@ public class TransactionWriter implements ItemWriter<Transaction> {
                 nullSafe(transaction.getTranId()),
                 nullSafe(transaction.getTranTypeCd()),
                 String.valueOf(transaction.getTranCatCd()),
-                nullSafe(transaction.getTranSource()),
-                nullSafe(transaction.getTranDesc()),
-                transaction.getTranAmt() != null ? transaction.getTranAmt().toPlainString() : "0.00",
-                nullSafe(transaction.getTranMerchantId()),
-                nullSafe(transaction.getTranMerchantName()),
-                nullSafe(transaction.getTranMerchantCity()),
-                nullSafe(transaction.getTranMerchantZip()),
+                transaction.getTranAmt() != null
+                        ? transaction.getTranAmt().toPlainString() : "0.00",
                 nullSafe(transaction.getTranCardNum()),
-                transaction.getTranOrigTs() != null ? transaction.getTranOrigTs().toString() : "",
-                transaction.getTranProcTs() != null ? transaction.getTranProcTs().toString() : ""
+                transaction.getTranOrigTs() != null
+                        ? transaction.getTranOrigTs().toString() : "",
+                transaction.getTranProcTs() != null
+                        ? transaction.getTranProcTs().format(DB2_TIMESTAMP_FORMAT)
+                        : ""
         );
     }
 
     /**
-     * Null-safe string converter for backup formatting.
+     * Null-safe string conversion for backup formatting. Returns the
+     * object's {@code toString()} result, or empty string if null.
      *
      * @param value the value to convert
-     * @return the value as a string, or empty string if null
+     * @return string representation, or empty string if null
      */
     private String nullSafe(Object value) {
         return value != null ? value.toString() : "";
     }
 
+    // -----------------------------------------------------------------------
+    // Counter management — maps COBOL WS-TRANSACTION-COUNT
+    // -----------------------------------------------------------------------
+
     /**
-     * Returns the total number of transactions posted in the current
-     * job execution.
+     * Returns the total number of transactions successfully posted in the
+     * current job execution.
      *
-     * @return the transaction count
+     * <p>Maps COBOL field {@code WS-TRANSACTION-COUNT PIC 9(09) VALUE 0}
+     * from CBTRN02C.cbl line 185. Used for batch summary reporting at job
+     * completion.</p>
+     *
+     * @return the cumulative transaction count
      */
     public long getTransactionCount() {
-        return transactionCount.get();
+        return transactionCount;
     }
 
     /**
-     * Resets the transaction and chunk counters for a new job execution.
+     * Resets the transaction counter and internal state for a new job
+     * execution.
      *
-     * <p>Should be called at the start of each batch job run to reset
-     * the running totals. Equivalent to the COBOL WORKING-STORAGE
-     * initialization that occurs at program entry.</p>
+     * <p>Equivalent to COBOL WORKING-STORAGE initialization that occurs
+     * at program entry ({@code WS-TRANSACTION-COUNT PIC 9(09) VALUE 0}).
+     * Also clears the card-to-account resolution cache and chunk counter
+     * to ensure clean state for the next batch run.</p>
      */
-    public void resetCounters() {
-        transactionCount.set(0);
-        chunkCount.set(0);
-        log.debug("TransactionWriter counters reset — ready for new job execution");
+    public void resetTransactionCount() {
+        transactionCount = 0;
+        chunkCounter.set(0);
+        cardToAccountCache.clear();
+        log.info("TransactionWriter counters and cache reset for new job execution");
     }
 }
