@@ -63,6 +63,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.filter.CommonsRequestLoggingFilter;
@@ -479,6 +481,73 @@ public class WebConfig implements WebMvcConfigurer {
                     HttpStatus.BAD_REQUEST, "Validation failed", "VALID",
                     errors, request);
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+        }
+
+        /**
+         * Handles {@link HttpMessageNotReadableException} — malformed or missing
+         * request body.
+         *
+         * <p>Returns HTTP 400 (Bad Request) when the request body cannot be
+         * deserialized by Jackson. Common causes include malformed JSON syntax,
+         * empty request bodies for endpoints expecting {@code @RequestBody}, and
+         * type coercion failures (e.g., string where number expected).</p>
+         *
+         * <p>This handler is critical for all REST endpoints — without it,
+         * malformed payloads fall through to the generic {@code Exception} handler
+         * and return HTTP 500, which incorrectly signals a server error for what
+         * is a client input problem.</p>
+         *
+         * <p>No direct COBOL equivalent — BMS 3270 screens enforced field-level
+         * formatting at the terminal level before data reached the COBOL program.
+         * In the REST API, clients can send arbitrary payloads, so server-side
+         * deserialization error handling is essential.</p>
+         *
+         * @param ex      the message-not-readable exception from Jackson/Spring MVC
+         * @param request the HTTP request for URI extraction
+         * @return HTTP 400 response with structured error body
+         */
+        @ExceptionHandler(HttpMessageNotReadableException.class)
+        public ResponseEntity<ErrorResponse> handleHttpMessageNotReadableException(
+                HttpMessageNotReadableException ex, HttpServletRequest request) {
+            log.warn("Malformed request body: {}", ex.getMessage());
+            ErrorResponse response = buildErrorResponse(
+                    HttpStatus.BAD_REQUEST,
+                    "Malformed or missing request body. Ensure the request contains valid JSON.",
+                    "BAD_REQUEST", null, request);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+        }
+
+        /**
+         * Handles {@link HttpMediaTypeNotSupportedException} — unsupported
+         * Content-Type header.
+         *
+         * <p>Returns HTTP 415 (Unsupported Media Type) when the request
+         * Content-Type header does not match any media type accepted by the
+         * target endpoint. For CardDemo REST endpoints, the accepted type is
+         * {@code application/json}.</p>
+         *
+         * <p>Without this handler, unsupported content types fall through to the
+         * generic {@code Exception} handler and return HTTP 500, which incorrectly
+         * signals a server error for what is a client configuration problem.</p>
+         *
+         * <p>No direct COBOL equivalent — BMS 3270 terminal protocol had a fixed
+         * data encoding (EBCDIC), so content-type negotiation was not applicable.</p>
+         *
+         * @param ex      the media-type-not-supported exception from Spring MVC
+         * @param request the HTTP request for URI extraction
+         * @return HTTP 415 response with structured error body
+         */
+        @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+        public ResponseEntity<ErrorResponse> handleHttpMediaTypeNotSupportedException(
+                HttpMediaTypeNotSupportedException ex, HttpServletRequest request) {
+            log.warn("Unsupported media type: {}", ex.getContentType());
+            String message = String.format(
+                    "Content type '%s' is not supported. Use 'application/json'.",
+                    ex.getContentType());
+            ErrorResponse response = buildErrorResponse(
+                    HttpStatus.UNSUPPORTED_MEDIA_TYPE, message,
+                    "UNSUPPORTED_MEDIA_TYPE", null, request);
+            return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE).body(response);
         }
 
         /**
