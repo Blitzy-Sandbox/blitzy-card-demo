@@ -4,6 +4,7 @@ import com.cardemo.model.entity.Account;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Customer;
 import com.cardemo.model.entity.Transaction;
+import com.cardemo.batch.writers.StatementWriter;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CustomerRepository;
 import com.cardemo.repository.TransactionRepository;
@@ -53,7 +54,7 @@ import java.util.Optional;
  */
 @Component
 public class StatementProcessor
-        implements ItemProcessor<CardCrossReference, StatementProcessor.StatementOutput> {
+        implements ItemProcessor<CardCrossReference, StatementWriter.StatementOutput> {
 
     private static final Logger log = LoggerFactory.getLogger(StatementProcessor.class);
 
@@ -109,23 +110,6 @@ public class StatementProcessor
     }
 
     // -----------------------------------------------------------------------
-    // Inner types
-    // -----------------------------------------------------------------------
-
-    /**
-     * Dual-format statement output record carrying both text and HTML content.
-     *
-     * <p>Maps the COBOL dual-file output pattern where CBSTM03A writes to
-     * STMT-FILE (LRECL=80, sequential text) and HTML-FILE (LRECL=100, HTML
-     * markup) simultaneously during statement generation.
-     *
-     * @param textContent the plain-text statement (maps to STMT-FILE output)
-     * @param htmlContent the HTML statement (maps to HTML-FILE output)
-     */
-    public record StatementOutput(String textContent, String htmlContent) {
-    }
-
-    // -----------------------------------------------------------------------
     // ItemProcessor contract
     // -----------------------------------------------------------------------
 
@@ -141,11 +125,12 @@ public class StatementProcessor
      * </ol>
      *
      * @param item CardCrossReference record with card → customer → account linkage
-     * @return {@link StatementOutput} with text and HTML, or {@code null} to skip
+     * @return {@link StatementWriter.StatementOutput} with card number, text and HTML,
+     *         or {@code null} to skip
      * @throws Exception on unexpected processing failure
      */
     @Override
-    public StatementOutput process(CardCrossReference item) throws Exception {
+    public StatementWriter.StatementOutput process(CardCrossReference item) throws Exception {
         log.info("Processing statement for card: {}, customer: {}, account: {}",
                 item.getXrefCardNum(), item.getXrefCustId(), item.getXrefAcctId());
 
@@ -225,7 +210,7 @@ public class StatementProcessor
         log.info("Statement generated for account: {} ({} transactions processed)",
                 account.getAcctId(), transactions.size());
 
-        return new StatementOutput(textContent, htmlContent);
+        return new StatementWriter.StatementOutput(item.getXrefCardNum(), textContent, htmlContent);
     }
 
     // -----------------------------------------------------------------------
