@@ -35,6 +35,7 @@ import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.TransactionDto;
 import com.cardemo.model.entity.Transaction;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.TransactionRepository;
@@ -141,6 +142,10 @@ class BillPaymentServiceTest {
     /** Mocked CardCrossReferenceRepository — provides findByXrefAcctId() for card resolution. */
     @Mock
     private CardCrossReferenceRepository cardCrossReferenceRepository;
+
+    /** Mocked MetricsConfig — provides no-op recording stubs for transaction amount metrics. */
+    @Mock
+    private MetricsConfig metricsConfig;
 
     /** Service under test — BillPaymentService with all mocked repositories injected. */
     @InjectMocks

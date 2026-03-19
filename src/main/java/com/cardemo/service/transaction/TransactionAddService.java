@@ -18,6 +18,7 @@ import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.TransactionDto;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Transaction;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.TransactionRepository;
@@ -107,6 +108,12 @@ public class TransactionAddService {
     private final DateValidationService dateValidationService;
 
     /**
+     * Metrics configuration for recording transaction amount distribution.
+     * Per AAP §0.7.1: {@code carddemo.transaction.amount.total} (distribution summary).
+     */
+    private final MetricsConfig metricsConfig;
+
+    /**
      * Constructs a new TransactionAddService with required dependencies.
      *
      * <p>All dependencies are constructor-injected for immutability and testability.
@@ -116,16 +123,20 @@ public class TransactionAddService {
      * @param cardCrossReferenceRepository repository for card-to-account cross-reference lookups (CARDXREF / CXACAIX)
      * @param accountRepository            repository for account existence validation (ACCTDAT)
      * @param dateValidationService        shared date validation service replacing CSUTLDTC.cbl subprogram
+     * @param metricsConfig               observability metrics configuration for recording
+     *                                     transaction amount distribution; must not be {@code null}
      */
     public TransactionAddService(
             TransactionRepository transactionRepository,
             CardCrossReferenceRepository cardCrossReferenceRepository,
             AccountRepository accountRepository,
-            DateValidationService dateValidationService) {
+            DateValidationService dateValidationService,
+            MetricsConfig metricsConfig) {
         this.transactionRepository = transactionRepository;
         this.cardCrossReferenceRepository = cardCrossReferenceRepository;
         this.accountRepository = accountRepository;
         this.dateValidationService = dateValidationService;
+        this.metricsConfig = metricsConfig;
     }
 
     // -----------------------------------------------------------------------
@@ -191,7 +202,11 @@ public class TransactionAddService {
         // Step 5 — Build response DTO with generated ID
         TransactionDto response = toDto(saved);
 
-        // Step 6 — Structured logging for observability (AAP section 0.7.1)
+        // Step 6 — Record transaction amount metric for observability dashboard
+        // Per AAP §0.7.1: carddemo.transaction.amount.total distribution summary
+        metricsConfig.recordTransactionAmount(saved.getTranAmt().doubleValue());
+
+        // Step 7 — Structured logging for observability (AAP section 0.7.1)
         log.info("Transaction {} added successfully - card: {}, amount: {}",
                 generatedId, saved.getTranCardNum(), saved.getTranAmt());
 

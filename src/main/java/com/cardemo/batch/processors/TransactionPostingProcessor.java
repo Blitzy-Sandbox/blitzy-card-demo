@@ -7,6 +7,7 @@ import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.entity.TransactionCategoryBalance;
 import com.cardemo.model.enums.RejectCode;
 import com.cardemo.model.key.TransactionCategoryBalanceId;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.TransactionCategoryBalanceRepository;
@@ -104,6 +105,13 @@ public class TransactionPostingProcessor implements ItemProcessor<DailyTransacti
     private final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
 
     /**
+     * Metrics configuration for recording batch processing counters.
+     * Per AAP §0.7.1: {@code carddemo.batch.records.processed} (counter, per job)
+     * and {@code carddemo.batch.records.rejected} (counter, with reason tag).
+     */
+    private final MetricsConfig metricsConfig;
+
+    /**
      * Counter for successfully posted transactions.
      * Maps to COBOL {@code WS-GOOD-TRAN-COUNT PIC 9(09)}.
      */
@@ -124,7 +132,8 @@ public class TransactionPostingProcessor implements ItemProcessor<DailyTransacti
 
     /**
      * Constructs a {@code TransactionPostingProcessor} with the required
-     * Spring Data JPA repositories injected via constructor injection.
+     * Spring Data JPA repositories and observability dependencies injected
+     * via constructor injection.
      *
      * @param cardCrossReferenceRepository repository for XREF lookups
      *        (Stage 1 — card number to account ID resolution)
@@ -132,14 +141,18 @@ public class TransactionPostingProcessor implements ItemProcessor<DailyTransacti
      *        updates (Stages 2-4 and account balance update)
      * @param transactionCategoryBalanceRepository repository for TCATBAL
      *        create-or-update operations during transaction posting
+     * @param metricsConfig observability metrics configuration for recording
+     *        batch processed/rejected counters; must not be {@code null}
      */
     public TransactionPostingProcessor(
             CardCrossReferenceRepository cardCrossReferenceRepository,
             AccountRepository accountRepository,
-            TransactionCategoryBalanceRepository transactionCategoryBalanceRepository) {
+            TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
+            MetricsConfig metricsConfig) {
         this.cardCrossReferenceRepository = cardCrossReferenceRepository;
         this.accountRepository = accountRepository;
         this.transactionCategoryBalanceRepository = transactionCategoryBalanceRepository;
+        this.metricsConfig = metricsConfig;
         this.goodTranCount = 0;
         this.badTranCount = 0;
     }
@@ -245,6 +258,9 @@ public class TransactionPostingProcessor implements ItemProcessor<DailyTransacti
         }
 
         goodTranCount++;
+        // Record successful batch processing metric
+        // Per AAP §0.7.1: carddemo.batch.records.processed counter tagged per job
+        metricsConfig.recordBatchProcessed("DailyTransactionPosting");
         log.info("Transaction posted successfully: tranId={}, cardNum={}, acctId={}, amount={}",
                 item.getDalytranId(), item.getDalytranCardNum(), acctId, item.getDalytranAmt());
         return transaction;
@@ -393,6 +409,10 @@ public class TransactionPostingProcessor implements ItemProcessor<DailyTransacti
     private void rejectTransaction(DailyTransaction item, RejectCode rejectCode) {
         rejections.add(new RejectionResult(item, rejectCode, rejectCode.getDescription()));
         badTranCount++;
+        // Record batch rejection metric with reject code as reason tag
+        // Per AAP §0.7.1: carddemo.batch.records.rejected counter with reason tag
+        metricsConfig.recordBatchRejected("DailyTransactionPosting",
+                String.valueOf(rejectCode.getCode()));
         log.warn("Transaction rejected: tranId={}, cardNum={}, rejectCode={} ({}), reason={}",
                 item.getDalytranId(), item.getDalytranCardNum(),
                 rejectCode.getCode(), rejectCode.name(), rejectCode.getDescription());

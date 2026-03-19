@@ -37,15 +37,17 @@ scrape_configs:
   # CardDemo Spring Boot Application
   # -------------------------------------------------------------------------
   # Scrapes the Spring Boot Actuator Prometheus endpoint.
-  # The 'app' target uses the Docker Compose service name for DNS resolution.
-  # When the app service is not running (profiles not activated), Prometheus
-  # will log scrape failures but continue operating normally.
+  # Uses 'host.docker.internal' to resolve the host machine's network address,
+  # enabling Prometheus (running in Docker) to scrape the application whether
+  # it runs on the host (mvn spring-boot:run) or as a Docker container.
+  # The prometheus service in docker-compose.yml maps host.docker.internal via
+  # extra_hosts: ["host.docker.internal:host-gateway"].
   # -------------------------------------------------------------------------
   - job_name: "carddemo"
     metrics_path: "/actuator/prometheus"
     scrape_interval: 10s
     static_configs:
-      - targets: ["app:8080"]
+      - targets: ["host.docker.internal:8080"]
         labels:
           application: "carddemo"
           environment: "local"

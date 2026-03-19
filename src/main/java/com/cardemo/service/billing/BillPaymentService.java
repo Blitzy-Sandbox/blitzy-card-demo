@@ -35,6 +35,7 @@ import com.cardemo.model.dto.TransactionDto;
 import com.cardemo.model.entity.Account;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Transaction;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.TransactionRepository;
@@ -197,22 +198,33 @@ public class BillPaymentService {
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
 
     /**
-     * Constructs a new {@code BillPaymentService} with required repository dependencies.
+     * Metrics configuration for recording transaction amount distribution.
+     * Per AAP §0.7.1: {@code carddemo.transaction.amount.total} (distribution summary).
+     */
+    private final MetricsConfig metricsConfig;
+
+    /**
+     * Constructs a new {@code BillPaymentService} with required repository and
+     * observability dependencies.
      *
-     * <p>Spring auto-wires all three repositories via constructor injection. This
+     * <p>Spring auto-wires all dependencies via constructor injection. This
      * replaces the COBOL FILE SECTION declarations for ACCTDAT, TRANSACT, and
      * CXACAIX datasets in COBIL00C.cbl's WORKING-STORAGE SECTION (lines 40-42).</p>
      *
      * @param accountRepository             repository for Account entity (ACCTDAT VSAM KSDS)
      * @param transactionRepository         repository for Transaction entity (TRANSACT VSAM KSDS)
      * @param cardCrossReferenceRepository  repository for CardCrossReference entity (CXACAIX VSAM AIX)
+     * @param metricsConfig                 observability metrics configuration for recording
+     *                                       transaction amount distribution; must not be {@code null}
      */
     public BillPaymentService(AccountRepository accountRepository,
                               TransactionRepository transactionRepository,
-                              CardCrossReferenceRepository cardCrossReferenceRepository) {
+                              CardCrossReferenceRepository cardCrossReferenceRepository,
+                              MetricsConfig metricsConfig) {
         this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
         this.cardCrossReferenceRepository = cardCrossReferenceRepository;
+        this.metricsConfig = metricsConfig;
     }
 
     /**
@@ -357,6 +369,10 @@ public class BillPaymentService {
         // DFHRESP(DUPKEY)/DFHRESP(DUPREC) maps to DataIntegrityViolationException
         // propagated from JPA, which triggers @Transactional rollback
         transactionRepository.save(transaction);
+
+        // Record transaction amount metric for observability dashboard
+        // Per AAP §0.7.1: carddemo.transaction.amount.total distribution summary
+        metricsConfig.recordTransactionAmount(transaction.getTranAmt().doubleValue());
 
         // Step 9: Update account balance (← UPDATE-ACCTDAT-FILE, lines 377-403)
         // Maps COBOL: COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT (line 234)

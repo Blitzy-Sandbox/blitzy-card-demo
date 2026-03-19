@@ -42,6 +42,7 @@ import com.cardemo.model.dto.SignOnRequest;
 import com.cardemo.model.dto.SignOnResponse;
 import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.enums.UserType;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.UserSecurityRepository;
 
 import org.slf4j.Logger;
@@ -164,6 +165,15 @@ public class AuthenticationService {
      */
     private final PasswordEncoder passwordEncoder;
 
+    /**
+     * Custom business metrics recorder for authentication attempt counters.
+     * Records success/failure outcomes to the {@code carddemo.auth.attempts}
+     * Micrometer counter, which is scraped by Prometheus and displayed in the
+     * Grafana "Authentication Attempts" dashboard panel.
+     * <p>Per AAP §0.7.1: Observability ships with initial implementation.</p>
+     */
+    private final MetricsConfig metricsConfig;
+
     // -----------------------------------------------------------------------
     // Constructor — Dependency Injection
     // -----------------------------------------------------------------------
@@ -172,17 +182,22 @@ public class AuthenticationService {
      * Constructs the authentication service with required dependencies.
      *
      * <p>Uses constructor injection (not field injection) per Spring best practices.
-     * Both dependencies are required for the authentication flow.</p>
+     * All dependencies are required for the authentication flow.</p>
      *
      * @param userSecurityRepository repository for USRSEC VSAM dataset access;
      *                                must not be {@code null}
      * @param passwordEncoder        BCrypt password encoder configured in
      *                                SecurityConfig; must not be {@code null}
+     * @param metricsConfig          custom business metrics recorder for
+     *                                authentication attempt counters; must not
+     *                                be {@code null}
      */
     public AuthenticationService(UserSecurityRepository userSecurityRepository,
-                                 PasswordEncoder passwordEncoder) {
+                                 PasswordEncoder passwordEncoder,
+                                 MetricsConfig metricsConfig) {
         this.userSecurityRepository = userSecurityRepository;
         this.passwordEncoder = passwordEncoder;
+        this.metricsConfig = metricsConfig;
     }
 
     // -----------------------------------------------------------------------
@@ -245,25 +260,38 @@ public class AuthenticationService {
 
         log.info("Authentication attempt for user: {}", normalizedUserId);
 
-        // Step 3 — User lookup (CICS READ DATASET('USRSEC'))
-        // Maps: COSGN00C.cbl READ-USER-SEC-FILE lines 211-219
-        //   EXEC CICS READ DATASET(WS-USRSEC-FILE) INTO(SEC-USER-DATA)
-        //     RIDFLD(WS-USER-ID) RESP(WS-RESP-CD) RESP2(WS-REAS-CD)
-        UserSecurity user = readUserSecurityFile(normalizedUserId);
+        // Steps 3-5 wrapped in try-catch for metrics recording.
+        // Success → recordAuthAttempt(true), Failure → recordAuthAttempt(false).
+        // Per AAP §0.7.1: carddemo.auth.attempts counter with success/failure tag.
+        try {
+            // Step 3 — User lookup (CICS READ DATASET('USRSEC'))
+            // Maps: COSGN00C.cbl READ-USER-SEC-FILE lines 211-219
+            //   EXEC CICS READ DATASET(WS-USRSEC-FILE) INTO(SEC-USER-DATA)
+            //     RIDFLD(WS-USER-ID) RESP(WS-RESP-CD) RESP2(WS-REAS-CD)
+            UserSecurity user = readUserSecurityFile(normalizedUserId);
 
-        // Step 4 — Password verification (BCrypt replaces plaintext comparison)
-        // Maps: COSGN00C.cbl line 223
-        //   IF SEC-USR-PWD = WS-USER-PWD (plaintext → BCrypt upgrade per C-003)
-        verifyPassword(normalizedPassword, user.getSecUsrPwd(), normalizedUserId);
+            // Step 4 — Password verification (BCrypt replaces plaintext comparison)
+            // Maps: COSGN00C.cbl line 223
+            //   IF SEC-USR-PWD = WS-USER-PWD (plaintext → BCrypt upgrade per C-003)
+            verifyPassword(normalizedPassword, user.getSecUsrPwd(), normalizedUserId);
 
-        // Step 5 — Build successful response with routing information
-        // Maps: COSGN00C.cbl lines 224-240
-        //   MOVE WS-TRANID TO CDEMO-FROM-TRANID ... EXEC CICS XCTL PROGRAM(...)
-        SignOnResponse response = buildSignOnResponse(user, normalizedUserId);
+            // Step 5 — Build successful response with routing information
+            // Maps: COSGN00C.cbl lines 224-240
+            //   MOVE WS-TRANID TO CDEMO-FROM-TRANID ... EXEC CICS XCTL PROGRAM(...)
+            SignOnResponse response = buildSignOnResponse(user, normalizedUserId);
 
-        log.info("User {} authenticated successfully as {}", normalizedUserId, user.getSecUsrType());
+            // Record successful authentication metric
+            metricsConfig.recordAuthAttempt(true);
 
-        return response;
+            log.info("User {} authenticated successfully as {}", normalizedUserId, user.getSecUsrType());
+
+            return response;
+        } catch (RecordNotFoundException | BadCredentialsException e) {
+            // Record failed authentication metric — user not found (RESP(13))
+            // or wrong password (SEC-USR-PWD != WS-USER-PWD)
+            metricsConfig.recordAuthAttempt(false);
+            throw e;
+        }
     }
 
     // -----------------------------------------------------------------------

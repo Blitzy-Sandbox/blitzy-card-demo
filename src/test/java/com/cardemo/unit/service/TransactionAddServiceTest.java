@@ -20,6 +20,7 @@ import com.cardemo.model.dto.TransactionDto;
 import com.cardemo.model.entity.Account;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Transaction;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.TransactionRepository;
@@ -142,6 +143,9 @@ class TransactionAddServiceTest {
 
     @Mock
     private DateValidationService dateValidationService;
+
+    @Mock
+    private MetricsConfig metricsConfig;
 
     @InjectMocks
     private TransactionAddService transactionAddService;

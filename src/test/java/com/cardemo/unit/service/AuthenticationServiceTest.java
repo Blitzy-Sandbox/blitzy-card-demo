@@ -33,6 +33,7 @@ import com.cardemo.model.dto.SignOnRequest;
 import com.cardemo.model.dto.SignOnResponse;
 import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.enums.UserType;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.UserSecurityRepository;
 import com.cardemo.service.auth.AuthenticationService;
 
@@ -92,8 +93,16 @@ class AuthenticationServiceTest {
     private PasswordEncoder passwordEncoder;
 
     /**
+     * Mocked MetricsConfig — provides no-op recording stubs for authentication
+     * attempt counters. Verifies that recordAuthAttempt(boolean) is called
+     * appropriately on success and failure paths.
+     */
+    @Mock
+    private MetricsConfig metricsConfig;
+
+    /**
      * Service under test — AuthenticationService with injected mocks.
-     * Constructor injection of userSecurityRepository and passwordEncoder.
+     * Constructor injection of userSecurityRepository, passwordEncoder, and metricsConfig.
      */
     @InjectMocks
     private AuthenticationService authenticationService;

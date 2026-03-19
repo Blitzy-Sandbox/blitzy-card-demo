@@ -7,6 +7,7 @@ import com.cardemo.model.entity.DailyTransaction;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.entity.TransactionCategoryBalance;
 import com.cardemo.model.key.TransactionCategoryBalanceId;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.TransactionCategoryBalanceRepository;
@@ -61,6 +62,9 @@ class TransactionPostingProcessorTest {
     @Mock
     private TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
 
+    @Mock
+    private MetricsConfig metricsConfig;
+
     // ── Class Under Test ─────────────────────────────────────────────────────
 
     private TransactionPostingProcessor processor;
@@ -88,7 +92,8 @@ class TransactionPostingProcessorTest {
         processor = new TransactionPostingProcessor(
                 cardCrossReferenceRepository,
                 accountRepository,
-                transactionCategoryBalanceRepository
+                transactionCategoryBalanceRepository,
+                metricsConfig
         );
     }
 
