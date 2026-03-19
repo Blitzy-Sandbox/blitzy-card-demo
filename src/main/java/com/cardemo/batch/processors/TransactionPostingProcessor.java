@@ -439,6 +439,24 @@ public class TransactionPostingProcessor implements ItemProcessor<DailyTransacti
     }
 
     /**
+     * Resets all mutable instance state to initial values, enabling the singleton
+     * processor to be reused across multiple job executions within the same Spring
+     * application context (e.g., integration tests or re-runnable batch jobs).
+     *
+     * <p>Mirrors the COBOL working storage initialization that occurs at program
+     * load time (CBTRN02C.cbl lines 185-186):
+     * <pre>
+     * 05 WS-TRANSACTION-COUNT PIC 9(09) VALUE 0.
+     * 05 WS-REJECT-COUNT      PIC 9(09) VALUE 0.
+     * </pre>
+     */
+    public void resetState() {
+        goodTranCount = 0;
+        badTranCount = 0;
+        rejections.clear();
+    }
+
+    /**
      * Immutable record carrying rejection details for a single daily transaction
      * that failed the validation cascade or account update.
      *

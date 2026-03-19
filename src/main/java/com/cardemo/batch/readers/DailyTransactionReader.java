@@ -373,6 +373,11 @@ public class DailyTransactionReader implements ItemReader<DailyTransaction> {
                 reader = null;
             }
         }
+        // Reset lazy-init state so the singleton reader can be reused
+        // across multiple job executions within the same application context
+        // (e.g., integration tests or re-runnable batch jobs).
+        initialized = false;
+        recordCount = 0;
     }
 
     // =========================================================================

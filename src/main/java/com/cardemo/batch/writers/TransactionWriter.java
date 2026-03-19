@@ -247,13 +247,14 @@ public class TransactionWriter implements ItemWriter<Transaction> {
         log.info("Processing transaction chunk #{} with {} transactions",
                 currentChunk, chunkSize);
 
-        // For each transaction: set proc timestamp, resolve account,
-        // update TCATBAL, update Account — mirrors COBOL 2000-POST-TRANSACTION
-        for (Transaction transaction : transactions) {
-            postSingleTransaction(transaction);
-        }
+        // NOTE: TCATBAL and Account balance updates are performed by
+        // TransactionPostingProcessor during the process() phase, matching
+        // COBOL paragraph execution order (2700-UPDATE-TCATBAL and
+        // 2800-UPDATE-ACCOUNT-REC occur before 2900-WRITE-TRANSACTION-FILE).
+        // The writer's sole persistence responsibility is the Transaction
+        // records themselves plus the S3 backup (GDG TRANSACT.BKUP(+1)).
 
-        // Step 3: Bulk save all transactions to DB
+        // Step 1: Bulk save all transactions to DB
         // Maps COBOL 2900-WRITE-TRANSACTION-FILE (WRITE FD-TRANFILE-REC)
         // Use ArrayList to resolve wildcard type for saveAll() compatibility
         List<Transaction> transactionsToSave = new ArrayList<>(transactions);

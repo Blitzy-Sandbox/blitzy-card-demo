@@ -47,6 +47,9 @@ import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.item.Chunk;
+
+import java.util.List;
 
 // Spring Framework — configuration, bean wiring, value injection
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -215,7 +218,8 @@ public class DailyTransactionPostingJob {
             PlatformTransactionManager transactionManager,
             DailyTransactionReader reader,
             TransactionPostingProcessor processor,
-            TransactionWriter writer) {
+            TransactionWriter writer,
+            RejectWriter rejectWriter) {
 
         log.info("Configuring daily transaction posting step: chunkSize={}", chunkSize);
 
@@ -224,7 +228,7 @@ public class DailyTransactionPostingJob {
                 .reader(reader)
                 .processor(processor)
                 .writer(writer)
-                .listener(createPostingStepListener(writer))
+                .listener(createPostingStepListener(writer, processor, rejectWriter))
                 .build();
     }
 
@@ -263,11 +267,34 @@ public class DailyTransactionPostingJob {
      * @param writer the transaction writer providing posted transaction count
      * @return a configured {@link StepExecutionListener}
      */
-    private StepExecutionListener createPostingStepListener(TransactionWriter writer) {
+    private StepExecutionListener createPostingStepListener(
+            TransactionWriter writer,
+            TransactionPostingProcessor processor,
+            RejectWriter rejectWriter) {
         return new StepExecutionListener() {
 
             /**
-             * Invoked after the posting step completes. Logs a summary of
+             * Invoked before the posting step starts. Resets mutable state on
+             * the singleton processor and reject writer to ensure clean
+             * execution across multiple job runs within the same Spring context
+             * (e.g., integration tests or re-runnable batch jobs).
+             *
+             * <p>Mirrors COBOL working storage initialization at program load
+             * time (CBTRN02C.cbl lines 185-186).</p>
+             *
+             * @param stepExecution the step execution context (not used)
+             */
+            @Override
+            public void beforeStep(StepExecution stepExecution) {
+                processor.resetState();
+                rejectWriter.resetRejectCount();
+                writer.resetTransactionCount();
+                log.debug("Reset processor, writer, and reject writer state for new job run");
+            }
+
+            /**
+             * Invoked after the posting step completes. Flushes accumulated
+             * processor rejections to the RejectWriter (S3), logs a summary of
              * processed and rejected transactions, then determines the
              * appropriate exit status based on the rejection count.
              *
@@ -293,6 +320,46 @@ public class DailyTransactionPostingJob {
                 // The reject count is the number of items read but not written.
                 // Spring Batch's filterCount tracks processor-filtered items.
                 long rejectCount = filterCount;
+
+                // ---------------------------------------------------------------
+                // Flush accumulated rejections to RejectWriter (S3 output)
+                // Maps COBOL paragraph 2500-WRITE-REJECT-REC (CBTRN02C.cbl
+                // lines 446-465): writes each rejected DALYTRAN record plus an
+                // 80-byte validation trailer to the DALYREJS output file.
+                //
+                // Because the processor returns null for rejected items (Spring
+                // Batch filter convention), rejected DailyTransaction records
+                // never reach any ItemWriter in the chunk pipeline. Instead, the
+                // processor accumulates RejectionResult objects internally, and
+                // we flush them here after the step completes.
+                // ---------------------------------------------------------------
+                List<TransactionPostingProcessor.RejectionResult> rejections =
+                        processor.getRejections();
+                if (!rejections.isEmpty()) {
+                    // Register rejection metadata so the RejectWriter can include
+                    // correct reject codes and descriptions in the 80-byte trailer
+                    for (TransactionPostingProcessor.RejectionResult r : rejections) {
+                        rejectWriter.registerRejection(
+                                r.originalTransaction().getDalytranId(),
+                                r.rejectCode().getCode(),
+                                r.reasonDescription());
+                    }
+                    // Build a Chunk of rejected DailyTransaction entities and write
+                    Chunk<DailyTransaction> rejectChunk = new Chunk<>();
+                    for (TransactionPostingProcessor.RejectionResult r : rejections) {
+                        rejectChunk.add(r.originalTransaction());
+                    }
+                    try {
+                        rejectWriter.write(rejectChunk);
+                        log.info("Flushed {} rejection records to S3 via RejectWriter",
+                                rejections.size());
+                    } catch (Exception e) {
+                        log.error("Failed to write rejection records to S3: {}",
+                                e.getMessage(), e);
+                        // Non-fatal: COBOL POSTTRAN continues on reject file write
+                        // errors with RETURN-CODE 4, so we do not fail the step.
+                    }
+                }
 
                 // Log the summary matching COBOL DISPLAY statements (lines 227-228):
                 //   DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT
