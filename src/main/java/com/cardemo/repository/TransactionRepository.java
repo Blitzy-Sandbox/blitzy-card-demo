@@ -134,7 +134,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
     List<Transaction> findByTranCardNum(String cardNum);
 
     /**
-     * Date-range transaction query for reporting.
+     * Date-range transaction query for reporting (non-paginated).
      *
      * <p>Maps the {@code CBTRN03C.cbl} date-filtered read pattern used for
      * transaction reporting and the {@code TRANREPT.jcl} DFSORT date extraction.
@@ -149,6 +149,26 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * @return all transactions within the specified date range
      */
     List<Transaction> findByTranOrigTsBetween(LocalDateTime startDate, LocalDateTime endDate);
+
+    /**
+     * Paginated date-range transaction query for batch reporting.
+     *
+     * <p>Paginated overload required by Spring Batch's {@code RepositoryItemReader},
+     * which automatically appends a {@code PageRequest} argument when invoking
+     * the configured repository method. This method is used by the
+     * {@code TransactionReportJob} reader bean (Stage 4b — TRANREPT pipeline).
+     *
+     * <p>The {@code RepositoryItemReader} configured with
+     * {@code .methodName("findByTranOrigTsBetween")} and {@code .pageSize(100)}
+     * resolves this overload via reflection, passing the start/end dates as
+     * configured arguments and the generated {@code PageRequest} as the final parameter.
+     *
+     * @param startDate the inclusive start of the date range
+     * @param endDate   the inclusive end of the date range
+     * @param pageable  pagination and sorting parameters (managed by RepositoryItemReader)
+     * @return a {@link Page} of transactions within the date range
+     */
+    Page<Transaction> findByTranOrigTsBetween(LocalDateTime startDate, LocalDateTime endDate, Pageable pageable);
 
     // -----------------------------------------------------------------------
     // Custom JPQL Query — Maps COBOL Browse-to-End Auto-ID Pattern
