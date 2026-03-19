@@ -70,7 +70,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>{@code catCode} — transaction category code (PIC 9(04) → SMALLINT)</li>
  * </ul>
  *
- * <h3>Seed Data (discgrp.txt — 51 records in 3 blocks)</h3>
+ * <h3>Seed Data (discgrp.txt — 57 records in 3 blocks)</h3>
  * <ul>
  *   <li>Rows 1–17: Account-specific group ({@code "A000000000"}) with rates
  *       15.00, 25.00, 0.00 across type codes 01–07</li>
@@ -118,7 +118,7 @@ public class DisclosureGroupRepositoryIT {
      * {@code application-test.yml} with the dynamically allocated container URL.
      *
      * <p>This ensures Flyway migrations (V1 schema creation, V2 indexes, V3 seed
-     * data with 51 disclosure group records) run against the real PostgreSQL
+     * data with 57 disclosure group records) run against the real PostgreSQL
      * container and Hibernate validates entity mappings against the Flyway-created
      * schema.</p>
      *
@@ -436,34 +436,34 @@ public class DisclosureGroupRepositoryIT {
                     .isPresent();
         }
 
-        // Verify total seed data count — 51 records (3 blocks × 17 entries)
+        // Verify total seed data count — 57 records (3 blocks × 19 entries)
         // Using findAll() and count() to exercise repository members_accessed
         long totalCount = repository.count();
         assertThat(totalCount)
-                .as("V3 seed data should contain 51 disclosure group records "
-                        + "(17 A000000000 + 17 DEFAULT + 17 ZEROAPR)")
-                .isGreaterThanOrEqualTo(51L);
+                .as("V3 seed data should contain 57 disclosure group records "
+                        + "(19 A000000000 + 19 DEFAULT + 19 ZEROAPR)")
+                .isGreaterThanOrEqualTo(57L);
 
         // Verify via findAll() with List.size() and List.stream()
         List<DisclosureGroup> allGroups = repository.findAll();
         assertThat(allGroups.size())
-                .as("findAll() should return at least 51 seeded records")
-                .isGreaterThanOrEqualTo(51);
+                .as("findAll() should return at least 57 seeded records")
+                .isGreaterThanOrEqualTo(57);
 
         // Verify all three group blocks exist in the full result set
         long defaultCount = allGroups.stream()
                 .filter(g -> "DEFAULT".equals(g.getId().getGroupId()))
                 .count();
         assertThat(defaultCount)
-                .as("Should have 17 DEFAULT group entries in seed data")
-                .isEqualTo(17L);
+                .as("Should have 19 DEFAULT group entries in seed data")
+                .isEqualTo(19L);
 
         long zeroAprCount = allGroups.stream()
                 .filter(g -> "ZEROAPR".equals(g.getId().getGroupId()))
                 .count();
         assertThat(zeroAprCount)
-                .as("Should have 17 ZEROAPR group entries in seed data")
-                .isEqualTo(17L);
+                .as("Should have 19 ZEROAPR group entries in seed data")
+                .isEqualTo(19L);
     }
 
     // -----------------------------------------------------------------------

@@ -52,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *     05  FILLER                PIC X(04).   — Not mapped (padding)
  * </pre>
  *
- * <h3>Seed Data (trancatg.txt — 18 records across 7 type groups)</h3>
+ * <h3>Seed Data (trancatg.txt — 19 records across 7 type groups)</h3>
  * <ul>
  *   <li>Type 01 (Purchase): 5 categories</li>
  *   <li>Type 02 (Payment): 3 categories</li>
@@ -65,7 +65,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>All tests run against a real PostgreSQL 16 instance via Testcontainers with Flyway
  * migrations provisioning the schema (V1__create_schema.sql) and seed data
- * (V3__seed_data.sql — 18 transaction category records parsed from
+ * (V3__seed_data.sql — 19 transaction category records parsed from
  * {@code app/data/ASCII/trancatg.txt}).</p>
  *
  * <p>COBOL source reference: {@code app/jcl/TRANCATG.jcl}, {@code app/cpy/CVTRA04Y.cpy},
@@ -216,22 +216,22 @@ public class TransactionCategoryRepositoryIT {
     // -----------------------------------------------------------------------
 
     /**
-     * Verifies that {@code findAll()} returns exactly 18 transaction category records
+     * Verifies that {@code findAll()} returns exactly 19 transaction category records
      * from the seed data loaded via Flyway V3 migration from {@code trancatg.txt}.
      *
-     * <p>The 18 records span 7 transaction type groups (01-07) with varying numbers
-     * of categories per type: 5+3+3+3+1+2+1 = 18 total.</p>
+     * <p>The 19 records span 7 transaction type groups (01-07) with varying numbers
+     * of categories per type: 5+3+4+3+1+2+1 = 19 total.</p>
      */
     @Test
-    @DisplayName("findAll returns exactly 18 transaction categories from seed data")
+    @DisplayName("findAll returns exactly 19 transaction categories from seed data")
     void testFindAll() {
         // Act — equivalent to COBOL STARTBR / READNEXT loop
         List<TransactionCategory> allCategories = repository.findAll();
 
-        // Assert — verify total record count matches trancatg.txt (18 records)
+        // Assert — verify total record count matches trancatg.txt (19 records)
         assertThat(allCategories)
-                .as("Should return all 18 transaction categories from seed data")
-                .hasSize(18);
+                .as("Should return all 19 transaction categories from seed data")
+                .hasSize(19);
 
         // Verify each record has valid composite key and non-empty description
         for (TransactionCategory category : allCategories) {
@@ -260,7 +260,7 @@ public class TransactionCategoryRepositoryIT {
     // -----------------------------------------------------------------------
 
     /**
-     * Verifies all 18 categories from {@code trancatg.txt} by collecting
+     * Verifies all 19 categories from {@code trancatg.txt} by collecting
      * {@code findAll()} results into a map keyed by composite
      * {@link TransactionCategoryId} and asserting each entry's description.
      *
@@ -272,7 +272,7 @@ public class TransactionCategoryRepositoryIT {
      * Type 02 (Payment):       0001=Cash payment, 0002=Electronic payment,
      *                          0003=Check payment
      * Type 03 (Credit):        0001=Credit to Account, 0002=Credit to Purchase balance,
-     *                          0003=Credit to Cash balance
+     *                          0003=Credit to Cash balance, 0005=Return Interest Amount
      * Type 04 (Authorization): 0001=Zero dollar authorization,
      *                          0002=Online purchase authorization,
      *                          0003=Travel booking authorization
@@ -282,7 +282,7 @@ public class TransactionCategoryRepositoryIT {
      * </pre>
      */
     @Test
-    @DisplayName("findAll verifies all 18 categories from trancatg.txt with correct descriptions")
+    @DisplayName("findAll verifies all 19 categories from trancatg.txt with correct descriptions")
     void testFindAll_VerifyAllCategories() {
         // Act — load all categories
         List<TransactionCategory> allCategories = repository.findAll();
@@ -293,7 +293,7 @@ public class TransactionCategoryRepositoryIT {
             categoryMap.put(category.getId(), category.getTranCatTypeDesc());
         }
 
-        // Assert — verify all 18 entries are present with correct descriptions
+        // Assert — verify all 19 entries are present with correct descriptions
 
         // Type 01: Purchase — 5 categories
         assertCategoryPresent(categoryMap, "01", (short) 1, "Regular Sales Draft");
@@ -307,10 +307,11 @@ public class TransactionCategoryRepositoryIT {
         assertCategoryPresent(categoryMap, "02", (short) 2, "Electronic payment");
         assertCategoryPresent(categoryMap, "02", (short) 3, "Check payment");
 
-        // Type 03: Credit — 3 categories
+        // Type 03: Credit — 4 categories (including Return Interest Amount)
         assertCategoryPresent(categoryMap, "03", (short) 1, "Credit to Account");
         assertCategoryPresent(categoryMap, "03", (short) 2, "Credit to Purchase balance");
         assertCategoryPresent(categoryMap, "03", (short) 3, "Credit to Cash balance");
+        assertCategoryPresent(categoryMap, "03", (short) 5, "Return Interest Amount");
 
         // Type 04: Authorization — 3 categories
         assertCategoryPresent(categoryMap, "04", (short) 1, "Zero dollar authorization");
