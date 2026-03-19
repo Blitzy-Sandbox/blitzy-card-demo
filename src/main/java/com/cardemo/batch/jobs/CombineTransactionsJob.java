@@ -401,7 +401,24 @@ public class CombineTransactionsJob {
         // FILLER PIC X(20) — padding spaces (no data mapped)
         sb.append(padRight("", 20));
 
-        return sb.toString();
+        // Defensive byte-length enforcement — COBOL LRECL=350 is a byte-level contract.
+        // After ASCII sanitization in nullSafe(), character count should equal byte count,
+        // but this guard ensures the record is truncated/padded to exactly RECORD_LENGTH
+        // bytes regardless of any edge-case encoding anomalies.
+        String record = sb.toString();
+        byte[] bytes = record.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        if (bytes.length != RECORD_LENGTH) {
+            log.warn("Record byte-length mismatch for tran {}: expected={}, actual={} — enforcing LRECL",
+                    txn.getTranId(), RECORD_LENGTH, bytes.length);
+            if (bytes.length > RECORD_LENGTH) {
+                // Truncate to exactly RECORD_LENGTH bytes
+                record = new String(bytes, 0, RECORD_LENGTH, java.nio.charset.StandardCharsets.UTF_8);
+            } else {
+                // Pad with spaces to exactly RECORD_LENGTH bytes
+                record = record + " ".repeat(RECORD_LENGTH - bytes.length);
+            }
+        }
+        return record;
     }
 
     // -----------------------------------------------------------------------
@@ -475,13 +492,31 @@ public class CombineTransactionsJob {
 
     /**
      * Returns the input string if non-null, or an empty string if null.
-     * Prevents {@link NullPointerException} in fixed-width field formatting.
+     * Non-ASCII characters are replaced with '?' to match COBOL EBCDIC
+     * single-byte character semantics — ensures that character count
+     * equals byte count in UTF-8, preventing LRECL overflow.
      *
-     * @param value the string value to check
-     * @return the input value or empty string
+     * <p>COBOL PIC X(n) fields are exactly n bytes; EBCDIC does not support
+     * multi-byte characters. Sanitizing to ASCII before padding guarantees
+     * fixed-width record integrity per AAP §0.8.3 external interface
+     * contract preservation.</p>
+     *
+     * @param value the string value to check and sanitize
+     * @return sanitized ASCII-safe value or empty string
      */
     private String nullSafe(String value) {
-        return value != null ? value : "";
+        if (value == null) {
+            return "";
+        }
+        // Replace any non-ASCII character with '?' — COBOL EBCDIC is single-byte,
+        // and multi-byte UTF-8 characters (e.g., é=2 bytes, ☕=3 bytes, 📄=4 bytes)
+        // would inflate byte-length beyond the PIC X(n) field width
+        StringBuilder sanitized = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            sanitized.append(ch <= 0x7E && ch >= 0x20 ? ch : '?');
+        }
+        return sanitized.toString();
     }
 
     /**

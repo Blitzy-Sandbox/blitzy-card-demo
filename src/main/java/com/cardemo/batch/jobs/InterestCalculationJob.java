@@ -38,8 +38,11 @@ import com.cardemo.repository.TransactionCategoryBalanceRepository;
 import com.cardemo.repository.TransactionRepository;
 
 // Spring Batch Core — job/step definition and execution model
+import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.StepExecutionListener;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
 import org.springframework.batch.core.repository.JobRepository;
@@ -76,6 +79,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -174,6 +178,14 @@ public class InterestCalculationJob {
     @Value("${carddemo.s3.output-bucket:carddemo-batch-output}")
     private String outputBucket;
 
+    /**
+     * Accumulates formatted interest transaction records across all chunks for
+     * a single S3 write in the afterStep listener. Replaces the per-chunk
+     * S3 upload that caused data loss when chunk 2 overwrote chunk 1 under
+     * the same timestamp key. Thread-safe for single-threaded chunk processing.
+     */
+    private final List<String> s3BackupAccumulator = new ArrayList<>(256);
+
     // -----------------------------------------------------------------------
     // ItemReader Bean — replaces CBACT04C 1000-TCATBALF-GET-NEXT sequential
     // read of TCATBALF.VSAM.KSDS records
@@ -265,9 +277,15 @@ public class InterestCalculationJob {
             transactionRepository.saveAll(items);
             log.debug("Persisted {} interest transactions to PostgreSQL", items.size());
 
-            // Step 2: Write to S3 as backup
-            // Replaces GDG output DSN=AWS.M2.CARDDEMO.SYSTRAN(+1)
-            writeBackupToS3(s3Client, items);
+            // Step 2: Accumulate formatted records for S3 backup.
+            // The actual S3 upload happens ONCE in the afterStep listener to
+            // prevent chunk-boundary overwrites (Bug fix: previously each chunk
+            // wrote to the same S3 key, causing chunk N+1 to overwrite chunk N).
+            for (Transaction txn : items) {
+                s3BackupAccumulator.add(formatTransactionRecord(txn));
+            }
+            log.debug("Accumulated {} records for S3 backup (total: {})",
+                    items.size(), s3BackupAccumulator.size());
         };
     }
 
@@ -358,7 +376,8 @@ public class InterestCalculationJob {
             @Qualifier("interestTcatbalReader")
                     RepositoryItemReader<TransactionCategoryBalance> reader,
             InterestCalculationProcessor processor,
-            @Qualifier("interestTransactionWriter") ItemWriter<Transaction> writer) {
+            @Qualifier("interestTransactionWriter") ItemWriter<Transaction> writer,
+            S3Client s3Client) {
 
         log.info("Configuring interest calculation step: chunkSize={}", chunkSize);
 
@@ -367,7 +386,53 @@ public class InterestCalculationJob {
                 .reader(reader)
                 .processor(processor)
                 .writer(writer)
+                .listener(interestS3BackupListener(s3Client))
                 .build();
+    }
+
+    /**
+     * Step listener that writes accumulated interest transaction records to S3
+     * as a single file AFTER all chunks have been processed.
+     *
+     * <p>This replaces the per-chunk S3 upload strategy that caused data loss:
+     * when the step had multiple chunks (e.g., 50 records chunk 1 + 1 record
+     * chunk 2), each chunk wrote to the same timestamp-based S3 key, causing
+     * the final chunk to overwrite all previous chunks. The listener pattern
+     * ensures all records are accumulated in memory during chunk processing
+     * and then written as a single complete file.</p>
+     *
+     * <p>Replaces GDG output {@code DSN=AWS.M2.CARDDEMO.SYSTRAN(+1)} from
+     * INTCALC.jcl with a timestamped S3 object.</p>
+     *
+     * @param s3Client AWS S3 client for file upload
+     * @return StepExecutionListener that finalizes S3 backup after step completion
+     */
+    private StepExecutionListener interestS3BackupListener(S3Client s3Client) {
+        return new StepExecutionListener() {
+            @Override
+            public void beforeStep(StepExecution stepExecution) {
+                // Clear accumulator at start of step to ensure clean state
+                s3BackupAccumulator.clear();
+                log.info("S3 backup accumulator cleared for interest calculation step");
+            }
+
+            @Override
+            public ExitStatus afterStep(StepExecution stepExecution) {
+                if (s3BackupAccumulator.isEmpty()) {
+                    log.info("No interest transactions to back up to S3");
+                    return null; // preserve original exit status
+                }
+
+                // Write all accumulated records to S3 as a single file
+                writeBackupToS3(s3Client, s3BackupAccumulator);
+                log.info("S3 backup complete: {} interest transaction records written",
+                        s3BackupAccumulator.size());
+
+                // Clear after successful write to free memory
+                s3BackupAccumulator.clear();
+                return null; // preserve original exit status
+            }
+        };
     }
 
     // -----------------------------------------------------------------------
@@ -375,30 +440,29 @@ public class InterestCalculationJob {
     // -----------------------------------------------------------------------
 
     /**
-     * Writes a pipe-delimited backup of interest transactions to S3.
+     * Writes pre-formatted pipe-delimited interest transaction records to S3
+     * as a single file.
      *
      * <p>Replaces the GDG output:
      * {@code //TRANSACT DD DSN=AWS.M2.CARDDEMO.SYSTRAN(+1),LRECL=350}
      * from INTCALC.jcl. Uses versioned S3 object keys with timestamps
      * instead of GDG generation numbers.</p>
      *
-     * <p>Each transaction is formatted as a pipe-delimited record containing
-     * all fields from the TRAN-RECORD layout (CVTRA05Y.cpy, 350 bytes).
-     * The pipe-delimited format provides human-readable backup while
-     * preserving all field values.</p>
+     * <p>Called ONCE from the afterStep listener with ALL accumulated records,
+     * ensuring a single complete file is written regardless of how many
+     * chunks the step processes.</p>
      *
-     * @param s3Client     the S3 client for file upload
-     * @param transactions the list of interest transactions to back up
+     * @param s3Client        the S3 client for file upload
+     * @param formattedRecords pre-formatted pipe-delimited records to write
      */
-    private void writeBackupToS3(S3Client s3Client,
-                                 List<? extends Transaction> transactions) {
+    private void writeBackupToS3(S3Client s3Client, List<String> formattedRecords) {
 
         String timestamp = LocalDateTime.now().format(S3_TIMESTAMP_FORMAT);
         String key = "batch-output/system-transactions/SYSTRAN-" + timestamp + ".txt";
 
-        StringBuilder content = new StringBuilder(transactions.size() * 256);
-        for (Transaction txn : transactions) {
-            content.append(formatTransactionRecord(txn)).append('\n');
+        StringBuilder content = new StringBuilder(formattedRecords.size() * 256);
+        for (String record : formattedRecords) {
+            content.append(record).append('\n');
         }
 
         s3Client.putObject(
@@ -409,7 +473,7 @@ public class InterestCalculationJob {
                 RequestBody.fromString(content.toString(), StandardCharsets.UTF_8));
 
         log.info("Wrote {} interest transactions to S3: {}/{}",
-                transactions.size(), outputBucket, key);
+                formattedRecords.size(), outputBucket, key);
     }
 
     /**

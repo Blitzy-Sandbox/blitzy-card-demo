@@ -79,6 +79,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Spring Batch {@code @Configuration} defining the transaction report job —
@@ -168,6 +169,39 @@ public class TransactionReportJob {
      */
     @Value("${carddemo.batch.chunk-size.report:50}")
     private int chunkSize;
+
+    /**
+     * Shared state between the writer lambda and the step execution listener.
+     * The writer populates the buffer with page headers, detail lines, page totals,
+     * and account totals during chunk processing. The step listener's {@code afterStep}
+     * callback appends the final account total and grand total, then performs the
+     * definitive S3 upload.
+     *
+     * <p>Uses {@link AtomicReference} to safely share state between the {@code @StepScope}
+     * writer bean and the step execution listener within the same step lifecycle.
+     */
+    private final AtomicReference<ReportWriterState> reportStateRef = new AtomicReference<>();
+
+    /**
+     * Mutable holder for structured report generation state, shared between the writer
+     * and the step execution listener. Tracks control break state (page breaks and
+     * account breaks) and running monetary totals matching the COBOL WORKING-STORAGE
+     * fields from CBTRN03C.cbl (lines 122-137).
+     */
+    private static class ReportWriterState {
+        final StringBuilder buffer = new StringBuilder(64 * 1024);
+        String s3Key;
+        String bucketName;
+        S3Client s3Client;
+        String startDateStr;
+        String endDateStr;
+        int lineCounter;
+        int pageNum = 1;
+        String currentCard = "";
+        BigDecimal pageTotal = BigDecimal.ZERO;
+        BigDecimal accountTotal = BigDecimal.ZERO;
+        BigDecimal grandTotal = BigDecimal.ZERO;
+    }
 
     // -----------------------------------------------------------------------
     // Job Bean Definition — TRANREPT.jcl overall job
@@ -383,6 +417,22 @@ public class TransactionReportJob {
             @Value("#{jobParameters['endDate']}") String endDate,
             TransactionRepository transactionRepository) {
 
+        // Validate required date parameters — COBOL CBTRN03C reads DATEPARM
+        // in-stream data (paragraph 0500-DATE-READ, lines 162–170) and abends
+        // if the file is empty. The Java equivalent throws a descriptive
+        // IllegalArgumentException so the job fails with a clear message
+        // instead of a NullPointerException.
+        if (startDate == null || startDate.isBlank()) {
+            throw new IllegalArgumentException(
+                    "startDate job parameter is required for transactionReportJob "
+                    + "(format: YYYY-MM-DD). Maps COBOL WS-START-DATE from DATEPARM.");
+        }
+        if (endDate == null || endDate.isBlank()) {
+            throw new IllegalArgumentException(
+                    "endDate job parameter is required for transactionReportJob "
+                    + "(format: YYYY-MM-DD). Maps COBOL WS-END-DATE from DATEPARM.");
+        }
+
         // Parse YYYY-MM-DD strings from JobParameters — maps COBOL WS-START-DATE
         // and WS-END-DATE PIC X(10) read from DATEPARM file
         // (paragraph 0500-DATE-READ in CBTRN03C.cbl)
@@ -422,26 +472,36 @@ public class TransactionReportJob {
 
     /**
      * Defines the report writer that collects processed transactions and uploads
-     * a formatted report to S3. The report uses 133-character fixed-width lines
-     * matching the COBOL {@code FD-REPTFILE-REC} LRECL=133 specification.
+     * a structured, formatted report to S3. The report uses 133-character fixed-width
+     * lines matching the COBOL {@code FD-REPTFILE-REC} LRECL=133 specification, and
+     * includes the full structured layout from CBTRN03C.cbl:
      *
-     * <p>The writer accumulates report lines across all chunks in a buffer and
-     * uploads the complete report to S3 after each chunk (overwriting the same
-     * key). The final S3 upload contains the complete report.
+     * <ul>
+     *   <li>Page headers with date range and page number
+     *       (paragraph {@code 0600-WRITE-PAGE-HEADER}, lines 175–195)</li>
+     *   <li>Transaction detail lines
+     *       (paragraph {@code 1100-WRITE-TRANSACTION-REPORT}, lines 380–430)</li>
+     *   <li>Page totals after every {@value #DEFAULT_PAGE_SIZE} detail lines
+     *       (paragraph {@code 0700-WRITE-PAGE-TOTALS}, lines 200–215)</li>
+     *   <li>Account totals on card-number break
+     *       (paragraph {@code 0800-WRITE-ACCT-TOTALS}, lines 220–235)</li>
+     *   <li>Grand total at end of report (emitted in the step listener's
+     *       {@code afterStep} via the shared {@link ReportWriterState})</li>
+     * </ul>
+     *
+     * <p>The writer tracks its own control-break state (current card number, line
+     * counter, page/account/grand totals) independently of the processor, because
+     * the Spring Batch chunk pipeline may process items ahead of the writer.
      *
      * <p>The S3 object key follows the pattern
      * {@code reports/{timestamp}/transaction-report.txt}, replacing the mainframe
      * {@code REPTFILE DD DSN=AWS.M2.CARDDEMO.REPORT.PS}.
      *
-     * <p>This method also initialises the {@link TransactionReportProcessor} date range
-     * by calling {@code setStartDate}/{@code setEndDate} — mapping the COBOL paragraph
-     * {@code 0500-DATE-READ} (CBTRN03C.cbl, lines 162–170).
-     *
      * @param s3Client  AWS S3 client for report upload
-     * @param processor the report processor (for date configuration and summary stats)
+     * @param processor the report processor (for date configuration)
      * @param startDate start date (YYYY-MM-DD) from JobParameters
      * @param endDate   end date (YYYY-MM-DD) from JobParameters
-     * @return a configured {@link ItemWriter} for report output
+     * @return a configured {@link ItemWriter} for structured report output
      */
     @Bean("transactionReportWriter")
     @StepScope
@@ -465,41 +525,88 @@ public class TransactionReportJob {
         log.info("TRANREPT writer configured: date range {} to {}, output LRECL={}",
                 startDate, endDate, REPORT_LRECL);
 
-        // Buffer for accumulating 133-char report lines across all chunks.
-        // The buffer grows as chunks are processed; after each chunk the
-        // complete accumulated content is uploaded to S3 (overwriting the
-        // previous version). The final upload contains the complete report.
-        final StringBuilder reportBuffer = new StringBuilder(64 * 1024);
-
-        // Compute S3 key once at bean creation — all chunks write to the same key.
-        // The timestamp replaces GDG generation numbering in the original JCL.
-        final String timestamp = LocalDateTime.now().format(TIMESTAMP_FMT);
-        final String s3Key = REPORT_KEY_PREFIX + timestamp
-                + "/transaction-report.txt";
+        // Initialise shared state — the step listener's afterStep reads this to
+        // append the final account total, grand total, and perform the definitive
+        // S3 upload. The AtomicReference field (reportStateRef) bridges the writer
+        // bean and the listener within the same step lifecycle.
+        ReportWriterState state = new ReportWriterState();
+        String timestamp = LocalDateTime.now().format(TIMESTAMP_FMT);
+        state.s3Key = REPORT_KEY_PREFIX + timestamp + "/transaction-report.txt";
+        state.bucketName = outputBucket;
+        state.s3Client = s3Client;
+        state.startDateStr = startDate;
+        state.endDateStr = endDate;
+        reportStateRef.set(state);
 
         return items -> {
-            // Format each processed transaction as a 133-char fixed-width line
-            // matching FD-REPTFILE-REC LRECL=133 from CBTRN03C.cbl
             for (Transaction txn : items) {
-                reportBuffer.append(formatReportLine(txn)).append('\n');
+                String cardNum = nullSafe(txn.getTranCardNum());
+
+                // First record ever — emit initial page header
+                // (COBOL 0600-WRITE-PAGE-HEADER, first invocation)
+                if (state.lineCounter == 0 && state.pageNum == 1) {
+                    state.buffer.append(formatPageHeader(
+                            state.startDateStr, state.endDateStr, state.pageNum))
+                            .append('\n');
+                }
+
+                // Account break detection — card number changes.
+                // Maps COBOL paragraph 0800-WRITE-ACCT-TOTALS which fires
+                // when TRAN-CARD-NUM changes between successive records.
+                if (!state.currentCard.isEmpty()
+                        && !state.currentCard.equals(cardNum)) {
+                    // Emit account total for the previous card
+                    state.buffer.append(formatAccountTotalLine(
+                            state.currentCard, state.accountTotal)).append('\n');
+                    state.grandTotal = state.grandTotal.add(state.accountTotal);
+                    state.accountTotal = BigDecimal.ZERO;
+                    state.lineCounter++;
+                }
+
+                // Page break check — every DEFAULT_PAGE_SIZE detail lines.
+                // Maps COBOL paragraph 0700-WRITE-PAGE-TOTALS which triggers
+                // when WS-LINE-COUNT >= WS-LINES-PER-PAGE (default 20).
+                if (state.lineCounter > 0
+                        && state.lineCounter % DEFAULT_PAGE_SIZE == 0) {
+                    state.buffer.append(formatPageTotalLine(state.pageTotal))
+                            .append('\n');
+                    state.pageTotal = BigDecimal.ZERO;
+                    state.pageNum++;
+                    state.lineCounter = 0;
+                    state.buffer.append(formatPageHeader(
+                            state.startDateStr, state.endDateStr, state.pageNum))
+                            .append('\n');
+                }
+
+                state.currentCard = cardNum;
+
+                // Write transaction detail line — COBOL 1100-WRITE-TRANSACTION-REPORT
+                state.buffer.append(formatReportLine(txn)).append('\n');
+                state.lineCounter++;
+
+                // Accumulate monetary totals — maps COBOL ADD TRAN-AMT TO
+                // WS-PAGE-TOTAL, WS-ACCT-TOTAL working-storage fields
+                BigDecimal amt = txn.getTranAmt() != null
+                        ? txn.getTranAmt() : BigDecimal.ZERO;
+                state.pageTotal = state.pageTotal.add(amt);
+                state.accountTotal = state.accountTotal.add(amt);
             }
 
-            // Upload accumulated report content to S3 (overwrites same key each chunk)
+            // Upload accumulated report to S3 after each chunk (overwrites same
+            // key). The step listener's afterStep performs the definitive upload
+            // after appending the final account total + grand total.
             PutObjectRequest putRequest = PutObjectRequest.builder()
-                    .bucket(outputBucket)
-                    .key(s3Key)
+                    .bucket(state.bucketName)
+                    .key(state.s3Key)
                     .build();
-            s3Client.putObject(putRequest,
-                    RequestBody.fromString(reportBuffer.toString()));
+            state.s3Client.putObject(putRequest,
+                    RequestBody.fromString(state.buffer.toString()));
 
-            BigDecimal grandTotal = processor.getGrandTotal();
-            int pageNum = processor.getPageNum();
-
-            log.debug("TRANREPT report chunk written: {} items in chunk, "
-                            + "buffer size {} bytes, {} pages so far, "
-                            + "running grand total: {} -> s3://{}/{}",
-                    items.size(), reportBuffer.length(),
-                    pageNum, grandTotal, outputBucket, s3Key);
+            log.debug("TRANREPT report chunk written: {} items, buffer {} bytes, "
+                            + "{} pages, running grand total: {} -> s3://{}/{}",
+                    items.size(), state.buffer.length(), state.pageNum,
+                    state.grandTotal.add(state.accountTotal),
+                    state.bucketName, state.s3Key);
         };
     }
 
@@ -508,16 +615,24 @@ public class TransactionReportJob {
     // -----------------------------------------------------------------------
 
     /**
-     * Creates a {@link StepExecutionListener} that logs the report summary after
-     * step completion. This replaces the COBOL end-of-file processing in CBTRN03C.cbl
-     * that writes the grand total line and displays summary messages.
+     * Creates a {@link StepExecutionListener} that finalises the structured report
+     * after all chunks have been processed. This replaces the COBOL end-of-file
+     * processing in CBTRN03C.cbl that writes:
+     * <ol>
+     *   <li>The final account total (paragraph {@code 0800-WRITE-ACCT-TOTALS})</li>
+     *   <li>The final page total (paragraph {@code 0700-WRITE-PAGE-TOTALS})</li>
+     *   <li>The grand total line (paragraph {@code 0900-WRITE-GRAND-TOTALS},
+     *       lines 240–260)</li>
+     * </ol>
      *
-     * <p>Summary includes: total transactions processed, transactions in report,
-     * pages generated, and grand total amount from the processor.
+     * <p>The listener reads the shared {@link ReportWriterState} from
+     * {@link #reportStateRef} to access the accumulated buffer, running totals,
+     * and the S3 client. It appends the final totals, performs the definitive S3
+     * upload, and logs the report summary.
      *
      * @param processor the chunk processor (may be a TransactionReportProcessor
      *                  for detailed statistics)
-     * @return a step execution listener for report summary logging
+     * @return a step execution listener for report finalisation and upload
      */
     private StepExecutionListener createReportStepListener(
             ItemProcessor<Transaction, Transaction> processor) {
@@ -537,18 +652,48 @@ public class TransactionReportJob {
                 long writeCount = stepExecution.getWriteCount();
                 long filterCount = stepExecution.getFilterCount();
 
-                // Attempt to retrieve detailed stats from TransactionReportProcessor.
-                // The processor may be proxied by Spring's @StepScope mechanism;
-                // pattern matching instanceof handles both direct and CGLIB proxies.
-                if (processor instanceof TransactionReportProcessor reportProcessor) {
-                    BigDecimal grandTotal = reportProcessor.getGrandTotal();
-                    int pageNum = reportProcessor.getPageNum();
+                // Finalise the structured report — append final account total,
+                // page total, and grand total, then upload the complete report
+                // to S3. This maps COBOL paragraphs 0800-WRITE-ACCT-TOTALS,
+                // 0700-WRITE-PAGE-TOTALS, and 0900-WRITE-GRAND-TOTALS that
+                // execute after the READ TRANSACT AT END condition is reached.
+                ReportWriterState state = reportStateRef.get();
+                if (state != null && writeCount > 0) {
+                    // Emit final account total for the last card processed
+                    if (!state.currentCard.isEmpty()) {
+                        state.buffer.append(formatAccountTotalLine(
+                                state.currentCard, state.accountTotal))
+                                .append('\n');
+                        state.grandTotal = state.grandTotal.add(
+                                state.accountTotal);
+                    }
+
+                    // Emit final page total for the last (possibly partial) page
+                    state.buffer.append(formatPageTotalLine(state.pageTotal))
+                            .append('\n');
+
+                    // Emit grand total — paragraph 0900-WRITE-GRAND-TOTALS
+                    state.buffer.append(formatGrandTotalLine(state.grandTotal))
+                            .append('\n');
+
+                    // Definitive S3 upload with the complete, finalised report
+                    PutObjectRequest putRequest = PutObjectRequest.builder()
+                            .bucket(state.bucketName)
+                            .key(state.s3Key)
+                            .build();
+                    state.s3Client.putObject(putRequest,
+                            RequestBody.fromString(state.buffer.toString()));
 
                     log.info("TRANREPT complete: {} transactions reported across "
                                     + "{} pages, grand total: {} "
-                                    + "(read={}, written={}, filtered={})",
-                            writeCount, pageNum, grandTotal,
-                            readCount, writeCount, filterCount);
+                                    + "(read={}, written={}, filtered={}) "
+                                    + "-> s3://{}/{}",
+                            writeCount, state.pageNum, state.grandTotal,
+                            readCount, writeCount, filterCount,
+                            state.bucketName, state.s3Key);
+                } else if (state != null) {
+                    log.info("TRANREPT complete: 0 transactions in date range "
+                            + "(read={}, filtered={})", readCount, filterCount);
                 } else {
                     log.info("TRANREPT complete: {} transactions processed "
                                     + "(read={}, written={}, filtered={})",
@@ -631,6 +776,82 @@ public class TransactionReportJob {
             return padRight(result, REPORT_LRECL);
         }
         return result;
+    }
+
+    /**
+     * Formats a page header line for the structured report, matching the COBOL
+     * paragraph {@code 0600-WRITE-PAGE-HEADER} (CBTRN03C.cbl, lines 175–195).
+     *
+     * <p>Layout (133 characters):
+     * {@code TRANSACTION REPORT    Date Range: YYYY-MM-DD to YYYY-MM-DD    Page: NNN}
+     *
+     * @param startDate report start date (YYYY-MM-DD)
+     * @param endDate   report end date (YYYY-MM-DD)
+     * @param pageNum   current page number
+     * @return a 133-character page header line
+     */
+    private static String formatPageHeader(String startDate, String endDate,
+                                           int pageNum) {
+        String header = "TRANSACTION REPORT    Date Range: "
+                + nullSafe(startDate) + " to " + nullSafe(endDate)
+                + "                    Page: " + pageNum;
+        return padRight(header, REPORT_LRECL);
+    }
+
+    /**
+     * Formats a page total line, matching the COBOL paragraph
+     * {@code 0700-WRITE-PAGE-TOTALS} (CBTRN03C.cbl, lines 200–215).
+     *
+     * <p>Layout (133 characters):
+     * {@code Page Total:                                                  NNNNNNNNNNNNN}
+     *
+     * @param pageTotal the accumulated page total amount
+     * @return a 133-character page total line
+     */
+    private static String formatPageTotalLine(BigDecimal pageTotal) {
+        String label = "Page Total:";
+        String amtStr = pageTotal != null ? pageTotal.toPlainString() : "0.00";
+        // Label on the left, amount right-justified at column 121-133
+        String line = padRight(label, REPORT_LRECL - 13) + padLeft(amtStr, 13);
+        return line;
+    }
+
+    /**
+     * Formats an account total line, matching the COBOL paragraph
+     * {@code 0800-WRITE-ACCT-TOTALS} (CBTRN03C.cbl, lines 220–235).
+     *
+     * <p>Layout (133 characters):
+     * {@code Account Total (card XXXXXXXXXXXXXXXX):                       NNNNNNNNNNNNN}
+     *
+     * @param cardNum      the card number identifying the account group
+     * @param accountTotal the accumulated account total amount
+     * @return a 133-character account total line
+     */
+    private static String formatAccountTotalLine(String cardNum,
+                                                 BigDecimal accountTotal) {
+        String label = "Account Total (card " + nullSafe(cardNum) + "):";
+        String amtStr = accountTotal != null
+                ? accountTotal.toPlainString() : "0.00";
+        String line = padRight(label, REPORT_LRECL - 13) + padLeft(amtStr, 13);
+        return line;
+    }
+
+    /**
+     * Formats the grand total line, matching the COBOL paragraph
+     * {@code 0900-WRITE-GRAND-TOTALS} (CBTRN03C.cbl, lines 240–260).
+     *
+     * <p>Layout (133 characters):
+     * {@code Grand Total:                                                 NNNNNNNNNNNNN}
+     *
+     * @param grandTotal the accumulated grand total amount
+     * @return a 133-character grand total line
+     */
+    private static String formatGrandTotalLine(BigDecimal grandTotal) {
+        String label = "Grand Total:";
+        String amtStr = grandTotal != null
+                ? grandTotal.toPlainString() : "0.00";
+        String line = padRight(label, REPORT_LRECL - 13) + padLeft(amtStr, 13);
+        return line;
     }
 
     /**

@@ -45,7 +45,9 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -221,10 +223,20 @@ public class InterestCalculationProcessor
         currentAccount = null;
         currentXref = null;
 
-        // Read parmDate from job parameters if not explicitly set via setParmDate()
+        // Read parmDate from job parameters if not explicitly set via setParmDate().
+        // Maps COBOL LINKAGE SECTION PARM-DATE read from JCL EXEC PARM=...
         String dateParam = stepExecution.getJobParameters().getString("parmDate");
         if (dateParam != null && parmDate == null) {
             this.parmDate = dateParam;
+        }
+
+        // Fallback to current date if parmDate is still null — ensures generated
+        // transaction IDs always have a valid date prefix (format YYYY-MM-DD)
+        // instead of the string "null". The COBOL JCL always provides a PARM date;
+        // the Java fallback handles the case where the job is launched without it.
+        if (this.parmDate == null) {
+            this.parmDate = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE);
+            log.warn("No parmDate provided — defaulting to current date: {}", this.parmDate);
         }
         log.info("Interest calculation processor initialized — parmDate: {}", parmDate);
     }

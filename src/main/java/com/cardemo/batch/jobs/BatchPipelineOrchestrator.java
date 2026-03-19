@@ -154,15 +154,24 @@ public class BatchPipelineOrchestrator {
     @Bean
     public JobExecutionDecider conditionCodeDecider() {
         return (JobExecution jobExecution, StepExecution stepExecution) -> {
-            // The decider is invoked after Stage 1 (POSTTRAN / dailyTransactionPostingStep).
-            // stepExecution contains the last executed step's information.
-            if (stepExecution == null) {
-                log.warn("Pipeline decider: No step execution available — "
-                        + "defaulting to CONTINUE for pipeline resilience");
-                return new FlowExecutionStatus(DECIDER_STATUS_CONTINUE);
+            // The decider is invoked after Stage 1 (POSTTRAN) which is wrapped in a Flow.
+            // When a step is wrapped inside a FlowBuilder, the stepExecution parameter
+            // passed to the decider may be null. We must retrieve the actual POSTTRAN
+            // step execution from the JobExecution context by name.
+            StepExecution postingStepExecution = jobExecution.getStepExecutions().stream()
+                    .filter(se -> "dailyTransactionPostingStep".equals(se.getStepName()))
+                    .findFirst()
+                    .orElse(stepExecution);
+
+            if (postingStepExecution == null) {
+                // Defensive: if neither jobExecution lookup nor parameter yields a step,
+                // treat as fatal — do NOT silently continue through potentially corrupt pipeline
+                log.error("Pipeline decider: POSTTRAN step execution not found in job context — "
+                        + "halting pipeline as a safety measure");
+                return FlowExecutionStatus.FAILED;
             }
 
-            String exitCode = stepExecution.getExitStatus().getExitCode();
+            String exitCode = postingStepExecution.getExitStatus().getExitCode();
 
             // JCL COND code mapping:
             // Only FAILED exit status stops the pipeline (maps to RETURN-CODE >= 8).
