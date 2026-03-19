@@ -226,6 +226,14 @@ public class GateVerificationTest {
                 () -> "true");
         registry.add("management.health.readinessstate.enabled",
                 () -> "true");
+
+        // Prometheus metrics export — explicitly enable the Prometheus meter
+        // registry so that PrometheusMetricsExportAutoConfiguration activates.
+        // Without this, @ConditionalOnEnabledMetricsExport falls through to
+        // management.defaults.metrics.export.enabled which evaluates false
+        // when SimpleMetricsExportAutoConfiguration matches first.
+        registry.add("management.prometheus.metrics.export.enabled",
+                () -> "true");
     }
 
     // ========================================================================

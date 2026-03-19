@@ -964,31 +964,36 @@ class TransactionReportJobIT {
         String reportContent = downloadReportContent();
         assertThat(reportContent).isNotNull().isNotEmpty();
 
-        // Parse all non-blank lines (the writer produces detail lines only)
-        List<String> detailLines = reportContent.lines()
+        // Parse all non-blank lines (the writer produces header, detail, account
+        // total, page total, and grand total lines — all padded to LRECL=133)
+        List<String> reportLines = reportContent.lines()
                 .filter(line -> !line.isBlank())
                 .collect(Collectors.toList());
 
-        // Report should contain exactly 4 detail lines (4 in-range transactions)
-        assertThat(detailLines)
-                .as("Report should contain exactly 4 detail lines (4 in-range transactions)")
-                .hasSize(4);
+        // Report should contain exactly 9 lines for 4 in-range transactions across
+        // 2 card groups: 1 header + 2 detail (card1) + 1 account total (card1)
+        // + 2 detail (card2) + 1 account total (card2) + 1 page total + 1 grand total
+        assertThat(reportLines)
+                .as("Report should contain 9 lines: 1 header, 4 detail, "
+                        + "2 account totals, 1 page total, 1 grand total")
+                .hasSize(9);
 
-        // Verify every detail line is exactly LRECL=133 characters (RECFM=FB)
-        for (String detailLine : detailLines) {
-            assertThat(detailLine.length())
-                    .as("Report detail line should be LRECL=%d characters: '%s'",
-                            REPORT_LRECL, detailLine)
+        // Verify every report line is exactly LRECL=133 characters (RECFM=FB)
+        for (String reportLine : reportLines) {
+            assertThat(reportLine.length())
+                    .as("Report line should be LRECL=%d characters: '%s'",
+                            REPORT_LRECL, reportLine)
                     .isEqualTo(REPORT_LRECL);
         }
 
-        // Verify detail lines contain card numbers (basic content check)
-        String combinedLines = String.join("\n", detailLines);
+        // Verify report lines contain card numbers (basic content check)
+        String combinedLines = String.join("\n", reportLines);
         assertThat(combinedLines).contains(CARD_NUM_1);
         assertThat(combinedLines).contains(CARD_NUM_2);
 
         log.info("testReportOutputFormatAndS3Upload — PASSED: S3 upload verified, "
-                + "4 detail lines at LRECL=133");
+                + "9 report lines (header + 4 detail + 2 account totals "
+                + "+ page total + grand total) at LRECL=133");
     }
 
     // =========================================================================

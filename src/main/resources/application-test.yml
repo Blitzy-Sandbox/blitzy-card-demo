@@ -150,11 +150,14 @@ spring:
         endpoint: http://localhost:4566
 
 # -----------------------------------------------------------------------------
-# Actuator and Observability — Minimal for Tests
+# Actuator and Observability — Test Profile Endpoints
 # -----------------------------------------------------------------------------
-# Integration tests only need health and info endpoints. Full observability
-# endpoints (prometheus, metrics, env, beans) are not required in test context
-# and are excluded to reduce noise and startup overhead.
+# Integration tests require health, info, prometheus, and metrics endpoints.
+# Prometheus and metrics are included to support Gate 8 observability checks
+# in GateVerificationTest (AAP §0.7.1 Observability rule). Including these
+# endpoints at the profile level ensures the PrometheusMetricsExportAutoConfiguration
+# activates properly during context startup — @DynamicPropertySource overrides
+# alone are insufficient because they apply after auto-configuration decisions.
 #
 # Health check details are shown unconditionally (always) to aid debugging
 # when tests fail due to infrastructure connectivity issues.
@@ -163,7 +166,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus,metrics
   endpoint:
     health:
       show-details: always
@@ -174,6 +177,10 @@ management:
       enabled: true
     readinessstate:
       enabled: true
+  prometheus:
+    metrics:
+      export:
+        enabled: true
 
 # -----------------------------------------------------------------------------
 # Server Configuration — Random Port for Test Isolation
