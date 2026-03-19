@@ -193,9 +193,11 @@ public class CardUpdateService {
         card.setCardActiveStatus(updateRequest.getCardActiveStatus());
 
         // Step 6: Save with optimistic locking (maps 9200-WRITE-CARD / 9300-CHECK-CHANGE-IN-REC)
-        // JPA @Version on Card entity triggers OptimisticLockException on version mismatch
+        // JPA @Version on Card entity triggers OptimisticLockException on version mismatch.
+        // saveAndFlush() ensures the JPA @Version field is incremented immediately so the
+        // returned entity reflects the post-save version number in the PUT response.
         try {
-            Card savedCard = cardRepository.save(card);
+            Card savedCard = cardRepository.saveAndFlush(card);
             logger.info("Successfully updated card ending in {}", maskCardNumber(cardNum));
             return toCardDto(savedCard);
         } catch (OptimisticLockException ex) {

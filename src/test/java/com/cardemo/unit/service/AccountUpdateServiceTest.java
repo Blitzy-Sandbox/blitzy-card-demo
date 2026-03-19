@@ -192,8 +192,8 @@ class AccountUpdateServiceTest {
                                 && e.message().contains("must be Y or N")));
 
         // Validation fails before repo calls — neither find nor save should be invoked
-        verify(accountRepository, never()).save(any(Account.class));
-        verify(customerRepository, never()).save(any(Customer.class));
+        verify(accountRepository, never()).saveAndFlush(any(Account.class));
+        verify(customerRepository, never()).saveAndFlush(any(Customer.class));
     }
 
     @Test
@@ -493,7 +493,7 @@ class AccountUpdateServiceTest {
                 .isInstanceOf(ValidationException.class)
                 .satisfies(ex -> assertThat(((ValidationException) ex).getFieldErrors())
                         .anyMatch(e -> "custZip".equals(e.fieldName())
-                                && e.message().contains("numeric")));
+                                && e.message().contains("5 digits or ZIP+4 format")));
     }
 
     // =========================================================================
@@ -565,9 +565,9 @@ class AccountUpdateServiceTest {
         when(customerRepository.findById(CUST_ID))
                 .thenReturn(Optional.of(testCustomer));
 
-        // Simulate JPA @Version mismatch on save — customerRepository.save never reached
+        // Simulate JPA @Version mismatch on saveAndFlush — customerRepository.saveAndFlush never reached
         doThrow(new ObjectOptimisticLockingFailureException(Account.class.getName(), ACCT_ID))
-                .when(accountRepository).save(any(Account.class));
+                .when(accountRepository).saveAndFlush(any(Account.class));
 
         assertThatThrownBy(() -> accountUpdateService.updateAccount(ACCT_ID, dto))
                 .isInstanceOf(ConcurrentModificationException.class);
@@ -587,8 +587,8 @@ class AccountUpdateServiceTest {
 
         // Both entities must be persisted within the same @Transactional boundary
         assertThat(result).isNotNull();
-        verify(accountRepository, times(1)).save(any(Account.class));
-        verify(customerRepository, times(1)).save(any(Customer.class));
+        verify(accountRepository, times(1)).saveAndFlush(any(Account.class));
+        verify(customerRepository, times(1)).saveAndFlush(any(Customer.class));
     }
 
     @Test
@@ -603,18 +603,18 @@ class AccountUpdateServiceTest {
                 .thenReturn(List.of(testXref));
         when(customerRepository.findById(CUST_ID))
                 .thenReturn(Optional.of(testCustomer));
-        when(accountRepository.save(any(Account.class)))
+        when(accountRepository.saveAndFlush(any(Account.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
         // Simulate failure on customer save — Spring @Transactional rollback
-        when(customerRepository.save(any(Customer.class)))
+        when(customerRepository.saveAndFlush(any(Customer.class)))
                 .thenThrow(new RuntimeException("Database error"));
 
         assertThatThrownBy(() -> accountUpdateService.updateAccount(ACCT_ID, dto))
                 .isInstanceOf(RuntimeException.class);
 
         // Account save was attempted before customer save failed
-        verify(accountRepository, times(1)).save(any(Account.class));
+        verify(accountRepository, times(1)).saveAndFlush(any(Account.class));
     }
 
     // =========================================================================
@@ -676,7 +676,7 @@ class AccountUpdateServiceTest {
     // =========================================================================
 
     @Test
-    @DisplayName("updateAccount — success: verify accountRepository.save() and customerRepository.save() invoked")
+    @DisplayName("updateAccount — success: verify accountRepository.saveAndFlush() and customerRepository.saveAndFlush() invoked")
     void testUpdateAccount_success_verifySaveCalled() {
         AccountDto dto = createValidDto();
         setupUpdateRepoMocks();
@@ -684,8 +684,8 @@ class AccountUpdateServiceTest {
         accountUpdateService.updateAccount(ACCT_ID, dto);
 
         // Verify exactly one save for each entity in the dual-record transaction
-        verify(accountRepository, times(1)).save(any(Account.class));
-        verify(customerRepository, times(1)).save(any(Customer.class));
+        verify(accountRepository, times(1)).saveAndFlush(any(Account.class));
+        verify(customerRepository, times(1)).saveAndFlush(any(Customer.class));
         // Also verify the full read chain was exercised
         verify(accountRepository, times(1)).findById(ACCT_ID);
         verify(cardCrossReferenceRepository, times(1)).findByXrefAcctId(ACCT_ID);
@@ -800,9 +800,9 @@ class AccountUpdateServiceTest {
                 .thenReturn(List.of(testXref));
         when(customerRepository.findById(CUST_ID))
                 .thenReturn(Optional.of(testCustomer));
-        when(accountRepository.save(any(Account.class)))
+        when(accountRepository.saveAndFlush(any(Account.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        when(customerRepository.save(any(Customer.class)))
+        when(customerRepository.saveAndFlush(any(Customer.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
     }
 

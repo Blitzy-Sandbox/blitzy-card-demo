@@ -217,9 +217,15 @@ public class AccountUpdateService {
         // Step 5: Persist both records atomically (← REWRITE ACCTDAT + REWRITE CUSTDAT)
         // If ObjectOptimisticLockingFailureException occurs → maps 9700-CHECK-CHANGE-IN-REC
         // @Transactional ensures SYNCPOINT ROLLBACK on any exception
+        // saveAndFlush() ensures JPA @Version is incremented immediately so the
+        // returned entity reflects the post-save version number (fixes stale version
+        // in PUT response — the DTO must carry the updated version for optimistic locking
+        // by subsequent client requests).
+        Account savedAccount;
+        Customer savedCustomer;
         try {
-            accountRepository.save(account);
-            customerRepository.save(customer);
+            savedAccount = accountRepository.saveAndFlush(account);
+            savedCustomer = customerRepository.saveAndFlush(customer);
         } catch (ObjectOptimisticLockingFailureException ex) {
             logger.error("Concurrent modification detected for account: {}", acctId, ex);
             throw new ConcurrentModificationException(
@@ -229,8 +235,8 @@ public class AccountUpdateService {
 
         logger.info("Account update completed successfully: acctId='{}'", acctId);
 
-        // Step 6: Return updated AccountDto
-        return assembleAccountDto(account, customer);
+        // Step 6: Return updated AccountDto using the post-save entities (with incremented version)
+        return assembleAccountDto(savedAccount, savedCustomer);
     }
 
     // =========================================================================
@@ -896,8 +902,13 @@ public class AccountUpdateService {
     }
 
     /**
-     * Validates ZIP code: required, numeric, 5 digits, non-zero.
+     * Validates ZIP code: required, 5-digit or ZIP+4 format, non-zero base.
      * Maps COBOL 1245-EDIT-NUM-REQD for ZIP field.
+     *
+     * <p>Accepts both standard 5-digit ZIP codes (e.g., "48251") and ZIP+4 format
+     * (e.g., "48251-1698"). The COBOL seed data contains ZIP+4 values in the
+     * CUSTDATA VSAM dataset, so the validation must accept both formats to
+     * maintain behavioral parity with the original application.</p>
      *
      * @return true if ZIP is individually valid (used for cross-field validation)
      */
@@ -908,16 +919,13 @@ public class AccountUpdateService {
             return false;
         }
         String trimmed = zip.trim();
-        if (!trimmed.matches("\\d+")) {
+        // Accept 5-digit ZIP (^\d{5}$) or ZIP+4 format (^\d{5}-\d{4}$)
+        if (!trimmed.matches("\\d{5}(-\\d{4})?")) {
             errors.add(new ValidationException.FieldError("custZip", zip,
-                    "ZIP Code must be all numeric."));
+                    "ZIP Code must be 5 digits or ZIP+4 format (e.g., 12345 or 12345-6789)."));
             return false;
         }
-        if (trimmed.length() < 5) {
-            errors.add(new ValidationException.FieldError("custZip", zip,
-                    "ZIP Code must be at least 5 digits."));
-            return false;
-        }
+        // Validate the 5-digit base portion is not all zeros
         if (trimmed.substring(0, 5).chars().allMatch(c -> c == '0')) {
             errors.add(new ValidationException.FieldError("custZip", zip,
                     "ZIP Code must not be zero."));

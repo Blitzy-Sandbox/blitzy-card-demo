@@ -578,6 +578,36 @@ public class WebConfig implements WebMvcConfigurer {
         }
 
         /**
+         * Handles {@link IllegalArgumentException} — returned when input validation
+         * in service methods rejects invalid parameters.
+         *
+         * <p>Returns HTTP 400 (Bad Request) with the exception message as the error
+         * detail. This handler catches validation exceptions thrown by service-layer
+         * input checks (e.g., non-numeric card number in
+         * {@code CardDetailService.validateCardNumber()}) that are not already covered
+         * by Bean Validation or Spring MVC binding exceptions.</p>
+         *
+         * <p>In the COBOL source, these map to field-level edit paragraphs such as
+         * {@code 2220-EDIT-CARD} in COCRDSLC.cbl, which set an error message and
+         * re-display the BMS screen. In the REST API target, this maps to HTTP 400
+         * with a descriptive error message.</p>
+         *
+         * @param ex      the IllegalArgumentException from service-layer validation
+         * @param request the HTTP request for URI extraction
+         * @return HTTP 400 response with validation error details
+         */
+        @ExceptionHandler(IllegalArgumentException.class)
+        public ResponseEntity<ErrorResponse> handleIllegalArgumentException(
+                IllegalArgumentException ex, HttpServletRequest request) {
+            log.warn("Invalid argument: {} {} — {}",
+                    request.getMethod(), request.getRequestURI(), ex.getMessage());
+            ErrorResponse response = buildErrorResponse(
+                    HttpStatus.BAD_REQUEST, ex.getMessage(),
+                    "INVALID_ARGUMENT", null, request);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+        }
+
+        /**
          * Handles {@link CardDemoException} — catch-all for application exceptions.
          *
          * <p>Returns HTTP 500 (Internal Server Error) for any CardDemoException

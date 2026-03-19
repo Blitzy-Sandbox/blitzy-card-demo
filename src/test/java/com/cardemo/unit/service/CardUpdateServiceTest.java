@@ -293,7 +293,7 @@ class CardUpdateServiceTest {
 
         assertThat(result).isNotNull();
         assertThat(result.getCardNum()).isEqualTo(VALID_CARD_NUM);
-        verify(cardRepository, never()).save(any(Card.class));
+        verify(cardRepository, never()).saveAndFlush(any(Card.class));
     }
 
     @Test
@@ -301,7 +301,7 @@ class CardUpdateServiceTest {
     void testUpdateCard_withChanges_savesAndReturnsUpdated() {
         when(cardRepository.findById(VALID_CARD_NUM)).thenReturn(Optional.of(testCard));
         when(accountRepository.findById(VALID_ACCT_ID)).thenReturn(Optional.of(mock(Account.class)));
-        when(cardRepository.save(any(Card.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(cardRepository.saveAndFlush(any(Card.class))).thenAnswer(inv -> inv.getArgument(0));
 
         CardDto dto = createValidDto();
         dto.setCardEmbossedName("JANE SMITH");
@@ -310,7 +310,7 @@ class CardUpdateServiceTest {
 
         assertThat(result).isNotNull();
         assertThat(result.getCardEmbossedName()).isEqualTo("JANE SMITH");
-        verify(cardRepository).save(any(Card.class));
+        verify(cardRepository).saveAndFlush(any(Card.class));
     }
 
     // ============================================================================================
@@ -322,7 +322,7 @@ class CardUpdateServiceTest {
     void testUpdateCard_optimisticLockConflict_throwsConcurrentModification() {
         when(cardRepository.findById(VALID_CARD_NUM)).thenReturn(Optional.of(testCard));
         when(accountRepository.findById(VALID_ACCT_ID)).thenReturn(Optional.of(mock(Account.class)));
-        when(cardRepository.save(any(Card.class))).thenThrow(new OptimisticLockException("version mismatch"));
+        when(cardRepository.saveAndFlush(any(Card.class))).thenThrow(new OptimisticLockException("version mismatch"));
 
         CardDto dto = createValidDto();
         dto.setCardEmbossedName("CHANGED NAME");
@@ -340,7 +340,7 @@ class CardUpdateServiceTest {
     void testUpdateCard_cardNumNeverModified() {
         when(cardRepository.findById(VALID_CARD_NUM)).thenReturn(Optional.of(testCard));
         when(accountRepository.findById(VALID_ACCT_ID)).thenReturn(Optional.of(mock(Account.class)));
-        when(cardRepository.save(any(Card.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(cardRepository.saveAndFlush(any(Card.class))).thenAnswer(inv -> inv.getArgument(0));
 
         CardDto dto = createValidDto();
         dto.setCardEmbossedName("MODIFIED NAME"); // Ensure a change so save is triggered
@@ -348,7 +348,7 @@ class CardUpdateServiceTest {
         cardUpdateService.updateCard(VALID_CARD_NUM, dto);
 
         // Verify saved card retains the original cardNum
-        verify(cardRepository).save(argThat(card ->
+        verify(cardRepository).saveAndFlush(argThat(card ->
                 VALID_CARD_NUM.equals(card.getCardNum())));
     }
 
@@ -357,7 +357,7 @@ class CardUpdateServiceTest {
     void testUpdateCard_acctIdNeverModified() {
         when(cardRepository.findById(VALID_CARD_NUM)).thenReturn(Optional.of(testCard));
         when(accountRepository.findById(VALID_ACCT_ID)).thenReturn(Optional.of(mock(Account.class)));
-        when(cardRepository.save(any(Card.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(cardRepository.saveAndFlush(any(Card.class))).thenAnswer(inv -> inv.getArgument(0));
 
         CardDto dto = createValidDto();
         dto.setCardEmbossedName("MODIFIED NAME"); // Ensure a change triggers save
@@ -365,7 +365,7 @@ class CardUpdateServiceTest {
         cardUpdateService.updateCard(VALID_CARD_NUM, dto);
 
         // Verify saved card retains the original acctId
-        verify(cardRepository).save(argThat(card ->
+        verify(cardRepository).saveAndFlush(argThat(card ->
                 VALID_ACCT_ID.equals(card.getCardAcctId())));
     }
 
@@ -378,7 +378,7 @@ class CardUpdateServiceTest {
     void testUpdateCard_validUpdate_allFieldsMapped() {
         when(cardRepository.findById(VALID_CARD_NUM)).thenReturn(Optional.of(testCard));
         when(accountRepository.findById(VALID_ACCT_ID)).thenReturn(Optional.of(mock(Account.class)));
-        when(cardRepository.save(any(Card.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(cardRepository.saveAndFlush(any(Card.class))).thenAnswer(inv -> inv.getArgument(0));
 
         CardDto dto = createValidDto();
         dto.setCardCvvCd("456");
@@ -412,7 +412,7 @@ class CardUpdateServiceTest {
 
         // UPPER-CASE comparison detects no change — save should NOT be called
         assertThat(result).isNotNull();
-        verify(cardRepository, never()).save(any(Card.class));
+        verify(cardRepository, never()).saveAndFlush(any(Card.class));
     }
 
     // ============================================================================================
@@ -420,22 +420,22 @@ class CardUpdateServiceTest {
     // ============================================================================================
 
     @Test
-    @DisplayName("updateCard — verify save() called exactly once when changes detected")
+    @DisplayName("updateCard — verify saveAndFlush() called exactly once when changes detected")
     void testUpdateCard_verifySaveCalled() {
         when(cardRepository.findById(VALID_CARD_NUM)).thenReturn(Optional.of(testCard));
         when(accountRepository.findById(VALID_ACCT_ID)).thenReturn(Optional.of(mock(Account.class)));
-        when(cardRepository.save(any(Card.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(cardRepository.saveAndFlush(any(Card.class))).thenAnswer(inv -> inv.getArgument(0));
 
         CardDto dto = createValidDto();
         dto.setCardActiveStatus("N"); // Change active status to trigger save
 
         cardUpdateService.updateCard(VALID_CARD_NUM, dto);
 
-        verify(cardRepository, times(1)).save(any(Card.class));
+        verify(cardRepository, times(1)).saveAndFlush(any(Card.class));
     }
 
     @Test
-    @DisplayName("updateCard — verify save() NOT called when no changes detected")
+    @DisplayName("updateCard — verify saveAndFlush() NOT called when no changes detected")
     void testUpdateCard_verifySaveNotCalled_noChanges() {
         when(cardRepository.findById(VALID_CARD_NUM)).thenReturn(Optional.of(testCard));
         when(accountRepository.findById(VALID_ACCT_ID)).thenReturn(Optional.of(mock(Account.class)));
@@ -443,7 +443,7 @@ class CardUpdateServiceTest {
         // DTO matches testCard exactly — no changes
         cardUpdateService.updateCard(VALID_CARD_NUM, validDto);
 
-        verify(cardRepository, never()).save(any(Card.class));
+        verify(cardRepository, never()).saveAndFlush(any(Card.class));
     }
 
     // ============================================================================================
