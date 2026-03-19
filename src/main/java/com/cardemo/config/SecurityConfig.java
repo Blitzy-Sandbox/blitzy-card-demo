@@ -155,6 +155,14 @@ public class SecurityConfig {
                             "Access denied. Insufficient privileges for this resource.",
                             "ACCESS_DENIED")))
 
+            // Security headers — defense-in-depth for the REST API
+            // Content-Security-Policy: restricts resource loading to 'none' and
+            // prevents framing, providing XSS and clickjacking protection even
+            // though this is an API-only application (OWASP best practice).
+            .headers(headers -> headers
+                .contentSecurityPolicy(csp ->
+                    csp.policyDirectives("default-src 'none'; frame-ancestors 'none'")))
+
             // Endpoint authorization rules — mirrors COBOL COSGN00C routing logic
             .authorizeHttpRequests(auth -> auth
                 // Public sign-on endpoint — maps from COSGN00C transaction CC00 entry
@@ -244,13 +252,19 @@ public class SecurityConfig {
     @Bean
     public UserDetailsService userDetailsService(UserSecurityRepository userSecurityRepository) {
         return username -> {
-            // Step 1: Read USRSEC record by SEC-USR-ID
+            // Step 1: Uppercase the username before lookup to match COBOL behavior.
+            // COSGN00C.cbl line 132: MOVE FUNCTION UPPER-CASE(USERIDI) TO WS-USER-ID
+            // Both AuthenticationService.authenticate() and this UserDetailsService
+            // must handle case identically — user IDs are stored uppercase in USRSEC.
+            String normalizedUsername = username.toUpperCase();
+
+            // Step 2: Read USRSEC record by SEC-USR-ID
             // Maps COSGN00C.cbl lines 211-219: READ DATASET('USRSEC') RIDFLD(WS-USER-ID)
-            UserSecurity userSecurity = userSecurityRepository.findBySecUsrId(username)
+            UserSecurity userSecurity = userSecurityRepository.findBySecUsrId(normalizedUsername)
                     .orElseThrow(() -> new UsernameNotFoundException(
                             // Maps COSGN00C.cbl line 249: "User not found. Try again ..."
                             // COBOL RESP code 13 (NOTFND) handling
-                            "User not found: " + username));
+                            "User not found: " + normalizedUsername));
 
             // Step 2: Map SEC-USR-TYPE to Spring Security role
             // COSGN00C.cbl lines 230-240:

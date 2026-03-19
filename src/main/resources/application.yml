@@ -279,6 +279,16 @@ logging:
 #                          bridge, triggers batch report generation via SQS)
 # -----------------------------------------------------------------------------
 carddemo:
+  # ---------------------------------------------------------------------------
+  # CORS Configuration
+  # ---------------------------------------------------------------------------
+  # Allowed origin patterns for Cross-Origin Resource Sharing. Defaults to
+  # localhost for local development. Production must set explicit frontend
+  # domains via CORS_ALLOWED_ORIGINS environment variable.
+  # OWASP: Wildcard (*) is prohibited for endpoints accepting credentials.
+  # ---------------------------------------------------------------------------
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:*}
   aws:
     s3:
       batch-input-bucket: ${S3_BATCH_INPUT_BUCKET:carddemo-batch-input}

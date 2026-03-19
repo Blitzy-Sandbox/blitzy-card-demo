@@ -97,11 +97,30 @@ import java.util.Map;
 public class WebConfig implements WebMvcConfigurer {
 
     /**
+     * Configurable CORS allowed origin patterns.
+     *
+     * <p>Defaults to {@code http://localhost:*} for local development, restricting
+     * cross-origin access to localhost-based frontends. Production deployments must
+     * configure specific frontend domains via the {@code CORS_ALLOWED_ORIGINS}
+     * environment variable (comma-separated list) or Spring profile override.</p>
+     *
+     * <p>Using {@code allowedOriginPatterns} instead of {@code allowedOrigins("*")}
+     * prevents cross-origin credential theft and aligns with OWASP CORS best
+     * practices for API endpoints that accept authentication credentials.</p>
+     */
+    @org.springframework.beans.factory.annotation.Value("${carddemo.cors.allowed-origins:http://localhost:*}")
+    private String corsAllowedOrigins;
+
+    /**
      * Configures Cross-Origin Resource Sharing (CORS) for all API endpoints.
      *
-     * <p>Allows all origins for development flexibility (production environments
-     * should restrict origins via Spring profiles or environment configuration).
-     * Exposes the {@code X-Correlation-Id} header to enable observability
+     * <p>Uses {@code allowedOriginPatterns} with a configurable allowlist instead
+     * of the wildcard {@code *} to prevent cross-origin credential theft attacks.
+     * The allowed origins default to {@code http://localhost:*} for local development;
+     * production environments must configure specific frontend domains via the
+     * {@code CORS_ALLOWED_ORIGINS} environment variable or Spring profile override.</p>
+     *
+     * <p>Exposes the {@code X-Correlation-Id} header to enable observability
      * correlation ID propagation to API consumers (AAP §0.7.1).</p>
      *
      * <p>Replaces COBOL BMS 3270 terminal I/O, which had no cross-origin
@@ -112,7 +131,7 @@ public class WebConfig implements WebMvcConfigurer {
     @Override
     public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/api/**")
-                .allowedOrigins("*")
+                .allowedOriginPatterns(corsAllowedOrigins)
                 .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                 .allowedHeaders("*")
                 .exposedHeaders("X-Correlation-Id");
@@ -154,21 +173,59 @@ public class WebConfig implements WebMvcConfigurer {
      * Creates a request/response logging filter enabled only in the local
      * development profile.
      *
-     * <p>Logs request URI, query string, and payload body for debugging.
-     * Headers are excluded to prevent accidental logging of authentication
-     * tokens or other sensitive data (AAP §0.8.1 — no hardcoded credentials
-     * or sensitive data exposure).</p>
+     * <p>Logs request URI and query string for debugging. The payload body is
+     * included for non-sensitive endpoints only. Security-sensitive endpoints
+     * (authentication paths) have their payloads excluded to prevent plaintext
+     * passwords from appearing in log files — per AAP §0.8.1 (no hardcoded
+     * credentials or sensitive data exposure).</p>
+     *
+     * <p>Headers are excluded to prevent accidental logging of authentication
+     * tokens (Authorization, Cookie headers).</p>
      *
      * <p>This filter is only active when {@code spring.profiles.active=local},
      * preventing verbose request logging in test, staging, or production
      * environments.</p>
      *
-     * @return the configured {@link CommonsRequestLoggingFilter}
+     * @return the configured {@link CommonsRequestLoggingFilter} that redacts
+     *         payloads for authentication endpoints
      */
     @Bean
     @Profile("local")
     public CommonsRequestLoggingFilter requestLoggingFilter() {
-        CommonsRequestLoggingFilter filter = new CommonsRequestLoggingFilter();
+        // Custom subclass that suppresses payload logging for auth endpoints
+        // to prevent plaintext passwords from being written to log files.
+        CommonsRequestLoggingFilter filter = new CommonsRequestLoggingFilter() {
+            @Override
+            protected boolean shouldLog(jakarta.servlet.http.HttpServletRequest request) {
+                return logger.isDebugEnabled();
+            }
+
+            @Override
+            protected String createMessage(
+                    jakarta.servlet.http.HttpServletRequest request,
+                    String prefix, String suffix) {
+                // Detect security-sensitive endpoints by URI path
+                String uri = request.getRequestURI();
+                if (uri != null && (uri.contains("/api/auth/")
+                        || uri.contains("/login")
+                        || uri.contains("/signin"))) {
+                    // Log only the URI and method — never the request body
+                    // for endpoints that accept credentials
+                    StringBuilder msg = new StringBuilder();
+                    msg.append(prefix);
+                    msg.append(request.getMethod()).append(' ').append(uri);
+                    String queryString = request.getQueryString();
+                    if (queryString != null) {
+                        msg.append('?').append(queryString);
+                    }
+                    msg.append(" [payload redacted for security]");
+                    msg.append(suffix);
+                    return msg.toString();
+                }
+                // For non-sensitive endpoints, delegate to default behavior
+                return super.createMessage(request, prefix, suffix);
+            }
+        };
         filter.setIncludeQueryString(true);
         filter.setIncludePayload(true);
         filter.setMaxPayloadLength(10000);

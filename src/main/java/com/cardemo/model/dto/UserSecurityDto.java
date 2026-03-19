@@ -72,8 +72,15 @@ public class UserSecurityDto {
      * <p>Maps from COBOL: {@code SEC-USR-FNAME PIC X(20)} (CSUSR01Y.cpy line 19).
      * Also mapped from BMS fields: FNAMEI (COUSR01/02/03) and
      * FNAME01I..FNAME10I (COUSR00 list rows).</p>
+     *
+     * <p>Input sanitization: The {@code @Pattern} constraint rejects HTML tags and
+     * script content at the input boundary, preventing stored XSS payloads from
+     * being persisted. Allows letters (including Unicode), digits, spaces, periods,
+     * apostrophes, and hyphens — covering all valid personal name characters.</p>
      */
     @Size(max = 20, message = "First name must not exceed 20 characters")
+    @Pattern(regexp = "^[\\p{L}\\p{N}\\s.'-]*$",
+             message = "First name must not contain HTML tags or script content")
     private String secUsrFname;
 
     /**
@@ -82,8 +89,15 @@ public class UserSecurityDto {
      * <p>Maps from COBOL: {@code SEC-USR-LNAME PIC X(20)} (CSUSR01Y.cpy line 20).
      * Also mapped from BMS fields: LNAMEI (COUSR01/02/03) and
      * LNAME01I..LNAME10I (COUSR00 list rows).</p>
+     *
+     * <p>Input sanitization: The {@code @Pattern} constraint rejects HTML tags and
+     * script content at the input boundary, preventing stored XSS payloads from
+     * being persisted. Allows letters (including Unicode), digits, spaces, periods,
+     * apostrophes, and hyphens — covering all valid personal name characters.</p>
      */
     @Size(max = 20, message = "Last name must not exceed 20 characters")
+    @Pattern(regexp = "^[\\p{L}\\p{N}\\s.'-]*$",
+             message = "Last name must not contain HTML tags or script content")
     private String secUsrLname;
 
     /**
