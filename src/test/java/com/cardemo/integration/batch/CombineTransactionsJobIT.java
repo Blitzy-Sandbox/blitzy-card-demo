@@ -80,6 +80,7 @@ import org.springframework.batch.test.context.SpringBatchTest;
 
 // Spring Batch Core — job execution and parameter types
 import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.core.repository.JobRepository;
@@ -280,6 +281,15 @@ class CombineTransactionsJobIT {
     private S3Client s3Client;
 
     /**
+     * The specific CombineTransactionsJob bean — must be explicitly injected and set
+     * on JobLauncherTestUtils because there are 6 Job beans in context, and
+     * {@code @SpringBatchTest} cannot auto-detect which one to use.
+     */
+    @Autowired
+    @Qualifier("combineTransactionsJob")
+    private Job combineTransactionsJob;
+
+    /**
      * JDBC DataSource for initializing Spring Batch metadata schema.
      * Required because {@code @EnableBatchProcessing} in BatchConfig disables
      * Spring Boot's {@code BatchAutoConfiguration} which would normally read
@@ -350,7 +360,8 @@ class CombineTransactionsJobIT {
             syncLauncher.setTaskExecutor(new SyncTaskExecutor());
             syncLauncher.afterPropertiesSet();
             jobLauncherTestUtils.setJobLauncher(syncLauncher);
-            log.debug("Configured synchronous JobLauncher for test execution");
+            jobLauncherTestUtils.setJob(combineTransactionsJob);
+            log.debug("Configured synchronous JobLauncher for test execution with combineTransactionsJob");
         } catch (Exception e) {
             throw new RuntimeException("Failed to configure synchronous JobLauncher", e);
         }

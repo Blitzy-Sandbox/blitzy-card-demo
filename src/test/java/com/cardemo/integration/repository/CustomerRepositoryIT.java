@@ -570,10 +570,10 @@ public class CustomerRepositoryIT {
      * <pre>
      * cust_id='000000001', first_name='Immanuel', middle_name='Madeline',
      * last_name='Kessler', addr_line_1='618 Deshaun Route', addr_line_2='Apt. 802',
-     * addr_line_3='Altenwerthshire', state_cd='NC', country_cd='USA', zip='12546',
-     * phone_1='(908)119-8310', phone_2='(373)693-8684', ssn='020973888',
+     * addr_line_3='Altenwerthshire', state_cd='NC', country_cd='USA', zip='27546',
+     * phone_1='(908)119-8310', phone_2='(445)693-8684', ssn='020973888',
      * govt_id='00000000000049368437', dob='1961-06-08', eft='0053581756',
-     * pri_card='Y', fico=274
+     * pri_card='Y', fico=688
      * </pre>
      */
     @Test
@@ -659,7 +659,7 @@ public class CustomerRepositoryIT {
         assertThat(customer.getCustAddrZip())
                 .as("custAddrZip: PIC X(10), max 10 chars")
                 .isNotNull()
-                .isEqualTo("12546")
+                .isEqualTo("27546")
                 .hasSizeLessThanOrEqualTo(10);
 
         // ---- Field 11: custPhoneNum1 — PIC X(15), max 15 chars ----
@@ -673,7 +673,7 @@ public class CustomerRepositoryIT {
         assertThat(customer.getCustPhoneNum2())
                 .as("custPhoneNum2: PIC X(15), max 15 chars")
                 .isNotNull()
-                .isEqualTo("(373)693-8684")
+                .isEqualTo("(445)693-8684")
                 .hasSizeLessThanOrEqualTo(15);
 
         // ---- Field 13: custSsn — PIC 9(09), 9-char String (sensitive PII) ----
@@ -715,9 +715,9 @@ public class CustomerRepositoryIT {
 
         // ---- Field 18: custFicoCreditScore — PIC 9(03), Short 0-999 ----
         assertThat(customer.getCustFicoCreditScore())
-                .as("custFicoCreditScore: PIC 9(03), Short (SMALLINT), value=274")
+                .as("custFicoCreditScore: PIC 9(03), Short (SMALLINT), value=688")
                 .isNotNull()
-                .isEqualTo((short) 274);
+                .isEqualTo((short) 688);
         assertThat(customer.getCustFicoCreditScore().intValue())
                 .as("custFicoCreditScore should be within valid range 0-999")
                 .isGreaterThanOrEqualTo(0)
