@@ -277,17 +277,18 @@ Test the authentication endpoint with default seed data credentials (originally 
 # Admin user sign-in
 curl -s -X POST http://localhost:8080/api/auth/signin \
   -H 'Content-Type: application/json' \
-  -d '{"userId":"ADMIN001","password":"PASSWORD"}' | python3 -m json.tool
+  -d '{"userId":"ADMIN001","password":"PASSWORDA"}' | python3 -m json.tool
 ```
 
 **Expected response:**
 
 ```json
 {
-    "token": "<jwt-token>",
+    "token": "<uuid-session-token>",
     "userType": "ADMIN",
-    "firstName": "ADMIN",
-    "lastName": "USER"
+    "userId": "ADMIN001",
+    "toTranId": "CA00",
+    "toProgram": "COADM01C"
 }
 ```
 
@@ -295,7 +296,7 @@ curl -s -X POST http://localhost:8080/api/auth/signin \
 # Regular user sign-in
 curl -s -X POST http://localhost:8080/api/auth/signin \
   -H 'Content-Type: application/json' \
-  -d '{"userId":"USER0001","password":"PASSWORD"}' | python3 -m json.tool
+  -d '{"userId":"USER0001","password":"PASSWORDU"}' | python3 -m json.tool
 ```
 
 > **Note:** These are test credentials from the seed data only. In a production deployment, passwords would be hashed with BCrypt on first use. The original COBOL application stored passwords in plaintext (constraint C-003); this migration upgrades to BCrypt hashing.
@@ -450,7 +451,7 @@ The application supports two user roles:
 | **ADMIN** | User administration (list, add, update, delete users) + admin menu                      | `ADMIN001`   |
 | **USER**  | Account management, card management, transactions, bill payment, reports + main menu     | `USER0001`   |
 
-Default password for both roles: `PASSWORD` (from seed data)
+Default passwords (from seed data): `PASSWORDA` for ADMIN users, `PASSWORDU` for regular users
 
 ### 7.3 Business Domains
 
@@ -482,77 +483,94 @@ erDiagram
     USER_SECURITY }o--o| CUSTOMER : "may relate"
 
     CUSTOMER {
-        string customerId PK
-        string firstName
-        string lastName
-        string ssnEncrypted
-        string address
-        string phone
+        string custId PK
+        string custFirstName
+        string custMiddleName
+        string custLastName
+        string custSsn
+        string custAddrLine1
+        string custAddrStateCd
+        string custAddrZip
+        string custPhoneNum1
+        date custDob
+        int custFicoScore
     }
     ACCOUNT {
-        string accountId PK
-        string status
-        bigdecimal creditLimit
-        bigdecimal currentBalance
-        date openDate
-        date expiryDate
+        string acctId PK
+        string acctActiveStatus
+        bigdecimal acctCurrBal
+        bigdecimal acctCreditLimit
+        bigdecimal acctCashCreditLimit
+        date acctOpenDate
+        date acctExpDate
+        date acctReissueDate
+        bigdecimal acctCurrCycCredit
+        bigdecimal acctCurrCycDebit
+        string acctGroupId
         int version
     }
     CARD {
-        string cardNumber PK
-        string accountId FK
-        string cardStatus
-        int expiryMonth
-        int expiryYear
+        string cardNum PK
+        string cardAcctId FK
+        string cardCvvCd
+        string cardEmbossedName
+        date cardExpDate
+        string cardActiveStatus
         int version
     }
     CARD_CROSS_REFERENCE {
-        string cardNumber PK
-        string accountId
-        string customerId
+        string xrefCardNum PK
+        string xrefAcctId
+        string xrefCustId
     }
     TRANSACTION {
-        string transactionId PK
-        string cardNumber FK
-        string typeCode
-        string categoryCode
-        bigdecimal amount
-        date originalDate
-        date processedDate
+        string tranId PK
+        string tranCardNum FK
+        string tranTypeCd
+        short tranCatCd
+        string tranSource
+        string tranDesc
+        bigdecimal tranAmt
+        string tranMerchantId
+        string tranMerchantName
+        datetime tranOrigTs
+        datetime tranProcTs
     }
     TRANSACTION_CATEGORY_BALANCE {
-        string accountId PK
+        string acctId PK
         string typeCode PK
-        string categoryCode PK
-        bigdecimal balance
+        short catCode PK
+        bigdecimal tranCatBal
     }
     DISCLOSURE_GROUP {
         string groupId PK
         string typeCode PK
-        string categoryCode PK
-        bigdecimal interestRate
+        short catCode PK
+        bigdecimal disIntRate
     }
     TRANSACTION_TYPE {
-        string typeCode PK
-        string description
+        string tranType PK
+        string tranTypeDesc
     }
     TRANSACTION_CATEGORY {
         string typeCode PK
-        string categoryCode PK
-        string description
+        short catCode PK
+        string tranCatTypeDesc
     }
     DAILY_TRANSACTION {
-        string transactionId PK
-        string cardNumber
-        bigdecimal amount
-        date transactionDate
+        string dalytranId PK
+        string dalytranCardNum
+        string dalytranTypeCd
+        bigdecimal dalytranAmt
+        datetime dalytranOrigTs
+        datetime dalytranProcTs
     }
     USER_SECURITY {
-        string userId PK
-        string passwordHash
-        string userType
-        string firstName
-        string lastName
+        string secUsrId PK
+        string secUsrPwd
+        string secUsrType
+        string secUsrFname
+        string secUsrLname
     }
 ```
 

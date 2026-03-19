@@ -15,7 +15,7 @@ This document provides comprehensive visual architecture documentation using Mer
 | 3 | [Batch Pipeline — Before & After](#3-batch-pipeline--before--after) | JCL 5-stage pipeline vs. Spring Batch 5-stage pipeline side by side |
 | 4 | [Data Migration Flow](#4-data-migration--vsam-to-postgresql) | VSAM KSDS/AIX/PS to PostgreSQL relational tables via Flyway |
 | 5 | [Component Interaction — Layered Architecture](#5-spring-boot-component-interaction--layered-architecture) | Controller → Service → Repository → Database layering with cross-cutting concerns |
-| 6 | [Authentication Flow — Before & After](#6-authentication-flow--before--after) | CICS pseudo-conversational sign-on vs. Spring Security JWT flow |
+| 6 | [Authentication Flow — Before & After](#6-authentication-flow--before--after) | CICS pseudo-conversational sign-on vs. Spring Security HTTP Basic Auth flow |
 
 ---
 
@@ -200,13 +200,13 @@ graph TB
     subgraph CLIENT["API Client Tier"]
         direction LR
         REST_CLIENT["🌐 REST API Clients<br/>(HTTP/JSON)"]
-        JWT["🔑 JWT Bearer Token<br/>Authorization Header"]
+        BASIC_AUTH["🔑 HTTP Basic Auth<br/>Authorization Header"]
     end
     style CLIENT fill:#E3F2FD,stroke:#1565C0,color:#0D47A1
 
     %% ── Spring Security ──
     subgraph SECURITY["Spring Security Layer"]
-        SEC_FILTER["Security Filter Chain<br/>BCrypt Password Verification<br/>JWT Token Generation/Validation<br/>Role-Based Access (ADMIN/USER)"]
+        SEC_FILTER["Security Filter Chain<br/>BCrypt Password Verification<br/>HTTP Basic Authentication<br/>Role-Based Access (ADMIN/USER)"]
     end
     style SECURITY fill:#FFEBEE,stroke:#C62828,color:#B71C1C
 
@@ -346,8 +346,8 @@ graph TB
 
 | Color | Component Type |
 |-------|---------------|
-| 🔵 Blue (`#E3F2FD`) | API client tier — REST clients with JWT authentication |
-| 🔴 Red (`#FFEBEE`) | Spring Security — filter chain, BCrypt, JWT token management |
+| 🔵 Blue (`#E3F2FD`) | API client tier — REST clients with HTTP Basic Authentication |
+| 🔴 Red (`#FFEBEE`) | Spring Security — filter chain, BCrypt, HTTP Basic Authentication |
 | 🟠 Orange (`#FFF3E0`) | Controller layer — 8 Spring MVC REST controllers |
 | 🟢 Green (`#E8F5E9`) | Service layer — 19 service classes organized by domain |
 | 🟣 Purple (`#F3E5F5`) | Repository layer — 11 Spring Data JPA repository interfaces |
@@ -709,7 +709,7 @@ graph TB
     subgraph XCUT["Cross-Cutting Concerns"]
         direction LR
         OBS_CFG["ObservabilityConfig<br/>• CorrelationIdFilter<br/>• Micrometer Tracing<br/>• Custom Metrics"]
-        SEC_CFG["SecurityConfig<br/>• BCrypt Encoder<br/>• JWT Filter<br/>• Role-Based Access"]
+        SEC_CFG["SecurityConfig<br/>• BCrypt Encoder<br/>• HTTP Basic Auth<br/>• Role-Based Access"]
         WEB_CFG["WebConfig<br/>• CORS Config<br/>• Jackson Serialization<br/>• Global Error Handling"]
     end
     style XCUT fill:#E0F7FA,stroke:#00695C,color:#004D40
@@ -837,7 +837,7 @@ graph TB
 
 | Color | Layer | Description |
 |-------|-------|-------------|
-| 🩵 Teal | Cross-Cutting | Observability (tracing, metrics, correlation IDs), Security (BCrypt, JWT), Web (CORS, serialization) |
+| 🩵 Teal | Cross-Cutting | Observability (tracing, metrics, correlation IDs), Security (BCrypt, HTTP Basic Auth), Web (CORS, serialization) |
 | 🟠 Orange | Controller | 8 REST controllers — HTTP request routing and response mapping |
 | 🟢 Green | Service | 19 service classes — business logic (1:1 mapping from COBOL programs) |
 | 🟡 Yellow | Shared Services | 3 shared utilities — date validation, lookup tables, FILE STATUS mapping |
@@ -849,7 +849,7 @@ graph TB
 
 ## 6. Authentication Flow — Before & After
 
-The authentication flow demonstrates the transformation from CICS pseudo-conversational 3270 terminal interaction to stateless REST API with JWT tokens. The key security upgrade is the replacement of plaintext password comparison with BCrypt hash verification.
+The authentication flow demonstrates the transformation from CICS pseudo-conversational 3270 terminal interaction to REST API with HTTP Basic Authentication. The key security upgrade is the replacement of plaintext password comparison with BCrypt hash verification.
 
 ### 6a. CICS Authentication Flow (Before)
 
@@ -918,7 +918,7 @@ sequenceDiagram
 
 ### 6b. Spring Security Authentication Flow (After)
 
-The migrated authentication uses a stateless REST endpoint (`POST /api/auth/signin`), BCrypt password hash verification, JWT token generation with user type claims, and Spring Security filter chain for subsequent request authorization. No session state is maintained server-side.
+The migrated authentication uses Spring Security HTTP Basic Authentication with BCrypt password hash verification for all API requests. The sign-in endpoint (`POST /api/auth/signin`) provides initial credential validation and returns a UUID session token for client tracking, while subsequent requests authenticate via HTTP Basic Auth (`Authorization: Basic <base64(userId:password)>`). The security filter chain delegates to `UserSecurityRepository` for credential lookup.
 
 ```mermaid
 sequenceDiagram
@@ -931,12 +931,11 @@ sequenceDiagram
     participant AuthSvc as AuthenticationService
     participant UserRepo as UserSecurityRepository<br/>(Spring Data JPA)
     participant PG as 🐘 PostgreSQL<br/>user_security table
-    participant JWT as JWT Token<br/>Generator
 
-    Note over Client,JWT: Sign-In Request
+    Note over Client,PG: Initial Sign-In (Optional — validates credentials and returns session info)
     Client->>Filter: POST /api/auth/signin<br/>{userId: "...", password: "..."}
     Filter->>Filter: Skip auth for /api/auth/** (permitAll)
-    Filter->>AuthCtrl: Forward request (no token required)
+    Filter->>AuthCtrl: Forward request (no auth required)
 
     AuthCtrl->>AuthSvc: authenticate(SignOnRequest)
 
@@ -949,15 +948,15 @@ sequenceDiagram
     alt User Found
         AuthSvc->>AuthSvc: BCrypt.checkpw(password, storedHash) 🔒
         alt Password Matches
-            AuthSvc->>JWT: Generate token with claims:<br/>sub: userId<br/>userType: ADMIN or USER<br/>firstName, lastName
-            JWT-->>AuthSvc: Signed JWT token
-            AuthSvc-->>AuthCtrl: SignOnResponse(token, userType, name)
-            AuthCtrl-->>Client: 200 OK<br/>{token, userType, firstName, lastName}
+            AuthSvc->>AuthSvc: Generate UUID session token<br/>UUID.randomUUID()
+            AuthSvc-->>AuthCtrl: SignOnResponse(token, userType,<br/>userId, toTranId, toProgram)
+            AuthCtrl-->>Client: 200 OK<br/>{token, userType, userId, toTranId, toProgram}
 
-            Note over Client,JWT: Subsequent Authenticated Requests
-            Client->>Filter: GET /api/accounts/{id}<br/>Authorization: Bearer <token>
-            Filter->>Filter: Validate JWT signature<br/>Extract claims (userId, userType)
-            Filter->>Filter: Set SecurityContext<br/>with authorities
+            Note over Client,PG: Subsequent Authenticated Requests (HTTP Basic Auth)
+            Client->>Filter: GET /api/accounts/{id}<br/>Authorization: Basic base64(userId:password)
+            Filter->>Filter: Decode Basic credentials<br/>Lookup user via UserDetailsService
+            Filter->>PG: SELECT * FROM user_security<br/>WHERE usr_id = ?
+            Filter->>Filter: BCrypt.checkpw(password, hash)<br/>Set SecurityContext with authorities
             Note over Filter: Request proceeds to controller<br/>with authenticated principal
         else Password Mismatch
             AuthSvc-->>AuthCtrl: throw ValidationException<br/>("Invalid credentials")
@@ -977,7 +976,8 @@ sequenceDiagram
 | Symbol | Meaning |
 |--------|---------|
 | 🔒 BCrypt | Password verified via BCrypt hash comparison — replaces plaintext (security upgrade) |
-| JWT | JSON Web Token — stateless authentication replaces CICS COMMAREA pseudo-conversational state |
+| HTTP Basic Auth | HTTP Basic Authentication (`Authorization: Basic base64(userId:password)`) — replaces CICS COMMAREA pseudo-conversational state |
+| UUID Token | Session tracking token returned by sign-in — for client-side session management, not for API authentication |
 | `permitAll` | Spring Security configuration allows unauthenticated access to sign-in endpoint |
 | `SecurityContext` | Spring Security thread-local context — replaces CICS COMMAREA for user identity propagation |
 | `@Transactional` | Not shown in auth flow, but `AccountUpdateService` uses it for SYNCPOINT ROLLBACK equivalence |
@@ -1001,7 +1001,7 @@ This table summarizes the architectural transformation for quick reference. Each
 | 9 | DFSORT + IDCAMS REPRO | Java Comparator + `saveAll()` | Utility programs → Java collections |
 | 10 | Plaintext passwords (USRSEC) | BCrypt hash (user_security) | Security vulnerability → BCrypt |
 | 11 | CICS SYNCPOINT ROLLBACK | `@Transactional(rollbackFor=...)` | Explicit → Declarative |
-| 12 | CICS XCTL COMMAREA | JWT token + Spring Security | Pseudo-conversational → Stateless |
+| 12 | CICS XCTL COMMAREA | HTTP Basic Auth + Spring Security | Pseudo-conversational → Stateless REST |
 | 13 | LE CEEDAYS date validation | `java.time.LocalDate` + custom validators | Language Environment → Java API |
 | 14 | COBOL COMP-3 / COMP fields | `BigDecimal` (zero floating-point) | Packed decimal → Exact precision |
 | 15 | FILE STATUS codes | Custom exception hierarchy + `FileStatus` enum | Status codes → Exceptions |

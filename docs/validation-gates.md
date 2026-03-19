@@ -102,7 +102,7 @@ The validation cascade from `CBTRN02C.cbl` paragraphs `1500-VALIDATE-TRAN`, `150
 
 ```bash
 # Step 1: Ensure the application and PostgreSQL are running
-docker-compose up -d
+docker compose up -d
 
 # Step 2: Seed the database with fixture data (Flyway runs automatically on startup)
 mvn spring-boot:run -Dspring.profiles.active=local &
@@ -111,10 +111,15 @@ sleep 15
 # Step 3: Upload the daily transaction file to S3 (LocalStack)
 aws --endpoint-url=http://localhost.localstack.cloud:4566 s3 cp \
     src/test/resources/data/dailytran.txt \
-    s3://carddemo-batch-input/daily/dailytran.txt
+    s3://carddemo-batch-input/dailytran.txt
 
 # Step 4: Trigger the DailyTransactionPostingJob
-curl -X POST http://localhost:8080/api/batch/jobs/daily-posting/run
+# No REST endpoint exists for batch triggering — jobs are launched via
+# Spring Batch JobLauncher programmatically or via integration tests.
+# Run the integration test that exercises the full posting pipeline:
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw test -B \
+    -Dtest=DailyTransactionPostingJobIT \
+    -pl . -Dspring.profiles.active=test
 
 # Step 5: Verify results
 # Check transaction count in PostgreSQL
@@ -125,11 +130,14 @@ psql -h localhost -U carddemo -d carddemo \
 aws --endpoint-url=http://localhost.localstack.cloud:4566 s3 ls \
     s3://carddemo-batch-output/rejections/
 
-# Step 6: Download and inspect rejection file
+# Step 6: List and download rejection file (key includes timestamp)
+aws --endpoint-url=http://localhost.localstack.cloud:4566 s3 ls \
+    s3://carddemo-batch-output/rejections/ --recursive
+# Download the latest rejection file (replace timestamp with actual value)
+# Key pattern: rejections/DALYREJS-{yyyyMMddHHmmss}.txt
 aws --endpoint-url=http://localhost.localstack.cloud:4566 s3 cp \
-    s3://carddemo-batch-output/rejections/dailyrejs-latest.txt \
-    /tmp/rejections.txt
-cat /tmp/rejections.txt
+    s3://carddemo-batch-output/rejections/ /tmp/rejections/ --recursive
+ls -la /tmp/rejections/
 ```
 
 ### Evidence Template — Boundary Comparison Report
@@ -195,14 +203,18 @@ mvn clean verify -B \
 The Maven compiler plugin is configured with strict warning settings:
 
 ```xml
+<!-- Spring Boot parent manages source/target via java.version property -->
+<properties>
+    <java.version>25</java.version>
+</properties>
+
 <plugin>
     <groupId>org.apache.maven.plugins</groupId>
     <artifactId>maven-compiler-plugin</artifactId>
     <configuration>
-        <source>25</source>
-        <target>25</target>
         <compilerArgs>
             <arg>-Xlint:all</arg>
+            <arg>-Werror</arg>
         </compilerArgs>
     </configuration>
 </plugin>
@@ -278,7 +290,7 @@ Establish a performance baseline for the Java batch pipeline by measuring throug
 
 ```bash
 # Step 1: Ensure clean state
-docker-compose down -v && docker-compose up -d
+docker compose down -v && docker compose up -d
 sleep 10
 
 # Step 2: Start the application with JMX monitoring enabled
@@ -293,11 +305,14 @@ sleep 15
 # Step 3: Upload fixture data to S3
 aws --endpoint-url=http://localhost.localstack.cloud:4566 s3 cp \
     src/test/resources/data/dailytran.txt \
-    s3://carddemo-batch-input/daily/dailytran.txt
+    s3://carddemo-batch-input/dailytran.txt
 
-# Step 4: Record start time and trigger batch job
+# Step 4: Record start time and trigger batch job via integration test
+# No REST endpoint exists for batch triggering — jobs use Spring Batch JobLauncher.
 START_TIME=$(date +%s%N)
-curl -X POST http://localhost:8080/api/batch/jobs/daily-posting/run
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw test -B \
+    -Dtest=DailyTransactionPostingJobIT \
+    -pl . -Dspring.profiles.active=test
 END_TIME=$(date +%s%N)
 
 # Step 5: Calculate elapsed time
@@ -309,7 +324,7 @@ curl -s http://localhost:8080/actuator/metrics/jvm.memory.used | python3 -m json
 curl -s http://localhost:8080/actuator/metrics/jvm.memory.max | python3 -m json.tool
 
 # Step 7: Query batch job execution metrics
-curl -s http://localhost:8080/actuator/metrics/spring.batch.job.active.count | python3 -m json.tool
+curl -s http://localhost:8080/actuator/metrics/spring.batch.job | python3 -m json.tool
 ```
 
 ### Metrics to Capture
@@ -432,10 +447,10 @@ After loading, the following integrity checks confirm correct data migration:
 | Check | SQL Query | Expected Result | Actual Result | Status |
 |---|---|---|---|---|
 | All accounts have positive credit limits | `SELECT COUNT(*) FROM accounts WHERE credit_limit <= 0` | 0 | _PENDING_ | _PENDING_ |
-| All cards reference valid accounts | `SELECT COUNT(*) FROM cards c LEFT JOIN accounts a ON c.acct_id = a.acct_id WHERE a.acct_id IS NULL` | 0 | _PENDING_ | _PENDING_ |
+| All cards reference valid accounts | `SELECT COUNT(*) FROM cards c LEFT JOIN accounts a ON c.card_acct_id = a.acct_id WHERE a.acct_id IS NULL` | 0 | _PENDING_ | _PENDING_ |
 | All XREF entries reference valid cards | `SELECT COUNT(*) FROM card_cross_references x LEFT JOIN cards c ON x.card_num = c.card_num WHERE c.card_num IS NULL` | 0 | _PENDING_ | _PENDING_ |
-| Disclosure groups include DEFAULT | `SELECT COUNT(*) FROM disclosure_groups WHERE dis_group_id = 'DEFAULT'` | ≥1 | _PENDING_ | _PENDING_ |
-| Transaction types match 7 expected | `SELECT COUNT(DISTINCT type_code) FROM transaction_types` | 7 | _PENDING_ | _PENDING_ |
+| Disclosure groups include DEFAULT | `SELECT COUNT(*) FROM disclosure_groups WHERE group_id = 'DEFAULT'` | ≥1 | _PENDING_ | _PENDING_ |
+| Transaction types match 7 expected | `SELECT COUNT(DISTINCT type_cd) FROM transaction_types` | 7 | _PENDING_ | _PENDING_ |
 | Transaction categories total 18 | `SELECT COUNT(*) FROM transaction_categories` | 18 | _PENDING_ | _PENDING_ |
 
 ---
@@ -468,7 +483,7 @@ The `DailyTransactionReader` must parse fixed-width records matching the COBOL `
 | Origination Timestamp | `X(26)` | 277 | 26 | `LocalDateTime` | `DateTimeFormatter` parse |
 | (Filler) | `X(47)` | 303 | 47 | — | Ignored |
 
-**Verification:** Integration test `DailyTransactionReaderIT` parses all 300 records from `dailytran.txt` and asserts that each field is correctly extracted.
+**Verification:** Integration test `DailyTransactionPostingJobIT` parses all 300 records from `dailytran.txt` and asserts that each field is correctly extracted.
 
 #### 5.2 SQS Message Schema
 
@@ -492,17 +507,17 @@ The `ReportSubmissionService` publishes report requests to the SQS FIFO queue `c
 }
 ```
 
-**Verification:** Integration test `ReportSubmissionServiceIT` publishes a message via the service and reads it from the SQS queue using the AWS SDK, asserting schema compliance.
+**Verification:** Integration test `SqsIntegrationIT` publishes a message via the service and reads it from the SQS queue using the AWS SDK, asserting schema compliance.
 
 #### 5.3 S3 Object Formats
 
 | Object Type | S3 Bucket | Key Pattern | Format | Source Equivalent |
 |---|---|---|---|---|
-| Batch input (daily transactions) | `carddemo-batch-input` | `daily/dailytran.txt` | Fixed-width 350 bytes/record | `DALYTRAN.PS` sequential file |
-| Rejection file | `carddemo-batch-output` | `rejections/dailyrejs-YYYYMMDD-HHMMSS.txt` | 350-byte record + 80-byte validation trailer | `DALYREJS` GDG generation (+1) |
-| Statement file (text) | `carddemo-statements` | `statements/ACCT-NNNNNNNNNNN-YYYYMM.txt` | Plain text formatted statement | Statement output file |
-| Statement file (HTML) | `carddemo-statements` | `statements/ACCT-NNNNNNNNNNN-YYYYMM.html` | HTML formatted statement | N/A (enhancement) |
-| Transaction report | `carddemo-batch-output` | `reports/tranrept-YYYYMMDD-HHMMSS.txt` | Formatted report with totals | Transaction report output |
+| Batch input (daily transactions) | `carddemo-batch-input` | `dailytran.txt` | Fixed-width 350 bytes/record | `DALYTRAN.PS` sequential file |
+| Rejection file | `carddemo-batch-output` | `rejections/DALYREJS-{yyyyMMddHHmmss}.txt` | 350-byte record + 80-byte validation trailer | `DALYREJS` GDG generation (+1) |
+| Statement file (text) | `carddemo-statements` | `text/{cardNumber}-{yyyyMMddHHmmss}.txt` | Plain text formatted statement | Statement output file |
+| Statement file (HTML) | `carddemo-statements` | `html/{cardNumber}-{yyyyMMddHHmmss}.html` | HTML formatted statement | N/A (enhancement) |
+| Transaction report | `carddemo-batch-output` | `reports/{yyyyMMddHHmmss}/transaction-report.txt` | Formatted report with totals | Transaction report output |
 
 **Verification:** Integration tests verify object existence, content format, and key patterns after batch job execution against LocalStack S3.
 
@@ -512,41 +527,41 @@ All REST endpoints are documented in [`docs/api-contracts.md`](api-contracts.md)
 
 | Endpoint | Method | COBOL Source | BMS Map | Test Class |
 |---|---|---|---|---|
-| `/api/auth/signin` | POST | `COSGN00C.cbl` | `COSGN00.bms` | `AuthControllerIT` |
-| `/api/accounts/{id}` | GET | `COACTVWC.cbl` | `COACTVW.bms` | `AccountControllerIT` |
-| `/api/accounts/{id}` | PUT | `COACTUPC.cbl` | `COACTUP.bms` | `AccountControllerIT` |
-| `/api/cards` | GET | `COCRDLIC.cbl` | `COCRDLI.bms` | `CardControllerIT` |
-| `/api/cards/{cardNum}` | GET | `COCRDSLC.cbl` | `COCRDSL.bms` | `CardControllerIT` |
-| `/api/cards/{cardNum}` | PUT | `COCRDUPC.cbl` | `COCRDUP.bms` | `CardControllerIT` |
-| `/api/transactions` | GET | `COTRN00C.cbl` | `COTRN00.bms` | `TransactionControllerIT` |
-| `/api/transactions/{id}` | GET | `COTRN01C.cbl` | `COTRN01.bms` | `TransactionControllerIT` |
-| `/api/transactions` | POST | `COTRN02C.cbl` | `COTRN02.bms` | `TransactionControllerIT` |
-| `/api/billing/pay` | POST | `COBIL00C.cbl` | `COBIL00.bms` | `BillingControllerIT` |
-| `/api/reports/submit` | POST | `CORPT00C.cbl` | `CORPT00.bms` | `ReportControllerIT` |
-| `/api/admin/users` | GET | `COUSR00C.cbl` | `COUSR00.bms` | `UserAdminControllerIT` |
-| `/api/admin/users` | POST | `COUSR01C.cbl` | `COUSR01.bms` | `UserAdminControllerIT` |
-| `/api/admin/users/{id}` | PUT | `COUSR02C.cbl` | `COUSR02.bms` | `UserAdminControllerIT` |
-| `/api/admin/users/{id}` | DELETE | `COUSR03C.cbl` | `COUSR03.bms` | `UserAdminControllerIT` |
-| `/api/menu/main` | GET | `COMEN01C.cbl` | `COMEN01.bms` | `MenuControllerIT` |
-| `/api/menu/admin` | GET | `COADM01C.cbl` | `COADM01.bms` | `MenuControllerIT` |
+| `/api/auth/signin` | POST | `COSGN00C.cbl` | `COSGN00.bms` | `OnlineTransactionE2ETest` |
+| `/api/accounts/{id}` | GET | `COACTVWC.cbl` | `COACTVW.bms` | `OnlineTransactionE2ETest` |
+| `/api/accounts/{id}` | PUT | `COACTUPC.cbl` | `COACTUP.bms` | `OnlineTransactionE2ETest` |
+| `/api/cards` | GET | `COCRDLIC.cbl` | `COCRDLI.bms` | `OnlineTransactionE2ETest` |
+| `/api/cards/{cardNum}` | GET | `COCRDSLC.cbl` | `COCRDSL.bms` | `OnlineTransactionE2ETest` |
+| `/api/cards/{cardNum}` | PUT | `COCRDUPC.cbl` | `COCRDUP.bms` | `OnlineTransactionE2ETest` |
+| `/api/transactions` | GET | `COTRN00C.cbl` | `COTRN00.bms` | `OnlineTransactionE2ETest` |
+| `/api/transactions/{id}` | GET | `COTRN01C.cbl` | `COTRN01.bms` | `OnlineTransactionE2ETest` |
+| `/api/transactions` | POST | `COTRN02C.cbl` | `COTRN02.bms` | `OnlineTransactionE2ETest` |
+| `/api/billing/pay` | POST | `COBIL00C.cbl` | `COBIL00.bms` | `OnlineTransactionE2ETest` |
+| `/api/reports/submit` | POST | `CORPT00C.cbl` | `CORPT00.bms` | `OnlineTransactionE2ETest` |
+| `/api/admin/users` | GET | `COUSR00C.cbl` | `COUSR00.bms` | `OnlineTransactionE2ETest` |
+| `/api/admin/users` | POST | `COUSR01C.cbl` | `COUSR01.bms` | `OnlineTransactionE2ETest` |
+| `/api/admin/users/{id}` | PUT | `COUSR02C.cbl` | `COUSR02.bms` | `OnlineTransactionE2ETest` |
+| `/api/admin/users/{id}` | DELETE | `COUSR03C.cbl` | `COUSR03.bms` | `OnlineTransactionE2ETest` |
+| `/api/menu/main` | GET | `COMEN01C.cbl` | `COMEN01.bms` | `OnlineTransactionE2ETest` |
+| `/api/menu/admin` | GET | `COADM01C.cbl` | `COADM01.bms` | `OnlineTransactionE2ETest` |
 
 ### Evidence Template — Per-Interface Contract Verification
 
 | Interface Type | Contract | Test Class | Test Count | Passed | Failed | Status |
 |---|---|---|---|---|---|---|
-| File format (dailytran.txt) | 350-byte fixed-width record parsing | `DailyTransactionReaderIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
-| SQS message (report jobs) | JSON schema with FIFO ordering | `ReportSubmissionServiceIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
-| S3 object (rejection file) | 430-byte records (350 + 80 trailer) | `RejectWriterIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
-| S3 object (statement) | Text + HTML formatted output | `StatementWriterIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
+| File format (dailytran.txt) | 350-byte fixed-width record parsing | `DailyTransactionPostingJobIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
+| SQS message (report jobs) | JSON schema with FIFO ordering | `SqsIntegrationIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
+| S3 object (rejection file) | 430-byte records (350 + 80 trailer) | `DailyTransactionPostingJobIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
+| S3 object (statement) | Text + HTML formatted output | `StatementGenerationJobIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
 | S3 object (report) | Formatted report with totals | `TransactionReportJobIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
-| REST API (auth) | POST /api/auth/signin | `AuthControllerIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
-| REST API (accounts) | GET/PUT /api/accounts/{id} | `AccountControllerIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
-| REST API (cards) | GET/PUT /api/cards/* | `CardControllerIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
-| REST API (transactions) | GET/POST /api/transactions/* | `TransactionControllerIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
-| REST API (billing) | POST /api/billing/pay | `BillingControllerIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
-| REST API (reports) | POST /api/reports/submit | `ReportControllerIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
-| REST API (admin/users) | CRUD /api/admin/users/* | `UserAdminControllerIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
-| REST API (menu) | GET /api/menu/{type} | `MenuControllerIT` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
+| REST API (auth) | POST /api/auth/signin | `OnlineTransactionE2ETest` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
+| REST API (accounts) | GET/PUT /api/accounts/{id} | `OnlineTransactionE2ETest` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
+| REST API (cards) | GET/PUT /api/cards/* | `OnlineTransactionE2ETest` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
+| REST API (transactions) | GET/POST /api/transactions/* | `OnlineTransactionE2ETest` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
+| REST API (billing) | POST /api/billing/pay | `OnlineTransactionE2ETest` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
+| REST API (reports) | POST /api/reports/submit | `OnlineTransactionE2ETest` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
+| REST API (admin/users) | CRUD /api/admin/users/* | `OnlineTransactionE2ETest` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
+| REST API (menu) | GET /api/menu/{type} | `OnlineTransactionE2ETest` | _PENDING_ | _PENDING_ | _PENDING_ | _PENDING_ |
 
 ---
 

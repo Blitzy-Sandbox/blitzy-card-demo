@@ -555,7 +555,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "spring_batch_job_active_count{application=\"carddemo\"}",
+          "expr": "spring_batch_job_launch_count_total{application=\"carddemo\"}",
           "legendFormat": "Active Jobs",
           "range": true,
           "refId": "A"
@@ -722,7 +722,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "carddemo_transaction_amount_total_sum{application=\"carddemo\"} / carddemo_transaction_amount_total_count{application=\"carddemo\"}",
+          "expr": "carddemo_transaction_amount_total_USD_sum{application=\"carddemo\"} / carddemo_transaction_amount_total_USD_count{application=\"carddemo\"}",
           "legendFormat": "Avg Transaction Amount",
           "range": true,
           "refId": "A"
@@ -733,7 +733,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(carddemo_transaction_amount_total_sum{application=\"carddemo\"}[5m])",
+          "expr": "rate(carddemo_transaction_amount_total_USD_sum{application=\"carddemo\"}[5m])",
           "legendFormat": "Amount Throughput ($/s)",
           "range": true,
           "refId": "B"

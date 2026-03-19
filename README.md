@@ -5,7 +5,7 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-336791?logo=postgresql)
 ![License](https://img.shields.io/badge/License-Apache_2.0-blue)
 
-A fully operational credit card management application built with **Java 25 LTS** and **Spring Boot 3.x**, migrated from the [AWS CardDemo COBOL mainframe application](https://github.com/aws-samples/aws-mainframe-modernization-carddemo) (source commit [`27d6c6f`](https://github.com/aws-samples/aws-mainframe-modernization-carddemo/tree/27d6c6f)) with **100% behavioral parity**. All 22 original features — spanning 18 online transactions and 10 batch programs — are preserved with identical business logic semantics.
+A fully operational credit card management application built with **Java 25 LTS** and **Spring Boot 3.x**, migrated from the [AWS CardDemo COBOL mainframe application](https://github.com/aws-samples/aws-mainframe-modernization-carddemo) (source commit [`27d6c6f`](https://github.com/aws-samples/aws-mainframe-modernization-carddemo/commit/27d6c6f)) with **100% behavioral parity**. All 22 original features — spanning 18 online transactions and 10 batch programs — are preserved with identical business logic semantics.
 
 ---
 
@@ -71,7 +71,7 @@ Before building and running CardDemo, ensure the following tools are installed:
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/your-org/carddemo-java.git
+git clone <YOUR_REPOSITORY_URL>
 cd carddemo-java
 ```
 
@@ -86,7 +86,7 @@ This compiles the application, runs unit tests, and packages a deployable JAR. T
 ### 3. Start Local Infrastructure
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 This starts the following services:
@@ -102,7 +102,7 @@ This starts the following services:
 Wait for all services to become healthy:
 
 ```bash
-docker-compose ps
+docker compose ps
 ```
 
 ### 4. Run the Application
@@ -145,8 +145,8 @@ The application ships with seed data that includes the following default user ac
 
 | User ID | Password | Role | Access |
 |:---|:---|:---|:---|
-| `ADMIN001` | `PASSWORD` | Admin | User management (CRUD) |
-| `USER0001` | `PASSWORD` | User | Account, card, transaction, billing operations |
+| `ADMIN001` | `PASSWORDA` | Admin | User management (CRUD) |
+| `USER0001` | `PASSWORDU` | User | Account, card, transaction, billing operations |
 
 > **Note:** Passwords are stored with BCrypt hashing. The seed data uses pre-hashed values for the default passwords above.
 
@@ -302,14 +302,17 @@ POSTTRAN → INTCALC → COMBTRAN → CREASTMT (4a)
 | `GET` | `/api/accounts/{id}` | `AccountController` | View account details |
 | `PUT` | `/api/accounts/{id}` | `AccountController` | Update account |
 | `GET` | `/api/cards` | `CardController` | List cards (paginated) |
-| `GET` | `/api/cards/{id}` | `CardController` | View card details |
-| `PUT` | `/api/cards/{id}` | `CardController` | Update card |
+| `GET` | `/api/cards/account/{acctId}` | `CardController` | List cards by account |
+| `GET` | `/api/cards/{cardNum}` | `CardController` | View card details |
+| `PUT` | `/api/cards/{cardNum}` | `CardController` | Update card |
 | `GET` | `/api/transactions` | `TransactionController` | List transactions (paginated) |
 | `GET` | `/api/transactions/{id}` | `TransactionController` | View transaction details |
 | `POST` | `/api/transactions` | `TransactionController` | Add new transaction |
+| `GET` | `/api/transactions/copy/{sourceId}` | `TransactionController` | Copy transaction for new entry |
 | `POST` | `/api/billing/pay` | `BillingController` | Process bill payment |
 | `POST` | `/api/reports/submit` | `ReportController` | Submit report request → SQS |
 | `GET` | `/api/admin/users` | `UserAdminController` | List users (admin only) |
+| `GET` | `/api/admin/users/{id}` | `UserAdminController` | Get user details (admin only) |
 | `POST` | `/api/admin/users` | `UserAdminController` | Add user (admin only) |
 | `PUT` | `/api/admin/users/{id}` | `UserAdminController` | Update user (admin only) |
 | `DELETE` | `/api/admin/users/{id}` | `UserAdminController` | Delete user (admin only) |

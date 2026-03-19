@@ -224,6 +224,9 @@ management:
   metrics:
     tags:
       application: carddemo
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
   tracing:
     sampling:
       probability: ${TRACING_SAMPLING_PROBABILITY:0.1}

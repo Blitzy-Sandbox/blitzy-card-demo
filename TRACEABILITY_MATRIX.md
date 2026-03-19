@@ -4,12 +4,12 @@
 
 | Property | Value |
 |---|---|
-| **Source Repository** | `aws-samples/carddemo` |
+| **Source Repository** | [`aws-samples/aws-mainframe-modernization-carddemo`](https://github.com/aws-samples/aws-mainframe-modernization-carddemo) |
 | **Source Commit SHA** | `27d6c6f` |
 | **Target Platform** | Java 25 LTS + Spring Boot 3.x |
 | **Target Package** | `com.cardemo` |
-| **Coverage** | 100% COBOL paragraph coverage across all 28 programs |
-| **Generated** | Automated extraction from COBOL PROCEDURE DIVISION sources |
+| **Coverage** | Verified COBOL paragraph coverage across all 28 programs — mapped to actual Java method names |
+| **Generated** | Verified by cross-referencing actual Java source code method signatures |
 
 ---
 
@@ -63,9 +63,9 @@
 | COSGN00C.cbl | MAIN-PARA | AuthController | `POST /api/auth/signin` | Entry point; CICS program initialization and routing |
 | COSGN00C.cbl | PROCESS-ENTER-KEY | AuthenticationService | `authenticate()` | BCrypt verification replaces plaintext password compare |
 | COSGN00C.cbl | SEND-SIGNON-SCREEN | AuthController | `POST /api/auth/signin` response | BMS SEND MAP → JSON response body |
-| COSGN00C.cbl | SEND-PLAIN-TEXT | AuthController | `sendErrorResponse()` | Plain-text error message output |
-| COSGN00C.cbl | POPULATE-HEADER-INFO | AuthController | `buildResponseMetadata()` | Title line, current date/time population |
-| COSGN00C.cbl | READ-USER-SEC-FILE | AuthenticationService | `findUserByUserId()` | VSAM USRSEC READ → JPA `UserSecurityRepository.findById()` |
+| COSGN00C.cbl | SEND-PLAIN-TEXT | AuthenticationService | `validateInput()` | Plain-text error → validation exception |
+| COSGN00C.cbl | POPULATE-HEADER-INFO | AuthenticationService | `buildSignOnResponse()` | Title line, date/time → response DTO construction |
+| COSGN00C.cbl | READ-USER-SEC-FILE | AuthenticationService | `readUserSecurityFile()` | VSAM USRSEC READ → JPA `UserSecurityRepository.findById()` |
 
 ### 1.2 COMEN01C — Main Menu
 
@@ -73,13 +73,13 @@
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| COMEN01C.cbl | MAIN-PARA | MenuController | `GET /api/menu/main` | Entry point; pseudo-conversational init |
-| COMEN01C.cbl | PROCESS-ENTER-KEY | MainMenuService | `processMenuSelection()` | 10-option routing via EVALUATE |
-| COMEN01C.cbl | RETURN-TO-SIGNON-SCREEN | MenuController | `redirectToSignOn()` | CICS XCTL to COSGN00C → redirect |
+| COMEN01C.cbl | MAIN-PARA | MenuController | `GET /api/menu/{type}` | Entry point; pseudo-conversational init |
+| COMEN01C.cbl | PROCESS-ENTER-KEY | MainMenuService | `getMenuOption()` | 10-option routing via EVALUATE |
+| COMEN01C.cbl | RETURN-TO-SIGNON-SCREEN | — | — | CICS XCTL → not applicable in REST stateless model |
 | COMEN01C.cbl | SEND-MENU-SCREEN | MenuController | `GET /api/menu/main` response | BMS SEND MAP → JSON response |
-| COMEN01C.cbl | RECEIVE-MENU-SCREEN | MenuController | `processMenuInput()` | BMS RECEIVE MAP → request body parsing |
-| COMEN01C.cbl | POPULATE-HEADER-INFO | MenuController | `buildResponseMetadata()` | Title line, date/time fields |
-| COMEN01C.cbl | BUILD-MENU-OPTIONS | MainMenuService | `buildMenuOptions()` | COMEN02Y 10-option table → menu DTO list |
+| COMEN01C.cbl | RECEIVE-MENU-SCREEN | MenuController | `GET /api/menu/{type}` request | BMS RECEIVE MAP → request parameter parsing |
+| COMEN01C.cbl | POPULATE-HEADER-INFO | MainMenuService | `getMenuOptions()` | Title line, date/time → included in menu options list |
+| COMEN01C.cbl | BUILD-MENU-OPTIONS | MainMenuService | `getMenuOptionsForUser()` | COMEN02Y 10-option table → menu DTO list filtered by UserType |
 
 ### 1.3 COADM01C — Admin Menu
 
@@ -87,13 +87,13 @@
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| COADM01C.cbl | MAIN-PARA | MenuController | `GET /api/menu/admin` | Entry point; pseudo-conversational init |
-| COADM01C.cbl | PROCESS-ENTER-KEY | AdminMenuService | `processMenuSelection()` | 4-option routing via EVALUATE |
-| COADM01C.cbl | RETURN-TO-SIGNON-SCREEN | MenuController | `redirectToSignOn()` | CICS XCTL to COSGN00C → redirect |
+| COADM01C.cbl | MAIN-PARA | MenuController | `GET /api/menu/{type}` | Entry point; pseudo-conversational init |
+| COADM01C.cbl | PROCESS-ENTER-KEY | AdminMenuService | `getAdminMenuOption()` | 4-option routing via EVALUATE |
+| COADM01C.cbl | RETURN-TO-SIGNON-SCREEN | — | — | CICS XCTL → not applicable in REST stateless model |
 | COADM01C.cbl | SEND-MENU-SCREEN | MenuController | `GET /api/menu/admin` response | BMS SEND MAP → JSON response |
-| COADM01C.cbl | RECEIVE-MENU-SCREEN | MenuController | `processMenuInput()` | BMS RECEIVE MAP → request body parsing |
-| COADM01C.cbl | POPULATE-HEADER-INFO | MenuController | `buildResponseMetadata()` | Title line, date/time fields |
-| COADM01C.cbl | BUILD-MENU-OPTIONS | AdminMenuService | `buildMenuOptions()` | COADM02Y 4-option table → menu DTO list |
+| COADM01C.cbl | RECEIVE-MENU-SCREEN | MenuController | `GET /api/menu/{type}` request | BMS RECEIVE MAP → request parameter parsing |
+| COADM01C.cbl | POPULATE-HEADER-INFO | AdminMenuService | `getAdminMenuOptions()` | Title line, date/time → included in admin menu options |
+| COADM01C.cbl | BUILD-MENU-OPTIONS | AdminMenuService | `getAdminMenuOptions()` | COADM02Y 4-option table → admin menu DTO list |
 
 ### 1.4 COACTVWC — Account View
 
@@ -102,40 +102,40 @@
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | COACTVWC.cbl | 0000-MAIN | AccountController | `GET /api/accounts/{id}` | Entry point; first-time vs reenter routing |
-| COACTVWC.cbl | COMMON-RETURN | AccountController | `returnResponse()` | CICS RETURN TRANSID COMMAREA → stateless response |
+| COACTVWC.cbl | COMMON-RETURN | AccountController | `GET /api/accounts/{id}` response | CICS RETURN TRANSID COMMAREA → stateless JSON response |
 | COACTVWC.cbl | 0000-MAIN-EXIT | — | — | Control flow exit point |
-| COACTVWC.cbl | 1000-SEND-MAP | AccountViewService | `composeAccountView()` | Orchestrates screen init, vars, attrs, send |
+| COACTVWC.cbl | 1000-SEND-MAP | AccountViewService | `getAccountView()` | Orchestrates multi-dataset read and DTO assembly |
 | COACTVWC.cbl | 1000-SEND-MAP-EXIT | — | — | Control flow exit point |
-| COACTVWC.cbl | 1100-SCREEN-INIT | AccountViewService | `initializeViewFields()` | LOW-VALUES initialization of output map |
+| COACTVWC.cbl | 1100-SCREEN-INIT | AccountViewService | `getAccountView()` | LOW-VALUES init consolidated into DTO construction |
 | COACTVWC.cbl | 1100-SCREEN-INIT-EXIT | — | — | Control flow exit point |
-| COACTVWC.cbl | 1200-SETUP-SCREEN-VARS | AccountViewService | `populateViewData()` | Maps entity data to response DTO fields |
+| COACTVWC.cbl | 1200-SETUP-SCREEN-VARS | AccountViewService | `assembleAccountDto()` | Maps entity data to response DTO fields |
 | COACTVWC.cbl | 1200-SETUP-SCREEN-VARS-EXIT | — | — | Control flow exit point |
-| COACTVWC.cbl | 1300-SETUP-SCREEN-ATTRS | AccountViewService | `setFieldAttributes()` | BMS attribute bytes → validation metadata |
+| COACTVWC.cbl | 1300-SETUP-SCREEN-ATTRS | — | — | BMS attribute bytes → not applicable in REST API |
 | COACTVWC.cbl | 1300-SETUP-SCREEN-ATTRS-EXIT | — | — | Control flow exit point |
-| COACTVWC.cbl | 1400-SEND-SCREEN | AccountController | `sendMapResponse()` | CICS SEND MAP → JSON response serialization |
+| COACTVWC.cbl | 1400-SEND-SCREEN | AccountController | `GET /api/accounts/{id}` response | CICS SEND MAP → JSON response serialization |
 | COACTVWC.cbl | 1400-SEND-SCREEN-EXIT | — | — | Control flow exit point |
-| COACTVWC.cbl | 2000-PROCESS-INPUTS | AccountViewService | `processViewRequest()` | Receive, edit, then read account data |
+| COACTVWC.cbl | 2000-PROCESS-INPUTS | AccountViewService | `getAccountView()` | Receive, validate, then read account data |
 | COACTVWC.cbl | 2000-PROCESS-INPUTS-EXIT | — | — | Control flow exit point |
-| COACTVWC.cbl | 2100-RECEIVE-MAP | AccountController | `receiveRequest()` | CICS RECEIVE MAP → request body deserialization |
+| COACTVWC.cbl | 2100-RECEIVE-MAP | AccountController | `GET /api/accounts/{id}` request | CICS RECEIVE MAP → path variable deserialization |
 | COACTVWC.cbl | 2100-RECEIVE-MAP-EXIT | — | — | Control flow exit point |
-| COACTVWC.cbl | 2200-EDIT-MAP-INPUTS | AccountViewService | `validateInputs()` | Input field validation |
+| COACTVWC.cbl | 2200-EDIT-MAP-INPUTS | AccountViewService | `validateAccountId()` | Input field validation |
 | COACTVWC.cbl | 2200-EDIT-MAP-INPUTS-EXIT | — | — | Control flow exit point |
 | COACTVWC.cbl | 2210-EDIT-ACCOUNT | AccountViewService | `validateAccountId()` | Account ID numeric/non-blank edit |
 | COACTVWC.cbl | 2210-EDIT-ACCOUNT-EXIT | — | — | Control flow exit point |
-| COACTVWC.cbl | 9000-READ-ACCT | AccountViewService | `readAccountData()` | Orchestrates multi-dataset read (xref→acct→cust) |
+| COACTVWC.cbl | 9000-READ-ACCT | AccountViewService | `getAccountView()` | Orchestrates multi-dataset read (xref→acct→cust) |
 | COACTVWC.cbl | 9000-READ-ACCT-EXIT | — | — | Control flow exit point |
-| COACTVWC.cbl | 9200-GETCARDXREF-BYACCT | AccountViewService | `getCardCrossReference()` | CXACAIX alternate index read → `CardCrossReferenceRepository.findByAccountId()` |
+| COACTVWC.cbl | 9200-GETCARDXREF-BYACCT | AccountViewService | `getAccountView()` | CXACAIX alternate index read → `CardCrossReferenceRepository` |
 | COACTVWC.cbl | 9200-GETCARDXREF-BYACCT-EXIT | — | — | Control flow exit point |
-| COACTVWC.cbl | 9300-GETACCTDATA-BYACCT | AccountViewService | `getAccountRecord()` | ACCTDAT keyed read → `AccountRepository.findById()` |
+| COACTVWC.cbl | 9300-GETACCTDATA-BYACCT | AccountViewService | `getAccountView()` | ACCTDAT keyed read → `AccountRepository.findById()` |
 | COACTVWC.cbl | 9300-GETACCTDATA-BYACCT-EXIT | — | — | Control flow exit point |
-| COACTVWC.cbl | 9400-GETCUSTDATA-BYCUST | AccountViewService | `getCustomerRecord()` | CUSTDAT keyed read → `CustomerRepository.findById()` |
+| COACTVWC.cbl | 9400-GETCUSTDATA-BYCUST | AccountViewService | `getAccountView()` | CUSTDAT keyed read → `CustomerRepository.findById()` |
 | COACTVWC.cbl | 9400-GETCUSTDATA-BYCUST-EXIT | — | — | Control flow exit point |
-| COACTVWC.cbl | SEND-PLAIN-TEXT | AccountController | `sendPlainTextError()` | Short error message output |
+| COACTVWC.cbl | SEND-PLAIN-TEXT | AccountController | error response | Short error message → exception handler |
 | COACTVWC.cbl | SEND-PLAIN-TEXT-EXIT | — | — | Control flow exit point |
-| COACTVWC.cbl | SEND-LONG-TEXT | AccountController | `sendLongTextError()` | Extended error message output |
+| COACTVWC.cbl | SEND-LONG-TEXT | AccountController | error response | Extended error message → exception handler |
 | COACTVWC.cbl | SEND-LONG-TEXT-EXIT | — | — | Control flow exit point |
-| COACTVWC.cbl | YYYY-STORE-PFKEY | AccountViewService | `storePfKey()` | COPY CSSTRPFY — EIBAID key decode and storage |
-| COACTVWC.cbl | ABEND-ROUTINE | AccountController | `handleAbend()` | CICS ABEND handler → global `@ExceptionHandler` |
+| COACTVWC.cbl | YYYY-STORE-PFKEY | — | — | COPY CSSTRPFY — EIBAID key decode; not applicable in REST |
+| COACTVWC.cbl | ABEND-ROUTINE | WebConfig | `@ExceptionHandler` | CICS ABEND handler → global exception handler |
 
 ### 1.5 COACTUPC — Account Update
 
@@ -145,102 +145,102 @@
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| COACTUPC.cbl | 0000-MAIN | AccountController | `PUT /api/accounts/{id}` | Entry point; first-time vs reenter routing |
-| COACTUPC.cbl | COMMON-RETURN | AccountController | `returnResponse()` | CICS RETURN TRANSID COMMAREA → stateless response |
+| COACTUPC.cbl | 0000-MAIN | AccountController | `PUT /api/accounts/{id}` | Entry point; GET for fetch, PUT for update |
+| COACTUPC.cbl | COMMON-RETURN | AccountController | `PUT /api/accounts/{id}` response | CICS RETURN TRANSID COMMAREA → stateless JSON response |
 | COACTUPC.cbl | 0000-MAIN-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 1000-PROCESS-INPUTS | AccountUpdateService | `processUpdateRequest()` | Orchestrates receive, edit, decide-action |
+| COACTUPC.cbl | 1000-PROCESS-INPUTS | AccountUpdateService | `updateAccount()` | Orchestrates validation and update |
 | COACTUPC.cbl | 1000-PROCESS-INPUTS-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 1100-RECEIVE-MAP | AccountController | `receiveUpdateRequest()` | CICS RECEIVE MAP → request body deserialization |
+| COACTUPC.cbl | 1100-RECEIVE-MAP | AccountController | `PUT /api/accounts/{id}` request | CICS RECEIVE MAP → `@RequestBody AccountDto` deserialization |
 | COACTUPC.cbl | 1100-RECEIVE-MAP-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 1200-EDIT-MAP-INPUTS | AccountUpdateService | `validateAllFields()` | Orchestrates all field-level edits for account+customer |
+| COACTUPC.cbl | 1200-EDIT-MAP-INPUTS | AccountUpdateService | `validateUpdateFields()` | Orchestrates all field-level edits for account+customer |
 | COACTUPC.cbl | 1200-EDIT-MAP-INPUTS-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 1205-COMPARE-OLD-NEW | AccountUpdateService | `compareOldAndNewValues()` | Field-by-field change detection for all account+customer fields |
+| COACTUPC.cbl | 1205-COMPARE-OLD-NEW | AccountUpdateService | `updateAccount()` | Field-by-field change detection consolidated into update flow |
 | COACTUPC.cbl | 1205-COMPARE-OLD-NEW-EXIT | — | — | Control flow exit point |
 | COACTUPC.cbl | 1210-EDIT-ACCOUNT | AccountUpdateService | `validateAccountId()` | Account ID numeric/non-blank edit |
 | COACTUPC.cbl | 1210-EDIT-ACCOUNT-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 1215-EDIT-MANDATORY | AccountUpdateService | `validateMandatoryField()` | Generic mandatory field validation |
+| COACTUPC.cbl | 1215-EDIT-MANDATORY | AccountUpdateService | `validateUpdateFields()` | Generic mandatory field validation consolidated |
 | COACTUPC.cbl | 1215-EDIT-MANDATORY-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 1220-EDIT-YESNO | AccountUpdateService | `validateYesNoField()` | Y/N character validation |
+| COACTUPC.cbl | 1220-EDIT-YESNO | AccountUpdateService | `validateYesNo()` | Y/N character validation |
 | COACTUPC.cbl | 1220-EDIT-YESNO-EXIT | — | — | Control flow exit point |
 | COACTUPC.cbl | 1225-EDIT-ALPHA-REQD | AccountUpdateService | `validateAlphaRequired()` | Required alphabetic field validation |
 | COACTUPC.cbl | 1225-EDIT-ALPHA-REQD-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 1230-EDIT-ALPHANUM-REQD | AccountUpdateService | `validateAlphanumRequired()` | Required alphanumeric field validation |
+| COACTUPC.cbl | 1230-EDIT-ALPHANUM-REQD | AccountUpdateService | `validateUpdateFields()` | Required alphanumeric — consolidated into field validation |
 | COACTUPC.cbl | 1230-EDIT-ALPHANUM-REQD-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 1235-EDIT-ALPHA-OPT | AccountUpdateService | `validateAlphaOptional()` | Optional alphabetic field validation |
+| COACTUPC.cbl | 1235-EDIT-ALPHA-OPT | AccountUpdateService | `validateUpdateFields()` | Optional alphabetic — consolidated into field validation |
 | COACTUPC.cbl | 1235-EDIT-ALPHA-OPT-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 1240-EDIT-ALPHANUM-OPT | AccountUpdateService | `validateAlphanumOptional()` | Optional alphanumeric field validation |
+| COACTUPC.cbl | 1240-EDIT-ALPHANUM-OPT | AccountUpdateService | `validateUpdateFields()` | Optional alphanumeric — consolidated into field validation |
 | COACTUPC.cbl | 1240-EDIT-ALPHANUM-OPT-EXIT | — | — | Control flow exit point |
 | COACTUPC.cbl | 1245-EDIT-NUM-REQD | AccountUpdateService | `validateNumericRequired()` | Required numeric field validation |
 | COACTUPC.cbl | 1245-EDIT-NUM-REQD-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 1250-EDIT-SIGNED-9V2 | AccountUpdateService | `validateSignedDecimal()` | Signed PIC S9(7)V99 → BigDecimal validation |
+| COACTUPC.cbl | 1250-EDIT-SIGNED-9V2 | AccountUpdateService | `validateUpdateFields()` | Signed PIC S9(7)V99 → BigDecimal validation consolidated |
 | COACTUPC.cbl | 1250-EDIT-SIGNED-9V2-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 1260-EDIT-US-PHONE-NUM | ValidationLookupService | `validateUsPhoneNumber()` | US phone number validation (area+prefix+line) |
-| COACTUPC.cbl | EDIT-AREA-CODE | ValidationLookupService | `validateAreaCode()` | NANPA area code validation via CSLKPCDY lookup |
-| COACTUPC.cbl | EDIT-US-PHONE-PREFIX | ValidationLookupService | `validatePhonePrefix()` | 3-digit phone prefix validation |
-| COACTUPC.cbl | EDIT-US-PHONE-LINENUM | ValidationLookupService | `validatePhoneLineNumber()` | 4-digit line number validation |
+| COACTUPC.cbl | 1260-EDIT-US-PHONE-NUM | AccountUpdateService | `validatePhoneNumber()` | US phone number validation (area+prefix+line) |
+| COACTUPC.cbl | EDIT-AREA-CODE | ValidationLookupService | `isValidAreaCode()` | NANPA area code validation via CSLKPCDY lookup |
+| COACTUPC.cbl | EDIT-US-PHONE-PREFIX | AccountUpdateService | `validatePhoneNumber()` | 3-digit phone prefix validation consolidated |
+| COACTUPC.cbl | EDIT-US-PHONE-LINENUM | AccountUpdateService | `validatePhoneNumber()` | 4-digit line number validation consolidated |
 | COACTUPC.cbl | EDIT-US-PHONE-EXIT | — | — | Control flow exit point |
 | COACTUPC.cbl | 1260-EDIT-US-PHONE-NUM-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 1265-EDIT-US-SSN | AccountUpdateService | `validateUsSsn()` | US SSN 3-part validation (3-2-4 digits) |
+| COACTUPC.cbl | 1265-EDIT-US-SSN | AccountUpdateService | `validateSsn()` | US SSN 3-part validation (3-2-4 digits) |
 | COACTUPC.cbl | 1265-EDIT-US-SSN-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 1270-EDIT-US-STATE-CD | ValidationLookupService | `validateUsStateCode()` | US state abbreviation lookup via CSLKPCDY |
+| COACTUPC.cbl | 1270-EDIT-US-STATE-CD | ValidationLookupService | `isValidStateCode()` | US state abbreviation lookup via CSLKPCDY |
 | COACTUPC.cbl | 1270-EDIT-US-STATE-CD-EXIT | — | — | Control flow exit point |
 | COACTUPC.cbl | 1275-EDIT-FICO-SCORE | AccountUpdateService | `validateFicoScore()` | FICO score range validation (300–850) |
 | COACTUPC.cbl | 1275-EDIT-FICO-SCORE-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 1280-EDIT-US-STATE-ZIP-CD | ValidationLookupService | `validateStateZipCombination()` | State/ZIP prefix cross-validation via CSLKPCDY |
+| COACTUPC.cbl | 1280-EDIT-US-STATE-ZIP-CD | ValidationLookupService | `isValidStateZipPrefix()` | State/ZIP prefix cross-validation via CSLKPCDY |
 | COACTUPC.cbl | 1280-EDIT-US-STATE-ZIP-CD-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 2000-DECIDE-ACTION | AccountUpdateService | `decideUpdateAction()` | State machine: fetch→edit→confirm→commit flow |
+| COACTUPC.cbl | 2000-DECIDE-ACTION | AccountUpdateService | `updateAccount()` | State machine consolidated: validate→update→save |
 | COACTUPC.cbl | 2000-DECIDE-ACTION-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 3000-SEND-MAP | AccountController | `composeUpdateResponse()` | Orchestrates screen init, vars, attrs, send |
+| COACTUPC.cbl | 3000-SEND-MAP | AccountController | `PUT /api/accounts/{id}` response | Orchestrates response building |
 | COACTUPC.cbl | 3000-SEND-MAP-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 3100-SCREEN-INIT | AccountUpdateService | `initializeUpdateFields()` | LOW-VALUES initialization of output map |
+| COACTUPC.cbl | 3100-SCREEN-INIT | — | — | LOW-VALUES init → not applicable in REST (DTO construction) |
 | COACTUPC.cbl | 3100-SCREEN-INIT-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 3200-SETUP-SCREEN-VARS | AccountUpdateService | `populateUpdateData()` | Dispatches to initial/original/updated value display |
+| COACTUPC.cbl | 3200-SETUP-SCREEN-VARS | AccountUpdateService | `updateAccount()` | Value population consolidated into update response |
 | COACTUPC.cbl | 3200-SETUP-SCREEN-VARS-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 3201-SHOW-INITIAL-VALUES | AccountUpdateService | `showInitialValues()` | Populates initial empty state for search screen |
+| COACTUPC.cbl | 3201-SHOW-INITIAL-VALUES | AccountUpdateService | `getAccount()` | Initial fetch via GET endpoint |
 | COACTUPC.cbl | 3201-SHOW-INITIAL-VALUES-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 3202-SHOW-ORIGINAL-VALUES | AccountUpdateService | `showOriginalValues()` | Populates fetched account+customer data |
+| COACTUPC.cbl | 3202-SHOW-ORIGINAL-VALUES | AccountUpdateService | `getAccount()` | Returns fetched account+customer data |
 | COACTUPC.cbl | 3202-SHOW-ORIGINAL-VALUES-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 3203-SHOW-UPDATED-VALUES | AccountUpdateService | `showUpdatedValues()` | Populates user-modified values with validation flags |
+| COACTUPC.cbl | 3203-SHOW-UPDATED-VALUES | AccountUpdateService | `updateAccount()` | Returns updated values in response |
 | COACTUPC.cbl | 3203-SHOW-UPDATED-VALUES-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 3250-SETUP-INFOMSG | AccountUpdateService | `setupInfoMessage()` | Context-sensitive info/prompt message selection |
+| COACTUPC.cbl | 3250-SETUP-INFOMSG | — | — | Context-sensitive messaging → exception/response handling |
 | COACTUPC.cbl | 3250-SETUP-INFOMSG-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 3300-SETUP-SCREEN-ATTRS | AccountUpdateService | `setupScreenAttributes()` | Field protection, cursor positioning, color coding via COPY CSSETATY |
+| COACTUPC.cbl | 3300-SETUP-SCREEN-ATTRS | — | — | BMS field attributes → not applicable in REST API |
 | COACTUPC.cbl | 3300-SETUP-SCREEN-ATTRS-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 3310-PROTECT-ALL-ATTRS | AccountUpdateService | `protectAllFields()` | Sets all fields to protected (read-only) |
+| COACTUPC.cbl | 3310-PROTECT-ALL-ATTRS | — | — | BMS field protection → not applicable in REST API |
 | COACTUPC.cbl | 3310-PROTECT-ALL-ATTRS-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 3320-UNPROTECT-FEW-ATTRS | AccountUpdateService | `unprotectEditableFields()` | Sets editable fields to unprotected (writable) |
+| COACTUPC.cbl | 3320-UNPROTECT-FEW-ATTRS | — | — | BMS field unprotect → not applicable in REST API |
 | COACTUPC.cbl | 3320-UNPROTECT-FEW-ATTRS-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 3390-SETUP-INFOMSG-ATTRS | AccountUpdateService | `setupInfoMessageAttributes()` | Info message visibility and F-key highlighting |
+| COACTUPC.cbl | 3390-SETUP-INFOMSG-ATTRS | — | — | BMS attribute styling → not applicable in REST API |
 | COACTUPC.cbl | 3390-SETUP-INFOMSG-ATTRS-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 3400-SEND-SCREEN | AccountController | `sendMapResponse()` | CICS SEND MAP CURSOR ERASE → JSON response |
+| COACTUPC.cbl | 3400-SEND-SCREEN | AccountController | `PUT /api/accounts/{id}` response | CICS SEND MAP → JSON response serialization |
 | COACTUPC.cbl | 3400-SEND-SCREEN-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 9000-READ-ACCT | AccountUpdateService | `readAccountData()` | Orchestrates xref→acct→cust→store pipeline |
+| COACTUPC.cbl | 9000-READ-ACCT | AccountUpdateService | `getAccount()` | Orchestrates multi-dataset read (xref→acct→cust) |
 | COACTUPC.cbl | 9000-READ-ACCT-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 9200-GETCARDXREF-BYACCT | AccountUpdateService | `getCardCrossReference()` | CXACAIX alternate index read → `CardCrossReferenceRepository.findByAccountId()` |
+| COACTUPC.cbl | 9200-GETCARDXREF-BYACCT | AccountUpdateService | `getAccount()` | CXACAIX alternate index read → `CardCrossReferenceRepository` |
 | COACTUPC.cbl | 9200-GETCARDXREF-BYACCT-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 9300-GETACCTDATA-BYACCT | AccountUpdateService | `getAccountRecord()` | ACCTDAT keyed read → `AccountRepository.findById()` |
+| COACTUPC.cbl | 9300-GETACCTDATA-BYACCT | AccountUpdateService | `getAccount()` | ACCTDAT keyed read → `AccountRepository.findById()` |
 | COACTUPC.cbl | 9300-GETACCTDATA-BYACCT-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 9400-GETCUSTDATA-BYCUST | AccountUpdateService | `getCustomerRecord()` | CUSTDAT keyed read → `CustomerRepository.findById()` |
+| COACTUPC.cbl | 9400-GETCUSTDATA-BYCUST | AccountUpdateService | `getAccount()` | CUSTDAT keyed read → `CustomerRepository.findById()` |
 | COACTUPC.cbl | 9400-GETCUSTDATA-BYCUST-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 9500-STORE-FETCHED-DATA | AccountUpdateService | `storeFetchedData()` | Copies fetched records to old-values snapshot for change detection |
+| COACTUPC.cbl | 9500-STORE-FETCHED-DATA | AccountUpdateService | `getAccount()` | JPA managed entities act as implicit snapshots |
 | COACTUPC.cbl | 9500-STORE-FETCHED-DATA-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 9600-WRITE-PROCESSING | AccountUpdateService | `writeAccountAndCustomer()` | `@Transactional` dual REWRITE with SYNCPOINT ROLLBACK → JPA save with `@Version` |
+| COACTUPC.cbl | 9600-WRITE-PROCESSING | AccountUpdateService | `updateAccount()` | `@Transactional` dual save with `@Version` for SYNCPOINT ROLLBACK |
 | COACTUPC.cbl | 9600-WRITE-PROCESSING-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | 9700-CHECK-CHANGE-IN-REC | AccountUpdateService | `checkForConcurrentChanges()` | Optimistic concurrency: compares re-read vs stored snapshot → JPA `@Version` |
+| COACTUPC.cbl | 9700-CHECK-CHANGE-IN-REC | AccountUpdateService | `updateAccount()` | Optimistic concurrency via JPA `@Version` — automatic |
 | COACTUPC.cbl | 9700-CHECK-CHANGE-IN-REC-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | YYYY-STORE-PFKEY | AccountUpdateService | `storePfKey()` | COPY CSSTRPFY — EIBAID key decode and storage |
-| COACTUPC.cbl | ABEND-ROUTINE | AccountController | `handleAbend()` | CICS ABEND handler → global `@ExceptionHandler` |
+| COACTUPC.cbl | YYYY-STORE-PFKEY | — | — | COPY CSSTRPFY — EIBAID key decode; not applicable in REST |
+| COACTUPC.cbl | ABEND-ROUTINE | WebConfig | `@ExceptionHandler` | CICS ABEND handler → global exception handler |
 | COACTUPC.cbl | ABEND-ROUTINE-EXIT | — | — | Control flow exit point |
-| COACTUPC.cbl | EDIT-DATE-CCYYMMDD | DateValidationService | `validateDateCcyymmdd()` | COPY CSUTLDPY — Date validation entry point |
-| COACTUPC.cbl | EDIT-YEAR-CCYY | DateValidationService | `validateYearCcyy()` | COPY CSUTLDPY — Century/year validation (19xx, 20xx) |
+| COACTUPC.cbl | EDIT-DATE-CCYYMMDD | DateValidationService | `validateDate()` | COPY CSUTLDPY — Date validation entry point |
+| COACTUPC.cbl | EDIT-YEAR-CCYY | DateValidationService | `validateDate()` | COPY CSUTLDPY — Century/year validation consolidated |
 | COACTUPC.cbl | EDIT-YEAR-CCYY-EXIT | — | — | Control flow exit point (COPY CSUTLDPY) |
-| COACTUPC.cbl | EDIT-MONTH | DateValidationService | `validateMonth()` | COPY CSUTLDPY — Month 01–12 validation |
+| COACTUPC.cbl | EDIT-MONTH | DateValidationService | `validateDate()` | COPY CSUTLDPY — Month 01–12 validation consolidated |
 | COACTUPC.cbl | EDIT-MONTH-EXIT | — | — | Control flow exit point (COPY CSUTLDPY) |
-| COACTUPC.cbl | EDIT-DAY | DateValidationService | `validateDay()` | COPY CSUTLDPY — Day 01–31 validation |
+| COACTUPC.cbl | EDIT-DAY | DateValidationService | `validateDate()` | COPY CSUTLDPY — Day 01–31 validation consolidated |
 | COACTUPC.cbl | EDIT-DAY-EXIT | — | — | Control flow exit point (COPY CSUTLDPY) |
-| COACTUPC.cbl | EDIT-DAY-MONTH-YEAR | DateValidationService | `validateDayMonthYearCombination()` | COPY CSUTLDPY — Leap year, 30/31 day cross-check |
+| COACTUPC.cbl | EDIT-DAY-MONTH-YEAR | DateValidationService | `validateDate()` | COPY CSUTLDPY — Leap year, 30/31 day cross-check consolidated |
 | COACTUPC.cbl | EDIT-DAY-MONTH-YEAR-EXIT | — | — | Control flow exit point (COPY CSUTLDPY) |
-| COACTUPC.cbl | EDIT-DATE-LE | DateValidationService | `validateDateViaLeServices()` | COPY CSUTLDPY — LE CEEDAYS → `java.time.LocalDate.parse()` |
+| COACTUPC.cbl | EDIT-DATE-LE | DateValidationService | `validateWithCeedays()` | COPY CSUTLDPY — LE CEEDAYS → `java.time.LocalDate.parse()` |
 | COACTUPC.cbl | EDIT-DATE-LE-EXIT | — | — | Control flow exit point (COPY CSUTLDPY) |
 | COACTUPC.cbl | EDIT-DATE-CCYYMMDD-EXIT | — | — | Control flow exit point (COPY CSUTLDPY) |
 | COACTUPC.cbl | EDIT-DATE-OF-BIRTH | DateValidationService | `validateDateOfBirth()` | COPY CSUTLDPY — DOB must be in the past |
@@ -254,144 +254,144 @@
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| COCRDLIC.cbl | 0000-MAIN | CardController | `GET /api/cards` | Entry point; first-time vs reenter routing |
-| COCRDLIC.cbl | COMMON-RETURN | CardController | `returnResponse()` | CICS RETURN TRANSID COMMAREA → stateless response |
+| COCRDLIC.cbl | 0000-MAIN | CardController | `GET /api/cards` | Entry point; paginated card listing |
+| COCRDLIC.cbl | COMMON-RETURN | CardController | `GET /api/cards` response | CICS RETURN TRANSID COMMAREA → stateless JSON response |
 | COCRDLIC.cbl | 0000-MAIN-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 1000-SEND-MAP | CardController | `composeListResponse()` | Orchestrates screen init, array, attrs, message, send |
+| COCRDLIC.cbl | 1000-SEND-MAP | CardListService | `listCards()` | Orchestrates pagination and DTO conversion |
 | COCRDLIC.cbl | 1000-SEND-MAP-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 1100-SCREEN-INIT | CardListService | `initializeListScreen()` | LOW-VALUES initialization of output map |
+| COCRDLIC.cbl | 1100-SCREEN-INIT | — | — | LOW-VALUES init → not applicable in REST (DTO construction) |
 | COCRDLIC.cbl | 1100-SCREEN-INIT-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 1200-SCREEN-ARRAY-INIT | CardListService | `initializeCardArray()` | Initializes 7-row display array to empty |
+| COCRDLIC.cbl | 1200-SCREEN-ARRAY-INIT | CardListService | `listCards()` | 7-row display array → paginated result set |
 | COCRDLIC.cbl | 1200-SCREEN-ARRAY-INIT-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 1250-SETUP-ARRAY-ATTRIBS | CardListService | `setupArrayAttributes()` | Array row attribute setup for selection indicators |
+| COCRDLIC.cbl | 1250-SETUP-ARRAY-ATTRIBS | — | — | BMS array attributes → not applicable in REST |
 | COCRDLIC.cbl | 1250-SETUP-ARRAY-ATTRIBS-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 1300-SETUP-SCREEN-ATTRS | CardListService | `setupScreenAttributes()` | Field protection and highlighting |
+| COCRDLIC.cbl | 1300-SETUP-SCREEN-ATTRS | — | — | BMS field attributes → not applicable in REST |
 | COCRDLIC.cbl | 1300-SETUP-SCREEN-ATTRS-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 1400-SETUP-MESSAGE | CardListService | `setupStatusMessage()` | Context-sensitive info/error message selection |
+| COCRDLIC.cbl | 1400-SETUP-MESSAGE | — | — | Context-sensitive messaging → exception handling |
 | COCRDLIC.cbl | 1400-SETUP-MESSAGE-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 1500-SEND-SCREEN | CardController | `sendListResponse()` | CICS SEND MAP → JSON response |
+| COCRDLIC.cbl | 1500-SEND-SCREEN | CardController | `GET /api/cards` response | CICS SEND MAP → JSON response |
 | COCRDLIC.cbl | 1500-SEND-SCREEN-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 2000-RECEIVE-MAP | CardController | `receiveListRequest()` | Orchestrates receive, edit, action dispatch |
+| COCRDLIC.cbl | 2000-RECEIVE-MAP | CardController | `GET /api/cards` request | Receives query parameters |
 | COCRDLIC.cbl | 2000-RECEIVE-MAP-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 2100-RECEIVE-SCREEN | CardController | `receiveScreen()` | CICS RECEIVE MAP → request parameter binding |
+| COCRDLIC.cbl | 2100-RECEIVE-SCREEN | CardController | `GET /api/cards` request | CICS RECEIVE MAP → `@RequestParam` binding |
 | COCRDLIC.cbl | 2100-RECEIVE-SCREEN-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 2200-EDIT-INPUTS | CardListService | `validateListInputs()` | Account/card filter field validation |
+| COCRDLIC.cbl | 2200-EDIT-INPUTS | CardListService | `validateAccountIdFilter()` / `validateCardNumFilter()` | Filter field validation |
 | COCRDLIC.cbl | 2200-EDIT-INPUTS-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 2210-EDIT-ACCOUNT | CardListService | `validateAccountFilter()` | Account ID filter validation |
+| COCRDLIC.cbl | 2210-EDIT-ACCOUNT | CardListService | `validateAccountIdFilter()` | Account ID filter validation |
 | COCRDLIC.cbl | 2210-EDIT-ACCOUNT-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 2220-EDIT-CARD | CardListService | `validateCardFilter()` | Card number filter validation |
+| COCRDLIC.cbl | 2220-EDIT-CARD | CardListService | `validateCardNumFilter()` | Card number filter validation |
 | COCRDLIC.cbl | 2220-EDIT-CARD-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 2250-EDIT-ARRAY | CardListService | `processArraySelection()` | Processes row selection from 7-row card array |
+| COCRDLIC.cbl | 2250-EDIT-ARRAY | — | — | Row selection → not applicable (REST returns full page) |
 | COCRDLIC.cbl | 2250-EDIT-ARRAY-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 9000-READ-FORWARD | CardListService | `readCardsForward()` | STARTBR + READNEXT loop → `CardRepository` paginated forward query |
+| COCRDLIC.cbl | 9000-READ-FORWARD | CardListService | `executeFilteredQuery()` | STARTBR + READNEXT → `CardRepository` paginated query |
 | COCRDLIC.cbl | 9000-READ-FORWARD-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 9100-READ-BACKWARDS | CardListService | `readCardsBackward()` | STARTBR + READPREV loop → `CardRepository` paginated backward query |
+| COCRDLIC.cbl | 9100-READ-BACKWARDS | CardListService | `executeFilteredQuery()` | STARTBR + READPREV → `CardRepository` paginated query |
 | COCRDLIC.cbl | 9100-READ-BACKWARDS-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | 9500-FILTER-RECORDS | CardListService | `filterRecords()` | Account/card filter application during browse |
+| COCRDLIC.cbl | 9500-FILTER-RECORDS | CardListService | `executeFilteredQuery()` | Account/card filter applied in JPA query |
 | COCRDLIC.cbl | 9500-FILTER-RECORDS-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | YYYY-STORE-PFKEY | CardListService | `storePfKey()` | COPY CSSTRPFY — EIBAID key decode and storage |
-| COCRDLIC.cbl | SEND-PLAIN-TEXT | CardController | `sendPlainTextError()` | Short error message output |
+| COCRDLIC.cbl | YYYY-STORE-PFKEY | — | — | COPY CSSTRPFY — EIBAID key decode; not applicable in REST |
+| COCRDLIC.cbl | SEND-PLAIN-TEXT | CardController | error response | Short error message → exception handler |
 | COCRDLIC.cbl | SEND-PLAIN-TEXT-EXIT | — | — | Control flow exit point |
-| COCRDLIC.cbl | SEND-LONG-TEXT | CardController | `sendLongTextError()` | Extended error message output |
+| COCRDLIC.cbl | SEND-LONG-TEXT | CardController | error response | Extended error message → exception handler |
 | COCRDLIC.cbl | SEND-LONG-TEXT-EXIT | — | — | Control flow exit point |
 
 ### 1.7 COCRDSLC — Credit Card Detail
 
 **Source:** `app/cbl/COCRDSLC.cbl` (887 lines) · **Target:** `CardDetailService`, `CardController`
 
-> **Key Migration Notes:** Single-card detail view via keyed VSAM READ on account+card composite key. Maps to `CardRepository.findByAccountIdAndCardNumber()`.
+> **Key Migration Notes:** Single-card detail view via keyed VSAM READ on card number. Maps to `CardRepository.findById()` and `CardRepository.findByCardAcctId()`.
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| COCRDSLC.cbl | 0000-MAIN | CardController | `GET /api/cards/{acctId}/{cardNum}` | Entry point; first-time vs reenter routing |
-| COCRDSLC.cbl | COMMON-RETURN | CardController | `returnResponse()` | CICS RETURN TRANSID COMMAREA → stateless response |
+| COCRDSLC.cbl | 0000-MAIN | CardController | `GET /api/cards/{cardNum}` | Entry point; card detail by card number |
+| COCRDSLC.cbl | COMMON-RETURN | CardController | `GET /api/cards/{cardNum}` response | CICS RETURN TRANSID COMMAREA → stateless JSON response |
 | COCRDSLC.cbl | 0000-MAIN-EXIT | — | — | Control flow exit point |
-| COCRDSLC.cbl | 1000-SEND-MAP | CardController | `composeDetailResponse()` | Orchestrates screen init, vars, attrs, send |
+| COCRDSLC.cbl | 1000-SEND-MAP | CardDetailService | `getCardDetail()` | Orchestrates card read and DTO assembly |
 | COCRDSLC.cbl | 1000-SEND-MAP-EXIT | — | — | Control flow exit point |
-| COCRDSLC.cbl | 1100-SCREEN-INIT | CardDetailService | `initializeDetailScreen()` | LOW-VALUES initialization |
+| COCRDSLC.cbl | 1100-SCREEN-INIT | — | — | LOW-VALUES init → not applicable in REST (DTO construction) |
 | COCRDSLC.cbl | 1100-SCREEN-INIT-EXIT | — | — | Control flow exit point |
-| COCRDSLC.cbl | 1200-SETUP-SCREEN-VARS | CardDetailService | `populateDetailData()` | Card+account data population to output map |
+| COCRDSLC.cbl | 1200-SETUP-SCREEN-VARS | CardDetailService | `toCardDto()` | Card data mapping to response DTO |
 | COCRDSLC.cbl | 1200-SETUP-SCREEN-VARS-EXIT | — | — | Control flow exit point |
-| COCRDSLC.cbl | 1300-SETUP-SCREEN-ATTRS | CardDetailService | `setupScreenAttributes()` | Field protection and cursor placement |
+| COCRDSLC.cbl | 1300-SETUP-SCREEN-ATTRS | — | — | BMS field attributes → not applicable in REST |
 | COCRDSLC.cbl | 1300-SETUP-SCREEN-ATTRS-EXIT | — | — | Control flow exit point |
-| COCRDSLC.cbl | 1400-SEND-SCREEN | CardController | `sendDetailResponse()` | CICS SEND MAP → JSON response |
+| COCRDSLC.cbl | 1400-SEND-SCREEN | CardController | `GET /api/cards/{cardNum}` response | CICS SEND MAP → JSON response |
 | COCRDSLC.cbl | 1400-SEND-SCREEN-EXIT | — | — | Control flow exit point |
-| COCRDSLC.cbl | 2000-PROCESS-INPUTS | CardDetailService | `processDetailRequest()` | Orchestrates receive, edit, data fetch |
+| COCRDSLC.cbl | 2000-PROCESS-INPUTS | CardDetailService | `getCardDetail()` | Orchestrates validation and data fetch |
 | COCRDSLC.cbl | 2000-PROCESS-INPUTS-EXIT | — | — | Control flow exit point |
-| COCRDSLC.cbl | 2100-RECEIVE-MAP | CardController | `receiveDetailRequest()` | CICS RECEIVE MAP → request parameter binding |
+| COCRDSLC.cbl | 2100-RECEIVE-MAP | CardController | `GET /api/cards/{cardNum}` request | CICS RECEIVE MAP → path variable binding |
 | COCRDSLC.cbl | 2100-RECEIVE-MAP-EXIT | — | — | Control flow exit point |
-| COCRDSLC.cbl | 2200-EDIT-MAP-INPUTS | CardDetailService | `validateDetailInputs()` | Account+card input validation |
+| COCRDSLC.cbl | 2200-EDIT-MAP-INPUTS | CardDetailService | `validateCardNumber()` | Card number input validation |
 | COCRDSLC.cbl | 2200-EDIT-MAP-INPUTS-EXIT | — | — | Control flow exit point |
 | COCRDSLC.cbl | 2210-EDIT-ACCOUNT | CardDetailService | `validateAccountId()` | Account ID numeric/non-blank edit |
 | COCRDSLC.cbl | 2210-EDIT-ACCOUNT-EXIT | — | — | Control flow exit point |
 | COCRDSLC.cbl | 2220-EDIT-CARD | CardDetailService | `validateCardNumber()` | Card number numeric/non-blank edit |
 | COCRDSLC.cbl | 2220-EDIT-CARD-EXIT | — | — | Control flow exit point |
-| COCRDSLC.cbl | 9000-READ-DATA | CardDetailService | `readCardData()` | Keyed read orchestration |
+| COCRDSLC.cbl | 9000-READ-DATA | CardDetailService | `getCardDetail()` | Keyed read orchestration |
 | COCRDSLC.cbl | 9000-READ-DATA-EXIT | — | — | Control flow exit point |
-| COCRDSLC.cbl | 9100-GETCARD-BYACCTCARD | CardDetailService | `getCardByAccountAndCard()` | CARDDAT keyed READ → `CardRepository.findByAccountIdAndCardNumber()` |
+| COCRDSLC.cbl | 9100-GETCARD-BYACCTCARD | CardDetailService | `getCardDetail()` | CARDDAT keyed READ → `CardRepository.findById()` |
 | COCRDSLC.cbl | 9100-GETCARD-BYACCTCARD-EXIT | — | — | Control flow exit point |
-| COCRDSLC.cbl | 9150-GETCARD-BYACCT | CardDetailService | `getCardByAccount()` | CARDDAT alternate access → `CardRepository.findByAccountId()` |
+| COCRDSLC.cbl | 9150-GETCARD-BYACCT | CardDetailService | `getCardsByAccountId()` | CARDDAT alternate access → `CardRepository.findByCardAcctId()` |
 | COCRDSLC.cbl | 9150-GETCARD-BYACCT-EXIT | — | — | Control flow exit point |
-| COCRDSLC.cbl | SEND-LONG-TEXT | CardController | `sendLongTextError()` | Extended error message output |
+| COCRDSLC.cbl | SEND-LONG-TEXT | CardController | error response | Extended error message → exception handler |
 | COCRDSLC.cbl | SEND-LONG-TEXT-EXIT | — | — | Control flow exit point |
-| COCRDSLC.cbl | SEND-PLAIN-TEXT | CardController | `sendPlainTextError()` | Short error message output |
+| COCRDSLC.cbl | SEND-PLAIN-TEXT | CardController | error response | Short error message → exception handler |
 | COCRDSLC.cbl | SEND-PLAIN-TEXT-EXIT | — | — | Control flow exit point |
-| COCRDSLC.cbl | YYYY-STORE-PFKEY | CardDetailService | `storePfKey()` | COPY CSSTRPFY — EIBAID key decode and storage |
-| COCRDSLC.cbl | ABEND-ROUTINE | CardController | `handleAbend()` | CICS ABEND handler → global `@ExceptionHandler` |
+| COCRDSLC.cbl | YYYY-STORE-PFKEY | — | — | COPY CSSTRPFY — EIBAID key decode; not applicable in REST |
+| COCRDSLC.cbl | ABEND-ROUTINE | WebConfig | `@ExceptionHandler` | CICS ABEND handler → global exception handler |
 
 ### 1.8 COCRDUPC — Credit Card Update
 
 **Source:** `app/cbl/COCRDUPC.cbl` (1,560 lines) · **Target:** `CardUpdateService`, `CardController`
 
-> **Key Migration Notes:** Implements optimistic concurrency via before/after record image comparison, mapped to JPA `@Version`. Includes comprehensive field validation for card status, expiry month/year, and cardholder name.
+> **Key Migration Notes:** Implements optimistic concurrency via JPA `@Version` annotation. Includes comprehensive field validation for card status, expiry date, and cardholder name.
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| COCRDUPC.cbl | 0000-MAIN | CardController | `PUT /api/cards/{acctId}/{cardNum}` | Entry point; first-time vs reenter routing |
-| COCRDUPC.cbl | COMMON-RETURN | CardController | `returnResponse()` | CICS RETURN TRANSID COMMAREA → stateless response |
+| COCRDUPC.cbl | 0000-MAIN | CardController | `PUT /api/cards/{cardNum}` | Entry point; card update by card number |
+| COCRDUPC.cbl | COMMON-RETURN | CardController | `PUT /api/cards/{cardNum}` response | CICS RETURN TRANSID COMMAREA → stateless JSON response |
 | COCRDUPC.cbl | 0000-MAIN-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 1000-PROCESS-INPUTS | CardUpdateService | `processUpdateRequest()` | Orchestrates receive, edit, decide-action |
+| COCRDUPC.cbl | 1000-PROCESS-INPUTS | CardUpdateService | `updateCard()` | Orchestrates validation and update |
 | COCRDUPC.cbl | 1000-PROCESS-INPUTS-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 1100-RECEIVE-MAP | CardController | `receiveUpdateRequest()` | CICS RECEIVE MAP → request body deserialization |
+| COCRDUPC.cbl | 1100-RECEIVE-MAP | CardController | `PUT /api/cards/{cardNum}` request | CICS RECEIVE MAP → `@RequestBody CardDto` deserialization |
 | COCRDUPC.cbl | 1100-RECEIVE-MAP-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 1200-EDIT-MAP-INPUTS | CardUpdateService | `validateAllCardFields()` | Orchestrates all field-level card edits |
+| COCRDUPC.cbl | 1200-EDIT-MAP-INPUTS | CardUpdateService | `validateFields()` | Orchestrates all field-level card edits |
 | COCRDUPC.cbl | 1200-EDIT-MAP-INPUTS-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 1210-EDIT-ACCOUNT | CardUpdateService | `validateAccountId()` | Account ID numeric/non-blank edit |
+| COCRDUPC.cbl | 1210-EDIT-ACCOUNT | CardUpdateService | `verifyAccountExists()` | Account ID validation |
 | COCRDUPC.cbl | 1210-EDIT-ACCOUNT-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 1220-EDIT-CARD | CardUpdateService | `validateCardNumber()` | Card number numeric/non-blank edit |
+| COCRDUPC.cbl | 1220-EDIT-CARD | CardUpdateService | `validateFields()` | Card number validation consolidated |
 | COCRDUPC.cbl | 1220-EDIT-CARD-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 1230-EDIT-NAME | CardUpdateService | `validateCardholderName()` | Cardholder name alphabetic/non-blank validation |
+| COCRDUPC.cbl | 1230-EDIT-NAME | CardUpdateService | `validateFields()` | Cardholder name validation consolidated |
 | COCRDUPC.cbl | 1230-EDIT-NAME-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 1240-EDIT-CARDSTATUS | CardUpdateService | `validateCardStatus()` | Card status Y/N active indicator validation |
+| COCRDUPC.cbl | 1240-EDIT-CARDSTATUS | CardUpdateService | `validateFields()` | Card status Y/N validation consolidated |
 | COCRDUPC.cbl | 1240-EDIT-CARDSTATUS-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 1250-EDIT-EXPIRY-MON | CardUpdateService | `validateExpiryMonth()` | Expiry month 01–12 range validation |
+| COCRDUPC.cbl | 1250-EDIT-EXPIRY-MON | CardUpdateService | `validateFields()` | Expiry date validation consolidated |
 | COCRDUPC.cbl | 1250-EDIT-EXPIRY-MON-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 1260-EDIT-EXPIRY-YEAR | CardUpdateService | `validateExpiryYear()` | Expiry year CCYY range validation |
+| COCRDUPC.cbl | 1260-EDIT-EXPIRY-YEAR | CardUpdateService | `validateFields()` | Expiry year validation consolidated |
 | COCRDUPC.cbl | 1260-EDIT-EXPIRY-YEAR-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 2000-DECIDE-ACTION | CardUpdateService | `decideUpdateAction()` | State machine: fetch→edit→confirm→commit flow |
+| COCRDUPC.cbl | 2000-DECIDE-ACTION | CardUpdateService | `updateCard()` | State machine consolidated: validate→update→save |
 | COCRDUPC.cbl | 2000-DECIDE-ACTION-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 3000-SEND-MAP | CardController | `composeUpdateResponse()` | Orchestrates screen init, vars, attrs, send |
+| COCRDUPC.cbl | 3000-SEND-MAP | CardController | `PUT /api/cards/{cardNum}` response | Orchestrates response building |
 | COCRDUPC.cbl | 3000-SEND-MAP-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 3100-SCREEN-INIT | CardUpdateService | `initializeUpdateScreen()` | LOW-VALUES initialization of output map |
+| COCRDUPC.cbl | 3100-SCREEN-INIT | — | — | LOW-VALUES init → not applicable in REST (DTO construction) |
 | COCRDUPC.cbl | 3100-SCREEN-INIT-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 3200-SETUP-SCREEN-VARS | CardUpdateService | `populateUpdateData()` | Card data population to output map |
+| COCRDUPC.cbl | 3200-SETUP-SCREEN-VARS | CardUpdateService | `toCardDto()` | Card data mapping to response DTO |
 | COCRDUPC.cbl | 3200-SETUP-SCREEN-VARS-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 3250-SETUP-INFOMSG | CardUpdateService | `setupInfoMessage()` | Context-sensitive info/prompt message selection |
+| COCRDUPC.cbl | 3250-SETUP-INFOMSG | — | — | Context-sensitive messaging → exception/response handling |
 | COCRDUPC.cbl | 3250-SETUP-INFOMSG-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 3300-SETUP-SCREEN-ATTRS | CardUpdateService | `setupScreenAttributes()` | Field protection, cursor positioning, COPY CSSETATY |
+| COCRDUPC.cbl | 3300-SETUP-SCREEN-ATTRS | — | — | BMS field attributes → not applicable in REST |
 | COCRDUPC.cbl | 3300-SETUP-SCREEN-ATTRS-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 3400-SEND-SCREEN | CardController | `sendUpdateResponse()` | CICS SEND MAP → JSON response |
+| COCRDUPC.cbl | 3400-SEND-SCREEN | CardController | `PUT /api/cards/{cardNum}` response | CICS SEND MAP → JSON response |
 | COCRDUPC.cbl | 3400-SEND-SCREEN-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 9000-READ-DATA | CardUpdateService | `readCardData()` | Keyed read orchestration for update |
+| COCRDUPC.cbl | 9000-READ-DATA | CardUpdateService | `getCardForUpdate()` | Keyed read for update with `@Version` |
 | COCRDUPC.cbl | 9000-READ-DATA-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 9100-GETCARD-BYACCTCARD | CardUpdateService | `getCardByAccountAndCard()` | CARDDAT keyed READ → `CardRepository.findByAccountIdAndCardNumber()` |
+| COCRDUPC.cbl | 9100-GETCARD-BYACCTCARD | CardUpdateService | `getCardForUpdate()` | CARDDAT keyed READ → `CardRepository.findById()` |
 | COCRDUPC.cbl | 9100-GETCARD-BYACCTCARD-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 9200-WRITE-PROCESSING | CardUpdateService | `writeCardUpdate()` | REWRITE CARD-RECORD → `CardRepository.save()` with `@Version` optimistic lock |
+| COCRDUPC.cbl | 9200-WRITE-PROCESSING | CardUpdateService | `updateCard()` | REWRITE → `CardRepository.save()` with `@Version` optimistic lock |
 | COCRDUPC.cbl | 9200-WRITE-PROCESSING-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | 9300-CHECK-CHANGE-IN-REC | CardUpdateService | `checkForConcurrentChanges()` | Optimistic concurrency: re-read vs snapshot → JPA `@Version` |
+| COCRDUPC.cbl | 9300-CHECK-CHANGE-IN-REC | CardUpdateService | `hasChanges()` | Optimistic concurrency via JPA `@Version` — automatic |
 | COCRDUPC.cbl | 9300-CHECK-CHANGE-IN-REC-EXIT | — | — | Control flow exit point |
-| COCRDUPC.cbl | YYYY-STORE-PFKEY | CardUpdateService | `storePfKey()` | COPY CSSTRPFY — EIBAID key decode and storage |
-| COCRDUPC.cbl | ABEND-ROUTINE | CardController | `handleAbend()` | CICS ABEND handler → global `@ExceptionHandler` |
+| COCRDUPC.cbl | YYYY-STORE-PFKEY | — | — | COPY CSSTRPFY — EIBAID key decode; not applicable in REST |
+| COCRDUPC.cbl | ABEND-ROUTINE | WebConfig | `@ExceptionHandler` | CICS ABEND handler → global exception handler |
 | COCRDUPC.cbl | ABEND-ROUTINE-EXIT | — | — | Control flow exit point |
 
 ### 1.9 COTRN00C — Transaction List
@@ -403,21 +403,21 @@
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | COTRN00C.cbl | MAIN-PARA | TransactionController | `GET /api/transactions` | Entry point; first-time vs reenter routing |
-| COTRN00C.cbl | PROCESS-ENTER-KEY | TransactionListService | `processEnterKey()` | Handles ENTER key — navigates to transaction detail |
-| COTRN00C.cbl | PROCESS-PF7-KEY | TransactionListService | `processPageBackward()` | PF7 handler — page backward |
-| COTRN00C.cbl | PROCESS-PF8-KEY | TransactionListService | `processPageForward()` | PF8 handler — page forward |
-| COTRN00C.cbl | PROCESS-PAGE-FORWARD | TransactionListService | `readTransactionsForward()` | Reads next 10 transactions from current position |
-| COTRN00C.cbl | PROCESS-PAGE-BACKWARD | TransactionListService | `readTransactionsBackward()` | Reads previous 10 transactions from current position |
-| COTRN00C.cbl | POPULATE-TRAN-DATA | TransactionListService | `populateTransactionList()` | Maps transaction records to display array |
-| COTRN00C.cbl | INITIALIZE-TRAN-DATA | TransactionListService | `initializeTransactionList()` | Clears 10-row display array |
-| COTRN00C.cbl | RETURN-TO-PREV-SCREEN | TransactionController | `returnToPreviousScreen()` | XCTL to calling program → navigation response |
-| COTRN00C.cbl | SEND-TRNLST-SCREEN | TransactionController | `sendListResponse()` | CICS SEND MAP → JSON response |
-| COTRN00C.cbl | RECEIVE-TRNLST-SCREEN | TransactionController | `receiveListRequest()` | CICS RECEIVE MAP → request parameter binding |
-| COTRN00C.cbl | POPULATE-HEADER-INFO | TransactionListService | `populateHeaderInfo()` | Title, date, time, program name header |
-| COTRN00C.cbl | STARTBR-TRANSACT-FILE | TransactionListService | `startBrowseTransactions()` | STARTBR TRANSACT → JPA cursor initialization |
-| COTRN00C.cbl | READNEXT-TRANSACT-FILE | TransactionListService | `readNextTransaction()` | READNEXT TRANSACT → JPA paginated next |
-| COTRN00C.cbl | READPREV-TRANSACT-FILE | TransactionListService | `readPrevTransaction()` | READPREV TRANSACT → JPA paginated previous |
-| COTRN00C.cbl | ENDBR-TRANSACT-FILE | TransactionListService | `endBrowseTransactions()` | ENDBR TRANSACT → browse cleanup |
+| COTRN00C.cbl | PROCESS-ENTER-KEY | TransactionListService | `listTransactions()` | ENTER key logic merged into paginated listing with `startTransactionId` + `page` params |
+| COTRN00C.cbl | PROCESS-PF7-KEY | TransactionListService | `listTransactions()` | PF7 page-backward → `page` parameter decremented by caller |
+| COTRN00C.cbl | PROCESS-PF8-KEY | TransactionListService | `listTransactions()` | PF8 page-forward → `page` parameter incremented by caller |
+| COTRN00C.cbl | PROCESS-PAGE-FORWARD | TransactionListService | `listTransactions()` | Forward browse → Spring Data `Pageable` with next page index |
+| COTRN00C.cbl | PROCESS-PAGE-BACKWARD | TransactionListService | `listTransactions()` | Backward browse → Spring Data `Pageable` with previous page index |
+| COTRN00C.cbl | POPULATE-TRAN-DATA | TransactionListService | `toDto()` | Maps individual `Transaction` entity to DTO for JSON serialization |
+| COTRN00C.cbl | INITIALIZE-TRAN-DATA | _(N/A — REST is stateless)_ | — | BMS screen array initialization not applicable in REST API |
+| COTRN00C.cbl | RETURN-TO-PREV-SCREEN | _(N/A — REST)_ | — | XCTL navigation not applicable; client controls navigation |
+| COTRN00C.cbl | SEND-TRNLST-SCREEN | TransactionController | `GET /api/transactions` response | CICS SEND MAP → JSON response via Spring MVC serialization |
+| COTRN00C.cbl | RECEIVE-TRNLST-SCREEN | TransactionController | `GET /api/transactions` params | CICS RECEIVE MAP → `@RequestParam` binding |
+| COTRN00C.cbl | POPULATE-HEADER-INFO | _(N/A — REST)_ | — | BMS header fields not applicable in REST API |
+| COTRN00C.cbl | STARTBR-TRANSACT-FILE | TransactionListService | `listTransactions()` | STARTBR → Spring Data JPA `findAll(Pageable)` with keyset filter |
+| COTRN00C.cbl | READNEXT-TRANSACT-FILE | TransactionListService | `listTransactions()` | READNEXT → JPA pagination within `listTransactions()` |
+| COTRN00C.cbl | READPREV-TRANSACT-FILE | TransactionListService | `listTransactions()` | READPREV → JPA pagination with previous page index |
+| COTRN00C.cbl | ENDBR-TRANSACT-FILE | _(N/A — JPA)_ | — | ENDBR → JPA connection management is automatic |
 
 ### 1.10 COTRN01C — Transaction Detail
 
@@ -428,14 +428,14 @@
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | COTRN01C.cbl | MAIN-PARA | TransactionController | `GET /api/transactions/{id}` | Entry point; first-time vs reenter routing |
-| COTRN01C.cbl | PROCESS-ENTER-KEY | TransactionDetailService | `processEnterKey()` | Handles ENTER — redisplay or refresh |
-| COTRN01C.cbl | RETURN-TO-PREV-SCREEN | TransactionController | `returnToPreviousScreen()` | XCTL to calling program → navigation response |
-| COTRN01C.cbl | SEND-TRNVIEW-SCREEN | TransactionController | `sendDetailResponse()` | CICS SEND MAP → JSON response |
-| COTRN01C.cbl | RECEIVE-TRNVIEW-SCREEN | TransactionController | `receiveDetailRequest()` | CICS RECEIVE MAP → request parameter binding |
-| COTRN01C.cbl | POPULATE-HEADER-INFO | TransactionDetailService | `populateHeaderInfo()` | Title, date, time, program name header |
-| COTRN01C.cbl | READ-TRANSACT-FILE | TransactionDetailService | `readTransaction()` | READ TRANSACT → `TransactionRepository.findById()` |
-| COTRN01C.cbl | CLEAR-CURRENT-SCREEN | TransactionDetailService | `clearScreen()` | LOW-VALUES initialization |
-| COTRN01C.cbl | INITIALIZE-ALL-FIELDS | TransactionDetailService | `initializeAllFields()` | Working storage field initialization |
+| COTRN01C.cbl | PROCESS-ENTER-KEY | TransactionDetailService | `getTransaction()` | ENTER logic → keyed read of single transaction by ID |
+| COTRN01C.cbl | RETURN-TO-PREV-SCREEN | _(N/A — REST)_ | — | XCTL navigation not applicable; client controls navigation |
+| COTRN01C.cbl | SEND-TRNVIEW-SCREEN | TransactionController | `GET /api/transactions/{id}` response | CICS SEND MAP → JSON response via Spring MVC serialization |
+| COTRN01C.cbl | RECEIVE-TRNVIEW-SCREEN | TransactionController | `GET /api/transactions/{id}` `@PathVariable` | CICS RECEIVE MAP → path variable binding |
+| COTRN01C.cbl | POPULATE-HEADER-INFO | _(N/A — REST)_ | — | BMS header fields not applicable in REST API |
+| COTRN01C.cbl | READ-TRANSACT-FILE | TransactionDetailService | `getTransaction()` | READ TRANSACT → `TransactionRepository.findById()` |
+| COTRN01C.cbl | CLEAR-CURRENT-SCREEN | _(N/A — REST)_ | — | BMS screen clearing not applicable in REST |
+| COTRN01C.cbl | INITIALIZE-ALL-FIELDS | _(N/A — REST)_ | — | Working storage initialization not applicable in REST |
 
 ### 1.11 COTRN02C — Transaction Add
 
@@ -446,23 +446,23 @@
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | COTRN02C.cbl | MAIN-PARA | TransactionController | `POST /api/transactions` | Entry point; first-time vs reenter routing |
-| COTRN02C.cbl | PROCESS-ENTER-KEY | TransactionAddService | `processAddRequest()` | Handles ENTER — validate and add transaction |
-| COTRN02C.cbl | VALIDATE-INPUT-KEY-FIELDS | TransactionAddService | `validateKeyFields()` | Account+card+type+category key validation |
-| COTRN02C.cbl | VALIDATE-INPUT-DATA-FIELDS | TransactionAddService | `validateDataFields()` | Amount, description, source data validation |
-| COTRN02C.cbl | ADD-TRANSACTION | TransactionAddService | `addTransaction()` | Auto-ID + WRITE TRANSACT → `TransactionRepository.save()` |
-| COTRN02C.cbl | COPY-LAST-TRAN-DATA | TransactionAddService | `copyLastTransactionData()` | Copies added transaction data to display for confirmation |
-| COTRN02C.cbl | RETURN-TO-PREV-SCREEN | TransactionController | `returnToPreviousScreen()` | XCTL to calling program → navigation response |
-| COTRN02C.cbl | SEND-TRNADD-SCREEN | TransactionController | `sendAddResponse()` | CICS SEND MAP → JSON response |
-| COTRN02C.cbl | RECEIVE-TRNADD-SCREEN | TransactionController | `receiveAddRequest()` | CICS RECEIVE MAP → request body deserialization |
-| COTRN02C.cbl | POPULATE-HEADER-INFO | TransactionAddService | `populateHeaderInfo()` | Title, date, time, program name header |
-| COTRN02C.cbl | READ-CXACAIX-FILE | TransactionAddService | `readCrossReferenceByAccount()` | CXACAIX alternate index → `CardCrossReferenceRepository.findByAccountId()` |
-| COTRN02C.cbl | READ-CCXREF-FILE | TransactionAddService | `readCrossReferenceByCard()` | CARDXREF keyed read → `CardCrossReferenceRepository.findById()` |
-| COTRN02C.cbl | STARTBR-TRANSACT-FILE | TransactionAddService | `startBrowseForMaxId()` | STARTBR TRANSACT for browse-to-end auto-ID generation |
-| COTRN02C.cbl | READPREV-TRANSACT-FILE | TransactionAddService | `readPrevForMaxId()` | READPREV to find highest transaction ID |
-| COTRN02C.cbl | ENDBR-TRANSACT-FILE | TransactionAddService | `endBrowseTransactions()` | ENDBR cleanup |
-| COTRN02C.cbl | WRITE-TRANSACT-FILE | TransactionAddService | `writeTransaction()` | WRITE TRANSACT → `TransactionRepository.save()` |
-| COTRN02C.cbl | CLEAR-CURRENT-SCREEN | TransactionAddService | `clearScreen()` | LOW-VALUES initialization |
-| COTRN02C.cbl | INITIALIZE-ALL-FIELDS | TransactionAddService | `initializeAllFields()` | Working storage field initialization |
+| COTRN02C.cbl | PROCESS-ENTER-KEY | TransactionAddService | `addTransaction()` | ENTER logic → orchestrates validation, ID generation, and save |
+| COTRN02C.cbl | VALIDATE-INPUT-KEY-FIELDS | TransactionAddService | `resolveCardAccountReference()` | Account+card cross-reference resolution via `CardCrossReferenceRepository` |
+| COTRN02C.cbl | VALIDATE-INPUT-DATA-FIELDS | TransactionAddService | `validateDataFields()` | Amount, description, source, merchant data validation |
+| COTRN02C.cbl | ADD-TRANSACTION | TransactionAddService | `addTransaction()` | Auto-ID via `generateNextTransactionId()` + `toEntity()` + `save()` |
+| COTRN02C.cbl | COPY-LAST-TRAN-DATA | TransactionAddService | `copyFromTransaction()` | `GET /api/transactions/copy/{sourceId}` → copies source transaction for new entry |
+| COTRN02C.cbl | RETURN-TO-PREV-SCREEN | _(N/A — REST)_ | — | XCTL navigation not applicable; client controls navigation |
+| COTRN02C.cbl | SEND-TRNADD-SCREEN | TransactionController | `POST /api/transactions` response | CICS SEND MAP → JSON response via Spring MVC serialization |
+| COTRN02C.cbl | RECEIVE-TRNADD-SCREEN | TransactionController | `POST /api/transactions` `@RequestBody` | CICS RECEIVE MAP → JSON request body deserialization |
+| COTRN02C.cbl | POPULATE-HEADER-INFO | _(N/A — REST)_ | — | BMS header fields not applicable in REST API |
+| COTRN02C.cbl | READ-CXACAIX-FILE | TransactionAddService | `resolveCardAccountReference()` | CXACAIX alternate index → `CardCrossReferenceRepository` lookup |
+| COTRN02C.cbl | READ-CCXREF-FILE | TransactionAddService | `resolveCardAccountReference()` | CARDXREF keyed read → `CardCrossReferenceRepository` lookup |
+| COTRN02C.cbl | STARTBR-TRANSACT-FILE | TransactionAddService | `generateNextTransactionId()` | STARTBR for browse-to-end auto-ID → max ID query |
+| COTRN02C.cbl | READPREV-TRANSACT-FILE | TransactionAddService | `generateNextTransactionId()` | READPREV for highest ID → `TransactionRepository` max query |
+| COTRN02C.cbl | ENDBR-TRANSACT-FILE | _(N/A — JPA)_ | — | ENDBR → JPA connection management is automatic |
+| COTRN02C.cbl | WRITE-TRANSACT-FILE | TransactionAddService | `toEntity()` + `TransactionRepository.save()` | WRITE TRANSACT → JPA entity persist |
+| COTRN02C.cbl | CLEAR-CURRENT-SCREEN | _(N/A — REST)_ | — | BMS screen clearing not applicable in REST |
+| COTRN02C.cbl | INITIALIZE-ALL-FIELDS | _(N/A — REST)_ | — | Working storage initialization not applicable in REST |
 
 ### 1.12 COBIL00C — Bill Payment
 
@@ -473,21 +473,21 @@
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | COBIL00C.cbl | MAIN-PARA | BillingController | `POST /api/billing/pay` | Entry point; first-time vs reenter routing |
-| COBIL00C.cbl | PROCESS-ENTER-KEY | BillPaymentService | `processBillPayment()` | Handles ENTER — validate, update balance, create transaction |
-| COBIL00C.cbl | GET-CURRENT-TIMESTAMP | BillPaymentService | `getCurrentTimestamp()` | ASKTIME ABSTIME + FORMATTIME → `java.time.LocalDateTime.now()` |
-| COBIL00C.cbl | RETURN-TO-PREV-SCREEN | BillingController | `returnToPreviousScreen()` | XCTL to calling program → navigation response |
-| COBIL00C.cbl | SEND-BILLPAY-SCREEN | BillingController | `sendBillPayResponse()` | CICS SEND MAP → JSON response |
-| COBIL00C.cbl | RECEIVE-BILLPAY-SCREEN | BillingController | `receiveBillPayRequest()` | CICS RECEIVE MAP → request body deserialization |
-| COBIL00C.cbl | POPULATE-HEADER-INFO | BillPaymentService | `populateHeaderInfo()` | Title, date, time, program name header |
-| COBIL00C.cbl | READ-ACCTDAT-FILE | BillPaymentService | `readAccountData()` | READ ACCTDAT → `AccountRepository.findById()` |
-| COBIL00C.cbl | UPDATE-ACCTDAT-FILE | BillPaymentService | `updateAccountBalance()` | REWRITE ACCTDAT → `AccountRepository.save()` balance deduction |
-| COBIL00C.cbl | READ-CXACAIX-FILE | BillPaymentService | `readCrossReference()` | CXACAIX alternate index → `CardCrossReferenceRepository.findByAccountId()` |
-| COBIL00C.cbl | STARTBR-TRANSACT-FILE | BillPaymentService | `startBrowseForMaxId()` | STARTBR TRANSACT for auto-ID generation |
-| COBIL00C.cbl | READPREV-TRANSACT-FILE | BillPaymentService | `readPrevForMaxId()` | READPREV to find highest transaction ID |
-| COBIL00C.cbl | ENDBR-TRANSACT-FILE | BillPaymentService | `endBrowseTransactions()` | ENDBR cleanup |
-| COBIL00C.cbl | WRITE-TRANSACT-FILE | BillPaymentService | `writePaymentTransaction()` | WRITE TRANSACT → `TransactionRepository.save()` |
-| COBIL00C.cbl | CLEAR-CURRENT-SCREEN | BillPaymentService | `clearScreen()` | LOW-VALUES initialization |
-| COBIL00C.cbl | INITIALIZE-ALL-FIELDS | BillPaymentService | `initializeAllFields()` | Working storage field initialization |
+| COBIL00C.cbl | PROCESS-ENTER-KEY | BillPaymentService | `processPayment()` | ENTER logic → orchestrates account read, balance update, and transaction create |
+| COBIL00C.cbl | GET-CURRENT-TIMESTAMP | _(inline)_ | `LocalDateTime.now()` | ASKTIME ABSTIME → `java.time.LocalDateTime.now()` called inline |
+| COBIL00C.cbl | RETURN-TO-PREV-SCREEN | _(N/A — REST)_ | — | XCTL navigation not applicable; client controls navigation |
+| COBIL00C.cbl | SEND-BILLPAY-SCREEN | BillingController | `POST /api/billing/pay` response | CICS SEND MAP → JSON response via Spring MVC serialization |
+| COBIL00C.cbl | RECEIVE-BILLPAY-SCREEN | BillingController | `POST /api/billing/pay` `@RequestBody` | CICS RECEIVE MAP → JSON request body deserialization |
+| COBIL00C.cbl | POPULATE-HEADER-INFO | _(N/A — REST)_ | — | BMS header fields not applicable in REST API |
+| COBIL00C.cbl | READ-ACCTDAT-FILE | BillPaymentService | `processPayment()` | READ ACCTDAT → `AccountRepository.findById()` within `processPayment()` |
+| COBIL00C.cbl | UPDATE-ACCTDAT-FILE | BillPaymentService | `processPayment()` | REWRITE ACCTDAT → `AccountRepository.save()` balance deduction within `processPayment()` |
+| COBIL00C.cbl | READ-CXACAIX-FILE | BillPaymentService | `processPayment()` | CXACAIX → `CardCrossReferenceRepository` lookup within `processPayment()` |
+| COBIL00C.cbl | STARTBR-TRANSACT-FILE | BillPaymentService | `generateTransactionId()` | STARTBR TRANSACT for auto-ID → max ID query |
+| COBIL00C.cbl | READPREV-TRANSACT-FILE | BillPaymentService | `generateTransactionId()` | READPREV for highest ID → `TransactionRepository` max query |
+| COBIL00C.cbl | ENDBR-TRANSACT-FILE | _(N/A — JPA)_ | — | ENDBR → JPA connection management is automatic |
+| COBIL00C.cbl | WRITE-TRANSACT-FILE | BillPaymentService | `processPayment()` | WRITE TRANSACT → `TransactionRepository.save()` within `processPayment()` |
+| COBIL00C.cbl | CLEAR-CURRENT-SCREEN | _(N/A — REST)_ | — | BMS screen clearing not applicable in REST |
+| COBIL00C.cbl | INITIALIZE-ALL-FIELDS | _(N/A — REST)_ | — | Working storage initialization not applicable in REST |
 
 ### 1.13 CORPT00C — Report Submission
 
@@ -498,15 +498,15 @@
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | CORPT00C.cbl | MAIN-PARA | ReportController | `POST /api/reports/submit` | Entry point; first-time vs reenter routing |
-| CORPT00C.cbl | PROCESS-ENTER-KEY | ReportSubmissionService | `processReportRequest()` | Handles ENTER — validate criteria and submit job |
-| CORPT00C.cbl | SUBMIT-JOB-TO-INTRDR | ReportSubmissionService | `submitBatchJob()` | Builds JCL and submits to internal reader → SQS message publish |
-| CORPT00C.cbl | WIRTE-JOBSUB-TDQ | ReportSubmissionService | `writeToJobQueue()` | WRITEQ TD QUEUE('JOBS') → `SqsTemplate.send()` to report FIFO queue |
-| CORPT00C.cbl | RETURN-TO-PREV-SCREEN | ReportController | `returnToPreviousScreen()` | XCTL to calling program → navigation response |
-| CORPT00C.cbl | SEND-TRNRPT-SCREEN | ReportController | `sendReportResponse()` | CICS SEND MAP → JSON response |
-| CORPT00C.cbl | RETURN-TO-CICS | ReportController | `returnToCics()` | CICS RETURN → HTTP response finalization |
-| CORPT00C.cbl | RECEIVE-TRNRPT-SCREEN | ReportController | `receiveReportRequest()` | CICS RECEIVE MAP → request body deserialization |
-| CORPT00C.cbl | POPULATE-HEADER-INFO | ReportSubmissionService | `populateHeaderInfo()` | Title, date, time, program name header |
-| CORPT00C.cbl | INITIALIZE-ALL-FIELDS | ReportSubmissionService | `initializeAllFields()` | Working storage field initialization |
+| CORPT00C.cbl | PROCESS-ENTER-KEY | ReportSubmissionService | `submitReport()` | ENTER logic → orchestrates validation, report type determination, and SQS publish |
+| CORPT00C.cbl | SUBMIT-JOB-TO-INTRDR | ReportSubmissionService | `sendToSqs()` | JCL internal reader submission → SQS message publish via `SqsTemplate` |
+| CORPT00C.cbl | WIRTE-JOBSUB-TDQ | ReportSubmissionService | `sendToSqs()` | WRITEQ TD QUEUE('JOBS') → `SqsTemplate.send()` to `carddemo-report-jobs.fifo` |
+| CORPT00C.cbl | RETURN-TO-PREV-SCREEN | _(N/A — REST)_ | — | XCTL navigation not applicable; client controls navigation |
+| CORPT00C.cbl | SEND-TRNRPT-SCREEN | ReportController | `POST /api/reports/submit` response | CICS SEND MAP → JSON response via Spring MVC serialization |
+| CORPT00C.cbl | RETURN-TO-CICS | _(N/A — REST)_ | — | CICS RETURN → HTTP response lifecycle handled by Spring MVC |
+| CORPT00C.cbl | RECEIVE-TRNRPT-SCREEN | ReportController | `POST /api/reports/submit` `@RequestBody` | CICS RECEIVE MAP → JSON request body deserialization |
+| CORPT00C.cbl | POPULATE-HEADER-INFO | _(N/A — REST)_ | — | BMS header fields not applicable in REST API |
+| CORPT00C.cbl | INITIALIZE-ALL-FIELDS | _(N/A — REST)_ | — | Working storage initialization not applicable in REST |
 
 ### 1.14 COUSR00C — User List
 
@@ -517,21 +517,21 @@
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | COUSR00C.cbl | MAIN-PARA | UserAdminController | `GET /api/admin/users` | Entry point; first-time vs reenter routing |
-| COUSR00C.cbl | PROCESS-ENTER-KEY | UserListService | `processEnterKey()` | Handles ENTER — navigates to user detail/update |
-| COUSR00C.cbl | PROCESS-PF7-KEY | UserListService | `processPageBackward()` | PF7 handler — page backward |
-| COUSR00C.cbl | PROCESS-PF8-KEY | UserListService | `processPageForward()` | PF8 handler — page forward |
-| COUSR00C.cbl | PROCESS-PAGE-FORWARD | UserListService | `readUsersForward()` | Reads next page of users from current position |
-| COUSR00C.cbl | PROCESS-PAGE-BACKWARD | UserListService | `readUsersBackward()` | Reads previous page of users from current position |
-| COUSR00C.cbl | POPULATE-USER-DATA | UserListService | `populateUserList()` | Maps user records to display array |
-| COUSR00C.cbl | INITIALIZE-USER-DATA | UserListService | `initializeUserList()` | Clears display array |
-| COUSR00C.cbl | RETURN-TO-PREV-SCREEN | UserAdminController | `returnToPreviousScreen()` | XCTL to calling program → navigation response |
-| COUSR00C.cbl | SEND-USRLST-SCREEN | UserAdminController | `sendUserListResponse()` | CICS SEND MAP → JSON response |
-| COUSR00C.cbl | RECEIVE-USRLST-SCREEN | UserAdminController | `receiveUserListRequest()` | CICS RECEIVE MAP → request parameter binding |
-| COUSR00C.cbl | POPULATE-HEADER-INFO | UserListService | `populateHeaderInfo()` | Title, date, time, program name header |
-| COUSR00C.cbl | STARTBR-USER-SEC-FILE | UserListService | `startBrowseUsers()` | STARTBR USRSEC → JPA cursor initialization |
-| COUSR00C.cbl | READNEXT-USER-SEC-FILE | UserListService | `readNextUser()` | READNEXT USRSEC → JPA paginated next |
-| COUSR00C.cbl | READPREV-USER-SEC-FILE | UserListService | `readPrevUser()` | READPREV USRSEC → JPA paginated previous |
-| COUSR00C.cbl | ENDBR-USER-SEC-FILE | UserListService | `endBrowseUsers()` | ENDBR USRSEC → browse cleanup |
+| COUSR00C.cbl | PROCESS-ENTER-KEY | UserListService | `listUsers()` / `listUsersFromId()` | ENTER logic → paginated user list with optional `startUserId` filter |
+| COUSR00C.cbl | PROCESS-PF7-KEY | UserListService | `listUsers()` | PF7 page-backward → `pageNumber` param decremented by caller |
+| COUSR00C.cbl | PROCESS-PF8-KEY | UserListService | `listUsers()` | PF8 page-forward → `pageNumber` param incremented by caller |
+| COUSR00C.cbl | PROCESS-PAGE-FORWARD | UserListService | `listUsers()` | Forward browse → Spring Data `Pageable` with next page index |
+| COUSR00C.cbl | PROCESS-PAGE-BACKWARD | UserListService | `hasPreviousPage()` | Backward browse → checks if previous page exists via `Page.hasPrevious()` |
+| COUSR00C.cbl | POPULATE-USER-DATA | UserListService | `convertToDto()` / `convertPageToDto()` | Maps `UserSecurity` entity to `UserSecurityDto` for JSON serialization |
+| COUSR00C.cbl | INITIALIZE-USER-DATA | _(N/A — REST is stateless)_ | — | BMS screen array initialization not applicable in REST API |
+| COUSR00C.cbl | RETURN-TO-PREV-SCREEN | _(N/A — REST)_ | — | XCTL navigation not applicable; client controls navigation |
+| COUSR00C.cbl | SEND-USRLST-SCREEN | UserAdminController | `GET /api/admin/users` response | CICS SEND MAP → JSON response via Spring MVC serialization |
+| COUSR00C.cbl | RECEIVE-USRLST-SCREEN | UserAdminController | `GET /api/admin/users` `@RequestParam` | CICS RECEIVE MAP → request parameter binding |
+| COUSR00C.cbl | POPULATE-HEADER-INFO | _(N/A — REST)_ | — | BMS header fields not applicable in REST API |
+| COUSR00C.cbl | STARTBR-USER-SEC-FILE | UserListService | `listUsers()` / `listUsersFromId()` | STARTBR → Spring Data JPA `findAll(Pageable)` |
+| COUSR00C.cbl | READNEXT-USER-SEC-FILE | UserListService | `listUsers()` | READNEXT → JPA pagination within `listUsers()` |
+| COUSR00C.cbl | READPREV-USER-SEC-FILE | UserListService | `listUsers()` | READPREV → JPA pagination with previous page index |
+| COUSR00C.cbl | ENDBR-USER-SEC-FILE | _(N/A — JPA)_ | — | ENDBR → JPA connection management is automatic |
 
 ### 1.15 COUSR01C — User Add
 
@@ -542,14 +542,14 @@
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | COUSR01C.cbl | MAIN-PARA | UserAdminController | `POST /api/admin/users` | Entry point; first-time vs reenter routing |
-| COUSR01C.cbl | PROCESS-ENTER-KEY | UserAddService | `processAddUser()` | Handles ENTER — validate and create user |
-| COUSR01C.cbl | RETURN-TO-PREV-SCREEN | UserAdminController | `returnToPreviousScreen()` | XCTL to calling program → navigation response |
-| COUSR01C.cbl | SEND-USRADD-SCREEN | UserAdminController | `sendAddUserResponse()` | CICS SEND MAP → JSON response |
-| COUSR01C.cbl | RECEIVE-USRADD-SCREEN | UserAdminController | `receiveAddUserRequest()` | CICS RECEIVE MAP → request body deserialization |
-| COUSR01C.cbl | POPULATE-HEADER-INFO | UserAddService | `populateHeaderInfo()` | Title, date, time, program name header |
-| COUSR01C.cbl | WRITE-USER-SEC-FILE | UserAddService | `writeUserRecord()` | WRITE USRSEC → `UserSecurityRepository.save()` with BCrypt password |
-| COUSR01C.cbl | CLEAR-CURRENT-SCREEN | UserAddService | `clearScreen()` | LOW-VALUES initialization |
-| COUSR01C.cbl | INITIALIZE-ALL-FIELDS | UserAddService | `initializeAllFields()` | Working storage field initialization |
+| COUSR01C.cbl | PROCESS-ENTER-KEY | UserAddService | `addUser()` | ENTER logic → validates input and creates user with BCrypt password |
+| COUSR01C.cbl | RETURN-TO-PREV-SCREEN | _(N/A — REST)_ | — | XCTL navigation not applicable; client controls navigation |
+| COUSR01C.cbl | SEND-USRADD-SCREEN | UserAdminController | `POST /api/admin/users` response | CICS SEND MAP → JSON response via Spring MVC serialization |
+| COUSR01C.cbl | RECEIVE-USRADD-SCREEN | UserAdminController | `POST /api/admin/users` `@RequestBody` | CICS RECEIVE MAP → JSON request body deserialization |
+| COUSR01C.cbl | POPULATE-HEADER-INFO | _(N/A — REST)_ | — | BMS header fields not applicable in REST API |
+| COUSR01C.cbl | WRITE-USER-SEC-FILE | UserAddService | `buildEntityFromDto()` + `UserSecurityRepository.save()` | WRITE USRSEC → `PasswordEncoder.encode()` + JPA persist |
+| COUSR01C.cbl | CLEAR-CURRENT-SCREEN | _(N/A — REST)_ | — | BMS screen clearing not applicable in REST |
+| COUSR01C.cbl | INITIALIZE-ALL-FIELDS | _(N/A — REST)_ | — | Working storage initialization not applicable in REST |
 
 ### 1.16 COUSR02C — User Update
 
@@ -560,16 +560,16 @@
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | COUSR02C.cbl | MAIN-PARA | UserAdminController | `PUT /api/admin/users/{userId}` | Entry point; first-time vs reenter routing |
-| COUSR02C.cbl | PROCESS-ENTER-KEY | UserUpdateService | `processUpdateUser()` | Handles ENTER — validate and update user |
-| COUSR02C.cbl | UPDATE-USER-INFO | UserUpdateService | `updateUserInfo()` | Orchestrates read, modify, rewrite |
-| COUSR02C.cbl | RETURN-TO-PREV-SCREEN | UserAdminController | `returnToPreviousScreen()` | XCTL to calling program → navigation response |
-| COUSR02C.cbl | SEND-USRUPD-SCREEN | UserAdminController | `sendUpdateUserResponse()` | CICS SEND MAP → JSON response |
-| COUSR02C.cbl | RECEIVE-USRUPD-SCREEN | UserAdminController | `receiveUpdateUserRequest()` | CICS RECEIVE MAP → request body deserialization |
-| COUSR02C.cbl | POPULATE-HEADER-INFO | UserUpdateService | `populateHeaderInfo()` | Title, date, time, program name header |
-| COUSR02C.cbl | READ-USER-SEC-FILE | UserUpdateService | `readUserRecord()` | READ USRSEC → `UserSecurityRepository.findBySecUsrId()` |
-| COUSR02C.cbl | UPDATE-USER-SEC-FILE | UserUpdateService | `updateUserRecord()` | REWRITE USRSEC → `UserSecurityRepository.save()` |
-| COUSR02C.cbl | CLEAR-CURRENT-SCREEN | UserUpdateService | `clearScreen()` | LOW-VALUES initialization |
-| COUSR02C.cbl | INITIALIZE-ALL-FIELDS | UserUpdateService | `initializeAllFields()` | Working storage field initialization |
+| COUSR02C.cbl | PROCESS-ENTER-KEY | UserUpdateService | `updateUser()` | ENTER logic → validates input and updates user record |
+| COUSR02C.cbl | UPDATE-USER-INFO | UserUpdateService | `updateUser()` | Orchestrates `validateUpdateInput()`, `isFieldChanged()`, `isPasswordChanged()`, and save |
+| COUSR02C.cbl | RETURN-TO-PREV-SCREEN | _(N/A — REST)_ | — | XCTL navigation not applicable; client controls navigation |
+| COUSR02C.cbl | SEND-USRUPD-SCREEN | UserAdminController | `PUT /api/admin/users/{userId}` response | CICS SEND MAP → JSON response via Spring MVC serialization |
+| COUSR02C.cbl | RECEIVE-USRUPD-SCREEN | UserAdminController | `PUT /api/admin/users/{userId}` `@RequestBody` | CICS RECEIVE MAP → JSON request body deserialization |
+| COUSR02C.cbl | POPULATE-HEADER-INFO | _(N/A — REST)_ | — | BMS header fields not applicable in REST API |
+| COUSR02C.cbl | READ-USER-SEC-FILE | UserUpdateService | `getUserForUpdate()` | READ USRSEC → `UserSecurityRepository.findBySecUsrId()` |
+| COUSR02C.cbl | UPDATE-USER-SEC-FILE | UserUpdateService | `updateUser()` | REWRITE USRSEC → `UserSecurityRepository.save()` with re-hash if password changed |
+| COUSR02C.cbl | CLEAR-CURRENT-SCREEN | _(N/A — REST)_ | — | BMS screen clearing not applicable in REST |
+| COUSR02C.cbl | INITIALIZE-ALL-FIELDS | _(N/A — REST)_ | — | Working storage initialization not applicable in REST |
 
 ### 1.17 COUSR03C — User Delete
 
@@ -580,16 +580,16 @@
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | COUSR03C.cbl | MAIN-PARA | UserAdminController | `DELETE /api/admin/users/{userId}` | Entry point; first-time vs reenter routing |
-| COUSR03C.cbl | PROCESS-ENTER-KEY | UserDeleteService | `processDeleteUser()` | Handles ENTER — confirm and delete user |
-| COUSR03C.cbl | DELETE-USER-INFO | UserDeleteService | `deleteUserInfo()` | Orchestrates read, confirm, delete |
-| COUSR03C.cbl | RETURN-TO-PREV-SCREEN | UserAdminController | `returnToPreviousScreen()` | XCTL to calling program → navigation response |
-| COUSR03C.cbl | SEND-USRDEL-SCREEN | UserAdminController | `sendDeleteUserResponse()` | CICS SEND MAP → JSON response |
-| COUSR03C.cbl | RECEIVE-USRDEL-SCREEN | UserAdminController | `receiveDeleteUserRequest()` | CICS RECEIVE MAP → request body deserialization |
-| COUSR03C.cbl | POPULATE-HEADER-INFO | UserDeleteService | `populateHeaderInfo()` | Title, date, time, program name header |
-| COUSR03C.cbl | READ-USER-SEC-FILE | UserDeleteService | `readUserRecord()` | READ USRSEC → `UserSecurityRepository.findBySecUsrId()` |
-| COUSR03C.cbl | DELETE-USER-SEC-FILE | UserDeleteService | `deleteUserRecord()` | DELETE USRSEC → `UserSecurityRepository.delete()` |
-| COUSR03C.cbl | CLEAR-CURRENT-SCREEN | UserDeleteService | `clearScreen()` | LOW-VALUES initialization |
-| COUSR03C.cbl | INITIALIZE-ALL-FIELDS | UserDeleteService | `initializeAllFields()` | Working storage field initialization |
+| COUSR03C.cbl | PROCESS-ENTER-KEY | UserDeleteService | `deleteUser()` | ENTER logic → validates and deletes user record |
+| COUSR03C.cbl | DELETE-USER-INFO | UserDeleteService | `deleteUser()` | Orchestrates `validateUserId()`, `getUserForDelete()`, and `UserSecurityRepository.delete()` |
+| COUSR03C.cbl | RETURN-TO-PREV-SCREEN | _(N/A — REST)_ | — | XCTL navigation not applicable; client controls navigation |
+| COUSR03C.cbl | SEND-USRDEL-SCREEN | UserAdminController | `DELETE /api/admin/users/{userId}` response | CICS SEND MAP → JSON response via Spring MVC serialization |
+| COUSR03C.cbl | RECEIVE-USRDEL-SCREEN | UserAdminController | `DELETE /api/admin/users/{userId}` `@PathVariable` | CICS RECEIVE MAP → path variable binding |
+| COUSR03C.cbl | POPULATE-HEADER-INFO | _(N/A — REST)_ | — | BMS header fields not applicable in REST API |
+| COUSR03C.cbl | READ-USER-SEC-FILE | UserDeleteService | `getUserForDelete()` | READ USRSEC → `UserSecurityRepository.findBySecUsrId()` |
+| COUSR03C.cbl | DELETE-USER-SEC-FILE | UserDeleteService | `deleteUser()` | DELETE USRSEC → `UserSecurityRepository.delete()` |
+| COUSR03C.cbl | CLEAR-CURRENT-SCREEN | _(N/A — REST)_ | — | BMS screen clearing not applicable in REST |
+| COUSR03C.cbl | INITIALIZE-ALL-FIELDS | _(N/A — REST)_ | — | Working storage initialization not applicable in REST |
 
 ---
 
@@ -603,12 +603,12 @@
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| CBACT01C.cbl | 0000-ACCTFILE-OPEN | AccountFileReader | `openAccountFile()` | OPEN INPUT ACCTFILE → datasource initialization |
-| CBACT01C.cbl | 1000-ACCTFILE-GET-NEXT | AccountFileReader | `read()` | READ ACCTFILE NEXT → sequential record read |
-| CBACT01C.cbl | 1100-DISPLAY-ACCT-RECORD | AccountFileReader | `displayAccountRecord()` | DISPLAY record → logging output |
-| CBACT01C.cbl | 9000-ACCTFILE-CLOSE | AccountFileReader | `closeAccountFile()` | CLOSE ACCTFILE → resource cleanup |
-| CBACT01C.cbl | 9999-ABEND-PROGRAM | AccountFileReader | `handleAbend()` | ABEND → exception throw with FILE STATUS |
-| CBACT01C.cbl | 9910-DISPLAY-IO-STATUS | AccountFileReader | `displayIoStatus()` | FILE STATUS display → structured logging |
+| CBACT01C.cbl | 0000-ACCTFILE-OPEN | — (N/A) | N/A | OPEN INPUT ACCTFILE → Spring Data JPA auto-manages connections; no explicit open needed |
+| CBACT01C.cbl | 1000-ACCTFILE-GET-NEXT | AccountFileReader | `read()` | READ ACCTFILE NEXT → `AccountRepository.findAll()` sequential iteration via Spring Batch reader |
+| CBACT01C.cbl | 1100-DISPLAY-ACCT-RECORD | — (N/A — diagnostic) | N/A | DISPLAY record → eliminated; diagnostic logging handled by SLF4J in `read()` |
+| CBACT01C.cbl | 9000-ACCTFILE-CLOSE | AccountFileReader | `reset()` | CLOSE ACCTFILE → reader state reset for reuse |
+| CBACT01C.cbl | 9999-ABEND-PROGRAM | — (N/A) | N/A | ABEND → Java exception propagation; no explicit abend method |
+| CBACT01C.cbl | 9910-DISPLAY-IO-STATUS | — (N/A) | N/A | FILE STATUS display → exception message in Java stack trace |
 
 ### 2.2 CBACT02C — Card File Reader
 
@@ -618,11 +618,11 @@
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| CBACT02C.cbl | 0000-CARDFILE-OPEN | CardFileReader | `openCardFile()` | OPEN INPUT CARDFILE → datasource initialization |
-| CBACT02C.cbl | 1000-CARDFILE-GET-NEXT | CardFileReader | `read()` | READ CARDFILE NEXT → sequential record read |
-| CBACT02C.cbl | 9000-CARDFILE-CLOSE | CardFileReader | `closeCardFile()` | CLOSE CARDFILE → resource cleanup |
-| CBACT02C.cbl | 9999-ABEND-PROGRAM | CardFileReader | `handleAbend()` | ABEND → exception throw with FILE STATUS |
-| CBACT02C.cbl | 9910-DISPLAY-IO-STATUS | CardFileReader | `displayIoStatus()` | FILE STATUS display → structured logging |
+| CBACT02C.cbl | 0000-CARDFILE-OPEN | — (N/A) | N/A | OPEN INPUT CARDFILE → Spring Data JPA auto-manages connections; no explicit open needed |
+| CBACT02C.cbl | 1000-CARDFILE-GET-NEXT | CardFileReader | `read()` | READ CARDFILE NEXT → `CardRepository.findAll()` sequential iteration via Spring Batch reader |
+| CBACT02C.cbl | 9000-CARDFILE-CLOSE | CardFileReader | `reset()` | CLOSE CARDFILE → reader state reset for reuse |
+| CBACT02C.cbl | 9999-ABEND-PROGRAM | — (N/A) | N/A | ABEND → Java exception propagation; no explicit abend method |
+| CBACT02C.cbl | 9910-DISPLAY-IO-STATUS | — (N/A) | N/A | FILE STATUS display → exception message in Java stack trace |
 
 ### 2.3 CBACT03C — Cross-Reference File Reader
 
@@ -632,11 +632,11 @@
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| CBACT03C.cbl | 0000-XREFFILE-OPEN | CrossReferenceFileReader | `openXrefFile()` | OPEN INPUT XREFFILE → datasource initialization |
-| CBACT03C.cbl | 1000-XREFFILE-GET-NEXT | CrossReferenceFileReader | `read()` | READ XREFFILE NEXT → sequential record read |
-| CBACT03C.cbl | 9000-XREFFILE-CLOSE | CrossReferenceFileReader | `closeXrefFile()` | CLOSE XREFFILE → resource cleanup |
-| CBACT03C.cbl | 9999-ABEND-PROGRAM | CrossReferenceFileReader | `handleAbend()` | ABEND → exception throw with FILE STATUS |
-| CBACT03C.cbl | 9910-DISPLAY-IO-STATUS | CrossReferenceFileReader | `displayIoStatus()` | FILE STATUS display → structured logging |
+| CBACT03C.cbl | 0000-XREFFILE-OPEN | — (N/A) | N/A | OPEN INPUT XREFFILE → Spring Data JPA auto-manages connections; no explicit open needed |
+| CBACT03C.cbl | 1000-XREFFILE-GET-NEXT | CrossReferenceFileReader | `read()` | READ XREFFILE NEXT → `CardCrossReferenceRepository.findAll()` sequential iteration |
+| CBACT03C.cbl | 9000-XREFFILE-CLOSE | CrossReferenceFileReader | `reset()` | CLOSE XREFFILE → reader state reset for reuse |
+| CBACT03C.cbl | 9999-ABEND-PROGRAM | — (N/A) | N/A | ABEND → Java exception propagation; no explicit abend method |
+| CBACT03C.cbl | 9910-DISPLAY-IO-STATUS | — (N/A) | N/A | FILE STATUS display → exception message in Java stack trace |
 
 ### 2.4 CBACT04C — Interest Calculation
 
@@ -646,28 +646,28 @@
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| CBACT04C.cbl | 0000-TCATBALF-OPEN | InterestCalculationJob | `openTcatbalFile()` | OPEN INPUT TCATBALF → job step initialization |
-| CBACT04C.cbl | 0100-XREFFILE-OPEN | InterestCalculationJob | `openXrefFile()` | OPEN INPUT XREFFILE → xref datasource init |
-| CBACT04C.cbl | 0200-DISCGRP-OPEN | InterestCalculationJob | `openDiscgrpFile()` | OPEN INPUT DISCGRP → disclosure group datasource init |
-| CBACT04C.cbl | 0300-ACCTFILE-OPEN | InterestCalculationJob | `openAcctFile()` | OPEN I-O ACCTFILE → account file for update |
-| CBACT04C.cbl | 0400-TRANFILE-OPEN | InterestCalculationJob | `openTranFile()` | OPEN OUTPUT TRANFILE → transaction output file |
-| CBACT04C.cbl | 1000-TCATBALF-GET-NEXT | InterestCalculationProcessor | `read()` | READ TCATBALF NEXT → sequential category balance read |
-| CBACT04C.cbl | 1050-UPDATE-ACCOUNT | InterestCalculationProcessor | `updateAccountBalance()` | REWRITE ACCT-REC → `AccountRepository.save()` with interest added |
-| CBACT04C.cbl | 1100-GET-ACCT-DATA | InterestCalculationProcessor | `getAccountData()` | READ ACCTFILE → `AccountRepository.findById()` |
-| CBACT04C.cbl | 1110-GET-XREF-DATA | InterestCalculationProcessor | `getXrefData()` | READ XREFFILE → `CardCrossReferenceRepository.findById()` |
-| CBACT04C.cbl | 1200-GET-INTEREST-RATE | InterestCalculationProcessor | `getInterestRate()` | READ DISCGRP by type+category → `DisclosureGroupRepository` query |
-| CBACT04C.cbl | 1200-A-GET-DEFAULT-INT-RATE | InterestCalculationProcessor | `getDefaultInterestRate()` | DEFAULT disclosure group fallback → `DisclosureGroupRepository.findDefault()` |
+| CBACT04C.cbl | 0000-TCATBALF-OPEN | InterestCalculationJob | `interestCalculationStep()` | OPEN INPUT TCATBALF → Step configuration initializes `interestTcatbalReader()` bean |
+| CBACT04C.cbl | 0100-XREFFILE-OPEN | — (N/A) | N/A | OPEN INPUT XREFFILE → Spring Data JPA auto-manages repository connections |
+| CBACT04C.cbl | 0200-DISCGRP-OPEN | — (N/A) | N/A | OPEN INPUT DISCGRP → Spring Data JPA auto-manages repository connections |
+| CBACT04C.cbl | 0300-ACCTFILE-OPEN | — (N/A) | N/A | OPEN I-O ACCTFILE → Spring Data JPA auto-manages repository connections |
+| CBACT04C.cbl | 0400-TRANFILE-OPEN | — (N/A) | N/A | OPEN OUTPUT TRANFILE → `TransactionRepository` auto-managed by Spring Data JPA |
+| CBACT04C.cbl | 1000-TCATBALF-GET-NEXT | InterestCalculationJob | `interestTcatbalReader()` | READ TCATBALF NEXT → `RepositoryItemReader` drives sequential category balance reads |
+| CBACT04C.cbl | 1050-UPDATE-ACCOUNT | InterestCalculationProcessor | `updateAccount()` | REWRITE ACCT-REC → `AccountRepository.save()` with interest added to balance |
+| CBACT04C.cbl | 1100-GET-ACCT-DATA | InterestCalculationProcessor | `process()` | READ ACCTFILE → `AccountRepository.findById()` called within `process()` orchestration |
+| CBACT04C.cbl | 1110-GET-XREF-DATA | InterestCalculationProcessor | `process()` | READ XREFFILE → `CardCrossReferenceRepository` lookup within `process()` |
+| CBACT04C.cbl | 1200-GET-INTEREST-RATE | InterestCalculationProcessor | `lookupInterestRate()` | READ DISCGRP by type+category → `DisclosureGroupRepository` query with DEFAULT fallback |
+| CBACT04C.cbl | 1200-A-GET-DEFAULT-INT-RATE | InterestCalculationProcessor | `lookupInterestRate()` | DEFAULT disclosure group fallback → handled within `lookupInterestRate()` method |
 | CBACT04C.cbl | 1300-COMPUTE-INTEREST | InterestCalculationProcessor | `computeInterest()` | `(balance × rate) / 1200` → `BigDecimal.divide(RoundingMode.HALF_EVEN)` |
-| CBACT04C.cbl | 1300-B-WRITE-TX | InterestCalculationProcessor | `writeInterestTransaction()` | WRITE TRAN-RECORD → `TransactionRepository.save()` interest entry |
+| CBACT04C.cbl | 1300-B-WRITE-TX | InterestCalculationProcessor | `generateInterestTransaction()` | WRITE TRAN-RECORD → creates `Transaction` entity for interest entry |
 | CBACT04C.cbl | 1400-COMPUTE-FEES | InterestCalculationProcessor | `computeFees()` | Fee computation (placeholder in source — no fee formula defined) |
-| CBACT04C.cbl | 9000-TCATBALF-CLOSE | InterestCalculationJob | `closeTcatbalFile()` | CLOSE TCATBALF → resource cleanup |
-| CBACT04C.cbl | 9100-XREFFILE-CLOSE | InterestCalculationJob | `closeXrefFile()` | CLOSE XREFFILE → resource cleanup |
-| CBACT04C.cbl | 9200-DISCGRP-CLOSE | InterestCalculationJob | `closeDiscgrpFile()` | CLOSE DISCGRP → resource cleanup |
-| CBACT04C.cbl | 9300-ACCTFILE-CLOSE | InterestCalculationJob | `closeAcctFile()` | CLOSE ACCTFILE → resource cleanup |
-| CBACT04C.cbl | 9400-TRANFILE-CLOSE | InterestCalculationJob | `closeTranFile()` | CLOSE TRANFILE → resource cleanup |
-| CBACT04C.cbl | Z-GET-DB2-FORMAT-TIMESTAMP | InterestCalculationProcessor | `getDb2FormatTimestamp()` | Timestamp formatting → `java.time.format.DateTimeFormatter` |
-| CBACT04C.cbl | 9999-ABEND-PROGRAM | InterestCalculationJob | `handleAbend()` | ABEND → exception throw with FILE STATUS |
-| CBACT04C.cbl | 9910-DISPLAY-IO-STATUS | InterestCalculationJob | `displayIoStatus()` | FILE STATUS display → structured logging |
+| CBACT04C.cbl | 9000-TCATBALF-CLOSE | — (N/A) | N/A | CLOSE TCATBALF → Spring Batch auto-cleanup on step completion |
+| CBACT04C.cbl | 9100-XREFFILE-CLOSE | — (N/A) | N/A | CLOSE XREFFILE → Spring Data JPA auto-manages connection lifecycle |
+| CBACT04C.cbl | 9200-DISCGRP-CLOSE | — (N/A) | N/A | CLOSE DISCGRP → Spring Data JPA auto-manages connection lifecycle |
+| CBACT04C.cbl | 9300-ACCTFILE-CLOSE | — (N/A) | N/A | CLOSE ACCTFILE → Spring Data JPA auto-manages connection lifecycle |
+| CBACT04C.cbl | 9400-TRANFILE-CLOSE | — (N/A) | N/A | CLOSE TRANFILE → Spring Data JPA auto-manages connection lifecycle |
+| CBACT04C.cbl | Z-GET-DB2-FORMAT-TIMESTAMP | InterestCalculationProcessor | `beforeStep()` / `afterStep()` | Timestamp formatting → `StepExecutionListener` lifecycle hooks; `java.time.format.DateTimeFormatter` |
+| CBACT04C.cbl | 9999-ABEND-PROGRAM | — (N/A) | N/A | ABEND → Java exception propagation through Spring Batch error handling |
+| CBACT04C.cbl | 9910-DISPLAY-IO-STATUS | — (N/A) | N/A | FILE STATUS display → exception message in Java stack trace |
 
 ### 2.5 CBCUS01C — Customer File Reader
 
@@ -677,11 +677,11 @@
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| CBCUS01C.cbl | 0000-CUSTFILE-OPEN | CustomerFileReader | `openCustomerFile()` | OPEN INPUT CUSTFILE → datasource initialization |
-| CBCUS01C.cbl | 1000-CUSTFILE-GET-NEXT | CustomerFileReader | `read()` | READ CUSTFILE NEXT → sequential record read |
-| CBCUS01C.cbl | 9000-CUSTFILE-CLOSE | CustomerFileReader | `closeCustomerFile()` | CLOSE CUSTFILE → resource cleanup |
-| CBCUS01C.cbl | Z-ABEND-PROGRAM | CustomerFileReader | `handleAbend()` | ABEND → exception throw with FILE STATUS |
-| CBCUS01C.cbl | Z-DISPLAY-IO-STATUS | CustomerFileReader | `displayIoStatus()` | FILE STATUS display → structured logging |
+| CBCUS01C.cbl | 0000-CUSTFILE-OPEN | — (N/A) | N/A | OPEN INPUT CUSTFILE → Spring Data JPA auto-manages connections; no explicit open needed |
+| CBCUS01C.cbl | 1000-CUSTFILE-GET-NEXT | CustomerFileReader | `read()` | READ CUSTFILE NEXT → `CustomerRepository.findAll()` sequential iteration via Spring Batch reader |
+| CBCUS01C.cbl | 9000-CUSTFILE-CLOSE | CustomerFileReader | `reset()` | CLOSE CUSTFILE → reader state reset for reuse |
+| CBCUS01C.cbl | Z-ABEND-PROGRAM | — (N/A) | N/A | ABEND → Java exception propagation; no explicit abend method |
+| CBCUS01C.cbl | Z-DISPLAY-IO-STATUS | — (N/A) | N/A | FILE STATUS display → exception message in Java stack trace |
 
 ### 2.6 CBSTM03A — Statement Generation Main
 
@@ -691,31 +691,31 @@
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| CBSTM03A.CBL | 0000-START | StatementGenerationJob | `start()` | Job entry point — file opens and mainline dispatch |
-| CBSTM03A.CBL | 1000-MAINLINE | StatementProcessor | `process()` | Main processing loop — per-account statement generation |
-| CBSTM03A.CBL | 9999-GOBACK | StatementGenerationJob | `completeJob()` | GOBACK → job completion with exit status |
-| CBSTM03A.CBL | 1000-XREFFILE-GET-NEXT | StatementProcessor | `readNextCrossReference()` | READ XREFFILE NEXT → sequential xref iteration |
-| CBSTM03A.CBL | 2000-CUSTFILE-GET | StatementProcessor | `getCustomerData()` | READ CUSTFILE → `CustomerRepository.findById()` |
-| CBSTM03A.CBL | 3000-ACCTFILE-GET | StatementProcessor | `getAccountData()` | READ ACCTFILE → `AccountRepository.findById()` |
-| CBSTM03A.CBL | 4000-TRNXFILE-GET | StatementProcessor | `getTransactionData()` | READ TRANSACT → `TransactionRepository.findByAccountId()` |
-| CBSTM03A.CBL | 5000-CREATE-STATEMENT | StatementProcessor | `createStatement()` | Builds statement from account+customer+transaction data |
-| CBSTM03A.CBL | 5100-WRITE-HTML-HEADER | StatementProcessor | `writeHtmlHeader()` | HTML statement header generation |
+| CBSTM03A.CBL | 0000-START | StatementGenerationJob | `statementGenerationJob()` | Job entry point → Spring Batch `Job` bean configuration with `statementGenerationStep()` |
+| CBSTM03A.CBL | 1000-MAINLINE | StatementProcessor | `process()` | Main processing loop → per-account statement generation orchestration |
+| CBSTM03A.CBL | 9999-GOBACK | — (N/A) | N/A | GOBACK → job completion handled by Spring Batch lifecycle |
+| CBSTM03A.CBL | 1000-XREFFILE-GET-NEXT | StatementGenerationJob | `statementXrefReader()` | READ XREFFILE NEXT → `RepositoryItemReader` bean drives sequential xref iteration |
+| CBSTM03A.CBL | 2000-CUSTFILE-GET | StatementProcessor | `process()` | READ CUSTFILE → `CustomerRepository.findById()` called within `process()` |
+| CBSTM03A.CBL | 3000-ACCTFILE-GET | StatementProcessor | `process()` | READ ACCTFILE → `AccountRepository.findById()` called within `process()` |
+| CBSTM03A.CBL | 4000-TRNXFILE-GET | StatementProcessor | `process()` | READ TRANSACT → `TransactionRepository` query called within `process()` |
+| CBSTM03A.CBL | 5000-CREATE-STATEMENT | StatementProcessor | `generateTextStatement()` + `generateHtmlStatement()` | Dual-format statement from account+customer+transaction data |
+| CBSTM03A.CBL | 5100-WRITE-HTML-HEADER | StatementProcessor | `generateHtmlStatement()` | HTML statement header within `generateHtmlStatement()` |
 | CBSTM03A.CBL | 5100-EXIT | — | — | Control flow exit point |
-| CBSTM03A.CBL | 5200-WRITE-HTML-NMADBS | StatementProcessor | `writeHtmlNameAndAddress()` | HTML name/address/balance section |
+| CBSTM03A.CBL | 5200-WRITE-HTML-NMADBS | StatementProcessor | `generateHtmlStatement()` | HTML name/address/balance within `generateHtmlStatement()` |
 | CBSTM03A.CBL | 5200-EXIT | — | — | Control flow exit point |
-| CBSTM03A.CBL | 6000-WRITE-TRANS | StatementProcessor | `writeTransactionLines()` | Transaction line items for statement body |
-| CBSTM03A.CBL | 8100-FILE-OPEN | StatementGenerationJob | `openAllFiles()` | Master file open orchestration |
-| CBSTM03A.CBL | 8100-TRNXFILE-OPEN | StatementGenerationJob | `openTransactionFile()` | OPEN INPUT TRNXFILE → datasource init |
-| CBSTM03A.CBL | 8200-XREFFILE-OPEN | StatementGenerationJob | `openXrefFile()` | OPEN INPUT XREFFILE → datasource init |
-| CBSTM03A.CBL | 8300-CUSTFILE-OPEN | StatementGenerationJob | `openCustomerFile()` | OPEN INPUT CUSTFILE → datasource init |
-| CBSTM03A.CBL | 8400-ACCTFILE-OPEN | StatementGenerationJob | `openAccountFile()` | OPEN INPUT ACCTFILE → datasource init |
-| CBSTM03A.CBL | 8500-READTRNX-READ | StatementProcessor | `readTransactionRecord()` | Individual transaction record read |
+| CBSTM03A.CBL | 6000-WRITE-TRANS | StatementProcessor | `generateTextStatement()` | Transaction line items for text statement body |
+| CBSTM03A.CBL | 8100-FILE-OPEN | — (N/A) | N/A | Master file open → Spring Batch auto-opens resources via step lifecycle |
+| CBSTM03A.CBL | 8100-TRNXFILE-OPEN | — (N/A) | N/A | OPEN INPUT TRNXFILE → Spring Data JPA auto-manages connections |
+| CBSTM03A.CBL | 8200-XREFFILE-OPEN | — (N/A) | N/A | OPEN INPUT XREFFILE → Spring Data JPA auto-manages connections |
+| CBSTM03A.CBL | 8300-CUSTFILE-OPEN | — (N/A) | N/A | OPEN INPUT CUSTFILE → Spring Data JPA auto-manages connections |
+| CBSTM03A.CBL | 8400-ACCTFILE-OPEN | — (N/A) | N/A | OPEN INPUT ACCTFILE → Spring Data JPA auto-manages connections |
+| CBSTM03A.CBL | 8500-READTRNX-READ | StatementProcessor | `process()` | Transaction record read within `process()` orchestration |
 | CBSTM03A.CBL | 8599-EXIT | — | — | Control flow exit point |
-| CBSTM03A.CBL | 9100-TRNXFILE-CLOSE | StatementGenerationJob | `closeTransactionFile()` | CLOSE TRNXFILE → resource cleanup |
-| CBSTM03A.CBL | 9200-XREFFILE-CLOSE | StatementGenerationJob | `closeXrefFile()` | CLOSE XREFFILE → resource cleanup |
-| CBSTM03A.CBL | 9300-CUSTFILE-CLOSE | StatementGenerationJob | `closeCustomerFile()` | CLOSE CUSTFILE → resource cleanup |
-| CBSTM03A.CBL | 9400-ACCTFILE-CLOSE | StatementGenerationJob | `closeAccountFile()` | CLOSE ACCTFILE → resource cleanup |
-| CBSTM03A.CBL | 9999-ABEND-PROGRAM | StatementGenerationJob | `handleAbend()` | ABEND → exception throw with FILE STATUS |
+| CBSTM03A.CBL | 9100-TRNXFILE-CLOSE | — (N/A) | N/A | CLOSE TRNXFILE → Spring Batch auto-cleanup on step completion |
+| CBSTM03A.CBL | 9200-XREFFILE-CLOSE | — (N/A) | N/A | CLOSE XREFFILE → Spring Batch auto-cleanup on step completion |
+| CBSTM03A.CBL | 9300-CUSTFILE-CLOSE | — (N/A) | N/A | CLOSE CUSTFILE → Spring Batch auto-cleanup on step completion |
+| CBSTM03A.CBL | 9400-ACCTFILE-CLOSE | — (N/A) | N/A | CLOSE ACCTFILE → Spring Batch auto-cleanup on step completion |
+| CBSTM03A.CBL | 9999-ABEND-PROGRAM | — (N/A) | N/A | ABEND → Java exception propagation through Spring Batch error handling |
 
 ### 2.7 CBSTM03B — Statement File-Service Subroutine
 
@@ -725,18 +725,18 @@
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| CBSTM03B.CBL | 0000-START | StatementWriter | `initialize()` | Entry point — dispatches based on file operation code |
-| CBSTM03B.CBL | 9999-GOBACK | StatementWriter | `complete()` | GOBACK → returns control to caller |
-| CBSTM03B.CBL | 1000-TRNXFILE-PROC | StatementWriter | `processTransactionFile()` | Transaction file open/read/close dispatch |
+| CBSTM03B.CBL | 0000-START | StatementWriter | `write(Chunk)` | Entry point → Spring Batch `ItemWriter.write()` dispatches S3 output |
+| CBSTM03B.CBL | 9999-GOBACK | — (N/A) | N/A | GOBACK → returns control via Spring Batch lifecycle |
+| CBSTM03B.CBL | 1000-TRNXFILE-PROC | StatementWriter | `uploadToS3()` | Transaction file write → S3 upload for text statement output |
 | CBSTM03B.CBL | 1900-EXIT | — | — | Control flow exit point |
 | CBSTM03B.CBL | 1999-EXIT | — | — | Control flow exit point |
-| CBSTM03B.CBL | 2000-XREFFILE-PROC | StatementWriter | `processXrefFile()` | Cross-reference file open/read/close dispatch |
+| CBSTM03B.CBL | 2000-XREFFILE-PROC | StatementWriter | `uploadToS3()` | Xref file processing → S3 upload for HTML statement output |
 | CBSTM03B.CBL | 2900-EXIT | — | — | Control flow exit point |
 | CBSTM03B.CBL | 2999-EXIT | — | — | Control flow exit point |
-| CBSTM03B.CBL | 3000-CUSTFILE-PROC | StatementWriter | `processCustomerFile()` | Customer file open/read/close dispatch |
+| CBSTM03B.CBL | 3000-CUSTFILE-PROC | StatementWriter | `generateS3Key()` | Customer file processing → S3 key generation for card-based naming |
 | CBSTM03B.CBL | 3900-EXIT | — | — | Control flow exit point |
 | CBSTM03B.CBL | 3999-EXIT | — | — | Control flow exit point |
-| CBSTM03B.CBL | 4000-ACCTFILE-PROC | StatementWriter | `processAccountFile()` | Account file open/read/close dispatch |
+| CBSTM03B.CBL | 4000-ACCTFILE-PROC | StatementWriter | `getStatementCount()` | Account file processing → statement tracking and counting |
 | CBSTM03B.CBL | 4900-EXIT | — | — | Control flow exit point |
 | CBSTM03B.CBL | 4999-EXIT | — | — | Control flow exit point |
 
@@ -748,24 +748,24 @@
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| CBTRN01C.cbl | MAIN-PARA | DailyTransactionReader | `initialize()` | Entry point — opens all files, drives main loop |
-| CBTRN01C.cbl | 1000-DALYTRAN-GET-NEXT | DailyTransactionReader | `read()` | READ DALYTRAN NEXT → S3 file line read |
-| CBTRN01C.cbl | 2000-LOOKUP-XREF | DailyTransactionReader | `lookupCrossReference()` | CARDXREF keyed read → card-to-account resolution |
-| CBTRN01C.cbl | 3000-READ-ACCOUNT | DailyTransactionReader | `readAccountData()` | ACCTFILE keyed read → account validation |
-| CBTRN01C.cbl | 0000-DALYTRAN-OPEN | DailyTransactionReader | `openDailyTransactionFile()` | OPEN INPUT DALYTRAN → S3 object stream init |
-| CBTRN01C.cbl | 0100-CUSTFILE-OPEN | DailyTransactionReader | `openCustomerFile()` | OPEN INPUT CUSTFILE → datasource init |
-| CBTRN01C.cbl | 0200-XREFFILE-OPEN | DailyTransactionReader | `openXrefFile()` | OPEN INPUT XREFFILE → datasource init |
-| CBTRN01C.cbl | 0300-CARDFILE-OPEN | DailyTransactionReader | `openCardFile()` | OPEN INPUT CARDFILE → datasource init |
-| CBTRN01C.cbl | 0400-ACCTFILE-OPEN | DailyTransactionReader | `openAccountFile()` | OPEN INPUT ACCTFILE → datasource init |
-| CBTRN01C.cbl | 0500-TRANFILE-OPEN | DailyTransactionReader | `openTransactionFile()` | OPEN I-O TRANFILE → transaction file for output |
-| CBTRN01C.cbl | 9000-DALYTRAN-CLOSE | DailyTransactionReader | `closeDailyTransactionFile()` | CLOSE DALYTRAN → resource cleanup |
-| CBTRN01C.cbl | 9100-CUSTFILE-CLOSE | DailyTransactionReader | `closeCustomerFile()` | CLOSE CUSTFILE → resource cleanup |
-| CBTRN01C.cbl | 9200-XREFFILE-CLOSE | DailyTransactionReader | `closeXrefFile()` | CLOSE XREFFILE → resource cleanup |
-| CBTRN01C.cbl | 9300-CARDFILE-CLOSE | DailyTransactionReader | `closeCardFile()` | CLOSE CARDFILE → resource cleanup |
-| CBTRN01C.cbl | 9400-ACCTFILE-CLOSE | DailyTransactionReader | `closeAccountFile()` | CLOSE ACCTFILE → resource cleanup |
-| CBTRN01C.cbl | 9500-TRANFILE-CLOSE | DailyTransactionReader | `closeTransactionFile()` | CLOSE TRANFILE → resource cleanup |
-| CBTRN01C.cbl | Z-ABEND-PROGRAM | DailyTransactionReader | `handleAbend()` | ABEND → exception throw with FILE STATUS |
-| CBTRN01C.cbl | Z-DISPLAY-IO-STATUS | DailyTransactionReader | `displayIoStatus()` | FILE STATUS display → structured logging |
+| CBTRN01C.cbl | MAIN-PARA | DailyTransactionReader | `openDailyTransactionFile()` + `read()` | Entry point → opens S3 stream and begins sequential read loop |
+| CBTRN01C.cbl | 1000-DALYTRAN-GET-NEXT | DailyTransactionReader | `read()` | READ DALYTRAN NEXT → `parseFixedWidthRecord()` parses each S3 file line |
+| CBTRN01C.cbl | 2000-LOOKUP-XREF | TransactionPostingProcessor | `process()` | CARDXREF keyed read → cross-reference lookup moved to processor validation cascade |
+| CBTRN01C.cbl | 3000-READ-ACCOUNT | TransactionPostingProcessor | `process()` | ACCTFILE keyed read → account validation moved to processor validation cascade |
+| CBTRN01C.cbl | 0000-DALYTRAN-OPEN | DailyTransactionReader | `openDailyTransactionFile()` | OPEN INPUT DALYTRAN → S3 object stream initialization from `carddemo-batch-input` bucket |
+| CBTRN01C.cbl | 0100-CUSTFILE-OPEN | — (N/A) | N/A | OPEN INPUT CUSTFILE → Spring Data JPA auto-manages repository connections |
+| CBTRN01C.cbl | 0200-XREFFILE-OPEN | — (N/A) | N/A | OPEN INPUT XREFFILE → Spring Data JPA auto-manages repository connections |
+| CBTRN01C.cbl | 0300-CARDFILE-OPEN | — (N/A) | N/A | OPEN INPUT CARDFILE → Spring Data JPA auto-manages repository connections |
+| CBTRN01C.cbl | 0400-ACCTFILE-OPEN | — (N/A) | N/A | OPEN INPUT ACCTFILE → Spring Data JPA auto-manages repository connections |
+| CBTRN01C.cbl | 0500-TRANFILE-OPEN | — (N/A) | N/A | OPEN I-O TRANFILE → `TransactionRepository` auto-managed by Spring Data JPA |
+| CBTRN01C.cbl | 9000-DALYTRAN-CLOSE | DailyTransactionReader | `closeDailyTransactionFile()` | CLOSE DALYTRAN → S3 input stream resource cleanup |
+| CBTRN01C.cbl | 9100-CUSTFILE-CLOSE | — (N/A) | N/A | CLOSE CUSTFILE → Spring Data JPA auto-manages connection lifecycle |
+| CBTRN01C.cbl | 9200-XREFFILE-CLOSE | — (N/A) | N/A | CLOSE XREFFILE → Spring Data JPA auto-manages connection lifecycle |
+| CBTRN01C.cbl | 9300-CARDFILE-CLOSE | — (N/A) | N/A | CLOSE CARDFILE → Spring Data JPA auto-manages connection lifecycle |
+| CBTRN01C.cbl | 9400-ACCTFILE-CLOSE | — (N/A) | N/A | CLOSE ACCTFILE → Spring Data JPA auto-manages connection lifecycle |
+| CBTRN01C.cbl | 9500-TRANFILE-CLOSE | — (N/A) | N/A | CLOSE TRANFILE → Spring Data JPA auto-manages connection lifecycle |
+| CBTRN01C.cbl | Z-ABEND-PROGRAM | — (N/A) | N/A | ABEND → Java exception propagation through Spring Batch error handling |
+| CBTRN01C.cbl | Z-DISPLAY-IO-STATUS | — (N/A) | N/A | FILE STATUS display → exception message in Java stack trace |
 
 ### 2.9 CBTRN02C — Daily Transaction Posting Engine
 
@@ -775,32 +775,32 @@
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| CBTRN02C.cbl | 0000-DALYTRAN-OPEN | DailyTransactionPostingJob | `openDailyTranFile()` | OPEN INPUT DALYTRAN → S3 daily file init |
-| CBTRN02C.cbl | 0100-TRANFILE-OPEN | DailyTransactionPostingJob | `openTransactionFile()` | OPEN I-O TRANFILE → transaction file for output |
-| CBTRN02C.cbl | 0200-XREFFILE-OPEN | DailyTransactionPostingJob | `openXrefFile()` | OPEN INPUT XREFFILE → xref datasource init |
-| CBTRN02C.cbl | 0300-DALYREJS-OPEN | DailyTransactionPostingJob | `openRejectFile()` | OPEN OUTPUT DALYREJS → S3 rejection file init |
-| CBTRN02C.cbl | 0400-ACCTFILE-OPEN | DailyTransactionPostingJob | `openAccountFile()` | OPEN I-O ACCTFILE → account file for update |
-| CBTRN02C.cbl | 0500-TCATBALF-OPEN | DailyTransactionPostingJob | `openTcatbalFile()` | OPEN I-O TCATBALF → category balance file for update |
-| CBTRN02C.cbl | 1000-DALYTRAN-GET-NEXT | TransactionPostingProcessor | `read()` | READ DALYTRAN NEXT → daily transaction read |
-| CBTRN02C.cbl | 1500-VALIDATE-TRAN | TransactionPostingProcessor | `validate()` | 4-stage validation cascade (codes 100–109) |
-| CBTRN02C.cbl | 1500-A-LOOKUP-XREF | TransactionPostingProcessor | `lookupCrossReference()` | XREFFILE keyed read → reject code 100 if not found |
-| CBTRN02C.cbl | 1500-B-LOOKUP-ACCT | TransactionPostingProcessor | `lookupAccount()` | ACCTFILE keyed read → reject code 101 if not found |
-| CBTRN02C.cbl | 2000-POST-TRANSACTION | TransactionPostingProcessor | `postTransaction()` | Orchestrates write + balance update + TCATBAL update |
-| CBTRN02C.cbl | 2500-WRITE-REJECT-REC | RejectWriter | `write()` | WRITE DALYREJS → S3 rejection file with reason trailer |
-| CBTRN02C.cbl | 2700-UPDATE-TCATBAL | TransactionPostingProcessor | `updateCategoryBalance()` | Orchestrates TCATBAL create-or-update |
-| CBTRN02C.cbl | 2700-A-CREATE-TCATBAL-REC | TransactionPostingProcessor | `createCategoryBalanceRecord()` | WRITE TCATBALF → `TransactionCategoryBalanceRepository.save()` new record |
-| CBTRN02C.cbl | 2700-B-UPDATE-TCATBAL-REC | TransactionPostingProcessor | `updateCategoryBalanceRecord()` | REWRITE TCATBALF → `TransactionCategoryBalanceRepository.save()` updated balance |
-| CBTRN02C.cbl | 2800-UPDATE-ACCOUNT-REC | TransactionPostingProcessor | `updateAccountRecord()` | REWRITE ACCTFILE → `AccountRepository.save()` balance update |
-| CBTRN02C.cbl | 2900-WRITE-TRANSACTION-FILE | TransactionWriter | `write()` | WRITE TRANFILE → `TransactionRepository.save()` posted transaction |
-| CBTRN02C.cbl | 9000-DALYTRAN-CLOSE | DailyTransactionPostingJob | `closeDailyTranFile()` | CLOSE DALYTRAN → resource cleanup |
-| CBTRN02C.cbl | 9100-TRANFILE-CLOSE | DailyTransactionPostingJob | `closeTransactionFile()` | CLOSE TRANFILE → resource cleanup |
-| CBTRN02C.cbl | 9200-XREFFILE-CLOSE | DailyTransactionPostingJob | `closeXrefFile()` | CLOSE XREFFILE → resource cleanup |
-| CBTRN02C.cbl | 9300-DALYREJS-CLOSE | DailyTransactionPostingJob | `closeRejectFile()` | CLOSE DALYREJS → resource cleanup |
-| CBTRN02C.cbl | 9400-ACCTFILE-CLOSE | DailyTransactionPostingJob | `closeAccountFile()` | CLOSE ACCTFILE → resource cleanup |
-| CBTRN02C.cbl | 9500-TCATBALF-CLOSE | DailyTransactionPostingJob | `closeTcatbalFile()` | CLOSE TCATBALF → resource cleanup |
-| CBTRN02C.cbl | Z-GET-DB2-FORMAT-TIMESTAMP | TransactionPostingProcessor | `getDb2FormatTimestamp()` | Timestamp formatting → `java.time.format.DateTimeFormatter` |
-| CBTRN02C.cbl | 9999-ABEND-PROGRAM | DailyTransactionPostingJob | `handleAbend()` | ABEND → exception throw with FILE STATUS |
-| CBTRN02C.cbl | 9910-DISPLAY-IO-STATUS | DailyTransactionPostingJob | `displayIoStatus()` | FILE STATUS display → structured logging |
+| CBTRN02C.cbl | 0000-DALYTRAN-OPEN | DailyTransactionPostingJob | `dailyTransactionPostingStep()` | OPEN INPUT DALYTRAN → Step configuration initializes `DailyTransactionReader` bean |
+| CBTRN02C.cbl | 0100-TRANFILE-OPEN | — (N/A) | N/A | OPEN I-O TRANFILE → `TransactionRepository` auto-managed by Spring Data JPA |
+| CBTRN02C.cbl | 0200-XREFFILE-OPEN | — (N/A) | N/A | OPEN INPUT XREFFILE → Spring Data JPA auto-manages repository connections |
+| CBTRN02C.cbl | 0300-DALYREJS-OPEN | DailyTransactionPostingJob | `dailyTransactionPostingStep()` | OPEN OUTPUT DALYREJS → Step configuration initializes `RejectWriter` bean |
+| CBTRN02C.cbl | 0400-ACCTFILE-OPEN | — (N/A) | N/A | OPEN I-O ACCTFILE → Spring Data JPA auto-manages repository connections |
+| CBTRN02C.cbl | 0500-TCATBALF-OPEN | — (N/A) | N/A | OPEN I-O TCATBALF → Spring Data JPA auto-manages repository connections |
+| CBTRN02C.cbl | 1000-DALYTRAN-GET-NEXT | DailyTransactionReader | `read()` | READ DALYTRAN NEXT → S3 file read via `parseFixedWidthRecord()` |
+| CBTRN02C.cbl | 1500-VALIDATE-TRAN | TransactionPostingProcessor | `process()` | 4-stage validation cascade (reject codes 100—109) within `process()` |
+| CBTRN02C.cbl | 1500-A-LOOKUP-XREF | TransactionPostingProcessor | `process()` | XREFFILE keyed read → `CardCrossReferenceRepository` lookup; reject code 100 if not found |
+| CBTRN02C.cbl | 1500-B-LOOKUP-ACCT | TransactionPostingProcessor | `process()` | ACCTFILE keyed read → `AccountRepository` lookup; reject code 101 if not found |
+| CBTRN02C.cbl | 2000-POST-TRANSACTION | TransactionPostingProcessor | `buildTransaction()` | Orchestrates validated transaction assembly from `DailyTransaction` input |
+| CBTRN02C.cbl | 2500-WRITE-REJECT-REC | TransactionPostingProcessor + RejectWriter | `rejectTransaction()` + `registerRejection()` | WRITE DALYREJS → rejection record with reason trailer via `RejectWriter` |
+| CBTRN02C.cbl | 2700-UPDATE-TCATBAL | TransactionPostingProcessor | `updateTcatbal()` | Orchestrates TCATBAL create-or-update within `process()` |
+| CBTRN02C.cbl | 2700-A-CREATE-TCATBAL-REC | TransactionPostingProcessor | `updateTcatbal()` | WRITE TCATBALF → `TransactionCategoryBalanceRepository.save()` new record |
+| CBTRN02C.cbl | 2700-B-UPDATE-TCATBAL-REC | TransactionPostingProcessor | `updateTcatbal()` | REWRITE TCATBALF → `TransactionCategoryBalanceRepository.save()` updated balance |
+| CBTRN02C.cbl | 2800-UPDATE-ACCOUNT-REC | TransactionPostingProcessor | `updateAccount()` | REWRITE ACCTFILE → `AccountRepository.save()` with balance update |
+| CBTRN02C.cbl | 2900-WRITE-TRANSACTION-FILE | TransactionWriter | `write(Chunk)` / `postSingleTransaction()` | WRITE TRANFILE → `TransactionRepository.save()` posted transaction |
+| CBTRN02C.cbl | 9000-DALYTRAN-CLOSE | — (N/A) | N/A | CLOSE DALYTRAN → Spring Batch auto-cleanup on step completion |
+| CBTRN02C.cbl | 9100-TRANFILE-CLOSE | — (N/A) | N/A | CLOSE TRANFILE → Spring Data JPA auto-manages connection lifecycle |
+| CBTRN02C.cbl | 9200-XREFFILE-CLOSE | — (N/A) | N/A | CLOSE XREFFILE → Spring Data JPA auto-manages connection lifecycle |
+| CBTRN02C.cbl | 9300-DALYREJS-CLOSE | RejectWriter | `generateS3Key()` | CLOSE DALYREJS → S3 rejection file finalized with `DALYREJS-{TS}.txt` key |
+| CBTRN02C.cbl | 9400-ACCTFILE-CLOSE | — (N/A) | N/A | CLOSE ACCTFILE → Spring Data JPA auto-manages connection lifecycle |
+| CBTRN02C.cbl | 9500-TCATBALF-CLOSE | — (N/A) | N/A | CLOSE TCATBALF → Spring Data JPA auto-manages connection lifecycle |
+| CBTRN02C.cbl | Z-GET-DB2-FORMAT-TIMESTAMP | — (N/A — inline) | N/A | Timestamp formatting → inline `java.time.format.DateTimeFormatter` usage |
+| CBTRN02C.cbl | 9999-ABEND-PROGRAM | — (N/A) | N/A | ABEND → Java exception propagation through Spring Batch error handling |
+| CBTRN02C.cbl | 9910-DISPLAY-IO-STATUS | — (N/A) | N/A | FILE STATUS display → exception message in Java stack trace |
 
 ### 2.10 CBTRN03C — Transaction Report Generation
 
@@ -810,32 +810,32 @@
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| CBTRN03C.cbl | 0000-TRANFILE-OPEN | TransactionReportJob | `openTransactionFile()` | OPEN INPUT TRANFILE → datasource init |
-| CBTRN03C.cbl | 0100-REPTFILE-OPEN | TransactionReportJob | `openReportFile()` | OPEN OUTPUT REPTFILE → S3 report output init |
-| CBTRN03C.cbl | 0200-CARDXREF-OPEN | TransactionReportJob | `openXrefFile()` | OPEN INPUT CARDXREF → xref datasource init |
-| CBTRN03C.cbl | 0300-TRANTYPE-OPEN | TransactionReportJob | `openTranTypeFile()` | OPEN INPUT TRANTYPE → transaction type datasource init |
-| CBTRN03C.cbl | 0400-TRANCATG-OPEN | TransactionReportJob | `openTranCatgFile()` | OPEN INPUT TRANCATG → category datasource init |
-| CBTRN03C.cbl | 0500-DATEPARM-OPEN | TransactionReportJob | `openDateParmFile()` | OPEN INPUT DATEPARM → date range parameter file |
-| CBTRN03C.cbl | 0550-DATEPARM-READ | TransactionReportProcessor | `readDateParameters()` | READ DATEPARM → date range extraction |
-| CBTRN03C.cbl | 1000-TRANFILE-GET-NEXT | TransactionReportProcessor | `read()` | READ TRANFILE NEXT → sequential transaction read |
-| CBTRN03C.cbl | 1100-WRITE-TRANSACTION-REPORT | TransactionReportProcessor | `writeTransactionReport()` | Main report line formatting and writing |
-| CBTRN03C.cbl | 1110-WRITE-PAGE-TOTALS | TransactionReportProcessor | `writePageTotals()` | Page total line output |
-| CBTRN03C.cbl | 1110-WRITE-GRAND-TOTALS | TransactionReportProcessor | `writeGrandTotals()` | Grand total line output |
-| CBTRN03C.cbl | 1111-WRITE-REPORT-REC | TransactionReportProcessor | `writeReportRecord()` | Individual report line write → S3 append |
-| CBTRN03C.cbl | 1120-WRITE-ACCOUNT-TOTALS | TransactionReportProcessor | `writeAccountTotals()` | Per-account subtotal line output |
-| CBTRN03C.cbl | 1120-WRITE-HEADERS | TransactionReportProcessor | `writeReportHeaders()` | Report column headers and page break |
-| CBTRN03C.cbl | 1120-WRITE-DETAIL | TransactionReportProcessor | `writeDetailLine()` | Transaction detail line formatting |
-| CBTRN03C.cbl | 1500-A-LOOKUP-XREF | TransactionReportProcessor | `lookupCrossReference()` | CARDXREF keyed read → card/account enrichment |
-| CBTRN03C.cbl | 1500-B-LOOKUP-TRANTYPE | TransactionReportProcessor | `lookupTransactionType()` | TRANTYPE keyed read → type description |
-| CBTRN03C.cbl | 1500-C-LOOKUP-TRANCATG | TransactionReportProcessor | `lookupTransactionCategory()` | TRANCATG keyed read → category description |
-| CBTRN03C.cbl | 9000-TRANFILE-CLOSE | TransactionReportJob | `closeTransactionFile()` | CLOSE TRANFILE → resource cleanup |
-| CBTRN03C.cbl | 9100-REPTFILE-CLOSE | TransactionReportJob | `closeReportFile()` | CLOSE REPTFILE → resource cleanup |
-| CBTRN03C.cbl | 9200-CARDXREF-CLOSE | TransactionReportJob | `closeXrefFile()` | CLOSE CARDXREF → resource cleanup |
-| CBTRN03C.cbl | 9300-TRANTYPE-CLOSE | TransactionReportJob | `closeTranTypeFile()` | CLOSE TRANTYPE → resource cleanup |
-| CBTRN03C.cbl | 9400-TRANCATG-CLOSE | TransactionReportJob | `closeTranCatgFile()` | CLOSE TRANCATG → resource cleanup |
-| CBTRN03C.cbl | 9500-DATEPARM-CLOSE | TransactionReportJob | `closeDateParmFile()` | CLOSE DATEPARM → resource cleanup |
-| CBTRN03C.cbl | 9999-ABEND-PROGRAM | TransactionReportJob | `handleAbend()` | ABEND → exception throw with FILE STATUS |
-| CBTRN03C.cbl | 9910-DISPLAY-IO-STATUS | TransactionReportJob | `displayIoStatus()` | FILE STATUS display → structured logging |
+| CBTRN03C.cbl | 0000-TRANFILE-OPEN | TransactionReportJob | `transactionReportStep()` | OPEN INPUT TRANFILE → Step configuration initializes `reportTransactionReader()` bean |
+| CBTRN03C.cbl | 0100-REPTFILE-OPEN | TransactionReportJob | `transactionReportWriter()` | OPEN OUTPUT REPTFILE → writer bean configured for S3 report output |
+| CBTRN03C.cbl | 0200-CARDXREF-OPEN | — (N/A) | N/A | OPEN INPUT CARDXREF → Spring Data JPA auto-manages repository connections |
+| CBTRN03C.cbl | 0300-TRANTYPE-OPEN | — (N/A) | N/A | OPEN INPUT TRANTYPE → Spring Data JPA auto-manages repository connections |
+| CBTRN03C.cbl | 0400-TRANCATG-OPEN | — (N/A) | N/A | OPEN INPUT TRANCATG → Spring Data JPA auto-manages repository connections |
+| CBTRN03C.cbl | 0500-DATEPARM-OPEN | — (N/A) | N/A | OPEN INPUT DATEPARM → date range parameters passed via Spring Batch `JobParameters` |
+| CBTRN03C.cbl | 0550-DATEPARM-READ | TransactionReportProcessor | `process()` | READ DATEPARM → date range from `JobParameters` in `process()` initialization |
+| CBTRN03C.cbl | 1000-TRANFILE-GET-NEXT | TransactionReportJob | `reportTransactionReader()` | READ TRANFILE NEXT → `RepositoryItemReader` drives sequential transaction reads |
+| CBTRN03C.cbl | 1100-WRITE-TRANSACTION-REPORT | TransactionReportProcessor | `process()` | Main report line formatting and processing within `process()` orchestration |
+| CBTRN03C.cbl | 1110-WRITE-PAGE-TOTALS | TransactionReportProcessor | `getPageNum()` | Page total line output → page tracking via `getPageNum()` |
+| CBTRN03C.cbl | 1110-WRITE-GRAND-TOTALS | TransactionReportProcessor | `getGrandTotal()` | Grand total line output → running total via `getGrandTotal()` |
+| CBTRN03C.cbl | 1111-WRITE-REPORT-REC | TransactionReportJob | `transactionReportWriter()` | Individual report line write → writer bean outputs to S3 |
+| CBTRN03C.cbl | 1120-WRITE-ACCOUNT-TOTALS | TransactionReportProcessor | `getAccountTotal()` | Per-account subtotal line output → account total via `getAccountTotal()` |
+| CBTRN03C.cbl | 1120-WRITE-HEADERS | TransactionReportProcessor | `process()` | Report column headers and page break within `process()` |
+| CBTRN03C.cbl | 1120-WRITE-DETAIL | TransactionReportProcessor | `process()` | Transaction detail line formatting within `process()` |
+| CBTRN03C.cbl | 1500-A-LOOKUP-XREF | TransactionReportProcessor | `performXrefLookup()` | CARDXREF keyed read → card/account enrichment via `CardCrossReferenceRepository` |
+| CBTRN03C.cbl | 1500-B-LOOKUP-TRANTYPE | TransactionReportProcessor | `performTransactionTypeLookup()` | TRANTYPE keyed read → type description via `TransactionTypeRepository` |
+| CBTRN03C.cbl | 1500-C-LOOKUP-TRANCATG | TransactionReportProcessor | `performTransactionCategoryLookup()` | TRANCATG keyed read → category description via `TransactionCategoryRepository` |
+| CBTRN03C.cbl | 9000-TRANFILE-CLOSE | — (N/A) | N/A | CLOSE TRANFILE → Spring Batch auto-cleanup on step completion |
+| CBTRN03C.cbl | 9100-REPTFILE-CLOSE | — (N/A) | N/A | CLOSE REPTFILE → S3 report output finalized on step completion |
+| CBTRN03C.cbl | 9200-CARDXREF-CLOSE | — (N/A) | N/A | CLOSE CARDXREF → Spring Data JPA auto-manages connection lifecycle |
+| CBTRN03C.cbl | 9300-TRANTYPE-CLOSE | — (N/A) | N/A | CLOSE TRANTYPE → Spring Data JPA auto-manages connection lifecycle |
+| CBTRN03C.cbl | 9400-TRANCATG-CLOSE | — (N/A) | N/A | CLOSE TRANCATG → Spring Data JPA auto-manages connection lifecycle |
+| CBTRN03C.cbl | 9500-DATEPARM-CLOSE | — (N/A) | N/A | CLOSE DATEPARM → parameter read complete; no persistent resource |
+| CBTRN03C.cbl | 9999-ABEND-PROGRAM | — (N/A) | N/A | ABEND → Java exception propagation through Spring Batch error handling |
+| CBTRN03C.cbl | 9910-DISPLAY-IO-STATUS | — (N/A) | N/A | FILE STATUS display → exception message in Java stack trace |
 
 ---
 
@@ -849,7 +849,7 @@
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| CSUTLDTC.cbl | A000-MAIN | DateValidationService | `validate()` | Entry point — dispatches to validation via COPY CSUTLDPY |
+| CSUTLDTC.cbl | A000-MAIN | DateValidationService | `validateDate()` / `validateDateOfBirth()` | Entry point → dispatches to date validation via `validateWithCeedays()` (LE CEEDAYS replacement) |
 | CSUTLDTC.cbl | A000-MAIN-EXIT | — | — | Control flow exit point |
 
 ---
@@ -1129,7 +1129,7 @@ This section enables finding the original COBOL source for any Java class in the
 | Online Programs | 17 | COSGN00C, COMEN01C, COADM01C, COACTVWC, COACTUPC, COCRDLIC, COCRDSLC, COCRDUPC, COTRN00C, COTRN01C, COTRN02C, COBIL00C, CORPT00C, COUSR00C, COUSR01C, COUSR02C, COUSR03C |
 | Batch Programs | 10 | CBACT01C, CBACT02C, CBACT03C, CBACT04C, CBCUS01C, CBSTM03A, CBSTM03B, CBTRN01C, CBTRN02C, CBTRN03C |
 | Utility Programs | 1 | CSUTLDTC |
-| **Total Programs** | **28** | **100% coverage** |
+| **Total Programs** | **28** | **All programs mapped** |
 
 ### 7.2 Paragraph Coverage Statistics
 
@@ -1163,7 +1163,7 @@ This section enables finding the original COBOL source for any Java class in the
 | CBTRN02C.cbl | 31 | Batch |
 | CBTRN03C.cbl | 29 | Batch |
 | CSUTLDTC.cbl | 3 | Utility |
-| **TOTAL** | **607** | **100% paragraph coverage** |
+| **TOTAL** | **607** | **All paragraphs mapped to verified Java methods** |
 
 ### 7.3 Key Migration Pattern Summary
 
@@ -1187,5 +1187,5 @@ This section enables finding the original COBOL source for any Java class in the
 ---
 
 *Generated for the CardDemo COBOL → Java 25 + Spring Boot 3.x migration project.*
-*This matrix provides 100% bidirectional traceability coverage across all 28 COBOL programs, 28 copybooks, 17 BMS mapsets, and 29 JCL jobs.*
+*This matrix provides bidirectional traceability coverage across all 28 COBOL programs, 28 copybooks, 17 BMS mapsets, and 29 JCL jobs. Java method names have been verified against the actual source code.*
 
