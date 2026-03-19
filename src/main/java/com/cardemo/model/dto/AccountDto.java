@@ -199,6 +199,15 @@ public class AccountDto {
     @Size(max = 9)
     private String stmtNum;
 
+    /**
+     * JPA optimistic locking version field.
+     * Exposes the {@code @Version} field from the Account entity to API consumers,
+     * enabling concurrent modification detection per AAP §0.8.4.
+     * Clients must include the version from the GET response in PUT requests;
+     * a mismatch triggers HTTP 409 Conflict.
+     */
+    private Integer version;
+
     // ========================================================================
     // Constructors
     // ========================================================================
@@ -533,6 +542,14 @@ public class AccountDto {
 
     public void setStmtNum(String stmtNum) {
         this.stmtNum = stmtNum;
+    }
+
+    public Integer getVersion() {
+        return version;
+    }
+
+    public void setVersion(Integer version) {
+        this.version = version;
     }
 
     // ========================================================================

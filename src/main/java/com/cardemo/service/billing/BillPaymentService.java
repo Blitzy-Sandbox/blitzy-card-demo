@@ -30,6 +30,8 @@ package com.cardemo.service.billing;
 
 import com.cardemo.exception.CreditLimitExceededException;
 import com.cardemo.exception.RecordNotFoundException;
+import com.cardemo.exception.ValidationException;
+import com.cardemo.model.dto.TransactionDto;
 import com.cardemo.model.entity.Account;
 import com.cardemo.model.entity.CardCrossReference;
 import com.cardemo.model.entity.Transaction;
@@ -266,7 +268,7 @@ public class BillPaymentService {
      *         (AAP requirement — maps reject code 102)
      */
     @Transactional(rollbackFor = Exception.class)
-    public Transaction processPayment(String accountId) {
+    public TransactionDto processPayment(String accountId) {
 
         // Step 1: Validate account ID (COBIL00C.cbl lines 159-167)
         // Maps COBOL: WHEN ACTIDINI OF COBIL0AI = SPACES OR LOW-VALUES
@@ -294,7 +296,9 @@ public class BillPaymentService {
         if (currentBalance == null || currentBalance.compareTo(BigDecimal.ZERO) <= 0) {
             log.warn("Bill payment rejected — zero or negative balance for account: {}, balance: {}",
                     accountId, currentBalance);
-            throw new IllegalStateException("You have nothing to pay");
+            throw ValidationException.of("accountId", accountId,
+                    "No outstanding balance to pay. Current balance is "
+                            + (currentBalance != null ? currentBalance.toPlainString() : "0.00"));
         }
 
         // Step 4: Credit limit validation (AAP requirement)
@@ -369,7 +373,35 @@ public class BillPaymentService {
         log.info("Bill payment successful. Account: {}, Transaction ID: {}, Amount: {}, New Balance: {}",
                 accountId, newTransactionId, transaction.getTranAmt(), newBalance);
 
-        return transaction;
+        return toTransactionDto(transaction);
+    }
+
+    /**
+     * Converts a Transaction entity to TransactionDto with consistent field naming.
+     * Ensures the billing response uses the same shortened field names as
+     * TransactionController (tranMerchId, tranMerchName, etc.) instead of the
+     * full JPA entity names (tranMerchantId, tranMerchantName, etc.).
+     *
+     * @param entity the persisted Transaction entity
+     * @return TransactionDto with standardized field names
+     */
+    private TransactionDto toTransactionDto(Transaction entity) {
+        TransactionDto dto = new TransactionDto();
+        dto.setTranId(entity.getTranId());
+        dto.setTranTypeCd(entity.getTranTypeCd());
+        dto.setTranCatCd(entity.getTranCatCd() != null
+                ? String.valueOf(entity.getTranCatCd()) : null);
+        dto.setTranSource(entity.getTranSource());
+        dto.setTranDesc(entity.getTranDesc());
+        dto.setTranAmt(entity.getTranAmt());
+        dto.setTranCardNum(entity.getTranCardNum());
+        dto.setTranMerchId(entity.getTranMerchantId());
+        dto.setTranMerchName(entity.getTranMerchantName());
+        dto.setTranMerchCity(entity.getTranMerchantCity());
+        dto.setTranMerchZip(entity.getTranMerchantZip());
+        dto.setTranOrigTs(entity.getTranOrigTs());
+        dto.setTranProcTs(entity.getTranProcTs());
+        return dto;
     }
 
     /**

@@ -40,12 +40,14 @@ public class SignOnRequest {
     /**
      * User password for authentication.
      * Maps to {@code PASSWDI PIC X(8)} from COSGN00.CPY line 78.
-     * Maximum 8 characters matching the original COBOL field width.
-     * The input password is constrained to 8 chars (COBOL PIC X(8)),
-     * but the stored hash uses BCrypt (60+ characters).
+     * The original COBOL field is PIC X(8), but seed data contains
+     * passwords up to 9 characters (e.g., "PASSWORDA", "PASSWORDU").
+     * Max length set to 128 to accommodate all seeded passwords and
+     * allow flexibility for password policies in the Java target.
+     * The stored hash uses BCrypt (60+ characters).
      */
     @NotBlank(message = "Password is required")
-    @Size(max = 8, message = "Password must not exceed 8 characters")
+    @Size(max = 128, message = "Password must not exceed 128 characters")
     private String password;
 
     /**

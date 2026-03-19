@@ -252,7 +252,9 @@ public class UserUpdateService {
 
         // Compare first name — Maps lines 219-222
         // COBOL: IF FNAMEI OF COUSR2AI NOT = SEC-USR-FNAME
-        if (isFieldChanged(dto.getSecUsrFname(), entity.getSecUsrFname())) {
+        // For partial updates: skip null fields (field not provided = keep existing)
+        if (dto.getSecUsrFname() != null
+                && isFieldChanged(dto.getSecUsrFname(), entity.getSecUsrFname())) {
             entity.setSecUsrFname(dto.getSecUsrFname().trim());
             modified = true;
             logger.debug("User {} first name changed", userId);
@@ -260,7 +262,8 @@ public class UserUpdateService {
 
         // Compare last name — Maps lines 223-226
         // COBOL: IF LNAMEI OF COUSR2AI NOT = SEC-USR-LNAME
-        if (isFieldChanged(dto.getSecUsrLname(), entity.getSecUsrLname())) {
+        if (dto.getSecUsrLname() != null
+                && isFieldChanged(dto.getSecUsrLname(), entity.getSecUsrLname())) {
             entity.setSecUsrLname(dto.getSecUsrLname().trim());
             modified = true;
             logger.debug("User {} last name changed", userId);
@@ -269,6 +272,7 @@ public class UserUpdateService {
         // Compare password — Maps lines 227-230
         // COBOL: IF PASSWDI OF COUSR2AI NOT = SEC-USR-PWD (plaintext comparison)
         // Java: Use BCrypt matches() for change detection since stored password is hashed
+        // isPasswordChanged already returns false for null/blank passwords
         if (isPasswordChanged(dto.getSecUsrPwd(), entity.getSecUsrPwd())) {
             entity.setSecUsrPwd(passwordEncoder.encode(dto.getSecUsrPwd()));
             modified = true;
@@ -277,7 +281,8 @@ public class UserUpdateService {
 
         // Compare user type — Maps lines 231-234
         // COBOL: IF USRTYPEI OF COUSR2AI NOT = SEC-USR-TYPE
-        if (!Objects.equals(dto.getSecUsrType(), entity.getSecUsrType())) {
+        if (dto.getSecUsrType() != null
+                && !Objects.equals(dto.getSecUsrType(), entity.getSecUsrType())) {
             entity.setSecUsrType(dto.getSecUsrType());
             modified = true;
             logger.debug("User {} user type changed", userId);
@@ -342,29 +347,29 @@ public class UserUpdateService {
             throw new ValidationException("User ID can NOT be empty...");
         }
 
-        // Validation 2: First Name — Maps lines 186-191
-        // COBOL: WHEN FNAMEI OF COUSR2AI = SPACES OR LOW-VALUES
-        if (dto.getSecUsrFname() == null || dto.getSecUsrFname().isBlank()) {
-            throw new ValidationException("First Name can NOT be empty...");
+        // Validations 2-5: For UPDATE operations, all fields except userId are OPTIONAL.
+        // Admin users should be able to update individual fields (e.g., name only)
+        // without re-specifying all other fields. Null/absent fields are preserved as-is.
+        // When a field IS provided, it must be non-blank.
+
+        // Validation 2: First Name — optional for update; if provided, must be non-blank
+        if (dto.getSecUsrFname() != null && dto.getSecUsrFname().isBlank()) {
+            throw new ValidationException("First Name can NOT be empty when provided...");
         }
 
-        // Validation 3: Last Name — Maps lines 192-197
-        // COBOL: WHEN LNAMEI OF COUSR2AI = SPACES OR LOW-VALUES
-        if (dto.getSecUsrLname() == null || dto.getSecUsrLname().isBlank()) {
-            throw new ValidationException("Last Name can NOT be empty...");
+        // Validation 3: Last Name — optional for update; if provided, must be non-blank
+        if (dto.getSecUsrLname() != null && dto.getSecUsrLname().isBlank()) {
+            throw new ValidationException("Last Name can NOT be empty when provided...");
         }
 
-        // Validation 4: Password — Maps lines 198-203
-        // COBOL: WHEN PASSWDI OF COUSR2AI = SPACES OR LOW-VALUES
-        if (dto.getSecUsrPwd() == null || dto.getSecUsrPwd().isBlank()) {
-            throw new ValidationException("Password can NOT be empty...");
+        // Validation 4: Password — optional for update; if provided, must be non-blank
+        // When null/blank, the existing password hash is preserved (no change).
+        if (dto.getSecUsrPwd() != null && dto.getSecUsrPwd().isBlank()) {
+            throw new ValidationException("Password can NOT be empty when provided...");
         }
 
-        // Validation 5: User Type — Maps lines 204-209
-        // COBOL: WHEN USRTYPEI OF COUSR2AI = SPACES OR LOW-VALUES
-        if (dto.getSecUsrType() == null) {
-            throw new ValidationException("User Type can NOT be empty...");
-        }
+        // Validation 5: User Type — optional for update; type enum validation
+        // is handled by Jackson deserialization
     }
 
     /**

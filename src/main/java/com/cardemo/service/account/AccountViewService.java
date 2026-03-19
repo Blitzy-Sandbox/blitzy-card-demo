@@ -130,8 +130,11 @@ public class AccountViewService {
         // COBOL: EXEC CICS READ DATASET(CXACAIX) RIDFLD(WS-CARD-RID-ACCT-ID)
         List<CardCrossReference> crossRefs = cardCrossReferenceRepository.findByXrefAcctId(acctId);
         if (crossRefs.isEmpty()) {
-            logger.warn("Card cross-reference not found for account ID: {}", acctId);
-            throw new RecordNotFoundException("CardCrossReference", acctId);
+            // Report as "Account" not found since the user is looking up an account —
+            // the cross-reference absence means the account is not linked/does not exist
+            // in the system (no card-to-account mapping found).
+            logger.warn("No card cross-reference found for account ID: {} — reporting as account not found", acctId);
+            throw new RecordNotFoundException("Account", acctId);
         }
 
         // Extract the first cross-reference record to obtain customer ID and card number.
@@ -336,6 +339,11 @@ public class AccountViewService {
 
         // Primary cardholder indicator — COBOL: CUST-PRI-CARD-HOLDER-IND PIC X(01)
         dto.setCustProfileFlag(customer.getCustPriCardHolderInd());
+
+        // Optimistic locking version — exposes JPA @Version for concurrent modification
+        // detection via API. Clients must include this in PUT requests; a mismatch
+        // triggers HTTP 409 Conflict per AAP §0.8.4.
+        dto.setVersion(account.getVersion());
 
         return dto;
     }

@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.cardemo.exception.ValidationException;
 import com.cardemo.service.menu.AdminMenuService;
 import com.cardemo.service.menu.MainMenuService;
 
@@ -95,6 +96,6 @@ public class MenuController {
         }
 
         logger.info("Invalid menu type requested: {}", type);
-        return ResponseEntity.badRequest().body("Invalid menu type. Use 'main' or 'admin'.");
+        throw new ValidationException("Invalid menu type. Use 'main' or 'admin'.");
     }
 }

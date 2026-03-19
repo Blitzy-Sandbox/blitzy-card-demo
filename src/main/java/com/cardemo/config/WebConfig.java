@@ -65,6 +65,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.filter.CommonsRequestLoggingFilter;
@@ -548,6 +549,32 @@ public class WebConfig implements WebMvcConfigurer {
                     HttpStatus.UNSUPPORTED_MEDIA_TYPE, message,
                     "UNSUPPORTED_MEDIA_TYPE", null, request);
             return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE).body(response);
+        }
+
+        /**
+         * Handles {@link HttpRequestMethodNotSupportedException} — returned by
+         * Spring MVC when a request uses an HTTP method not supported by the handler.
+         *
+         * <p>Returns HTTP 405 (Method Not Allowed) instead of Spring's default 500
+         * error. This ensures that e.g. GET /api/auth/signin (a POST-only endpoint)
+         * returns a proper 405 response with a structured error body.</p>
+         *
+         * @param ex      the method-not-supported exception from Spring MVC
+         * @param request the HTTP request for URI extraction
+         * @return HTTP 405 response with allowed methods listed in the error message
+         */
+        @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+        public ResponseEntity<ErrorResponse> handleMethodNotAllowed(
+                HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
+            log.warn("Method not allowed: {} {} (supported: {})",
+                    request.getMethod(), request.getRequestURI(), ex.getSupportedHttpMethods());
+            String message = String.format(
+                    "Request method '%s' is not supported for this endpoint. Supported methods: %s",
+                    ex.getMethod(), ex.getSupportedHttpMethods());
+            ErrorResponse response = buildErrorResponse(
+                    HttpStatus.METHOD_NOT_ALLOWED, message,
+                    "METHOD_NOT_ALLOWED", null, request);
+            return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(response);
         }
 
         /**

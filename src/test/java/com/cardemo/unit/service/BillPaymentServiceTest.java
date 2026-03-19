@@ -32,6 +32,8 @@ package com.cardemo.unit.service;
 import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.model.entity.Account;
 import com.cardemo.model.entity.CardCrossReference;
+import com.cardemo.exception.ValidationException;
+import com.cardemo.model.dto.TransactionDto;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
@@ -265,7 +267,7 @@ class BillPaymentServiceTest {
         when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
 
         assertThatThrownBy(() -> billPaymentService.processPayment(ACCOUNT_ID))
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(ValidationException.class);
     }
 
     /**
@@ -281,7 +283,7 @@ class BillPaymentServiceTest {
         when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
 
         assertThatThrownBy(() -> billPaymentService.processPayment(ACCOUNT_ID))
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(ValidationException.class);
     }
 
     // =======================================================================
@@ -327,7 +329,7 @@ class BillPaymentServiceTest {
     void testProcessPayment_autoIdGeneration() {
         setupSuccessfulPaymentMocks();
 
-        Transaction result = billPaymentService.processPayment(ACCOUNT_ID);
+        TransactionDto result = billPaymentService.processPayment(ACCOUNT_ID);
 
         // Verify the generated ID is MAX + 1, zero-padded to 16 characters
         assertThat(result.getTranId()).isEqualTo(EXPECTED_NEXT_ID);
@@ -349,7 +351,7 @@ class BillPaymentServiceTest {
     void testProcessPayment_transactionTypeCd02() {
         setupSuccessfulPaymentMocks();
 
-        Transaction result = billPaymentService.processPayment(ACCOUNT_ID);
+        TransactionDto result = billPaymentService.processPayment(ACCOUNT_ID);
 
         assertThat(result.getTranTypeCd()).isEqualTo("02");
     }
@@ -366,10 +368,10 @@ class BillPaymentServiceTest {
     void testProcessPayment_transactionCatCd0002() {
         setupSuccessfulPaymentMocks();
 
-        Transaction result = billPaymentService.processPayment(ACCOUNT_ID);
+        TransactionDto result = billPaymentService.processPayment(ACCOUNT_ID);
 
         // Short value 2 maps COBOL PIC 9(04) display "0002"
-        assertThat(result.getTranCatCd()).isEqualTo((short) 2);
+        assertThat(result.getTranCatCd()).isEqualTo("2");
     }
 
     /**
@@ -383,7 +385,7 @@ class BillPaymentServiceTest {
     void testProcessPayment_transactionSourcePOSTERM() {
         setupSuccessfulPaymentMocks();
 
-        Transaction result = billPaymentService.processPayment(ACCOUNT_ID);
+        TransactionDto result = billPaymentService.processPayment(ACCOUNT_ID);
 
         assertThat(result.getTranSource()).isEqualTo("POS TERM");
     }
@@ -399,7 +401,7 @@ class BillPaymentServiceTest {
     void testProcessPayment_transactionDescBillPayment() {
         setupSuccessfulPaymentMocks();
 
-        Transaction result = billPaymentService.processPayment(ACCOUNT_ID);
+        TransactionDto result = billPaymentService.processPayment(ACCOUNT_ID);
 
         assertThat(result.getTranDesc()).isEqualTo("BILL PAYMENT - ONLINE");
     }
@@ -416,9 +418,9 @@ class BillPaymentServiceTest {
     void testProcessPayment_transactionMerchantId999999999() {
         setupSuccessfulPaymentMocks();
 
-        Transaction result = billPaymentService.processPayment(ACCOUNT_ID);
+        TransactionDto result = billPaymentService.processPayment(ACCOUNT_ID);
 
-        assertThat(result.getTranMerchantId()).isEqualTo("999999999");
+        assertThat(result.getTranMerchId()).isEqualTo("999999999");
     }
 
     // =======================================================================
@@ -504,7 +506,7 @@ class BillPaymentServiceTest {
     void testProcessPayment_success_returnsTransaction() {
         setupSuccessfulPaymentMocks();
 
-        Transaction result = billPaymentService.processPayment(ACCOUNT_ID);
+        TransactionDto result = billPaymentService.processPayment(ACCOUNT_ID);
 
         assertThat(result).isNotNull();
         assertThat(result.getTranId()).isNotNull();
@@ -527,7 +529,7 @@ class BillPaymentServiceTest {
     void testProcessPayment_amountIsBigDecimal() {
         setupSuccessfulPaymentMocks();
 
-        Transaction result = billPaymentService.processPayment(ACCOUNT_ID);
+        TransactionDto result = billPaymentService.processPayment(ACCOUNT_ID);
 
         assertThat(result.getTranAmt()).isInstanceOf(BigDecimal.class);
     }
@@ -547,7 +549,7 @@ class BillPaymentServiceTest {
     void testProcessPayment_amountScale2() {
         setupSuccessfulPaymentMocks();
 
-        Transaction result = billPaymentService.processPayment(ACCOUNT_ID);
+        TransactionDto result = billPaymentService.processPayment(ACCOUNT_ID);
 
         assertThat(result.getTranAmt().scale()).isEqualTo(2);
     }

@@ -193,6 +193,21 @@ public class AccountUpdateService {
 
         logger.debug("Current account version before update: {}", account.getVersion());
 
+        // Step 2.5: Optimistic concurrency control — compare client-supplied version with DB version
+        // Maps COACTUPC 9700-CHECK-CHANGE-IN-REC (DATA-WAS-CHANGED-BEFORE-UPDATE).
+        // If the client-supplied version does not match the current DB version, the record
+        // was modified by another transaction between the client's GET and this PUT.
+        if (updatedData.getVersion() != null
+                && !updatedData.getVersion().equals(account.getVersion())) {
+            logger.error("Optimistic lock conflict: client version={}, DB version={} for account {}",
+                    updatedData.getVersion(), account.getVersion(), acctId);
+            throw new ConcurrentModificationException(
+                    "Account " + acctId + " was modified by another transaction. "
+                            + "Expected version " + updatedData.getVersion()
+                            + " but found version " + account.getVersion()
+                            + ". Please refresh and retry.");
+        }
+
         // Step 3: Apply updates to Account entity (← prepare ACCT-UPDATE-RECORD)
         applyAccountUpdates(account, updatedData);
 
@@ -367,6 +382,11 @@ public class AccountUpdateService {
         dto.setCustGovtId(customer.getCustGovtIssuedId());
         dto.setCustEftAcct(customer.getCustEftAccountId());
         dto.setCustProfileFlag(customer.getCustPriCardHolderInd());
+
+        // Optimistic locking version — exposes JPA @Version for concurrent modification
+        // detection via API. Clients must include this in PUT requests; a mismatch
+        // triggers HTTP 409 Conflict per AAP §0.8.4.
+        dto.setVersion(account.getVersion());
 
         return dto;
     }

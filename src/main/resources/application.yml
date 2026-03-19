@@ -54,6 +54,7 @@ spring:
       idle-timeout: 600000
       max-lifetime: 1800000
       pool-name: CardDemoHikariPool
+      auto-commit: false
 
   # ---------------------------------------------------------------------------
   # JPA / Hibernate — Entity mapping for VSAM record layouts

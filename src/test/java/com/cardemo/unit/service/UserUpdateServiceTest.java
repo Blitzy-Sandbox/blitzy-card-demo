@@ -49,6 +49,7 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -310,27 +311,30 @@ class UserUpdateServiceTest {
     }
 
     /**
-     * Test 8: updateUser with invalid (null) user type throws ValidationException.
+     * Test 8: updateUser with null user type preserves existing type (partial update).
      *
-     * <p>Maps COUSR02C.cbl UPDATE-USER-INFO validation (lines 204-209):
-     * {@code WHEN USRTYPEI OF COUSR2AI = SPACES OR LOW-VALUES}
-     * → "User Type can NOT be empty..."
-     * Fifth and final field in the 5-field COBOL EVALUATE TRUE cascade.
-     * Since UserType is a Java enum (ADMIN='A', USER='U'), the "invalid"
-     * case is {@code null} — there are no other possible enum values.</p>
+     * <p>With partial update support, null fields mean "keep existing value."
+     * A null userType in the DTO should not cause a validation error — instead,
+     * the service preserves the existing user's type. When combined with a
+     * real field change (e.g., firstName), the update succeeds and the original
+     * type remains unchanged.</p>
      */
     @Test
-    void testUpdateUser_invalidUserType_throwsValidation() {
-        // Arrange — set user type to null (invalid — only ADMIN/USER are valid)
+    void testUpdateUser_nullUserType_preservesExistingType() {
+        // Arrange — null type with a real first-name change
         updateDto.setSecUsrType(null);
+        updateDto.setSecUsrFname("Jane");
+        when(userSecurityRepository.findById(TEST_USER_ID)).thenReturn(Optional.of(existingUser));
+        when(passwordEncoder.matches("password", STORED_BCRYPT_HASH)).thenReturn(true);
+        when(userSecurityRepository.save(any(UserSecurity.class))).thenReturn(existingUser);
 
-        // Act & Assert
-        assertThatThrownBy(() -> userUpdateService.updateUser(TEST_USER_ID, updateDto))
-                .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("User Type");
+        // Act
+        UserSecurityDto result = userUpdateService.updateUser(TEST_USER_ID, updateDto);
 
-        // Verify — validation short-circuits before repository access
-        verify(userSecurityRepository, never()).findById(any());
+        // Assert — user type remains USER (original value preserved)
+        assertThat(result).isNotNull();
+        verify(userSecurityRepository).save(argThat(saved ->
+                saved.getSecUsrType() == UserType.USER));
     }
 
     // ========================================================================

@@ -27,7 +27,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.cardemo.model.dto.BillPaymentRequest;
-import com.cardemo.model.entity.Transaction;
+import com.cardemo.model.dto.TransactionDto;
 import com.cardemo.service.billing.BillPaymentService;
 
 /**
@@ -247,7 +247,7 @@ public class BillingController {
         // resolution, auto-ID generation, transaction creation, balance update) is
         // in the service layer — the controller contains no business logic per
         // architectural conventions.
-        Transaction result = billPaymentService.processPayment(request.getAccountId());
+        var result = billPaymentService.processPayment(request.getAccountId());
 
         logger.info("Bill payment completed successfully for account {}, transactionId={}",
                 request.getAccountId(), result.getTranId());

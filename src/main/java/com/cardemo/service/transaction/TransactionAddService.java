@@ -589,22 +589,23 @@ public class TransactionAddService {
         entity.setTranSource(dto.getTranSource());
 
         // 5. TRAN-DESC — PIC X(100)
-        entity.setTranDesc(dto.getTranDesc());
+        // Sanitize text to prevent XSS content from being stored and returned
+        entity.setTranDesc(sanitizeHtml(dto.getTranDesc()));
 
         // 6. TRAN-AMT — BigDecimal (PIC S9(09)V99 COMP-3) — CRITICAL: no float/double
         entity.setTranAmt(dto.getTranAmt());
 
         // 7. TRAN-MERCHANT-ID — PIC X(09) — note: DTO uses shortened name 'tranMerchId'
-        entity.setTranMerchantId(dto.getTranMerchId());
+        entity.setTranMerchantId(sanitizeHtml(dto.getTranMerchId()));
 
         // 8. TRAN-MERCHANT-NAME — PIC X(50)
-        entity.setTranMerchantName(dto.getTranMerchName());
+        entity.setTranMerchantName(sanitizeHtml(dto.getTranMerchName()));
 
         // 9. TRAN-MERCHANT-CITY — PIC X(50)
-        entity.setTranMerchantCity(dto.getTranMerchCity());
+        entity.setTranMerchantCity(sanitizeHtml(dto.getTranMerchCity()));
 
         // 10. TRAN-MERCHANT-ZIP — PIC X(10)
-        entity.setTranMerchantZip(dto.getTranMerchZip());
+        entity.setTranMerchantZip(sanitizeHtml(dto.getTranMerchZip()));
 
         // 11. TRAN-CARD-NUM — PIC X(16) — resolved from cross-reference
         entity.setTranCardNum(dto.getTranCardNum());
@@ -716,5 +717,32 @@ public class TransactionAddService {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    /**
+     * Sanitizes a string value by escaping HTML special characters to prevent
+     * stored XSS attacks. Replaces dangerous characters with their HTML entity
+     * equivalents so that any script tags or HTML markup are rendered as
+     * harmless text rather than executable content.
+     *
+     * <p>The COBOL source (COTRN02C.cbl) accepted raw PIC X fields without
+     * sanitization because 3270 terminals cannot inject HTML. The REST API
+     * must sanitize inputs to prevent XSS content from being stored and
+     * later returned to consumers who might render it in a browser context.</p>
+     *
+     * @param value the string to sanitize; may be {@code null}
+     * @return the sanitized string with HTML entities escaped, or {@code null}
+     *         if the input was {@code null}
+     */
+    private String sanitizeHtml(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
     }
 }

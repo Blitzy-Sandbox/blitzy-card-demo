@@ -59,10 +59,14 @@ spring:
   jpa:
     hibernate:
       ddl-auto: validate
-    show-sql: true
+    # SECURITY: show-sql and format_sql DISABLED to prevent PCI-sensitive data
+    # (card numbers, CVV codes) from appearing in application logs as Hibernate
+    # bind parameters. Use org.hibernate.SQL at DEBUG level for statement
+    # structure only, without parameter values.
+    show-sql: false
     properties:
       hibernate:
-        format_sql: true
+        format_sql: false
 
   # ---------------------------------------------------------------------------
   # Flyway — Database Migration (Local)
@@ -175,14 +179,17 @@ server:
 # from batch metadata operations.
 #
 # Hibernate SQL logging levels:
-#   org.hibernate.SQL: DEBUG        — Logs all SQL statements
-#   org.hibernate.orm.jdbc.bind: TRACE — Logs bound parameter values
+#   org.hibernate.SQL: DEBUG       — Logs SQL statement structure (no params)
+#   org.hibernate.orm.jdbc.bind: OFF — DISABLED to prevent PCI-sensitive data
+#     (card numbers, CVV codes) from appearing in logs as bind parameters.
+#     This is a PCI DSS requirement: full card numbers and CVV data must NEVER
+#     appear in application logs, even in development profiles.
 # -----------------------------------------------------------------------------
 logging:
   level:
     com.cardemo: DEBUG
     org.springframework.batch: INFO
     org.hibernate.SQL: DEBUG
-    org.hibernate.orm.jdbc.bind: TRACE
+    org.hibernate.orm.jdbc.bind: "OFF"
     org.springframework.security: DEBUG
     org.flywaydb: INFO

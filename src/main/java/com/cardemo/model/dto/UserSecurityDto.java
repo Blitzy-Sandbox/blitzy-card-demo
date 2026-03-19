@@ -33,6 +33,7 @@ package com.cardemo.model.dto;
 import com.cardemo.model.enums.UserType;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -61,6 +62,8 @@ public class UserSecurityDto {
      */
     @NotBlank(message = "User ID is required")
     @Size(max = 8, message = "User ID must not exceed 8 characters")
+    @Pattern(regexp = "^[A-Za-z0-9]+$",
+             message = "User ID must contain only alphanumeric characters")
     private String secUsrId;
 
     /**
@@ -70,7 +73,6 @@ public class UserSecurityDto {
      * Also mapped from BMS fields: FNAMEI (COUSR01/02/03) and
      * FNAME01I..FNAME10I (COUSR00 list rows).</p>
      */
-    @NotBlank(message = "First name is required")
     @Size(max = 20, message = "First name must not exceed 20 characters")
     private String secUsrFname;
 
@@ -81,7 +83,6 @@ public class UserSecurityDto {
      * Also mapped from BMS fields: LNAMEI (COUSR01/02/03) and
      * LNAME01I..LNAME10I (COUSR00 list rows).</p>
      */
-    @NotBlank(message = "Last name is required")
     @Size(max = 20, message = "Last name must not exceed 20 characters")
     private String secUsrLname;
 

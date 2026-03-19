@@ -270,34 +270,41 @@ public class ReportSubmissionService {
 
         if (request.isMonthly()) {
             // Monthly report (COBOL lines 213-238)
-            // Uses FUNCTION CURRENT-DATE to get current year/month
             reportName = "Monthly";
-            LocalDate now = LocalDate.now();
 
-            // Start date = first day of current month
-            // COBOL line 219: MOVE '01' TO WS-START-DATE-DD
-            startDate = now.withDayOfMonth(1);
-
-            // End date = last day of current month
-            // Replaces COBOL lines 223-234 algorithm:
-            //   1. Set day=1, increment month by 1
-            //   2. If month > 12, increment year, reset month to 1
-            //   3. Compute DATE-OF-INTEGER(INTEGER-OF-DATE(computed) - 1)
-            // java.time.YearMonth.atEndOfMonth() provides identical semantics
-            endDate = YearMonth.from(now).atEndOfMonth();
+            // When explicit startDate/endDate are provided alongside monthly=true,
+            // the provided dates take precedence over the current-month defaults.
+            // This enables requesting monthly reports for any specific month.
+            if (request.getStartDate() != null && request.getEndDate() != null) {
+                startDate = request.getStartDate();
+                endDate = request.getEndDate();
+            } else {
+                // Default: use current month (FUNCTION CURRENT-DATE)
+                LocalDate now = LocalDate.now();
+                // Start date = first day of current month
+                // COBOL line 219: MOVE '01' TO WS-START-DATE-DD
+                startDate = now.withDayOfMonth(1);
+                // End date = last day of current month
+                // java.time.YearMonth.atEndOfMonth() provides identical semantics
+                endDate = YearMonth.from(now).atEndOfMonth();
+            }
 
         } else if (request.isYearly()) {
             // Yearly report (COBOL lines 239-255)
             reportName = "Yearly";
-            LocalDate now = LocalDate.now();
 
-            // Start date = January 1 of current year (lines 245-246)
-            // COBOL: MOVE '01' TO WS-START-DATE-MM, MOVE '01' TO WS-START-DATE-DD
-            startDate = LocalDate.of(now.getYear(), 1, 1);
-
-            // End date = December 31 of current year (lines 250-251)
-            // COBOL: MOVE '12' TO WS-END-DATE-MM, MOVE '31' TO WS-END-DATE-DD
-            endDate = LocalDate.of(now.getYear(), 12, 31);
+            // When explicit dates are provided alongside yearly=true,
+            // the provided dates take precedence over the current-year defaults.
+            if (request.getStartDate() != null && request.getEndDate() != null) {
+                startDate = request.getStartDate();
+                endDate = request.getEndDate();
+            } else {
+                LocalDate now = LocalDate.now();
+                // Start date = January 1 of current year (lines 245-246)
+                startDate = LocalDate.of(now.getYear(), 1, 1);
+                // End date = December 31 of current year (lines 250-251)
+                endDate = LocalDate.of(now.getYear(), 12, 31);
+            }
 
         } else if (request.isCustom()) {
             // Custom report (COBOL lines 256-436)

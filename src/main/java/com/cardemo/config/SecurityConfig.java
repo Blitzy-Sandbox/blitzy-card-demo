@@ -23,8 +23,14 @@
  */
 package com.cardemo.config;
 
+import java.io.IOException;
+import java.time.Instant;
+
+import org.slf4j.MDC;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -41,6 +47,10 @@ import org.springframework.security.web.SecurityFilterChain;
 import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.enums.UserType;
 import com.cardemo.repository.UserSecurityRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 /**
  * Spring Security configuration for the CardDemo application.
@@ -130,7 +140,20 @@ public class SecurityConfig {
 
             // HTTP Basic authentication — initial REST API auth mechanism
             // Can be extended to JWT token-based auth for production deployments
-            .httpBasic(Customizer.withDefaults())
+            // Custom entry point returns structured JSON on 401 (matching app error format)
+            .httpBasic(basic -> basic
+                .authenticationEntryPoint((request, response, authException) ->
+                    writeSecurityErrorResponse(response, request, HttpStatus.UNAUTHORIZED,
+                            "Authentication required. Provide valid credentials.",
+                            "AUTHENTICATION_REQUIRED")))
+
+            // Custom 403 handler returns structured JSON (matching app error format)
+            // with correlationId for observability tracing
+            .exceptionHandling(ex -> ex
+                .accessDeniedHandler((request, response, accessDeniedException) ->
+                    writeSecurityErrorResponse(response, request, HttpStatus.FORBIDDEN,
+                            "Access denied. Insufficient privileges for this resource.",
+                            "ACCESS_DENIED")))
 
             // Endpoint authorization rules — mirrors COBOL COSGN00C routing logic
             .authorizeHttpRequests(auth -> auth
@@ -247,5 +270,53 @@ public class SecurityConfig {
 
             return userDetails;
         };
+    }
+
+    // =========================================================================
+    // Security Error Response Helper
+    // =========================================================================
+
+    /**
+     * Writes a structured JSON error response for Spring Security rejections (401/403).
+     *
+     * <p>Produces the same {@code ErrorResponse} format used by the application's
+     * {@code GlobalExceptionHandler} in {@link WebConfig}, ensuring consistent error
+     * structure across all HTTP error responses. Includes the correlation ID from MDC
+     * for end-to-end observability tracing.</p>
+     *
+     * <p>This replaces Spring Security's default behavior:
+     * <ul>
+     *   <li>401: default sends empty body → now sends structured JSON with AUTHENTICATION_REQUIRED</li>
+     *   <li>403: default sends Spring's own format (missing correlationId, errorCode) → now matches app format</li>
+     * </ul>
+     *
+     * @param response      the HTTP servlet response to write the JSON body to
+     * @param request       the HTTP servlet request for extracting the request URI
+     * @param httpStatus    the HTTP status (401 or 403) to set on the response
+     * @param message       the human-readable error message
+     * @param errorCode     the machine-readable error code (AUTHENTICATION_REQUIRED or ACCESS_DENIED)
+     * @throws IOException if writing to the response output stream fails
+     */
+    private static void writeSecurityErrorResponse(HttpServletResponse response,
+                                                    HttpServletRequest request,
+                                                    HttpStatus httpStatus,
+                                                    String message,
+                                                    String errorCode) throws IOException {
+        response.setStatus(httpStatus.value());
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+
+        // Build the same error structure as WebConfig.GlobalExceptionHandler.buildErrorResponse()
+        var errorBody = java.util.Map.of(
+                "status", httpStatus.value(),
+                "error", httpStatus.getReasonPhrase(),
+                "message", message,
+                "errorCode", errorCode,
+                "fieldErrors", java.util.Collections.emptyList(),
+                "timestamp", Instant.now().toString(),
+                "path", request.getRequestURI(),
+                "correlationId", MDC.get("correlationId") != null ? MDC.get("correlationId") : ""
+        );
+
+        new ObjectMapper().writeValue(response.getOutputStream(), errorBody);
     }
 }
