@@ -100,6 +100,16 @@ public class CardDto {
     private String cardCvvCd;
 
     /**
+     * JPA optimistic locking version field.
+     * Exposes the {@code @Version} field from the Card entity to API consumers,
+     * enabling optimistic concurrency control through the REST API (AAP §0.8.4).
+     * Clients must include the version from the GET response in PUT requests;
+     * a version mismatch triggers HTTP 409 Conflict (maps to COCRDUPC.cbl
+     * paragraph 9300-CHECK-CHANGE-IN-REC snapshot comparison).
+     */
+    private Integer version;
+
+    /**
      * Default no-args constructor required for framework deserialization
      * (Jackson JSON binding, Spring MVC request body mapping).
      */
@@ -238,6 +248,24 @@ public class CardDto {
      */
     public void setCardCvvCd(String cardCvvCd) {
         this.cardCvvCd = cardCvvCd;
+    }
+
+    /**
+     * Returns the JPA optimistic locking version.
+     *
+     * @return current version number, or {@code null} if not yet persisted
+     */
+    public Integer getVersion() {
+        return version;
+    }
+
+    /**
+     * Sets the JPA optimistic locking version.
+     *
+     * @param version version number from a previous GET response
+     */
+    public void setVersion(Integer version) {
+        this.version = version;
     }
 
     /**

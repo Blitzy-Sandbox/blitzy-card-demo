@@ -46,6 +46,7 @@ import com.cardemo.repository.UserSecurityRepository;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
@@ -218,7 +219,7 @@ public class AuthenticationService {
      *         user type, user ID, and routing information
      * @throws IllegalArgumentException  if userId or password is blank/null
      *                                    (maps COBOL "Please enter User ID/Password")
-     *                                    or if the password is incorrect
+     * @throws BadCredentialsException   if the password is incorrect
      *                                    (maps COBOL "Wrong Password. Try again ...")
      * @throws RecordNotFoundException   if the user ID does not exist in the
      *                                    USRSEC dataset (maps COBOL RESP(13)
@@ -374,8 +375,8 @@ public class AuthenticationService {
      * @param rawPassword     the uppercased plaintext password from the request
      * @param encodedPassword the BCrypt hash stored in the user security record
      * @param userId          the user ID for logging (never log the password)
-     * @throws IllegalArgumentException if the password does not match
-     *                                   (maps COBOL "Wrong Password. Try again ...")
+     * @throws BadCredentialsException if the password does not match
+     *                                  (maps COBOL "Wrong Password. Try again ...")
      */
     private void verifyPassword(String rawPassword, String encodedPassword, String userId) {
         // Maps: COSGN00C.cbl line 223
@@ -387,7 +388,7 @@ public class AuthenticationService {
             //   MOVE -1 TO PASSWDL OF COSGN0AI
             //   PERFORM SEND-SIGNON-SCREEN
             log.warn("Failed password attempt for user: {}", userId);
-            throw new IllegalArgumentException("Invalid password");
+            throw new BadCredentialsException("Invalid password");
         }
         log.debug("Password verified successfully for user: {}", userId);
     }
@@ -420,9 +421,12 @@ public class AuthenticationService {
      * @return a fully populated {@link SignOnResponse}
      */
     private SignOnResponse buildSignOnResponse(UserSecurity user, String normalizedUserId) {
-        // Generate authentication token (replaces CICS COMMAREA state passing)
-        // The CICS pseudo-conversational model uses RETURN TRANSID with COMMAREA;
-        // in the REST API, a UUID token replaces this mechanism.
+        // Generate informational session identifier (NOT used for request authentication).
+        // SecurityConfig enforces HTTP Basic auth via DaoAuthenticationProvider — each
+        // REST request is independently authenticated, mirroring COBOL's stateless CICS
+        // pseudo-conversational model (RETURN TRANSID COMMAREA). This UUID provides a
+        // unique session correlation token for client-side routing and logging, replacing
+        // the COMMAREA-based state passing without serving as a security credential.
         String token = UUID.randomUUID().toString();
 
         // Determine routing based on user type

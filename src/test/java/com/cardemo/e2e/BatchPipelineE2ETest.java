@@ -13,6 +13,7 @@ import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,8 +23,6 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.localstack.LocalStackContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -109,7 +108,6 @@ import com.cardemo.repository.TransactionTypeRepository;
  * @see BatchPipelineOrchestrator
  * @see com.cardemo.batch.jobs.CombineTransactionsJob
  */
-@Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles({"test", "batch"})
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
@@ -127,8 +125,9 @@ public class BatchPipelineE2ETest {
     private static final String STATEMENTS_BUCKET = "carddemo-statements";
     private static final String REPORT_QUEUE_NAME = "carddemo-report-jobs.fifo";
 
-    /** S3 key prefix for daily transaction input files (← DALYTRAN DD in POSTTRAN.jcl). */
-    private static final String DAILY_TRAN_S3_KEY = "daily-transactions/dailytran.txt";
+    /** S3 key for daily transaction input file (← DALYTRAN DD in POSTTRAN.jcl).
+     *  Must match DailyTransactionReader default: ${carddemo.aws.s3.daily-transaction-key:dailytran.txt} */
+    private static final String DAILY_TRAN_S3_KEY = "dailytran.txt";
 
     /** Maximum seconds to wait for an asynchronous batch job to complete. */
     private static final int JOB_TIMEOUT_SECONDS = 120;
@@ -147,7 +146,6 @@ public class BatchPipelineE2ETest {
     // the OnlineTransactionE2ETest pattern for consistency.
     // =========================================================================
 
-    @Container
     @SuppressWarnings("resource")
     static PostgreSQLContainer postgres = new PostgreSQLContainer(
             DockerImageName.parse("postgres:16-alpine"))
@@ -155,10 +153,16 @@ public class BatchPipelineE2ETest {
             .withUsername("test")
             .withPassword("test");
 
-    @Container
     static LocalStackContainer localstack = new LocalStackContainer(
             DockerImageName.parse("localstack/localstack:latest"))
             .withServices("s3", "sqs");
+
+    // Start containers before @DynamicPropertySource evaluation — matches
+    // OnlineTransactionE2ETest pattern for reliable container lifecycle.
+    static {
+        postgres.start();
+        localstack.start();
+    }
 
     // =========================================================================
     // Dynamic property wiring — container endpoints → Spring configuration
@@ -685,10 +689,12 @@ public class BatchPipelineE2ETest {
         }
 
         // ─── Stage 4b: Transaction Report (TRANREPT) ────────────────────────
+        // Parameter names must match TransactionReportJob.reportTransactionReader():
+        //   @Value("#{jobParameters['startDate']}") and @Value("#{jobParameters['endDate']}")
         JobParameters rptParams = new JobParametersBuilder()
                 .addLong("run.id", System.currentTimeMillis() + 1)
-                .addString("report.start.date", "2024-01-01")
-                .addString("report.end.date", "2024-01-31")
+                .addString("startDate", "2024-01-01")
+                .addString("endDate", "2024-01-31")
                 .toJobParameters();
 
         JobExecution rptExecution = launchJobAndWait(transactionReportJob, rptParams);
@@ -739,13 +745,34 @@ public class BatchPipelineE2ETest {
         long prePipelineTransactionCount = transactionRepository.count();
         long prePipelineAccountCount = accountRepository.count();
 
-        // Launch full 5-stage pipeline via BatchPipelineOrchestrator
+        // Launch full 5-stage pipeline via BatchPipelineOrchestrator.
+        // Must include startDate/endDate because Stage 4b (TransactionReportJob) reader
+        // uses @Value("#{jobParameters['startDate']}") / @Value("#{jobParameters['endDate']}")
+        // and all steps in the pipeline share the same JobParameters.
         JobParameters pipelineParams = new JobParametersBuilder()
                 .addLong("run.id", System.currentTimeMillis())
                 .addString("pipeline.date", "2024-02-15")
+                .addString("startDate", "2024-01-01")
+                .addString("endDate", "2024-12-31")
                 .toJobParameters();
 
         JobExecution pipelineExecution = launchJobAndWait(batchPipelineJob, pipelineParams);
+
+        // Diagnostic: log step execution details before assertions to identify
+        // which stage fails when the pipeline doesn't reach COMPLETED status.
+        for (StepExecution step : pipelineExecution.getStepExecutions()) {
+            System.out.printf("[PIPELINE DIAG] Step: %-40s status=%-12s exitCode=%-28s read=%d write=%d filter=%d%n",
+                    step.getStepName(), step.getStatus(), step.getExitStatus().getExitCode(),
+                    step.getReadCount(), step.getWriteCount(), step.getFilterCount());
+            if (step.getFailureExceptions() != null && !step.getFailureExceptions().isEmpty()) {
+                for (Throwable t : step.getFailureExceptions()) {
+                    System.out.printf("[PIPELINE DIAG]   FAILURE: %s: %s%n",
+                            t.getClass().getSimpleName(), t.getMessage());
+                }
+            }
+        }
+        System.out.printf("[PIPELINE DIAG] Overall pipeline status: %s, exitStatus: %s%n",
+                pipelineExecution.getStatus(), pipelineExecution.getExitStatus().getExitCode());
 
         // Pipeline must complete — sequential dependency chain enforced internally:
         //   Stage 1 → Decider → Stage 2 → Stage 3 → parallel(Stage 4a || Stage 4b)

@@ -345,6 +345,9 @@ public class CardListService {
         dto.setCardExpDate(card.getCardExpDate());
         dto.setCardActiveStatus(card.getCardActiveStatus());
         dto.setCardCvvCd(card.getCardCvvCd());
+        // Optimistic locking version — exposes JPA @Version for concurrent modification
+        // detection via REST API (AAP §0.8.4).
+        dto.setVersion(card.getVersion());
         return dto;
     }
 

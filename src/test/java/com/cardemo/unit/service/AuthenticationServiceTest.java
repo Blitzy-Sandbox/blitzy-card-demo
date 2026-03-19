@@ -9,7 +9,7 @@
  *   PROCESS-ENTER-KEY    → tests 1-4 (input validation: null/blank userId/password)
  *   FUNCTION UPPER-CASE  → tests 6, 8 (uppercase conversion for userId and password)
  *   READ-USER-SEC-FILE   → test 5 (user-not-found → RecordNotFoundException)
- *   Password comparison   → tests 7-8 (wrong password, uppercase-before-BCrypt)
+ *   Password comparison   → tests 7-8 (wrong password → BadCredentialsException, uppercase-before-BCrypt)
  *   User type routing     → tests 9-12 (ADMIN→COADM01C/CA00, USER→COMEN01C/CM01)
  *   Response population   → tests 13-14 (userType, all fields)
  *   Interaction verify    → tests 15-16 (repository and passwordEncoder called once)
@@ -42,6 +42,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.util.Optional;
@@ -290,14 +291,16 @@ class AuthenticationServiceTest {
     // =======================================================================
 
     /**
-     * Test 7: Wrong password triggers IllegalArgumentException with message.
+     * Test 7: Wrong password triggers BadCredentialsException with message.
      *
      * <p>Maps COBOL: {@code IF SEC-USR-PWD NOT = WS-USER-PWD}
      * → "Wrong Password. Try again ..." (COSGN00C.cbl line 242).
-     * BCrypt.matches() returns false → service throws IllegalArgumentException.</p>
+     * BCrypt.matches() returns false → service throws BadCredentialsException.
+     * Spring Security maps this to HTTP 401 Unauthorized (not 500 like
+     * IllegalArgumentException), aligning with COBOL's unified error behavior.</p>
      */
     @Test
-    void testAuthenticate_wrongPassword_throwsIllegalArgument() {
+    void testAuthenticate_wrongPassword_throwsBadCredentials() {
         // Given — valid user but wrong password (BCrypt.matches returns false)
         SignOnRequest request = new SignOnRequest();
         request.setUserId("ADMIN001");
@@ -308,9 +311,9 @@ class AuthenticationServiceTest {
         when(passwordEncoder.matches("WRONGPWD", adminUser.getSecUsrPwd()))
                 .thenReturn(false);
 
-        // When/Then — authenticate throws IllegalArgumentException for wrong password
+        // When/Then — authenticate throws BadCredentialsException for wrong password
         assertThatThrownBy(() -> authenticationService.authenticate(request))
-                .isInstanceOf(IllegalArgumentException.class)
+                .isInstanceOf(BadCredentialsException.class)
                 .hasMessageContaining("Invalid password");
     }
 

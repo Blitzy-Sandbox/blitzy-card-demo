@@ -31,6 +31,8 @@ import com.cardemo.model.dto.SignOnRequest;
 import com.cardemo.model.dto.SignOnResponse;
 import com.cardemo.service.auth.AuthenticationService;
 
+import org.springframework.security.authentication.BadCredentialsException;
+
 /**
  * Spring MVC REST controller providing authentication (sign-on) operations,
  * replacing CICS BMS screen COSGN00 from the CardDemo mainframe application.
@@ -77,9 +79,9 @@ import com.cardemo.service.auth.AuthenticationService;
  *   <li>Passwords are NEVER logged — not plaintext, not masked, not hashed.</li>
  *   <li>This endpoint is permitted without authentication in SecurityConfig
  *       (it IS the login endpoint).</li>
- *   <li>RecordNotFoundException and IllegalArgumentException from the service layer
- *       are both caught and mapped to HTTP 401, NOT their default ControllerAdvice
- *       mappings (404/400), to prevent information leakage.</li>
+ *   <li>RecordNotFoundException, BadCredentialsException, and IllegalArgumentException
+ *       from the service layer are all caught and mapped to HTTP 401, NOT their default
+ *       ControllerAdvice mappings (404/500/400), to prevent information leakage.</li>
  * </ul>
  *
  * <p>Source traceability: COSGN00C.cbl — CardDemo v1.0-15-g27d6c6f-68</p>
@@ -141,8 +143,9 @@ public class AuthController {
      * <h4>Security: Auth-Specific Exception Handling</h4>
      * <p>This is the ONE controller where exception handling is implemented at the
      * controller level instead of delegating to {@code @ControllerAdvice}. Both
-     * {@link RecordNotFoundException} (user not found) and
-     * {@link IllegalArgumentException} (wrong password) are caught and mapped to
+     * {@link RecordNotFoundException} (user not found),
+     * {@link BadCredentialsException} (wrong password), and
+     * {@link IllegalArgumentException} (blank input) are caught and mapped to
      * HTTP 401 Unauthorized with a generic error message. This prevents user
      * enumeration by ensuring the same response for both error conditions —
      * matching the COBOL behavior of showing "Sign-on is unsuccessful..." for
@@ -170,11 +173,17 @@ public class AuthController {
             // the same generic message "Sign-on is unsuccessful..." is displayed.
             logger.warn("Authentication failed for user {}", request.getUserId());
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(null);
+        } catch (BadCredentialsException ex) {
+            // Wrong password — map to 401 (NOT 500) to prevent distinguishing
+            // between "user exists but wrong password" and "user not found".
+            // Matches COBOL COSGN00C.cbl behavior where SEC-USR-PWD mismatch
+            // shows the same "Sign-on is unsuccessful..." message.
+            logger.warn("Authentication failed for user {}", request.getUserId());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(null);
         } catch (IllegalArgumentException ex) {
-            // Invalid password or blank input — map to 401 (NOT 400) to prevent
-            // distinguishing between "user exists but wrong password" and "user
-            // not found". Matches COBOL COSGN00C.cbl behavior where SEC-USR-PWD
-            // mismatch shows the same "Sign-on is unsuccessful..." message.
+            // Blank userId or password input — map to 401 (NOT 400) to prevent
+            // information leakage about which field is missing. Matches COBOL
+            // COSGN00C.cbl PROCESS-ENTER-KEY behavior for SPACES/LOW-VALUES.
             logger.warn("Authentication failed for user {}", request.getUserId());
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(null);
         }

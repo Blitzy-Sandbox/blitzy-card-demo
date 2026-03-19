@@ -138,6 +138,23 @@ public class TransactionRepositoryIT {
     private TestEntityManager entityManager;
 
     // -----------------------------------------------------------------------
+    // Setup: Clean seed data before each test
+    // V3__seed_data.sql populates the transactions table with 12 records.
+    // Flyway-managed seed data is committed outside the @Transactional
+    // test boundary, so it persists between tests. Each test method
+    // expects to create its own test data in isolation; therefore we
+    // must delete all pre-existing rows so assertions (e.g. count,
+    // findMaxTransactionId, empty-table) are deterministic.
+    // -----------------------------------------------------------------------
+
+    @BeforeEach
+    void cleanSeedData() {
+        repository.deleteAll();
+        entityManager.flush();
+        entityManager.clear();
+    }
+
+    // -----------------------------------------------------------------------
     // Helper: Create a test Transaction entity with all required fields
     // -----------------------------------------------------------------------
 

@@ -253,16 +253,19 @@ public class DailyTransactionPostingJob {
      * successfully posted transactions and determines the reject count
      * from the step execution's filter count metric.</p>
      *
-     * <p>Exit status mapping:</p>
+     * <p>Exit status mapping (always returns {@link ExitStatus#COMPLETED} exit code):</p>
      * <ul>
      *   <li>Rejections == 0 → {@link ExitStatus#COMPLETED} (RETURN-CODE 0)</li>
-     *   <li>Rejections &gt; 0 → {@code new ExitStatus("COMPLETED_WITH_REJECTS")}
-     *       (RETURN-CODE 4)</li>
+     *   <li>Rejections &gt; 0 → {@code ExitStatus("COMPLETED", description)}
+     *       with reject count stored in {@code ExecutionContext} (RETURN-CODE 4)</li>
      * </ul>
      *
-     * <p>The {@link BatchPipelineOrchestrator#conditionCodeDecider} evaluates
-     * this exit status to determine whether downstream stages proceed.
-     * Both COMPLETED and COMPLETED_WITH_REJECTS allow continuation.</p>
+     * <p>The {@link BatchPipelineOrchestrator} Flow transitions require standard
+     * exit codes. The COBOL RETURN-CODE 4 semantics are preserved via the
+     * {@code rejectCount} and {@code postedCount} entries in the step's
+     * {@code ExecutionContext}, accessible by the
+     * {@link BatchPipelineOrchestrator#conditionCodeDecider} and downstream
+     * stages.</p>
      *
      * @param writer the transaction writer providing posted transaction count
      * @return a configured {@link StepExecutionListener}
@@ -361,12 +364,41 @@ public class DailyTransactionPostingJob {
                     }
                 }
 
-                // Log the summary matching COBOL DISPLAY statements (lines 227-228):
-                //   DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT
-                //   DISPLAY 'TRANSACTIONS REJECTED  :' WS-REJECT-COUNT
-                ExitStatus exitStatus = rejectCount > 0
-                        ? new ExitStatus(COMPLETED_WITH_REJECTS)
-                        : ExitStatus.COMPLETED;
+                // ---------------------------------------------------------------
+                // Exit status determination — COBOL RETURN-CODE mapping
+                //
+                // COBOL CBTRN02C.cbl line 230:
+                //   IF WS-REJECT-COUNT > 0 MOVE 4 TO RETURN-CODE
+                //   ELSE MOVE 0 TO RETURN-CODE
+                //
+                // In the Spring Batch pipeline (BatchPipelineOrchestrator), the
+                // FlowJobBuilder uses Flow-level transitions that match only
+                // standard exit codes. Custom exit codes (e.g. the previous
+                // "COMPLETED_WITH_REJECTS") prevent the conditionCodeDecider
+                // from being invoked, silently stopping downstream stages.
+                //
+                // To maintain correct pipeline flow while preserving COBOL
+                // RETURN-CODE semantics, we always return ExitStatus.COMPLETED
+                // and store reject metadata in the StepExecution context for
+                // the conditionCodeDecider and observability consumers.
+                //
+                // The conditionCodeDecider only checks for "FAILED" exit codes
+                // (RETURN-CODE >= 8), so both RC=0 and RC=4 correctly map to
+                // ExitStatus.COMPLETED → pipeline CONTINUES.
+                // ---------------------------------------------------------------
+                stepExecution.getExecutionContext().putLong("rejectCount", rejectCount);
+                stepExecution.getExecutionContext().putLong("postedCount", transactionCount);
+
+                ExitStatus exitStatus;
+                if (rejectCount > 0) {
+                    // Return COMPLETED with descriptive text for observability.
+                    // Exit code remains "COMPLETED" for correct Flow transitions.
+                    exitStatus = new ExitStatus(ExitStatus.COMPLETED.getExitCode(),
+                            "Completed with " + rejectCount + " rejections "
+                            + "(RETURN-CODE=4 equivalent)");
+                } else {
+                    exitStatus = ExitStatus.COMPLETED;
+                }
 
                 log.info("POSTTRAN complete: read={}, posted={}, rejected={}, exitStatus={}",
                         readCount, transactionCount, rejectCount, exitStatus.getExitCode());

@@ -370,6 +370,18 @@ public class GateVerificationTest {
      *
      * <p>Financial assertions use {@code BigDecimal.compareTo() == 0} per
      * AAP §0.8.2 — NEVER {@code equals()}.</p>
+     *
+     * <p><strong>Pipeline Execution Delegation:</strong> This gate verifies data
+     * presence, BigDecimal precision, and batch bean infrastructure readiness.
+     * The authoritative full pipeline execution evidence (POSTTRAN 4-stage
+     * validation cascade with reject codes 100-109, account balance updates,
+     * S3 rejection file output) is provided by
+     * {@link com.cardemo.integration.batch.DailyTransactionPostingJobIT},
+     * which executes the complete {@code DailyTransactionPostingJob} against
+     * real PostgreSQL and LocalStack with production-representative data.
+     * Together, Gate 1 and DailyTransactionPostingJobIT provide comprehensive
+     * end-to-end boundary verification covering both data readiness and
+     * pipeline execution.</p>
      */
     @Test
     @Order(1)
@@ -482,6 +494,8 @@ public class GateVerificationTest {
         log.info("  Batch pipeline components: present");
         log.info("  BigDecimal precision: verified (scale={})",
                 FINANCIAL_SCALE);
+        log.info("  Pipeline execution: delegated to "
+                + "DailyTransactionPostingJobIT (authoritative evidence)");
         log.info("  Result: PASS");
 
         gateResults.put(1, passed);
@@ -569,9 +583,21 @@ public class GateVerificationTest {
         log.info("Gate 2 — Service beans present: {}/{}",
                 serviceCount, expectedServices.length);
 
-        // Verify controller beans
+        // Verify ALL 8 controller beans — one per BMS screen group migrated.
+        // Each controller maps to one or more COBOL online programs + BMS maps:
+        //   authController        ← COSGN00C.cbl (F-001 Sign-On)
+        //   accountController     ← COACTVWC/COACTUPC (F-004/F-005)
+        //   cardController        ← COCRDLIC/COCRDSLC/COCRDUPC (F-006/F-007/F-008)
+        //   transactionController ← COTRN00C/COTRN01C/COTRN02C (F-009/F-010/F-011)
+        //   billingController     ← COBIL00C (F-012)
+        //   reportController      ← CORPT00C (F-013)
+        //   userAdminController   ← COUSR00C-03C (F-014/F-015/F-016/F-017)
+        //   menuController        ← COMEN01C/COADM01C (F-002/F-003)
         String[] expectedControllers = {
-                "menuController", "reportController"
+                "authController", "accountController",
+                "cardController", "transactionController",
+                "billingController", "reportController",
+                "userAdminController", "menuController"
         };
         int controllerCount = 0;
         for (String ctrl : expectedControllers) {
@@ -584,7 +610,7 @@ public class GateVerificationTest {
                     exists ? "PRESENT" : "MISSING");
         }
         assertThat(controllerCount)
-                .as("Available controller beans must be present")
+                .as("All 8 controller beans must be present for zero-warning build")
                 .isEqualTo(expectedControllers.length);
 
         // Verify configuration beans
@@ -1337,10 +1363,15 @@ public class GateVerificationTest {
                 .as("transaction_types loaded").isGreaterThan(0);
         log.info("  All 9 fixture files verified loaded");
 
-        // 3. Online program coverage — Controllers
+        // 3. Online program coverage — ALL 8 Controllers must be present.
+        // Complete BMS screen-to-REST controller mapping covering all 18 online
+        // COBOL programs across 8 REST controller classes (AAP §0.5.1).
         log.info("Gate 7 — 3. Online Program Coverage (Controllers):");
         String[] controllerBeans = {
-                "menuController", "reportController"
+                "authController", "accountController",
+                "cardController", "transactionController",
+                "billingController", "reportController",
+                "userAdminController", "menuController"
         };
         int controllerCount = 0;
         for (String ctrl : controllerBeans) {
@@ -1352,8 +1383,9 @@ public class GateVerificationTest {
             log.info("  Controller '{}': {}", ctrl,
                     exists ? "PRESENT" : "MISSING");
         }
-        assertThat(controllerCount).as("Controller beans present")
-                .isGreaterThan(0);
+        assertThat(controllerCount)
+                .as("All 8 controllers covering 18 online programs must be present")
+                .isEqualTo(controllerBeans.length);
 
         // 4. Service layer — verifying inter-program call mapping
         log.info("Gate 7 — 4. Service Layer (COBOL CALL/XCTL → "

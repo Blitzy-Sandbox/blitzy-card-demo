@@ -159,6 +159,20 @@ public class CardUpdateService {
                     return new RecordNotFoundException("Card", cardNum);
                 });
 
+        // Step 1.5: Optimistic concurrency control — compare client-supplied version with DB version
+        // Maps to COCRDUPC.cbl paragraph 9300-CHECK-CHANGE-IN-REC: if the client-supplied version
+        // does not match the current DB version, the record was modified by another user since the
+        // client's last read. Reject with ConcurrentModificationException (HTTP 409 Conflict).
+        if (updateRequest.getVersion() != null
+                && !updateRequest.getVersion().equals(card.getVersion())) {
+            logger.error("Optimistic lock conflict: client version={}, DB version={} for card ending in {}",
+                    updateRequest.getVersion(), card.getVersion(), maskCardNumber(cardNum));
+            throw new ConcurrentModificationException(
+                    "Card record was modified by another user. "
+                            + "Expected version " + updateRequest.getVersion()
+                            + " but found version " + card.getVersion());
+        }
+
         // Step 2: Field-by-field validation (maps 1100-VALIDATE-CARD-DATA paragraphs 1210–1260)
         // Collects ALL errors before throwing — matches COBOL behavior of marking all bad fields
         validateFields(updateRequest);
@@ -441,6 +455,9 @@ public class CardUpdateService {
         dto.setCardExpDate(card.getCardExpDate());
         dto.setCardActiveStatus(card.getCardActiveStatus());
         dto.setCardCvvCd(card.getCardCvvCd());
+        // Optimistic locking version — exposes JPA @Version for concurrent modification
+        // detection via REST API, matching AccountDto pattern (AAP §0.8.4).
+        dto.setVersion(card.getVersion());
         return dto;
     }
 

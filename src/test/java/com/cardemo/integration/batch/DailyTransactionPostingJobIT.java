@@ -560,7 +560,7 @@ class DailyTransactionPostingJobIT {
 
         // Assert — job completes with rejects (RETURN-CODE 4)
         assertThat(jobExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
-        assertExitStatusContains(jobExecution, "COMPLETED_WITH_REJECTS");
+        assertCompletedWithRejects(jobExecution);
 
         // Assert — no transactions posted
         assertThat(transactionRepository.count()).isZero();
@@ -613,7 +613,7 @@ class DailyTransactionPostingJobIT {
 
         // Assert — job completes with rejects
         assertThat(jobExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
-        assertExitStatusContains(jobExecution, "COMPLETED_WITH_REJECTS");
+        assertCompletedWithRejects(jobExecution);
 
         // Assert — no transactions posted
         assertThat(transactionRepository.count()).isZero();
@@ -675,7 +675,7 @@ class DailyTransactionPostingJobIT {
 
         // Assert — job completes with rejects
         assertThat(jobExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
-        assertExitStatusContains(jobExecution, "COMPLETED_WITH_REJECTS");
+        assertCompletedWithRejects(jobExecution);
 
         // Assert — no transactions posted
         assertThat(transactionRepository.count()).isZero();
@@ -742,7 +742,7 @@ class DailyTransactionPostingJobIT {
 
         // Assert — job completes with rejects
         assertThat(jobExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
-        assertExitStatusContains(jobExecution, "COMPLETED_WITH_REJECTS");
+        assertCompletedWithRejects(jobExecution);
 
         // Assert — no transactions posted
         assertThat(transactionRepository.count()).isZero();
@@ -837,7 +837,7 @@ class DailyTransactionPostingJobIT {
 
         // Assert — job completes with rejects (rejectCount > 0 → RETURN-CODE 4)
         assertThat(jobExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
-        assertExitStatusContains(jobExecution, "COMPLETED_WITH_REJECTS");
+        assertCompletedWithRejects(jobExecution);
 
         // Assert — exactly 2 valid transactions posted
         List<Transaction> posted = transactionRepository.findAll();
@@ -1522,6 +1522,41 @@ class DailyTransactionPostingJobIT {
                         jobExecution.getStepExecutions().stream()
                                 .map(s -> s.getExitStatus().getExitCode())
                                 .toList())
+                .isTrue();
+    }
+
+    /**
+     * Asserts that the job completed successfully but with rejections — COBOL
+     * RETURN-CODE 4 equivalent. Verifies:
+     * <ul>
+     *   <li>Exit code is COMPLETED (required for pipeline flow transitions)</li>
+     *   <li>Reject count is stored in the step execution context</li>
+     *   <li>Exit description contains rejection information</li>
+     * </ul>
+     *
+     * @param jobExecution the completed job execution
+     */
+    private void assertCompletedWithRejects(JobExecution jobExecution) {
+        assertThat(jobExecution.getExitStatus().getExitCode())
+                .as("Job exit code should be COMPLETED (RETURN-CODE 4 uses COMPLETED "
+                        + "exit code with reject metadata in step execution context)")
+                .isEqualTo("COMPLETED");
+
+        // Verify reject metadata is stored in step execution context
+        boolean rejectFound = false;
+        for (StepExecution step : jobExecution.getStepExecutions()) {
+            Long rejectCount = step.getExecutionContext().getLong("rejectCount", 0L);
+            if (rejectCount > 0) {
+                rejectFound = true;
+                // Also verify the exit description mentions rejections
+                assertThat(step.getExitStatus().getExitDescription())
+                        .as("Step exit description should document rejection count")
+                        .containsIgnoringCase("rejection");
+                break;
+            }
+        }
+        assertThat(rejectFound)
+                .as("Expected at least one step with rejectCount > 0 in execution context")
                 .isTrue();
     }
 }

@@ -460,14 +460,18 @@ class UserUpdateServiceTest {
         updateDto.setSecUsrPwd("newpass");
         when(userSecurityRepository.findById(TEST_USER_ID)).thenReturn(Optional.of(existingUser));
         when(passwordEncoder.matches("newpass", STORED_BCRYPT_HASH)).thenReturn(false);
-        when(passwordEncoder.encode("newpass")).thenReturn("$2a$10$newEncodedHashForNewPass");
+        // Password is uppercased before encoding (COBOL parity: COSGN00C.cbl line 135
+        // uppercases passwords via MOVE FUNCTION UPPER-CASE(PASSWDI), making them
+        // case-insensitive. AuthenticationService applies the same uppercasing before
+        // BCrypt verification, so encoding must also use the uppercased form.)
+        when(passwordEncoder.encode("NEWPASS")).thenReturn("$2a$10$newEncodedHashForNewPass");
         when(userSecurityRepository.save(any(UserSecurity.class))).thenReturn(existingUser);
 
         // Act
         userUpdateService.updateUser(TEST_USER_ID, updateDto);
 
-        // Assert — encode was called with the new plaintext password
-        verify(passwordEncoder, times(1)).encode("newpass");
+        // Assert — encode was called with the UPPERCASED new password
+        verify(passwordEncoder, times(1)).encode("NEWPASS");
     }
 
     /**

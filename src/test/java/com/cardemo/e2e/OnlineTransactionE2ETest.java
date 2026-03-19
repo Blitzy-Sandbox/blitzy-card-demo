@@ -41,6 +41,8 @@ import software.amazon.awssdk.services.sqs.model.ReceiveMessageResponse;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -63,6 +65,13 @@ import com.cardemo.model.enums.UserType;
  * <p>Uses real PostgreSQL (Testcontainers) with Flyway seed data and real AWS
  * services (LocalStack) for SQS message verification. Validates Gate 5
  * (API/interface contract verification) for the CardDemo migration.
+ *
+ * <p><strong>Auth model:</strong> All authenticated requests use HTTP Basic auth,
+ * matching the SecurityConfig's DaoAuthenticationProvider + BCryptPasswordEncoder.
+ * Test 1 verifies the /api/auth/signin endpoint (returns routing metadata and UUID
+ * token) and stores credentials for HTTP Basic auth on subsequent requests. This
+ * mirrors COBOL's stateless CICS model where each pseudo-conversational interaction
+ * is independently authenticated (AAP §0.4.3).
  *
  * <p>Source mapping: All 18 COBOL online programs (CO*.cbl) + corresponding BMS
  * screens (app/bms/*.bms) migrated to REST API endpoints.
@@ -134,7 +143,15 @@ public class OnlineTransactionE2ETest {
     private int port;
 
     // ── Shared test state across ordered tests ──────────────────────────────────
+    // Authentication: HTTP Basic auth credentials for all authenticated requests.
+    // SecurityConfig enforces HTTP Basic via Spring Security's DaoAuthenticationProvider.
+    // The UUID token returned from /api/auth/signin is retained for informational
+    // metadata verification (routing, user type) but is NOT used for request auth —
+    // this aligns with COBOL's stateless CICS model where each request is
+    // independently authenticated (AAP §0.4.3 Stateless REST).
     private String authToken;
+    private String authUsername;
+    private String authPassword;
     private SqsClient sqsClient;
     private String sqsQueueUrl;
     private String discoveredAcctId;
@@ -190,7 +207,11 @@ public class OnlineTransactionE2ETest {
 
     private HttpHeaders createAuthHeaders() {
         HttpHeaders headers = new HttpHeaders();
-        headers.setBearerAuth(authToken);
+        // HTTP Basic auth — SecurityConfig enforces Basic auth via Spring Security's
+        // DaoAuthenticationProvider + BCryptPasswordEncoder. Each request is independently
+        // authenticated, matching COBOL's stateless CICS pseudo-conversational model
+        // where RETURN TRANSID COMMAREA re-authenticates on every interaction.
+        headers.setBasicAuth(authUsername, authPassword);
         headers.setContentType(MediaType.APPLICATION_JSON);
         return headers;
     }
@@ -239,7 +260,9 @@ public class OnlineTransactionE2ETest {
     @Test
     @Order(1)
     void testAuthentication_SignOn() {
-        SignOnRequest request = new SignOnRequest("ADMIN001", "ADMIN001");
+        // Admin user credentials from V3__seed_data.sql — ADMIN001/PASSWORDA
+        // (COBOL default credentials, BCrypt-hashed in the Java target per AAP §0.8.1)
+        SignOnRequest request = new SignOnRequest("ADMIN001", "PASSWORDA");
 
         ResponseEntity<SignOnResponse> response = restTemplate.postForEntity(
                 "/api/auth/signin", request, SignOnResponse.class);
@@ -253,8 +276,13 @@ public class OnlineTransactionE2ETest {
         assertThat(body.getToTranId()).isNotBlank();
         assertThat(body.getToProgram()).isNotBlank();
 
-        // Store token for all subsequent authenticated requests
+        // Store UUID token for informational/routing metadata verification only.
+        // Actual request authentication uses HTTP Basic (see createAuthHeaders()).
         authToken = body.getToken();
+        // Store credentials for HTTP Basic auth on all subsequent requests.
+        // SecurityConfig enforces HTTP Basic via DaoAuthenticationProvider.
+        authUsername = "ADMIN001";
+        authPassword = "PASSWORDA";
     }
 
     /**
@@ -410,16 +438,25 @@ public class OnlineTransactionE2ETest {
         ResponseEntity<Map<String, Object>> firstGet =
                 authenticatedGetPage("/api/accounts/" + discoveredAcctId);
         assertThat(firstGet.getStatusCode()).isEqualTo(HttpStatus.OK);
-        Map<String, Object> staleData = firstGet.getBody();
-        assertThat(staleData).isNotNull();
+        Map<String, Object> originalData = firstGet.getBody();
+        assertThat(originalData).isNotNull();
 
-        // First update succeeds (version N → N+1)
+        // Keep a snapshot with stale version N for the conflicting second update
+        Map<String, Object> staleData = new HashMap<>(originalData);
+
+        // First update MUST modify a field so JPA @Version is incremented (N → N+1).
+        // Without a real change, Hibernate detects no dirty state and skips the UPDATE.
+        Map<String, Object> firstUpdatePayload = new HashMap<>(originalData);
+        String origStatus = (String) firstUpdatePayload.getOrDefault("acctActiveStatus", "Y");
+        String toggledStatus = "Y".equals(origStatus) ? "N" : "Y";
+        firstUpdatePayload.put("acctActiveStatus", toggledStatus);
+
         ResponseEntity<Map<String, Object>> firstUpdate = restTemplate.exchange(
                 "/api/accounts/" + discoveredAcctId, HttpMethod.PUT,
-                new HttpEntity<>(staleData, createAuthHeaders()), PAGE_TYPE);
+                new HttpEntity<>(firstUpdatePayload, createAuthHeaders()), PAGE_TYPE);
         assertThat(firstUpdate.getStatusCode()).isEqualTo(HttpStatus.OK);
 
-        // Second update with same stale data (version N) should fail with 409
+        // Second update with stale version N should fail with 409 CONFLICT
         ResponseEntity<String> conflictResponse = restTemplate.exchange(
                 "/api/accounts/" + discoveredAcctId, HttpMethod.PUT,
                 new HttpEntity<>(staleData, createAuthHeaders()), String.class);
@@ -498,16 +535,26 @@ public class OnlineTransactionE2ETest {
                 "/api/cards/" + discoveredCardNum, HttpMethod.GET,
                 new HttpEntity<>(createAuthHeaders()), PAGE_TYPE);
         assertThat(firstGet.getStatusCode()).isEqualTo(HttpStatus.OK);
-        Map<String, Object> staleCardData = firstGet.getBody();
-        assertThat(staleCardData).isNotNull();
+        Map<String, Object> originalCardData = firstGet.getBody();
+        assertThat(originalCardData).isNotNull();
 
-        // First update succeeds (version N → N+1)
+        // Keep a snapshot with the stale version for the second (conflicting) update
+        Map<String, Object> staleCardData = new HashMap<>(originalCardData);
+
+        // First update MUST modify a field so CardUpdateService.hasChanges() triggers
+        // a save and the JPA @Version is incremented from N to N+1. Toggling the
+        // embossed name is a safe, reversible field change for this test.
+        Map<String, Object> firstUpdatePayload = new HashMap<>(originalCardData);
+        String origName = (String) firstUpdatePayload.getOrDefault("cardEmbossedName", "");
+        firstUpdatePayload.put("cardEmbossedName", origName + " UPDATED");
+
         ResponseEntity<Map<String, Object>> firstUpdate = restTemplate.exchange(
                 "/api/cards/" + discoveredCardNum, HttpMethod.PUT,
-                new HttpEntity<>(staleCardData, createAuthHeaders()), PAGE_TYPE);
+                new HttpEntity<>(firstUpdatePayload, createAuthHeaders()), PAGE_TYPE);
         assertThat(firstUpdate.getStatusCode()).isEqualTo(HttpStatus.OK);
 
-        // Second update with same stale data should fail with 409
+        // Second update with stale version N should fail with 409 CONFLICT because
+        // the entity is now at version N+1 after the first successful save.
         ResponseEntity<String> conflictResponse = restTemplate.exchange(
                 "/api/cards/" + discoveredCardNum, HttpMethod.PUT,
                 new HttpEntity<>(staleCardData, createAuthHeaders()), String.class);
@@ -589,18 +636,24 @@ public class OnlineTransactionE2ETest {
     void testTransactionAdd_AutoIdGeneration() {
         assertThat(discoveredCardNum).as("Card number from test 8").isNotNull();
 
-        // Build a new transaction — tranId is omitted (auto-generated by service)
-        Map<String, Object> newTransaction = Map.ofEntries(
-                Map.entry("tranTypeCd", "SA"),
-                Map.entry("tranCatCd", "5001"),
-                Map.entry("tranSource", "POS TERM"),
-                Map.entry("tranDesc", "E2E Test Transaction"),
-                Map.entry("tranAmt", new BigDecimal("25.99")),
-                Map.entry("tranCardNum", discoveredCardNum),
-                Map.entry("tranMerchId", "123456789"),
-                Map.entry("tranMerchName", "TEST MERCHANT"),
-                Map.entry("tranMerchCity", "NEW YORK"),
-                Map.entry("tranMerchZip", "10001"));
+        // Build a new transaction — tranId is omitted (auto-generated by service).
+        // tranOrigTs and tranProcTs are required by TransactionAddService.validateDataFields()
+        // (maps COTRN02C.cbl origination/processing date validation paragraphs).
+        // Using HashMap instead of Map.ofEntries because Jackson serializes LocalDateTime
+        // values through JavaTimeModule as ISO-8601 strings.
+        Map<String, Object> newTransaction = new HashMap<>();
+        newTransaction.put("tranTypeCd", "01");
+        newTransaction.put("tranCatCd", "5001");
+        newTransaction.put("tranSource", "POS TERM");
+        newTransaction.put("tranDesc", "E2E Test Transaction");
+        newTransaction.put("tranAmt", new BigDecimal("25.99"));
+        newTransaction.put("tranCardNum", discoveredCardNum);
+        newTransaction.put("tranMerchId", "123456789");
+        newTransaction.put("tranMerchName", "TEST MERCHANT");
+        newTransaction.put("tranMerchCity", "NEW YORK");
+        newTransaction.put("tranMerchZip", "10001");
+        newTransaction.put("tranOrigTs", LocalDateTime.now().toString());
+        newTransaction.put("tranProcTs", LocalDateTime.now().toString());
 
         ResponseEntity<TransactionDto> response = authenticatedPost(
                 "/api/transactions", newTransaction, TransactionDto.class);
@@ -766,12 +819,15 @@ public class OnlineTransactionE2ETest {
         long initialUserCount = ((Number) listBody.get("totalElements")).longValue();
 
         // ── ADD ── POST /api/admin/users → COUSR01C
-        UserSecurityDto newUser = new UserSecurityDto();
-        newUser.setSecUsrId("E2EUSER1");
-        newUser.setSecUsrFname("End2End");
-        newUser.setSecUsrLname("TestUser");
-        newUser.setSecUsrPwd("SecureP@ss1");
-        newUser.setSecUsrType(UserType.USER);
+        // Use Map instead of UserSecurityDto because @JsonProperty(WRITE_ONLY) on
+        // secUsrPwd prevents Jackson from serializing the password field when sending
+        // the DTO as a request body — the server would receive null and reject it.
+        Map<String, Object> newUser = new HashMap<>();
+        newUser.put("secUsrId", "E2EUSER1");
+        newUser.put("secUsrFname", "End2End");
+        newUser.put("secUsrLname", "TestUser");
+        newUser.put("secUsrPwd", "SecureP@ss1");
+        newUser.put("secUsrType", "USER");
 
         ResponseEntity<UserSecurityDto> addResponse = authenticatedPost(
                 "/api/admin/users", newUser, UserSecurityDto.class);
@@ -792,12 +848,13 @@ public class OnlineTransactionE2ETest {
         assertThat(fetchedUser.getSecUsrFname()).isEqualTo("End2End");
 
         // ── UPDATE ── PUT /api/admin/users/{id} → COUSR02C
-        UserSecurityDto updateData = new UserSecurityDto();
-        updateData.setSecUsrId("E2EUSER1");
-        updateData.setSecUsrFname("Updated");
-        updateData.setSecUsrLname("TestUser");
-        updateData.setSecUsrPwd("SecureP@ss1");
-        updateData.setSecUsrType(UserType.USER);
+        // Use Map for same WRITE_ONLY serialization reason as the ADD operation above.
+        Map<String, Object> updateData = new HashMap<>();
+        updateData.put("secUsrId", "E2EUSER1");
+        updateData.put("secUsrFname", "Updated");
+        updateData.put("secUsrLname", "TestUser");
+        updateData.put("secUsrPwd", "SecureP@ss1");
+        updateData.put("secUsrType", "USER");
 
         ResponseEntity<UserSecurityDto> updateResponse = authenticatedPut(
                 "/api/admin/users/E2EUSER1", updateData, UserSecurityDto.class);
@@ -827,13 +884,15 @@ public class OnlineTransactionE2ETest {
     @Test
     @Order(19)
     void testUserAdd_BcryptPasswordHashing() {
-        // Create a new user with known credentials
-        UserSecurityDto newUser = new UserSecurityDto();
-        newUser.setSecUsrId("BCRYPT01");
-        newUser.setSecUsrFname("BCrypt");
-        newUser.setSecUsrLname("Tester");
-        newUser.setSecUsrPwd("TestPassword123!");
-        newUser.setSecUsrType(UserType.USER);
+        // Create a new user with known credentials.
+        // Use Map to bypass @JsonProperty(WRITE_ONLY) on secUsrPwd in UserSecurityDto
+        // so the password is serialized into the JSON request body.
+        Map<String, Object> newUser = new HashMap<>();
+        newUser.put("secUsrId", "BCRYPT01");
+        newUser.put("secUsrFname", "BCrypt");
+        newUser.put("secUsrLname", "Tester");
+        newUser.put("secUsrPwd", "TestPassword123!");
+        newUser.put("secUsrType", "USER");
 
         ResponseEntity<UserSecurityDto> addResponse = authenticatedPost(
                 "/api/admin/users", newUser, UserSecurityDto.class);

@@ -150,10 +150,13 @@ public class AccountDto {
     private String custState;
 
     /**
-     * Customer ZIP code — maps to ACSZIPCI PIC X(5) in BMS map.
-     * Source CUST-ADDR-ZIP is PIC X(10) but BMS displays 5-digit format.
+     * Customer ZIP code — maps to CUST-ADDR-ZIP PIC X(10) in CVCUS01Y.cpy.
+     * Supports both 5-digit (e.g., "30852") and ZIP+4 (e.g., "30852-6716")
+     * formats as present in the seed data. The COBOL source field is PIC X(10)
+     * which accommodates the full ZIP+4 format; the BMS screen field ACSZIPCI
+     * is PIC X(5) but the underlying data store allows up to 10 characters.
      */
-    @Size(max = 5)
+    @Size(max = 10)
     private String custZip;
 
     /** Customer country code — maps to CUST-ADDR-COUNTRY-CD PIC X(03). ISO 3-letter code. */

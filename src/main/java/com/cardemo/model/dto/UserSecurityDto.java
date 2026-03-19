@@ -94,12 +94,14 @@ public class UserSecurityDto {
      *
      * <p>This field is accepted on create and update requests but is
      * <strong>never</strong> included in JSON response output. The COBOL source
-     * stored passwords in plaintext; the Java target hashes them with BCrypt
-     * before persistence. The max length of 8 matches the original PIC X(08)
-     * constraint on the input password before hashing.</p>
+     * stored passwords in plaintext with PIC X(08); the Java target accepts
+     * longer passwords and hashes them with BCrypt before persistence.
+     * The max length of 128 accommodates modern password policies while BCrypt
+     * internally truncates to 72 bytes — matching the upgraded security model
+     * per AAP §0.8.1 (BCrypt password hashing improvement).</p>
      */
     @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
-    @Size(max = 8, message = "Password must not exceed 8 characters")
+    @Size(max = 128, message = "Password must not exceed 128 characters")
     private String secUsrPwd;
 
     /**

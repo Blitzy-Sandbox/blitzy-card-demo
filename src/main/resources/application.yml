@@ -33,6 +33,13 @@ spring:
     active: ${SPRING_PROFILES_ACTIVE:local}
   main:
     banner-mode: console
+    # Allow the custom async JobLauncher defined in BatchConfig to override
+    # Spring Boot's auto-configured synchronous JobLauncher. This is required
+    # because @EnableBatchProcessing is intentionally NOT used — Spring Boot's
+    # BatchAutoConfiguration handles schema initialization (spring.batch.jdbc.
+    # initialize-schema=always) while BatchConfig provides a custom async
+    # TaskExecutorJobLauncher for SQS-triggered report submissions (CORPT00C).
+    allow-bean-definition-overriding: true
 
   # ---------------------------------------------------------------------------
   # Datasource — PostgreSQL 16+ (replaces VSAM KSDS datasets)

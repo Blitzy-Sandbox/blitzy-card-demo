@@ -309,8 +309,14 @@ public class UserAddService {
         entity.setSecUsrLname(dto.getSecUsrLname().trim());
 
         // SECURITY UPGRADE: MOVE PASSWDI OF COUSR1AI TO SEC-USR-PWD (line 157)
-        // COBOL stored plaintext PIC X(08); Java stores BCrypt hash (~60 chars)
-        entity.setSecUsrPwd(passwordEncoder.encode(dto.getSecUsrPwd()));
+        // COBOL stored plaintext PIC X(08); Java stores BCrypt hash (~60 chars).
+        // Password is uppercased before hashing to preserve COBOL behavioral parity:
+        // COSGN00C.cbl line 135 uppercases the password before comparison
+        // (MOVE FUNCTION UPPER-CASE(PASSWDI) TO WS-USER-PWD), making passwords
+        // effectively case-insensitive. AuthenticationService.authenticate() applies
+        // the same uppercasing before BCrypt verification, so encoding must also
+        // use the uppercased form to ensure matches() succeeds.
+        entity.setSecUsrPwd(passwordEncoder.encode(dto.getSecUsrPwd().trim().toUpperCase()));
 
         // MOVE USRTYPEI OF COUSR1AI TO SEC-USR-TYPE (line 158)
         entity.setSecUsrType(dto.getSecUsrType());

@@ -271,10 +271,14 @@ public class UserUpdateService {
 
         // Compare password — Maps lines 227-230
         // COBOL: IF PASSWDI OF COUSR2AI NOT = SEC-USR-PWD (plaintext comparison)
-        // Java: Use BCrypt matches() for change detection since stored password is hashed
-        // isPasswordChanged already returns false for null/blank passwords
+        // Java: Use BCrypt matches() for change detection since stored password is hashed.
+        // isPasswordChanged already returns false for null/blank passwords.
+        // Password is uppercased before hashing to preserve COBOL behavioral parity:
+        // COSGN00C.cbl line 135 uppercases passwords (MOVE FUNCTION UPPER-CASE(PASSWDI)),
+        // making them case-insensitive. AuthenticationService applies the same uppercasing
+        // before BCrypt verification, so encoding must also use the uppercased form.
         if (isPasswordChanged(dto.getSecUsrPwd(), entity.getSecUsrPwd())) {
-            entity.setSecUsrPwd(passwordEncoder.encode(dto.getSecUsrPwd()));
+            entity.setSecUsrPwd(passwordEncoder.encode(dto.getSecUsrPwd().trim().toUpperCase()));
             modified = true;
             logger.debug("User {} password changed", userId);
         }
