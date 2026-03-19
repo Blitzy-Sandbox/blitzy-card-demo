@@ -53,6 +53,7 @@ INSERT INTO transaction_categories (type_cd, cat_cd, cat_desc) VALUES
     ('03', 1, 'Credit to Account'),
     ('03', 2, 'Credit to Purchase balance'),
     ('03', 3, 'Credit to Cash balance'),
+    ('03', 5, 'Return Interest Amount'),
     ('04', 1, 'Zero dollar authorization'),
     ('04', 2, 'Online purchase authorization'),
     ('04', 3, 'Travel booking authorization'),
@@ -312,12 +313,14 @@ INSERT INTO disclosure_groups (group_id, type_cd, cat_cd, int_rate) VALUES
     ('A000000000', '01', 2, 25.00),
     ('A000000000', '01', 3, 25.00),
     ('A000000000', '01', 4, 25.00),
+    ('A000000000', '01', 5, 0.00),
     ('A000000000', '02', 1, 0.00),
     ('A000000000', '02', 2, 0.00),
     ('A000000000', '02', 3, 0.00),
     ('A000000000', '03', 1, 0.00),
     ('A000000000', '03', 2, 0.00),
     ('A000000000', '03', 3, 0.00),
+    ('A000000000', '03', 5, 0.00),
     ('A000000000', '04', 1, 15.00),
     ('A000000000', '04', 2, 15.00),
     ('A000000000', '04', 3, 15.00),
@@ -329,12 +332,14 @@ INSERT INTO disclosure_groups (group_id, type_cd, cat_cd, int_rate) VALUES
     ('DEFAULT', '01', 2, 25.00),
     ('DEFAULT', '01', 3, 25.00),
     ('DEFAULT', '01', 4, 25.00),
+    ('DEFAULT', '01', 5, 0.00),
     ('DEFAULT', '02', 1, 0.00),
     ('DEFAULT', '02', 2, 0.00),
     ('DEFAULT', '02', 3, 0.00),
     ('DEFAULT', '03', 1, 0.00),
     ('DEFAULT', '03', 2, 0.00),
     ('DEFAULT', '03', 3, 0.00),
+    ('DEFAULT', '03', 5, 0.00),
     ('DEFAULT', '04', 1, 15.00),
     ('DEFAULT', '04', 2, 15.00),
     ('DEFAULT', '04', 3, 15.00),
@@ -346,12 +351,14 @@ INSERT INTO disclosure_groups (group_id, type_cd, cat_cd, int_rate) VALUES
     ('ZEROAPR', '01', 2, 0.00),
     ('ZEROAPR', '01', 3, 0.00),
     ('ZEROAPR', '01', 4, 0.00),
+    ('ZEROAPR', '01', 5, 0.00),
     ('ZEROAPR', '02', 1, 0.00),
     ('ZEROAPR', '02', 2, 0.00),
     ('ZEROAPR', '02', 3, 0.00),
     ('ZEROAPR', '03', 1, 0.00),
     ('ZEROAPR', '03', 2, 0.00),
     ('ZEROAPR', '03', 3, 0.00),
+    ('ZEROAPR', '03', 5, 0.00),
     ('ZEROAPR', '04', 1, 0.00),
     ('ZEROAPR', '04', 2, 0.00),
     ('ZEROAPR', '04', 3, 0.00),
@@ -804,16 +811,16 @@ INSERT INTO user_security (usr_id, usr_fname, usr_lname, password_hash, usr_type
 -- SEED DATA VERIFICATION
 -- Expected record counts:
 --   transaction_types:              7
---   transaction_categories:        18
+--   transaction_categories:        19
 --   accounts:                      50
 --   customers:                     50
 --   cards:                         50
 --   card_cross_references:         50
---   disclosure_groups:             51
+--   disclosure_groups:             57
 --   transaction_category_balances: 50
 --   daily_transactions:           300
 --   user_security:                 10
---   TOTAL:                        636
+--   TOTAL:                        643
 --
 -- NOTE: The transactions table is NOT seeded here.
 -- It is populated by the batch pipeline (DailyTransactionPostingJob).

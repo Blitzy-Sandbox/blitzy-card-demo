@@ -417,27 +417,33 @@ public class TransactionReportJob {
             @Value("#{jobParameters['endDate']}") String endDate,
             TransactionRepository transactionRepository) {
 
-        // Validate required date parameters — COBOL CBTRN03C reads DATEPARM
-        // in-stream data (paragraph 0500-DATE-READ, lines 162–170) and abends
-        // if the file is empty. The Java equivalent throws a descriptive
-        // IllegalArgumentException so the job fails with a clear message
-        // instead of a NullPointerException.
-        if (startDate == null || startDate.isBlank()) {
-            throw new IllegalArgumentException(
-                    "startDate job parameter is required for transactionReportJob "
-                    + "(format: YYYY-MM-DD). Maps COBOL WS-START-DATE from DATEPARM.");
+        // Validate date parameters — COBOL CBTRN03C reads DATEPARM in-stream data
+        // (paragraph 0500-DATE-READ, lines 162–170). When running standalone, explicit
+        // dates are required. When running as part of the batchPipelineJob (5-stage
+        // pipeline), default to the current month range so the report covers the
+        // billing cycle that was just processed by stages 1–3.
+        // This enables the pipeline orchestrator to launch TRANREPT without requiring
+        // the caller to supply date parameters — matching the JCL DATEPARM behavior
+        // where the date range was typically the current processing period.
+        String effectiveStartDate = startDate;
+        String effectiveEndDate = endDate;
+
+        if (effectiveStartDate == null || effectiveStartDate.isBlank()) {
+            effectiveStartDate = LocalDate.now().withDayOfMonth(1).toString();
+            log.info("TRANREPT: No startDate parameter provided — defaulting to first "
+                    + "day of current month: {}", effectiveStartDate);
         }
-        if (endDate == null || endDate.isBlank()) {
-            throw new IllegalArgumentException(
-                    "endDate job parameter is required for transactionReportJob "
-                    + "(format: YYYY-MM-DD). Maps COBOL WS-END-DATE from DATEPARM.");
+        if (effectiveEndDate == null || effectiveEndDate.isBlank()) {
+            effectiveEndDate = LocalDate.now().toString();
+            log.info("TRANREPT: No endDate parameter provided — defaulting to today: {}",
+                    effectiveEndDate);
         }
 
-        // Parse YYYY-MM-DD strings from JobParameters — maps COBOL WS-START-DATE
-        // and WS-END-DATE PIC X(10) read from DATEPARM file
+        // Parse YYYY-MM-DD strings from JobParameters or defaults — maps COBOL
+        // WS-START-DATE and WS-END-DATE PIC X(10) read from DATEPARM file
         // (paragraph 0500-DATE-READ in CBTRN03C.cbl)
-        LocalDate start = LocalDate.parse(startDate);
-        LocalDate end = LocalDate.parse(endDate);
+        LocalDate start = LocalDate.parse(effectiveStartDate);
+        LocalDate end = LocalDate.parse(effectiveEndDate);
 
         // Convert to LocalDateTime boundaries for the JPA query:
         //   startDate → start of day (00:00:00)

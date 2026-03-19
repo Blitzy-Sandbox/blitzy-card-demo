@@ -121,12 +121,12 @@ public class GateVerificationTest {
     // Derived from 9 ASCII fixture files in app/data/ASCII/
     // ========================================================================
     private static final long EXPECTED_TRANSACTION_TYPES = 7L;
-    private static final long EXPECTED_TRANSACTION_CATEGORIES = 18L;
+    private static final long EXPECTED_TRANSACTION_CATEGORIES = 19L;
     private static final long EXPECTED_ACCOUNTS = 50L;
     private static final long EXPECTED_CUSTOMERS = 50L;
     private static final long EXPECTED_CARDS = 50L;
     private static final long EXPECTED_CROSS_REFS = 50L;
-    private static final long EXPECTED_DISCLOSURE_GROUPS = 51L;
+    private static final long EXPECTED_DISCLOSURE_GROUPS = 57L;
     private static final long EXPECTED_CAT_BALANCES = 50L;
     private static final long EXPECTED_DAILY_TRANSACTIONS = 300L;
     private static final long EXPECTED_USERS = 10L;
@@ -833,12 +833,12 @@ public class GateVerificationTest {
                 .as("trantype.txt → transaction_types (7 types)")
                 .isEqualTo(EXPECTED_TRANSACTION_TYPES);
 
-        // 2. trancatg.txt → transaction_categories (18 categories)
+        // 2. trancatg.txt → transaction_categories (19 categories: 18 base + 1 return interest)
         long tranCatCount = transactionCategoryRepository.count();
         log.info("Gate 4 — trancatg.txt: expected={}, actual={}",
                 EXPECTED_TRANSACTION_CATEGORIES, tranCatCount);
         assertThat(tranCatCount)
-                .as("trancatg.txt → transaction_categories (18)")
+                .as("trancatg.txt → transaction_categories (19)")
                 .isEqualTo(EXPECTED_TRANSACTION_CATEGORIES);
 
         // 3. acctdata.txt → accounts (50 records)
@@ -900,12 +900,12 @@ public class GateVerificationTest {
                 .as("cardxref.txt → card_cross_references (50)")
                 .isEqualTo(EXPECTED_CROSS_REFS);
 
-        // 7. discgrp.txt → disclosure_groups (~51: 3 groups × 17)
+        // 7. discgrp.txt → disclosure_groups (57: 3 groups × 19, includes interest + return interest cat 5)
         long discGrpCount = disclosureGroupRepository.count();
         log.info("Gate 4 — discgrp.txt: expected={}, actual={}",
                 EXPECTED_DISCLOSURE_GROUPS, discGrpCount);
         assertThat(discGrpCount)
-                .as("discgrp.txt → disclosure_groups (51)")
+                .as("discgrp.txt → disclosure_groups (57)")
                 .isEqualTo(EXPECTED_DISCLOSURE_GROUPS);
 
         // 8. tcatbal.txt → transaction_category_balances (~50)

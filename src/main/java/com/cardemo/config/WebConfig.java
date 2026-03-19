@@ -42,6 +42,9 @@ import com.cardemo.exception.ExpiredCardException;
 import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.exception.ValidationException;
 
+import org.springframework.dao.InvalidDataAccessApiUsageException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -715,6 +718,68 @@ public class WebConfig implements WebMvcConfigurer {
                     HttpStatus.NOT_FOUND, ex.getMessage(),
                     "RESOURCE_NOT_FOUND", null, request);
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+        }
+
+        /**
+         * Handles {@link MethodArgumentTypeMismatchException} — thrown when a
+         * request parameter cannot be converted to the expected type (e.g.,
+         * {@code page=abc} where an Integer is expected).
+         *
+         * <p>Returns HTTP 400 (Bad Request) with a descriptive message identifying
+         * the invalid parameter name and expected type. This prevents non-numeric
+         * or overflow pagination parameters from falling through to the generic
+         * 500 handler.</p>
+         *
+         * <p>No direct COBOL equivalent — BMS 3270 screens used fixed numeric
+         * fields that only accepted digits at the terminal level.</p>
+         *
+         * @param ex      the type mismatch exception from Spring MVC
+         * @param request the HTTP request for URI extraction
+         * @return HTTP 400 response with parameter validation error details
+         */
+        @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+        public ResponseEntity<ErrorResponse> handleMethodArgumentTypeMismatch(
+                MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
+            String paramName = ex.getName();
+            String requiredType = ex.getRequiredType() != null
+                    ? ex.getRequiredType().getSimpleName() : "unknown";
+            String message = String.format(
+                    "Invalid value for parameter '%s': expected type %s",
+                    paramName, requiredType);
+            log.warn("Method argument type mismatch: {} — {}", paramName, ex.getMessage());
+            ErrorResponse response = buildErrorResponse(
+                    HttpStatus.BAD_REQUEST, message,
+                    "INVALID_PARAMETER_TYPE", null, request);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+        }
+
+        /**
+         * Handles {@link InvalidDataAccessApiUsageException} — thrown when JPA
+         * receives invalid data access parameters (e.g., a page offset that
+         * exceeds {@code Integer.MAX_VALUE}).
+         *
+         * <p>Returns HTTP 400 (Bad Request) because the root cause is invalid
+         * client input (excessively large page numbers) rather than a server
+         * error. This prevents extreme pagination values from generating 500
+         * responses.</p>
+         *
+         * <p>COBOL traceability: CICS STARTBR with an invalid key would return
+         * FILE STATUS '23' (record not found); the Java equivalent maps this
+         * to a client-side validation error rather than a server error.</p>
+         *
+         * @param ex      the invalid data access API usage exception
+         * @param request the HTTP request for URI extraction
+         * @return HTTP 400 response with descriptive error message
+         */
+        @ExceptionHandler(InvalidDataAccessApiUsageException.class)
+        public ResponseEntity<ErrorResponse> handleInvalidDataAccessApiUsage(
+                InvalidDataAccessApiUsageException ex, HttpServletRequest request) {
+            String message = "Invalid query parameter value: " + ex.getMessage();
+            log.warn("Invalid data access API usage: {}", ex.getMessage());
+            ErrorResponse response = buildErrorResponse(
+                    HttpStatus.BAD_REQUEST, message,
+                    "INVALID_DATA_ACCESS", null, request);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
         }
 
         /**
