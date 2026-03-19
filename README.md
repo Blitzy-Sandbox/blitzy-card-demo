@@ -83,6 +83,26 @@ cd carddemo-java
 
 This compiles the application, runs unit tests, and packages a deployable JAR. The build is configured for zero warnings with `-Xlint:all`.
 
+### Docker Image Build (Optional)
+
+To build a self-contained Docker image for deployment:
+
+```bash
+docker build -t carddemo:latest .
+```
+
+> **Networking note:** In environments with restricted Docker networking (Docker-in-Docker, corporate proxies, certain CI/CD runners), the Maven dependency download step may fail with "Connection reset" errors. In these cases, use the host network:
+>
+> ```bash
+> docker build --network=host -t carddemo:latest .
+> ```
+
+Run the container:
+
+```bash
+docker run -p 8080:8080 --env-file .env carddemo:latest
+```
+
 ### 3. Start Local Infrastructure
 
 ```bash

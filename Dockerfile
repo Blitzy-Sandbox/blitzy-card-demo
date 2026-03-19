@@ -12,6 +12,12 @@
 #   docker build -t carddemo:latest .
 #   docker run -p 8080:8080 --env-file .env carddemo:latest
 #
+# Networking note:
+#   In environments with restricted Docker networking (Docker-in-Docker,
+#   corporate proxies, certain CI/CD runners), the Maven dependency download
+#   step may fail with "Connection reset" errors. In these cases, use:
+#     docker build --network=host -t carddemo:latest .
+#
 # Security:
 #   - Non-root user (appuser) in runtime stage
 #   - No credentials or secrets baked into image layers
@@ -37,6 +43,10 @@ RUN chmod +x mvnw
 # Download all project dependencies into the local Maven repository.
 # This layer is cached and only rebuilt when pom.xml or .mvn/ change,
 # dramatically speeding up subsequent builds.
+#
+# NOTE: If this step fails with "Connection reset" or network errors,
+# rebuild with: docker build --network=host -t carddemo:latest .
+# This is common in Docker-in-Docker or restrictive networking environments.
 RUN ./mvnw dependency:go-offline -B \
     -Dmaven.repo.local=/app/.m2/repository
 
