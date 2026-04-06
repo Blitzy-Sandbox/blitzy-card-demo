@@ -4,12 +4,10 @@ metadata:
   name: blitzy-card-demo
   description: "AWS CardDemo COBOL mainframe application migrated to Java 25 + Spring Boot 3.x"
   tags:
-    - java
-    - cobol
+    - typescript
     - web-app
-    - in-progress
+    - new-feature
   labels:
-    blitzy.com/status: in-progress
     blitzy.com/language: java
   annotations:
     github.com/project-slug: Blitzy-Sandbox/blitzy-card-demo
