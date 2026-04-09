@@ -1,0 +1,137 @@
+# =============================================================================
+# .gitignore — Java 25 + Spring Boot 3.x + Maven Project
+# CardDemo Mainframe-to-Cloud Migration
+# =============================================================================
+
+# =============================================================================
+# Phase 1: Maven Build Artifacts
+# =============================================================================
+target/
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# Compiled Java class files
+*.class
+
+# Package files
+*.jar
+*.war
+*.ear
+
+# =============================================================================
+# Phase 2: IDE Files
+# =============================================================================
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Eclipse
+.project
+.classpath
+.settings/
+.factorypath
+
+# Spring Tool Suite
+.springBeans
+.sts4-cache/
+
+# NetBeans
+nbproject/
+nbbuild/
+nbdist/
+nb-configuration.xml
+
+# VS Code
+.vscode/
+
+# Vim
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# =============================================================================
+# Phase 3: Spring Boot / Java Specific
+# =============================================================================
+
+# Log files
+*.log
+*.log.*
+logs/
+
+# JVM crash logs
+hs_err_pid*
+replay_pid*
+
+# Gradle (in case Gradle is used alongside Maven)
+.gradle/
+build/
+
+# =============================================================================
+# Phase 4: Maven Wrapper
+# Keep wrapper properties file tracked; ignore downloaded wrapper JAR
+# =============================================================================
+.mvn/wrapper/maven-wrapper.jar
+!.mvn/wrapper/maven-wrapper.properties
+
+# =============================================================================
+# Phase 5: Environment and Secrets
+# =============================================================================
+
+# Local environment variables (may contain secrets)
+.env
+*.env.local
+
+# Note: application-local.yml is intentionally NOT ignored — it is tracked
+# in the repository for local development configuration with LocalStack.
+
+# =============================================================================
+# Phase 6: Docker
+# =============================================================================
+
+# Docker volume data directories
+docker-data/
+pgdata/
+localstack-data/
+
+# Docker override (local-only compose overrides)
+docker-compose.override.yml
+
+# =============================================================================
+# Phase 7: Test Output
+# =============================================================================
+
+# Test output directories
+test-output/
+
+# Maven Surefire/Failsafe reports (generated inside target/ but listed explicitly)
+surefire-reports/
+failsafe-reports/
+
+# JaCoCo coverage data
+*.exec
+
+# =============================================================================
+# Miscellaneous
+# =============================================================================
+
+# Virtual environments (Python — used for AWS CLI tooling)
+venv/
+.venv/
+
+# LocalStack persistence
+.localstack/
+volume/
+
+# Temporary files created by Blitzy agents during validation
+blitzy_adhoc_test_*

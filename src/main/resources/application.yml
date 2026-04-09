@@ -1,0 +1,314 @@
+# =============================================================================
+# CardDemo Application — Main Spring Boot Configuration
+# =============================================================================
+# Central configuration for the CardDemo credit card management application,
+# migrated from IBM z/OS COBOL/CICS/VSAM to Java 25 + Spring Boot 3.x.
+#
+# Profile-specific overrides:
+#   - application-local.yml  : Local development (Docker Compose PostgreSQL + LocalStack)
+#   - application-test.yml   : Integration tests (Testcontainers)
+#
+# COBOL Source Reference: aws-samples/carddemo commit 27d6c6f
+# VSAM Datasets Mapped:
+#   ACCTDATA  (KEYS 11,0  RECSIZE 300) → accounts table
+#   CARDDATA  (KEYS 16,0  RECSIZE 150) → cards table
+#   CUSTDATA  (KEYS 9,0   RECSIZE 500) → customers table
+#   CARDXREF  (KEYS 16,0  RECSIZE 50)  → card_cross_references table
+#   TRANSACT  (KEYS 16,0  RECSIZE 350) → transactions table
+#   USRSEC    (KEYS 8,0   RECSIZE 80)  → user_security table
+#   TCATBALF  (KEYS 17,0  RECSIZE 50)  → transaction_category_balances table
+#   DISCGRP   (KEYS 16,0  RECSIZE 50)  → disclosure_groups table
+#   TRANCATG  (KEYS 6,0   RECSIZE 60)  → transaction_categories table
+#   TRANTYPE  (KEYS 2,0   RECSIZE 60)  → transaction_types table
+#   DALYTRAN  (sequential PS)           → daily_transactions staging table
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Spring Boot Core
+# -----------------------------------------------------------------------------
+spring:
+  application:
+    name: carddemo
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+  main:
+    banner-mode: console
+    # Allow the custom async JobLauncher defined in BatchConfig to override
+    # Spring Boot's auto-configured synchronous JobLauncher. This is required
+    # because @EnableBatchProcessing is intentionally NOT used — Spring Boot's
+    # BatchAutoConfiguration handles schema initialization (spring.batch.jdbc.
+    # initialize-schema=always) while BatchConfig provides a custom async
+    # TaskExecutorJobLauncher for SQS-triggered report submissions (CORPT00C).
+    allow-bean-definition-overriding: true
+
+  # ---------------------------------------------------------------------------
+  # Datasource — PostgreSQL 16+ (replaces VSAM KSDS datasets)
+  # ---------------------------------------------------------------------------
+  # COBOL origin: 10 VSAM KSDS clusters + 2 AIX/PATH alternate indexes + 1 PS
+  # JCL references: ACCTFILE.jcl, CARDFILE.jcl, CUSTFILE.jcl, XREFFILE.jcl,
+  #   TRANFILE.jcl, DUSRSECJ.jcl, TCATBALF.jcl, DISCGRP.jcl, TRANCATG.jcl,
+  #   TRANTYPE.jcl
+  # ---------------------------------------------------------------------------
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/carddemo}
+    username: ${DATABASE_USERNAME:carddemo}
+    password: ${DATABASE_PASSWORD:carddemo}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      pool-name: CardDemoHikariPool
+      auto-commit: false
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate — Entity mapping for VSAM record layouts
+  # ---------------------------------------------------------------------------
+  # Flyway manages schema creation; Hibernate validates entity-table alignment.
+  # Batch insert optimization (batch_size: 50) supports Spring Batch bulk writes
+  # from POSTTRAN.jcl (CBTRN02C daily transaction posting) and COMBTRAN.jcl
+  # (DFSORT + REPRO merge operations).
+  # ---------------------------------------------------------------------------
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        default_schema: public
+        jdbc:
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+        generate_statistics: false
+        connection:
+          provider_disables_autocommit: true
+
+  # ---------------------------------------------------------------------------
+  # Flyway — Database Migration Management
+  # ---------------------------------------------------------------------------
+  # Migration scripts in src/main/resources/db/migration/:
+  #   V1__create_schema.sql  — 11 tables DDL from VSAM DEFINE CLUSTER specs
+  #   V2__create_indexes.sql — Alternate indexes (CXACAIX from XREFFILE.jcl,
+  #                            TRANSACT AIX from TRANFILE.jcl)
+  #   V3__seed_data.sql      — 9 ASCII fixture files (acctdata.txt, carddata.txt,
+  #                            custdata.txt, cardxref.txt, dailytran.txt,
+  #                            discgrp.txt, tcatbal.txt, trancatg.txt,
+  #                            trantype.txt) as INSERT statements
+  # ---------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    out-of-order: false
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch — JCL Job Migration Infrastructure
+  # ---------------------------------------------------------------------------
+  # Batch metadata tables (BATCH_JOB_INSTANCE, BATCH_JOB_EXECUTION, etc.) are
+  # auto-created in the application database.
+  #
+  # JCL-to-Spring Batch mapping:
+  #   POSTTRAN.jcl  → DailyTransactionPostingJob  (CBTRN02C 4-stage validation)
+  #   INTCALC.jcl   → InterestCalculationJob      (CBACT04C rate computation)
+  #   COMBTRAN.jcl  → CombineTransactionsJob       (DFSORT + REPRO merge)
+  #   CREASTMT.JCL  → StatementGenerationJob       (CBSTM03A/B dual-format)
+  #   TRANREPT.jcl  → TransactionReportJob          (CBTRN03C date filtering)
+  #
+  # Jobs are NOT auto-triggered on startup. They are launched explicitly via
+  # BatchPipelineOrchestrator or REST API triggers (ReportSubmissionService).
+  # ---------------------------------------------------------------------------
+  batch:
+    jdbc:
+      initialize-schema: always
+    job:
+      enabled: false
+
+  # ---------------------------------------------------------------------------
+  # AWS Services — S3, SQS, SNS via Spring Cloud AWS 3.3.0
+  # ---------------------------------------------------------------------------
+  # Replaces VSAM GDG (Generation Data Group) bases and CICS TDQ queues:
+  #   GDG TRANSACT.DALY  → S3 batch-input-bucket  (daily transaction files)
+  #   GDG TRANREPT       → S3 batch-output-bucket  (transaction reports)
+  #   GDG DALYREJS       → S3 batch-output-bucket  (daily rejection files)
+  #   GDG TRANSACT.BKUP  → S3 batch-output-bucket  (transaction backups)
+  #   GDG SYSTRAN        → S3 batch-output-bucket  (system transactions)
+  #   GDG TRANSACT.COMBINED → S3 batch-output-bucket (combined transactions)
+  #   CREASTMT output    → S3 statements-bucket     (statement files)
+  #   CICS TDQ JOBS queue → SQS report-jobs queue   (online-to-batch bridge
+  #                          from CORPT00C.cbl report submission)
+  #
+  # DEFGDGB.jcl defines 6 GDG bases with LIMIT(5) SCRATCH — S3 versioned
+  # objects with lifecycle policies provide equivalent generation management.
+  #
+  # All endpoints default to LocalStack (http://localhost:4566) for local
+  # development and testing. No live AWS credentials required.
+  # ---------------------------------------------------------------------------
+  cloud:
+    aws:
+      region:
+        static: ${AWS_REGION:us-east-1}
+      credentials:
+        access-key: ${AWS_ACCESS_KEY_ID:test}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+      s3:
+        endpoint: ${AWS_S3_ENDPOINT:http://localhost:4566}
+      sqs:
+        endpoint: ${AWS_SQS_ENDPOINT:http://localhost:4566}
+      sns:
+        endpoint: ${AWS_SNS_ENDPOINT:http://localhost:4566}
+
+  # ---------------------------------------------------------------------------
+  # Spring Security
+  # ---------------------------------------------------------------------------
+  # Authentication and authorization are configured via SecurityConfig.java.
+  # COBOL origin: COSGN00C.cbl sign-on logic with USRSEC VSAM dataset.
+  # BCrypt password hashing replaces COBOL plaintext storage (constraint C-003).
+  # No default Spring Security user is generated — SecurityConfig.java provides
+  # all authentication configuration including role-based access (ADMIN/USER).
+  # ---------------------------------------------------------------------------
+  security:
+    user:
+      name: ${SECURITY_DEFAULT_USER:}
+      password: ${SECURITY_DEFAULT_PASSWORD:}
+
+  # ---------------------------------------------------------------------------
+  # Jackson / JSON Serialization
+  # ---------------------------------------------------------------------------
+  # ISO-8601 date format preserves COBOL date field semantics (CSDAT01Y.cpy)
+  # while providing standard JSON interchange format.
+  # ---------------------------------------------------------------------------
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    deserialization:
+      fail-on-unknown-properties: false
+    default-property-inclusion: non_null
+
+# -----------------------------------------------------------------------------
+# Actuator and Observability
+# -----------------------------------------------------------------------------
+# The COBOL source has zero observability infrastructure. This configuration
+# provides comprehensive monitoring from day one:
+#   - Health checks: DB, S3, SQS connectivity (HealthIndicators.java)
+#   - Metrics: Prometheus endpoint for scraping (Micrometer + Prometheus registry)
+#   - Tracing: Distributed tracing with OpenTelemetry (Micrometer Tracing bridge)
+#   - Liveness/Readiness: Kubernetes-style probes via /actuator/health/liveness
+#                         and /actuator/health/readiness
+#
+# Custom business metrics (registered in MetricsConfig.java):
+#   carddemo.batch.records.processed  — counter per batch job
+#   carddemo.batch.records.rejected   — counter with reason tag
+#   carddemo.auth.attempts            — counter with success/failure tag
+#   carddemo.transaction.amount.total — distribution summary
+# -----------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: when_authorized
+      probes:
+        enabled: true
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  metrics:
+    tags:
+      application: carddemo
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
+
+# -----------------------------------------------------------------------------
+# Server Configuration
+# -----------------------------------------------------------------------------
+# REST API endpoints are mounted at /api/* (controllers use @RequestMapping).
+# Error responses include message and binding error details for API consumers.
+# -----------------------------------------------------------------------------
+server:
+  port: ${SERVER_PORT:8080}
+  servlet:
+    context-path: /
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: never
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/xml,text/plain,application/hal+json,application/openmetrics-text
+    min-response-size: 2048
+
+# -----------------------------------------------------------------------------
+# Logging Configuration
+# -----------------------------------------------------------------------------
+# Structured logging via logback-spring.xml with logstash-logback-encoder.
+# Correlation IDs injected by CorrelationIdFilter.java (observability package).
+# Trace/span IDs injected by Micrometer Tracing + OpenTelemetry bridge.
+# Profile-aware: console pattern for local, JSON for non-local environments.
+# -----------------------------------------------------------------------------
+logging:
+  config: classpath:logback-spring.xml
+  level:
+    root: INFO
+    com.cardemo: ${LOG_LEVEL_APP:INFO}
+    org.springframework.batch: INFO
+    org.springframework.security: WARN
+    org.flywaydb: INFO
+    org.hibernate.SQL: WARN
+
+# -----------------------------------------------------------------------------
+# Custom CardDemo Application Properties
+# -----------------------------------------------------------------------------
+# S3 bucket names and SQS queue names derived from COBOL VSAM/GDG/TDQ:
+#
+# S3 Buckets (replacing GDG bases from DEFGDGB.jcl):
+#   batch-input-bucket   ← GDG AWS.M2.CARDDEMO.TRANSACT.DALY (daily txn files)
+#   batch-output-bucket  ← GDG AWS.M2.CARDDEMO.TRANREPT (reports),
+#                          AWS.M2.CARDDEMO.DALYREJS (rejections),
+#                          AWS.M2.CARDDEMO.TRANSACT.BKUP (backups),
+#                          AWS.M2.CARDDEMO.TRANSACT.COMBINED (merged)
+#   statements-bucket    ← CREASTMT.JCL statement output files
+#
+# SQS Queues (replacing CICS TDQ):
+#   report-queue         ← CICS TDQ 'JOBS' queue (CORPT00C online-to-batch
+#                          bridge, triggers batch report generation via SQS)
+# -----------------------------------------------------------------------------
+carddemo:
+  # ---------------------------------------------------------------------------
+  # CORS Configuration
+  # ---------------------------------------------------------------------------
+  # Allowed origin patterns for Cross-Origin Resource Sharing. Defaults to
+  # localhost for local development. Production must set explicit frontend
+  # domains via CORS_ALLOWED_ORIGINS environment variable.
+  # OWASP: Wildcard (*) is prohibited for endpoints accepting credentials.
+  # ---------------------------------------------------------------------------
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:*}
+  aws:
+    s3:
+      batch-input-bucket: ${S3_BATCH_INPUT_BUCKET:carddemo-batch-input}
+      batch-output-bucket: ${S3_BATCH_OUTPUT_BUCKET:carddemo-batch-output}
+      statements-bucket: ${S3_STATEMENTS_BUCKET:carddemo-statements}
+      statement-text-prefix: ${S3_STATEMENT_TEXT_PREFIX:text/}
+      statement-html-prefix: ${S3_STATEMENT_HTML_PREFIX:html/}
+      reject-prefix: ${S3_REJECT_PREFIX:rejections/}
+    sqs:
+      report-queue: ${SQS_REPORT_QUEUE:carddemo-report-jobs.fifo}
+  # Batch pipeline configuration
+  batch:
+    # Chunk size for Spring Batch ItemReader/ItemWriter processing
+    chunk-size: ${BATCH_CHUNK_SIZE:100}
+    # Maximum number of records to skip before failing a batch step
+    skip-limit: ${BATCH_SKIP_LIMIT:10}

@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Logback Spring Configuration for CardDemo Application
+    ======================================================
+    Structured logging configuration supporting two modes:
+      - LOCAL profile:  Human-readable console output with MDC fields for development debugging
+      - NON-LOCAL profiles (test, production, default): Structured JSON output via LogstashEncoder
+        for log aggregation, plus optional rolling file appender
+
+    MDC Keys propagated:
+      - correlationId : Application-level request correlation (set by CorrelationIdFilter)
+      - traceId       : Distributed trace identifier (set by Micrometer/OpenTelemetry bridge)
+      - spanId        : Current span identifier (set by Micrometer/OpenTelemetry bridge)
+
+    Dependencies:
+      - net.logstash.logback:logstash-logback-encoder:8.0 (in pom.xml)
+      - Spring Boot 3.5.x logback auto-configuration
+      - Micrometer Tracing with OpenTelemetry bridge for traceId/spanId injection
+
+    COBOL Origin: The original COBOL CardDemo application had zero observability infrastructure.
+    This configuration is entirely greenfield per AAP §0.7.1 and §0.8.6.
+-->
+<configuration scan="true" scanPeriod="30 seconds">
+
+    <!-- ================================================================== -->
+    <!-- Reusable Properties                                                 -->
+    <!-- ================================================================== -->
+
+    <!-- Application name used in structured JSON output and log context -->
+    <property name="APP_NAME" value="carddemo"/>
+
+    <!-- Console log pattern for local development with all MDC fields
+         Fields: timestamp [thread] [correlationId] [traceId] [spanId] LEVEL logger - message -->
+    <property name="LOG_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{correlationId}] [%X{traceId}] [%X{spanId}] %-5level %logger{36} - %msg%n"/>
+
+    <!-- ================================================================== -->
+    <!-- LOCAL PROFILE: Human-readable console output for development        -->
+    <!-- ================================================================== -->
+    <springProfile name="local">
+
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>${LOG_PATTERN}</pattern>
+                <charset>UTF-8</charset>
+            </encoder>
+        </appender>
+
+        <!-- Application package: DEBUG for development visibility -->
+        <logger name="com.cardemo" level="DEBUG"/>
+
+        <!-- Spring Batch: INFO to track job/step lifecycle events -->
+        <logger name="org.springframework.batch" level="INFO"/>
+
+        <!-- Hibernate SQL: DEBUG to see generated SQL queries during development -->
+        <logger name="org.hibernate.SQL" level="DEBUG"/>
+
+        <!-- Hibernate bind parameters: TRACE to see query parameter values (local only) -->
+        <logger name="org.hibernate.orm.jdbc.bind" level="TRACE"/>
+
+        <!-- Spring Security: DEBUG for authentication/authorization troubleshooting -->
+        <logger name="org.springframework.security" level="DEBUG"/>
+
+        <!-- Spring Web: DEBUG for request mapping and handler resolution -->
+        <logger name="org.springframework.web" level="DEBUG"/>
+
+        <!-- Flyway: INFO for migration tracking -->
+        <logger name="org.flywaydb" level="INFO"/>
+
+        <!-- AWS SDK: INFO for S3/SQS/SNS operation tracking against LocalStack -->
+        <logger name="software.amazon.awssdk" level="INFO"/>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+
+    </springProfile>
+
+    <!-- ================================================================== -->
+    <!-- NON-LOCAL PROFILES: Structured JSON output for test/production       -->
+    <!-- Applies to: test, production, and any other non-local profile       -->
+    <!-- ================================================================== -->
+    <springProfile name="!local">
+
+        <!-- JSON console appender using LogstashEncoder for structured log aggregation -->
+        <appender name="JSON_STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <!-- Field name customization -->
+                <fieldNames>
+                    <timestamp>timestamp</timestamp>
+                    <version>[ignore]</version>
+                    <levelValue>[ignore]</levelValue>
+                </fieldNames>
+
+                <!-- Static custom fields added to every log entry -->
+                <customFields>{"application":"carddemo"}</customFields>
+
+                <!-- Include specific MDC keys in structured output.
+                     These keys are set by:
+                       - correlationId: CorrelationIdFilter (com.cardemo.observability)
+                       - traceId: Micrometer Tracing / OpenTelemetry bridge
+                       - spanId: Micrometer Tracing / OpenTelemetry bridge -->
+                <includeMdcKeyName>correlationId</includeMdcKeyName>
+                <includeMdcKeyName>traceId</includeMdcKeyName>
+                <includeMdcKeyName>spanId</includeMdcKeyName>
+
+                <!-- Include caller info for error-level messages only (performance consideration) -->
+                <includeCallerData>false</includeCallerData>
+
+                <!-- Shorten logger name for cleaner JSON output -->
+                <shortenedLoggerNameLength>36</shortenedLoggerNameLength>
+            </encoder>
+        </appender>
+
+        <!-- Rolling file appender for persistent log storage in production -->
+        <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <file>logs/carddemo.log</file>
+            <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+                <!-- Daily rotation with index-based splitting when max size is reached -->
+                <fileNamePattern>logs/carddemo.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+                <maxFileSize>50MB</maxFileSize>
+                <maxHistory>30</maxHistory>
+                <totalSizeCap>1GB</totalSizeCap>
+            </rollingPolicy>
+            <!-- File appender also uses structured JSON for machine-parseable log files -->
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <fieldNames>
+                    <timestamp>timestamp</timestamp>
+                    <version>[ignore]</version>
+                    <levelValue>[ignore]</levelValue>
+                </fieldNames>
+                <customFields>{"application":"carddemo"}</customFields>
+                <includeMdcKeyName>correlationId</includeMdcKeyName>
+                <includeMdcKeyName>traceId</includeMdcKeyName>
+                <includeMdcKeyName>spanId</includeMdcKeyName>
+                <includeCallerData>false</includeCallerData>
+                <shortenedLoggerNameLength>36</shortenedLoggerNameLength>
+            </encoder>
+        </appender>
+
+        <!-- Application package: INFO for production (no DEBUG noise) -->
+        <logger name="com.cardemo" level="INFO"/>
+
+        <!-- Spring Batch: INFO for job execution monitoring -->
+        <logger name="org.springframework.batch" level="INFO"/>
+
+        <!-- Spring Security: WARN only (suppress verbose auth debug in production) -->
+        <logger name="org.springframework.security" level="WARN"/>
+
+        <!-- Hibernate SQL: WARN to suppress SQL logging in production -->
+        <logger name="org.hibernate.SQL" level="WARN"/>
+
+        <!-- Hibernate bind parameters: OFF in production -->
+        <logger name="org.hibernate.orm.jdbc.bind" level="OFF"/>
+
+        <!-- Flyway: INFO for migration tracking in production -->
+        <logger name="org.flywaydb" level="INFO"/>
+
+        <!-- AWS SDK: WARN to reduce noise from S3/SQS/SNS operations -->
+        <logger name="software.amazon.awssdk" level="WARN"/>
+
+        <!-- Spring Web: WARN to suppress verbose request mapping logs -->
+        <logger name="org.springframework.web" level="WARN"/>
+
+        <!-- Apache HTTP client (used by AWS SDK): WARN -->
+        <logger name="org.apache.http" level="WARN"/>
+
+        <!-- Netty (used by AWS SDK async): WARN -->
+        <logger name="io.netty" level="WARN"/>
+
+        <root level="INFO">
+            <appender-ref ref="JSON_STDOUT"/>
+            <appender-ref ref="FILE"/>
+        </root>
+
+    </springProfile>
+
+</configuration>
