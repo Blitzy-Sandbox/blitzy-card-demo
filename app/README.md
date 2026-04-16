@@ -200,14 +200,14 @@ To run the full batch processing cycle after environment setup:
 
 | Step | Job | Program | Purpose |
 |------|-----|---------|---------|
-| 1 | `CLOSEFIL` | IEFBR14 | Close CICS-held files |
+| 1 | `CLOSEFIL` | SDSF | Close CICS-held files |
 | 2 | `POSTTRAN` | CBTRN02C | Post daily transactions, update balances |
 | 3 | `INTCALC` | CBACT04C | Calculate and post interest charges |
 | 4 | `TRANBKP` | IDCAMS | Back up transaction master |
 | 5 | `COMBTRAN` | SORT | Merge daily and system transactions |
 | 6 | `CREASTMT` | CBSTM03A | Generate customer statements |
 | 7 | `TRANIDX` | IDCAMS | Rebuild alternate indexes |
-| 8 | `OPENFIL` | IEFBR14 | Reopen files for CICS |
+| 8 | `OPENFIL` | SDSF | Reopen files for CICS |
 
 Source: `README.md` (lines 161–183)
 

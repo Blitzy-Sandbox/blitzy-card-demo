@@ -13,6 +13,8 @@
       * Consuming Programs (Online):
       *   COACTVWC - Account view
       *   COACTUPC - Account update
+      *   COCRDSLC - Card detail view
+      *   COCRDUPC - Card update
       *   COTRN02C - Transaction add
       *   COBIL00C - Bill payment
       * Consuming Programs (Batch):

@@ -13,7 +13,7 @@
       * Most heavily consumed record layout in CardDemo,
       * used by online transaction screens (COTRN00C,
       * COTRN01C, COTRN02C, COBIL00C, CORPT00C) and batch
-      * processing (CBTRN02C, CBTRN03C, CBACT04C, CBSTM03A)
+      * processing (CBTRN01C, CBTRN02C, CBTRN03C, CBACT04C)
       *
       * Cross-references:
       *   CVTRA06Y.cpy - Staging record (DALYTRAN-RECORD,

@@ -31,7 +31,7 @@
       * here before returning control to CICS, and reads it
       * back on re-entry.
       *
-      * Consuming programs: ALL 18 online CICS programs
+      * Consuming programs: All 17 online CICS programs
       *   COSGN00C, COMEN01C, COADM01C, COACTVWC, COACTUPC,
       *   COCRDLIC, COCRDSLC, COCRDUPC, COTRN00C, COTRN01C,
       *   COTRN02C, COBIL00C, CORPT00C, COUSR00C, COUSR01C,

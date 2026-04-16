@@ -30,7 +30,7 @@
       *
       * Cross-references:
       *   BMS maps: All app/bms/*.bms display these titles
-      *   Programs: All 18 online CICS programs via COPY COTTL01Y
+      *   Programs: All 17 online CICS programs via COPY COTTL01Y
       *----------------------------------------------------------------*
        01 CCDA-SCREEN-TITLE.
       * First banner line - "AWS Mainframe Modernization"

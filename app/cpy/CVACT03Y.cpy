@@ -22,8 +22,8 @@
       *   COACTVWC, COACTUPC, COCRDSLC, COCRDUPC,
       *   COTRN02C, COBIL00C
       * Consuming programs (batch):
-      *   CBTRN01C, CBTRN02C, CBTRN03C, CBACT04C,
-      *   CBSTM03A
+      *   CBACT03C, CBTRN01C, CBTRN02C, CBTRN03C,
+      *   CBACT04C, CBSTM03A
       *
       * Cross-references:
       *   Card:     CVACT02Y.cpy (CARD-RECORD)

@@ -3,7 +3,7 @@
       *****************************************************************         
       * Report Format Copybook: Daily Transaction Report
       *   print line definitions
-      * Defines 6 record structures for formatted report
+      * Defines 7 record structures for formatted report
       *   output (133-char line width)
       * Used by CBTRN03C.cbl for paginated transaction
       *   reporting
