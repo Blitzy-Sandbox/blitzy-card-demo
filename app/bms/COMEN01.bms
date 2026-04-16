@@ -16,6 +16,45 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*
+*---------------------------------------------------------------*
+* BMS SOURCE: Main Menu Screen Definition
+*---------------------------------------------------------------*
+* This BMS source defines the Main Menu screen for
+* the CardDemo application, driven by COBOL program
+* COMEN01C under CICS transaction CM00.
+*
+* The screen is the central navigation hub after
+* sign-on, presenting up to 12 menu options.
+* COMEN01C populates these options at runtime:
+*   - Account View       - Account Update
+*   - Card List          - Card Detail
+*   - Card Update        - Transaction List
+*   - Transaction Detail - Transaction Add
+*   - Bill Payment       - Report Criteria
+*   - Admin Menu (admin users only)
+*
+* Mapset: COMEN01    Map: COMEN1A
+* Generated symbolic map: app/cpy-bms/COMEN01.CPY
+* Navigation: EXEC CICS XCTL transfers control to
+*             the program selected by the user.
+*---------------------------------------------------------------*
+*
+*---------------------------------------------------------------*
+* DFHMSD MACRO -- Mapset-level attributes
+*---------------------------------------------------------------*
+* CTRL=(ALARM,FREEKB) -- Audible alarm on map send
+*   to alert user; keyboard unlocked for input
+* EXTATT=YES -- Enables extended attributes (COLOR,
+*   HILIGHT) on individual fields
+* LANG=COBOL -- Generate COBOL-compatible symbolic map
+* MODE=INOUT -- Supports SEND MAP and RECEIVE MAP
+* STORAGE=AUTO -- CICS allocates fresh storage/task
+* TIOAPFX=YES -- Reserve TIOA prefix in symbolic map
+*   for CICS terminal I/O area management
+* TYPE=&&SYSPARM -- Assembly-time parameter: generates
+*   physical MAP or DSECT depending on build step
+*---------------------------------------------------------------*
 COMEN01 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                EXTATT=YES,                                             -
                LANG=COBOL,                                             -
@@ -23,9 +62,26 @@ COMEN01 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+*---------------------------------------------------------------*
+* DFHMDI MACRO -- Map definition for COMEN1A
+*---------------------------------------------------------------*
+* Map COMEN1A: Full 24x80 screen starting at
+* column 1, line 1. Single map within mapset COMEN01.
+*---------------------------------------------------------------*
 COMEN1A DFHMDI COLUMN=1,                                               -
                LINE=1,                                                 -
                SIZE=(24,80)
+*---------------------------------------------------------------*
+* HEADER AREA (screen lines 1-2)
+*---------------------------------------------------------------*
+* Line 1: Tran/Prog identifiers in BLUE, TITLE01
+*   app title in YELLOW (from COTTL01Y copybook),
+*   current date display.
+* Line 2: Program name in BLUE, TITLE02 subtitle in
+*   YELLOW, current time display.
+* All header fields use ASKIP (protected) with FSET
+* (always sent to terminal on output).
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
@@ -72,11 +128,29 @@ CURTIME DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss'
+*---------------------------------------------------------------*
+* SCREEN TITLE (screen line 4)
+*---------------------------------------------------------------*
+* "Main Menu" -- ASKIP bright NEUTRAL text centered
+* at column 35. Identifies this screen to the user.
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,BRT),                                      -
                COLOR=NEUTRAL,                                          -
                LENGTH=9,                                               -
                POS=(4,35),                                             -
                INITIAL='Main Menu'
+*---------------------------------------------------------------*
+* OPTION LINES (screen lines 6-17)
+*---------------------------------------------------------------*
+* OPTN001 through OPTN012 -- 12 x 40-char fields in
+* BLUE, starting at column 20 on consecutive lines.
+* COMEN01C populates these at runtime with formatted
+* option text (e.g., "01. Account View").
+*   ASKIP -- User cannot edit option text
+*   FSET  -- Fields always sent to terminal
+*   NORM  -- Normal intensity display
+* Unused option slots remain blank (INITIAL=' ').
+*---------------------------------------------------------------*
 OPTN001 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                COLOR=BLUE,                                             -
                LENGTH=40,                                              -
@@ -137,6 +211,17 @@ OPTN012 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=40,                                              -
                POS=(17,20),                                            -
                INITIAL=' '
+*---------------------------------------------------------------*
+* SELECTION INPUT (screen line 20)
+*---------------------------------------------------------------*
+* Prompt "Please select an option :" in bright
+* TURQUOISE, followed by the OPTION input field:
+*   NUM,UNPROT -- Numeric-only, user-editable
+*   IC         -- Initial cursor on this field
+*   JUSTIFY=(RIGHT,ZERO) -- Right-justify, zero-fill
+*                           for numeric alignment
+*   HILIGHT=UNDERLINE -- Visual cue for input area
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,BRT),                                      -
                COLOR=TURQUOISE,                                        -
                LENGTH=25,                                              -
@@ -147,14 +232,38 @@ OPTION  DFHMDF ATTRB=(FSET,IC,NORM,NUM,UNPROT),                        -
                JUSTIFY=(RIGHT,ZERO),                                   -
                LENGTH=2,                                               -
                POS=(20,41)
+*---------------------------------------------------------------*
+* ZERO-LENGTH TERMINATOR (screen line 20)
+*---------------------------------------------------------------*
+* Zero-length ASKIP field after OPTION input. Stops
+* the UNDERLINE highlight attribute from bleeding
+* into adjacent screen positions.
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=GREEN,                                            -
                LENGTH=0,                                               -
                POS=(20,44)
+*---------------------------------------------------------------*
+* ERROR MESSAGE (screen line 23)
+*---------------------------------------------------------------*
+* ERRMSG -- 78-char field in RED with BRT (bright)
+* intensity. COMEN01C sends validation errors here
+* (invalid option number, unauthorized access, etc.).
+* ASKIP prevents user editing; FSET ensures the
+* message is always transmitted to the terminal.
+*---------------------------------------------------------------*
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=78,                                              -
                POS=(23,1)
+*---------------------------------------------------------------*
+* FUNCTION KEY LEGEND (screen line 24)
+*---------------------------------------------------------------*
+* "ENTER=Continue  F3=Exit" in YELLOW at column 1.
+* Only two actions available on this screen:
+*   ENTER -- Submit the selected option number
+*   F3    -- Exit to sign-on screen
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=23,                                              -
