@@ -16,12 +16,35 @@
 //* either express or implied. See the License for the specific     
 //* language governing permissions and limitations under the License
 //******************************************************************
+//* JOB: OPENFIL - Open CICS File Resources
+//* Opens CardDemo VSAM file resources in the CICS
+//* region CICSAWSA using SDSF batch command submission.
+//* Files must be opened after VSAM datasets have been
+//* rebuilt by provisioning jobs so CICS programs can
+//* access them for online transaction processing.
+//* Run order: Execute after dataset rebuild/provision jobs
+//* Companion job: CLOSEFIL.jcl (closes files before rebuild)
+//* NOTE: JOB card name 'OEPNFIL' contains a typo
+//*   (should be 'OPENFIL'). This is the original code.
+//*
 //*********************************************************************         
 //* Open files in CICS region                                                  
 //*********************************************************************         
+//* OPCIFIL: SDSF - Submit CEMT commands to CICS region
+//*   Uses /F (modify) MVS command to send CICS CEMT
+//*   transactions to the CICSAWSA region
 //OPCIFIL EXEC PGM=SDSF                                                         
+//* ISFOUT: SDSF output messages (job log/messages)
 //ISFOUT DD SYSOUT=*                                                            
+//* CMDOUT: SDSF command response output
 //CMDOUT DD SYSOUT=*                                                            
+//* ISFIN: SDSF command input stream
+//*   Opens 5 CICS file definitions:
+//*     TRANSACT - Transaction master VSAM file
+//*     CCXREF   - Card-account cross-reference file
+//*     ACCTDAT  - Account data VSAM file
+//*     CXACAIX  - Cross-reference alternate index path
+//*     USRSEC   - User security VSAM file
 //ISFIN  DD *                                                                   
  /F CICSAWSA,'CEMT SET FIL(TRANSACT ) OPE'                                      
  /F CICSAWSA,'CEMT SET FIL(CCXREF ) OPE'                                        
