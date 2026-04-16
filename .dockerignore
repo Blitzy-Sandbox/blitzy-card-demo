@@ -1,0 +1,61 @@
+# ============================================================================
+# Docker build context ignore list
+# ----------------------------------------------------------------------------
+# Keep the API image small by excluding the legacy mainframe subtree, tests,
+# documentation, and local development artifacts that must never be shipped
+# to production ECS Fargate.
+# ============================================================================
+
+# Legacy mainframe sources (retained in repo for traceability, not shipped)
+app/
+samples/
+diagrams/
+
+# Documentation and policy docs
+docs/
+README.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+NOTICE
+LICENSE
+mkdocs.yml
+catalog-info.yaml
+
+# Tests and local development
+tests/
+db/
+infra/
+.github/
+docker-compose.yml
+.env
+.env.*
+
+# Python build & cache artifacts
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+
+# IDE / OS cruft
+.idea/
+.vscode/
+.DS_Store
+
+# Blitzy working directory
+blitzy/
