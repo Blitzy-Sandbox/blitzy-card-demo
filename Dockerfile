@@ -59,10 +59,14 @@ COPY pyproject.toml ./
 COPY src/ ./src/
 
 # ----------------------------------------------------------------------------
-# Create a non-root user for security best practices
+# Create a non-root user for security best practices.
+# UID/GID 1001 is the standard non-privileged user in container contexts and
+# avoids collisions with host system users (typically in the 0-999 range).
+# No home directory is created — the user's working directory is /app (owned
+# by appuser via the chown below) and interactive login is disabled.
 # ----------------------------------------------------------------------------
-RUN groupadd --system --gid 1001 appgroup \
-    && useradd --system --uid 1001 --gid appgroup --home-dir /app --shell /sbin/nologin appuser \
+RUN groupadd --gid 1001 appgroup \
+    && useradd --uid 1001 --gid appgroup --home-dir /app --no-create-home --shell /sbin/nologin appuser \
     && chown -R appuser:appgroup /app
 USER appuser
 
