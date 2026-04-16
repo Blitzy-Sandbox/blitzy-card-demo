@@ -16,9 +16,24 @@
 //* either express or implied. See the License for the specific     
 //* language governing permissions and limitations under the License
 //******************************************************************            
+//*
+//* JOB: TRANCATG - Provision Transaction Category Type File
+//* Deletes, defines, and loads the Transaction Category
+//* lookup VSAM KSDS file. Contains category codes and
+//* descriptions used for transaction classification.
+//* Dataset: AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS
+//* KSDS key: 6 bytes at offset 0 (category code)
+//* Record size: 60 bytes (fixed)
+//* Seed data: AWS.M2.CARDDEMO.TRANCATG.PS
+//* Copybook layout: CVTRA04Y.cpy
+//* Consumed by: TRANREPT (CBTRN03C)
+//*
 //* *******************************************************************         
 //* DELETE TRANSACTION CATEGORY TYPE VSAM FILE IF ONE ALREADY EXISTS            
 //* *******************************************************************         
+//* IDCAMS DELETE - Remove existing TRANCATG cluster.
+//* SET MAXCC=0 ensures idempotent reruns (ignores
+//* 'cluster not found' condition).
 //STEP05 EXEC PGM=IDCAMS                                                        
 //SYSPRINT DD   SYSOUT=*                                                        
 //SYSIN    DD   *                                                               
@@ -30,6 +45,11 @@
 //* *******************************************************************         
 //* DEFINE TRANSACTION CATEGORY TYPE VSAM FILE                                  
 //* *******************************************************************         
+//* IDCAMS DEFINE CLUSTER - Create TRANCATG VSAM KSDS.
+//* KEYS(6 0) = 6-byte category key at offset 0.
+//* RECORDSIZE(60 60) = fixed 60-byte records.
+//* SHAREOPTIONS(2 3) = cross-region read sharing.
+//* ERASE = overwrite data component on cluster deletion.
 //STEP10 EXEC PGM=IDCAMS                                                        
 //SYSPRINT DD   SYSOUT=*                                                        
 //SYSIN    DD   *                                                               
@@ -51,10 +71,16 @@
 //* *******************************************************************         
 //* COPY DATA FROM FLAT FILE TO VSAM FILE                                       
 //* *******************************************************************         
+//* IDCAMS REPRO - Load seed data from flat file
+//* TRANCATG.PS into the VSAM KSDS cluster.
 //STEP15 EXEC PGM=IDCAMS                                                        
 //SYSPRINT DD   SYSOUT=*                                                        
+//* TRANCATG DD - Input flat file containing seed data
+//*   (DISP=SHR for shared read access)
 //TRANCATG DD DISP=SHR,                                                         
 //         DSN=AWS.M2.CARDDEMO.TRANCATG.PS                                      
+//* TCATVSAM DD - Output VSAM target (DISP=OLD for exclusive
+//*   write access during REPRO load)
 //TCATVSAM DD DISP=OLD,                                                         
 //         DSN=AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS                               
 //SYSIN    DD   *                                                               
