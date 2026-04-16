@@ -16,11 +16,25 @@
 //* either express or implied. See the License for the specific     
 //* language governing permissions and limitations under the License
 //******************************************************************            
+//* JOB: REPTFILE - Define GDG Base for Transaction Reports
+//* Defines a GDG base for formatted transaction report
+//* output files. The TRANREPT GDG stores reports produced
+//* by TRANREPT.jcl (CBTRN03C) batch processing.
+//* Prerequisite for: TRANREPT.jcl (writes TRANREPT(+1))
+//* GDG settings: LIMIT(10) - higher limit than other GDGs
+//*   to retain more report history
+//* NOTE: Existing section comment below is a copy-paste
+//*   artifact from another job.
 //* *******************************************************************         
 //* DELETE TRANSACATION MASTER VSAM FILE IF ONE ALREADY EXISTS                  
 //* *******************************************************************         
+//* STEP05: IDCAMS - Define GDG base AWS.M2.CARDDEMO.TRANREPT
+//*   LIMIT(10): Retains up to 10 generations of reports
+//*   No SCRATCH keyword: generations are not auto-deleted
 //STEP05 EXEC PGM=IDCAMS                                                        
+//*   DD SYSPRINT: IDCAMS diagnostic and status output
 //SYSPRINT DD   SYSOUT=*                                                        
+//*   DD SYSIN: IDCAMS control statements (inline)
 //SYSIN    DD   *                                                               
    DEFINE GENERATIONDATAGROUP -                                                 
    (NAME(AWS.M2.CARDDEMO.TRANREPT) -                                            
