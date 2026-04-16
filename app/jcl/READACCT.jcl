@@ -16,16 +16,31 @@
 //* either express or implied. See the License for the specific     
 //* language governing permissions and limitations under the License
 //******************************************************************
+//* JOB: READACCT - Account File Diagnostic Read Utility
+//* Executes batch COBOL program CBACT01C to sequentially
+//* read and display all records from the Account Master
+//* VSAM KSDS file. Used for validation, debugging, and
+//* data verification after provisioning or updates.
+//* Related program source: app/cbl/CBACT01C.cbl
+//* Related dataset: AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS
 //* *******************************************************************         
 //* RUN THE PROGRAM THAT READS THE ACCOUNT MASTER VSAM FILE                     
 //* *******************************************************************         
+//* STEP05: Execute CBACT01C - reads ACCTDATA VSAM KSDS
+//*   sequentially and writes record contents to SYSOUT
 //STEP05 EXEC PGM=CBACT01C                                                      
 //STEPLIB  DD DISP=SHR,                                                         
 //         DSN=AWS.M2.CARDDEMO.LOADLIB                                          
+//*   STEPLIB  - CardDemo compiled load module library
 //ACCTFILE DD DISP=SHR,                                                         
 //         DSN=AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS                               
+//*   ACCTFILE - Account Master VSAM KSDS (input, read-only)
+//*              300-byte records, key=11 bytes at offset 0
+//*              Layout: CVACT01Y.cpy
 //SYSOUT   DD SYSOUT=*                                                          
 //SYSPRINT DD SYSOUT=*                                                          
+//*   SYSOUT   - Program display output (DISPLAY statements)
+//*   SYSPRINT - System messages and status output
 //*
 //* Ver: CardDemo_v1.0-15-g27d6c6f-68 Date: 2022-07-19 23:23:07 CDT
 //*
