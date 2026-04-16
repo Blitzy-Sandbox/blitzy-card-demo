@@ -1,0 +1,51 @@
+# ============================================================================
+# CardDemo — Development & Testing Dependencies
+# ----------------------------------------------------------------------------
+# Tooling for automated testing (per AAP §0.7.2), linting, type checking,
+# and local development support.
+#
+# Per AAP §0.6.1 "Development and Testing Dependencies (requirements-dev.txt)".
+# ============================================================================
+
+# Inherit core shared dependencies (boto3, pydantic, python-dotenv)
+-r requirements.txt
+
+# Inherit API layer dependencies so that we can exercise FastAPI endpoints
+# with TestClient in the same environment.
+-r requirements-api.txt
+
+# ---------------------------------------------------------------------------
+# Testing framework — pytest
+# ---------------------------------------------------------------------------
+pytest>=8.3,<9.0
+pytest-asyncio>=0.24,<1.0
+pytest-cov>=6.0,<7.0
+
+# ---------------------------------------------------------------------------
+# API testing client (httpx)
+#   Also in requirements-api.txt but listed here for clarity/tests.
+# ---------------------------------------------------------------------------
+httpx>=0.28,<1.0
+
+# ---------------------------------------------------------------------------
+# AWS service mocking
+#   Simulates S3 (GDG replacement), SQS FIFO (TDQ replacement),
+#   Secrets Manager, and Glue for unit tests.
+# ---------------------------------------------------------------------------
+moto[all]>=5.0,<6.0
+
+# ---------------------------------------------------------------------------
+# Test data factories
+# ---------------------------------------------------------------------------
+factory-boy>=3.3,<4.0
+
+# ---------------------------------------------------------------------------
+# Code quality
+# ---------------------------------------------------------------------------
+ruff>=0.8,<1.0
+mypy>=1.13,<2.0
+
+# ---------------------------------------------------------------------------
+# Integration testing — real PostgreSQL container
+# ---------------------------------------------------------------------------
+testcontainers[postgres]>=4.8,<5.0
