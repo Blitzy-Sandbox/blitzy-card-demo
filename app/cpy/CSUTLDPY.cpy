@@ -14,7 +14,30 @@
       *      d) EDIT-DATE-OF-BIRTH
       *      e) EDIT-DATE-OF-BIRTH
       ******************************************************************
-
+      *
+      * Working storage fields: see CSUTLDWY.cpy for all
+      *   WS-EDIT-DATE-*, FLG-*, WS-RETURN-MSG, and
+      *   INPUT-ERROR field definitions
+      * Consumed by: COACTUPC.cbl (via COPY CSUTLDPY)
+      * Called subprogram: CSUTLDTC.cbl (LE CEEDAYS wrapper)
+      *
+      * Validation flow: the calling program PERFORMs
+      *   EDIT-DATE-CCYYMMDD THRU EDIT-DATE-CCYYMMDD-EXIT.
+      *   Sub-paragraphs validate each component in order:
+      *   EDIT-YEAR-CCYY -> EDIT-MONTH -> EDIT-DAY ->
+      *   EDIT-DAY-MONTH-YEAR -> EDIT-DATE-LE
+      *
+      * Pattern notes:
+      *  - GO TO is used for early exit on validation
+      *    failure (acknowledged as intentional structured
+      *    programming violation in the original comments)
+      *  - WS-RETURN-MSG-OFF guard ensures only the first
+      *    error message is stored; subsequent failures
+      *    set flags but do not overwrite the message
+      *
+      * Entry point: initializes the composite date flag
+      * to invalid. The calling program PERFORM THRU
+      * orchestrates the sub-paragraph validation sequence.
        EDIT-DATE-CCYYMMDD.
            SET WS-EDIT-DATE-IS-INVALID   TO TRUE
            .
@@ -22,6 +45,10 @@
       ******************************************************************
       *Check for valid year and century
       ******************************************************************
+      * Validates 4-digit year (CCYY): rejects blank or
+      * space input, verifies numeric content, restricts
+      * century to 19xx or 20xx. Sets FLG-YEAR-ISVALID
+      * on success.
        EDIT-YEAR-CCYY.
 
            SET FLG-YEAR-NOT-OK             TO TRUE
@@ -88,6 +115,11 @@
        EDIT-YEAR-CCYY-EXIT.
            EXIT
            .
+      * Validates 2-digit month (MM): rejects blank or
+      * space input, checks range 1-12 via 88-level
+      * condition WS-VALID-MONTH, converts alphanumeric
+      * to numeric via NUMVAL intrinsic function.
+      * Sets FLG-MONTH-ISVALID on success.
        EDIT-MONTH.
            SET FLG-MONTH-NOT-OK            TO TRUE
 
@@ -147,6 +179,10 @@
            .
 
 
+      * Validates 2-digit day (DD): rejects blank or
+      * space input, verifies numeric via TEST-NUMVAL
+      * intrinsic, converts via NUMVAL, and checks
+      * range 1-31 using 88-level WS-VALID-DAY.
        EDIT-DAY.
 
            SET FLG-DAY-ISVALID             TO TRUE
@@ -206,6 +242,14 @@
            EXIT
            .
 
+      * Cross-field day/month/year validation: checks
+      * combinations invalid together but valid alone:
+      *  - Day 31 in a non-31-day month
+      *  - Day 30 in February
+      *  - Day 29 in Feb for non-leap years
+      * Leap year: if year ends in 00 (century year)
+      * divides full year by 400; otherwise by 4.
+      * Remainder of zero means leap year.
        EDIT-DAY-MONTH-YEAR.
       ******************************************************************
       *    Checking for any other combinations
@@ -240,6 +284,9 @@
               GO TO EDIT-DATE-CCYYMMDD-EXIT
            END-IF
 
+      * Leap year check for Feb 29: century years (YY=00)
+      * must be divisible by 400; other years by 4.
+      * Non-zero remainder means not a leap year.
            IF  WS-FEBRUARY
            AND WS-DAY-29
                IF WS-EDIT-DATE-YY-N = 0
@@ -281,6 +328,12 @@
            EXIT
            .
 
+      * Final validation via Language Environment (LE):
+      * calls CSUTLDTC subprogram wrapping the LE
+      * CEEDAYS callable service. Severity code 0 means
+      * valid; non-zero indicates an invalid date that
+      * slipped past field-level checks above.
+      * See app/cbl/CSUTLDTC.cbl for the LE wrapper.
        EDIT-DATE-LE.
       ******************************************************************
       *    In case some one managed to enter a bad date that passsed all
@@ -338,6 +391,11 @@
       *  Date of birth in the future is not acceptable
       ******************************************************************
       *
+      * Date-of-birth reasonableness: converts both the
+      * input date and current system date to integer
+      * day counts via INTEGER-OF-DATE intrinsic.
+      * If input date >= current date the date is in
+      * the future and is rejected as invalid.
        EDIT-DATE-OF-BIRTH.
 
            MOVE FUNCTION CURRENT-DATE TO WS-CURRENT-DATE-YYYYMMDD
