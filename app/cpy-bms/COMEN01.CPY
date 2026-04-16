@@ -20,8 +20,6 @@
       * Central navigation hub after sign-on. Presents up to 12 menu
       * options populated at runtime. User enters option number and
       * COMEN01C uses EXEC CICS XCTL to transfer to selected program.
-      * Also COPY-included by COACTUPC, COACTVWC, COCRDLIC, COCRDSLC,
-      * COCRDUPC for navigation context.
       * ---------------------------------------------------------------
       * Input buffer layout (AI) — populated by EXEC CICS RECEIVE MAP.
       * Fields use L/F/A/I suffixes:

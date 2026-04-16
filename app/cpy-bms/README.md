@@ -134,23 +134,33 @@ These copybooks integrate into the COBOL build process as follows:
 - **Compiler resolution:** The COBOL compiler searches the SYSLIB concatenation (copy library search path) to locate the `.CPY` member matching the `COPY` statement name.
 - **Synchronization requirement:** These files must remain synchronized with their corresponding BMS source definitions in `app/bms/`. Any field added, removed, or resized in a BMS map must be reflected in the corresponding symbolic map to avoid compile-time errors or runtime field-offset misalignment.
 
-### Cross-Program COPY Usage
+### COPY Usage — 1:1 Program Mapping
 
-While most symbolic maps are included only by their primary COBOL program, several maps are shared across multiple programs in the card and account management domain:
+Each symbolic map copybook is `COPY`-included by exactly one COBOL program — its primary program. There is no cross-program sharing of symbolic maps in the CardDemo application. Programs navigate between screens using `EXEC CICS XCTL` with the COMMAREA (defined in `app/cpy/COCOM01Y.cpy`) as the inter-program data contract — they do not need to include each other's symbolic maps for screen transitions.
 
-| Symbolic Map | Programs Using This Map | Count |
+| Symbolic Map | COBOL Program | COPY Statement |
 |---|---|---|
-| `COMEN01.CPY` | COMEN01C, COACTUPC, COACTVWC, COCRDLIC, COCRDSLC, COCRDUPC | 6 |
-| `COCRDLI.CPY` | COCRDLIC, COACTUPC, COACTVWC, COCRDSLC, COCRDUPC | 5 |
-| `COCRDSL.CPY` | COCRDSLC, COACTUPC, COACTVWC, COCRDLIC, COCRDUPC | 5 |
-| `COCRDUP.CPY` | COCRDUPC, COACTUPC, COACTVWC, COCRDLIC | 4 |
-| `COACTVW.CPY` | COACTVWC, COACTUPC, COCRDLIC, COCRDSLC, COCRDUPC | 5 |
-| `COACTUP.CPY` | COACTUPC, COACTVWC, COCRDLIC, COCRDSLC, COCRDUPC | 5 |
-| All others | Primary program only | 1 |
+| `COSGN00.CPY` | `COSGN00C.cbl` | `COPY COSGN00` |
+| `COMEN01.CPY` | `COMEN01C.cbl` | `COPY COMEN01` |
+| `COADM01.CPY` | `COADM01C.cbl` | `COPY COADM01` |
+| `COACTVW.CPY` | `COACTVWC.cbl` | `COPY COACTVW` |
+| `COACTUP.CPY` | `COACTUPC.cbl` | `COPY COACTUP` |
+| `COCRDLI.CPY` | `COCRDLIC.cbl` | `COPY COCRDLI` |
+| `COCRDSL.CPY` | `COCRDSLC.cbl` | `COPY COCRDSL` |
+| `COCRDUP.CPY` | `COCRDUPC.cbl` | `COPY COCRDUP` |
+| `COTRN00.CPY` | `COTRN00C.cbl` | `COPY COTRN00` |
+| `COTRN01.CPY` | `COTRN01C.cbl` | `COPY COTRN01` |
+| `COTRN02.CPY` | `COTRN02C.cbl` | `COPY COTRN02` |
+| `COBIL00.CPY` | `COBIL00C.cbl` | `COPY COBIL00` |
+| `CORPT00.CPY` | `CORPT00C.cbl` | `COPY CORPT00` |
+| `COUSR00.CPY` | `COUSR00C.cbl` | `COPY COUSR00` |
+| `COUSR01.CPY` | `COUSR01C.cbl` | `COPY COUSR01` |
+| `COUSR02.CPY` | `COUSR02C.cbl` | `COPY COUSR02` |
+| `COUSR03.CPY` | `COUSR03C.cbl` | `COPY COUSR03` |
 
-This sharing pattern reflects the CardDemo application's navigation design — programs in the card/account management domain include each other's symbolic maps to support `EXEC CICS XCTL` (transfer control) transitions between related screens.
+> **Note:** `COCRDLIC.cbl` contains a commented-out `*COPY COCRDSL` (column-7 asterisk = inactive code). This is the only trace of historical cross-program symbolic map sharing in the codebase; it is not active and has no compile-time effect.
 
-Source: `app/cbl/COACTUPC.cbl`, `app/cbl/COACTVWC.cbl`, `app/cbl/COCRDLIC.cbl`, `app/cbl/COCRDSLC.cbl`, `app/cbl/COCRDUPC.cbl`
+Source: `grep "COPY " app/cbl/*.cbl` across all 28 COBOL programs
 
 ---
 
@@ -315,13 +325,13 @@ All 17 maps include the same standard header fields in the same order at the sta
 3. **CURDATE** — Current date display (PIC X(8))
 4. **PGMNAME** — Current program name (PIC X(8))
 5. **TITLE02** — Secondary title line (PIC X(40))
-6. **CURTIME** — Current time display (PIC X(9))
+6. **CURTIME** — Current time display (PIC X(8); PIC X(9) for `COSGN00.CPY` only)
 
 The sign-on screen (`COSGN00.CPY`) additionally includes **APPLID** (PIC X(8)) and **SYSID** (PIC X(8)) fields after CURTIME for displaying the CICS application and system identifiers.
 
 ### ERRMSG in Every Map
 
-All 17 maps include an **ERRMSG** field (`PIC X(78)`) — a 78-character error/information message area used to display feedback to the user. This enables every screen in the application to show status messages using a consistent mechanism.
+All 17 maps include an **ERRMSG** field — a 78- or 80-character error/information message area used to display feedback to the user (`PIC X(78)` for 15 maps; `PIC X(80)` for `COCRDSL.CPY` and `COCRDUP.CPY`). This enables every screen in the application to show status messages using a consistent mechanism.
 
 ---
 

@@ -19,7 +19,6 @@
       * COBOL Program: app/cbl/COCRDSLC.cbl (Transaction: CCDL)
       * Read-only card detail display. User enters account/card
       * numbers for lookup; card attributes shown as protected fields.
-      * Also COPY-included by COACTUPC, COACTVWC, COCRDLIC, COCRDUPC.
       * ---------------------------------------------------------------
       * Input buffer layout (AI) — populated by EXEC CICS RECEIVE MAP.
       * Fields use L/F/A/I suffixes:

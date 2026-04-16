@@ -20,7 +20,6 @@
       * Editable card maintenance screen. Allows update of cardholder
       * name, status, and expiration date (month/day/year).
       * COCRDUPC uses optimistic concurrency (before/after images).
-      * Also COPY-included by COACTUPC, COACTVWC, COCRDLIC.
       * ---------------------------------------------------------------
       * Input buffer layout (AI) -- populated by EXEC CICS RECEIVE MAP.
       * Fields use L/F/A/I suffixes:

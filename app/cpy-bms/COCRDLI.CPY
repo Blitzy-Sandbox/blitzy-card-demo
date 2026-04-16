@@ -21,8 +21,6 @@
       * Paginated list of credit cards with 7 selectable rows
       *   per page. Supports account/card number filtering.
       *   F7/F8 for paging.
-      * Also COPY-included by COACTUPC, COACTVWC, COCRDSLC,
-      *   COCRDUPC.
       * ---------------------------------------------------------------
       * Input buffer layout (AI) -- populated by
       *   EXEC CICS RECEIVE MAP.

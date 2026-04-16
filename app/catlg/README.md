@@ -4,7 +4,7 @@
 
 This directory contains a single file, `LISTCAT.txt`, which is an IDCAMS (Access Method Services) `LISTCAT ALL` report for the `AWS.M2.CARDDEMO` high-level qualifier. It provides a point-in-time catalog inventory snapshot capturing every z/OS catalog entry related to the CardDemo application environment.
 
-The report was generated using the command `LISTCAT ALL ENT(AWS.M2.CARDDEMO)` at 15:36:44 on 09/01/22 against the catalog `CATALOG.XXXXXXXX.YYYY`. It completed successfully with a highest condition code of 0 and a maximum condition code of 0. The report spans 3,956 lines across 86 pages, documenting 209 catalog entries.
+The report was generated using the command `LISTCAT LEVEL(AWS.M2.CARDDEMO) ALL` at 15:36:44 on 09/01/22 against the catalog `CATALOG.XXXXXXXX.YYYY`. It completed successfully with a highest condition code of 0 and a maximum condition code of 0. The report spans 3,956 lines across 86 pages, documenting 209 catalog entries.
 
 This file serves as the authoritative reference for verifying that a target mainframe environment has been correctly provisioned with all required datasets, VSAM (Virtual Storage Access Method) clusters, GDG (Generation Data Group) bases, AIX (Alternate Index) definitions, and supporting flat files.
 
@@ -146,7 +146,7 @@ The LISTCAT report serves multiple verification and troubleshooting use cases:
 
 ### New Environment Validation
 
-After provisioning a new CardDemo environment using the JCL jobs in `app/jcl/`, run `LISTCAT ALL ENT(AWS.M2.CARDDEMO)` against the target environment and compare the output against this reference file. Verify that:
+After provisioning a new CardDemo environment using the JCL jobs in `app/jcl/`, run `LISTCAT LEVEL(AWS.M2.CARDDEMO) ALL` against the target environment and compare the output against this reference file. Verify that:
 
 - All 10 VSAM KSDS clusters are defined with matching key lengths, key positions, and record sizes
 - All 3 AIX definitions and 3 PATH associations exist with correct AXRKP values
