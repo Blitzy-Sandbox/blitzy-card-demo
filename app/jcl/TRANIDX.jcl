@@ -16,9 +16,29 @@
 //* either express or implied. See the License for the specific     
 //* language governing permissions and limitations under the License
 //******************************************************************      
+//*
+//* JOB: TRANIDX - Define AIX on Existing Transaction Master
+//* Defines the alternate index (AIX) and PATH on the
+//* existing TRANSACT.VSAM.KSDS base cluster WITHOUT
+//* deleting or redefining the base dataset. Use this
+//* when the base cluster is already provisioned but the
+//* AIX/PATH need to be created or rebuilt.
+//* Step numbers (20/25/30) match TRANFILE.jcl for
+//* consistency in the AIX creation sequence.
+//* AIX: AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX
+//*   KEYS(26 304) = processed timestamp at offset 304
+//* PATH: AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX.PATH
+//* Prerequisite: TRANSACT.VSAM.KSDS must exist
+//*   (created by TRANFILE.jcl or TRANBKP.jcl)
+//*
 //*-------------------------------------------------------------------*         
 //* CREATE ALTERNATE INDEX ON PROCESSED TIMESTAMP                               
 //*-------------------------------------------------------------------*         
+//* STEP20: IDCAMS DEFINE ALTERNATEINDEX
+//*   KEYS(26 304) = 26-byte processed timestamp at
+//*   offset 304. NONUNIQUEKEY allows duplicate
+//*   timestamps. UPGRADE keeps AIX in sync with base.
+//*   Identical definition to TRANFILE.jcl STEP20.
 //STEP20  EXEC PGM=IDCAMS                                                       
 //SYSPRINT DD  SYSOUT=*                                                         
 //SYSIN    DD  *                                                                
@@ -36,6 +56,8 @@
 //*-------------------------------------------------------------------*         
 //* DEFINE PATH IS USED TO RELATE THE ALTERNATE INDEX TO BASE CLUSTER           
 //*-------------------------------------------------------------------*         
+//* STEP25: IDCAMS DEFINE PATH - Links AIX to base
+//*   cluster for timestamp-based access.
 //STEP25  EXEC PGM=IDCAMS                                                       
 //SYSPRINT DD  SYSOUT=*                                                         
 //SYSIN    DD  *                                                                
@@ -46,6 +68,8 @@
 //*------------------------------------------------------------------           
 //* BUILD ALTERNATE INDEX CLUSTER                                               
 //*-------------------------------------------------------------------*         
+//* STEP30: IDCAMS BLDINDEX - Scans base KSDS and
+//*   populates AIX entries from existing records.
 //STEP30  EXEC PGM=IDCAMS                                                       
 //SYSPRINT DD  SYSOUT=*                                                         
 //SYSIN    DD  *                                                                
