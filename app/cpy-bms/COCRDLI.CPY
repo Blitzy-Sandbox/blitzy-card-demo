@@ -14,8 +14,26 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      * Symbolic map copybook for the Card List screen.
+      * BMS Source: app/bms/COCRDLI.bms (Mapset: COCRDLI,
+      *   Map: CCRDLIA)
+      * COBOL Program: app/cbl/COCRDLIC.cbl (Transaction: CCLI)
+      * Paginated list of credit cards with 7 selectable rows
+      *   per page. Supports account/card number filtering.
+      *   F7/F8 for paging.
+      * Also COPY-included by COACTUPC, COACTVWC, COCRDSLC,
+      *   COCRDUPC.
+      * ---------------------------------------------------------------
+      * Input buffer layout (AI) -- populated by
+      *   EXEC CICS RECEIVE MAP.
+      * Fields use L/F/A/I suffixes:
+      *   L = Length (COMP PIC S9(4))  F = Flag (PICTURE X)
+      *   A = Attribute (PICTURE X)    I = Input data
+      * ---------------------------------------------------------------
        01  CCRDLIAI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
+      * --- Header fields: transaction ID, titles, date/time ---
            02  TRNNAMEL    COMP  PIC  S9(4).
            02  TRNNAMEF    PICTURE X.
            02  FILLER REDEFINES TRNNAMEF.
@@ -52,12 +70,14 @@
              03 CURTIMEA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CURTIMEI  PIC X(8).
+      * --- Page number display ---
            02  PAGENOL    COMP  PIC  S9(4).
            02  PAGENOF    PICTURE X.
            02  FILLER REDEFINES PAGENOF.
              03 PAGENOA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  PAGENOI  PIC X(3).
+      * --- Filter inputs: account and card number ---
            02  ACCTSIDL    COMP  PIC  S9(4).
            02  ACCTSIDF    PICTURE X.
            02  FILLER REDEFINES ACCTSIDF.
@@ -70,6 +90,7 @@
              03 CARDSIDA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CARDSIDI  PIC X(16).
+      * --- Data row 1 (note: lacks CRDSTPn stop field) ---
            02  CRDSEL1L    COMP  PIC  S9(4).
            02  CRDSEL1F    PICTURE X.
            02  FILLER REDEFINES CRDSEL1F.
@@ -94,6 +115,7 @@
              03 CRDSTS1A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CRDSTS1I  PIC X(1).
+      * --- Data row 2 (includes CRDSTP2 stop field) ---
            02  CRDSEL2L    COMP  PIC  S9(4).
            02  CRDSEL2F    PICTURE X.
            02  FILLER REDEFINES CRDSEL2F.
@@ -124,6 +146,7 @@
              03 CRDSTS2A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CRDSTS2I  PIC X(1).
+      * --- Data row 3 (same pattern as row 2) ---
            02  CRDSEL3L    COMP  PIC  S9(4).
            02  CRDSEL3F    PICTURE X.
            02  FILLER REDEFINES CRDSEL3F.
@@ -154,6 +177,7 @@
              03 CRDSTS3A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CRDSTS3I  PIC X(1).
+      * --- Data row 4 (same pattern as row 2) ---
            02  CRDSEL4L    COMP  PIC  S9(4).
            02  CRDSEL4F    PICTURE X.
            02  FILLER REDEFINES CRDSEL4F.
@@ -184,6 +208,7 @@
              03 CRDSTS4A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CRDSTS4I  PIC X(1).
+      * --- Data row 5 (same pattern as row 2) ---
            02  CRDSEL5L    COMP  PIC  S9(4).
            02  CRDSEL5F    PICTURE X.
            02  FILLER REDEFINES CRDSEL5F.
@@ -214,6 +239,7 @@
              03 CRDSTS5A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CRDSTS5I  PIC X(1).
+      * --- Data row 6 (same pattern as row 2) ---
            02  CRDSEL6L    COMP  PIC  S9(4).
            02  CRDSEL6F    PICTURE X.
            02  FILLER REDEFINES CRDSEL6F.
@@ -244,6 +270,7 @@
              03 CRDSTS6A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CRDSTS6I  PIC X(1).
+      * --- Data row 7 (same pattern as row 2) ---
            02  CRDSEL7L    COMP  PIC  S9(4).
            02  CRDSEL7F    PICTURE X.
            02  FILLER REDEFINES CRDSEL7F.
@@ -274,6 +301,7 @@
              03 CRDSTS7A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CRDSTS7I  PIC X(1).
+      * --- Information and error message areas ---
            02  INFOMSGL    COMP  PIC  S9(4).
            02  INFOMSGF    PICTURE X.
            02  FILLER REDEFINES INFOMSGF.
@@ -286,8 +314,17 @@
              03 ERRMSGA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ERRMSGI  PIC X(78).
+      * ---------------------------------------------------------------
+      * Output buffer layout (AO) -- populated by program for
+      *   EXEC CICS SEND MAP. REDEFINES the AI layout.
+      * Fields use C/P/H/V/O suffixes:
+      *   C = Color    P = Programmed symbol   H = Highlighting
+      *   V = Validation   O = Output data (REDEFINES I field)
+      * ---------------------------------------------------------------
        01  CCRDLIAO REDEFINES CCRDLIAI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
+      * --- Header fields (AO): trans ID, titles, date/time ---
            02  FILLER PICTURE X(3).
            02  TRNNAMEC    PICTURE X.
            02  TRNNAMEP    PICTURE X.
@@ -324,12 +361,14 @@
            02  CURTIMEH    PICTURE X.
            02  CURTIMEV    PICTURE X.
            02  CURTIMEO  PIC X(8).
+      * --- Page number display (AO) ---
            02  FILLER PICTURE X(3).
            02  PAGENOC    PICTURE X.
            02  PAGENOP    PICTURE X.
            02  PAGENOH    PICTURE X.
            02  PAGENOV    PICTURE X.
            02  PAGENOO  PIC X(3).
+      * --- Filter inputs (AO): account and card number ---
            02  FILLER PICTURE X(3).
            02  ACCTSIDC    PICTURE X.
            02  ACCTSIDP    PICTURE X.
@@ -342,6 +381,7 @@
            02  CARDSIDH    PICTURE X.
            02  CARDSIDV    PICTURE X.
            02  CARDSIDO  PIC X(16).
+      * --- Data row 1 (AO, note: lacks CRDSTPn stop field) ---
            02  FILLER PICTURE X(3).
            02  CRDSEL1C    PICTURE X.
            02  CRDSEL1P    PICTURE X.
@@ -366,6 +406,7 @@
            02  CRDSTS1H    PICTURE X.
            02  CRDSTS1V    PICTURE X.
            02  CRDSTS1O  PIC X(1).
+      * --- Data row 2 (AO, includes CRDSTP2 stop field) ---
            02  FILLER PICTURE X(3).
            02  CRDSEL2C    PICTURE X.
            02  CRDSEL2P    PICTURE X.
@@ -396,6 +437,7 @@
            02  CRDSTS2H    PICTURE X.
            02  CRDSTS2V    PICTURE X.
            02  CRDSTS2O  PIC X(1).
+      * --- Data row 3 (AO, same pattern as row 2) ---
            02  FILLER PICTURE X(3).
            02  CRDSEL3C    PICTURE X.
            02  CRDSEL3P    PICTURE X.
@@ -426,6 +468,7 @@
            02  CRDSTS3H    PICTURE X.
            02  CRDSTS3V    PICTURE X.
            02  CRDSTS3O  PIC X(1).
+      * --- Data row 4 (AO, same pattern as row 2) ---
            02  FILLER PICTURE X(3).
            02  CRDSEL4C    PICTURE X.
            02  CRDSEL4P    PICTURE X.
@@ -456,6 +499,7 @@
            02  CRDSTS4H    PICTURE X.
            02  CRDSTS4V    PICTURE X.
            02  CRDSTS4O  PIC X(1).
+      * --- Data row 5 (AO, same pattern as row 2) ---
            02  FILLER PICTURE X(3).
            02  CRDSEL5C    PICTURE X.
            02  CRDSEL5P    PICTURE X.
@@ -486,6 +530,7 @@
            02  CRDSTS5H    PICTURE X.
            02  CRDSTS5V    PICTURE X.
            02  CRDSTS5O  PIC X(1).
+      * --- Data row 6 (AO, same pattern as row 2) ---
            02  FILLER PICTURE X(3).
            02  CRDSEL6C    PICTURE X.
            02  CRDSEL6P    PICTURE X.
@@ -516,6 +561,7 @@
            02  CRDSTS6H    PICTURE X.
            02  CRDSTS6V    PICTURE X.
            02  CRDSTS6O  PIC X(1).
+      * --- Data row 7 (AO, same pattern as row 2) ---
            02  FILLER PICTURE X(3).
            02  CRDSEL7C    PICTURE X.
            02  CRDSEL7P    PICTURE X.
@@ -546,6 +592,7 @@
            02  CRDSTS7H    PICTURE X.
            02  CRDSTS7V    PICTURE X.
            02  CRDSTS7O  PIC X(1).
+      * --- Information and error message areas (AO) ---
            02  FILLER PICTURE X(3).
            02  INFOMSGC    PICTURE X.
            02  INFOMSGP    PICTURE X.
