@@ -16,6 +16,39 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*
+*---------------------------------------------------------------*
+* BMS Source: COTRN02 - Transaction Add Screen
+*---------------------------------------------------------------*
+* This BMS source defines the Transaction Add screen used by
+* the COTRN02C COBOL program (CICS transaction CT02).
+*
+* The screen provides a data entry form for adding new credit
+* card transactions to the TRANSACT VSAM dataset. Fields
+* include account/card identification, transaction attributes
+* (type, category, source), amount, origination/processing
+* dates, and merchant information.
+*
+* A confirmation prompt (Y/N) prevents accidental writes.
+* The F5 key supports a copy-from-last-transaction feature.
+* COTRN02C generates the next transaction ID by performing
+* a browse-to-end of the TRANSACT VSAM KSDS.
+*
+* Mapset: COTRN02    Map: COTRN2A
+* Generated symbolic map: app/cpy-bms/COTRN02.CPY
+*---------------------------------------------------------------*
+*
+*---------------------------------------------------------------*
+* DFHMSD - Mapset Definition
+*---------------------------------------------------------------*
+* CTRL=(ALARM,FREEKB) - Sound alarm on SEND, unlock keyboard
+* EXTATT=YES  - Enable extended attributes (color,
+*               highlighting, validation)
+* LANG=COBOL  - Generate COBOL symbolic map copybook
+* MODE=INOUT  - Map supports both input and output
+* STORAGE=AUTO - Automatic storage per task invocation
+* TIOAPFX=YES - Include 12-byte TIOA prefix in layout
+*
 COTRN02 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                EXTATT=YES,                                             -
                LANG=COBOL,                                             -
@@ -23,9 +56,32 @@ COTRN02 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+*
+*---------------------------------------------------------------*
+* DFHMDI - Map COTRN2A Definition
+*---------------------------------------------------------------*
+* Defines a single 24-row by 80-column screen layout starting
+* at column 1, line 1 for the transaction add form.
+*
 COTRN2A DFHMDI COLUMN=1,                                               -
                LINE=1,                                                 -
                SIZE=(24,80)
+*
+*---------------------------------------------------------------*
+* Header Area - Screen Lines 1-2
+*---------------------------------------------------------------*
+* Standard CardDemo header with transaction ID, program name,
+* application titles, and current date/time. All fields are
+* ASKIP (auto-skip, protected) so the operator cannot modify
+* them. FSET fields are returned on RECEIVE for state
+* tracking. Colors: labels in BLUE, titles in YELLOW.
+*   TRNNAME - Transaction ID display (line 1, col 7)
+*   TITLE01 - Application title line 1 (line 1, col 21)
+*   CURDATE - Current date display (line 1, col 71)
+*   PGMNAME - Program name display (line 2, col 7)
+*   TITLE02 - Application title line 2 (line 2, col 21)
+*   CURTIME - Current time display (line 2, col 71)
+*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
@@ -72,11 +128,33 @@ CURTIME DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss'
+*
+*---------------------------------------------------------------*
+* Screen Title - Line 4
+*---------------------------------------------------------------*
+* "Add Transaction" displayed BRT (bright) in NEUTRAL color,
+* centered at row 4, column 30. ASKIP protected label.
+*
         DFHMDF ATTRB=(ASKIP,BRT),                                      -
                COLOR=NEUTRAL,                                          -
                LENGTH=15,                                              -
                POS=(4,30),                                             -
                INITIAL='Add Transaction'
+*
+*---------------------------------------------------------------*
+* Account / Card Identification - Line 6
+*---------------------------------------------------------------*
+* The operator enters either an account number or a card
+* number to identify the target account for the new
+* transaction. ACTIDIN has IC (initial cursor) so the cursor
+* lands here on first display. Both input fields are UNPROT
+* (unprotected) with GREEN UNDERLINE for editable input.
+* Stopper fields (LENGTH=0) follow each input to prevent
+* overtyping into adjacent fields.
+*   ACTIDIN - Account Number, 11-char UNPROT with IC
+*   CARDNIN - Card Number, 16-char UNPROT entry
+* The "(or)" label separates the two identification methods.
+*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=13,                                              -
@@ -108,12 +186,32 @@ CARDNIN DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                POS=(6,55)
         DFHMDF LENGTH=0,                                               -
                POS=(6,72)
+*
+*---------------------------------------------------------------*
+* Separator - Line 8
+*---------------------------------------------------------------*
+* A 70-character dashed line visually separating the account
+* identification area from the transaction data entry fields.
+*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=NEUTRAL,                                          -
                LENGTH=70,                                              -
                POS=(8,6),                                              -
                INITIAL='------------------------------------------------
                -----------------------'
+*
+*---------------------------------------------------------------*
+* Transaction Classification Fields - Line 10
+*---------------------------------------------------------------*
+* Three UNPROT fields on line 10 for transaction type data:
+*   TTYPCD - Transaction Type Code, 2-char entry
+*            (e.g., "01" purchase, "02" return)
+*   TCATCD - Transaction Category Code, 4-char entry
+*   TRNSRC - Transaction Source, 10-char entry
+* All editable fields are GREEN with UNDERLINE highlighting
+* and FSET to ensure modified data flag is set on input.
+* Stopper fields (LENGTH=0) follow each to cap input length.
+*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=8,                                               -
@@ -153,6 +251,13 @@ TRNSRC  DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                INITIAL=' '
         DFHMDF LENGTH=0,                                               -
                POS=(10,65)
+*
+*---------------------------------------------------------------*
+* Transaction Description - Line 12
+*---------------------------------------------------------------*
+* TDESC - Free-text description field, 60-char UNPROT.
+* Spans most of line 12 for the transaction narrative.
+*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=12,                                              -
@@ -166,6 +271,20 @@ TDESC   DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                INITIAL=' '
         DFHMDF LENGTH=0,                                               -
                POS=(12,80)
+*
+*---------------------------------------------------------------*
+* Amount and Date Fields - Lines 14-15
+*---------------------------------------------------------------*
+* Three UNPROT fields on line 14 for financial and date data:
+*   TRNAMT  - Transaction Amount, 12-char numeric entry
+*             Format hint on line 15: (-99999999.99)
+*   TORIGDT - Origination Date, 10-char date entry
+*             Format hint on line 15: (YYYY-MM-DD)
+*   TPROCDT - Processing Date, 10-char date entry
+*             Format hint on line 15: (YYYY-MM-DD)
+* Line 15 shows BLUE format hints below each field as
+* ASKIP protected guidance labels for the operator.
+*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=7,                                               -
@@ -220,6 +339,18 @@ TPROCDT DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                LENGTH=12,                                              -
                POS=(15,67),                                            -
                INITIAL='(YYYY-MM-DD)'
+*
+*---------------------------------------------------------------*
+* Merchant Information - Lines 16 and 18
+*---------------------------------------------------------------*
+* Four UNPROT fields capture merchant details:
+*   MID   - Merchant ID, 9-char entry (line 16)
+*   MNAME - Merchant Name, 30-char entry (line 16)
+*   MCITY - Merchant City, 25-char entry (line 18)
+*   MZIP  - Merchant ZIP Code, 10-char entry (line 18)
+* All fields are GREEN with UNDERLINE highlighting and
+* TURQUOISE labels. Stopper fields prevent overtyping.
+*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=12,                                              -
@@ -272,6 +403,16 @@ MZIP    DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                INITIAL=' '
         DFHMDF LENGTH=0,                                               -
                POS=(18,78)
+*
+*---------------------------------------------------------------*
+* Confirmation Prompt - Line 21
+*---------------------------------------------------------------*
+* Explicit Y/N confirmation before writing the new transaction
+* to the TRANSACT VSAM dataset. CONFIRM is a 1-char UNPROT
+* field where the operator types Y to proceed or N to cancel.
+* The "(Y/N)" hint is a protected NEUTRAL-color label.
+* COTRN02C checks this field before executing the VSAM WRITE.
+*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=55,                                              -
@@ -290,16 +431,40 @@ CONFIRM DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                LENGTH=5,                                               -
                POS=(21,66),                                            -
                INITIAL='(Y/N)'
+*
+*---------------------------------------------------------------*
+* Error / Information Message - Line 23
+*---------------------------------------------------------------*
+* ERRMSG - 78-char message area at row 23, column 1.
+* Displayed in RED with BRT (bright) for high visibility.
+* ASKIP prevents operator input. FSET ensures the field is
+* returned on RECEIVE so the program can clear or refresh it.
+* Used for validation errors, warnings, and confirmations.
+*
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=78,                                              -
                POS=(23,1)
+*
+*---------------------------------------------------------------*
+* Function Key Legend - Line 24
+*---------------------------------------------------------------*
+* YELLOW ASKIP label showing available function keys:
+*   ENTER - Submit the transaction (Continue processing)
+*   F3    - Return to previous screen (back navigation)
+*   F4    - Clear all input fields on the form
+*   F5    - Copy data from the last transaction (auto-fill)
+*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=53,                                              -
                POS=(24,1),                                             -
                INITIAL='ENTER=Continue  F3=Back  F4=Clear  F5=Copy Last-
                 Tran.'
+*
+*---------------------------------------------------------------*
+* End of Map COTRN2A / Mapset COTRN02
+*---------------------------------------------------------------*
         DFHMSD TYPE=FINAL
         END
 *
