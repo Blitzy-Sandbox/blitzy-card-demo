@@ -14,8 +14,25 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      * Symbolic map copybook for the Sign-On (Login) screen.
+      * BMS Source: app/bms/COSGN00.bms (Mapset: COSGN00, Map: COSGN0A)
+      * COBOL Program: app/cbl/COSGN00C.cbl (Transaction: CC00)
+      * Application entry point. Collects user credentials (user ID
+      * and password). COSGN00C authenticates against USRSEC VSAM
+      * and routes to Main Menu or Admin Menu based on user type.
+      * Unique: includes APPLID and SYSID (CICS region identifiers)
+      * in the header area -- not present in other symbolic maps.
+      * ---------------------------------------------------------------
+      * Input buffer layout (AI) -- populated by EXEC CICS RECEIVE MAP.
+      * Fields use L/F/A/I suffixes:
+      *   L = Length (COMP PIC S9(4))  F = Flag (PICTURE X)
+      *   A = Attribute (PICTURE X)    I = Input data (PICTURE X(n))
+      * ---------------------------------------------------------------
        01  COSGN0AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
+      * --- Extended header (3 lines: tran/title/date,
+      *     prog/title/time, AppID/SysID) ---
            02  TRNNAMEL    COMP  PIC  S9(4).
            02  TRNNAMEF    PICTURE X.
            02  FILLER REDEFINES TRNNAMEF.
@@ -52,6 +69,7 @@
              03 CURTIMEA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CURTIMEI  PIC X(9).
+      * --- CICS region identifiers (unique to sign-on screen) ---
            02  APPLIDL    COMP  PIC  S9(4).
            02  APPLIDF    PICTURE X.
            02  FILLER REDEFINES APPLIDF.
@@ -64,24 +82,34 @@
              03 SYSIDA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  SYSIDI  PIC X(8).
+      * --- Credential input fields ---
            02  USERIDL    COMP  PIC  S9(4).
            02  USERIDF    PICTURE X.
            02  FILLER REDEFINES USERIDF.
              03 USERIDA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  USERIDI  PIC X(8).
+      * Password field -- BMS uses DRK attribute for hidden entry
            02  PASSWDL    COMP  PIC  S9(4).
            02  PASSWDF    PICTURE X.
            02  FILLER REDEFINES PASSWDF.
              03 PASSWDA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  PASSWDI  PIC X(8).
+      * --- Error message area (78-char, RED) ---
            02  ERRMSGL    COMP  PIC  S9(4).
            02  ERRMSGF    PICTURE X.
            02  FILLER REDEFINES ERRMSGF.
              03 ERRMSGA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ERRMSGI  PIC X(78).
+      * ---------------------------------------------------------------
+      * Output buffer layout (AO) -- populated by program for
+      * EXEC CICS SEND MAP. REDEFINES the AI layout.
+      * Fields use C/P/H/V/O suffixes:
+      *   C = Color    P = Programmed symbol   H = Highlighting
+      *   V = Validation   O = Output data (REDEFINES I field)
+      * ---------------------------------------------------------------
        01  COSGN0AO REDEFINES COSGN0AI.
            02  FILLER PIC X(12).
            02  FILLER PICTURE X(3).
