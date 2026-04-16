@@ -97,6 +97,7 @@ disallow_untyped_defs = true
 disallow_incomplete_defs = true
 plugins = [
     "pydantic.mypy",
+    "sqlalchemy.ext.mypy.plugin",
 ]
 exclude = [
     "app/",
