@@ -16,16 +16,31 @@
 //* either express or implied. See the License for the specific     
 //* language governing permissions and limitations under the License
 //******************************************************************            
+//* JOB: READCARD - Card File Diagnostic Read Utility
+//* Executes batch COBOL program CBACT02C to sequentially
+//* read and display all records from the Card Data VSAM
+//* KSDS file. Used for validation and debugging after
+//* provisioning with CARDFILE.jcl.
+//* Related program source: app/cbl/CBACT02C.cbl
+//* Related dataset: AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS
 //* *******************************************************************         
 //* RUN THE PROGRAM THAT READS THE CARD MASTER VSAM FILE                        
 //* *******************************************************************         
+//* STEP05: Execute CBACT02C - reads CARDDATA VSAM KSDS
+//*   sequentially and writes record contents to SYSOUT
 //STEP05 EXEC PGM=CBACT02C                                                      
 //STEPLIB  DD DISP=SHR,                                                         
 //         DSN=AWS.M2.CARDDEMO.LOADLIB                                          
+//*   STEPLIB: CardDemo compiled load module library
 //CARDFILE DD DISP=SHR,                                                         
 //         DSN=AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS                               
+//*   CARDFILE: Card Data VSAM KSDS (input, read-only)
+//*     150-byte records, key=16 bytes at offset 0
+//*     Record layout: CVACT02Y.cpy
 //SYSOUT   DD SYSOUT=*                                                          
+//*   SYSOUT: Program display output (DISPLAY stmts)
 //SYSPRINT DD SYSOUT=*                                                          
+//*   SYSPRINT: System messages and status output
 //*
 //* Ver: CardDemo_v1.0-15-g27d6c6f-68 Date: 2022-07-19 23:23:07 CDT
 //*
