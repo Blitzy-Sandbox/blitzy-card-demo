@@ -1,0 +1,99 @@
+# ============================================================================
+# CardDemo — API Deployment Pipeline
+# ----------------------------------------------------------------------------
+# Builds the FastAPI Docker image, pushes it to AWS ECR, and rolls out the
+# ECS Fargate service. Replaces the z/OS deploy JCL for CICS programs.
+#
+# Per AAP §0.4.4 "API deployment: build Docker -> push to ECR -> update
+# ECS service".
+# ============================================================================
+
+name: deploy-api
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/api/**"
+      - "src/shared/**"
+      - "Dockerfile"
+      - "requirements.txt"
+      - "requirements-api.txt"
+      - ".github/workflows/deploy-api.yml"
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Override image tag (defaults to commit SHA)"
+        required: false
+        default: ""
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'carddemo-api' }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER || 'carddemo-cluster' }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE || 'carddemo-api-service' }}
+  ECS_TASK_DEFINITION_FILE: infra/ecs-task-definition.json
+  CONTAINER_NAME: carddemo-api
+
+jobs:
+  build-push-deploy:
+    name: Build, push to ECR, and deploy to ECS
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # required for OIDC role assumption
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Compute image tag
+        id: tag
+        run: |
+          INPUT_TAG="${{ github.event.inputs.image_tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            echo "tag=$INPUT_TAG" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.tag.outputs.tag }}
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Render new ECS task definition
+        id: render-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ env.ECS_TASK_DEFINITION_FILE }}
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.tag.outputs.tag }}
+
+      - name: Deploy to Amazon ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-task-def.outputs.task-definition }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.ECS_SERVICE }}
+          wait-for-service-stability: true

@@ -1,0 +1,98 @@
+# ============================================================================
+# CardDemo — AWS Glue Job Deployment Pipeline
+# ----------------------------------------------------------------------------
+# Uploads PySpark scripts to S3 and updates the AWS Glue 5.1 job definitions
+# for the 5-stage batch pipeline (POSTTRAN -> INTCALC -> COMBTRAN ->
+# CREASTMT || TRANREPT). Replaces z/OS JCL-based batch deployment.
+#
+# Per AAP §0.4.4 "Glue deployment: upload PySpark scripts to S3 ->
+# update Glue job definitions".
+# ============================================================================
+
+name: deploy-glue
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/batch/**"
+      - "src/shared/**"
+      - "infra/glue-job-configs/**"
+      - "requirements.txt"
+      - "requirements-glue.txt"
+      - ".github/workflows/deploy-glue.yml"
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  GLUE_SCRIPT_BUCKET: ${{ vars.GLUE_SCRIPT_BUCKET || 'carddemo-glue-scripts' }}
+  GLUE_SCRIPT_PREFIX: ${{ vars.GLUE_SCRIPT_PREFIX || 'carddemo/batch' }}
+
+jobs:
+  package-and-deploy:
+    name: Package and deploy Glue jobs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # required for OIDC role assumption
+    environment: production
+    strategy:
+      matrix:
+        job:
+          - posttran
+          - intcalc
+          - combtran
+          - creastmt
+          - tranrept
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload PySpark script to S3
+        run: |
+          aws s3 cp \
+            "src/batch/jobs/${{ matrix.job }}_job.py" \
+            "s3://${{ env.GLUE_SCRIPT_BUCKET }}/${{ env.GLUE_SCRIPT_PREFIX }}/${{ matrix.job }}_job.py"
+
+      - name: Upload shared code as Glue extra-py-files zip
+        run: |
+          python -m zipfile -c carddemo_shared.zip src/shared src/batch/common
+          aws s3 cp carddemo_shared.zip \
+            "s3://${{ env.GLUE_SCRIPT_BUCKET }}/${{ env.GLUE_SCRIPT_PREFIX }}/carddemo_shared.zip"
+
+      - name: Update Glue job definition
+        run: |
+          aws glue update-job \
+            --job-name "carddemo-${{ matrix.job }}" \
+            --job-update file://infra/glue-job-configs/${{ matrix.job }}.json
+
+  deploy-step-functions:
+    name: Deploy Step Functions pipeline
+    runs-on: ubuntu-latest
+    needs: package-and-deploy
+    permissions:
+      contents: read
+      id-token: write
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update Step Functions state machine
+        run: |
+          aws stepfunctions update-state-machine \
+            --state-machine-arn "${{ vars.STEP_FUNCTIONS_ARN }}" \
+            --definition file://src/batch/pipeline/step_functions_definition.json
