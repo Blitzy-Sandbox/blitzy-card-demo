@@ -329,16 +329,16 @@ The following issues exist in the JCL source files as-is. Per the documentation 
 
 | File | Issue | Details |
 |:-----|:------|:--------|
-| `DEFCUST.jcl` | Dataset name mismatch | DELETE targets `AWS.CCDA.CUSTDATA.CLUSTER` but DEFINE creates `AWS.CUSTDATA.CLUSTER`. Neither uses the standard `AWS.M2.CARDDEMO.*` naming convention. This appears to be a draft job. Source: `app/jcl/DEFCUST.jcl` lines 25, 35 |
-| `DEFCUST.jcl` | Duplicate step name | Two steps are both named `STEP05` (delete step and define step). Source: `app/jcl/DEFCUST.jcl` lines 22, 32 |
+| `DEFCUST.jcl` | Dataset name mismatch | DELETE targets `AWS.CCDA.CUSTDATA.CLUSTER` but DEFINE creates `AWS.CUSTDATA.CLUSTER`. Neither uses the standard `AWS.M2.CARDDEMO.*` naming convention. This appears to be a draft job. Source: `app/jcl/DEFCUST.jcl` lines 47, 72 |
+| `DEFCUST.jcl` | Duplicate step name | Two steps are both named `STEP05` (delete step and define step). Source: `app/jcl/DEFCUST.jcl` lines 44, 69 |
 | `OPENFIL.jcl` | JOB card typo | The JOB card reads `OEPNFIL` instead of `OPENFIL`. Source: `app/jcl/OPENFIL.jcl` line 1 |
-| `DALYREJS.jcl` | Misleading comment | Section divider says "DELETE TRANSACATION MASTER VSAM FILE IF ONE ALREADY EXISTS" but the actual operation is `DEFINE GENERATIONDATAGROUP` for `DALYREJS`. Copy-pasted from another job. Source: `app/jcl/DALYREJS.jcl` line 19 |
-| `REPTFILE.jcl` | Misleading comment | Same copy-paste issue — comment says "DELETE TRANSACATION MASTER VSAM FILE" but the job defines the `TRANREPT` GDG base. Source: `app/jcl/REPTFILE.jcl` line 20 |
-| `TRANREPT.jcl` | Duplicate step name | Two steps are both named `STEP05R` (REPROC unload step and SORT filter step). Source: `app/jcl/TRANREPT.jcl` lines 23, 37 |
-| `CREASTMT.JCL` | Malformed line | Line 90 contains apparent concatenation debris: `SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS`. Source: `app/jcl/CREASTMT.JCL` line 90 |
-| `CREASTMT.JCL` | Non-standard volume | Uses volume `TSU023` instead of the standard `AWSHJ1` used by all other provisioning jobs. Source: `app/jcl/CREASTMT.JCL` line 31 |
-| `TRANFILE.jcl` | Comment typo | Line 114 reads "Opem files in CICS region" instead of "Open files". Source: `app/jcl/TRANFILE.jcl` line 114 |
-| Various | Comment typos | Several jobs spell "TRANSACTION" as "TRANSACATION" in section divider comments (TRANBKP, TRANFILE, TRANTYPE). Source: `app/jcl/TRANBKP.jcl` line 35, `app/jcl/TRANFILE.jcl` line 30 |
+| `DALYREJS.jcl` | Misleading comment | Section divider says "DELETE TRANSACATION MASTER VSAM FILE IF ONE ALREADY EXISTS" but the actual operation is `DEFINE GENERATIONDATAGROUP` for `DALYREJS`. Copy-pasted from another job. Source: `app/jcl/DALYREJS.jcl` line 28 |
+| `REPTFILE.jcl` | Misleading comment | Same copy-paste issue — comment says "DELETE TRANSACATION MASTER VSAM FILE" but the job defines the `TRANREPT` GDG base. Source: `app/jcl/REPTFILE.jcl` line 29 |
+| `TRANREPT.jcl` | Duplicate step name | Two steps are both named `STEP05R` (REPROC unload step and SORT filter step). Source: `app/jcl/TRANREPT.jcl` lines 40, 64 |
+| `CREASTMT.JCL` | Malformed line | Line 143 contains apparent concatenation debris: `SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS`. Source: `app/jcl/CREASTMT.JCL` line 143 |
+| `CREASTMT.JCL` | Non-standard volume | Uses volume `TSU023` instead of the standard `AWSHJ1` used by all other provisioning jobs. Source: `app/jcl/CREASTMT.JCL` line 55 |
+| `TRANFILE.jcl` | Comment typo | Line 157 reads "Opem files in CICS region" instead of "Open files". Source: `app/jcl/TRANFILE.jcl` line 157 |
+| Various | Comment typos | Several jobs spell "TRANSACTION" as "TRANSACATION" in section divider comments (TRANBKP, TRANFILE, TRANTYPE). Source: `app/jcl/TRANBKP.jcl` line 51, `app/jcl/TRANFILE.jcl` line 50 |
 | `READCUST.jcl` | Missing license header | Does not include the standard Apache 2.0 license header block present in all other JCL files. Source: `app/jcl/READCUST.jcl` |
 
 ---
@@ -347,12 +347,12 @@ The following issues exist in the JCL source files as-is. Per the documentation 
 
 | Related Module | Link | Relationship |
 |:---------------|:-----|:-------------|
-| COBOL Programs | [app/cbl/README.md](../cbl/README.md) | Batch programs (CBTRN02C, CBACT04C, CBTRN03C, CBSTM03A, CBACT01C–03C, CBCUS01C) executed by these JCL jobs |
+| COBOL Programs | [app/cbl/README.md](../cbl/README.md) *(pending creation)* | Batch programs (CBTRN02C, CBACT04C, CBTRN03C, CBSTM03A, CBACT01C–03C, CBCUS01C) executed by these JCL jobs |
 | Copybooks | [app/cpy/README.md](../cpy/README.md) | Record layout definitions (CVACT01Y, CVACT02Y, CVACT03Y, CVCUS01Y, CVTRA01Y–06Y, CSUSR01Y) used by VSAM datasets |
 | Data Fixtures | [app/data/README.md](../data/README.md) | ASCII seed data files loaded into VSAM by provisioning jobs |
 | Application Overview | [app/README.md](../README.md) | System architecture context and module relationships |
 | Main README | [README.md](../../README.md) | Installation instructions, application inventory, and batch execution order |
-| Sample JCL | [samples/jcl/README.md](../../samples/jcl/README.md) | Compile wrapper patterns for building COBOL programs referenced by these jobs |
+| Sample JCL | [samples/jcl/README.md](../../samples/jcl/README.md) *(pending creation)* | Compile wrapper patterns for building COBOL programs referenced by these jobs |
 
 ---
 

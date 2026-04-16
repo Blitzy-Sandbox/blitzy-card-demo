@@ -20,8 +20,8 @@
 //* Runs DFHCSDUP (CSD utility) to define all CardDemo
 //* CICS resources in GROUP(CARDDEMO). This includes:
 //*   - 1 LIBRARY definition (COM2DOLL -> LOADLIB)
-//*   - ~18 MAPSET definitions for BMS screen maps
-//*   - ~18 PROGRAM definitions for online programs
+//*   - 20 MAPSET definitions (15 unique, 5 duplicated)
+//*   - 19 PROGRAM definitions (15 unique, 4 duplicated)
 //*   - 5 TRANSACTION definitions (CCDM, CCT1-CCT4)
 //* Run order: Execute once during initial CICS setup.
 //*   Install with CEDA INSTALL GROUP(CARDDEMO).
