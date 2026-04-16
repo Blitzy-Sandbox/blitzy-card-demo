@@ -83,8 +83,8 @@ These copybooks provide reusable date handling, validation logic, and reference 
 |----------|------------------|-------------|
 | `CSDAT01Y.cpy` | `01 WS-DATE-TIME` (Working-Storage) | Date/time working storage — raw date components (`CCYYMMDD`), raw time (`HHMMSSms`), formatted display views (`MM/DD/YY`, `HH:MM:SS`), and ISO timestamp (`YYYY-MM-DD HH:MM:SS.mmmmmm`) |
 | `CSUTLDWY.cpy` | `10`-level (nested under parent) | Date-edit working storage — input date fields (`CCYYMMDD` with century, year, month, day subfields), REDEFINES for numeric testing, validation flags (year/month/day with 88-level conditions for blank/invalid/valid), LE callable service result buffer, and current-date comparison fields |
-| `CSUTLDPY.cpy` | `PROCEDURE DIVISION` paragraphs | Date validation executable paragraphs (375 lines) — `EDIT-DATE-CCYYMMDD` main entry, year validation (`EDIT-YEAR-CCYY`), month validation (`EDIT-MONTH`), day validation with leap year logic (`EDIT-DAY`), date-of-birth future-date check, and IBM Language Environment `CEEDAYS` callable service integration |
-| `CSLKPCDY.cpy` | `01`-level (multiple) | Validation lookup data (1,318 lines) — NANPA area codes (~300 entries from `nationalnanpa.com`), US state codes (56 entries including territories), and state-plus-ZIP-prefix combinations (~240 entries). All stored as 88-level condition VALUE lists. |
+| `CSUTLDPY.cpy` | `PROCEDURE DIVISION` paragraphs | Date validation executable paragraphs (433 lines) — `EDIT-DATE-CCYYMMDD` main entry, year validation (`EDIT-YEAR-CCYY`), month validation (`EDIT-MONTH`), day validation with leap year logic (`EDIT-DAY`), date-of-birth future-date check, and IBM Language Environment `CEEDAYS` callable service integration |
+| `CSLKPCDY.cpy` | `01`-level (multiple) | Validation lookup data (1,338 lines) — NANPA area codes (~300 entries from `nationalnanpa.com`), US state codes (56 entries including territories), and state-plus-ZIP-prefix combinations (~240 entries). All stored as 88-level condition VALUE lists. |
 
 > Sources: `app/cpy/CSDAT01Y.cpy`, `app/cpy/CSUTLDWY.cpy`, `app/cpy/CSUTLDPY.cpy`, `app/cpy/CSLKPCDY.cpy`
 
@@ -354,7 +354,7 @@ Copybooks are the **shared contract layer** of the CardDemo application — they
 
 4. **Unreferenced copybook** — `UNUSED1Y.cpy` defines an 80-byte `UNUSED-DATA` record that mirrors the `SEC-USER-DATA` structure but is not consumed by any program. It is retained as a structural placeholder.
 
-5. **Monolithic lookup data** — `CSLKPCDY.cpy` is a 1,318-line file dominated by literal validation data (NANPA area codes, US state codes, ZIP-prefix tables). Any updates to area codes, state codes, or ZIP combinations require manual editing of the VALUE literal lists.
+5. **Monolithic lookup data** — `CSLKPCDY.cpy` is a 1,338-line file dominated by literal validation data (NANPA area codes, US state codes, ZIP-prefix tables). Any updates to area codes, state codes, or ZIP combinations require manual editing of the VALUE literal lists.
 
 6. **No version control metadata** — Version information exists only as footer comments (e.g., `Ver: CardDemo_v1.0-15-g27d6c6f-68 Date: 2022-07-19`). There is no formal versioning mechanism for copybook interface changes.
 
