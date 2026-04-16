@@ -28,6 +28,7 @@
       *   A = Attribute (PICTURE X)    I = Input data (PICTURE X(n))
       * ---------------------------------------------------------------
        01  COUSR0AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
       * --- Header fields: transaction ID, titles, date/time ---
            02  TRNNAMEL    COMP  PIC  S9(4).
@@ -405,6 +406,7 @@
       *   V = Validation   O = Output data (REDEFINES I field)
       * ---------------------------------------------------------------
        01  COUSR0AO REDEFINES COUSR0AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
       * --- Header fields (output) ---
            02  FILLER PICTURE X(3).

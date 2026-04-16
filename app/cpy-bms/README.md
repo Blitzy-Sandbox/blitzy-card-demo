@@ -254,25 +254,25 @@ The following table lists all 17 symbolic maps sorted by total line count (desce
 
 | File | Total Lines | AI Lines | AO Lines | Screen Type |
 |------|-------------|----------|----------|-------------|
-| `COUSR00.CPY` | 728 | 356 | 356 | 10-row user list |
-| `COTRN00.CPY` | 728 | 356 | 356 | 10-row transaction list |
-| `COACTUP.CPY` | 668 | 326 | 326 | Full account maintenance (largest form) |
-| `COCRDLI.CPY` | 560 | 272 | 272 | 7-row card list |
-| `COACTVW.CPY` | 464 | 224 | 224 | Account view (read-only) |
-| `COTRN01.CPY` | 272 | 128 | 128 | Transaction detail |
-| `COTRN02.CPY` | 272 | 128 | 128 | Transaction add |
-| `COADM01.CPY` | 260 | 122 | 122 | Admin menu |
-| `COMEN01.CPY` | 260 | 122 | 122 | Main menu |
-| `CORPT00.CPY` | 224 | 104 | 104 | Report criteria |
-| `COCRDUP.CPY` | 224 | 104 | 104 | Card update |
-| `COCRDSL.CPY` | 200 | 92 | 92 | Card detail (read-only) |
-| `COUSR01.CPY` | 164 | 74 | 74 | User add |
-| `COUSR02.CPY` | 164 | 74 | 74 | User update |
-| `COSGN00.CPY` | 152 | 68 | 68 | Sign-on (includes APPLID/SYSID) |
-| `COUSR03.CPY` | 152 | 68 | 68 | User delete |
-| `COBIL00.CPY` | 140 | 62 | 62 | Bill payment (smallest) |
+| `COUSR00.CPY` | 778 | 378 | 371 | 10-row user list |
+| `COTRN00.CPY` | 771 | 381 | 361 | 10-row transaction list |
+| `COACTUP.CPY` | 712 | 351 | 332 | Full account maintenance (largest form) |
+| `COCRDLI.CPY` | 605 | 291 | 284 | 7-row card list |
+| `COACTVW.CPY` | 498 | 238 | 231 | Account view (read-only) |
+| `COTRN02.CPY` | 300 | 142 | 129 | Transaction add |
+| `COTRN01.CPY` | 299 | 141 | 129 | Transaction detail |
+| `COADM01.CPY` | 290 | 135 | 127 | Admin menu |
+| `COMEN01.CPY` | 286 | 135 | 123 | Main menu |
+| `CORPT00.CPY` | 251 | 118 | 105 | Report criteria |
+| `COCRDUP.CPY` | 251 | 118 | 105 | Card update |
+| `COCRDSL.CPY` | 224 | 104 | 93 | Card detail (read-only) |
+| `COUSR01.CPY` | 191 | 88 | 75 | User add |
+| `COUSR02.CPY` | 189 | 86 | 75 | User update |
+| `COSGN00.CPY` | 180 | 82 | 68 | Sign-on (includes APPLID/SYSID) |
+| `COUSR03.CPY` | 179 | 81 | 69 | User delete |
+| `COBIL00.CPY` | 170 | 75 | 67 | Bill payment (smallest) |
 
-> **Note:** Each file includes a 16-line Apache 2.0 license header. The AI and AO line counts above include the 01-level record definition and all contained 02/03-level field definitions. Total Lines = 16 (license) + AI Lines + AO Lines.
+> **Note:** Total Lines is the actual file line count (via `wc -l`), including the 16-line Apache 2.0 license header, file-level documentation preamble, and both data sections. AI Lines counts from the `01`-level AI record definition through all contained fields and inline comments. AO Lines counts from the `01`-level AO REDEFINES record through the end of the file.
 
 ---
 

@@ -26,6 +26,7 @@
       *   A = Attribute (PICTURE X)    I = Input data (PICTURE X(n))
       * ---------------------------------------------------------------
        01  CCRDSLAI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
       * --- Header fields: transaction ID, titles, date/time ---
            02  TRNNAMEL    COMP  PIC  S9(4).
@@ -129,6 +130,7 @@
       *   V = Validation   O = Output data (REDEFINES I field)
       * ---------------------------------------------------------------
        01  CCRDSLAO REDEFINES CCRDSLAI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
            02  FILLER PICTURE X(3).
            02  TRNNAMEC    PICTURE X.
