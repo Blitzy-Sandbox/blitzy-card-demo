@@ -1,6 +1,24 @@
       *****************************************************************         
       *    Reporting data structure for transaction report                      
       *****************************************************************         
+      * Report Format Copybook: Daily Transaction Report
+      *   print line definitions
+      * Defines 6 record structures for formatted report
+      *   output (133-char line width)
+      * Used by CBTRN03C.cbl for paginated transaction
+      *   reporting
+      *
+      * Cross-References:
+      *   Consumer: CBTRN03C.cbl (transaction report)
+      *   Transaction data: CVTRA05Y.cpy (source record)
+      *   Lookup: CVTRA03Y.cpy (type descriptions),
+      *           CVTRA04Y.cpy (category descriptions)
+      *
+      * Total Hierarchy (standard mainframe report pattern):
+      *   Page Total -> Account Total -> Grand Total
+      *
+      * Report title block with short name, long name,
+      *   and date range. Printed at top of each page.
        01  REPORT-NAME-HEADER.                                                  
            05  REPT-SHORT-NAME                  PIC X(38) VALUE                 
            'DALYREPT'.                                                          
@@ -12,6 +30,10 @@
            05  FILLER                           PIC X(04) VALUE ' to '.         
            05  REPT-END-DATE                    PIC X(10) VALUE SPACES.         
                                                                                 
+      * Detail line: one per transaction showing ID,
+      *   account, type, category, source, and amount.
+      *   Edit mask PIC -ZZZ,ZZZ,ZZZ.ZZ allows negative
+      *   amounts to display with leading minus sign.
        01  TRANSACTION-DETAIL-REPORT.                                           
            05  TRAN-REPORT-TRANS-ID             PIC X(16).                      
            05  FILLER                           PIC X(01) VALUE SPACES.         
@@ -30,6 +52,8 @@
            05  TRAN-REPORT-AMT                  PIC -ZZZ,ZZZ,ZZZ.ZZ.            
            05  FILLER                           PIC X(02) VALUE SPACES.         
                                                                                 
+      * Column labels printed below the report name
+      *   header on each new page of report output
        01  TRANSACTION-HEADER-1.                                                
            05  FILLER                           PIC X(17) VALUE                 
            'Transaction ID'.                                                    
@@ -45,20 +69,29 @@
            05  FILLER                           PIC X(16) VALUE                 
            '        Amount'.                                                    
                                                                                 
+      * Separator line of 133 dashes printed below
+      *   column headers to visually divide headers
+      *   from detail lines
        01  TRANSACTION-HEADER-2  PIC X(133) VALUE ALL '-'.                      
                                                                                 
+      * Running total per printed page
+      *   (level 1 of 3 in the total hierarchy)
        01  REPORT-PAGE-TOTALS.                                                  
            05  FILLER                           PIC X(11) VALUE                 
            'Page Total'.                                                        
            05  FILLER                           PIC X(86) VALUE ALL '.'.        
            05  REPT-PAGE-TOTAL                  PIC +ZZZ,ZZZ,ZZZ.ZZ.            
                                                                                 
+      * Subtotal per account - control break on account
+      *   ID (level 2 of 3 in the total hierarchy)
        01  REPORT-ACCOUNT-TOTALS.                                               
            05  FILLER                           PIC X(13) VALUE                 
            'Account Total'.                                                     
            05  FILLER                           PIC X(84) VALUE ALL '.'.        
            05  REPT-ACCOUNT-TOTAL               PIC +ZZZ,ZZZ,ZZZ.ZZ.            
                                                                                 
+      * Grand total across all transactions in the report
+      *   (level 3 of 3 in the total hierarchy)
        01  REPORT-GRAND-TOTALS.                                                 
            05  FILLER                           PIC X(11) VALUE                 
            'Grand Total'.                                                       
