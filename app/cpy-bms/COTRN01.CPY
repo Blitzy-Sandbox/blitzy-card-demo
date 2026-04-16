@@ -14,8 +14,22 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      * Symbolic map copybook for the Transaction Detail screen.
+      * BMS Source: app/bms/COTRN01.bms (Mapset: COTRN01, Map: COTRN1A)
+      * COBOL Program: app/cbl/COTRN01C.cbl (Transaction: CT01)
+      * Read-only transaction detail viewer. Displays a single
+      * transaction record including card, type, category, source,
+      * description, amount, dates, and merchant information.
+      * All display fields are protected (ASKIP/PROT).
+      * ---------------------------------------------------------------
+      * Input buffer layout (AI) -- populated by EXEC CICS RECEIVE MAP.
+      * Fields use L/F/A/I suffixes:
+      *   L = Length (COMP PIC S9(4))  F = Flag (PICTURE X)
+      *   A = Attribute (PICTURE X)    I = Input data (PICTURE X(n))
+      * ---------------------------------------------------------------
        01  COTRN1AI.
            02  FILLER PIC X(12).
+      * --- Header fields: transaction ID, titles, date/time ---
            02  TRNNAMEL    COMP  PIC  S9(4).
            02  TRNNAMEF    PICTURE X.
            02  FILLER REDEFINES TRNNAMEF.
@@ -52,6 +66,7 @@
              03 CURTIMEA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CURTIMEI  PIC X(8).
+      * --- Transaction ID lookup input (UNPROT with IC) ---
            02  TRNIDINL    COMP  PIC  S9(4).
            02  TRNIDINF    PICTURE X.
            02  FILLER REDEFINES TRNIDINF.
@@ -64,6 +79,7 @@
              03 TRNIDA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  TRNIDI  PIC X(16).
+      * --- Transaction detail display (all read-only) ---
            02  CARDNUML    COMP  PIC  S9(4).
            02  CARDNUMF    PICTURE X.
            02  FILLER REDEFINES CARDNUMF.
@@ -112,6 +128,7 @@
              03 TPROCDTA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  TPROCDTI  PIC X(10).
+      * --- Merchant information display ---
            02  MIDL    COMP  PIC  S9(4).
            02  MIDF    PICTURE X.
            02  FILLER REDEFINES MIDF.
@@ -136,12 +153,20 @@
              03 MZIPA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  MZIPI  PIC X(10).
+      * --- Error message area (78-char, RED) ---
            02  ERRMSGL    COMP  PIC  S9(4).
            02  ERRMSGF    PICTURE X.
            02  FILLER REDEFINES ERRMSGF.
              03 ERRMSGA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ERRMSGI  PIC X(78).
+      * ---------------------------------------------------------------
+      * Output buffer layout (AO) -- populated by program for
+      * EXEC CICS SEND MAP. REDEFINES the AI layout.
+      * Fields use C/P/H/V/O suffixes:
+      *   C = Color    P = Programmed symbol   H = Highlighting
+      *   V = Validation   O = Output data (REDEFINES I field)
+      * ---------------------------------------------------------------
        01  COTRN1AO REDEFINES COTRN1AI.
            02  FILLER PIC X(12).
            02  FILLER PICTURE X(3).
