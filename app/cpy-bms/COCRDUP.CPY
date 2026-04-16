@@ -14,8 +14,22 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      * Symbolic map copybook for the Card Update screen.
+      * BMS Source: app/bms/COCRDUP.bms (Mapset: COCRDUP, Map: CCRDUPA)
+      * COBOL Program: app/cbl/COCRDUPC.cbl (Transaction: CCUP)
+      * Editable card maintenance screen. Allows update of cardholder
+      * name, status, and expiration date (month/day/year).
+      * COCRDUPC uses optimistic concurrency (before/after images).
+      * Also COPY-included by COACTUPC, COACTVWC, COCRDLIC.
+      * ---------------------------------------------------------------
+      * Input buffer layout (AI) -- populated by EXEC CICS RECEIVE MAP.
+      * Fields use L/F/A/I suffixes:
+      *   L = Length (COMP PIC S9(4))  F = Flag (PICTURE X)
+      *   A = Attribute (PICTURE X)    I = Input data (PICTURE X(n))
+      * ---------------------------------------------------------------
        01  CCRDUPAI.
            02  FILLER PIC X(12).
+      * --- Header fields: transaction ID, titles, date/time ---
            02  TRNNAMEL    COMP  PIC  S9(4).
            02  TRNNAMEF    PICTURE X.
            02  FILLER REDEFINES TRNNAMEF.
@@ -52,6 +66,7 @@
              03 CURTIMEA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CURTIMEI  PIC X(8).
+      * --- Card identification (account and card number) ---
            02  ACCTSIDL    COMP  PIC  S9(4).
            02  ACCTSIDF    PICTURE X.
            02  FILLER REDEFINES ACCTSIDF.
@@ -64,6 +79,7 @@
              03 CARDSIDA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CARDSIDI  PIC X(16).
+      * --- Editable card attributes (UNPROT for update) ---
            02  CRDNAMEL    COMP  PIC  S9(4).
            02  CRDNAMEF    PICTURE X.
            02  FILLER REDEFINES CRDNAMEF.
@@ -88,12 +104,14 @@
              03 EXPYEARA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  EXPYEARI  PIC X(4).
+      * Note: EXPDAY field is unique to update screen (not in COCRDSL)
            02  EXPDAYL    COMP  PIC  S9(4).
            02  EXPDAYF    PICTURE X.
            02  FILLER REDEFINES EXPDAYF.
              03 EXPDAYA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  EXPDAYI  PIC X(2).
+      * --- Information and error message areas ---
            02  INFOMSGL    COMP  PIC  S9(4).
            02  INFOMSGF    PICTURE X.
            02  FILLER REDEFINES INFOMSGF.
@@ -106,6 +124,7 @@
              03 ERRMSGA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ERRMSGI  PIC X(80).
+      * --- Function key legend fields ---
            02  FKEYSL    COMP  PIC  S9(4).
            02  FKEYSF    PICTURE X.
            02  FILLER REDEFINES FKEYSF.
@@ -118,6 +137,13 @@
              03 FKEYSCA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  FKEYSCI  PIC X(18).
+      * ---------------------------------------------------------------
+      * Output buffer layout (AO) -- populated by program for
+      * EXEC CICS SEND MAP. REDEFINES the AI layout.
+      * Fields use C/P/H/V/O suffixes:
+      *   C = Color    P = Programmed symbol   H = Highlighting
+      *   V = Validation   O = Output data (REDEFINES I field)
+      * ---------------------------------------------------------------
        01  CCRDUPAO REDEFINES CCRDUPAI.
            02  FILLER PIC X(12).
            02  FILLER PICTURE X(3).
