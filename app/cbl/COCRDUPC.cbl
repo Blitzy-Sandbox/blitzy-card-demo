@@ -18,6 +18,20 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ******************************************************************        
+      *================================================================*
+      * Program:     COCRDUPC
+      * Transaction: CCUP
+      * BMS Map:     COCRDUP / CCRDUP
+      * Function:    Card update screen. Reads CARDDAT by primary key
+      *              (card number) to display current details, then
+      *              allows editing of cardholder name, status, and
+      *              expiry date. Uses optimistic concurrency: saves a
+      *              before-image on first display and compares it
+      *              before REWRITE to detect concurrent changes.
+      * Files:       CARDDAT (READ, READ UPDATE, REWRITE)
+      * Navigation:  PF3 returns to calling program (usually COCRDLIC).
+      *              Enter processes input; confirm action writes data.
+      *================================================================*
                                                                                 
        IDENTIFICATION DIVISION.                                                 
        PROGRAM-ID.                                                              

@@ -18,6 +18,19 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ******************************************************************        
+      *================================================================*
+      * Program:     COCRDSLC
+      * Transaction: CCDL
+      * BMS Map:     COCRDSL / CCRDSL
+      * Function:    Card detail (view-only) screen. Reads CARDDAT VSAM
+      *              KSDS by card number to display card details. May
+      *              also look up by account ID using the card-file
+      *              alternate index (ACCTID path). Validates account
+      *              and card number inputs before reading.
+      * Files:       CARDDAT (READ), CARDAIX (READ via ACCTID path)
+      * Navigation:  PF3 returns to calling program (usually COCRDLIC).
+      *              Enter re-displays after processing input criteria.
+      *================================================================*
                                                                                 
        IDENTIFICATION DIVISION.                                                 
        PROGRAM-ID.                                                              

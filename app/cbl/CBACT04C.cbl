@@ -19,6 +19,38 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ******************************************************************
+      *
+      * CBACT04C - Interest Calculation Batch Program
+      *
+      * Computes monthly interest for every account that has
+      * transaction-category-balance records in the TCATBAL VSAM
+      * file. For each category-balance record the program looks
+      * up the applicable interest rate from the DISCGRP
+      * (disclosure group) file, computes monthly interest as
+      * (balance * rate) / 1200, and writes a system-generated
+      * interest transaction to TRANSACT. When a new account
+      * number is detected, the accumulated interest is posted
+      * back to the account master via REWRITE.
+      *
+      * Files accessed:
+      *   TCATBALF  - Transaction category balance (KSDS, input,
+      *               sequential read by composite key)
+      *   XREFFILE  - Card cross-reference (KSDS, random read
+      *               by alternate key FD-XREF-ACCT-ID)
+      *   DISCGRP   - Disclosure group / interest rates (KSDS,
+      *               random read by composite key)
+      *   ACCTFILE  - Account master (KSDS, I-O for REWRITE)
+      *   TRANSACT  - Transaction output (sequential, output)
+      *
+      * Receives PARM-DATE via JCL PARM to stamp generated
+      * transaction IDs and timestamps.
+      *
+      * Copybooks: CVTRA01Y (category-balance record),
+      *            CVACT03Y (cross-reference record),
+      *            CVTRA02Y (disclosure group record),
+      *            CVACT01Y (account record),
+      *            CVTRA05Y (transaction record)
+      *
        IDENTIFICATION DIVISION.                                                 
        PROGRAM-ID.    CBACT04C.                                                 
        AUTHOR.        AWS.                                                      

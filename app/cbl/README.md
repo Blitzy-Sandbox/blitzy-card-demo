@@ -54,7 +54,7 @@ All 10 batch programs use native COBOL `FILE-CONTROL` / `OPEN` / `READ` / `WRITE
 | READXREF   | CBACT03C  | Cross-reference file sequential read/display utility |
 | INTCALC    | CBACT04C  | Interest calculation — rate lookup from DISCGRP, account balance updates, generates transaction output |
 | READCUST   | CBCUS01C  | Customer file sequential read/display utility |
-| POSTTRAN   | CBTRN01C  | Daily transaction driver — opens all required files, validates daily transactions, calls CBTRN02C |
+| —          | CBTRN01C  | Daily transaction driver — opens all required files, reads and validates daily transactions, looks up cross-references and accounts (not invoked by any JCL job in this repository) |
 | POSTTRAN   | CBTRN02C  | Transaction posting engine — 4-stage validation cascade, reject processing, balance/category-balance updates |
 | TRANREPT   | CBTRN03C  | Transaction reporting — date-filtered detail report with 3-level totals (account, category, grand), paginated |
 | CREASTMT   | CBSTM03A  | Statement generation — produces both plain-text and HTML output, 4-entity join, memory buffering |
@@ -94,7 +94,6 @@ flowchart TD
     COCRDLIC -->|"Select row"| COCRDSLC
     COCRDLIC -->|"Select row"| COCRDUPC
     COTRN00C -->|"Select row"| COTRN01C
-    COTRN00C -->|"Select row"| COTRN02C
 ```
 
 *Sources: `EXEC CICS XCTL PROGRAM` statements in online programs, `COMEN02Y.cpy` option table, `COADM02Y.cpy` option table*
@@ -107,7 +106,7 @@ The five-stage batch processing pipeline is executed via JCL jobs in [`app/jcl/`
 
 ```mermaid
 flowchart LR
-    POSTTRAN["<b>POSTTRAN</b><br/>CBTRN01C + CBTRN02C<br/>Validate & post<br/>daily transactions"] --> INTCALC["<b>INTCALC</b><br/>CBACT04C<br/>Calculate interest<br/>& update balances"]
+    POSTTRAN["<b>POSTTRAN</b><br/>CBTRN02C<br/>Validate & post<br/>daily transactions"] --> INTCALC["<b>INTCALC</b><br/>CBACT04C<br/>Calculate interest<br/>& update balances"]
     INTCALC --> COMBTRAN["<b>COMBTRAN</b><br/>DFSORT merge<br/>Combine transaction<br/>files"]
     COMBTRAN --> CREASTMT["<b>CREASTMT</b><br/>CBSTM03A + CBSTM03B<br/>Generate statements<br/>(text + HTML)"]
     COMBTRAN --> TRANREPT["<b>TRANREPT</b><br/>CBTRN03C<br/>Generate transaction<br/>detail report"]
@@ -115,7 +114,7 @@ flowchart LR
 
 **Pipeline stages:**
 
-1. **POSTTRAN** — CBTRN01C opens and validates daily transaction records from DALYTRAN. CBTRN02C performs a 4-stage validation cascade (cross-reference lookup, account verification, category-balance update, transaction posting) and writes rejects to DALYREJS.
+1. **POSTTRAN** — CBTRN02C performs a 4-stage validation cascade on daily transaction records from DALYTRAN (cross-reference lookup, account verification, category-balance update, transaction posting) and writes rejects to DALYREJS.
 2. **INTCALC** — CBACT04C reads each account via cross-reference, looks up the applicable interest rate from DISCGRP, calculates interest, updates the account balance, and writes interest-charge transaction records.
 3. **COMBTRAN** — A DFSORT utility job (no COBOL program) merges the posted transaction file with newly generated interest transactions.
 4. **CREASTMT** — CBSTM03A reads transactions, cross-references, customers, and accounts (via subroutine CBSTM03B), then generates customer statements in both plain-text and HTML formats.

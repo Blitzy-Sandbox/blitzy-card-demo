@@ -19,6 +19,39 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ******************************************************************
+      *
+      * CBTRN02C - Transaction Posting Engine (Batch)
+      *
+      * Reads daily transactions from DALYTRAN sequentially and
+      * performs a multi-stage validation cascade before posting.
+      * Validation stages:
+      *   1. Cross-reference lookup (card number -> account)
+      *   2. Account verification (account record exists)
+      *   3. Credit limit check (balance + amount <= limit)
+      *   4. Expiration date check (account not expired)
+      * Valid transactions are posted to TRANSACT, their amounts
+      * are accumulated in TCATBAL category-balance records, and
+      * account balances are updated via REWRITE. Rejected
+      * transactions are written to DALYREJS with a reason code.
+      * Sets RETURN-CODE = 4 if any rejects occurred.
+      *
+      * Invoked by: POSTTRAN.jcl (EXEC PGM=CBTRN02C)
+      *
+      * Files accessed:
+      *   DALYTRAN  - Daily transaction staging (sequential input)
+      *   TRANSACT  - Transaction master (sequential output)
+      *   XREFFILE  - Card cross-reference (KSDS, random read)
+      *   DALYREJS  - Daily rejects (sequential output)
+      *   ACCTFILE  - Account master (KSDS, I-O for REWRITE)
+      *   TCATBALF  - Category balance (KSDS, I-O for WRITE
+      *               and REWRITE)
+      *
+      * Copybooks: CVTRA06Y (daily transaction record),
+      *            CVTRA05Y (transaction record),
+      *            CVACT03Y (cross-reference record),
+      *            CVACT01Y (account record),
+      *            CVTRA01Y (category-balance record)
+      *
        IDENTIFICATION DIVISION.                                                 
        PROGRAM-ID.    CBTRN02C.                                                 
        AUTHOR.        AWS.                                                      

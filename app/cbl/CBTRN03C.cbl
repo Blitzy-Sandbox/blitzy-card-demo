@@ -19,6 +19,36 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ******************************************************************
+      *
+      * CBTRN03C - Transaction Detail Report (Batch)
+      *
+      * Reads the transaction master file (TRANFILE) sequentially
+      * and produces a paginated detail report filtered by a
+      * date range read from a parameter file (DATEPARM).
+      * Transactions outside the date range are skipped.
+      * For each transaction, looks up the card cross-reference,
+      * transaction type description, and transaction category
+      * description. The report includes 3-level totals:
+      *   - Page totals (every WS-PAGE-SIZE lines)
+      *   - Account totals (on card number change)
+      *   - Grand total (at end of file)
+      *
+      * Invoked by: TRANREPT.jcl
+      *
+      * Files accessed:
+      *   TRANFILE  - Transaction master (sequential input)
+      *   XREFFILE  - Card cross-reference (KSDS, random read)
+      *   TRANTYPF  - Transaction type lookup (KSDS, random)
+      *   TRANCATF  - Transaction category lookup (KSDS, random)
+      *   REPTFILE  - Report output (sequential, 133-col)
+      *   DATEPARM  - Date range parameter file (sequential)
+      *
+      * Copybooks: CVTRA05Y (transaction record),
+      *            CVACT03Y (cross-reference record),
+      *            CVTRA03Y (transaction type record),
+      *            CVTRA04Y (transaction category record),
+      *            CVTRA07Y (report line formats)
+      *
        IDENTIFICATION DIVISION.                                                 
        PROGRAM-ID.    CBTRN03C.                                                 
        AUTHOR.        AWS.                                                      

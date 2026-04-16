@@ -18,6 +18,19 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ******************************************************************        
+      *================================================================*
+      * Program:     COACTVWC
+      * Transaction: CAVW
+      * BMS Map:     COACTVW / CACTVW
+      * Function:    Account view (read-only) screen. Performs a
+      *              3-entity join: reads ACCTDAT for account details,
+      *              CXACAIX (card cross-reference by account) for the
+      *              associated card, and CUSTDAT for customer name and
+      *              demographics. All data is display-only.
+      * Files:       ACCTDAT (READ), CXACAIX (READ), CUSTDAT (READ)
+      * Navigation:  PF3 returns to calling program or main menu.
+      *              Enter re-displays after input validation.
+      *================================================================*
        IDENTIFICATION DIVISION.                                                 
        PROGRAM-ID.                                                              
            COACTVWC.                                                            

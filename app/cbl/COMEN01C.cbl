@@ -19,6 +19,19 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      *================================================================*
+      * Program:     COMEN01C
+      * Transaction: CM00
+      * BMS Map:     COMEN01 / COMEN1A
+      * Function:    Main menu controller for the CardDemo application.
+      *              Displays a numbered menu of up to 10 functional
+      *              options. Validates the user selection, enforces
+      *              admin-only restrictions, and transfers control to
+      *              the chosen program via EXEC CICS XCTL.
+      * Files:       None (menu metadata from COMEN02Y copybook)
+      * Navigation:  PF3 returns to sign-on (COSGN00C).
+      *              Enter on valid option XCTLs to target program.
+      *================================================================*
        IDENTIFICATION DIVISION.
        PROGRAM-ID. COMEN01C.
        AUTHOR.     AWS.
@@ -47,17 +60,26 @@
          05 WS-IDX                     PIC S9(04) COMP VALUE ZEROS.
          05 WS-MENU-OPT-TXT            PIC X(40) VALUE SPACES.
 
+      * COMMAREA structure for inter-program communication
        COPY COCOM01Y.
+      * Main menu option table (10 entries: name, program, type)
        COPY COMEN02Y.
 
+      * BMS symbolic map for main menu screen (COMEN1A)
        COPY COMEN01.
 
+      * Application title and banner text
        COPY COTTL01Y.
+      * Date/time working storage fields
        COPY CSDAT01Y.
+      * Common user message definitions
        COPY CSMSG01Y.
+      * User security record layout (80-byte USRSEC)
        COPY CSUSR01Y.
 
+      * CICS attention identifier constants (ENTER, PF keys)
        COPY DFHAID.
+      * BMS attribute constants (colors, highlights)
        COPY DFHBMSCA.
 
       *----------------------------------------------------------------*
@@ -72,6 +94,9 @@
       *                       PROCEDURE DIVISION
       *----------------------------------------------------------------*
        PROCEDURE DIVISION.
+      * Main entry point. If no COMMAREA (EIBCALEN=0), redirect
+      * to sign-on. On first entry, send menu screen. On re-entry,
+      * receive input and dispatch based on AID key.
        MAIN-PARA.
 
            SET ERR-FLG-OFF TO TRUE
@@ -104,6 +129,8 @@
                END-IF
            END-IF
 
+      * Return to CICS with pseudo-conversational wait;
+      * re-invoke under transaction CM00 on next terminal input
            EXEC CICS RETURN
                      TRANSID (WS-TRANID)
                      COMMAREA (CARDDEMO-COMMAREA)
@@ -112,6 +139,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-ENTER-KEY
       *----------------------------------------------------------------*
+      * Validate the menu option entered by the user. Trim
+      * trailing spaces, convert to numeric, enforce range check
+      * and admin-only restrictions, then XCTL to target program.
        PROCESS-ENTER-KEY.
 
            PERFORM VARYING WS-IDX
@@ -149,6 +179,7 @@
       *            MOVE WS-USER-ID   TO CDEMO-USER-ID
       *            MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE
                    MOVE ZEROS        TO CDEMO-PGM-CONTEXT
+      * Transfer control to the selected menu option program
                    EXEC CICS
                        XCTL PROGRAM(CDEMO-MENU-OPT-PGMNAME(WS-OPTION))
                        COMMAREA(CARDDEMO-COMMAREA)
@@ -167,6 +198,8 @@
       *----------------------------------------------------------------*
       *                      RETURN-TO-SIGNON-SCREEN
       *----------------------------------------------------------------*
+      * Transfer control to the sign-on screen (COSGN00C)
+      * via EXEC CICS XCTL.
        RETURN-TO-SIGNON-SCREEN.
 
            IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES
@@ -179,6 +212,8 @@
       *----------------------------------------------------------------*
       *                      SEND-MENU-SCREEN
       *----------------------------------------------------------------*
+      * Populate header fields and menu options, then send
+      * BMS map COMEN1A to the terminal with ERASE.
        SEND-MENU-SCREEN.
 
            PERFORM POPULATE-HEADER-INFO
@@ -196,6 +231,8 @@
       *----------------------------------------------------------------*
       *                      RECEIVE-MENU-SCREEN
       *----------------------------------------------------------------*
+      * Receive user input from BMS map COMEN1A into the
+      * symbolic input area COMEN1AI.
        RECEIVE-MENU-SCREEN.
 
            EXEC CICS RECEIVE
@@ -209,6 +246,8 @@
       *----------------------------------------------------------------*
       *                      POPULATE-HEADER-INFO
       *----------------------------------------------------------------*
+      * Fill screen header fields: application titles, transaction
+      * name, program name, current date (MM/DD/YY), and time.
        POPULATE-HEADER-INFO.
 
            MOVE FUNCTION CURRENT-DATE  TO WS-CURDATE-DATA
@@ -233,6 +272,9 @@
       *----------------------------------------------------------------*
       *                      BUILD-MENU-OPTIONS
       *----------------------------------------------------------------*
+      * Iterate through the menu option table (COMEN02Y) and
+      * format numbered option lines for display. Supports up
+      * to 12 menu lines via EVALUATE dispatch.
        BUILD-MENU-OPTIONS.
 
            PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL

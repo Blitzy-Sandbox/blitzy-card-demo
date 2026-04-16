@@ -19,6 +19,36 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ******************************************************************
+      *
+      * CBTRN01C - Daily Transaction Driver (Batch)
+      *
+      * Reads the daily transaction file (DALYTRAN) sequentially
+      * and validates each transaction by looking up the card
+      * number in the cross-reference file (XREFFILE). If the
+      * card is found, reads the associated account record from
+      * ACCTFILE to confirm the account exists. Transactions
+      * with unverifiable card numbers are skipped with a
+      * diagnostic DISPLAY message.
+      *
+      * Files accessed:
+      *   DALYTRAN  - Daily transaction staging (sequential input)
+      *   CUSTFILE  - Customer master (KSDS, random read)
+      *   XREFFILE  - Card cross-reference (KSDS, random read
+      *               by primary key FD-XREF-CARD-NUM)
+      *   CARDFILE  - Card master (KSDS, random read)
+      *   ACCTFILE  - Account master (KSDS, random read)
+      *   TRANSACT  - Transaction master (sequential input)
+      *
+      * Note: This program is not invoked by any JCL job in the
+      * repository. It serves as a standalone validation utility.
+      *
+      * Copybooks: CVTRA06Y (daily transaction record),
+      *            CVCUS01Y (customer record),
+      *            CVACT03Y (cross-reference record),
+      *            CVACT02Y (card record),
+      *            CVACT01Y (account record),
+      *            CVTRA05Y (transaction record)
+      *
        IDENTIFICATION DIVISION.
        PROGRAM-ID.    CBTRN01C.
        AUTHOR.        AWS.
@@ -96,36 +126,43 @@
        WORKING-STORAGE SECTION.
 
       *****************************************************************
+      * Daily transaction staging record layout (350 bytes)
        COPY CVTRA06Y.
        01  DALYTRAN-STATUS.
            05  DALYTRAN-STAT1      PIC X.
            05  DALYTRAN-STAT2      PIC X.
 
+      * Customer master record layout (500 bytes)
        COPY CVCUS01Y.
        01  CUSTFILE-STATUS.
            05  CUSTFILE-STAT1      PIC X.
            05  CUSTFILE-STAT2      PIC X.
 
+      * Card-to-account cross-reference record layout
        COPY CVACT03Y.
        01  XREFFILE-STATUS.
            05  XREFFILE-STAT1      PIC X.
            05  XREFFILE-STAT2      PIC X.
 
+      * Card master record layout (150 bytes)
        COPY CVACT02Y.
        01  CARDFILE-STATUS.
            05  CARDFILE-STAT1      PIC X.
            05  CARDFILE-STAT2      PIC X.
 
+      * Account master record layout (300 bytes)
        COPY CVACT01Y.
        01  ACCTFILE-STATUS.
            05  ACCTFILE-STAT1      PIC X.
            05  ACCTFILE-STAT2      PIC X.
 
+      * Transaction record layout (350 bytes)
        COPY CVTRA05Y.
        01  TRANFILE-STATUS.
            05  TRANFILE-STAT1      PIC X.
            05  TRANFILE-STAT2      PIC X.
 
+      * Generic I/O status area for diagnostics display
        01  IO-STATUS.
            05  IO-STAT1            PIC X.
            05  IO-STAT2            PIC X.
@@ -139,6 +176,7 @@
            05  IO-STATUS-0401      PIC 9   VALUE 0.
            05  IO-STATUS-0403      PIC 999 VALUE 0.
 
+      * Application result code: 0=OK, 16=EOF, other=error
        01  APPL-RESULT             PIC S9(9)   COMP.
            88  APPL-AOK            VALUE 0.
            88  APPL-EOF            VALUE 16.
@@ -146,11 +184,18 @@
        01  END-OF-DAILY-TRANS-FILE             PIC X(01)    VALUE 'N'.
        01  ABCODE                  PIC S9(9) BINARY.
        01  TIMING                  PIC S9(9) BINARY.
+      * Status flags for cross-reference and account lookups
        01  WS-MISC-VARIABLES.
            05 WS-XREF-READ-STATUS  PIC 9(04).
            05 WS-ACCT-READ-STATUS  PIC 9(04).
 
       *****************************************************************
+      *---------------------------------------------------------------*
+      * Main control: opens 6 VSAM files, reads DALYTRAN
+      * sequentially, validates each transaction card number
+      * via cross-reference lookup, then reads the account.
+      * Unverifiable cards are skipped with a DISPLAY message.
+      *---------------------------------------------------------------*
        PROCEDURE DIVISION.
        MAIN-PARA.
            DISPLAY 'START OF EXECUTION OF PROGRAM CBTRN01C'.
@@ -199,6 +244,8 @@
       *****************************************************************
       * READS FILE                                                    *
       *****************************************************************
+      * Read the next daily transaction record sequentially.
+      * Sets END-OF-DAILY-TRANS-FILE = 'Y' on status '10'.
        1000-DALYTRAN-GET-NEXT.
            READ DALYTRAN-FILE INTO DALYTRAN-RECORD.
            IF  DALYTRAN-STATUS = '00'
@@ -224,6 +271,9 @@
            END-IF
            EXIT.
       *---------------------------------------------------------------*
+      * Look up the card number in the cross-reference file.
+      * Uses primary key FD-XREF-CARD-NUM for keyed READ.
+      * Sets WS-XREF-READ-STATUS = 4 on INVALID KEY.
        2000-LOOKUP-XREF.
            MOVE XREF-CARD-NUM TO FD-XREF-CARD-NUM
            READ XREF-FILE  RECORD INTO CARD-XREF-RECORD
@@ -238,6 +288,8 @@
                   DISPLAY 'CUSTOMER ID: ' XREF-CUST-ID
            END-READ.
       *---------------------------------------------------------------*
+      * Read the account master record by FD-ACCT-ID.
+      * Sets WS-ACCT-READ-STATUS = 4 on INVALID KEY.
        3000-READ-ACCOUNT.
            MOVE ACCT-ID TO FD-ACCT-ID
            READ ACCOUNT-FILE RECORD INTO ACCOUNT-RECORD
@@ -249,6 +301,7 @@
                   DISPLAY 'SUCCESSFUL READ OF ACCOUNT FILE'
            END-READ.
       *---------------------------------------------------------------*
+      * Open the daily transaction staging file for input
        0000-DALYTRAN-OPEN.
            MOVE 8 TO APPL-RESULT.
            OPEN INPUT DALYTRAN-FILE
@@ -268,6 +321,7 @@
            EXIT.
 
       *---------------------------------------------------------------*
+      * Open the customer master file for input
        0100-CUSTFILE-OPEN.
            MOVE 8 TO APPL-RESULT.
            OPEN INPUT CUSTOMER-FILE
@@ -286,6 +340,7 @@
            END-IF
            EXIT.
       *---------------------------------------------------------------*
+      * Open the card cross-reference file for input
        0200-XREFFILE-OPEN.
            MOVE 8 TO APPL-RESULT.
            OPEN INPUT XREF-FILE
@@ -304,6 +359,7 @@
            END-IF
            EXIT.
       *---------------------------------------------------------------*
+      * Open the card master file for input
        0300-CARDFILE-OPEN.
            MOVE 8 TO APPL-RESULT.
            OPEN INPUT CARD-FILE
@@ -322,6 +378,7 @@
            END-IF
            EXIT.
       *---------------------------------------------------------------*
+      * Open the account master file for input
        0400-ACCTFILE-OPEN.
            MOVE 8 TO APPL-RESULT.
            OPEN INPUT ACCOUNT-FILE
@@ -340,6 +397,7 @@
            END-IF
            EXIT.
       *---------------------------------------------------------------*
+      * Open the transaction master file for input
        0500-TRANFILE-OPEN.
            MOVE 8 TO APPL-RESULT.
            OPEN INPUT TRANSACT-FILE
@@ -358,6 +416,7 @@
            END-IF
            EXIT.
       *---------------------------------------------------------------*
+      * Close the daily transaction staging file
        9000-DALYTRAN-CLOSE.
            ADD 8 TO ZERO GIVING APPL-RESULT.
            CLOSE DALYTRAN-FILE
@@ -376,6 +435,7 @@
            END-IF
            EXIT.
       *---------------------------------------------------------------*
+      * Close the customer master file
        9100-CUSTFILE-CLOSE.
            ADD 8 TO ZERO GIVING APPL-RESULT.
            CLOSE CUSTOMER-FILE
@@ -394,6 +454,7 @@
            END-IF
            EXIT.
       *---------------------------------------------------------------*
+      * Close the card cross-reference file
        9200-XREFFILE-CLOSE.
            ADD 8 TO ZERO GIVING APPL-RESULT.
            CLOSE XREF-FILE
@@ -412,6 +473,7 @@
            END-IF
            EXIT.
       *---------------------------------------------------------------*
+      * Close the card master file
        9300-CARDFILE-CLOSE.
            ADD 8 TO ZERO GIVING APPL-RESULT.
            CLOSE CARD-FILE
@@ -430,6 +492,7 @@
            END-IF
            EXIT.
       *---------------------------------------------------------------*
+      * Close the account master file
        9400-ACCTFILE-CLOSE.
            ADD 8 TO ZERO GIVING APPL-RESULT.
            CLOSE ACCOUNT-FILE
@@ -448,6 +511,7 @@
            END-IF
            EXIT.
       *---------------------------------------------------------------*
+      * Close the transaction master file
        9500-TRANFILE-CLOSE.
            ADD 8 TO ZERO GIVING APPL-RESULT.
            CLOSE TRANSACT-FILE
@@ -466,6 +530,7 @@
            END-IF
            EXIT.
 
+      * Abnormal termination via LE CEE3ABD (abend code 999)
        Z-ABEND-PROGRAM.
            DISPLAY 'ABENDING PROGRAM'
            MOVE 0 TO TIMING
@@ -473,6 +538,7 @@
            CALL 'CEE3ABD'.
 
       *****************************************************************
+      * Format and display file status for diagnostics
        Z-DISPLAY-IO-STATUS.
            IF  IO-STATUS NOT NUMERIC
            OR  IO-STAT1 = '9'

@@ -19,6 +19,21 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      *================================================================*
+      * Program:     COUSR00C
+      * Transaction: CU00
+      * BMS Map:     COUSR00 / COUSR0A
+      * Function:    User list browse screen. Reads the USRSEC VSAM
+      *              KSDS using STARTBR/READNEXT/READPREV/ENDBR to
+      *              display a paginated list of user records (7 rows
+      *              per page). Supports forward (PF8) and backward
+      *              (PF7) paging. Selecting a user passes the ID via
+      *              COMMAREA to COUSR02C (update) or COUSR03C (delete).
+      * Files:       USRSEC (STARTBR, READNEXT, READPREV, ENDBR)
+      * Navigation:  PF3 returns to admin menu (COADM01C).
+      *              PF7 pages backward. PF8 pages forward.
+      *              Enter on selected user routes to update/delete.
+      *================================================================*
        IDENTIFICATION DIVISION.
        PROGRAM-ID. COUSR00C.
        AUTHOR.     AWS.
@@ -63,6 +78,7 @@
            05 FILLER                     PIC X(02).
            05 USER-TYPE                  PIC X(08).
 
+      * COMMAREA structure for inter-program communication
        COPY COCOM01Y.
           05 CDEMO-CU00-INFO.
              10 CDEMO-CU00-USRID-FIRST     PIC X(08).
@@ -73,14 +89,21 @@
                 88 NEXT-PAGE-NO                      VALUE 'N'.
              10 CDEMO-CU00-USR-SEL-FLG     PIC X(01).
              10 CDEMO-CU00-USR-SELECTED    PIC X(08).
+      * BMS symbolic map for user list screen (COUSR0A)
        COPY COUSR00.
 
+      * Application title and banner text
        COPY COTTL01Y.
+      * Date/time working storage fields
        COPY CSDAT01Y.
+      * Common user message definitions
        COPY CSMSG01Y.
+      * User security record layout (80-byte USRSEC)
        COPY CSUSR01Y.
 
+      * CICS attention identifier constants (ENTER, PF keys)
        COPY DFHAID.
+      * BMS attribute constants (colors, highlights)
        COPY DFHBMSCA.
 
       *----------------------------------------------------------------*
@@ -95,6 +118,9 @@
       *                       PROCEDURE DIVISION
       *----------------------------------------------------------------*
        PROCEDURE DIVISION.
+      * Main entry point. On first entry, perform forward page.
+      * On re-entry, dispatch AID: Enter=select user, PF3=back,
+      * PF7=page backward, PF8=page forward.
        MAIN-PARA.
 
            SET ERR-FLG-OFF TO TRUE
@@ -138,6 +164,7 @@
                END-IF
            END-IF
 
+      * Return to CICS with pseudo-conversational wait
            EXEC CICS RETURN
                      TRANSID (WS-TRANID)
                      COMMAREA (CARDDEMO-COMMAREA)
@@ -146,6 +173,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-ENTER-KEY
       *----------------------------------------------------------------*
+      * Process user selection from the list. Validate the
+      * selection field, set the target program (COUSR02C for
+      * update or COUSR03C for delete), and XCTL to it.
        PROCESS-ENTER-KEY.
 
            EVALUATE TRUE
@@ -234,6 +264,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-PF7-KEY
       *----------------------------------------------------------------*
+      * Handle PF7 (page backward). Restore the first user ID
+      * on the current page from COMMAREA and invoke backward
+      * paging logic.
        PROCESS-PF7-KEY.
 
            IF CDEMO-CU00-USRID-FIRST = SPACES OR LOW-VALUES
@@ -257,6 +290,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-PF8-KEY
       *----------------------------------------------------------------*
+      * Handle PF8 (page forward). Restore the last user ID
+      * on the current page from COMMAREA and invoke forward
+      * paging logic.
        PROCESS-PF8-KEY.
 
            IF CDEMO-CU00-USRID-LAST = SPACES OR LOW-VALUES
@@ -279,6 +315,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-PAGE-FORWARD
       *----------------------------------------------------------------*
+      * Browse USRSEC forward from the current position.
+      * Read up to 7 records via STARTBR/READNEXT, populate
+      * screen rows, track first/last IDs for paging state.
        PROCESS-PAGE-FORWARD.
 
            PERFORM STARTBR-USER-SEC-FILE
@@ -333,6 +372,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-PAGE-BACKWARD
       *----------------------------------------------------------------*
+      * Browse USRSEC backward from the current position.
+      * Uses STARTBR/READPREV to read up to 7 records in
+      * reverse, then re-reads forward to display in order.
        PROCESS-PAGE-BACKWARD.
 
            PERFORM STARTBR-USER-SEC-FILE
@@ -381,6 +423,9 @@
       *----------------------------------------------------------------*
       *                      POPULATE-USER-DATA
       *----------------------------------------------------------------*
+      * Map USRSEC record fields (user ID, first name, last
+      * name, type) into the appropriate screen row based on
+      * the current row index.
        POPULATE-USER-DATA.
 
            EVALUATE WS-IDX
@@ -443,6 +488,8 @@
       *----------------------------------------------------------------*
       *                      INITIALIZE-USER-DATA
       *----------------------------------------------------------------*
+      * Clear a single screen row (selection, user ID, first
+      * name, last name, type) at the current row index.
        INITIALIZE-USER-DATA.
 
            EVALUATE WS-IDX
@@ -503,6 +550,8 @@
       *----------------------------------------------------------------*
       *                      RETURN-TO-PREV-SCREEN
       *----------------------------------------------------------------*
+      * Transfer control to the previous screen via EXEC CICS
+      * XCTL, passing the COMMAREA.
        RETURN-TO-PREV-SCREEN.
 
            IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES
@@ -519,6 +568,8 @@
       *----------------------------------------------------------------*
       *                      SEND-USRLST-SCREEN
       *----------------------------------------------------------------*
+      * Populate header and send BMS map COUSR0A with ERASE
+      * and CURSOR positioning to the terminal.
        SEND-USRLST-SCREEN.
 
            PERFORM POPULATE-HEADER-INFO
@@ -546,6 +597,8 @@
       *----------------------------------------------------------------*
       *                      RECEIVE-USRLST-SCREEN
       *----------------------------------------------------------------*
+      * Receive user input from BMS map COUSR0A into the
+      * symbolic input area COUSR0AI.
        RECEIVE-USRLST-SCREEN.
 
            EXEC CICS RECEIVE
@@ -559,6 +612,8 @@
       *----------------------------------------------------------------*
       *                      POPULATE-HEADER-INFO
       *----------------------------------------------------------------*
+      * Fill screen header: application titles, transaction
+      * name, program name, current date and time.
        POPULATE-HEADER-INFO.
 
            MOVE FUNCTION CURRENT-DATE  TO WS-CURDATE-DATA
@@ -583,6 +638,8 @@
       *----------------------------------------------------------------*
       *                      STARTBR-USER-SEC-FILE
       *----------------------------------------------------------------*
+      * Start a browse on USRSEC VSAM KSDS from the given
+      * key position. Handles NORMAL, NOTFND, and OTHER.
        STARTBR-USER-SEC-FILE.
 
            EXEC CICS STARTBR
@@ -616,6 +673,8 @@
       *----------------------------------------------------------------*
       *                      READNEXT-USER-SEC-FILE
       *----------------------------------------------------------------*
+      * Read the next sequential record from the USRSEC
+      * browse. Handles NORMAL, ENDFILE, and OTHER.
        READNEXT-USER-SEC-FILE.
 
            EXEC CICS READNEXT
@@ -650,6 +709,8 @@
       *----------------------------------------------------------------*
       *                      READPREV-USER-SEC-FILE
       *----------------------------------------------------------------*
+      * Read the previous record from the USRSEC browse.
+      * Handles NORMAL, ENDFILE, and OTHER.
        READPREV-USER-SEC-FILE.
 
            EXEC CICS READPREV
@@ -684,6 +745,7 @@
       *----------------------------------------------------------------*
       *                      ENDBR-USER-SEC-FILE
       *----------------------------------------------------------------*
+      * End the USRSEC file browse session.
        ENDBR-USER-SEC-FILE.
 
            EXEC CICS ENDBR

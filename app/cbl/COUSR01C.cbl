@@ -19,6 +19,18 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      *================================================================*
+      * Program:     COUSR01C
+      * Transaction: CU01
+      * BMS Map:     COUSR01 / COUSR1A
+      * Function:    User add screen. Collects first name, last name,
+      *              user ID, password, and user type from admin. On
+      *              Enter validates all fields are non-empty, then
+      *              writes a new record to the USRSEC VSAM KSDS.
+      *              Handles duplicate-key rejection. PF4 clears form.
+      * Files:       USRSEC (WRITE — add new user security record)
+      * Navigation:  PF3 returns to admin menu (COADM01C).
+      *================================================================*
        IDENTIFICATION DIVISION.
        PROGRAM-ID. COUSR01C.
        AUTHOR.     AWS.
@@ -43,16 +55,24 @@
          05 WS-RESP-CD                 PIC S9(09) COMP VALUE ZEROS.
          05 WS-REAS-CD                 PIC S9(09) COMP VALUE ZEROS.
 
+      * COMMAREA structure for inter-program communication
        COPY COCOM01Y.
 
+      * BMS symbolic map for user add screen (COUSR1A)
        COPY COUSR01.
 
+      * Application title and banner text
        COPY COTTL01Y.
+      * Date/time working storage fields
        COPY CSDAT01Y.
+      * Common user message definitions
        COPY CSMSG01Y.
+      * User security record layout (80-byte USRSEC)
        COPY CSUSR01Y.
 
+      * CICS attention identifier constants (ENTER, PF keys)
        COPY DFHAID.
+      * BMS attribute constants (colors, highlights)
        COPY DFHBMSCA.
       *COPY DFHATTR.
 
@@ -68,6 +88,9 @@
       *                      PROCEDURE DIVISION
       *----------------------------------------------------------------*
        PROCEDURE DIVISION.
+      * Main entry point. If no COMMAREA, redirect to sign-on.
+      * On first entry, send blank add form. On re-entry, receive
+      * input and dispatch based on AID key (Enter, PF3, PF4).
        MAIN-PARA.
 
            SET ERR-FLG-OFF TO TRUE
@@ -104,6 +127,7 @@
                END-IF
            END-IF
 
+      * Return to CICS with pseudo-conversational wait
            EXEC CICS RETURN
                      TRANSID (WS-TRANID)
                      COMMAREA (CARDDEMO-COMMAREA)
@@ -112,6 +136,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-ENTER-KEY
       *----------------------------------------------------------------*
+      * Validate all required fields (first name, last name,
+      * user ID, password, user type). If all non-empty, populate
+      * the SEC-USER-DATA record and write to USRSEC file.
        PROCESS-ENTER-KEY.
 
            EVALUATE TRUE
@@ -162,6 +189,8 @@
       *----------------------------------------------------------------*
       *                      RETURN-TO-PREV-SCREEN
       *----------------------------------------------------------------*
+      * Transfer control to the previous screen (admin menu)
+      * via EXEC CICS XCTL, passing the COMMAREA.
        RETURN-TO-PREV-SCREEN.
 
            IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES
@@ -181,6 +210,8 @@
       *----------------------------------------------------------------*
       *                      SEND-USRADD-SCREEN
       *----------------------------------------------------------------*
+      * Populate header and send BMS map COUSR1A with ERASE
+      * and CURSOR positioning to the terminal.
        SEND-USRADD-SCREEN.
 
            PERFORM POPULATE-HEADER-INFO
@@ -198,6 +229,8 @@
       *----------------------------------------------------------------*
       *                      RECEIVE-USRADD-SCREEN
       *----------------------------------------------------------------*
+      * Receive user input from BMS map COUSR1A into the
+      * symbolic input area COUSR1AI.
        RECEIVE-USRADD-SCREEN.
 
            EXEC CICS RECEIVE
@@ -211,6 +244,8 @@
       *----------------------------------------------------------------*
       *                      POPULATE-HEADER-INFO
       *----------------------------------------------------------------*
+      * Fill screen header: application titles, transaction
+      * name, program name, current date and time.
        POPULATE-HEADER-INFO.
 
            MOVE FUNCTION CURRENT-DATE  TO WS-CURDATE-DATA
@@ -235,6 +270,9 @@
       *----------------------------------------------------------------*
       *                      WRITE-USER-SEC-FILE
       *----------------------------------------------------------------*
+      * Write new user record to USRSEC VSAM KSDS via EXEC
+      * CICS WRITE. Handles NORMAL (success), DUPKEY/DUPREC
+      * (user already exists), and OTHER (unexpected error).
        WRITE-USER-SEC-FILE.
 
            EXEC CICS WRITE
@@ -276,6 +314,8 @@
       *----------------------------------------------------------------*
       *                      CLEAR-CURRENT-SCREEN
       *----------------------------------------------------------------*
+      * Reset all input fields to spaces and re-send the
+      * blank add form to the terminal.
        CLEAR-CURRENT-SCREEN.
 
            PERFORM INITIALIZE-ALL-FIELDS.
@@ -284,6 +324,8 @@
       *----------------------------------------------------------------*
       *                      INITIALIZE-ALL-FIELDS
       *----------------------------------------------------------------*
+      * Clear all symbolic map input fields and message area
+      * to spaces, reset cursor to first name field.
        INITIALIZE-ALL-FIELDS.
 
            MOVE -1              TO FNAMEL OF COUSR1AI

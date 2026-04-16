@@ -19,6 +19,12 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ******************************************************************
+      * Batch diagnostic utility: sequentially reads all records from
+      * the CUSTDAT VSAM KSDS (customer master file) and displays
+      * each record to SYSOUT. Uses CVCUS01Y copybook for the
+      * 500-byte CUSTOMER-RECORD layout. Invoked by JCL job
+      * READCUST.jcl. Abends via CEE3ABD on any I/O error.
+      ******************************************************************
        IDENTIFICATION DIVISION.
        PROGRAM-ID.    CBCUS01C.
        AUTHOR.        AWS.
@@ -42,7 +48,9 @@
        WORKING-STORAGE SECTION.
 
       *****************************************************************
+      * CUSTOMER-RECORD layout: see CVCUS01Y.cpy for fields
        COPY CVCUS01Y.
+      * Two-byte FILE STATUS: '00'=OK, '10'=EOF, other=error
        01  CUSTFILE-STATUS.
            05  CUSTFILE-STAT1      PIC X.
            05  CUSTFILE-STAT2      PIC X.
@@ -58,15 +66,20 @@
            05  IO-STATUS-0401      PIC 9   VALUE 0.
            05  IO-STATUS-0403      PIC 999 VALUE 0.
 
+      * Return code: 0=OK (APPL-AOK), 16=EOF (APPL-EOF)
        01  APPL-RESULT             PIC S9(9)   COMP.
            88  APPL-AOK            VALUE 0.
            88  APPL-EOF            VALUE 16.
 
+      * EOF sentinel flag: 'Y' terminates main read loop
        01  END-OF-FILE             PIC X(01)    VALUE 'N'.
+      * CEE3ABD parameters: timing=0 (immediate), abcode=999
        01  ABCODE                  PIC S9(9) BINARY.
        01  TIMING                  PIC S9(9) BINARY. 
 
       *****************************************************************
+      * PROCEDURE DIVISION: Opens customer file, reads all
+      * records sequentially, displays each, then closes.
        PROCEDURE DIVISION.
            DISPLAY 'START OF EXECUTION OF PROGRAM CBCUS01C'.
            PERFORM 0000-CUSTFILE-OPEN.
@@ -89,6 +102,8 @@
       *****************************************************************
       * I/O ROUTINES TO ACCESS A KSDS, VSAM DATA SET...               *
       *****************************************************************
+      * Reads next sequential record from CUSTFILE into
+      * CUSTOMER-RECORD (CVCUS01Y). Sets APPL-RESULT.
        1000-CUSTFILE-GET-NEXT.
            READ CUSTFILE-FILE INTO CUSTOMER-RECORD.
            IF  CUSTFILE-STATUS = '00'
@@ -115,6 +130,7 @@
            END-IF
            EXIT.
       *---------------------------------------------------------------*
+      * Opens CUSTFILE for sequential input. Abends on failure.
        0000-CUSTFILE-OPEN.
            MOVE 8 TO APPL-RESULT.
            OPEN INPUT CUSTFILE-FILE
@@ -133,6 +149,7 @@
            END-IF
            EXIT.
       *---------------------------------------------------------------*
+      * Closes CUSTFILE. Abends on close failure.
        9000-CUSTFILE-CLOSE.
            ADD 8 TO ZERO GIVING APPL-RESULT.
            CLOSE CUSTFILE-FILE

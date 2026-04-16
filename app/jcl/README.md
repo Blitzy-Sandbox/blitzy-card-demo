@@ -347,7 +347,7 @@ The following issues exist in the JCL source files as-is. Per the documentation 
 
 | Related Module | Link | Relationship |
 |:---------------|:-----|:-------------|
-| COBOL Programs | [app/cbl/README.md](../cbl/README.md) *(pending creation)* | Batch programs (CBTRN02C, CBACT04C, CBTRN03C, CBSTM03A, CBACT01C–03C, CBCUS01C) executed by these JCL jobs |
+| COBOL Programs | [app/cbl/README.md](../cbl/README.md) | Batch programs (CBTRN02C, CBACT04C, CBTRN03C, CBSTM03A, CBACT01C–03C, CBCUS01C) executed by these JCL jobs |
 | Copybooks | [app/cpy/README.md](../cpy/README.md) | Record layout definitions (CVACT01Y, CVACT02Y, CVACT03Y, CVCUS01Y, CVTRA01Y–06Y, CSUSR01Y) used by VSAM datasets |
 | Data Fixtures | [app/data/README.md](../data/README.md) | ASCII seed data files loaded into VSAM by provisioning jobs |
 | Application Overview | [app/README.md](../README.md) | System architecture context and module relationships |

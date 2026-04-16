@@ -20,6 +20,21 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      *================================================================*
+      * Program:     COBIL00C
+      * Transaction: CB00
+      * BMS Map:     COBIL00 / COBIL0A
+      * Function:    Bill payment screen. Accepts an account ID, reads
+      *              the account record to display current balance, and
+      *              on confirmation (Y): looks up card via CXACAIX,
+      *              generates next transaction ID (STARTBR/READPREV at
+      *              HIGH-VALUES), writes a bill-payment transaction to
+      *              TRANSACT, then updates ACCTDAT to reduce balance.
+      * Files:       ACCTDAT  (READ UPDATE, REWRITE — balance update)
+      *              CXACAIX  (READ — card number lookup via AIX)
+      *              TRANSACT (STARTBR, READPREV, ENDBR, WRITE)
+      * Navigation:  PF3 returns to caller. PF4 clears screen.
+      *================================================================*
        IDENTIFICATION DIVISION.
        PROGRAM-ID. COBIL00C.
        AUTHOR.     AWS.
@@ -60,6 +75,7 @@
          05 WS-CUR-DATE-X10            PIC X(10) VALUE SPACES.
          05 WS-CUR-TIME-X08            PIC X(08) VALUE SPACES.
 
+      * COMMAREA structure for inter-program communication
        COPY COCOM01Y.
           05 CDEMO-CB00-INFO.
              10 CDEMO-CB00-TRNID-FIRST     PIC X(16).
@@ -71,17 +87,26 @@
              10 CDEMO-CB00-TRN-SEL-FLG     PIC X(01).
              10 CDEMO-CB00-TRN-SELECTED    PIC X(16).
 
+      * BMS symbolic map for bill payment screen (COBIL0A)
        COPY COBIL00.
 
+      * Application title and banner text
        COPY COTTL01Y.
+      * Date/time working storage fields
        COPY CSDAT01Y.
+      * Common user message definitions
        COPY CSMSG01Y.
 
+      * 300-byte account record layout (balance, status)
        COPY CVACT01Y.
+      * 50-byte card cross-reference record (card-to-account)
        COPY CVACT03Y.
+      * 350-byte transaction record layout (TRAN-RECORD)
        COPY CVTRA05Y.
 
+      * CICS attention identifier constants (ENTER, PF keys)
        COPY DFHAID.
+      * BMS attribute constants (colors, highlights)
        COPY DFHBMSCA.
 
       *----------------------------------------------------------------*
@@ -96,6 +121,9 @@
       *                       PROCEDURE DIVISION
       *----------------------------------------------------------------*
        PROCEDURE DIVISION.
+      * Main entry point. If account ID was passed via COMMAREA,
+      * auto-populate and look up. AID dispatch: Enter=process
+      * payment, PF3=back, PF4=clear.
        MAIN-PARA.
 
            SET ERR-FLG-OFF     TO TRUE
@@ -143,6 +171,7 @@
                END-IF
            END-IF
 
+      * Return to CICS with pseudo-conversational wait
            EXEC CICS RETURN
                      TRANSID (WS-TRANID)
                      COMMAREA (CARDDEMO-COMMAREA)
@@ -151,6 +180,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-ENTER-KEY
       *----------------------------------------------------------------*
+      * Validate account ID, read account balance, check Y/N
+      * confirmation. On Y: look up card, generate tran ID,
+      * write bill-payment transaction, update account balance.
        PROCESS-ENTER-KEY.
 
            SET CONF-PAY-NO TO TRUE
@@ -246,6 +278,9 @@
       *----------------------------------------------------------------*
       *                      GET-CURRENT-TIMESTAMP
       *----------------------------------------------------------------*
+      * Obtain the current date and time via EXEC CICS ASKTIME
+      * and FORMATTIME. Format as YYYY-MM-DD HH:MM:SS.000000
+      * for transaction timestamp fields.
        GET-CURRENT-TIMESTAMP.
 
            EXEC CICS ASKTIME
@@ -270,6 +305,8 @@
       *----------------------------------------------------------------*
       *                      RETURN-TO-PREV-SCREEN
       *----------------------------------------------------------------*
+      * Transfer control to the previous screen via EXEC CICS
+      * XCTL, passing the COMMAREA.
        RETURN-TO-PREV-SCREEN.
 
            IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES
@@ -286,6 +323,8 @@
       *----------------------------------------------------------------*
       *                      SEND-BILLPAY-SCREEN
       *----------------------------------------------------------------*
+      * Populate header and send BMS map COBIL0A with ERASE
+      * and CURSOR positioning to the terminal.
        SEND-BILLPAY-SCREEN.
 
            PERFORM POPULATE-HEADER-INFO
@@ -303,6 +342,8 @@
       *----------------------------------------------------------------*
       *                      RECEIVE-BILLPAY-SCREEN
       *----------------------------------------------------------------*
+      * Receive user input from BMS map COBIL0A into the
+      * symbolic input area COBIL0AI.
        RECEIVE-BILLPAY-SCREEN.
 
            EXEC CICS RECEIVE
@@ -316,6 +357,8 @@
       *----------------------------------------------------------------*
       *                      POPULATE-HEADER-INFO
       *----------------------------------------------------------------*
+      * Fill screen header: application titles, transaction
+      * name, program name, current date and time.
        POPULATE-HEADER-INFO.
 
            MOVE FUNCTION CURRENT-DATE  TO WS-CURDATE-DATA
@@ -340,6 +383,9 @@
       *----------------------------------------------------------------*
       *                      READ-ACCTDAT-FILE
       *----------------------------------------------------------------*
+      * Read the account record from ACCTDAT VSAM KSDS with
+      * UPDATE intent for subsequent balance modification.
+      * Handles NORMAL, NOTFND, and OTHER conditions.
        READ-ACCTDAT-FILE.
 
            EXEC CICS READ
@@ -374,6 +420,8 @@
       *----------------------------------------------------------------*
       *                      UPDATE-ACCTDAT-FILE
       *----------------------------------------------------------------*
+      * REWRITE the account record to ACCTDAT after adjusting
+      * the current balance (ACCT-CURR-BAL minus payment amount).
        UPDATE-ACCTDAT-FILE.
 
            EXEC CICS REWRITE
@@ -405,6 +453,8 @@
       *----------------------------------------------------------------*
       *                      READ-CXACAIX-FILE
       *----------------------------------------------------------------*
+      * Read the card cross-reference alternate index (CXACAIX)
+      * to retrieve the card number for the account being paid.
        READ-CXACAIX-FILE.
 
            EXEC CICS READ
@@ -438,6 +488,8 @@
       *----------------------------------------------------------------*
       *                      STARTBR-TRANSACT-FILE
       *----------------------------------------------------------------*
+      * Start a browse on the TRANSACT file at HIGH-VALUES to
+      * position for next-ID generation (browse-to-end pattern).
        STARTBR-TRANSACT-FILE.
 
            EXEC CICS STARTBR
@@ -469,6 +521,8 @@
       *----------------------------------------------------------------*
       *                      READPREV-TRANSACT-FILE
       *----------------------------------------------------------------*
+      * Read the previous (last) record from the TRANSACT
+      * browse to determine the highest existing transaction ID.
        READPREV-TRANSACT-FILE.
 
            EXEC CICS READPREV
@@ -498,6 +552,7 @@
       *----------------------------------------------------------------*
       *                      ENDBR-TRANSACT-FILE
       *----------------------------------------------------------------*
+      * End the TRANSACT file browse session.
        ENDBR-TRANSACT-FILE.
 
            EXEC CICS ENDBR
@@ -507,6 +562,9 @@
       *----------------------------------------------------------------*
       *                      WRITE-TRANSACT-FILE
       *----------------------------------------------------------------*
+      * Write the new bill-payment transaction record to the
+      * TRANSACT VSAM KSDS. Handles NORMAL (success with ID
+      * display), DUPKEY/DUPREC, and OTHER errors.
        WRITE-TRANSACT-FILE.
 
            EXEC CICS WRITE
@@ -549,6 +607,7 @@
       *----------------------------------------------------------------*
       *                      CLEAR-CURRENT-SCREEN
       *----------------------------------------------------------------*
+      * Reset all screen fields and re-send the blank form.
        CLEAR-CURRENT-SCREEN.
 
            PERFORM INITIALIZE-ALL-FIELDS
@@ -557,6 +616,7 @@
       *----------------------------------------------------------------*
       *                      INITIALIZE-ALL-FIELDS
       *----------------------------------------------------------------*
+      * Clear all symbolic map input fields and message area.
        INITIALIZE-ALL-FIELDS.
 
            MOVE -1              TO ACTIDINL OF COBIL0AI

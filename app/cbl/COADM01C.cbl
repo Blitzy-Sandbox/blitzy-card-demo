@@ -19,6 +19,20 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      *================================================================*
+      * Program:     COADM01C
+      * Transaction: CA00
+      * BMS Map:     COADM01 / COADM1A
+      * Function:    Administration menu controller. Displays up to 10
+      *              admin-only options (user list, add, update,
+      *              delete).
+      *              No user-type restriction enforced here because only
+      *              admin users can reach this screen (enforced by
+      *              COMEN01C). Validates selection and XCTLs to target.
+      * Files:       None (menu metadata from COADM02Y copybook)
+      * Navigation:  PF3 returns to sign-on (COSGN00C).
+      *              Enter on valid option XCTLs to target program.
+      *================================================================*
        IDENTIFICATION DIVISION.
        PROGRAM-ID. COADM01C.
        AUTHOR.     AWS.
@@ -47,17 +61,26 @@
          05 WS-IDX                     PIC S9(04) COMP VALUE ZEROS.
          05 WS-ADMIN-OPT-TXT           PIC X(40) VALUE SPACES.
 
+      * COMMAREA structure for inter-program communication
        COPY COCOM01Y.
+      * Admin menu option table (4 entries: user CRUD programs)
        COPY COADM02Y.
 
+      * BMS symbolic map for admin menu screen (COADM1A)
        COPY COADM01.
 
+      * Application title and banner text
        COPY COTTL01Y.
+      * Date/time working storage fields
        COPY CSDAT01Y.
+      * Common user message definitions
        COPY CSMSG01Y.
+      * User security record layout (80-byte USRSEC)
        COPY CSUSR01Y.
 
+      * CICS attention identifier constants (ENTER, PF keys)
        COPY DFHAID.
+      * BMS attribute constants (colors, highlights)
        COPY DFHBMSCA.
 
       *----------------------------------------------------------------*
@@ -72,6 +95,9 @@
       *                       PROCEDURE DIVISION
       *----------------------------------------------------------------*
        PROCEDURE DIVISION.
+      * Main entry point. If no COMMAREA, redirect to sign-on.
+      * On first entry, send admin menu. On re-entry, receive
+      * input and dispatch based on AID key pressed.
        MAIN-PARA.
 
            SET ERR-FLG-OFF TO TRUE
@@ -104,6 +130,8 @@
                END-IF
            END-IF
 
+      * Return to CICS with pseudo-conversational wait;
+      * re-invoke under transaction CA00 on next terminal input
            EXEC CICS RETURN
                      TRANSID (WS-TRANID)
                      COMMAREA (CARDDEMO-COMMAREA)
@@ -112,6 +140,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-ENTER-KEY
       *----------------------------------------------------------------*
+      * Validate the admin option entered by the user. Trim
+      * trailing spaces, convert to numeric, enforce range check,
+      * then XCTL to the selected admin program.
        PROCESS-ENTER-KEY.
 
            PERFORM VARYING WS-IDX
@@ -139,6 +170,7 @@
                    MOVE WS-TRANID    TO CDEMO-FROM-TRANID
                    MOVE WS-PGMNAME   TO CDEMO-FROM-PROGRAM
                    MOVE ZEROS        TO CDEMO-PGM-CONTEXT
+      * Transfer control to the selected admin program
                    EXEC CICS
                        XCTL PROGRAM(CDEMO-ADMIN-OPT-PGMNAME(WS-OPTION))
                        COMMAREA(CARDDEMO-COMMAREA)
@@ -157,6 +189,8 @@
       *----------------------------------------------------------------*
       *                      RETURN-TO-SIGNON-SCREEN
       *----------------------------------------------------------------*
+      * Transfer control to the sign-on screen (COSGN00C)
+      * via EXEC CICS XCTL.
        RETURN-TO-SIGNON-SCREEN.
 
            IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES
@@ -169,6 +203,8 @@
       *----------------------------------------------------------------*
       *                      SEND-MENU-SCREEN
       *----------------------------------------------------------------*
+      * Populate header fields and admin options, then send
+      * BMS map COADM1A to the terminal with ERASE.
        SEND-MENU-SCREEN.
 
            PERFORM POPULATE-HEADER-INFO
@@ -186,6 +222,8 @@
       *----------------------------------------------------------------*
       *                      RECEIVE-MENU-SCREEN
       *----------------------------------------------------------------*
+      * Receive user input from BMS map COADM1A into the
+      * symbolic input area COADM1AI.
        RECEIVE-MENU-SCREEN.
 
            EXEC CICS RECEIVE
@@ -199,6 +237,8 @@
       *----------------------------------------------------------------*
       *                      POPULATE-HEADER-INFO
       *----------------------------------------------------------------*
+      * Fill screen header: application titles, transaction
+      * name, program name, current date and time.
        POPULATE-HEADER-INFO.
 
            MOVE FUNCTION CURRENT-DATE  TO WS-CURDATE-DATA
@@ -223,6 +263,9 @@
       *----------------------------------------------------------------*
       *                      BUILD-MENU-OPTIONS
       *----------------------------------------------------------------*
+      * Iterate through the admin option table (COADM02Y) and
+      * format numbered option lines for display. Supports up
+      * to 10 menu lines via EVALUATE dispatch.
        BUILD-MENU-OPTIONS.
 
            PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL

@@ -21,6 +21,21 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ******************************************************************        
+      *================================================================*
+      * Program:     COCRDLIC
+      * Transaction: CCLI
+      * BMS Map:     COCRDLI / CCRDLI
+      * Function:    Card list browse screen. Reads CARDDAT VSAM KSDS
+      *              using STARTBR/READNEXT/READPREV/ENDBR to display
+      *              a paginated list of cards (7 rows per page). The
+      *              list can be filtered by account ID and/or card
+      *              number. Selecting a row routes to COCRDSLC (view)
+      *              or COCRDUPC (update) based on selection option.
+      *              Supports PF7 (back) and PF8 (forward) paging.
+      * Files:       CARDDAT (STARTBR, READNEXT, READPREV, ENDBR)
+      * Navigation:  PF3 returns to main menu. PF7/PF8 page. Enter
+      *              on selected row goes to COCRDSLC or COCRDUPC.
+      *================================================================*
                                                                                 
        IDENTIFICATION DIVISION.                                                 
        PROGRAM-ID.                                                              

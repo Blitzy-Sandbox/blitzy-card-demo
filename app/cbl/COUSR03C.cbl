@@ -19,6 +19,19 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      *================================================================*
+      * Program:     COUSR03C
+      * Transaction: CU03
+      * BMS Map:     COUSR03 / COUSR3A
+      * Function:    User delete screen. Accepts a user ID (from input
+      *              or passed via COMMAREA), reads the USRSEC record
+      *              with UPDATE intent, and displays name/type for
+      *              confirmation. PF5 executes the DELETE. Handles
+      *              NOTFND and unexpected error conditions.
+      * Files:       USRSEC (READ UPDATE, DELETE — delete user record)
+      * Navigation:  PF3 returns to caller. PF4 clears screen.
+      *              PF5 confirms and deletes. PF12 returns to admin.
+      *================================================================*
        IDENTIFICATION DIVISION.
        PROGRAM-ID. COUSR03C.
        AUTHOR.     AWS.
@@ -46,6 +59,7 @@
            88 USR-MODIFIED-YES                   VALUE 'Y'.
            88 USR-MODIFIED-NO                    VALUE 'N'.
            
+      * COMMAREA structure for inter-program communication
        COPY COCOM01Y.
           05 CDEMO-CU03-INFO.
              10 CDEMO-CU03-USRID-FIRST     PIC X(08).
@@ -57,14 +71,21 @@
              10 CDEMO-CU03-USR-SEL-FLG     PIC X(01).
              10 CDEMO-CU03-USR-SELECTED    PIC X(08).
 
+      * BMS symbolic map for user delete screen (COUSR3A)
        COPY COUSR03.
 
+      * Application title and banner text
        COPY COTTL01Y.
+      * Date/time working storage fields
        COPY CSDAT01Y.
+      * Common user message definitions
        COPY CSMSG01Y.
+      * User security record layout (80-byte USRSEC)
        COPY CSUSR01Y.
 
+      * CICS attention identifier constants (ENTER, PF keys)
        COPY DFHAID.
+      * BMS attribute constants (colors, highlights)
        COPY DFHBMSCA.
 
       *----------------------------------------------------------------*
@@ -79,6 +100,10 @@
       *                       PROCEDURE DIVISION
       *----------------------------------------------------------------*
        PROCEDURE DIVISION.
+      * Main entry point. If user ID was passed via COMMAREA
+      * (CDEMO-CU03-USR-SELECTED), auto-populate and look up.
+      * AID dispatch: Enter=lookup, PF3=back, PF4=clear,
+      * PF5=delete, PF12=admin menu.
        MAIN-PARA.
 
            SET ERR-FLG-OFF     TO TRUE
@@ -131,6 +156,7 @@
                END-IF
            END-IF
 
+      * Return to CICS with pseudo-conversational wait
            EXEC CICS RETURN
                      TRANSID (WS-TRANID)
                      COMMAREA (CARDDEMO-COMMAREA)
@@ -139,6 +165,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-ENTER-KEY
       *----------------------------------------------------------------*
+      * Validate user ID is non-empty, then read the USRSEC
+      * record with UPDATE intent. On success, display user
+      * name and type for deletion confirmation.
        PROCESS-ENTER-KEY.
 
            EVALUATE TRUE
@@ -171,6 +200,8 @@
       *----------------------------------------------------------------*
       *                      DELETE-USER-INFO
       *----------------------------------------------------------------*
+      * Validate user ID, re-read with UPDATE, then perform
+      * the actual DELETE of the USRSEC record.
        DELETE-USER-INFO.
 
            EVALUATE TRUE
@@ -194,6 +225,8 @@
       *----------------------------------------------------------------*
       *                      RETURN-TO-PREV-SCREEN
       *----------------------------------------------------------------*
+      * Transfer control to the previous screen via EXEC CICS
+      * XCTL, passing the COMMAREA.
        RETURN-TO-PREV-SCREEN.
 
            IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES
@@ -210,6 +243,8 @@
       *----------------------------------------------------------------*
       *                      SEND-USRDEL-SCREEN
       *----------------------------------------------------------------*
+      * Populate header and send BMS map COUSR3A with ERASE
+      * and CURSOR positioning to the terminal.
        SEND-USRDEL-SCREEN.
 
            PERFORM POPULATE-HEADER-INFO
@@ -227,6 +262,8 @@
       *----------------------------------------------------------------*
       *                      RECEIVE-USRDEL-SCREEN
       *----------------------------------------------------------------*
+      * Receive user input from BMS map COUSR3A into the
+      * symbolic input area COUSR3AI.
        RECEIVE-USRDEL-SCREEN.
 
            EXEC CICS RECEIVE
@@ -240,6 +277,8 @@
       *----------------------------------------------------------------*
       *                      POPULATE-HEADER-INFO
       *----------------------------------------------------------------*
+      * Fill screen header: application titles, transaction
+      * name, program name, current date and time.
        POPULATE-HEADER-INFO.
 
            MOVE FUNCTION CURRENT-DATE  TO WS-CURDATE-DATA
@@ -264,6 +303,9 @@
       *----------------------------------------------------------------*
       *                      READ-USER-SEC-FILE
       *----------------------------------------------------------------*
+      * Read user record from USRSEC VSAM KSDS with UPDATE
+      * intent. Handles NORMAL (found — prompt for PF5 to
+      * confirm), NOTFND (invalid ID), and OTHER errors.
        READ-USER-SEC-FILE.
 
            EXEC CICS READ
@@ -302,6 +344,9 @@
       *----------------------------------------------------------------*
       *                      DELETE-USER-SEC-FILE
       *----------------------------------------------------------------*
+      * Delete the currently held USRSEC record via EXEC CICS
+      * DELETE. Handles NORMAL (success — show confirmation),
+      * NOTFND (already deleted), and OTHER errors.
        DELETE-USER-SEC-FILE.
 
            EXEC CICS DELETE
@@ -338,6 +383,7 @@
       *----------------------------------------------------------------*
       *                      CLEAR-CURRENT-SCREEN
       *----------------------------------------------------------------*
+      * Reset all screen fields and re-send the blank form.
        CLEAR-CURRENT-SCREEN.
 
            PERFORM INITIALIZE-ALL-FIELDS.
@@ -346,6 +392,7 @@
       *----------------------------------------------------------------*
       *                      INITIALIZE-ALL-FIELDS
       *----------------------------------------------------------------*
+      * Clear all symbolic map input fields and message area.
        INITIALIZE-ALL-FIELDS.
 
            MOVE -1              TO USRIDINL OF COUSR3AI

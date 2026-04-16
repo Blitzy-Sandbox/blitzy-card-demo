@@ -18,6 +18,25 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ******************************************************************      
+      *================================================================*
+      * Program:     COACTUPC
+      * Transaction: CAUP
+      * BMS Map:     COACTUP / CACTUP
+      * Function:    Account update screen. Performs a 3-entity join
+      *              (Account + CrossRef + Customer) for display, then
+      *              allows editing of account and customer fields.
+      *              Validates 18+ fields including US phone, SSN, state
+      *              code, ZIP prefix, and FICO score using CSLKPCDY
+      *              lookup tables. Uses optimistic concurrency via
+      *              before/after image comparison. Writes dual records
+      *              (ACCTDAT + CUSTDAT) under SYNCPOINT with ROLLBACK
+      *              on failure.
+      * Files:       ACCTDAT (READ, READ UPDATE, REWRITE),
+      *              CXACAIX (READ), CUSTDAT (READ, READ UPDATE,
+      *              REWRITE)
+      * Navigation:  PF3 returns to calling program. Enter processes
+      *              input. Confirm writes data under SYNCPOINT.
+      *================================================================*
        IDENTIFICATION DIVISION.
        PROGRAM-ID.
            COACTUPC.
@@ -163,6 +182,7 @@
       ******************************************************************
       *    Generic date edit variables CCYYMMDD
       ******************************************************************
+      * Date-edit working storage for date validation
            COPY 'CSUTLDWY'.
       ******************************************************************
          05  WS-DATACHANGED-FLAG                   PIC X(1).
@@ -594,11 +614,13 @@
       ******************************************************************
       *Other common working storage Variables
       ******************************************************************
+      * Card work area: AID/PF-key flags, routing fields
        COPY CVCRD01Y.
       ******************************************************************
       *Lookups
       ******************************************************************
       *North America Phone Area codes
+      * NANPA area codes, US state codes, ZIP-prefix lookup
        COPY CSLKPCDY.
 
       ******************************************************************
@@ -612,41 +634,53 @@
        77  LIT-NUM-SPACES-TO      PIC X(10) VALUE SPACES.
 
       *IBM SUPPLIED COPYBOOKS
+      * BMS attribute constants (colors, highlights)
        COPY DFHBMSCA.
+      * CICS attention identifier constants (ENTER, PF keys)
        COPY DFHAID.
 
       *COMMON COPYBOOKS
       *Screen Titles
+      * Application title and banner text fields
        COPY COTTL01Y.
 
       *Account Update Screen Layout
+      * BMS symbolic map for account update screen
        COPY COACTUP.
 
       *Current Date
+      * Date/time working storage fields
        COPY CSDAT01Y.
 
       *Common Messages
+      * Common user message definitions
        COPY CSMSG01Y.
 
       *Abend Variables
+      * Abend data work area fields
        COPY CSMSG02Y.
 
       *Signed on user data
+      * 80-byte user security record layout
        COPY CSUSR01Y.
 
       *Dataset layouts
 
       *ACCT RECORD LAYOUT
+      * 300-byte account record layout (ACCT-RECORD)
        COPY CVACT01Y.
 
       *CARD XREF LAYOUT
+      * 50-byte card cross-reference record
        COPY CVACT03Y.
 
       *CUSTOMER LAYOUT
+      * 500-byte customer record layout
        COPY CVCUS01Y.
 
       ******************************************************************
       *Application Commmarea Copybook
+      * COMMAREA structure for inter-program communication
        COPY COCOM01Y.
 
        01 WS-THIS-PROGCOMMAREA.
@@ -856,6 +890,9 @@
              OCCURS 1 TO 32767 TIMES DEPENDING ON EIBCALEN.
 
        PROCEDURE DIVISION.
+      * Main entry point. Initialise context, handle COMMAREA.
+      * Dispatch on AID: PF3=return, Enter=process inputs and
+      * decide action (first display, confirm, or re-prompt).
        0000-MAIN.
 
 
@@ -1004,6 +1041,8 @@
            END-EVALUATE
            .
 
+      * Pseudo-conversational return: save COMMAREA + program
+      * context then EXEC CICS RETURN with TRANSID.
        COMMON-RETURN.
            MOVE WS-RETURN-MSG     TO CCARD-ERROR-MSG
 
@@ -1022,6 +1061,8 @@
            EXIT
            .
 
+      * Receive user input from terminal and run field-level
+      * validations via 1100/1200 paragraphs.
        1000-PROCESS-INPUTS.
            PERFORM 1100-RECEIVE-MAP
               THRU 1100-RECEIVE-MAP-EXIT
@@ -1036,6 +1077,9 @@
        1000-PROCESS-INPUTS-EXIT.
            EXIT
            .
+      * Issue EXEC CICS RECEIVE MAP. Map entered values from
+      * BMS symbolic area to working storage for validation.
+      * Handles 18+ editable account and customer fields.
        1100-RECEIVE-MAP.
            EXEC CICS RECEIVE MAP(LIT-THISMAP)
                      MAPSET(LIT-THISMAPSET)
@@ -1426,6 +1470,11 @@
        1100-RECEIVE-MAP-EXIT.
            EXIT
            .
+      * Orchestrate field-level validations for all editable
+      * fields. Calls specific edit paragraphs for account ID,
+      * mandatory fields, yes/no fields, alpha/alphanum fields,
+      * numeric fields, US phone, SSN, state code, FICO score,
+      * and ZIP code.
        1200-EDIT-MAP-INPUTS.
 
            SET INPUT-OK                  TO TRUE
@@ -1678,6 +1727,9 @@
        1200-EDIT-MAP-INPUTS-EXIT.
            EXIT
            .
+      * Compare entered values with displayed values to detect
+      * which fields the user actually changed. Only changed
+      * fields are flagged for update.
        1205-COMPARE-OLD-NEW.
            SET NO-CHANGES-FOUND           TO TRUE
 
@@ -1780,6 +1832,7 @@
 
 
       *
+      * Validate account ID: must be non-blank and numeric.
        1210-EDIT-ACCOUNT.
            SET FLG-ACCTFILTER-NOT-OK    TO TRUE
 
@@ -1821,6 +1874,8 @@
            EXIT
            .
 
+      * Generic mandatory field validator. Rejects blank input
+      * and sets the appropriate error flag.
        1215-EDIT-MANDATORY.
       *    Initialize
            SET FLG-MANDATORY-NOT-OK    TO TRUE
@@ -1853,6 +1908,7 @@
            EXIT
            .
 
+      * Validate yes/no fields. Accepts only Y or N.
        1220-EDIT-YESNO.
       *    Must be Y or N
       *    SET FLG-YES-NO-NOT-OK         TO TRUE
@@ -1895,6 +1951,8 @@
            EXIT
            .
 
+      * Validate required alphabetic field. Must be non-blank
+      * and contain only letters and spaces.
        1225-EDIT-ALPHA-REQD.
       *    Initialize
            SET FLG-ALPHA-NOT-OK              TO TRUE
@@ -1952,6 +2010,8 @@
            EXIT
            .
 
+      * Validate required alphanumeric field. Must be non-blank
+      * and contain only letters, digits, and spaces.
        1230-EDIT-ALPHANUM-REQD.
       *    Initialize
            SET FLG-ALPHNANUM-NOT-OK          TO TRUE
@@ -2009,6 +2069,8 @@
        1230-EDIT-ALPHANUM-REQD-EXIT.
            EXIT
            .
+      * Validate optional alphabetic field. If non-blank, must
+      * contain only letters and spaces.
        1235-EDIT-ALPHA-OPT.
       *    Initialize
            SET FLG-ALPHA-NOT-OK              TO TRUE
@@ -2058,6 +2120,8 @@
            EXIT
            .
 
+      * Validate optional alphanumeric field. If non-blank,
+      * must contain only letters, digits, and spaces.
        1240-EDIT-ALPHANUM-OPT.
       *    Initialize
            SET FLG-ALPHNANUM-NOT-OK          TO TRUE
@@ -2106,6 +2170,8 @@
            EXIT
            .
 
+      * Validate required numeric field. Must be non-blank and
+      * all digits. Optionally checks for specific length.
        1245-EDIT-NUM-REQD.
       *    Initialize
            SET FLG-ALPHNANUM-NOT-OK          TO TRUE
@@ -2177,6 +2243,9 @@
            EXIT
            .
 
+      * Validate signed decimal (S9V2) field for monetary
+      * amounts. Accepts numeric with optional sign and
+      * implied decimal.
        1250-EDIT-SIGNED-9V2.
            SET FLG-SIGNED-NUMBER-NOT-OK    TO TRUE
 
@@ -2222,6 +2291,8 @@
            EXIT
            .
 
+      * Validate US phone number: area code against NANPA
+      * lookup (CSLKPCDY), prefix 200-999, line 0000-9999.
        1260-EDIT-US-PHONE-NUM.
 
       *    The database stores date in X(15) format (999)999-9999
@@ -2243,6 +2314,8 @@
                 CONTINUE
            END-IF
            .
+      * Validate phone area code against the NANPA area code
+      * table in CSLKPCDY. Rejects invalid area codes.
        EDIT-AREA-CODE.
            IF WS-EDIT-US-PHONE-NUMA EQUAL SPACES
            OR WS-EDIT-US-PHONE-NUMA EQUAL LOW-VALUES
@@ -2313,6 +2386,7 @@
 
            SET FLG-EDIT-US-PHONEA-ISVALID    TO TRUE
            .
+      * Validate phone prefix (exchange). Must be 200-999.
        EDIT-US-PHONE-PREFIX.
 
            IF WS-EDIT-US-PHONE-NUMB EQUAL SPACES
@@ -2367,6 +2441,7 @@
            SET FLG-EDIT-US-PHONEB-ISVALID    TO TRUE
            .
 
+      * Validate phone line number. Must be 0000-9999.
        EDIT-US-PHONE-LINENUM.
            IF WS-EDIT-US-PHONE-NUMC EQUAL SPACES
            OR WS-EDIT-US-PHONE-NUMC EQUAL LOW-VALUES
@@ -2428,6 +2503,8 @@
            EXIT
            .
 
+      * Validate US Social Security Number format. Checks
+      * area, group, and serial components against rules.
        1265-EDIT-US-SSN.
       *Format xxx-xx-xxxx
       *Part1 :should have 3 digits
@@ -2490,6 +2567,8 @@
            EXIT
            .
 
+      * Validate US state code against the state code table
+      * in CSLKPCDY.
        1270-EDIT-US-STATE-CD.
            MOVE ACUP-NEW-CUST-ADDR-STATE-CD TO US-STATE-CODE-TO-EDIT
            IF VALID-US-STATE-CODE
@@ -2511,6 +2590,8 @@
        1270-EDIT-US-STATE-CD-EXIT.
            EXIT
            .
+      * Validate FICO credit score. Must be numeric and
+      * within the valid range.
        1275-EDIT-FICO-SCORE.
            IF FICO-RANGE-IS-VALID
                CONTINUE
@@ -2533,6 +2614,8 @@
            .
 
       *A crude zip code edit based on data from USPS web site
+      * Validate ZIP code prefix against the state-ZIP
+      * mapping table in CSLKPCDY.
        1280-EDIT-US-STATE-ZIP-CD.
            STRING ACUP-NEW-CUST-ADDR-STATE-CD
                   ACUP-NEW-CUST-ADDR-ZIP(1:2)
@@ -2559,6 +2642,9 @@
            EXIT
            .
 
+      * Determine next action: first display reads data,
+      * confirmation writes under SYNCPOINT, errors re-display
+      * with messages.
        2000-DECIDE-ACTION.
            EVALUATE TRUE
       ******************************************************************
@@ -2646,6 +2732,8 @@
 
 
 
+      * Orchestrate screen build: initialise, set up vars
+      * and attributes, build messages, then send.
        3000-SEND-MAP.
            PERFORM 3100-SCREEN-INIT
               THRU 3100-SCREEN-INIT-EXIT
@@ -2665,6 +2753,7 @@
            EXIT
            .
 
+      * Initialise all output map fields to defaults.
        3100-SCREEN-INIT.
            MOVE LOW-VALUES TO CACTUPAO
 
@@ -2695,6 +2784,9 @@
            EXIT
            .
 
+      * Populate screen fields from account, customer, and
+      * cross-reference records. Delegates to 3201/3202/3203
+      * based on current display state.
        3200-SETUP-SCREEN-VARS.
       *    INITIALIZE SEARCH CRITERIA
            IF CDEMO-PGM-ENTER
@@ -2728,6 +2820,8 @@
            EXIT
            .
 
+      * Display initial values from freshly read data (first
+      * entry to the screen).
        3201-SHOW-INITIAL-VALUES.
            MOVE LOW-VALUES                     TO  ACSTTUSO OF CACTUPAO
                                                    ACRDLIMO OF CACTUPAO
@@ -2784,6 +2878,8 @@
            EXIT
            .
 
+      * Display the saved before-image values (from initial
+      * read) alongside any user changes.
        3202-SHOW-ORIGINAL-VALUES.
 
            MOVE LOW-VALUES                     TO WS-NON-KEY-FLAGS
@@ -2867,6 +2963,8 @@
        3202-SHOW-ORIGINAL-VALUES-EXIT.
            EXIT
            .
+      * Display the updated (user-entered) values alongside
+      * original values for confirmation review.
        3203-SHOW-UPDATED-VALUES.
 
            MOVE ACUP-NEW-ACTIVE-STATUS         TO ACSTTUSO OF CACTUPAO
@@ -2952,6 +3050,8 @@
            EXIT
            .
 
+      * Build informational messages: confirmation prompt,
+      * success feedback, or error details.
        3250-SETUP-INFOMSG.
       *    SETUP INFORMATION MESSAGE
            EVALUATE TRUE
@@ -2983,6 +3083,10 @@
        3250-SETUP-INFOMSG-EXIT.
            EXIT
            .
+      * Set BMS field attributes for all 18+ editable fields.
+      * Uses COPY CSSETATY REPLACING pattern (38 invocations)
+      * to set color, protection, and highlight per field
+      * based on validation flags and state.
        3300-SETUP-SCREEN-ATTRS.
 
       *    PROTECT ALL FIELDS
@@ -3438,6 +3542,8 @@
            EXIT
            .
 
+      * Set all editable fields to protected (display-only)
+      * for the confirmation display.
        3310-PROTECT-ALL-ATTRS.
            MOVE DFHBMPRF              TO ACCTSIDA OF CACTUPAI
                                          ACSTTUSA OF CACTUPAI
@@ -3497,6 +3603,8 @@
            EXIT
            .
 
+      * Unprotect selected fields for editing. Only fields
+      * that the user is allowed to modify are unprotected.
        3320-UNPROTECT-FEW-ATTRS.
 
            MOVE DFHBMFSE              TO ACSTTUSA OF CACTUPAI
@@ -3563,6 +3671,8 @@
            EXIT
            .
 
+      * Set BMS attributes for the informational message
+      * area (color based on message type).
        3390-SETUP-INFOMSG-ATTRS.
            IF  WS-NO-INFO-MESSAGE
                MOVE DFHBMDAR           TO INFOMSGA OF CACTUPAI
@@ -3586,6 +3696,8 @@
            .
 
 
+      * Issue EXEC CICS SEND MAP to push the account update
+      * screen to the terminal with ERASE.
        3400-SEND-SCREEN.
 
            MOVE LIT-THISMAPSET         TO CCARD-NEXT-MAPSET
@@ -3605,6 +3717,9 @@
            .
 
 
+      * Orchestrate 3-entity read: cross-reference (CXACAIX),
+      * account (ACCTDAT), customer (CUSTDAT). Then store
+      * fetched data as before-image for concurrency check.
        9000-READ-ACCT.
 
            INITIALIZE ACUP-OLD-DETAILS
@@ -3647,6 +3762,8 @@
        9000-READ-ACCT-EXIT.
            EXIT
            .
+      * READ CXACAIX (card cross-reference alternate index)
+      * by account ID. Returns card info on success.
        9200-GETCARDXREF-BYACCT.
 
       *    Read the Card file. Access via alternate index ACCTID
@@ -3698,6 +3815,8 @@
        9200-GETCARDXREF-BYACCT-EXIT.
            EXIT
            .
+      * READ ACCTDAT VSAM KSDS by account ID. Populates
+      * ACCT-RECORD on success.
        9300-GETACCTDATA-BYACCT.
 
            EXEC CICS READ
@@ -3749,6 +3868,8 @@
            EXIT
            .
 
+      * READ CUSTDAT VSAM KSDS by customer ID. Populates
+      * CUSTOMER-RECORD on success.
        9400-GETCUSTDATA-BYCUST.
            EXEC CICS READ
                 DATASET   (LIT-CUSTFILENAME)
@@ -3798,6 +3919,9 @@
            EXIT
            .
 
+      * Save current database values as before-image in
+      * COMMAREA for optimistic concurrency checking on
+      * subsequent update confirmation.
        9500-STORE-FETCHED-DATA.
 
       *    Store Context in Commarea
@@ -3885,6 +4009,10 @@
        9500-STORE-FETCHED-DATA-EXIT.
            EXIT
            .
+      * Perform the dual-record update under SYNCPOINT.
+      * READ UPDATE both ACCTDAT and CUSTDAT, compare
+      * before-images (9700), REWRITE both records. On any
+      * failure, SYNCPOINT ROLLBACK restores consistency.
        9600-WRITE-PROCESSING.
 
       *    Read the account file for update
@@ -4106,6 +4234,9 @@
            EXIT
            .
 
+      * Optimistic concurrency check: compare current DB
+      * records against saved before-images. If another user
+      * modified the data since our read, reject the update.
        9700-CHECK-CHANGE-IN-REC.
 
 
@@ -4200,6 +4331,8 @@
            .
 
 
+      * Abnormal termination handler: display abend data and
+      * issue EXEC CICS ABEND with code 9999.
        ABEND-ROUTINE.
 
            IF ABEND-MSG EQUAL LOW-VALUES
@@ -4229,6 +4362,7 @@
       ******************************************************************
       * Common Date Routines
       ******************************************************************
+      * Date validation paragraphs (leap year, LE integration)
        COPY CSUTLDPY
            .
       *

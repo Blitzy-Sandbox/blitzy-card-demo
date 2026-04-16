@@ -19,6 +19,20 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      *================================================================*
+      * Program:     COUSR02C
+      * Transaction: CU02
+      * BMS Map:     COUSR02 / COUSR2A
+      * Function:    User update screen. Accepts a user ID (from input
+      *              or COMMAREA), reads the USRSEC record, and displays
+      *              editable fields (name, password, type). On PF5,
+      *              compares each field to detect changes and REWRITEs
+      *              only if at least one field was modified.
+      * Files:       USRSEC (READ UPDATE, REWRITE — update user)
+      * Navigation:  PF3 saves changes and returns to caller.
+      *              PF4 clears screen. PF5 saves changes.
+      *              PF12 returns to admin menu without saving.
+      *================================================================*
        IDENTIFICATION DIVISION.
        PROGRAM-ID. COUSR02C.
        AUTHOR.     AWS.
@@ -46,6 +60,7 @@
            88 USR-MODIFIED-YES                   VALUE 'Y'.
            88 USR-MODIFIED-NO                    VALUE 'N'.
 
+      * COMMAREA structure for inter-program communication
        COPY COCOM01Y.
           05 CDEMO-CU02-INFO.
              10 CDEMO-CU02-USRID-FIRST     PIC X(08).
@@ -57,14 +72,21 @@
              10 CDEMO-CU02-USR-SEL-FLG     PIC X(01).
              10 CDEMO-CU02-USR-SELECTED    PIC X(08).
 
+      * BMS symbolic map for user update screen (COUSR2A)
        COPY COUSR02.
 
+      * Application title and banner text
        COPY COTTL01Y.
+      * Date/time working storage fields
        COPY CSDAT01Y.
+      * Common user message definitions
        COPY CSMSG01Y.
+      * User security record layout (80-byte USRSEC)
        COPY CSUSR01Y.
 
+      * CICS attention identifier constants (ENTER, PF keys)
        COPY DFHAID.
+      * BMS attribute constants (colors, highlights)
        COPY DFHBMSCA.
 
       *----------------------------------------------------------------*
@@ -79,6 +101,9 @@
       *                       PROCEDURE DIVISION
       *----------------------------------------------------------------*
        PROCEDURE DIVISION.
+      * Main entry point. If user ID was passed via COMMAREA,
+      * auto-populate and look up. AID dispatch: Enter=lookup,
+      * PF3=save+back, PF4=clear, PF5=save, PF12=admin menu.
        MAIN-PARA.
 
            SET ERR-FLG-OFF     TO TRUE
@@ -132,6 +157,7 @@
                END-IF
            END-IF
 
+      * Return to CICS with pseudo-conversational wait
            EXEC CICS RETURN
                      TRANSID (WS-TRANID)
                      COMMAREA (CARDDEMO-COMMAREA)
@@ -140,6 +166,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-ENTER-KEY
       *----------------------------------------------------------------*
+      * Validate user ID is non-empty, then read the USRSEC
+      * record with UPDATE intent. On success, populate screen
+      * fields with current values for editing.
        PROCESS-ENTER-KEY.
 
            EVALUATE TRUE
@@ -174,6 +203,10 @@
       *----------------------------------------------------------------*
       *                      UPDATE-USER-INFO
       *----------------------------------------------------------------*
+      * Validate all fields non-empty, re-read the record,
+      * compare each field to detect changes. If any field
+      * changed, set USR-MODIFIED-YES and REWRITE the record.
+      * If no changes detected, display informational message.
        UPDATE-USER-INFO.
 
            EVALUATE TRUE
@@ -247,6 +280,8 @@
       *----------------------------------------------------------------*
       *                      RETURN-TO-PREV-SCREEN
       *----------------------------------------------------------------*
+      * Transfer control to the previous screen via EXEC CICS
+      * XCTL, passing the COMMAREA.
        RETURN-TO-PREV-SCREEN.
 
            IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES
@@ -263,6 +298,8 @@
       *----------------------------------------------------------------*
       *                      SEND-USRUPD-SCREEN
       *----------------------------------------------------------------*
+      * Populate header and send BMS map COUSR2A with ERASE
+      * and CURSOR positioning to the terminal.
        SEND-USRUPD-SCREEN.
 
            PERFORM POPULATE-HEADER-INFO
@@ -280,6 +317,8 @@
       *----------------------------------------------------------------*
       *                      RECEIVE-USRUPD-SCREEN
       *----------------------------------------------------------------*
+      * Receive user input from BMS map COUSR2A into the
+      * symbolic input area COUSR2AI.
        RECEIVE-USRUPD-SCREEN.
 
            EXEC CICS RECEIVE
@@ -293,6 +332,8 @@
       *----------------------------------------------------------------*
       *                      POPULATE-HEADER-INFO
       *----------------------------------------------------------------*
+      * Fill screen header: application titles, transaction
+      * name, program name, current date and time.
        POPULATE-HEADER-INFO.
 
            MOVE FUNCTION CURRENT-DATE  TO WS-CURDATE-DATA
@@ -317,6 +358,9 @@
       *----------------------------------------------------------------*
       *                      READ-USER-SEC-FILE
       *----------------------------------------------------------------*
+      * Read user record from USRSEC VSAM KSDS with UPDATE
+      * intent. Handles NORMAL (found — prompt PF5 to save),
+      * NOTFND (invalid ID), and OTHER errors.
        READ-USER-SEC-FILE.
 
            EXEC CICS READ
@@ -355,6 +399,9 @@
       *----------------------------------------------------------------*
       *                      UPDATE-USER-SEC-FILE
       *----------------------------------------------------------------*
+      * REWRITE the modified USRSEC record via EXEC CICS
+      * REWRITE. Handles NORMAL (success confirmation),
+      * NOTFND (record disappeared), and OTHER errors.
        UPDATE-USER-SEC-FILE.
 
            EXEC CICS REWRITE
@@ -392,6 +439,7 @@
       *----------------------------------------------------------------*
       *                      CLEAR-CURRENT-SCREEN
       *----------------------------------------------------------------*
+      * Reset all screen fields and re-send the blank form.
        CLEAR-CURRENT-SCREEN.
 
            PERFORM INITIALIZE-ALL-FIELDS.
@@ -400,6 +448,7 @@
       *----------------------------------------------------------------*
       *                      INITIALIZE-ALL-FIELDS
       *----------------------------------------------------------------*
+      * Clear all symbolic map input fields and message area.
        INITIALIZE-ALL-FIELDS.
 
            MOVE -1              TO USRIDINL OF COUSR2AI

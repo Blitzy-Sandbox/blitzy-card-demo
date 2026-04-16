@@ -33,6 +33,32 @@
       *  4. 2 dimensional array
       *  5. Call to Subroutine
       ******************************************************************
+      *
+      * CBSTM03A - Account Statement Generation (Batch)
+      *
+      * Generates account statements in both plain text and HTML
+      * formats. Reads transactions into an in-memory table
+      * (51 cards x 10 transactions), then for each card:
+      *   1. Looks up customer and account data
+      *   2. Writes a plain-text statement file
+      *   3. Writes an HTML statement file
+      * Uses CBSTM03B as a callable subroutine for all file I/O
+      * operations (open, read, close) via the LINKAGE SECTION.
+      *
+      * Invoked by: CREASTMT.JCL
+      *
+      * Files accessed (via CBSTM03B):
+      *   TRNXFILE  - Transaction master (sequential input)
+      *   CUSTFILE  - Customer master (KSDS, random read)
+      *   XREFFILE  - Card cross-reference (KSDS, random read)
+      *   ACCTFILE  - Account master (KSDS, random read)
+      *   STMTFILE  - Plain-text statement output
+      *   HTMLFILE  - HTML statement output
+      *
+      * Features exercised: mainframe control block addressing,
+      * CALL with multiple BY-REFERENCE parameters, in-memory
+      * table processing, HTML generation, JCL TIOT lookup.
+      *
        ENVIRONMENT DIVISION.
        INPUT-OUTPUT SECTION.
        FILE-CONTROL.
@@ -82,6 +108,7 @@
            05  WS-M03B-KEY-LN      PIC S9(4).
            05  WS-M03B-FLDT        PIC X(1000).
 
+      * Plain-text statement line buffer (80-col per line)
        01  STATEMENT-LINES.
            05  ST-LINE0.
                10  FILLER  VALUE ALL '*'                PIC X(31).
@@ -145,6 +172,7 @@
                10  FILLER  VALUE ALL 'END OF STATEMENT' PIC X(16).
                10  FILLER  VALUE ALL '*'                PIC X(32).
 
+      * HTML statement markup lines and 88-level constants
        01  HTML-LINES.
            05  HTML-FIXED-LN        PIC X(100).
              88  HTML-L01 VALUE '<!DOCTYPE html>'.
@@ -222,20 +250,25 @@
            05  HTML-BSIC-LN PIC X(100).
            05  HTML-TRAN-LN PIC X(100).
 
+      * In-memory transaction table: 51 cards x 10 trans each
        01  WS-TRNX-TABLE.
            05  WS-CARD-TBL OCCURS 51 TIMES.
                10  WS-CARD-NUM                          PIC X(16).
                10  WS-TRAN-TBL OCCURS 10 TIMES.
                    15  WS-TRAN-NUM                      PIC X(16).
                    15  WS-TRAN-REST                     PIC X(318).
+      * Per-card transaction counters for the in-memory table
        01  WS-TRN-TBL-CNTR.
            05  WS-TRN-TBL-CTR OCCURS 51 TIMES.
                10  WS-TRCT               PIC S9(4) COMP.
 
+      * z/OS PSA pointer for TIOT (job name) lookup
        01  PSAPTR                  POINTER.
        01  BUMP-TIOT               PIC S9(08) BINARY VALUE ZERO.
        01  TIOT-INDEX              REDEFINES BUMP-TIOT POINTER.
 
+      * LINKAGE SECTION: PSA/TCB/TIOT control blocks for
+      * extracting job name, step name, and proc step name
        LINKAGE SECTION.
        01  ALIGN-PSA        PIC 9(16) BINARY.
        01  PSA-BLOCK.
@@ -293,6 +326,11 @@
            OPEN OUTPUT STMT-FILE HTML-FILE.
            INITIALIZE WS-TRNX-TABLE WS-TRN-TBL-CNTR.
 
+      *---------------------------------------------------------------*
+      * Entry point: initializes CBSTM03B subroutine path, loads
+      * all transactions into the in-memory table, then calls
+      * 1000-MAINLINE to generate statements for each card.
+      *---------------------------------------------------------------*
        0000-START.
 
            EVALUATE WS-FL-DD
@@ -313,6 +351,9 @@
              WHEN OTHER
                GO TO 9999-GOBACK.
 
+      * Main processing loop: for each card in the table that
+      * has transactions, look up customer/account data and
+      * generate both plain-text and HTML statements.
        1000-MAINLINE.
            PERFORM UNTIL END-OF-FILE = 'Y'
                IF  END-OF-FILE = 'N'
@@ -338,6 +379,7 @@
 
            CLOSE STMT-FILE HTML-FILE.
 
+      * Normal program termination
        9999-GOBACK.
            GOBACK.
 
@@ -455,6 +497,9 @@
 
            EXIT.
       *---------------------------------------------------------------*
+      * Build the plain-text statement for one card: populate
+      * header lines with customer name/address, account ID,
+      * balance, and FICO score, then write transaction lines.
        5000-CREATE-STATEMENT.
            INITIALIZE STATEMENT-LINES.
            WRITE FD-STMTFILE-REC FROM ST-LINE0.
@@ -503,6 +548,8 @@
 
            EXIT.
 
+      * Write the HTML document header, table structure, and
+      * bank branding section for one card statement.
        5100-WRITE-HTML-HEADER.
 
            SET HTML-L01 TO TRUE.
@@ -551,10 +598,13 @@
            SET HTML-L22-35 TO TRUE.
            WRITE FD-HTMLFILE-REC FROM HTML-FIXED-LN.
 
+      * Exit point for HTML header write
        5100-EXIT.
            EXIT.
 
       *---------------------------------------------------------------*
+      * Write the HTML name/address/account details section
+      * and the transaction detail rows for one card.
        5200-WRITE-HTML-NMADBS.
 
            MOVE ST-NAME TO L23-NAME.
@@ -668,10 +718,13 @@
            SET HTML-LTRE TO TRUE.
            WRITE FD-HTMLFILE-REC FROM HTML-FIXED-LN.
 
+      * Exit point for HTML name/address/details
        5200-EXIT.
            EXIT.
 
       *---------------------------------------------------------------*
+      * Write transaction detail lines to both plain-text and
+      * HTML statement files for the current card.
        6000-WRITE-TRANS.
            MOVE TRNX-ID TO ST-TRANID.
            MOVE TRNX-DESC TO ST-TRANDT.
@@ -815,6 +868,9 @@
            GO TO 1000-MAINLINE.
            EXIT.
       *---------------------------------------------------------------*
+      * Read all transactions from TRNXFILE into the in-memory
+      * table. Groups transactions by card number (up to 51
+      * cards, 10 transactions each).
        8500-READTRNX-READ.
            IF WS-SAVE-CARD = TRNX-CARD-NUM
                ADD 1 TO TR-CNT
@@ -846,6 +902,7 @@
                PERFORM 9999-ABEND-PROGRAM
            END-EVALUATE.
 
+      * Exit point for transaction read loop
        8599-EXIT.
            MOVE TR-CNT TO WS-TRCT (CR-CNT).
            MOVE 'XREFFILE' TO WS-FL-DD.
@@ -918,6 +975,7 @@
 
            EXIT.
 
+      * Abnormal termination via LE CEE3ABD (abend code 999)
        9999-ABEND-PROGRAM.
            DISPLAY 'ABENDING PROGRAM'
            CALL 'CEE3ABD'.

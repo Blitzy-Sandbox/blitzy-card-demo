@@ -19,6 +19,24 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      *================================================================*
+      * Program:     COTRN02C
+      * Transaction: CT02
+      * BMS Map:     COTRN02 / COTRN2A
+      * Function:    Transaction add screen. Collects card number,
+      *              account ID, transaction type/category/source,
+      *              amount, description, merchant info, and timestamps.
+      *              Validates key fields against CXACAIX (card cross-
+      *              reference by card number) and CCXREF (account
+      *              cross-reference). Generates next transaction ID via
+      *              STARTBR/READPREV at HIGH-VALUES, then writes new
+      *              record to TRANSACT. PF5 copies last transaction.
+      * Files:       CXACAIX (READ — validate card number via AIX)
+      *              CCXREF  (READ — validate account from xref)
+      *              TRANSACT (STARTBR, READPREV, ENDBR, WRITE)
+      * Navigation:  PF3 returns to caller. PF4 clears form.
+      *              PF5 copies last transaction data into form.
+      *================================================================*
        IDENTIFICATION DIVISION.
        PROGRAM-ID. COTRN02C.
        AUTHOR.     AWS.
@@ -68,6 +86,7 @@
              10 CSUTLDTC-RESULT-MSG-NUM      PIC X(04).
              10 CSUTLDTC-RESULT-MSG          PIC X(61).
 
+      * COMMAREA structure for inter-program communication
        COPY COCOM01Y.
           05 CDEMO-CT02-INFO.
              10 CDEMO-CT02-TRNID-FIRST     PIC X(16).
@@ -79,17 +98,26 @@
              10 CDEMO-CT02-TRN-SEL-FLG     PIC X(01).
              10 CDEMO-CT02-TRN-SELECTED    PIC X(16).
 
+      * BMS symbolic map for transaction add screen (COTRN2A)
        COPY COTRN02.
 
+      * Application title and banner text
        COPY COTTL01Y.
+      * Date/time working storage fields
        COPY CSDAT01Y.
+      * Common user message definitions
        COPY CSMSG01Y.
 
+      * 350-byte transaction record layout (TRAN-RECORD)
        COPY CVTRA05Y.
+      * 300-byte account record layout (ACCT-REC)
        COPY CVACT01Y.
+      * 50-byte card cross-reference record (CARD-XREF-REC)
        COPY CVACT03Y.
 
+      * CICS attention identifier constants (ENTER, PF keys)
        COPY DFHAID.
+      * BMS attribute constants (colors, highlights)
        COPY DFHBMSCA.
 
       *----------------------------------------------------------------*
@@ -104,6 +132,9 @@
       *                       PROCEDURE DIVISION
       *----------------------------------------------------------------*
        PROCEDURE DIVISION.
+      * Main entry point. If card number was passed via COMMAREA,
+      * auto-populate. AID dispatch: Enter=validate+add, PF3=back,
+      * PF4=clear, PF5=copy last transaction data.
        MAIN-PARA.
 
            SET ERR-FLG-OFF     TO TRUE
@@ -153,6 +184,7 @@
                END-IF
            END-IF
 
+      * Return to CICS with pseudo-conversational wait
            EXEC CICS RETURN
                      TRANSID (WS-TRANID)
                      COMMAREA (CARDDEMO-COMMAREA)
@@ -161,6 +193,8 @@
       *----------------------------------------------------------------*
       *                      PROCESS-ENTER-KEY
       *----------------------------------------------------------------*
+      * Validate key fields and data fields, then check the
+      * confirmation flag (Y/N). If confirmed, add transaction.
        PROCESS-ENTER-KEY.
 
            PERFORM VALIDATE-INPUT-KEY-FIELDS
@@ -190,6 +224,9 @@
       *----------------------------------------------------------------*
       *                      VALIDATE-INPUT-KEY-FIELDS
       *----------------------------------------------------------------*
+      * Validate account ID (numeric) and card number (numeric,
+      * length check). Read CXACAIX to verify card exists and
+      * CCXREF to verify the cross-reference record.
        VALIDATE-INPUT-KEY-FIELDS.
 
            EVALUATE TRUE
@@ -232,6 +269,9 @@
       *----------------------------------------------------------------*
       *                 VALIDATE-INPUT-DATA-FIELDS
       *----------------------------------------------------------------*
+      * Validate all data fields: transaction type, category,
+      * source, amount (numeric, non-zero), description, and
+      * merchant information are non-empty and well-formed.
        VALIDATE-INPUT-DATA-FIELDS.
 
            IF ERR-FLG-ON
@@ -439,6 +479,10 @@
       *----------------------------------------------------------------*
       *                        ADD-TRANSACTION
       *----------------------------------------------------------------*
+      * Generate the next transaction ID by browsing to the end
+      * of TRANSACT (STARTBR at HIGH-VALUES, READPREV) and adding
+      * 1 to the highest ID. Populate TRAN-RECORD from screen
+      * fields and WRITE to TRANSACT file.
        ADD-TRANSACTION.
 
            MOVE HIGH-VALUES TO TRAN-ID
@@ -468,6 +512,9 @@
       *----------------------------------------------------------------*
       *                      COPY-LAST-TRAN-DATA
       *----------------------------------------------------------------*
+      * Copy field values from the last transaction record into
+      * the screen input fields as a data entry convenience.
+      * Validates key fields first, then invokes PROCESS-ENTER-KEY.
        COPY-LAST-TRAN-DATA.
 
            PERFORM VALIDATE-INPUT-KEY-FIELDS
@@ -497,6 +544,8 @@
       *----------------------------------------------------------------*
       *                      RETURN-TO-PREV-SCREEN
       *----------------------------------------------------------------*
+      * Transfer control to the previous screen via EXEC CICS
+      * XCTL, passing the COMMAREA.
        RETURN-TO-PREV-SCREEN.
 
            IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES
@@ -513,6 +562,8 @@
       *----------------------------------------------------------------*
       *                      SEND-TRNADD-SCREEN
       *----------------------------------------------------------------*
+      * Populate header and send BMS map COTRN2A with ERASE
+      * and CURSOR positioning to the terminal.
        SEND-TRNADD-SCREEN.
 
            PERFORM POPULATE-HEADER-INFO
@@ -536,6 +587,8 @@
       *----------------------------------------------------------------*
       *                      RECEIVE-TRNADD-SCREEN
       *----------------------------------------------------------------*
+      * Receive user input from BMS map COTRN2A into the
+      * symbolic input area COTRN2AI.
        RECEIVE-TRNADD-SCREEN.
 
            EXEC CICS RECEIVE
@@ -549,6 +602,8 @@
       *----------------------------------------------------------------*
       *                      POPULATE-HEADER-INFO
       *----------------------------------------------------------------*
+      * Fill screen header: application titles, transaction
+      * name, program name, current date and time.
        POPULATE-HEADER-INFO.
 
            MOVE FUNCTION CURRENT-DATE  TO WS-CURDATE-DATA
@@ -573,6 +628,9 @@
       *----------------------------------------------------------------*
       *                      READ-CXACAIX-FILE
       *----------------------------------------------------------------*
+      * Read the card cross-reference alternate index (CXACAIX)
+      * to validate that the entered card number exists. Handles
+      * NORMAL, NOTFND, and OTHER conditions.
        READ-CXACAIX-FILE.
 
            EXEC CICS READ
@@ -606,6 +664,8 @@
       *----------------------------------------------------------------*
       *                      READ-CCXREF-FILE
       *----------------------------------------------------------------*
+      * Read the cross-reference file (CCXREF) to verify the
+      * account-card mapping. Handles NORMAL, NOTFND, and OTHER.
        READ-CCXREF-FILE.
 
            EXEC CICS READ
@@ -639,6 +699,8 @@
       *----------------------------------------------------------------*
       *                    STARTBR-TRANSACT-FILE
       *----------------------------------------------------------------*
+      * Start a browse on the TRANSACT file at HIGH-VALUES to
+      * position before the last record for next-ID generation.
        STARTBR-TRANSACT-FILE.
 
            EXEC CICS STARTBR
@@ -670,6 +732,8 @@
       *----------------------------------------------------------------*
       *                    READPREV-TRANSACT-FILE
       *----------------------------------------------------------------*
+      * Read the previous (last) record from the TRANSACT file
+      * browse to determine the highest existing transaction ID.
        READPREV-TRANSACT-FILE.
 
            EXEC CICS READPREV
@@ -699,6 +763,7 @@
       *----------------------------------------------------------------*
       *                    ENDBR-TRANSACT-FILE
       *----------------------------------------------------------------*
+      * End the TRANSACT file browse session.
        ENDBR-TRANSACT-FILE.
 
            EXEC CICS ENDBR
@@ -708,6 +773,9 @@
       *----------------------------------------------------------------*
       *                    WRITE-TRANSACT-FILE
       *----------------------------------------------------------------*
+      * Write the new transaction record to TRANSACT VSAM KSDS.
+      * Handles NORMAL (success with ID display), DUPKEY/DUPREC
+      * (ID collision), and OTHER errors.
        WRITE-TRANSACT-FILE.
 
            EXEC CICS WRITE
@@ -751,6 +819,7 @@
       *----------------------------------------------------------------*
       *                    CLEAR-CURRENT-SCREEN
       *----------------------------------------------------------------*
+      * Reset all screen fields and re-send the blank form.
        CLEAR-CURRENT-SCREEN.
 
            PERFORM INITIALIZE-ALL-FIELDS.
@@ -759,6 +828,7 @@
       *----------------------------------------------------------------*
       *                    INITIALIZE-ALL-FIELDS
       *----------------------------------------------------------------*
+      * Clear all symbolic map input fields and message area.
        INITIALIZE-ALL-FIELDS.
 
            MOVE -1              TO ACTIDINL OF COTRN2AI

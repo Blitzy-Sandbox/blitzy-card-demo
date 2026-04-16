@@ -20,6 +20,20 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      *================================================================*
+      * Program:     CORPT00C
+      * Transaction: CR00
+      * BMS Map:     CORPT00 / CORPT0A
+      * Function:    Report submission screen. Collects report criteria
+      *              (monthly or custom date range), validates date
+      *              fields using CSUTLDTC (date validation subprogram),
+      *              constructs a JCL job deck from hardcoded skeleton,
+      *              and submits it to the internal reader via TDQ
+      *              WRITEQ to the JOBS transient data queue.
+      * Files:       TRANSACT (STARTBR, READPREV, ENDBR — validate
+      *              date range against existing transactions)
+      * Navigation:  PF3 returns to main menu. PF4 clears screen.
+      *================================================================*
        IDENTIFICATION DIVISION.
        PROGRAM-ID. CORPT00C.
        AUTHOR.     AWS.
@@ -135,17 +149,25 @@
              10 CSUTLDTC-RESULT-MSG-NUM      PIC X(04).
              10 CSUTLDTC-RESULT-MSG          PIC X(61).
 
+      * COMMAREA structure for inter-program communication
        COPY COCOM01Y.
 
+      * BMS symbolic map for report submission screen
        COPY CORPT00.
 
+      * Application title and banner text
        COPY COTTL01Y.
+      * Date/time working storage fields
        COPY CSDAT01Y.
+      * Common user message definitions
        COPY CSMSG01Y.
 
+      * 350-byte transaction record layout (TRAN-RECORD)
        COPY CVTRA05Y.
 
+      * CICS attention identifier constants (ENTER, PF keys)
        COPY DFHAID.
+      * BMS attribute constants (colors, highlights)
        COPY DFHBMSCA.
 
       *----------------------------------------------------------------*
@@ -160,6 +182,8 @@
       *                       PROCEDURE DIVISION
       *----------------------------------------------------------------*
        PROCEDURE DIVISION.
+      * Main entry point. Dispatches on AID: Enter=process
+      * report request, PF3=back to main menu, PF4=clear.
        MAIN-PARA.
 
            SET ERR-FLG-OFF TO TRUE
@@ -205,6 +229,10 @@
       *----------------------------------------------------------------*
       *                      PROCESS-ENTER-KEY
       *----------------------------------------------------------------*
+      * Validate report type selection (monthly or custom),
+      * validate start/end dates using CSUTLDTC (LINK call),
+      * verify date range against TRANSACT file records, build
+      * JCL job deck, and submit via TDQ WRITEQ.
        PROCESS-ENTER-KEY.
 
            DISPLAY 'PROCESS ENTER KEY'
@@ -459,6 +487,10 @@
       *----------------------------------------------------------------*
       *                      SUBMIT-JOB-TO-INTRDR
       *----------------------------------------------------------------*
+      * Construct a multi-line JCL job deck with hardcoded
+      * skeleton (JOB, EXEC, DD statements) incorporating the
+      * validated date parameters. Write each line to the JOBS
+      * TDQ via EXEC CICS WRITEQ TD.
        SUBMIT-JOB-TO-INTRDR.
 
            IF CONFIRMI OF CORPT0AI = SPACES OR LOW-VALUES
@@ -512,6 +544,9 @@
       *----------------------------------------------------------------*
       *                      WIRTE-JOBSUB-TDQ
       *----------------------------------------------------------------*
+      * Write a single record to the JOBS transient data queue
+      * via EXEC CICS WRITEQ TD. Handles NORMAL and error
+      * conditions. Note: paragraph name has original typo.
        WIRTE-JOBSUB-TDQ.
 
            EXEC CICS WRITEQ TD
@@ -537,6 +572,8 @@
       *----------------------------------------------------------------*
       *                      RETURN-TO-PREV-SCREEN
       *----------------------------------------------------------------*
+      * Transfer control to the previous screen via EXEC CICS
+      * XCTL, passing the COMMAREA.
        RETURN-TO-PREV-SCREEN.
 
            IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES
@@ -553,6 +590,8 @@
       *----------------------------------------------------------------*
       *                      SEND-TRNRPT-SCREEN
       *----------------------------------------------------------------*
+      * Populate header and send BMS map CORPT0A with ERASE
+      * and CURSOR positioning to the terminal.
        SEND-TRNRPT-SCREEN.
 
            PERFORM POPULATE-HEADER-INFO
@@ -582,6 +621,8 @@
       *----------------------------------------------------------------*
       *                         RETURN-TO-CICS
       *----------------------------------------------------------------*
+      * Return control to CICS with pseudo-conversational wait
+      * under transaction CR00.
        RETURN-TO-CICS.
 
            EXEC CICS RETURN
@@ -593,6 +634,8 @@
       *----------------------------------------------------------------*
       *                      RECEIVE-TRNRPT-SCREEN
       *----------------------------------------------------------------*
+      * Receive user input from BMS map CORPT0A into the
+      * symbolic input area CORPT0AI.
        RECEIVE-TRNRPT-SCREEN.
 
            EXEC CICS RECEIVE
@@ -606,6 +649,8 @@
       *----------------------------------------------------------------*
       *                      POPULATE-HEADER-INFO
       *----------------------------------------------------------------*
+      * Fill screen header: application titles, transaction
+      * name, program name, current date and time.
        POPULATE-HEADER-INFO.
 
            MOVE FUNCTION CURRENT-DATE  TO WS-CURDATE-DATA
@@ -630,6 +675,7 @@
       *----------------------------------------------------------------*
       *                      INITIALIZE-ALL-FIELDS
       *----------------------------------------------------------------*
+      * Clear all symbolic map input fields and message area.
        INITIALIZE-ALL-FIELDS.
 
            MOVE -1              TO MONTHLYL OF CORPT0AI

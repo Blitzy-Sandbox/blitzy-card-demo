@@ -19,6 +19,20 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      *================================================================*
+      * Program:     COTRN00C
+      * Transaction: CT00
+      * BMS Map:     COTRN00 / COTRN0A
+      * Function:    Transaction list browse screen. Reads the TRANSACT
+      *              VSAM KSDS using STARTBR/READNEXT/READPREV/ENDBR
+      *              to display a paginated list of transactions (10
+      *              rows per page). Supports forward (PF8) and backward
+      *              (PF7) paging. Selecting a row passes the tran
+      *              ID via COMMAREA to COTRN01C (detail view).
+      * Files:       TRANSACT (STARTBR, READNEXT, READPREV, ENDBR)
+      * Navigation:  PF3 returns to main menu. PF7 pages backward.
+      *              PF8 pages forward. Enter on row goes to COTRN01C.
+      *================================================================*
        IDENTIFICATION DIVISION.
        PROGRAM-ID. COTRN00C.
        AUTHOR.     AWS.
@@ -58,6 +72,7 @@
 
 
 
+      * COMMAREA structure for inter-program communication
        COPY COCOM01Y.
           05 CDEMO-CT00-INFO.
              10 CDEMO-CT00-TRNID-FIRST     PIC X(16).
@@ -69,15 +84,22 @@
              10 CDEMO-CT00-TRN-SEL-FLG     PIC X(01).
              10 CDEMO-CT00-TRN-SELECTED    PIC X(16).
 
+      * BMS symbolic map for transaction list screen (COTRN0A)
        COPY COTRN00.
 
+      * Application title and banner text
        COPY COTTL01Y.
+      * Date/time working storage fields
        COPY CSDAT01Y.
+      * Common user message definitions
        COPY CSMSG01Y.
 
+      * 350-byte transaction record layout (TRAN-RECORD)
        COPY CVTRA05Y.
 
+      * CICS attention identifier constants (ENTER, PF keys)
        COPY DFHAID.
+      * BMS attribute constants (colors, highlights)
        COPY DFHBMSCA.
 
       *----------------------------------------------------------------*
@@ -92,6 +114,9 @@
       *                       PROCEDURE DIVISION
       *----------------------------------------------------------------*
        PROCEDURE DIVISION.
+      * Main entry point. On first entry, perform forward page.
+      * On re-entry, dispatch AID: Enter=select transaction,
+      * PF3=back, PF7=page backward, PF8=page forward.
        MAIN-PARA.
 
            SET ERR-FLG-OFF TO TRUE
@@ -135,6 +160,7 @@
                END-IF
            END-IF
 
+      * Return to CICS with pseudo-conversational wait
            EXEC CICS RETURN
                      TRANSID (WS-TRANID)
                      COMMAREA (CARDDEMO-COMMAREA)
@@ -143,6 +169,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-ENTER-KEY
       *----------------------------------------------------------------*
+      * Process transaction selection from the list. Validate
+      * the selection field, set CDEMO-CT01-TRN-SELECTED with
+      * the transaction ID, and XCTL to COTRN01C.
        PROCESS-ENTER-KEY.
 
            EVALUATE TRUE
@@ -231,6 +260,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-PF7-KEY
       *----------------------------------------------------------------*
+      * Handle PF7 (page backward). Restore the first tran ID
+      * on the current page from COMMAREA and invoke backward
+      * paging logic.
        PROCESS-PF7-KEY.
 
            IF CDEMO-CT00-TRNID-FIRST = SPACES OR LOW-VALUES
@@ -254,6 +286,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-PF8-KEY
       *----------------------------------------------------------------*
+      * Handle PF8 (page forward). Restore the last tran ID
+      * on the current page from COMMAREA and invoke forward
+      * paging logic.
        PROCESS-PF8-KEY.
 
            IF CDEMO-CT00-TRNID-LAST = SPACES OR LOW-VALUES
@@ -276,6 +311,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-PAGE-FORWARD
       *----------------------------------------------------------------*
+      * Browse TRANSACT forward from the current position.
+      * Read up to 10 records via STARTBR/READNEXT, populate
+      * screen rows, track first/last IDs for paging state.
        PROCESS-PAGE-FORWARD.
 
            PERFORM STARTBR-TRANSACT-FILE
@@ -330,6 +368,9 @@
       *----------------------------------------------------------------*
       *                      PROCESS-PAGE-BACKWARD
       *----------------------------------------------------------------*
+      * Browse TRANSACT backward from the current position.
+      * Uses STARTBR/READPREV to read up to 10 records in
+      * reverse, then re-reads forward to display in order.
        PROCESS-PAGE-BACKWARD.
 
            PERFORM STARTBR-TRANSACT-FILE
@@ -378,6 +419,9 @@
       *----------------------------------------------------------------*
       *                      POPULATE-TRAN-DATA
       *----------------------------------------------------------------*
+      * Map TRAN-RECORD fields (ID, card number, type code,
+      * category, source, amount) into the appropriate screen
+      * row based on the current row index.
        POPULATE-TRAN-DATA.
 
            MOVE TRAN-AMT                  TO WS-TRAN-AMT
@@ -447,6 +491,9 @@
       *----------------------------------------------------------------*
       *                      INITIALIZE-TRAN-DATA
       *----------------------------------------------------------------*
+      * Clear a single screen row (selection, tran ID, card
+      * number, type, category, source, amount) at the current
+      * row index.
        INITIALIZE-TRAN-DATA.
 
            EVALUATE WS-IDX
@@ -507,6 +554,8 @@
       *----------------------------------------------------------------*
       *                      RETURN-TO-PREV-SCREEN
       *----------------------------------------------------------------*
+      * Transfer control to the previous screen via EXEC CICS
+      * XCTL, passing the COMMAREA.
        RETURN-TO-PREV-SCREEN.
 
            IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES
@@ -524,6 +573,8 @@
       *----------------------------------------------------------------*
       *                      SEND-TRNLST-SCREEN
       *----------------------------------------------------------------*
+      * Populate header and send BMS map COTRN0A with ERASE
+      * and CURSOR positioning to the terminal.
        SEND-TRNLST-SCREEN.
 
            PERFORM POPULATE-HEADER-INFO
@@ -551,6 +602,8 @@
       *----------------------------------------------------------------*
       *                      RECEIVE-TRNLST-SCREEN
       *----------------------------------------------------------------*
+      * Receive user input from BMS map COTRN0A into the
+      * symbolic input area COTRN0AI.
        RECEIVE-TRNLST-SCREEN.
 
            EXEC CICS RECEIVE
@@ -564,6 +617,8 @@
       *----------------------------------------------------------------*
       *                      POPULATE-HEADER-INFO
       *----------------------------------------------------------------*
+      * Fill screen header: application titles, transaction
+      * name, program name, current date and time.
        POPULATE-HEADER-INFO.
 
            MOVE FUNCTION CURRENT-DATE  TO WS-CURDATE-DATA
@@ -588,6 +643,8 @@
       *----------------------------------------------------------------*
       *                      STARTBR-TRANSACT-FILE
       *----------------------------------------------------------------*
+      * Start a browse on TRANSACT VSAM KSDS from the given
+      * key position. Handles NORMAL, NOTFND, and OTHER.
        STARTBR-TRANSACT-FILE.
 
            EXEC CICS STARTBR
@@ -621,6 +678,8 @@
       *----------------------------------------------------------------*
       *                      READNEXT-TRANSACT-FILE
       *----------------------------------------------------------------*
+      * Read the next sequential record from the TRANSACT
+      * browse. Handles NORMAL, ENDFILE, and OTHER.
        READNEXT-TRANSACT-FILE.
 
            EXEC CICS READNEXT
@@ -655,6 +714,8 @@
       *----------------------------------------------------------------*
       *                      READPREV-TRANSACT-FILE
       *----------------------------------------------------------------*
+      * Read the previous record from the TRANSACT browse.
+      * Handles NORMAL, ENDFILE, and OTHER.
        READPREV-TRANSACT-FILE.
 
            EXEC CICS READPREV
@@ -689,6 +750,7 @@
       *----------------------------------------------------------------*
       *                      ENDBR-TRANSACT-FILE
       *----------------------------------------------------------------*
+      * End the TRANSACT file browse session.
        ENDBR-TRANSACT-FILE.
 
            EXEC CICS ENDBR

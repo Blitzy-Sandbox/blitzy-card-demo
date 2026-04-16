@@ -146,9 +146,9 @@ The following matrix shows which COBOL programs include each copybook via `COPY`
 | `CSMSG02Y` | COACTVWC, COACTUPC, COCRDLIC, COCRDSLC, COCRDUPC *(5)* | — |
 | `CSSTRPFY` | COACTVWC, COACTUPC, COCRDLIC, COCRDSLC, COCRDUPC *(5)* | — |
 | `CVCRD01Y` | COACTVWC, COACTUPC, COCRDLIC, COCRDSLC, COCRDUPC *(5)* | — |
-| `CVACT01Y` | COACTVWC, COACTUPC, COBIL00C, COCRDSLC, COCRDUPC, COTRN02C *(6)* | CBACT01C, CBACT04C, CBTRN01C, CBTRN02C, CBSTM03A *(5)* |
+| `CVACT01Y` | COACTVWC, COACTUPC, COBIL00C, COTRN02C *(4)* | CBACT01C, CBACT04C, CBTRN01C, CBTRN02C, CBSTM03A *(5)* |
 | `CVACT02Y` | COACTVWC, COCRDLIC, COCRDSLC, COCRDUPC *(4)* | CBACT02C, CBTRN01C *(2)* |
-| `CVACT03Y` | COACTVWC, COACTUPC, COBIL00C, COCRDSLC, COCRDUPC, COTRN02C *(6)* | CBACT03C, CBACT04C, CBTRN01C, CBTRN02C, CBTRN03C, CBSTM03A *(6)* |
+| `CVACT03Y` | COACTVWC, COACTUPC, COBIL00C, COTRN02C *(4)* | CBACT03C, CBACT04C, CBTRN01C, CBTRN02C, CBTRN03C, CBSTM03A *(6)* |
 | `CVCUS01Y` | COACTVWC, COACTUPC, COCRDSLC, COCRDUPC *(4)* | CBCUS01C, CBTRN01C *(2)* |
 | `CVTRA05Y` | COTRN00C, COTRN01C, COTRN02C, COBIL00C, CORPT00C *(5)* | CBACT04C, CBTRN01C, CBTRN02C, CBTRN03C *(4)* |
 | `CVTRA06Y` | — | CBTRN01C, CBTRN02C *(2)* |
@@ -171,7 +171,7 @@ The following matrix shows which COBOL programs include each copybook via `COPY`
 
 **Usage highlights:**
 - `COCOM01Y`, `COTTL01Y`, `CSDAT01Y`, and `CSMSG01Y` form the "universal quartet" — included by all 17 online programs
-- `CVACT01Y` and `CVACT03Y` are the most cross-cutting record layouts, consumed by 11–12 programs each (online + batch)
+- `CVACT01Y` and `CVACT03Y` are the most cross-cutting record layouts, consumed by 9–10 programs each (online + batch)
 - `COACTUPC` (Account Update) is the most copybook-intensive program, consuming 4 validation/utility copybooks that no other program uses
 - `UNUSED1Y` is the only copybook with zero consumers — it exists as a reserved placeholder in the repository
 
