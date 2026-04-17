@@ -1,0 +1,177 @@
+{
+  "Comment": "CardDemo batch pipeline - migrated from JCL COND parameter chaining. Original source: app/jcl/POSTTRAN.jcl, INTCALC.jcl, COMBTRAN.jcl, CREASTMT.JCL, TRANREPT.jcl. Licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0). This AWS Step Functions state machine (Amazon States Language / ASL) orchestrates the 5-stage CardDemo batch pipeline on AWS Glue 5.1, replacing the mainframe JES2/JCL job sequencing. Pipeline execution order: Stage1 (POSTTRAN) -> Stage2 (INTCALC) -> Stage3 (COMBTRAN) -> Parallel(Stage4a (CREASTMT), Stage4b (TRANREPT)) -> PipelineComplete. Any stage failure routes to PipelineFailed, halting all downstream stages (mirrors JCL COND=(0,NE) semantics from CREASTMT.JCL).",
+  "StartAt": "Stage1_PostTran",
+  "TimeoutSeconds": 86400,
+  "Version": "1.0",
+  "States": {
+    "Stage1_PostTran": {
+      "Type": "Task",
+      "Comment": "Stage 1: Transaction posting engine. Source: CBTRN02C.cbl + POSTTRAN.jcl. Processes daily transactions, updates accounts and category balances, writes rejects to S3. Preserves the 4-stage transaction validation cascade (reject codes 100-109) from CBTRN02C.cbl. Glue job reads from DALYTRAN (S3), XREFFILE/ACCTFILE/TCATBALF (Aurora PostgreSQL), updates TRANSACT and TCATBALF, writes rejects to DALYREJS S3 path.",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "carddemo-posttran"
+      },
+      "ResultPath": "$.Stage1Result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.ErrorInfo",
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "Stage2_IntCalc"
+    },
+    "Stage2_IntCalc": {
+      "Type": "Task",
+      "Comment": "Stage 2: Interest calculation. Source: CBACT04C.cbl + INTCALC.jcl. Computes interest using (TRAN-CAT-BAL x DIS-INT-RATE) / 1200 formula (un-simplified per refactoring rules), produces system-generated transactions. Applies DEFAULT/ZEROAPR disclosure group fallback from CBACT04C.cbl. The --parm_date argument replaces the JCL EXEC PARM='2022071800' for CBACT04C, providing the ledger timestamp used to stamp all generated interest transactions.",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "carddemo-intcalc",
+        "Arguments": {
+          "--parm_date": "2022071800"
+        }
+      },
+      "ResultPath": "$.Stage2Result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.ErrorInfo",
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "Stage3_CombTran"
+    },
+    "Stage3_CombTran": {
+      "Type": "Task",
+      "Comment": "Stage 3: Combined transactions merge/sort. Source: COMBTRAN.jcl (no COBOL program - originally DFSORT STEP05R + IDCAMS REPRO STEP10). PySpark merges transaction backup + system-generated transactions, sorts by tran_id ascending, loads into the transactions table. This stage must complete before both Stage 4a and Stage 4b can begin.",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "carddemo-combtran"
+      },
+      "ResultPath": "$.Stage3Result",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.ErrorInfo",
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "Stage4_Parallel"
+    },
+    "Stage4_Parallel": {
+      "Type": "Parallel",
+      "Comment": "Stage 4: Statement generation and transaction reporting run in PARALLEL (matching original JCL architecture where CREASTMT and TRANREPT are separate independent jobs submitted independently after COMBTRAN completes). If either branch fails, the Parallel state fails and routes to PipelineFailed via the Catch handler, cancelling the sibling branch.",
+      "Branches": [
+        {
+          "StartAt": "Stage4a_CreAStmt",
+          "States": {
+            "Stage4a_CreAStmt": {
+              "Type": "Task",
+              "Comment": "Stage 4a: Statement generation. Source: CBSTM03A.CBL + CBSTM03B.CBL + CREASTMT.JCL. Generates text and HTML statements from a 4-entity join (Account, Customer, CardCrossReference, Transaction). Replaces the original multi-step JCL (IDCAMS DEFINE -> SORT -> REPRO -> IEFBR14 cleanup -> CBSTM03A) with a single PySpark job whose internal steps preserve the COND=(0,NE) halting semantics implicitly via Spark job failure.",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName": "carddemo-creastmt"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 60,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Stage4b_TranRept",
+          "States": {
+            "Stage4b_TranRept": {
+              "Type": "Task",
+              "Comment": "Stage 4b: Transaction reporting. Source: CBTRN03C.cbl + TRANREPT.jcl. Generates date-filtered report with 3-level totals (per-account, per-page, report-grand-total). The --start_date and --end_date arguments replace the JCL SYMNAMES PARM-START-DATE / PARM-END-DATE literals from TRANREPT.jcl, providing the inclusive date range over TRAN-PROC-DT. Defaults preserve the original JCL behaviour (2022-01-01 through 2022-07-06).",
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                "JobName": "carddemo-tranrept",
+                "Arguments": {
+                  "--start_date": "2022-01-01",
+                  "--end_date": "2022-07-06"
+                }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 60,
+                  "MaxAttempts": 2,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultPath": "$.Stage4Result",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.ErrorInfo",
+          "Next": "PipelineFailed"
+        }
+      ],
+      "Next": "PipelineComplete"
+    },
+    "PipelineComplete": {
+      "Type": "Succeed",
+      "Comment": "All 5 pipeline stages completed successfully. Terminal success state equivalent to the mainframe batch job chain completing with RC=0 on every step."
+    },
+    "PipelineFailed": {
+      "Type": "Fail",
+      "Error": "CardDemoPipelineError",
+      "Cause": "One or more batch pipeline stages failed. Check CloudWatch logs for the failed Glue job.",
+      "Comment": "Pipeline failure handler - halts downstream stages (matching JCL COND parameter behavior where non-zero return codes prevent subsequent steps from executing, per CREASTMT.JCL COND=(0,NE) semantics). All Task states and the Parallel state route here via Catch with ErrorEquals=[States.ALL]."
+    }
+  }
+}
