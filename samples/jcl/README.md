@@ -28,7 +28,7 @@ Each wrapper invokes its respective cataloged procedure via an `EXEC` statement,
 
 ## Customization Parameters
 
-All three samples use JCL `SET` symbols for site-specific customization. The following parameters must be reviewed and updated before job submission:
+BATCMP and CICCMP use JCL `SET` symbols for all site-specific customization. BMSCMP uses a `SET` symbol for the HLQ but passes `MAPNAME` directly as an `EXEC` statement keyword parameter. The following parameters must be reviewed and updated before job submission:
 
 | Symbol | Default Value | Description | Used In |
 |--------|---------------|-------------|---------|
