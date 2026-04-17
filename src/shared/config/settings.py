@@ -288,6 +288,26 @@ class Settings(BaseSettings):
             "Glue is mocked or not invoked."
         ),
     )
+    AWS_ENDPOINT_URL: str = Field(
+        default="",
+        description=(
+            "Optional AWS service endpoint URL override, used exclusively "
+            "for local development against LocalStack. When set to a "
+            "non-empty value, all boto3 clients constructed via "
+            "``src.shared.config.aws_config`` (S3, SQS, Secrets Manager) "
+            "will target this endpoint instead of the AWS-managed "
+            "regional endpoints — this enables the Docker Compose local "
+            "development stack to fully exercise AWS integration code "
+            "paths against the ``localstack/localstack:3`` container "
+            "(see docker-compose.yml ``AWS_ENDPOINT_URL: "
+            "http://localstack:4566``). In production deployments to "
+            "AWS ECS Fargate this variable MUST be unset (or empty) so "
+            "that boto3 resolves to the real AWS endpoints via the "
+            "standard regional / VPC endpoint discovery mechanism. "
+            "There is no mainframe equivalent — the original z/OS "
+            "application had no concept of a pluggable service endpoint."
+        ),
+    )
 
     # ------------------------------------------------------------------
     # Application configuration

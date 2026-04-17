@@ -119,6 +119,13 @@ module = [
     "pyspark.*",
     "moto.*",
     "testcontainers.*",
+    # boto3 and botocore ship without bundled type stubs (no py.typed marker).
+    # The optional "boto3-stubs" package would provide them, but it adds a
+    # significant install-time surface for a dependency only used by a handful
+    # of AWS client factory functions in src/shared/config/aws_config.py.
+    # Adding the packages here matches the pattern used for awsglue/pyspark.
+    "boto3.*",
+    "botocore.*",
 ]
 ignore_missing_imports = true
 
