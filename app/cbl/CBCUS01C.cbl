@@ -19,11 +19,29 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ******************************************************************
-      * Batch diagnostic utility: sequentially reads all records from
-      * the CUSTDAT VSAM KSDS (customer master file) and displays
-      * each record to SYSOUT. Uses CVCUS01Y copybook for the
-      * 500-byte CUSTOMER-RECORD layout. Invoked by JCL job
-      * READCUST.jcl. Abends via CEE3ABD on any I/O error.
+      * Batch utility program: Sequential read and display of the
+      * customer master file (CUSTDAT).
+      * Reads all records from the CUSTDAT VSAM KSDS dataset in
+      * CUST-ID key sequence and writes each 500-byte
+      * CUSTOMER-RECORD to SYSOUT for diagnostic verification
+      * or data audit purposes.
+      *
+      * Record layout: CUSTOMER-RECORD (500 bytes) defined in
+      * CVCUS01Y.cpy — contains customer demographics (name),
+      * contact info (address, phone), identity data (SSN,
+      * government ID, DOB), and financial profile (EFT
+      * account, card holder indicator, FICO credit score).
+      *
+      * Invoked by: JCL job READCUST.jcl
+      *
+      * Files accessed:
+      *   CUSTFILE (CUSTDAT) — Customer master VSAM KSDS
+      *     Primary key: CUST-ID (9 bytes numeric)
+      *     Record size: 500 bytes fixed
+      *     Access mode: Sequential (full-file scan)
+      *
+      * Abend codes:
+      *   999 — Unrecoverable file I/O error (via CEE3ABD)
       ******************************************************************
        IDENTIFICATION DIVISION.
        PROGRAM-ID.    CBCUS01C.
@@ -32,6 +50,8 @@
        ENVIRONMENT DIVISION.
        INPUT-OUTPUT SECTION.
        FILE-CONTROL.
+      * CUSTDAT VSAM KSDS — primary key FD-CUST-ID (9 bytes
+      * numeric), accessed sequentially for full-file read
            SELECT CUSTFILE-FILE ASSIGN TO   CUSTFILE
                   ORGANIZATION IS INDEXED
                   ACCESS MODE  IS SEQUENTIAL
@@ -40,6 +60,8 @@
       *
        DATA DIVISION.
        FILE SECTION.
+      * File description for CUSTDAT — 500-byte customer records
+      * FD-CUST-ID is the 9-byte numeric primary key
        FD  CUSTFILE-FILE.
        01  FD-CUSTFILE-REC.
            05 FD-CUST-ID                        PIC 9(09).
@@ -48,20 +70,30 @@
        WORKING-STORAGE SECTION.
 
       *****************************************************************
-      * CUSTOMER-RECORD layout: see CVCUS01Y.cpy for fields
+      * Includes 500-byte CUSTOMER-RECORD layout from
+      * CVCUS01Y.cpy — demographics (first/middle/last name),
+      * address (3 lines, state, country, ZIP), phone (2),
+      * SSN, government ID, DOB, EFT account ID,
+      * primary card holder indicator, FICO credit score
        COPY CVCUS01Y.
       * Two-byte FILE STATUS: '00'=OK, '10'=EOF, other=error
        01  CUSTFILE-STATUS.
            05  CUSTFILE-STAT1      PIC X.
            05  CUSTFILE-STAT2      PIC X.
 
+      * General I/O status work area used by Z-DISPLAY-IO-STATUS
+      * to format and display file status diagnostics
        01  IO-STATUS.
            05  IO-STAT1            PIC X.
            05  IO-STAT2            PIC X.
+      * Binary-to-display conversion area for non-numeric
+      * (class 9) file status second byte
        01  TWO-BYTES-BINARY        PIC 9(4) BINARY.
        01  TWO-BYTES-ALPHA         REDEFINES TWO-BYTES-BINARY.
            05  TWO-BYTES-LEFT      PIC X.
            05  TWO-BYTES-RIGHT     PIC X.
+      * Formatted 4-digit display area for file status output
+      * Positions 1: class digit, 2-4: detail code
        01  IO-STATUS-04.
            05  IO-STATUS-0401      PIC 9   VALUE 0.
            05  IO-STATUS-0403      PIC 999 VALUE 0.
@@ -78,8 +110,9 @@
        01  TIMING                  PIC S9(9) BINARY. 
 
       *****************************************************************
-      * PROCEDURE DIVISION: Opens customer file, reads all
-      * records sequentially, displays each, then closes.
+      * Main control — opens CUSTDAT, reads all customer
+      * records sequentially, displays each to SYSOUT,
+      * then closes the file and returns to caller.
        PROCEDURE DIVISION.
            DISPLAY 'START OF EXECUTION OF PROGRAM CBCUS01C'.
            PERFORM 0000-CUSTFILE-OPEN.
@@ -103,7 +136,10 @@
       * I/O ROUTINES TO ACCESS A KSDS, VSAM DATA SET...               *
       *****************************************************************
       * Reads next sequential record from CUSTFILE into
-      * CUSTOMER-RECORD (CVCUS01Y). Sets APPL-RESULT.
+      * CUSTOMER-RECORD (CVCUS01Y layout). Evaluates
+      * FILE STATUS: '00' = success (displays record),
+      * '10' = end-of-file (sets APPL-EOF flag),
+      * other = error (displays status and abends).
        1000-CUSTFILE-GET-NEXT.
            READ CUSTFILE-FILE INTO CUSTOMER-RECORD.
            IF  CUSTFILE-STATUS = '00'
@@ -168,6 +204,10 @@
            END-IF
            EXIT.
 
+      * Forces abnormal program termination via CEE3ABD
+      * (LE Language Environment abend service).
+      * Sets abend code 999 to signal unrecoverable I/O
+      * error. Timing 0 requests immediate termination.
        Z-ABEND-PROGRAM.
            DISPLAY 'ABENDING PROGRAM'
            MOVE 0 TO TIMING
@@ -175,6 +215,10 @@
            CALL 'CEE3ABD'.
 
       *****************************************************************
+      * Formats and displays the FILE STATUS code to SYSOUT.
+      * Handles both numeric (class 0-8) and non-numeric
+      * (class 9 with binary second byte) status formats.
+      * Outputs a 4-digit NNNN display for diagnostics.
        Z-DISPLAY-IO-STATUS.
            IF  IO-STATUS NOT NUMERIC
            OR  IO-STAT1 = '9'
