@@ -46,42 +46,61 @@
       *----------------------------------------------------------------*
        WORKING-STORAGE SECTION.
 
+      * Local working storage for the transaction list program
        01 WS-VARIABLES.
+      * Program name and CICS transaction identifier
          05 WS-PGMNAME                 PIC X(08) VALUE 'COTRN00C'.
          05 WS-TRANID                  PIC X(04) VALUE 'CT00'.
+      * User-facing status/error message buffer (80 bytes)
          05 WS-MESSAGE                 PIC X(80) VALUE SPACES.
+      * VSAM KSDS file name constant for CICS file control
          05 WS-TRANSACT-FILE             PIC X(08) VALUE 'TRANSACT'.
+      * Error flag: Y when a processing error occurs
          05 WS-ERR-FLG                 PIC X(01) VALUE 'N'.
            88 ERR-FLG-ON                         VALUE 'Y'.
            88 ERR-FLG-OFF                        VALUE 'N'.
+      * End-of-file flag for TRANSACT browse operations
          05 WS-TRANSACT-EOF            PIC X(01) VALUE 'N'.
            88 TRANSACT-EOF                       VALUE 'Y'.
            88 TRANSACT-NOT-EOF                   VALUE 'N'.
+      * Controls whether SEND MAP uses ERASE (full repaint)
          05 WS-SEND-ERASE-FLG          PIC X(01) VALUE 'Y'.
            88 SEND-ERASE-YES                     VALUE 'Y'.
            88 SEND-ERASE-NO                      VALUE 'N'.
 
+      * CICS RESP/RESP2 codes from file control commands
          05 WS-RESP-CD                 PIC S9(09) COMP VALUE ZEROS.
          05 WS-REAS-CD                 PIC S9(09) COMP VALUE ZEROS.
+      * Record counter (unused), row index 1-10, page num
          05 WS-REC-COUNT               PIC S9(04) COMP VALUE ZEROS.
          05 WS-IDX                     PIC S9(04) COMP VALUE ZEROS.
          05 WS-PAGE-NUM                PIC S9(04) COMP VALUE ZEROS.
 
+      * Formatted transaction amount for screen display
          05 WS-TRAN-AMT                PIC +99999999.99.
+      * Formatted transaction date MM/DD/YY for display
          05 WS-TRAN-DATE               PIC X(08) VALUE '00/00/00'.
 
 
 
       * COMMAREA structure for inter-program communication
        COPY COCOM01Y.
+      * CT00-specific paging and selection state fields
+      * appended to the shared CARDDEMO-COMMAREA structure
           05 CDEMO-CT00-INFO.
+      *          First tran ID on current page (for PF7)
              10 CDEMO-CT00-TRNID-FIRST     PIC X(16).
+      *          Last tran ID on current page (for PF8)
              10 CDEMO-CT00-TRNID-LAST      PIC X(16).
+      *          Current page number for display
              10 CDEMO-CT00-PAGE-NUM        PIC 9(08).
+      *          Flag: Y if more records beyond this page
              10 CDEMO-CT00-NEXT-PAGE-FLG   PIC X(01) VALUE 'N'.
                 88 NEXT-PAGE-YES                     VALUE 'Y'.
                 88 NEXT-PAGE-NO                      VALUE 'N'.
+      *          Row selection flag (S = view detail)
              10 CDEMO-CT00-TRN-SEL-FLG     PIC X(01).
+      *          Transaction ID of the selected row
              10 CDEMO-CT00-TRN-SELECTED    PIC X(16).
 
       * BMS symbolic map for transaction list screen (COTRN0A)
@@ -106,6 +125,8 @@
       *                        LINKAGE SECTION
       *----------------------------------------------------------------*
        LINKAGE SECTION.
+      * DFHCOMMAREA receives the shared COMMAREA from CICS.
+      * Length depends on EIBCALEN set by the calling program.
        01  DFHCOMMAREA.
          05  LK-COMMAREA                           PIC X(01)
              OCCURS 1 TO 32767 TIMES DEPENDING ON EIBCALEN.
@@ -119,6 +140,8 @@
       * PF3=back, PF7=page backward, PF8=page forward.
        MAIN-PARA.
 
+      * Initialize processing flags: clear errors, reset
+      * EOF state, enable next-page, and set screen erase
            SET ERR-FLG-OFF TO TRUE
            SET TRANSACT-NOT-EOF TO TRUE
            SET NEXT-PAGE-NO TO TRUE
@@ -129,16 +152,23 @@
 
            MOVE -1       TO TRNIDINL OF COTRN0AI
 
+      * Pseudo-conversational check: EIBCALEN = 0 means
+      * no COMMAREA was passed (direct start), so redirect
+      * to sign-on screen COSGN00C for authentication
            IF EIBCALEN = 0
                MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM
                PERFORM RETURN-TO-PREV-SCREEN
            ELSE
                MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA
+      *            First entry (context=0): set re-enter
+      *            flag, clear output map, show first page
                IF NOT CDEMO-PGM-REENTER
                    SET CDEMO-PGM-REENTER    TO TRUE
                    MOVE LOW-VALUES          TO COTRN0AO
                    PERFORM PROCESS-ENTER-KEY
                    PERFORM SEND-TRNLST-SCREEN
+      *            Re-entry: receive input then dispatch
+      *            based on the attention identifier (AID)
                ELSE
                    PERFORM RECEIVE-TRNLST-SCREEN
                    EVALUATE EIBAID
@@ -174,6 +204,9 @@
       * the transaction ID, and XCTL to COTRN01C.
        PROCESS-ENTER-KEY.
 
+      * Scan all 10 SEL input fields (SEL0001I-SEL0010I)
+      * to find which row the user selected. Copy the
+      * selection flag and transaction ID into COMMAREA.
            EVALUATE TRUE
                WHEN SEL0001I OF COTRN0AI NOT = SPACES AND LOW-VALUES
                    MOVE SEL0001I OF COTRN0AI TO CDEMO-CT00-TRN-SEL-FLG
@@ -209,6 +242,9 @@
                    MOVE SPACES   TO CDEMO-CT00-TRN-SEL-FLG
                    MOVE SPACES   TO CDEMO-CT00-TRN-SELECTED
            END-EVALUATE
+      * If a valid selection was made, route to COTRN01C
+      * for transaction detail view via EXEC CICS XCTL.
+      * Only S or s is accepted; other values show error.
            IF (CDEMO-CT00-TRN-SEL-FLG NOT = SPACES AND LOW-VALUES) AND
               (CDEMO-CT00-TRN-SELECTED NOT = SPACES AND LOW-VALUES)
                EVALUATE CDEMO-CT00-TRN-SEL-FLG
@@ -232,6 +268,9 @@
                END-EVALUATE
            END-IF
 
+      * Process the transaction ID filter input field.
+      * If blank, start browse from the beginning; if
+      * numeric, use as the starting key for STARTBR.
            IF TRNIDINI OF COTRN0AI = SPACES OR LOW-VALUES
                MOVE LOW-VALUES TO TRAN-ID
            ELSE
@@ -320,10 +359,13 @@
 
            IF NOT ERR-FLG-ON
 
+      *            Skip the current record on PF8 forward
+      *            to avoid redisplaying the last row
                IF EIBAID NOT = DFHENTER AND DFHPF7 AND DFHPF3
                    PERFORM READNEXT-TRANSACT-FILE
                END-IF
 
+      *            Clear all 10 screen rows before read loop
                IF TRANSACT-NOT-EOF AND ERR-FLG-OFF
                   PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > 10
                       PERFORM INITIALIZE-TRAN-DATA
@@ -332,6 +374,8 @@
 
                MOVE 1             TO  WS-IDX
 
+      *            Read up to 10 records via READNEXT,
+      *            populating one screen row per record
                PERFORM UNTIL WS-IDX >= 11 OR TRANSACT-EOF OR ERR-FLG-ON
                    PERFORM READNEXT-TRANSACT-FILE
                    IF TRANSACT-NOT-EOF AND ERR-FLG-OFF
@@ -340,6 +384,9 @@
                    END-IF
                END-PERFORM
 
+      *            After filling the page, attempt one more
+      *            READNEXT as a look-ahead to determine if
+      *            another page of data exists (NEXT-PAGE-YES)
                IF TRANSACT-NOT-EOF AND ERR-FLG-OFF
                    COMPUTE CDEMO-CT00-PAGE-NUM =
                            CDEMO-CT00-PAGE-NUM + 1
@@ -377,6 +424,8 @@
 
            IF NOT ERR-FLG-ON
 
+      *            Skip current record to avoid redisplay
+      *            when re-entering from a non-Enter key
                IF EIBAID NOT = DFHENTER AND DFHPF8
                    PERFORM READPREV-TRANSACT-FILE
                END-IF
@@ -387,6 +436,8 @@
                   END-PERFORM
                END-IF
 
+      *            Fill screen rows from 10 down to 1 by
+      *            reading records in reverse key order
                MOVE 10          TO  WS-IDX
 
                PERFORM UNTIL WS-IDX <= 0 OR TRANSACT-EOF OR ERR-FLG-ON
@@ -397,6 +448,8 @@
                    END-IF
                END-PERFORM
 
+      *            Look-ahead READPREV to see if a prior
+      *            page exists and adjust page counter
                IF TRANSACT-NOT-EOF AND ERR-FLG-OFF
                   PERFORM READPREV-TRANSACT-FILE
                   IF NEXT-PAGE-YES
@@ -424,6 +477,9 @@
       * row based on the current row index.
        POPULATE-TRAN-DATA.
 
+      * Format transaction amount and extract date from
+      * TRAN-ORIG-TS timestamp (YYYY-MM-DD format) to
+      * MM/DD/YY display format for the screen row
            MOVE TRAN-AMT                  TO WS-TRAN-AMT
            MOVE TRAN-ORIG-TS              TO WS-TIMESTAMP
            MOVE WS-TIMESTAMP-DT-YYYY(3:2) TO WS-CURDATE-YY
@@ -431,6 +487,9 @@
            MOVE WS-TIMESTAMP-DT-DD        TO WS-CURDATE-DD
            MOVE WS-CURDATE-MM-DD-YY       TO WS-TRAN-DATE
 
+      * Map transaction fields to the screen row matching
+      * WS-IDX. Row 1 also saves first tran ID for PF7;
+      * row 10 also saves last tran ID for PF8 paging.
            EVALUATE WS-IDX
                WHEN 1
                    MOVE TRAN-ID    TO TRNID01I OF COTRN0AI
@@ -558,6 +617,7 @@
       * XCTL, passing the COMMAREA.
        RETURN-TO-PREV-SCREEN.
 
+      * Default to sign-on screen if no target is set
            IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES
                MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM
            END-IF
@@ -581,6 +641,8 @@
 
            MOVE WS-MESSAGE TO ERRMSGO OF COTRN0AO
 
+      * SEND MAP with ERASE clears screen before painting;
+      * without ERASE, overlays existing screen content
            IF SEND-ERASE-YES
                EXEC CICS SEND
                          MAP('COTRN0A')
@@ -606,6 +668,8 @@
       * symbolic input area COTRN0AI.
        RECEIVE-TRNLST-SCREEN.
 
+      * Receive user input from the 3270 terminal into the
+      * symbolic input map COTRN0AI for field processing
            EXEC CICS RECEIVE
                      MAP('COTRN0A')
                      MAPSET('COTRN00')
@@ -621,6 +685,7 @@
       * name, program name, current date and time.
        POPULATE-HEADER-INFO.
 
+      * Retrieve system date and time via intrinsic function
            MOVE FUNCTION CURRENT-DATE  TO WS-CURDATE-DATA
 
            MOVE CCDA-TITLE01           TO TITLE01O OF COTRN0AO
@@ -647,6 +712,9 @@
       * key position. Handles NORMAL, NOTFND, and OTHER.
        STARTBR-TRANSACT-FILE.
 
+      * Position the browse cursor at the transaction key
+      * held in TRAN-ID. The GTEQ option is commented out,
+      * so an exact key match or higher is used by default.
            EXEC CICS STARTBR
                 DATASET   (WS-TRANSACT-FILE)
                 RIDFLD    (TRAN-ID)
@@ -656,9 +724,12 @@
                 RESP2     (WS-REAS-CD)
            END-EXEC.
 
+      * Evaluate the CICS response from STARTBR
            EVALUATE WS-RESP-CD
+      *                NORMAL: browse positioned at key
                WHEN DFHRESP(NORMAL)
                    CONTINUE
+      *                NOTFND: no matching key, signal EOF
                WHEN DFHRESP(NOTFND)
                    CONTINUE
                    SET TRANSACT-EOF TO TRUE
@@ -666,6 +737,7 @@
                                    WS-MESSAGE
                    MOVE -1       TO TRNIDINL OF COTRN0AI
                    PERFORM SEND-TRNLST-SCREEN
+      *                OTHER: unexpected error, set error flag
                WHEN OTHER
                    DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD
                    MOVE 'Y'     TO WS-ERR-FLG
@@ -682,6 +754,8 @@
       * browse. Handles NORMAL, ENDFILE, and OTHER.
        READNEXT-TRANSACT-FILE.
 
+      * Read the next sequential transaction record into
+      * TRAN-RECORD. RIDFLD updates with current key position.
            EXEC CICS READNEXT
                 DATASET   (WS-TRANSACT-FILE)
                 INTO      (TRAN-RECORD)
@@ -692,9 +766,12 @@
                 RESP2     (WS-REAS-CD)
            END-EXEC.
 
+      * Evaluate the CICS response from READNEXT
            EVALUATE WS-RESP-CD
+      *                NORMAL: record read successfully
                WHEN DFHRESP(NORMAL)
                    CONTINUE
+      *                ENDFILE: reached end of dataset
                WHEN DFHRESP(ENDFILE)
                    CONTINUE
                    SET TRANSACT-EOF TO TRUE
@@ -702,6 +779,7 @@
                                    WS-MESSAGE
                    MOVE -1       TO TRNIDINL OF COTRN0AI
                    PERFORM SEND-TRNLST-SCREEN
+      *                OTHER: unexpected error, set error flag
                WHEN OTHER
                    DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD
                    MOVE 'Y'     TO WS-ERR-FLG
@@ -718,6 +796,8 @@
       * Handles NORMAL, ENDFILE, and OTHER.
        READPREV-TRANSACT-FILE.
 
+      * Read the previous transaction record into
+      * TRAN-RECORD. RIDFLD updates with current key position.
            EXEC CICS READPREV
                 DATASET   (WS-TRANSACT-FILE)
                 INTO      (TRAN-RECORD)
@@ -728,9 +808,12 @@
                 RESP2     (WS-REAS-CD)
            END-EXEC.
 
+      * Evaluate the CICS response from READPREV
            EVALUATE WS-RESP-CD
+      *                NORMAL: record read successfully
                WHEN DFHRESP(NORMAL)
                    CONTINUE
+      *                ENDFILE: reached beginning of dataset
                WHEN DFHRESP(ENDFILE)
                    CONTINUE
                    SET TRANSACT-EOF TO TRUE
@@ -738,6 +821,7 @@
                                    WS-MESSAGE
                    MOVE -1       TO TRNIDINL OF COTRN0AI
                    PERFORM SEND-TRNLST-SCREEN
+      *                OTHER: unexpected error, set error flag
                WHEN OTHER
                    DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD
                    MOVE 'Y'     TO WS-ERR-FLG
@@ -753,6 +837,7 @@
       * End the TRANSACT file browse session.
        ENDBR-TRANSACT-FILE.
 
+      * Release the browse cursor on the TRANSACT VSAM file
            EXEC CICS ENDBR
                 DATASET   (WS-TRANSACT-FILE)
            END-EXEC.
