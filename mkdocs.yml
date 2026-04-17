@@ -4,5 +4,14 @@ nav:
   - Project Guide: project-guide.md
   - Technical Specifications: technical-specifications.md
 plugins:
-  - techdocs-core
+  - techdocs-core:
+      use_material_search: true
   - mermaid2
+exclude_docs: |
+  README.md
+markdown_extensions:
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:mermaid2.fence_mermaid
