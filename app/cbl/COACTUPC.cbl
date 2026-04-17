@@ -18,6 +18,40 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ******************************************************************      
+      *================================================================*
+      * CICS online program: Account update
+      * Program:     COACTUPC
+      * Transaction: CAUP
+      * BMS Map:     COACTUP / CACTUPA
+      * Function:    Updates account data (balances, limits, dates)
+      *              and customer demographics (name, address, phone,
+      *              SSN, DOB, FICO). Performs a 3-entity join
+      *              (Account + CrossRef + Customer) via CXACAIX,
+      *              ACCTDAT, and CUSTDAT for initial display, then
+      *              allows editing of account and customer fields.
+      *              Validates 18+ fields including US phone, SSN,
+      *              state code, ZIP prefix, and FICO score using
+      *              CSLKPCDY lookup tables.
+      * Concurrency: Uses optimistic concurrency via COMMAREA
+      *              before-image comparison. On update, re-reads
+      *              records and compares against saved before-images
+      *              to detect concurrent modifications.
+      * Update:      Implements dual-record update: ACCTDAT + CUSTDAT
+      *              in single SYNCPOINT. SYNCPOINT ROLLBACK on
+      *              failure ensures data consistency.
+      * Files:       ACCTDAT (READ, READ UPDATE, REWRITE),
+      *              CXACAIX (READ via alternate index path),
+      *              CUSTDAT (READ, READ UPDATE, REWRITE)
+      * Navigation:  PF3 returns to calling program via XCTL.
+      *              ENTER fetches account or submits edits.
+      *              PF5 confirms update under SYNCPOINT.
+      * Copybooks:   COCOM01Y (COMMAREA), CVACT01Y (account),
+      *              CVACT03Y (xref), CVCUS01Y (customer),
+      *              CVCRD01Y (work area), CSSTRPFY (PF keys),
+      *              COTTL01Y (titles), CSDAT01Y (date/time),
+      *              CSMSG01Y (messages), CSMSG02Y (abend data),
+      *              CSLKPCDY (validation lookups)
+      *================================================================*
        IDENTIFICATION DIVISION.
        PROGRAM-ID.
            COACTUPC.
@@ -163,6 +197,7 @@
       ******************************************************************
       *    Generic date edit variables CCYYMMDD
       ******************************************************************
+      * Date-edit working storage for date validation
            COPY 'CSUTLDWY'.
       ******************************************************************
          05  WS-DATACHANGED-FLAG                   PIC X(1).
@@ -594,11 +629,13 @@
       ******************************************************************
       *Other common working storage Variables
       ******************************************************************
+      * Card work area: AID/PF-key flags, routing fields
        COPY CVCRD01Y.
       ******************************************************************
       *Lookups
       ******************************************************************
       *North America Phone Area codes
+      * NANPA area codes, US state codes, ZIP-prefix lookup
        COPY CSLKPCDY.
 
       ******************************************************************
@@ -612,41 +649,53 @@
        77  LIT-NUM-SPACES-TO      PIC X(10) VALUE SPACES.
 
       *IBM SUPPLIED COPYBOOKS
+      * BMS attribute constants (colors, highlights)
        COPY DFHBMSCA.
+      * CICS attention identifier constants (ENTER, PF keys)
        COPY DFHAID.
 
       *COMMON COPYBOOKS
       *Screen Titles
+      * Application title and banner text fields
        COPY COTTL01Y.
 
       *Account Update Screen Layout
+      * BMS symbolic map for account update screen
        COPY COACTUP.
 
       *Current Date
+      * Date/time working storage fields
        COPY CSDAT01Y.
 
       *Common Messages
+      * Common user message definitions
        COPY CSMSG01Y.
 
       *Abend Variables
+      * Abend data work area fields
        COPY CSMSG02Y.
 
       *Signed on user data
+      * 80-byte user security record layout
        COPY CSUSR01Y.
 
       *Dataset layouts
 
       *ACCT RECORD LAYOUT
+      * 300-byte account record layout (ACCT-RECORD)
        COPY CVACT01Y.
 
       *CARD XREF LAYOUT
+      * 50-byte card cross-reference record
        COPY CVACT03Y.
 
       *CUSTOMER LAYOUT
+      * 500-byte customer record layout
        COPY CVCUS01Y.
 
       ******************************************************************
       *Application Commmarea Copybook
+      * COMMAREA structure for inter-program communication
        COPY COCOM01Y.
 
        01 WS-THIS-PROGCOMMAREA.
@@ -856,6 +905,18 @@
              OCCURS 1 TO 32767 TIMES DEPENDING ON EIBCALEN.
 
        PROCEDURE DIVISION.
+      * Main entry point for the pseudo-conversational cycle.
+      * Registers ABEND handler, initialises working storage,
+      * then checks EIBCALEN to detect first entry (EIBCALEN=0
+      * or fresh navigation from menu) versus re-entry with
+      * saved COMMAREA. Restores COMMAREA and program-specific
+      * state on re-entry. Maps EIBAID via YYYY-STORE-PFKEY,
+      * then dispatches: PF3 commits pending SYNCPOINT and
+      * transfers control back to the menu (XCTL). ENTER
+      * processes inputs (fetch account or submit edits).
+      * PF5 confirms the dual-record update under SYNCPOINT.
+      * Ends with EXEC CICS RETURN TRANSID('CAUP') to resume
+      * pseudo-conversational cycle on next user input.
        0000-MAIN.
 
 
@@ -875,7 +936,9 @@
       *****************************************************************
            SET WS-RETURN-MSG-OFF  TO TRUE
       *****************************************************************
-      * Store passed data if  any                *
+      * Pseudo-conversational entry check: EIBCALEN=0 means     *
+      * first invocation (no prior COMMAREA). Fresh arrival    *
+      * from the menu also resets state.                       *
       *****************************************************************
            IF EIBCALEN IS EQUAL TO 0
                OR (CDEMO-FROM-PROGRAM = LIT-MENUPGM
@@ -898,9 +961,9 @@
            PERFORM YYYY-STORE-PFKEY
               THRU YYYY-STORE-PFKEY-EXIT
       *****************************************************************
-      * Check the AID to see if its valid at this point               *
-      * F3 - Exit
-      * Enter show screen again
+      * AID validation: only ENTER, PF3, PF5, PF12 are valid  *
+      * PF3 = return to menu, ENTER = fetch/submit edits,     *
+      * PF5 = confirm dual-record update, PF12 = cancel edits *
       *****************************************************************
            SET PFK-INVALID TO TRUE
            IF CCARD-AID-ENTER OR
@@ -949,10 +1012,11 @@
                    MOVE LIT-THISMAPSET     TO CDEMO-LAST-MAPSET
                    MOVE LIT-THISMAP        TO CDEMO-LAST-MAP
 
+      *            Commit any pending updates before leaving
                    EXEC CICS
                         SYNCPOINT
                    END-EXEC
-      *
+      *            Transfer control back to calling program
                    EXEC CICS XCTL
                         PROGRAM (CDEMO-TO-PROGRAM)
                         COMMAREA(CARDDEMO-COMMAREA)
@@ -1004,14 +1068,22 @@
            END-EVALUATE
            .
 
+      * Pseudo-conversational return: saves both the shared
+      * COMMAREA (COCOM01Y) and program-specific state
+      * (WS-THIS-PROGCOMMAREA with before-images) into a
+      * single buffer. Issues EXEC CICS RETURN with
+      * TRANSID('CAUP') so CICS re-invokes this program
+      * on the next user keystroke, completing the
+      * pseudo-conversational cycle.
        COMMON-RETURN.
+      *    Pack error/info message for display on re-entry
            MOVE WS-RETURN-MSG     TO CCARD-ERROR-MSG
-
+      *    Concatenate shared COMMAREA + program state
            MOVE  CARDDEMO-COMMAREA    TO WS-COMMAREA
            MOVE  WS-THIS-PROGCOMMAREA TO
                   WS-COMMAREA(LENGTH OF CARDDEMO-COMMAREA + 1:
                                LENGTH OF WS-THIS-PROGCOMMAREA )
-
+      *    Return to CICS with TRANSID for next invocation
            EXEC CICS RETURN
                 TRANSID (LIT-THISTRANID)
                 COMMAREA (WS-COMMAREA)
@@ -1022,6 +1094,8 @@
            EXIT
            .
 
+      * Receive user input from terminal and run field-level
+      * validations via 1100/1200 paragraphs.
        1000-PROCESS-INPUTS.
            PERFORM 1100-RECEIVE-MAP
               THRU 1100-RECEIVE-MAP-EXIT
@@ -1036,14 +1110,18 @@
        1000-PROCESS-INPUTS-EXIT.
            EXIT
            .
+      * Issue EXEC CICS RECEIVE MAP. Map entered values from
+      * BMS symbolic area to working storage for validation.
+      * Handles 18+ editable account and customer fields.
        1100-RECEIVE-MAP.
+      *    Receive terminal input into BMS symbolic input area
            EXEC CICS RECEIVE MAP(LIT-THISMAP)
                      MAPSET(LIT-THISMAPSET)
                      INTO(CACTUPAI)
                      RESP(WS-RESP-CD)
                      RESP2(WS-REAS-CD)
            END-EXEC
-      *
+      *    Clear new-details work area before extracting fields
            INITIALIZE ACUP-NEW-DETAILS
       ******************************************************************
       *    Account Master data
@@ -1426,6 +1504,11 @@
        1100-RECEIVE-MAP-EXIT.
            EXIT
            .
+      * Orchestrate field-level validations for all editable
+      * fields. Calls specific edit paragraphs for account ID,
+      * mandatory fields, yes/no fields, alpha/alphanum fields,
+      * numeric fields, US phone, SSN, state code, FICO score,
+      * and ZIP code.
        1200-EDIT-MAP-INPUTS.
 
            SET INPUT-OK                  TO TRUE
@@ -1678,6 +1761,9 @@
        1200-EDIT-MAP-INPUTS-EXIT.
            EXIT
            .
+      * Compare entered values with displayed values to detect
+      * which fields the user actually changed. Only changed
+      * fields are flagged for update.
        1205-COMPARE-OLD-NEW.
            SET NO-CHANGES-FOUND           TO TRUE
 
@@ -1780,6 +1866,7 @@
 
 
       *
+      * Validate account ID: must be non-blank and numeric.
        1210-EDIT-ACCOUNT.
            SET FLG-ACCTFILTER-NOT-OK    TO TRUE
 
@@ -1821,6 +1908,8 @@
            EXIT
            .
 
+      * Generic mandatory field validator. Rejects blank input
+      * and sets the appropriate error flag.
        1215-EDIT-MANDATORY.
       *    Initialize
            SET FLG-MANDATORY-NOT-OK    TO TRUE
@@ -1853,6 +1942,7 @@
            EXIT
            .
 
+      * Validate yes/no fields. Accepts only Y or N.
        1220-EDIT-YESNO.
       *    Must be Y or N
       *    SET FLG-YES-NO-NOT-OK         TO TRUE
@@ -1895,6 +1985,8 @@
            EXIT
            .
 
+      * Validate required alphabetic field. Must be non-blank
+      * and contain only letters and spaces.
        1225-EDIT-ALPHA-REQD.
       *    Initialize
            SET FLG-ALPHA-NOT-OK              TO TRUE
@@ -1952,6 +2044,8 @@
            EXIT
            .
 
+      * Validate required alphanumeric field. Must be non-blank
+      * and contain only letters, digits, and spaces.
        1230-EDIT-ALPHANUM-REQD.
       *    Initialize
            SET FLG-ALPHNANUM-NOT-OK          TO TRUE
@@ -2009,6 +2103,8 @@
        1230-EDIT-ALPHANUM-REQD-EXIT.
            EXIT
            .
+      * Validate optional alphabetic field. If non-blank, must
+      * contain only letters and spaces.
        1235-EDIT-ALPHA-OPT.
       *    Initialize
            SET FLG-ALPHA-NOT-OK              TO TRUE
@@ -2058,6 +2154,8 @@
            EXIT
            .
 
+      * Validate optional alphanumeric field. If non-blank,
+      * must contain only letters, digits, and spaces.
        1240-EDIT-ALPHANUM-OPT.
       *    Initialize
            SET FLG-ALPHNANUM-NOT-OK          TO TRUE
@@ -2106,6 +2204,8 @@
            EXIT
            .
 
+      * Validate required numeric field. Must be non-blank and
+      * all digits. Optionally checks for specific length.
        1245-EDIT-NUM-REQD.
       *    Initialize
            SET FLG-ALPHNANUM-NOT-OK          TO TRUE
@@ -2177,6 +2277,9 @@
            EXIT
            .
 
+      * Validate signed decimal (S9V2) field for monetary
+      * amounts. Accepts numeric with optional sign and
+      * implied decimal.
        1250-EDIT-SIGNED-9V2.
            SET FLG-SIGNED-NUMBER-NOT-OK    TO TRUE
 
@@ -2222,6 +2325,8 @@
            EXIT
            .
 
+      * Validate US phone number: area code against NANPA
+      * lookup (CSLKPCDY), prefix 200-999, line 0000-9999.
        1260-EDIT-US-PHONE-NUM.
 
       *    The database stores date in X(15) format (999)999-9999
@@ -2243,6 +2348,8 @@
                 CONTINUE
            END-IF
            .
+      * Validate phone area code against the NANPA area code
+      * table in CSLKPCDY. Rejects invalid area codes.
        EDIT-AREA-CODE.
            IF WS-EDIT-US-PHONE-NUMA EQUAL SPACES
            OR WS-EDIT-US-PHONE-NUMA EQUAL LOW-VALUES
@@ -2313,6 +2420,7 @@
 
            SET FLG-EDIT-US-PHONEA-ISVALID    TO TRUE
            .
+      * Validate phone prefix (exchange). Must be 200-999.
        EDIT-US-PHONE-PREFIX.
 
            IF WS-EDIT-US-PHONE-NUMB EQUAL SPACES
@@ -2367,6 +2475,7 @@
            SET FLG-EDIT-US-PHONEB-ISVALID    TO TRUE
            .
 
+      * Validate phone line number. Must be 0000-9999.
        EDIT-US-PHONE-LINENUM.
            IF WS-EDIT-US-PHONE-NUMC EQUAL SPACES
            OR WS-EDIT-US-PHONE-NUMC EQUAL LOW-VALUES
@@ -2428,6 +2537,8 @@
            EXIT
            .
 
+      * Validate US Social Security Number format. Checks
+      * area, group, and serial components against rules.
        1265-EDIT-US-SSN.
       *Format xxx-xx-xxxx
       *Part1 :should have 3 digits
@@ -2490,6 +2601,8 @@
            EXIT
            .
 
+      * Validate US state code against the state code table
+      * in CSLKPCDY.
        1270-EDIT-US-STATE-CD.
            MOVE ACUP-NEW-CUST-ADDR-STATE-CD TO US-STATE-CODE-TO-EDIT
            IF VALID-US-STATE-CODE
@@ -2511,6 +2624,8 @@
        1270-EDIT-US-STATE-CD-EXIT.
            EXIT
            .
+      * Validate FICO credit score. Must be numeric and
+      * within the valid range.
        1275-EDIT-FICO-SCORE.
            IF FICO-RANGE-IS-VALID
                CONTINUE
@@ -2533,6 +2648,8 @@
            .
 
       *A crude zip code edit based on data from USPS web site
+      * Validate ZIP code prefix against the state-ZIP
+      * mapping table in CSLKPCDY.
        1280-EDIT-US-STATE-ZIP-CD.
            STRING ACUP-NEW-CUST-ADDR-STATE-CD
                   ACUP-NEW-CUST-ADDR-ZIP(1:2)
@@ -2559,6 +2676,16 @@
            EXIT
            .
 
+      * Determine next action based on current program state.
+      * State machine: DETAILS-NOT-FETCHED reads 3 VSAM files
+      * via 9000-READ-ACCT. SHOW-DETAILS presents editable
+      * fields. CHANGES-OK-NOT-CONFIRMED prompts PF5 to
+      * confirm. On PF5, calls 9600-WRITE-PROCESSING for the
+      * dual-record ACCTDAT+CUSTDAT update under SYNCPOINT.
+      * Evaluates write results: lock failure, update failure
+      * (triggers SYNCPOINT ROLLBACK), concurrent change
+      * detected, or success. PF12 cancels pending edits and
+      * re-reads current data. Unexpected states cause ABEND.
        2000-DECIDE-ACTION.
            EVALUATE TRUE
       ******************************************************************
@@ -2601,15 +2728,21 @@
       ******************************************************************
               WHEN ACUP-CHANGES-OK-NOT-CONFIRMED
                AND CCARD-AID-PFK05
+      *          PF5 confirmed: perform dual-record update
                  PERFORM 9600-WRITE-PROCESSING
                     THRU 9600-WRITE-PROCESSING-EXIT
+      *          Evaluate update outcome
                  EVALUATE TRUE
+      *             READ UPDATE failed to acquire lock
                     WHEN COULD-NOT-LOCK-ACCT-FOR-UPDATE
                          SET ACUP-CHANGES-OKAYED-LOCK-ERROR TO TRUE
+      *             REWRITE failed; SYNCPOINT ROLLBACK done
                     WHEN LOCKED-BUT-UPDATE-FAILED
                        SET ACUP-CHANGES-OKAYED-BUT-FAILED TO TRUE
+      *             Another user changed record since our read
                     WHEN DATA-WAS-CHANGED-BEFORE-UPDATE
                         SET ACUP-SHOW-DETAILS            TO TRUE
+      *             Both REWRITE operations succeeded
                     WHEN OTHER
                        SET ACUP-CHANGES-OKAYED-AND-DONE   TO TRUE
                  END-EVALUATE
@@ -2646,6 +2779,8 @@
 
 
 
+      * Orchestrate screen build: initialise, set up vars
+      * and attributes, build messages, then send.
        3000-SEND-MAP.
            PERFORM 3100-SCREEN-INIT
               THRU 3100-SCREEN-INIT-EXIT
@@ -2665,6 +2800,7 @@
            EXIT
            .
 
+      * Initialise all output map fields to defaults.
        3100-SCREEN-INIT.
            MOVE LOW-VALUES TO CACTUPAO
 
@@ -2695,6 +2831,9 @@
            EXIT
            .
 
+      * Populate screen fields from account, customer, and
+      * cross-reference records. Delegates to 3201/3202/3203
+      * based on current display state.
        3200-SETUP-SCREEN-VARS.
       *    INITIALIZE SEARCH CRITERIA
            IF CDEMO-PGM-ENTER
@@ -2728,6 +2867,8 @@
            EXIT
            .
 
+      * Display initial values from freshly read data (first
+      * entry to the screen).
        3201-SHOW-INITIAL-VALUES.
            MOVE LOW-VALUES                     TO  ACSTTUSO OF CACTUPAO
                                                    ACRDLIMO OF CACTUPAO
@@ -2784,6 +2925,8 @@
            EXIT
            .
 
+      * Display the saved before-image values (from initial
+      * read) alongside any user changes.
        3202-SHOW-ORIGINAL-VALUES.
 
            MOVE LOW-VALUES                     TO WS-NON-KEY-FLAGS
@@ -2867,6 +3010,8 @@
        3202-SHOW-ORIGINAL-VALUES-EXIT.
            EXIT
            .
+      * Display the updated (user-entered) values alongside
+      * original values for confirmation review.
        3203-SHOW-UPDATED-VALUES.
 
            MOVE ACUP-NEW-ACTIVE-STATUS         TO ACSTTUSO OF CACTUPAO
@@ -2952,6 +3097,8 @@
            EXIT
            .
 
+      * Build informational messages: confirmation prompt,
+      * success feedback, or error details.
        3250-SETUP-INFOMSG.
       *    SETUP INFORMATION MESSAGE
            EVALUATE TRUE
@@ -2983,6 +3130,10 @@
        3250-SETUP-INFOMSG-EXIT.
            EXIT
            .
+      * Set BMS field attributes for all 18+ editable fields.
+      * Uses COPY CSSETATY REPLACING pattern (38 invocations)
+      * to set color, protection, and highlight per field
+      * based on validation flags and state.
        3300-SETUP-SCREEN-ATTRS.
 
       *    PROTECT ALL FIELDS
@@ -3438,6 +3589,8 @@
            EXIT
            .
 
+      * Set all editable fields to protected (display-only)
+      * for the confirmation display.
        3310-PROTECT-ALL-ATTRS.
            MOVE DFHBMPRF              TO ACCTSIDA OF CACTUPAI
                                          ACSTTUSA OF CACTUPAI
@@ -3497,6 +3650,8 @@
            EXIT
            .
 
+      * Unprotect selected fields for editing. Only fields
+      * that the user is allowed to modify are unprotected.
        3320-UNPROTECT-FEW-ATTRS.
 
            MOVE DFHBMFSE              TO ACSTTUSA OF CACTUPAI
@@ -3563,6 +3718,8 @@
            EXIT
            .
 
+      * Set BMS attributes for the informational message
+      * area (color based on message type).
        3390-SETUP-INFOMSG-ATTRS.
            IF  WS-NO-INFO-MESSAGE
                MOVE DFHBMDAR           TO INFOMSGA OF CACTUPAI
@@ -3586,11 +3743,15 @@
            .
 
 
+      * Issue EXEC CICS SEND MAP to push the account update
+      * screen to the terminal with ERASE.
        3400-SEND-SCREEN.
-
+      *    Save map/mapset names for pseudo-conversational restore
            MOVE LIT-THISMAPSET         TO CCARD-NEXT-MAPSET
            MOVE LIT-THISMAP            TO CCARD-NEXT-MAP
-
+      *    Send populated output map to 3270 terminal
+      *    CURSOR positions at first unprotected field
+      *    ERASE clears screen before writing, FREEKB unlocks
            EXEC CICS SEND MAP(CCARD-NEXT-MAP)
                           MAPSET(CCARD-NEXT-MAPSET)
                           FROM(CACTUPAO)
@@ -3605,6 +3766,16 @@
            .
 
 
+      * Fetch phase: orchestrate 3-entity read to populate
+      * the account update screen. Reads CXACAIX (card cross-
+      * reference by account ID alternate index) to obtain
+      * customer ID, then reads ACCTDAT (account master) and
+      * CUSTDAT (customer master). Each read checks RESP for
+      * NOTFND or OTHER errors. On success, calls 9500-STORE-
+      * FETCHED-DATA to save current values as before-images
+      * in the COMMAREA for optimistic concurrency comparison
+      * during a later update. Fields are then displayed as
+      * editable on the BMS screen.
        9000-READ-ACCT.
 
            INITIALIZE ACUP-OLD-DETAILS
@@ -3647,6 +3818,13 @@
        9000-READ-ACCT-EXIT.
            EXIT
            .
+      * Read card cross-reference via CXACAIX alternate index
+      * path using account ID as key. On RESP NORMAL, extracts
+      * XREF-CUST-ID and XREF-CARD-NUM for downstream reads.
+      * On RESP NOTFND, sets error message with account ID
+      * and response codes. On RESP OTHER, builds a generic
+      * file-error message. See CVACT03Y.cpy for the 50-byte
+      * CARD-XREF-RECORD layout.
        9200-GETCARDXREF-BYACCT.
 
       *    Read the Card file. Access via alternate index ACCTID
@@ -3698,6 +3876,12 @@
        9200-GETCARDXREF-BYACCT-EXIT.
            EXIT
            .
+      * Read account master from ACCTDAT VSAM KSDS using the
+      * account ID as primary key. On RESP NORMAL, populates
+      * ACCOUNT-RECORD (300-byte layout from CVACT01Y.cpy).
+      * On RESP NOTFND, sets error with account ID and RESP
+      * codes. On RESP OTHER, builds generic file-error
+      * message for display.
        9300-GETACCTDATA-BYACCT.
 
            EXEC CICS READ
@@ -3749,6 +3933,12 @@
            EXIT
            .
 
+      * Read customer master from CUSTDAT VSAM KSDS using the
+      * customer ID obtained from the cross-reference read.
+      * On RESP NORMAL, populates CUSTOMER-RECORD (500-byte
+      * layout from CVCUS01Y.cpy). On RESP NOTFND, sets error
+      * with customer ID and RESP codes. On RESP OTHER, builds
+      * generic file-error message for display.
        9400-GETCUSTDATA-BYCUST.
            EXEC CICS READ
                 DATASET   (LIT-CUSTFILENAME)
@@ -3798,6 +3988,15 @@
            EXIT
            .
 
+      * Save current database values as before-images in the
+      * program-specific COMMAREA (WS-THIS-PROGCOMMAREA).
+      * Copies all account fields (status, balances, limits,
+      * dates, group) to ACUP-OLD-* and all customer fields
+      * (names, address, phones, SSN, DOB, FICO, EFT) to
+      * ACUP-OLD-CUST-*. These before-images travel through
+      * the pseudo-conversational cycle and are compared
+      * against current DB values in 9700-CHECK-CHANGE-IN-REC
+      * during the update to detect concurrent modifications.
        9500-STORE-FETCHED-DATA.
 
       *    Store Context in Commarea
@@ -3885,9 +4084,28 @@
        9500-STORE-FETCHED-DATA-EXIT.
            EXIT
            .
+      * Perform the dual-record update under SYNCPOINT.
+      * This is the critical transactional write path:
+      *   Step 1: READ UPDATE ACCTDAT - lock account record
+      *   Step 2: READ UPDATE CUSTDAT - lock customer record
+      *   Step 3: 9700-CHECK-CHANGE-IN-REC - optimistic
+      *           concurrency check comparing current DB values
+      *           against COMMAREA before-images
+      *   Step 4: Move screen edits to ACCT-UPDATE-RECORD
+      *   Step 5: REWRITE ACCTDAT - write account changes
+      *   Step 6: Move screen edits to CUST-UPDATE-RECORD
+      *   Step 7: REWRITE CUSTDAT - write customer changes
+      * SYNCPOINT commits both updates atomically on success.
+      * If the CUSTDAT REWRITE (step 7) fails after the
+      * ACCTDAT REWRITE (step 5) succeeds, EXEC CICS
+      * SYNCPOINT ROLLBACK undoes the account changes to
+      * restore data consistency across both files.
+      * RESP codes checked: NORMAL (success), any non-NORMAL
+      * triggers lock-error or update-failed status.
        9600-WRITE-PROCESSING.
 
-      *    Read the account file for update
+      *    Step 1: READ UPDATE ACCTDAT to acquire exclusive
+      *    lock on the account record for modification
 
            MOVE CC-ACCT-ID              TO WS-CARD-RID-ACCT-ID
 
@@ -3902,7 +4120,8 @@
                 RESP2     (WS-REAS-CD)
            END-EXEC
       *****************************************************************
-      *    Could we lock the account record ?
+      *    Check RESP: NORMAL means lock acquired on ACCTDAT *
+      *    Any other response aborts the update               *
       *****************************************************************
            IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL)
               CONTINUE
@@ -3914,7 +4133,8 @@
               GO TO 9600-WRITE-PROCESSING-EXIT
            END-IF
 
-      *    Read the customer file for update
+      *    Step 2: READ UPDATE CUSTDAT to acquire exclusive
+      *    lock on the customer record for modification
 
            MOVE CDEMO-CUST-ID                   TO WS-CARD-RID-CUST-ID
 
@@ -3929,7 +4149,8 @@
                 RESP2     (WS-REAS-CD)
            END-EXEC
       *****************************************************************
-      *    Could we lock the customer record ?
+      *    Check RESP: NORMAL means lock acquired on CUSTDAT *
+      *    Any other response aborts the update               *
       *****************************************************************
            IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL)
               CONTINUE
@@ -3942,7 +4163,9 @@
            END-IF
 
       *****************************************************************
-      *    Did someone change the record while we were out ?
+      *    Step 3: Optimistic concurrency check. Compare the   *
+      *    just-read records against the COMMAREA before-images *
+      *    saved in 9500. Detects concurrent modifications.     *
       *****************************************************************
            PERFORM 9700-CHECK-CHANGE-IN-REC
               THRU 9700-CHECK-CHANGE-IN-REC-EXIT
@@ -3951,7 +4174,8 @@
               GO TO 9600-WRITE-PROCESSING-EXIT
            END-IF
       *****************************************************************
-      * Prepare the update
+      *    Steps 4-7: Prepare update records from screen edits *
+      *    then REWRITE both VSAM files                        *
       *****************************************************************
            INITIALIZE ACCT-UPDATE-RECORD
       ******************************************************************
@@ -4058,9 +4282,8 @@
            MOVE ACUP-NEW-CUST-FICO-SCORE TO
                                    CUST-UPDATE-FICO-CREDIT-SCORE
       *****************************************************************
-      * Update account *
+      * Step 5: REWRITE account record to ACCTDAT VSAM KSDS  *
       *****************************************************************
-
 
            EXEC CICS
                 REWRITE FILE(LIT-ACCTFILENAME)
@@ -4071,7 +4294,9 @@
            END-EXEC.
       *
       *****************************************************************
-      * Did account update succeed ?  *
+      * Check RESP: did account REWRITE succeed?               *
+      * If not, set update-failed and exit. No ROLLBACK needed *
+      * yet because only this write was attempted.             *
       *****************************************************************
            IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL)
              CONTINUE
@@ -4080,7 +4305,7 @@
              GO TO 9600-WRITE-PROCESSING-EXIT
            END-IF
       *****************************************************************
-      * Update customer *
+      * Step 7: REWRITE customer record to CUSTDAT VSAM KSDS *
       *****************************************************************
            EXEC CICS
                         REWRITE FILE(LIT-CUSTFILENAME)
@@ -4090,12 +4315,18 @@
                         RESP2     (WS-REAS-CD)
            END-EXEC.
       *****************************************************************
-      * Did customer update succeed ? *
+      * Check RESP: did customer REWRITE succeed?              *
+      * If it fails, the account REWRITE (step 5) already     *
+      * committed. SYNCPOINT ROLLBACK undoes the account       *
+      * changes to restore cross-file consistency. This is     *
+      * the critical data-integrity safeguard of the dual-     *
+      * record update pattern.                                 *
       *****************************************************************
            IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL)
              CONTINUE
            ELSE
              SET LOCKED-BUT-UPDATE-FAILED    TO TRUE
+      *      ROLLBACK undoes the account REWRITE from step 5
              EXEC CICS
                 SYNCPOINT ROLLBACK
              END-EXEC
@@ -4106,6 +4337,19 @@
            EXIT
            .
 
+      * Optimistic concurrency check: compare current database
+      * records (just read via READ UPDATE in 9600) against
+      * the before-images saved in COMMAREA by 9500-STORE-
+      * FETCHED-DATA during the initial fetch. If any field
+      * differs, another user or batch job modified the data
+      * between our display read and this update attempt.
+      * Sets DATA-WAS-CHANGED-BEFORE-UPDATE on mismatch,
+      * causing 9600 to abort without writing. Checks all
+      * account fields (status, balances, limits, dates,
+      * group) and all customer fields (names, address,
+      * phones, SSN, DOB, EFT, FICO, primary holder).
+      * Uses UPPER-CASE comparison for text fields to avoid
+      * false positives from case-only changes.
        9700-CHECK-CHANGE-IN-REC.
 
 
@@ -4194,12 +4438,20 @@
            EXIT
            .
       ******************************************************************
-      *Common code to store PFKey
+      * COPY CSSTRPFY: YYYY-STORE-PFKEY paragraph maps EIBAID *
+      * to CCARD-AID-* conditions (ENTER, PF01-PF12). Folds   *
+      * PF13-PF24 onto PF01-PF12 for uniform AID handling.    *
       ******************************************************************
        COPY 'CSSTRPFY'
            .
 
 
+      * Abnormal termination handler. Populates ABEND-DATA
+      * work area (from CSMSG02Y) with program name and
+      * message, sends it to the terminal with NOHANDLE
+      * (ignore further errors), cancels recursive ABEND
+      * handling, then issues EXEC CICS ABEND with ABCODE
+      * '9999' to terminate the transaction.
        ABEND-ROUTINE.
 
            IF ABEND-MSG EQUAL LOW-VALUES
@@ -4207,18 +4459,18 @@
            END-IF
 
            MOVE LIT-THISPGM       TO ABEND-CULPRIT
-
+      *    Send abend details to terminal before terminating
            EXEC CICS SEND
                             FROM (ABEND-DATA)
                             LENGTH(LENGTH OF ABEND-DATA)
                             NOHANDLE
                             ERASE
            END-EXEC
-
+      *    Prevent recursive ABEND handling
            EXEC CICS HANDLE ABEND
                 CANCEL
            END-EXEC
-
+      *    Terminate transaction with diagnostic code
            EXEC CICS ABEND
                 ABCODE('9999')
            END-EXEC
@@ -4229,6 +4481,7 @@
       ******************************************************************
       * Common Date Routines
       ******************************************************************
+      * Date validation paragraphs (leap year, LE integration)
        COPY CSUTLDPY
            .
       *

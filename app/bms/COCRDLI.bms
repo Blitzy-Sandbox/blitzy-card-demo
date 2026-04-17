@@ -16,16 +16,54 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*---------------------------------------------------------------*
+* BMS Source: Card Listing Screen
+*---------------------------------------------------------------*
+* Program:  COCRDLIC (online CICS program)
+* Tran ID:  CCLI
+* Mapset:   COCRDLI
+* Map:      CCRDLIA
+* Symbolic: app/cpy-bms/COCRDLI.CPY
+*
+* Displays a paginated list of credit cards with account
+* and card number filter inputs and 7 selectable data
+* rows. Uses DSATTS/MAPATTS at DFHMDI level for extended
+* color, highlight, programmed symbol, and validation
+* attribute support.
+*---------------------------------------------------------------*
         TITLE 'BMS MAP FOR CARD LISTING'
+*---------------------------------------------------------------*
+* DFHMSD: Mapset definition for COCRDLI
+* LANG=COBOL  - generates COBOL-compatible symbolic map
+* MODE=INOUT  - map used for both SEND MAP and RECEIVE MAP
+* STORAGE=AUTO - BMS acquires/releases storage automatically
+* TIOAPFX=YES - includes 12-byte TIOA prefix in symbolic map
+* Note: CTRL and EXTATT are NOT set at DFHMSD level.
+*   Extended attributes are specified per-map via DSATTS/
+*   MAPATTS on the DFHMDI macro below.
+*---------------------------------------------------------------*
 COCRDLI DFHMSD LANG=COBOL,                                             -
                MODE=INOUT,                                             -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+*---------------------------------------------------------------*
+* DFHMDI: Map definition for CCRDLIA
+* CTRL=(FREEKB) - unlocks keyboard after SEND MAP
+* DSATTS=(COLOR,HILIGHT,PS,VALIDN) - extended device attrs
+* MAPATTS=(COLOR,HILIGHT,PS,VALIDN) - extended map attrs
+* SIZE=(24,80) - standard 3270 Model 2 terminal dimensions
+*---------------------------------------------------------------*
 CCRDLIA DFHMDI CTRL=(FREEKB),                                          -
                DSATTS=(COLOR,HILIGHT,PS,VALIDN),                       -
                MAPATTS=(COLOR,HILIGHT,PS,VALIDN),                      -
                SIZE=(24,80)
+*---------------------------------------------------------------*
+* Header Area (screen lines 1-2)
+* Standard CardDemo header: Tran ID, Program Name,
+* Application Title, Current Date, and Current Time.
+* All fields are ASKIP (auto-skip), display-only, BLUE.
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
@@ -72,6 +110,12 @@ CURTIME DFHMDF ATTRB=(ASKIP,NORM),                                     -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss'
+*---------------------------------------------------------------*
+* Screen Title (screen line 4)
+* Centered title "List Credit Cards" in NEUTRAL color.
+* Includes page number display (PAGENO) for browse
+* paging.
+*---------------------------------------------------------------*
         DFHMDF COLOR=NEUTRAL,                                          -
                LENGTH=17,                                              -
                POS=(4,31),                                             -
@@ -81,6 +125,21 @@ CURTIME DFHMDF ATTRB=(ASKIP,NORM),                                     -
                INITIAL='Page '
 PAGENO  DFHMDF LENGTH=3,                                               -
                POS=(4,76)
+*---------------------------------------------------------------*
+* Filter Inputs (screen lines 6-7)
+*
+* Account Number (ACCTSID) - 11-char UNPROT input field.
+*   IC (Initial Cursor) positions cursor here on SEND.
+*   HILIGHT=UNDERLINE marks the input area. Filters the
+*   card list by account number.
+*
+* Credit Card Number (CARDSID) - 16-char UNPROT input.
+*   HILIGHT=UNDERLINE marks the input area. Optional
+*   filter to narrow results to a specific card.
+*
+* Both fields have zero-length DFHMDF terminators to stop
+* cursor tab advancement beyond the input area.
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=19,                                              -
@@ -105,6 +164,11 @@ CARDSID DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                POS=(7,44)
         DFHMDF LENGTH=0,                                               -
                POS=(7,61)
+*---------------------------------------------------------------*
+* Column Headers (screen line 9)
+* Labels: Select, Account Number, Card Number, Active
+* All in NEUTRAL color to separate from data rows.
+*---------------------------------------------------------------*
         DFHMDF COLOR=NEUTRAL,                                          -
                LENGTH=10,                                              -
                POS=(9,10),                                             -
@@ -121,6 +185,10 @@ CARDSID DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                LENGTH=7,                                               -
                POS=(9,66),                                             -
                INITIAL='Active '
+*---------------------------------------------------------------*
+* Column Separators (screen line 10)
+* Dashes under each column header for visual alignment.
+*---------------------------------------------------------------*
         DFHMDF COLOR=NEUTRAL,                                          -
                LENGTH=6,                                               -
                POS=(10,10),                                            -
@@ -137,6 +205,20 @@ CARDSID DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                LENGTH=8,                                               -
                POS=(10,65),                                            -
                INITIAL='--------'
+*---------------------------------------------------------------*
+* Data Row 1 (screen line 11) - First card entry
+*
+* CRDSEL1 - 1-char selection field, initially PROT. The
+*   program sets it UNPROT when the row is populated.
+*   HILIGHT=UNDERLINE marks the selectable area.
+* Zero-length terminator ends the selection input area.
+* Note: Row 1 does NOT have a CRDSTPn stop field,
+*   unlike rows 2-7. This is an asymmetry in the
+*   original BMS design.
+* ACCTNO1 - 11-char account number, PROT display.
+* CRDNUM1 - 16-char card number, PROT display.
+* CRDSTS1 - 1-char active status, PROT display.
+*---------------------------------------------------------------*
 CRDSEL1 DFHMDF ATTRB=(FSET,NORM,PROT),                                 -
                COLOR=DEFAULT,                                          -
                HILIGHT=UNDERLINE,                                      -
@@ -159,6 +241,15 @@ CRDSTS1 DFHMDF ATTRB=(NORM,PROT),                                      -
                HILIGHT=OFF,                                            -
                LENGTH=1,                                               -
                POS=(11,67)
+*---------------------------------------------------------------*
+* Data Row 2 (screen line 12) - Second card entry
+* Same field pattern as Row 1, but ADDS CRDSTP2:
+* CRDSTP2 - hidden 1-char stop field (DRK,ASKIP) placed
+*   at same position as the zero-length terminator.
+*   Provides attribute isolation between the selection
+*   field and the subsequent PROT data fields.
+*   Rows 2-7 all include this stop field.
+*---------------------------------------------------------------*
 CRDSEL2 DFHMDF ATTRB=(FSET,NORM,PROT),                                 -
                COLOR=DEFAULT,                                          -
                HILIGHT=UNDERLINE,                                      -
@@ -186,6 +277,11 @@ CRDSTS2 DFHMDF ATTRB=(NORM,PROT),                                      -
                HILIGHT=OFF,                                            -
                LENGTH=1,                                               -
                POS=(12,67)
+*---------------------------------------------------------------*
+* Data Row 3 (screen line 13) - Third card entry
+* Same pattern as Row 2: CRDSEL3, terminator, CRDSTP3,
+* ACCTNO3, CRDNUM3, CRDSTS3.
+*---------------------------------------------------------------*
 CRDSEL3 DFHMDF ATTRB=(FSET,NORM,PROT),                                 -
                COLOR=DEFAULT,                                          -
                HILIGHT=UNDERLINE,                                      -
@@ -213,6 +309,11 @@ CRDSTS3 DFHMDF ATTRB=(NORM,PROT),                                      -
                HILIGHT=OFF,                                            -
                LENGTH=1,                                               -
                POS=(13,67)
+*---------------------------------------------------------------*
+* Data Row 4 (screen line 14) - Fourth card entry
+* Same pattern as Row 2: CRDSEL4, terminator, CRDSTP4,
+* ACCTNO4, CRDNUM4, CRDSTS4.
+*---------------------------------------------------------------*
 CRDSEL4 DFHMDF ATTRB=(FSET,NORM,PROT),                                 -
                COLOR=DEFAULT,                                          -
                HILIGHT=UNDERLINE,                                      -
@@ -240,6 +341,11 @@ CRDSTS4 DFHMDF ATTRB=(NORM,PROT),                                      -
                HILIGHT=OFF,                                            -
                LENGTH=1,                                               -
                POS=(14,67)
+*---------------------------------------------------------------*
+* Data Row 5 (screen line 15) - Fifth card entry
+* Same pattern as Row 2: CRDSEL5, terminator, CRDSTP5,
+* ACCTNO5, CRDNUM5, CRDSTS5.
+*---------------------------------------------------------------*
 CRDSEL5 DFHMDF ATTRB=(FSET,NORM,PROT),                                 -
                COLOR=DEFAULT,                                          -
                HILIGHT=UNDERLINE,                                      -
@@ -267,6 +373,11 @@ CRDSTS5 DFHMDF ATTRB=(NORM,PROT),                                      -
                HILIGHT=OFF,                                            -
                LENGTH=1,                                               -
                POS=(15,67)
+*---------------------------------------------------------------*
+* Data Row 6 (screen line 16) - Sixth card entry
+* Same pattern as Row 2: CRDSEL6, terminator, CRDSTP6,
+* ACCTNO6, CRDNUM6, CRDSTS6.
+*---------------------------------------------------------------*
 CRDSEL6 DFHMDF ATTRB=(FSET,NORM,PROT),                                 -
                COLOR=DEFAULT,                                          -
                HILIGHT=UNDERLINE,                                      -
@@ -294,6 +405,11 @@ CRDSTS6 DFHMDF ATTRB=(NORM,PROT),                                      -
                HILIGHT=OFF,                                            -
                LENGTH=1,                                               -
                POS=(16,67)
+*---------------------------------------------------------------*
+* Data Row 7 (screen line 17) - Seventh card entry
+* Same pattern as Row 2: CRDSEL7, terminator, CRDSTP7,
+* ACCTNO7, CRDNUM7, CRDSTS7.
+*---------------------------------------------------------------*
 CRDSEL7 DFHMDF ATTRB=(FSET,NORM,PROT),                                 -
                COLOR=DEFAULT,                                          -
                HILIGHT=UNDERLINE,                                      -
@@ -321,6 +437,12 @@ CRDSTS7 DFHMDF ATTRB=(NORM,PROT),                                      -
                HILIGHT=OFF,                                            -
                LENGTH=1,                                               -
                POS=(17,67)
+*---------------------------------------------------------------*
+* Info Message (screen line 20)
+* INFOMSG - 45-char PROT field in NEUTRAL color for page
+* navigation status (e.g., "Page 1 of 5").
+* Zero-length terminator follows to end display area.
+*---------------------------------------------------------------*
 INFOMSG DFHMDF ATTRB=(PROT),                                           -
                COLOR=NEUTRAL,                                          -
                HILIGHT=OFF,                                            -
@@ -328,15 +450,28 @@ INFOMSG DFHMDF ATTRB=(PROT),                                           -
                POS=(20,19)
         DFHMDF LENGTH=0,                                               -
                POS=(20,65)
+*---------------------------------------------------------------*
+* Error Message (screen line 23)
+* ERRMSG - 78-char field in RED with BRT (bright).
+* Displays validation errors and system messages.
+*---------------------------------------------------------------*
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=78,                                              -
                POS=(23,1)
+*---------------------------------------------------------------*
+* Function Key Legend (screen line 24)
+* Displays paging controls: F3=Exit, F7=Backward,
+* F8=Forward. TURQUOISE ASKIP field, full line width.
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=78,                                              -
                POS=(24,1),                                             -
                INITIAL='  F3=Exit F7=Backward  F8=Forward'
+*---------------------------------------------------------------*
+* End of mapset definition
+*---------------------------------------------------------------*
         DFHMSD TYPE=FINAL
         END
 *

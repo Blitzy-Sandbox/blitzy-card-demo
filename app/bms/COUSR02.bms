@@ -16,6 +16,37 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*
+*-----------------------------------------------------------------*
+* BMS Source:  COUSR02.bms
+* Screen:     Update User
+* Program:    COUSR02C (transaction CU02)
+* Mapset:     COUSR02    Map: COUSR2A
+*-----------------------------------------------------------------*
+* This BMS source defines the Update User screen used by
+* the COUSR02C online CICS program (transaction CU02).
+* It is an admin-only screen for modifying existing user
+* accounts stored in the USRSEC VSAM KSDS dataset.
+*
+* Two-phase operation:
+*   Phase 1 - User enters an existing User ID to fetch
+*   Phase 2 - Pre-populated fields are edited and saved
+*
+* COUSR02C performs EXEC CICS READ UPDATE on USRSEC to
+* lock the record, then EXEC CICS REWRITE after edits.
+*
+* Generated symbolic map: app/cpy-bms/COUSR02.CPY
+*-----------------------------------------------------------------*
+*
+*-----------------------------------------------------------------*
+* DFHMSD: Mapset COUSR02 definition
+*   CTRL=(ALARM,FREEKB) - Sound alarm, free keyboard
+*   EXTATT=YES  - Extended attributes (color, hilight)
+*   LANG=COBOL  - Generate COBOL symbolic map
+*   MODE=INOUT  - Both SEND MAP and RECEIVE MAP
+*   STORAGE=AUTO - Automatic BMS storage allocation
+*   TIOAPFX=YES - Include 12-byte TIOA prefix
+*-----------------------------------------------------------------*
 COUSR02 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                EXTATT=YES,                                             -
                LANG=COBOL,                                             -
@@ -23,9 +54,23 @@ COUSR02 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+*-----------------------------------------------------------------*
+* DFHMDI: Map COUSR2A
+*   24-row by 80-column full-screen 3270 layout
+*   Starting at LINE=1, COLUMN=1
+*-----------------------------------------------------------------*
 COUSR2A DFHMDI COLUMN=1,                                               -
                LINE=1,                                                 -
                SIZE=(24,80)
+*-----------------------------------------------------------------*
+* HEADER AREA (screen rows 1-2)
+* Row 1: Transaction ID, application title, current date
+* Row 2: Program name, subtitle, current time
+* All header fields are ASKIP (protected, auto-skip).
+* Labels are BLUE; titles (TITLE01, TITLE02) are YELLOW.
+* Program populates TRNNAME, TITLE01, CURDATE, PGMNAME,
+* TITLE02, and CURTIME at SEND MAP time.
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
@@ -72,11 +117,26 @@ CURTIME DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss'
+*-----------------------------------------------------------------*
+* SCREEN TITLE (row 4)
+* "Update User" displayed in BRT (bright) NEUTRAL color
+* centered at column 35. Identifies this screen function.
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,BRT),                                      -
                COLOR=NEUTRAL,                                          -
                LENGTH=11,                                              -
                POS=(4,35),                                             -
                INITIAL='Update User'
+*-----------------------------------------------------------------*
+* USER ID LOOKUP SECTION (row 6)
+* "Enter User ID:" label with USRIDIN input field.
+* USRIDIN is 8 chars, UNPROT for user input, with IC
+* (Insert Cursor) so the cursor lands here on display.
+* Phase 1: User types a user ID and presses ENTER to
+*   fetch the record from USRSEC.
+* Phase 2: After fetch, COUSR02C may set USRIDIN to
+*   PROT dynamically via the symbolic map attribute.
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=GREEN,                                            -
                LENGTH=14,                                              -
@@ -90,11 +150,29 @@ USRIDIN DFHMDF ATTRB=(FSET,IC,NORM,UNPROT),                            -
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                LENGTH=0,                                               -
                POS=(6,30)
+*-----------------------------------------------------------------*
+* VISUAL SEPARATOR (row 8)
+* Yellow asterisk line separating the lookup section
+* above from the editable user detail fields below.
+*-----------------------------------------------------------------*
         DFHMDF COLOR=YELLOW,                                           -
                LENGTH=70,                                              -
                POS=(8,6),                                              -
                INITIAL='***********************************************-
                ***********************'
+*-----------------------------------------------------------------*
+* PRE-POPULATED EDITABLE FIELDS (rows 11-15)
+* After COUSR02C fetches the user record from USRSEC,
+* these fields display current values for editing:
+*   FNAME   - First Name (20 chars, row 11, UNPROT)
+*   LNAME   - Last Name  (20 chars, row 11, UNPROT)
+*   PASSWD  - Password   (8 chars, row 13, DRK+UNPROT)
+*             DRK hides typed characters for security
+*   USRTYPE - User Type  (1 char, row 15, UNPROT)
+*             Valid values: A=Admin, U=User
+* All fields use FSET so the modified data tag is sent
+* on RECEIVE MAP. HILIGHT=UNDERLINE marks editable areas.
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=11,                                              -
@@ -152,10 +230,27 @@ USRTYPE DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                LENGTH=17,                                              -
                POS=(15,19),                                            -
                INITIAL='(A=Admin, U=User)'
+*-----------------------------------------------------------------*
+* ERROR/INFORMATION MESSAGE AREA (row 23)
+* ERRMSG - 78-char message field in RED BRT (bright).
+* COUSR02C populates this via the symbolic map to show
+* validation errors, fetch-not-found, or update confirm.
+* FSET ensures the field data is always transmitted.
+*-----------------------------------------------------------------*
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=78,                                              -
                POS=(23,1)
+*-----------------------------------------------------------------*
+* FUNCTION KEY LEGEND (row 24)
+* Displays available actions to the operator:
+*   ENTER = Fetch user record or submit changes
+*   F3    = Save changes and exit to previous menu
+*   F4    = Clear all input fields
+*   F5    = Save changes and remain on screen
+*   F12   = Cancel and return without saving
+* COUSR02C evaluates EIBAID to route each key press.
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=58,                                              -

@@ -16,6 +16,46 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*
+*---------------------------------------------------------------*
+* BMS Source: COADM01 -- Admin Menu Screen
+*---------------------------------------------------------------*
+* This BMS source defines the Admin Menu screen for the
+* CardDemo application.
+*
+* Associated Program:    COADM01C
+* CICS Transaction ID:   CA00
+* Mapset Name:           COADM01
+* Map Name:              COADM1A
+* Symbolic Map Copybook: app/cpy-bms/COADM01.CPY
+*
+* The screen provides 4 administration options:
+*   1. User List   (COUSR00C)
+*   2. User Add    (COUSR01C)
+*   3. User Update (COUSR02C)
+*   4. User Delete (COUSR03C)
+*
+* Access is restricted to admin-type users; the COADM01C
+* program validates user type before displaying this screen.
+*
+* Layout mirrors COMEN01.bms (Main Menu) using the same
+* OPTN001-OPTN012 runtime-populated option pattern.
+*---------------------------------------------------------------*
+*
+*---------------------------------------------------------------*
+* DFHMSD -- Mapset Definition
+*---------------------------------------------------------------*
+* CTRL=(ALARM,FREEKB): Alarm sounds on SEND MAP, keyboard
+*   unlocked for user input after map display.
+* EXTATT=YES: Enables extended attributes (color, highlight,
+*   validation) on map fields.
+* LANG=COBOL: Generates COBOL-compatible symbolic map.
+* MODE=INOUT: Mapset supports both input and output maps.
+* STORAGE=AUTO: CICS allocates map storage automatically.
+* TIOAPFX=YES: Reserves 12-byte TIOA prefix for BMS use.
+* TYPE=&&SYSPARM: Map type resolved at assembly time via
+*   SYSPARM (MAP, DSECT, or &&SYSPARM for both).
+*---------------------------------------------------------------*
 COADM01 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                EXTATT=YES,                                             -
                LANG=COBOL,                                             -
@@ -23,9 +63,30 @@ COADM01 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+*
+*---------------------------------------------------------------*
+* DFHMDI -- Map Definition: COADM1A
+*---------------------------------------------------------------*
+* Defines the Admin Menu map as a full 24x80 screen starting
+* at column 1, line 1 (upper-left corner). This is the sole
+* map within the COADM01 mapset.
+*---------------------------------------------------------------*
 COADM1A DFHMDI COLUMN=1,                                               -
                LINE=1,                                                 -
                SIZE=(24,80)
+*
+*---------------------------------------------------------------*
+* Header Area -- Screen Lines 1-2
+*---------------------------------------------------------------*
+* Line 1: Transaction ID label ('Tran:') and value (TRNNAME),
+*   application title (TITLE01, populated from COTTL01Y
+*   copybook), date label ('Date:') and value (CURDATE).
+* Line 2: Program name label ('Prog:') and value (PGMNAME),
+*   second title line (TITLE02, populated from COTTL01Y),
+*   time label ('Time:') and value (CURTIME, hh:mm:ss).
+* Named fields use FSET to force the Modified Data Tag (MDT)
+*   so values are transmitted back on RECEIVE MAP.
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
@@ -72,11 +133,35 @@ CURTIME DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss'
+*
+*---------------------------------------------------------------*
+* Screen Title -- Line 4
+*---------------------------------------------------------------*
+* Centered 'Admin Menu' text in bright neutral color.
+* BRT attribute and NEUTRAL color distinguish the admin
+* context from the main menu's equivalent title area.
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,BRT),                                      -
                COLOR=NEUTRAL,                                          -
                LENGTH=10,                                              -
                POS=(4,35),                                             -
                INITIAL='Admin Menu'
+*
+*---------------------------------------------------------------*
+* Option Lines -- Screen Lines 6-17 (OPTN001 - OPTN012)
+*---------------------------------------------------------------*
+* Twelve 40-character option text fields populated at runtime
+* by the COADM01C program. The program fills 4 options:
+*   OPTN001: '01. User List   (COUSR00)'
+*   OPTN002: '02. User Add    (COUSR01)'
+*   OPTN003: '03. User Update (COUSR02)'
+*   OPTN004: '04. User Delete (COUSR03)'
+* Remaining OPTN005-OPTN012 are left blank (space-filled).
+*
+* ASKIP prevents user modification of option text.
+* FSET forces MDT so options are returned on RECEIVE MAP.
+* Each field starts at column 20, one per screen line.
+*---------------------------------------------------------------*
 OPTN001 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                COLOR=BLUE,                                             -
                LENGTH=40,                                              -
@@ -137,6 +222,22 @@ OPTN012 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=40,                                              -
                POS=(17,20),                                            -
                INITIAL=' '
+*
+*---------------------------------------------------------------*
+* Selection Input -- Screen Line 20
+*---------------------------------------------------------------*
+* Prompt label 'Please select an option :' in bright
+* turquoise (ASKIP,BRT), followed by the OPTION input field.
+*
+* OPTION: 2-character numeric input field.
+*   UNPROT: User-editable field.
+*   NUM: Restricts input to numeric characters only.
+*   IC: Sets initial cursor position on map display.
+*   FSET: MDT forced so the field is always transmitted.
+*   JUSTIFY=(RIGHT,ZERO): Right-justifies and zero-fills
+*     input (e.g., user enters '3', transmitted as '03').
+*   HILIGHT=UNDERLINE: Visual cue marking the input area.
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,BRT),                                      -
                COLOR=TURQUOISE,                                        -
                LENGTH=25,                                              -
@@ -147,14 +248,36 @@ OPTION  DFHMDF ATTRB=(FSET,IC,NORM,NUM,UNPROT),                        -
                JUSTIFY=(RIGHT,ZERO),                                   -
                LENGTH=2,                                               -
                POS=(20,41)
+*
+* Zero-length stopper field -- terminates attribute bleed
+* from the underlined OPTION input field. Without this
+* field the underline would continue across the row.
+*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=GREEN,                                            -
                LENGTH=0,                                               -
                POS=(20,44)
+*
+*---------------------------------------------------------------*
+* Error Message -- Screen Line 23
+*---------------------------------------------------------------*
+* ERRMSG: 78-character error message field in bright RED.
+* Displays validation messages such as invalid option
+* selection or unauthorized access attempts.
+* FSET forces MDT; BRT ensures high visibility.
+*---------------------------------------------------------------*
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=78,                                              -
                POS=(23,1)
+*
+*---------------------------------------------------------------*
+* Function Key Legend -- Screen Line 24
+*---------------------------------------------------------------*
+* Displays 'ENTER=Continue  F3=Exit' in YELLOW.
+* ENTER submits the selected option number for processing.
+* F3 returns the user to the main menu (COMEN01C).
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=23,                                              -

@@ -16,6 +16,36 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+* -----------------------------------------------------------------
+* BMS Source:  COUSR00.bms
+* Program:     COUSR00C (online CICS)
+* Transaction: CU00
+* Function:    User List - Admin user account browse screen
+* -----------------------------------------------------------------
+* This BMS source defines the User List screen used by the
+* COUSR00C program under CICS transaction CU00. It provides
+* an admin-only interface for browsing user accounts stored
+* in the USRSEC VSAM KSDS dataset.
+*
+* Screen Layout:
+*   - Paginated list of 10 user rows per page
+*   - Selection column for Update (U) or Delete (D) actions
+*   - User ID search filter input for filtering results
+*   - Standard header/footer with navigation keys
+*
+* Mapset: COUSR00    Map: COUSR0A
+* Generated symbolic map: app/cpy-bms/COUSR00.CPY
+* -----------------------------------------------------------------
+* -----------------------------------------------------------------
+* Mapset Definition: COUSR00
+* CTRL=(ALARM,FREEKB) - Sound alarm on SEND, free keyboard
+* EXTATT=YES           - Extended attributes (color, highlight)
+* LANG=COBOL           - Generate COBOL symbolic map copybook
+* MODE=INOUT           - Supports both input and output mapping
+* STORAGE=AUTO         - Automatic storage allocation
+* TIOAPFX=YES          - Include TIOA prefix in symbolic map
+* TYPE=&&SYSPARM       - Map type set by assembly parameter
+* -----------------------------------------------------------------
 COUSR00 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                EXTATT=YES,                                             -
                LANG=COBOL,                                             -
@@ -23,9 +53,22 @@ COUSR00 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+* -----------------------------------------------------------------
+* Map Definition: COUSR0A
+* Single map within the COUSR00 mapset
+* Full 24x80 3270 terminal screen at row 1, column 1
+* -----------------------------------------------------------------
 COUSR0A DFHMDI COLUMN=1,                                               -
                LINE=1,                                                 -
                SIZE=(24,80)
+* -----------------------------------------------------------------
+* Header Area (Screen Lines 1-2)
+* Standard CardDemo header with transaction ID, program name,
+* application title, current date, and current time
+* Row 1: Tran(TRNNAME) Title(TITLE01) Date(CURDATE)
+* Row 2: Prog(PGMNAME) Title(TITLE02) Time(CURTIME)
+* All header fields are ASKIP (protected) in BLUE or YELLOW
+* -----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
@@ -72,6 +115,11 @@ CURTIME DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss'
+* -----------------------------------------------------------------
+* Screen Title and Page Number (Screen Line 4)
+* "List Users" centered title in NEUTRAL BRT
+* PAGENUM - current page number for list pagination
+* -----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,BRT),                                      -
                COLOR=NEUTRAL,                                          -
                LENGTH=10,                                              -
@@ -87,6 +135,11 @@ PAGENUM DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=8,                                               -
                POS=(4,71),                                             -
                INITIAL=' '
+* -----------------------------------------------------------------
+* Search Filter Area (Screen Line 6)
+* USRIDIN - 8-char User ID filter (UNPROT GREEN underline)
+* Allows admin to filter the user list by user ID prefix
+* -----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=15,                                              -
@@ -100,6 +153,11 @@ USRIDIN DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                LENGTH=0,                                               -
                POS=(6,30)
+* -----------------------------------------------------------------
+* Column Headers (Screen Line 8)
+* Labels: Sel, User ID, First Name, Last Name, Type
+* All ASKIP NORM NEUTRAL - protected column headings
+* -----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=NEUTRAL,                                          -
                LENGTH=3,                                               -
@@ -125,6 +183,10 @@ USRIDIN DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                LENGTH=4,                                               -
                POS=(8,72),                                             -
                INITIAL='Type'
+* -----------------------------------------------------------------
+* Column Separator Dashes (Screen Line 9)
+* Visual separator between column headers and data rows
+* -----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=NEUTRAL,                                          -
                LENGTH=3,                                               -
@@ -150,6 +212,20 @@ USRIDIN DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                LENGTH=4,                                               -
                POS=(9,72),                                             -
                INITIAL='----'
+* -----------------------------------------------------------------
+* Data Rows Area (Screen Lines 10-19)
+* 10 repeating row groups with numeric suffixes 01 through 10
+* Each row contains 5 fields:
+*   SELnnnn - 1-char UNPROT selection (U=Update, D=Delete)
+*   USRIDnn - 8-char protected user ID display
+*   FNAMEnn - 20-char protected first name display
+*   LNAMEnn - 20-char protected last name display
+*   UTYPEnn - 1-char protected user type (admin/regular)
+* Selection fields are GREEN UNPROT with underline highlight
+* Display fields are BLUE ASKIP (protected, program-populated)
+* Rows occupy screen lines 10 through 19, one per line
+* -----------------------------------------------------------------
+* --- Data Row 01 (Screen Line 10) ---
 SEL0001 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -179,6 +255,7 @@ UTYPE01 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=1,                                               -
                POS=(10,73),                                            -
                INITIAL=' '
+* --- Data Row 02 (Screen Line 11) ---
 SEL0002 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -208,6 +285,7 @@ UTYPE02 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=1,                                               -
                POS=(11,73),                                            -
                INITIAL=' '
+* --- Data Row 03 (Screen Line 12) ---
 SEL0003 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -237,6 +315,7 @@ UTYPE03 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=1,                                               -
                POS=(12,73),                                            -
                INITIAL=' '
+* --- Data Row 04 (Screen Line 13) ---
 SEL0004 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -266,6 +345,7 @@ UTYPE04 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=1,                                               -
                POS=(13,73),                                            -
                INITIAL=' '
+* --- Data Row 05 (Screen Line 14) ---
 SEL0005 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -295,6 +375,7 @@ UTYPE05 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=1,                                               -
                POS=(14,73),                                            -
                INITIAL=' '
+* --- Data Row 06 (Screen Line 15) ---
 SEL0006 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -324,6 +405,7 @@ UTYPE06 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=1,                                               -
                POS=(15,73),                                            -
                INITIAL=' '
+* --- Data Row 07 (Screen Line 16) ---
 SEL0007 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -353,6 +435,7 @@ UTYPE07 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=1,                                               -
                POS=(16,73),                                            -
                INITIAL=' '
+* --- Data Row 08 (Screen Line 17) ---
 SEL0008 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -382,6 +465,7 @@ UTYPE08 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=1,                                               -
                POS=(17,73),                                            -
                INITIAL=' '
+* --- Data Row 09 (Screen Line 18) ---
 SEL0009 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -411,6 +495,7 @@ UTYPE09 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=1,                                               -
                POS=(18,73),                                            -
                INITIAL=' '
+* --- Data Row 10 (Screen Line 19) ---
 SEL0010 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -440,16 +525,31 @@ UTYPE10 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=1,                                               -
                POS=(19,73),                                            -
                INITIAL=' '
+* -----------------------------------------------------------------
+* Informational Message Area (Screen Line 21)
+* Displays user action instructions for the selection column
+* U = Update selected user, D = Delete selected user
+* -----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,BRT),                                      -
                COLOR=NEUTRAL,                                          -
                LENGTH=56,                                              -
                POS=(21,12),                                            -
                INITIAL='Type ''U'' to Update or ''D'' to Delete a User -
                from the list'
+* -----------------------------------------------------------------
+* Error Message Area (Screen Line 23)
+* ERRMSG - 78-char error/status message in RED BRT
+* Program-populated for validation errors and status feedback
+* -----------------------------------------------------------------
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=78,                                              -
                POS=(23,1)
+* -----------------------------------------------------------------
+* Function Key Legend (Screen Line 24)
+* ENTER=Continue, F3=Back, F7=Backward, F8=Forward
+* Standard navigation keys for paginated list browsing
+* -----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=48,                                              -

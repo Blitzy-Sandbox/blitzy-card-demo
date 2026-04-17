@@ -14,8 +14,23 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      * Symbolic map copybook for the Transaction List screen.
+      * BMS Source: app/bms/COTRN00.bms (Mapset: COTRN00, Map: COTRN0A)
+      * COBOL Program: app/cbl/COTRN00C.cbl (Transaction: CT00)
+      * Paginated transaction list with 10 selectable rows per page.
+      * Supports transaction ID filtering and F7/F8 paging.
+      * Row selection routes to Transaction Detail (COTRN01C) or
+      * Transaction Add (COTRN02C).
+      * ---------------------------------------------------------------
+      * Input buffer layout (AI) -- populated by EXEC CICS RECEIVE MAP.
+      * Fields use L/F/A/I suffixes:
+      *   L = Length (COMP PIC S9(4))  F = Flag (PICTURE X)
+      *   A = Attribute (PICTURE X)    I = Input data (PICTURE X(n))
+      * ---------------------------------------------------------------
        01  COTRN0AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
+      * --- Header fields: transaction name, titles, date/time ---
            02  TRNNAMEL    COMP  PIC  S9(4).
            02  TRNNAMEF    PICTURE X.
            02  FILLER REDEFINES TRNNAMEF.
@@ -52,18 +67,24 @@
              03 CURTIMEA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CURTIMEI  PIC X(8).
+      * --- Page number display ---
            02  PAGENUML    COMP  PIC  S9(4).
            02  PAGENUMF    PICTURE X.
            02  FILLER REDEFINES PAGENUMF.
              03 PAGENUMA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  PAGENUMI  PIC X(8).
+      * --- Transaction ID filter input ---
            02  TRNIDINL    COMP  PIC  S9(4).
            02  TRNIDINF    PICTURE X.
            02  FILLER REDEFINES TRNIDINF.
              03 TRNIDINA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  TRNIDINI  PIC X(16).
+      * --- Data rows: 10 rows, each with selection + 4 fields ---
+      * Each row: SEL (selection flag), TRNID (transaction ID),
+      * TDATE (date), TDESC (description), TAMT (amount)
+      * --- Row 1 ---
            02  SEL0001L    COMP  PIC  S9(4).
            02  SEL0001F    PICTURE X.
            02  FILLER REDEFINES SEL0001F.
@@ -94,6 +115,7 @@
              03 TAMT001A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  TAMT001I  PIC X(12).
+      * --- Row 2 ---
            02  SEL0002L    COMP  PIC  S9(4).
            02  SEL0002F    PICTURE X.
            02  FILLER REDEFINES SEL0002F.
@@ -124,6 +146,7 @@
              03 TAMT002A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  TAMT002I  PIC X(12).
+      * --- Row 3 ---
            02  SEL0003L    COMP  PIC  S9(4).
            02  SEL0003F    PICTURE X.
            02  FILLER REDEFINES SEL0003F.
@@ -154,6 +177,7 @@
              03 TAMT003A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  TAMT003I  PIC X(12).
+      * --- Row 4 ---
            02  SEL0004L    COMP  PIC  S9(4).
            02  SEL0004F    PICTURE X.
            02  FILLER REDEFINES SEL0004F.
@@ -184,6 +208,7 @@
              03 TAMT004A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  TAMT004I  PIC X(12).
+      * --- Row 5 ---
            02  SEL0005L    COMP  PIC  S9(4).
            02  SEL0005F    PICTURE X.
            02  FILLER REDEFINES SEL0005F.
@@ -214,6 +239,7 @@
              03 TAMT005A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  TAMT005I  PIC X(12).
+      * --- Row 6 ---
            02  SEL0006L    COMP  PIC  S9(4).
            02  SEL0006F    PICTURE X.
            02  FILLER REDEFINES SEL0006F.
@@ -244,6 +270,7 @@
              03 TAMT006A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  TAMT006I  PIC X(12).
+      * --- Row 7 ---
            02  SEL0007L    COMP  PIC  S9(4).
            02  SEL0007F    PICTURE X.
            02  FILLER REDEFINES SEL0007F.
@@ -274,6 +301,7 @@
              03 TAMT007A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  TAMT007I  PIC X(12).
+      * --- Row 8 ---
            02  SEL0008L    COMP  PIC  S9(4).
            02  SEL0008F    PICTURE X.
            02  FILLER REDEFINES SEL0008F.
@@ -304,6 +332,7 @@
              03 TAMT008A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  TAMT008I  PIC X(12).
+      * --- Row 9 ---
            02  SEL0009L    COMP  PIC  S9(4).
            02  SEL0009F    PICTURE X.
            02  FILLER REDEFINES SEL0009F.
@@ -334,6 +363,7 @@
              03 TAMT009A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  TAMT009I  PIC X(12).
+      * --- Row 10 ---
            02  SEL0010L    COMP  PIC  S9(4).
            02  SEL0010F    PICTURE X.
            02  FILLER REDEFINES SEL0010F.
@@ -364,14 +394,24 @@
              03 TAMT010A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  TAMT010I  PIC X(12).
+      * --- Error message area ---
            02  ERRMSGL    COMP  PIC  S9(4).
            02  ERRMSGF    PICTURE X.
            02  FILLER REDEFINES ERRMSGF.
              03 ERRMSGA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ERRMSGI  PIC X(78).
+      * ---------------------------------------------------------------
+      * Output buffer layout (AO) -- populated by program for
+      * EXEC CICS SEND MAP. REDEFINES the AI layout.
+      * Fields use C/P/H/V/O suffixes:
+      *   C = Color    P = Programmed symbol   H = Highlighting
+      *   V = Validation   O = Output data (REDEFINES I field)
+      * ---------------------------------------------------------------
        01  COTRN0AO REDEFINES COTRN0AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
+      * --- Header fields (output): name, titles, date/time ---
            02  FILLER PICTURE X(3).
            02  TRNNAMEC    PICTURE X.
            02  TRNNAMEP    PICTURE X.
@@ -408,6 +448,7 @@
            02  CURTIMEH    PICTURE X.
            02  CURTIMEV    PICTURE X.
            02  CURTIMEO  PIC X(8).
+      * --- Page number and filter (output) ---
            02  FILLER PICTURE X(3).
            02  PAGENUMC    PICTURE X.
            02  PAGENUMP    PICTURE X.
@@ -420,6 +461,7 @@
            02  TRNIDINH    PICTURE X.
            02  TRNIDINV    PICTURE X.
            02  TRNIDINO  PIC X(16).
+      * --- Data rows 1-10 (output) ---
            02  FILLER PICTURE X(3).
            02  SEL0001C    PICTURE X.
            02  SEL0001P    PICTURE X.
@@ -720,6 +762,7 @@
            02  TAMT010H    PICTURE X.
            02  TAMT010V    PICTURE X.
            02  TAMT010O  PIC X(12).
+      * --- Error message area (output) ---
            02  FILLER PICTURE X(3).
            02  ERRMSGC    PICTURE X.
            02  ERRMSGP    PICTURE X.

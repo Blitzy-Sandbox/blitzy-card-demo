@@ -14,8 +14,22 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      * Symbolic map copybook for the Main Menu screen.
+      * BMS Source: app/bms/COMEN01.bms (Mapset: COMEN01, Map: COMEN1A)
+      * COBOL Program: app/cbl/COMEN01C.cbl (Transaction: CM00)
+      * Central navigation hub after sign-on. Presents up to 12 menu
+      * options populated at runtime. User enters option number and
+      * COMEN01C uses EXEC CICS XCTL to transfer to selected program.
+      * ---------------------------------------------------------------
+      * Input buffer layout (AI) — populated by EXEC CICS RECEIVE MAP.
+      * Fields use L/F/A/I suffixes:
+      *   L = Length (COMP PIC S9(4))  F = Flag (PICTURE X)
+      *   A = Attribute (PICTURE X)    I = Input data (PICTURE X(n))
+      * ---------------------------------------------------------------
        01  COMEN1AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
+      * --- Header fields: transaction ID, titles, date/time ---
            02  TRNNAMEL    COMP  PIC  S9(4).
            02  TRNNAMEF    PICTURE X.
            02  FILLER REDEFINES TRNNAMEF.
@@ -52,6 +66,8 @@
              03 CURTIMEA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CURTIMEI  PIC X(8).
+      * --- Menu option lines (12 slots, 40-char each) ---
+      * COMEN01C populates ~10 options; remaining slots blank
            02  OPTN001L    COMP  PIC  S9(4).
            02  OPTN001F    PICTURE X.
            02  FILLER REDEFINES OPTN001F.
@@ -124,19 +140,29 @@
              03 OPTN012A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  OPTN012I  PIC X(40).
+      * --- Menu selection input (2-char numeric) ---
            02  OPTIONL    COMP  PIC  S9(4).
            02  OPTIONF    PICTURE X.
            02  FILLER REDEFINES OPTIONF.
              03 OPTIONA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  OPTIONI  PIC X(2).
+      * --- Error message area (78-char, RED) ---
            02  ERRMSGL    COMP  PIC  S9(4).
            02  ERRMSGF    PICTURE X.
            02  FILLER REDEFINES ERRMSGF.
              03 ERRMSGA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ERRMSGI  PIC X(78).
+      * ---------------------------------------------------------------
+      * Output buffer layout (AO) — populated by program for
+      * EXEC CICS SEND MAP. REDEFINES the AI layout.
+      * Fields use C/P/H/V/O suffixes:
+      *   C = Color    P = Programmed symbol   H = Highlighting
+      *   V = Validation   O = Output data (REDEFINES I field)
+      * ---------------------------------------------------------------
        01  COMEN1AO REDEFINES COMEN1AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
            02  FILLER PICTURE X(3).
            02  TRNNAMEC    PICTURE X.

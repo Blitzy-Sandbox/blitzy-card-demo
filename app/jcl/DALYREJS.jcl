@@ -15,11 +15,26 @@
 //* either express or implied. See the License for the specific     
 //* language governing permissions and limitations under the License
 //******************************************************************        
+//* JOB: DALYREJS - Define GDG Base for Daily Rejections
+//* Defines a GDG base for daily transaction rejection
+//* files. The DALYREJS GDG stores rejected transaction
+//* records produced by POSTTRAN (CBTRN02C) during daily
+//* transaction posting. Each run creates a new generation.
+//* Prerequisite for: POSTTRAN.jcl (writes DALYREJS(+1))
+//* GDG settings: LIMIT(5), SCRATCH
+//* NOTE: Existing section comment below is a copy-paste
+//*   artifact and does not match the actual operation.
 //* *******************************************************************         
 //* DELETE TRANSACATION MASTER VSAM FILE IF ONE ALREADY EXISTS                  
 //* *******************************************************************         
+//* STEP05: IDCAMS - Define GDG base AWS.M2.CARDDEMO.DALYREJS
+//*   LIMIT(5): Retains up to 5 generations
+//*   SCRATCH: Oldest generation is scratched when limit
+//*   is exceeded (disk space reclaimed)
 //STEP05 EXEC PGM=IDCAMS                                                        
+//* SYSPRINT: IDCAMS diagnostic and status messages
 //SYSPRINT DD   SYSOUT=*                                                        
+//* SYSIN: IDCAMS control statements (inline)
 //SYSIN    DD   *                                                               
    DEFINE GENERATIONDATAGROUP -                                                 
    (NAME(AWS.M2.CARDDEMO.DALYREJS) -                                            

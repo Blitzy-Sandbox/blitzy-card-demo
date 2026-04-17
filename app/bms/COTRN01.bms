@@ -16,6 +16,40 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*
+*-----------------------------------------------------------------
+* BMS SOURCE: Transaction Detail View Screen
+*-----------------------------------------------------------------
+* This BMS source defines the Transaction Detail View screen
+* used by COBOL program COTRN01C (CICS transaction CT01).
+*
+* The screen displays a single transaction record in read-only
+* detail mode. Users can look up a transaction by entering
+* its ID in the TRNIDIN input field. All other fields are
+* protected (ASKIP), showing data read from the TRANSACT
+* VSAM dataset.
+*
+* Displayed fields: card number, transaction type code,
+* category code, source, description, amount, origination
+* date, processed date, merchant ID, name, city, and ZIP.
+*
+* Mapset:  COTRN01
+* Map:     COTRN1A
+* Program: COTRN01C
+* Symmap:  app/cpy-bms/COTRN01.CPY
+*-----------------------------------------------------------------
+*
+*-----------------------------------------------------------------
+* DFHMSD Mapset Definition: COTRN01
+*-----------------------------------------------------------------
+* CTRL=(ALARM,FREEKB) - Sound alarm; free keyboard on SEND
+* EXTATT=YES          - Enable extended field attributes
+* LANG=COBOL          - Generate COBOL symbolic map
+* MODE=INOUT          - Map supports both input and output
+* STORAGE=AUTO        - CICS auto-allocates map storage
+* TIOAPFX=YES         - Include TIOA prefix for BMS I/O
+* TYPE=&&SYSPARM      - Map type set at assembly time
+*-----------------------------------------------------------------
 COTRN01 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                EXTATT=YES,                                             -
                LANG=COBOL,                                             -
@@ -23,9 +57,24 @@ COTRN01 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+*-----------------------------------------------------------------
+* DFHMDI Map Definition: COTRN1A
+*-----------------------------------------------------------------
+* Defines a single 24-row by 80-column 3270 screen starting
+* at row 1, column 1 (full-screen map for transaction detail).
+*-----------------------------------------------------------------
 COTRN1A DFHMDI COLUMN=1,                                               -
                LINE=1,                                                 -
                SIZE=(24,80)
+*-----------------------------------------------------------------
+* HEADER AREA (Screen Lines 1-2)
+*-----------------------------------------------------------------
+* Standard CardDemo header with transaction name, program name,
+* application titles, current date, and current time.
+* All header fields are ASKIP (protected) in BLUE.
+*   Line 1: Tran:[TRNNAME]  [TITLE01]  Date:[CURDATE]
+*   Line 2: Prog:[PGMNAME]  [TITLE02]  Time:[CURTIME]
+*-----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
@@ -72,11 +121,26 @@ CURTIME DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss'
+*-----------------------------------------------------------------
+* SCREEN TITLE (Screen Line 4)
+*-----------------------------------------------------------------
+* Centered title identifying the screen function. Displayed in
+* bright (BRT) neutral color for emphasis.
+*-----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,BRT),                                      -
                COLOR=NEUTRAL,                                          -
                LENGTH=16,                                              -
                POS=(4,30),                                             -
                INITIAL='View Transaction'
+*-----------------------------------------------------------------
+* TRANSACTION LOOKUP SECTION (Screen Line 6)
+*-----------------------------------------------------------------
+* Input area where users enter a transaction ID for lookup.
+* TRNIDIN: 16-char UNPROT input field with IC (Initial Cursor)
+*   positioning. Green text with underline highlight.
+*   COTRN01C reads the TRANSACT VSAM KSDS using this value
+*   as the primary key.
+*-----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=14,                                              -
@@ -91,12 +155,25 @@ TRNIDIN DFHMDF ATTRB=(FSET,IC,NORM,UNPROT),                            -
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                LENGTH=0,                                               -
                POS=(6,38)
+*-----------------------------------------------------------------
+* TRANSACTION DATA DISPLAY (Screen Lines 8-20)
+*-----------------------------------------------------------------
+* All fields below are read-only (ASKIP, protected) displaying
+* transaction details from the TRANSACT VSAM dataset.
+* Labels are TURQUOISE; data values are BLUE.
+* Each data field is followed by a LENGTH=0 stopper field to
+* prevent cursor bleed into adjacent screen areas.
+*-----------------------------------------------------------------
+* Horizontal separator between lookup and detail sections
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=NEUTRAL,                                          -
                LENGTH=70,                                              -
                POS=(8,6),                                              -
                INITIAL='------------------------------------------------
                -----------------------'
+* --- Screen Line 10: Transaction ID and Card Number ---
+* TRNID:   16-char echo of the looked-up transaction ID
+* CARDNUM: 16-char card number linked to this transaction
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=15,                                              -
@@ -124,6 +201,10 @@ CARDNUM DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=GREEN,                                            -
                LENGTH=0,                                               -
                POS=(10,75)
+* --- Screen Line 12: Type Code, Category Code, Source ---
+* TTYPCD:  2-char transaction type code (e.g., SA=Sale)
+* TCATCD:  4-char transaction category code
+* TRNSRC:  10-char transaction source identifier
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=8,                                               -
@@ -160,6 +241,8 @@ TRNSRC  DFHMDF ATTRB=(ASKIP,NORM),                                     -
                INITIAL=' '
         DFHMDF LENGTH=0,                                               -
                POS=(12,65)
+* --- Screen Line 14: Transaction Description ---
+* TDESC: 60-char free-text transaction description
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=12,                                              -
@@ -172,6 +255,10 @@ TDESC   DFHMDF ATTRB=(ASKIP,NORM),                                     -
                INITIAL=' '
         DFHMDF LENGTH=0,                                               -
                POS=(14,80)
+* --- Screen Line 16: Amount, Original Date, Processed Date ---
+* TRNAMT:  12-char formatted transaction amount
+* TORIGDT: 10-char origination date (when initiated)
+* TPROCDT: 10-char processed date (when posted)
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=7,                                               -
@@ -208,6 +295,11 @@ TPROCDT DFHMDF ATTRB=(ASKIP,NORM),                                     -
                INITIAL=' '
         DFHMDF LENGTH=0,                                               -
                POS=(16,79)
+* --- Screen Lines 18-20: Merchant Information ---
+* MID:   9-char merchant identification code
+* MNAME: 30-char merchant business name
+* MCITY: 25-char merchant city location
+* MZIP:  10-char merchant ZIP code
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=12,                                              -
@@ -256,10 +348,23 @@ MZIP    DFHMDF ATTRB=(ASKIP,NORM),                                     -
                INITIAL=' '
         DFHMDF LENGTH=0,                                               -
                POS=(20,78)
+*-----------------------------------------------------------------
+* ERROR MESSAGE AREA (Screen Line 23)
+*-----------------------------------------------------------------
+* ERRMSG: 78-char error/info message in bright RED (BRT).
+*   Populated by COTRN01C on lookup failure or validation
+*   errors. Cleared on successful transaction display.
+*-----------------------------------------------------------------
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=78,                                              -
                POS=(23,1)
+*-----------------------------------------------------------------
+* FUNCTION KEY LEGEND (Screen Line 24)
+*-----------------------------------------------------------------
+* Displays available keys in YELLOW on the last screen line:
+*   ENTER=Fetch  F3=Back  F4=Clear  F5=Browse Tran
+*-----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=47,                                              -

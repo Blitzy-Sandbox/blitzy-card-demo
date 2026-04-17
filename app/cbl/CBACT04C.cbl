@@ -19,18 +19,61 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ******************************************************************
+      *
+      * CBACT04C - Interest Calculation Batch Program
+      *
+      * Computes monthly interest for every account that has
+      * transaction-category-balance records in the TCATBAL VSAM
+      * file. For each category-balance record the program looks
+      * up the applicable interest rate from the DISCGRP
+      * (disclosure group) file, computes monthly interest as
+      * (balance * rate) / 1200, and writes a system-generated
+      * interest transaction to TRANSACT. When a new account
+      * number is detected, the accumulated interest is posted
+      * back to the account master via REWRITE.
+      *
+      * Files accessed:
+      *   TCATBALF  - Transaction category balance (KSDS, input,
+      *               sequential read by composite key)
+      *   XREFFILE  - Card cross-reference (KSDS, random read
+      *               by alternate key FD-XREF-ACCT-ID)
+      *   DISCGRP   - Disclosure group / interest rates (KSDS,
+      *               random read by composite key)
+      *   ACCTFILE  - Account master (KSDS, I-O for REWRITE)
+      *   TRANSACT  - Transaction output (sequential, output)
+      *
+      * Receives PARM-DATE via JCL PARM to stamp generated
+      * transaction IDs and timestamps.
+      *
+      * Copybooks: CVTRA01Y (category-balance record),
+      *            CVACT03Y (cross-reference record),
+      *            CVTRA02Y (disclosure group record),
+      *            CVACT01Y (account record),
+      *            CVTRA05Y (transaction record)
+      *
+      * JCL wrapper: app/jcl/INTCALC.jcl
+      * Pipeline position: Runs after POSTTRAN (transaction
+      *   posting), before COMBTRAN (combine)
+      *
        IDENTIFICATION DIVISION.                                                 
        PROGRAM-ID.    CBACT04C.                                                 
        AUTHOR.        AWS.                                                      
        ENVIRONMENT DIVISION.                                                    
        INPUT-OUTPUT SECTION.                                                    
        FILE-CONTROL.                                                            
+      * TCATBAL-FILE: Transaction category balance VSAM KSDS.
+      *   Opened for sequential input to iterate all balance
+      *   records by composite key (acct + type + category).
            SELECT TCATBAL-FILE ASSIGN TO TCATBALF                               
                   ORGANIZATION IS INDEXED                                       
                   ACCESS MODE  IS SEQUENTIAL                                    
                   RECORD KEY   IS FD-TRAN-CAT-KEY                               
                   FILE STATUS  IS TCATBALF-STATUS.                              
                                                                                 
+      * XREF-FILE: Card cross-reference VSAM KSDS.
+      *   Opened for random read by alternate key
+      *   FD-XREF-ACCT-ID to resolve card number for a
+      *   given account.
            SELECT XREF-FILE ASSIGN TO   XREFFILE                                
                   ORGANIZATION IS INDEXED                                       
                   ACCESS MODE  IS RANDOM                                        
@@ -38,18 +81,28 @@
                   ALTERNATE RECORD KEY IS FD-XREF-ACCT-ID                       
                   FILE STATUS  IS XREFFILE-STATUS.                              
                                                                                 
+      * ACCOUNT-FILE: Account master VSAM KSDS.
+      *   Opened I-O for random keyed read then REWRITE
+      *   of accumulated interest to ACCT-CURR-BAL.
            SELECT ACCOUNT-FILE ASSIGN TO ACCTFILE                               
                   ORGANIZATION IS INDEXED                                       
                   ACCESS MODE  IS RANDOM                                        
                   RECORD KEY   IS FD-ACCT-ID                                    
                   FILE STATUS  IS ACCTFILE-STATUS.                              
                                                                                 
+      * DISCGRP-FILE: Disclosure group VSAM KSDS.
+      *   Opened for random read by composite key
+      *   (group-id + type + category) to look up the
+      *   applicable annual interest rate DIS-INT-RATE.
            SELECT DISCGRP-FILE ASSIGN TO DISCGRP                                
                   ORGANIZATION IS INDEXED                                       
                   ACCESS MODE  IS RANDOM                                        
                   RECORD KEY   IS FD-DISCGRP-KEY                                
                   FILE STATUS  IS DISCGRP-STATUS.                               
                                                                                 
+      * TRANSACT-FILE: Transaction master output file.
+      *   Opened sequentially for output to write
+      *   system-generated interest transaction records.
            SELECT TRANSACT-FILE ASSIGN TO TRANSACT                              
                   ORGANIZATION IS SEQUENTIAL                                    
                   ACCESS MODE  IS SEQUENTIAL                                    
@@ -94,31 +147,43 @@
        WORKING-STORAGE SECTION.                                                 
                                                                                 
       *****************************************************************         
+      * Include transaction category balance record layout
+      * See app/cpy/CVTRA01Y.cpy (TRAN-CAT-BAL-RECORD, 50 bytes)
        COPY CVTRA01Y.                                                           
        01  TCATBALF-STATUS.                                                     
            05  TCATBALF-STAT1      PIC X.                                       
            05  TCATBALF-STAT2      PIC X.                                       
                                                                                 
+      * Include card cross-reference record layout
+      * See app/cpy/CVACT03Y.cpy (CARD-XREF-RECORD, 50 bytes)
        COPY CVACT03Y.                                                           
        01  XREFFILE-STATUS.                                                     
            05  XREFFILE-STAT1      PIC X.                                       
            05  XREFFILE-STAT2      PIC X.                                       
                                                                                 
+      * Include disclosure group record layout with rate
+      * See app/cpy/CVTRA02Y.cpy (DIS-GROUP-RECORD, 50 bytes)
        COPY CVTRA02Y.                                                           
        01  DISCGRP-STATUS.                                                      
            05 DISCGRP-STAT1        PIC X.                                       
            05 DISCGRP-STAT2        PIC X.                                       
                                                                                 
+      * Include account master record layout
+      * See app/cpy/CVACT01Y.cpy (ACCOUNT-RECORD, 300 bytes)
        COPY CVACT01Y.                                                           
        01  ACCTFILE-STATUS.                                                     
            05  ACCTFILE-STAT1      PIC X.                                       
            05  ACCTFILE-STAT2      PIC X.                                       
                                                                                 
+      * Include transaction record layout for output writes
+      * See app/cpy/CVTRA05Y.cpy (TRAN-RECORD, 350 bytes)
        COPY CVTRA05Y.                                                           
        01  TRANFILE-STATUS.                                                     
            05  TRANFILE-STAT1      PIC X.                                       
            05  TRANFILE-STAT2      PIC X.                                       
                                                                                 
+      * General I/O status area used by 9910-DISPLAY-IO-STATUS
+      * to format and display file status codes on error
        01  IO-STATUS.                                                           
            05  IO-STAT1            PIC X.                                       
            05  IO-STAT2            PIC X.                                       
@@ -130,13 +195,20 @@
            05  IO-STATUS-0401      PIC 9   VALUE 0.                             
            05  IO-STATUS-0403      PIC 999 VALUE 0.                             
                                                                                 
+      * Application-level return code. Condition names:
+      *   APPL-AOK (0) = success, APPL-EOF (16) = end of file
        01  APPL-RESULT             PIC S9(9)   COMP.                            
            88  APPL-AOK            VALUE 0.                                     
            88  APPL-EOF            VALUE 16.                                    
                                                                                 
+      * End-of-file flag controls main processing loop
        01  END-OF-FILE             PIC X(01)    VALUE 'N'.                      
        01  ABCODE                  PIC S9(9) BINARY.                            
        01  TIMING                  PIC S9(9) BINARY.                            
+      * Timestamp work areas for DB2-style formatting.
+      * COBOL-TS receives FUNCTION CURRENT-DATE result.
+      * DB2-FORMAT-TS holds reformatted YYYY-MM-DD-HH.MM.SS
+      *   used to stamp TRAN-ORIG-TS and TRAN-PROC-TS.
       * T I M E S T A M P   D B 2  X(26)     EEEE-MM-DD-UU.MM.SS.HH0000         
        01  COBOL-TS.                                                            
            05 COB-YYYY                  PIC X(04).                              
@@ -163,21 +235,35 @@
            06 DB2-DOT-3                 PIC X.                                  
            06 DB2-MIL                   PIC 9(002).                             
            06 DB2-REST                  PIC X(04).                              
+      * Working variables for interest accumulation.
+      * WS-LAST-ACCT-NUM: tracks current account for break
+      * WS-MONTHLY-INT: single category interest amount
+      * WS-TOTAL-INT: accumulated interest for the current
+      *   account, posted via 1050-UPDATE-ACCOUNT
+      * WS-FIRST-TIME: suppresses REWRITE on first account
        01 WS-MISC-VARS.                                                         
            05 WS-LAST-ACCT-NUM          PIC X(11) VALUE SPACES.                 
            05 WS-MONTHLY-INT            PIC S9(09)V99.                          
            05 WS-TOTAL-INT              PIC S9(09)V99.                          
            05 WS-FIRST-TIME             PIC X(01) VALUE 'Y'.                    
+      * Processing counters.
+      * WS-RECORD-COUNT: total TCATBAL records processed
+      * WS-TRANID-SUFFIX: monotonic suffix for generated IDs
        01 WS-COUNTERS.                                                          
            05 WS-RECORD-COUNT           PIC 9(09) VALUE 0.                      
            05 WS-TRANID-SUFFIX          PIC 9(06) VALUE 0.                      
                                                                                 
+      * JCL PARM interface: receives run date for transaction
+      * ID generation and timestamp stamping
        LINKAGE SECTION.                                                         
        01  EXTERNAL-PARMS.                                                      
            05  PARM-LENGTH         PIC S9(04) COMP.                             
            05  PARM-DATE           PIC X(10).                                   
       *****************************************************************         
        PROCEDURE DIVISION USING EXTERNAL-PARMS.                                 
+      * Main control: opens all 5 VSAM files, iterates
+      * TCATBAL records, calculates and posts interest for
+      * each account/type/category, then closes all files.
            DISPLAY 'START OF EXECUTION OF PROGRAM CBACT04C'.                    
            PERFORM 0000-TCATBALF-OPEN.                                          
            PERFORM 0100-XREFFILE-OPEN.                                          
@@ -185,6 +271,11 @@
            PERFORM 0300-ACCTFILE-OPEN.                                          
            PERFORM 0400-TRANFILE-OPEN.                                          
                                                                                 
+      * Main processing loop: reads TCATBAL records.
+      * On account control break, posts accumulated interest
+      * to previous account, fetches new account and xref.
+      * For each record, looks up disclosure rate and computes
+      * interest if rate is non-zero.
            PERFORM UNTIL END-OF-FILE = 'Y'                                      
                IF  END-OF-FILE = 'N'                                            
                    PERFORM 1000-TCATBALF-GET-NEXT                               
@@ -231,6 +322,8 @@
                                                                                 
            GOBACK.                                                              
       *---------------------------------------------------------------*         
+      * Opens TCATBAL-FILE for sequential input reading.
+      * Sets APPL-RESULT to 0 on success. Abends on failure.
        0000-TCATBALF-OPEN.                                                      
            MOVE 8 TO APPL-RESULT.                                               
            OPEN INPUT TCATBAL-FILE                                              
@@ -249,6 +342,8 @@
            END-IF                                                               
            EXIT.                                                                
       *---------------------------------------------------------------*         
+      * Opens XREF-FILE for random read by card or account
+      * key. Abends on any non-zero file status.
        0100-XREFFILE-OPEN.                                                      
            MOVE 8 TO APPL-RESULT.                                               
            OPEN INPUT XREF-FILE                                                 
@@ -267,6 +362,8 @@
            END-IF                                                               
            EXIT.                                                                
       *---------------------------------------------------------------*         
+      * Opens DISCGRP-FILE for random keyed read of interest
+      * rates. Abends on any non-zero file status.
        0200-DISCGRP-OPEN.                                                       
            MOVE 8 TO APPL-RESULT.                                               
            OPEN INPUT DISCGRP-FILE                                              
@@ -286,6 +383,8 @@
            EXIT.                                                                
                                                                                 
       *---------------------------------------------------------------*         
+      * Opens ACCOUNT-FILE in I-O mode to allow both READ
+      * and REWRITE of account records. Abends on failure.
        0300-ACCTFILE-OPEN.                                                      
            MOVE 8 TO APPL-RESULT.                                               
            OPEN I-O ACCOUNT-FILE                                                
@@ -304,6 +403,8 @@
            END-IF                                                               
            EXIT.                                                                
       *---------------------------------------------------------------*         
+      * Opens TRANSACT-FILE for sequential output to receive
+      * generated interest transaction records.
        0400-TRANFILE-OPEN.                                                      
            MOVE 8 TO APPL-RESULT.                                               
            OPEN OUTPUT TRANSACT-FILE                                            
@@ -322,6 +423,10 @@
            END-IF                                                               
            EXIT.                                                                
       *---------------------------------------------------------------*         
+      * Reads the next TCATBAL record sequentially into
+      * TRAN-CAT-BAL-RECORD (copybook CVTRA01Y).
+      * Status 00 = success, 10 = end-of-file,
+      * other = error triggering abend.
        1000-TCATBALF-GET-NEXT.                                                  
            READ TCATBAL-FILE INTO TRAN-CAT-BAL-RECORD.                          
            IF  TCATBALF-STATUS  = '00'                                          
@@ -347,6 +452,9 @@
            END-IF                                                               
            EXIT.                                                                
       *---------------------------------------------------------------*         
+      * Adds accumulated WS-TOTAL-INT to ACCT-CURR-BAL,
+      * resets cycle credit/debit to zero, then REWRITEs
+      * the account record. Abends on REWRITE failure.
        1050-UPDATE-ACCOUNT.                                                     
       * Update the balances in account record to reflect posted trans.          
            ADD WS-TOTAL-INT  TO ACCT-CURR-BAL                                   
@@ -369,6 +477,9 @@
            END-IF                                                               
            EXIT.                                                                
       *---------------------------------------------------------------*         
+      * Reads the account master record for FD-ACCT-ID via
+      * random keyed access. Populates ACCOUNT-RECORD from
+      * copybook CVACT01Y. Abends if account not found.
        1100-GET-ACCT-DATA.                                                      
            READ ACCOUNT-FILE INTO ACCOUNT-RECORD                                
                INVALID KEY                                                      
@@ -390,6 +501,10 @@
            END-IF                                                               
            EXIT.                                                                
       *---------------------------------------------------------------*         
+      * Reads cross-reference record by alternate key
+      * FD-XREF-ACCT-ID to obtain XREF-CARD-NUM for
+      * populating TRAN-CARD-NUM in generated interest
+      * transactions. Abends if record not found.
        1110-GET-XREF-DATA.                                                      
            READ XREF-FILE INTO CARD-XREF-RECORD                                 
             KEY IS FD-XREF-ACCT-ID                                              
@@ -412,6 +527,11 @@
            END-IF                                                               
            EXIT.                                                                
       *---------------------------------------------------------------*         
+      * Looks up disclosure group record by composite key
+      * (ACCT-GROUP-ID + TRAN-TYPE-CD + TRAN-CAT-CD).
+      * If specific group not found (status 23), falls
+      * back to DEFAULT via 1200-A-GET-DEFAULT-INT-RATE.
+      * Abends on unexpected I/O errors.
        1200-GET-INTEREST-RATE.                                                  
            READ DISCGRP-FILE INTO DIS-GROUP-RECORD                              
                 INVALID KEY                                                     
@@ -440,6 +560,10 @@
            EXIT.                                                                
                                                                                 
       *---------------------------------------------------------------*         
+      * Fallback: reads disclosure group record using
+      * DEFAULT as the account group ID when the original
+      * account-specific group was not found (status 23).
+      * Abends if the default record is also missing.
        1200-A-GET-DEFAULT-INT-RATE.                                             
            READ DISCGRP-FILE INTO DIS-GROUP-RECORD                              
                                                                                 
@@ -459,6 +583,13 @@
            END-IF                                                               
            EXIT.                                                                
       *---------------------------------------------------------------*         
+      * Calculates monthly interest for current category:
+      *   WS-MONTHLY-INT = (TRAN-CAT-BAL * DIS-INT-RATE)
+      *                     / 1200
+      * 1200 converts annual rate to monthly (rate / 12)
+      * and adjusts for rate stored as hundredths (/100).
+      * Accumulates into WS-TOTAL-INT, then writes a
+      * generated interest transaction via 1300-B-WRITE-TX.
        1300-COMPUTE-INTEREST.                                                   
                                                                                 
            COMPUTE WS-MONTHLY-INT                                               
@@ -470,6 +601,12 @@
            EXIT.                                                                
                                                                                 
       *---------------------------------------------------------------*         
+      * Builds and writes a system-generated interest
+      * transaction record to TRANSACT-FILE. Generates a
+      * unique TRAN-ID by concatenating PARM-DATE with
+      * WS-TRANID-SUFFIX. Sets type 01, category 05,
+      * source System, and stamps current DB2-format
+      * timestamps. Abends on write failure.
        1300-B-WRITE-TX.                                                         
            ADD 1 TO WS-TRANID-SUFFIX                                            
                                                                                 
@@ -515,10 +652,13 @@
            EXIT.                                                                
                                                                                 
       *---------------------------------------------------------------*         
+      * Reserved placeholder for future fee computation.
+      * Currently performs no operation (EXIT only).
        1400-COMPUTE-FEES.                                                       
       * To be implemented                                                       
            EXIT.                                                                
       *---------------------------------------------------------------*         
+      * Closes TCATBAL-FILE. Abends on non-zero status.
        9000-TCATBALF-CLOSE.                                                     
            MOVE 8 TO  APPL-RESULT.                                              
            CLOSE TCATBAL-FILE                                                   
@@ -538,6 +678,7 @@
            EXIT.                                                                
                                                                                 
       *---------------------------------------------------------------*         
+      * Closes XREF-FILE. Abends on non-zero status.
        9100-XREFFILE-CLOSE.                                                     
            MOVE 8 TO APPL-RESULT.                                               
            CLOSE XREF-FILE                                                      
@@ -556,6 +697,7 @@
            END-IF                                                               
            EXIT.                                                                
       *---------------------------------------------------------------*         
+      * Closes DISCGRP-FILE. Abends on non-zero status.
        9200-DISCGRP-CLOSE.                                                      
            MOVE 8 TO APPL-RESULT.                                               
            CLOSE DISCGRP-FILE                                                   
@@ -574,6 +716,7 @@
            END-IF                                                               
            EXIT.                                                                
       *---------------------------------------------------------------*         
+      * Closes ACCOUNT-FILE. Abends on non-zero status.
        9300-ACCTFILE-CLOSE.                                                     
            MOVE 8 TO APPL-RESULT.                                               
            CLOSE ACCOUNT-FILE                                                   
@@ -592,6 +735,7 @@
            END-IF                                                               
            EXIT.                                                                
                                                                                 
+      * Closes TRANSACT-FILE. Abends on non-zero status.
        9400-TRANFILE-CLOSE.                                                     
            MOVE 8 TO APPL-RESULT.                                               
            CLOSE TRANSACT-FILE                                                  
@@ -610,6 +754,9 @@
            END-IF                                                               
            EXIT.                                                                
                                                                                 
+      * Formats current system date/time into DB2-style
+      * timestamp YYYY-MM-DD-HH.MM.SS.HH0000 for use in
+      * transaction record timestamp fields.
        Z-GET-DB2-FORMAT-TIMESTAMP.                                              
            MOVE FUNCTION CURRENT-DATE TO COBOL-TS                               
            MOVE COB-YYYY TO DB2-YYYY                                            
@@ -625,6 +772,9 @@
       *    DISPLAY 'DB2-TIMESTAMP = ' DB2-FORMAT-TS                             
            EXIT.                                                                
                                                                                 
+      * Abnormal termination handler. Calls LE runtime
+      * CEE3ABD with abend code 999 to terminate on
+      * unrecoverable I/O errors.
        9999-ABEND-PROGRAM.                                                      
            DISPLAY 'ABENDING PROGRAM'                                           
            MOVE 0 TO TIMING                                                     
@@ -632,6 +782,10 @@
            CALL 'CEE3ABD'.                                                      
                                                                                 
       *****************************************************************         
+      * Formats and displays file status codes for
+      * diagnostic output. Handles both numeric and
+      * non-numeric statuses including extended class-9
+      * codes where the second byte is binary.
        9910-DISPLAY-IO-STATUS.                                                  
            IF  IO-STATUS NOT NUMERIC                                            
            OR  IO-STAT1 = '9'                                                   

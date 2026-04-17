@@ -16,16 +16,59 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*----------------------------------------------------------------*
+* BMS Map: COCRDSL - Card Detail/Selection Screen
+*
+* This BMS source defines the Card Detail/Selection
+* screen used by the COCRDSLC COBOL program (transaction
+* CCDL). The screen allows card lookup by account number
+* and card number, then displays card detail fields in
+* read-only mode.
+*
+*   Mapset : COCRDSL    Map: CCRDSLA
+*   Symbolic map: app/cpy-bms/COCRDSL.CPY
+*   Uses DSATTS/MAPATTS for extended attributes (COLOR,
+*   HILIGHT, PS, VALIDN).
+*----------------------------------------------------------------*
         TITLE 'BMS MAP FOR SELECT CARDS  '
+*----------------------------------------------------------------*
+* DFHMSD - Mapset definition for COCRDSL
+* LANG=COBOL generates COBOL-compatible symbolic map.
+* MODE=INOUT supports both send and receive operations.
+* STORAGE=AUTO allocates map storage automatically.
+* TIOAPFX=YES reserves TIOA prefix for BMS I/O area.
+* TYPE=&&SYSPARM is resolved at assembly time (MAP or
+* DSECT).
+* Note: No EXTATT at DFHMSD level. Extended attributes
+* are specified at the DFHMDI map level instead via
+* DSATTS and MAPATTS parameters.
+*----------------------------------------------------------------*
 COCRDSL DFHMSD LANG=COBOL,                                             -
                MODE=INOUT,                                             -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+*----------------------------------------------------------------*
+* DFHMDI - Map definition for CCRDSLA
+* CTRL=(FREEKB) unlocks the keyboard after each map
+* send so the operator can type immediately.
+* DSATTS/MAPATTS enable COLOR, HILIGHT, PS, and VALIDN
+* extended attributes for data and map attributes.
+* SIZE=(24,80) defines a standard 24-row by 80-column
+* 3270 terminal screen layout.
+*----------------------------------------------------------------*
 CCRDSLA DFHMDI CTRL=(FREEKB),                                          -
                DSATTS=(COLOR,HILIGHT,PS,VALIDN),                       -
                MAPATTS=(COLOR,HILIGHT,PS,VALIDN),                      -
                SIZE=(24,80)
+*----------------------------------------------------------------*
+* Header Area - Screen rows 1-2
+* Standard CardDemo header displaying transaction ID,
+* program name, application title (two lines), current
+* date, and current time.
+* All header fields are ASKIP (auto-skip, protected)
+* displayed in BLUE.
+*----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
@@ -72,10 +115,28 @@ CURTIME DFHMDF ATTRB=(ASKIP,NORM),                                     -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss'
+*----------------------------------------------------------------*
+* Screen Title - Row 4
+* "View Credit Card Detail" centered on line 4.
+* Displayed in NEUTRAL color as a section heading.
+*----------------------------------------------------------------*
         DFHMDF COLOR=NEUTRAL,                                          -
                LENGTH=23,                                              -
                POS=(4,30),                                             -
                INITIAL='View Credit Card Detail'
+*----------------------------------------------------------------*
+* Card Lookup Input Fields - Rows 7-8
+* Two unprotected input fields for card selection:
+*   ACCTSID - 11-char account number (UNPROT, IC, FSET)
+*             IC places the cursor here on map send.
+*             FSET ensures field is always transmitted.
+*             HILIGHT=UNDERLINE marks the input area.
+*   CARDSID - 16-char card number (UNPROT, FSET)
+*             Underlined to indicate editable field.
+* Each input is followed by a zero-length stopper field
+* to delimit the entry area on screen.
+* Labels displayed in TURQUOISE ASKIP.
+*----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=19,                                              -
@@ -100,6 +161,20 @@ CARDSID DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                POS=(8,45)
         DFHMDF LENGTH=0,                                               -
                POS=(8,62)
+*----------------------------------------------------------------*
+* Card Detail Display Fields - Rows 11-15
+* Read-only display fields showing card information
+* after a successful lookup. Each uses the label + data
+* + zero-length terminator pattern:
+*   CRDNAME - Cardholder name (50-char, underlined)
+*   CRDSTCD - Card active status 'Y' or 'N' (1-char,
+*             ASKIP protected)
+*   EXPMON  - Expiration month (2-char, ASKIP)
+*   EXPYEAR - Expiration year (4-char, ASKIP) with a
+*             '/' literal separator between month/year
+* HILIGHT=UNDERLINE highlights each data value.
+* Zero-length stoppers delimit each display field.
+*----------------------------------------------------------------*
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=20,                                              -
                POS=(11,4),                                             -
@@ -136,20 +211,42 @@ EXPYEAR DFHMDF ATTRB=(ASKIP),                                          -
                POS=(15,30)
         DFHMDF LENGTH=0,                                               -
                POS=(15,35)
+*----------------------------------------------------------------*
+* Informational Message - Row 20
+* INFOMSG - 40-char protected field for status or
+* informational messages (e.g., lookup instructions).
+* Displayed in NEUTRAL color with HILIGHT=OFF.
+*----------------------------------------------------------------*
 INFOMSG DFHMDF ATTRB=(PROT),                                           -
                COLOR=NEUTRAL,                                          -
                HILIGHT=OFF,                                            -
                LENGTH=40,                                              -
                POS=(20,25)
+*----------------------------------------------------------------*
+* Error Message - Row 23
+* ERRMSG - 80-char bright RED field for error messages.
+* BRT (bright) ensures high visibility for errors.
+* FSET ensures the field is always transmitted back.
+* Used for validation errors such as card not found.
+*----------------------------------------------------------------*
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=80,                                              -
                POS=(23,1)
+*----------------------------------------------------------------*
+* Function Key Legend - Row 24
+* Displays available function keys at the screen bottom.
+* ENTER=Search Cards, F3=Exit.
+* YELLOW ASKIP text for visibility.
+*----------------------------------------------------------------*
 FKEYS   DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=75,                                              -
                POS=(24,1),                                             -
                INITIAL='ENTER=Search Cards  F3=Exit'
+*----------------------------------------------------------------*
+* End of map and mapset definition
+*----------------------------------------------------------------*
         DFHMSD TYPE=FINAL
         END
 *

@@ -14,8 +14,28 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      * Symbolic map copybook for the Account Update screen.
+      * BMS Source: app/bms/COACTUP.bms (Mapset: COACTUP, Map: CACTUPA)
+      * COBOL Program: app/cbl/COACTUPC.cbl (Transaction: CAUP)
+      * This is the largest symbolic map in the application.
+      * Allows maintenance of account details including balances,
+      * dates, status, customer identity, address, phone, government
+      * ID, EFT flags, and primary cardholder link.
+      * Uses DSATTS/MAPATTS for extended color/highlight/validation.
+      * ---------------------------------------------------------------
+      * Input buffer layout (AI) -- populated by EXEC CICS RECEIVE MAP.
+      * Used by COACTUPC to read terminal input after user submits
+      * the Account Update screen. Fields use L/F/A/I suffixes.
+      * ---------------------------------------------------------------
        01  CACTUPAI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES in BMS mapset
            02  FILLER PIC X(12).
+      * --- Header fields: transaction ID, titles, date/time ---
+      * Field suffix convention for AI (Input) section:
+      *   L = Length (COMP PIC S9(4)) -- bytes received from terminal
+      *   F = Flag (PICTURE X) -- BMS modification indicator
+      *   A = Attribute (PICTURE X via REDEFINES F) -- screen attribute
+      *   I = Input data (PICTURE X(n)) -- actual field value
            02  TRNNAMEL    COMP  PIC  S9(4).
            02  TRNNAMEF    PICTURE X.
            02  FILLER REDEFINES TRNNAMEF.
@@ -52,12 +72,14 @@
              03 CURTIMEA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CURTIMEI  PIC X(8).
+      * --- Account key entry field ---
            02  ACCTSIDL    COMP  PIC  S9(4).
            02  ACCTSIDF    PICTURE X.
            02  FILLER REDEFINES ACCTSIDF.
              03 ACCTSIDA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ACCTSIDI  PIC X(11).
+      * --- Account detail fields (editable for update) ---
            02  ACSTTUSL    COMP  PIC  S9(4).
            02  ACSTTUSF    PICTURE X.
            02  FILLER REDEFINES ACSTTUSF.
@@ -154,12 +176,14 @@
              03 ACRCYDBA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ACRCYDBI  PIC X(15).
+      * --- Customer identity fields ---
            02  ACSTNUML    COMP  PIC  S9(4).
            02  ACSTNUMF    PICTURE X.
            02  FILLER REDEFINES ACSTNUMF.
              03 ACSTNUMA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ACSTNUMI  PIC X(9).
+      * --- SSN (segmented 3-2-4 format) ---
            02  ACTSSN1L    COMP  PIC  S9(4).
            02  ACTSSN1F    PICTURE X.
            02  FILLER REDEFINES ACTSSN1F.
@@ -220,6 +244,7 @@
              03 ACSLNAMA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ACSLNAMI  PIC X(25).
+      * --- Address section ---
            02  ACSADL1L    COMP  PIC  S9(4).
            02  ACSADL1F    PICTURE X.
            02  FILLER REDEFINES ACSADL1F.
@@ -256,6 +281,7 @@
              03 ACSCTRYA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ACSCTRYI  PIC X(3).
+      * --- Contact/phone fields ---
            02  ACSPH1AL    COMP  PIC  S9(4).
            02  ACSPH1AF    PICTURE X.
            02  FILLER REDEFINES ACSPH1AF.
@@ -274,6 +300,7 @@
              03 ACSPH1CA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ACSPH1CI  PIC X(4).
+      * --- Government ID section ---
            02  ACSGOVTL    COMP  PIC  S9(4).
            02  ACSGOVTF    PICTURE X.
            02  FILLER REDEFINES ACSGOVTF.
@@ -298,6 +325,7 @@
              03 ACSPH2CA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ACSPH2CI  PIC X(4).
+      * --- Banking/EFT and profile flags ---
            02  ACSEFTCL    COMP  PIC  S9(4).
            02  ACSEFTCF    PICTURE X.
            02  FILLER REDEFINES ACSEFTCF.
@@ -310,6 +338,7 @@
              03 ACSPFLGA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ACSPFLGI  PIC X(1).
+      * --- Information and error message areas ---
            02  INFOMSGL    COMP  PIC  S9(4).
            02  INFOMSGF    PICTURE X.
            02  FILLER REDEFINES INFOMSGF.
@@ -322,6 +351,7 @@
              03 ERRMSGA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ERRMSGI  PIC X(78).
+      * --- Function key legend fields ---
            02  FKEYSL    COMP  PIC  S9(4).
            02  FKEYSF    PICTURE X.
            02  FILLER REDEFINES FKEYSF.
@@ -340,8 +370,17 @@
              03 FKEY12A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  FKEY12I  PIC X(10).
+      * ---------------------------------------------------------------
+      * Output buffer layout (AO) -- populated by program for
+      * EXEC CICS SEND MAP. REDEFINES the AI layout so both views
+      * share the same storage. Fields use C/P/H/V/O suffixes:
+      *   C = Color attribute    P = Programmed symbol
+      *   H = Highlighting       V = Validation
+      *   O = Output data (REDEFINES I field from AI layout)
+      * ---------------------------------------------------------------
        01  CACTUPAO REDEFINES CACTUPAI.
            02  FILLER PIC X(12).
+      * --- Header output fields ---
            02  FILLER PICTURE X(3).
            02  TRNNAMEC    PICTURE X.
            02  TRNNAMEP    PICTURE X.
@@ -378,12 +417,14 @@
            02  CURTIMEH    PICTURE X.
            02  CURTIMEV    PICTURE X.
            02  CURTIMEO  PIC X(8).
+      * --- Account key output ---
            02  FILLER PICTURE X(3).
            02  ACCTSIDC    PICTURE X.
            02  ACCTSIDP    PICTURE X.
            02  ACCTSIDH    PICTURE X.
            02  ACCTSIDV    PICTURE X.
            02  ACCTSIDO  PIC X(11).
+      * --- Account detail output fields ---
            02  FILLER PICTURE X(3).
            02  ACSTTUSC    PICTURE X.
            02  ACSTTUSP    PICTURE X.
@@ -480,6 +521,7 @@
            02  ACRCYDBH    PICTURE X.
            02  ACRCYDBV    PICTURE X.
            02  ACRCYDBO  PIC X(15).
+      * --- Customer identity output ---
            02  FILLER PICTURE X(3).
            02  ACSTNUMC    PICTURE X.
            02  ACSTNUMP    PICTURE X.
@@ -546,6 +588,7 @@
            02  ACSLNAMH    PICTURE X.
            02  ACSLNAMV    PICTURE X.
            02  ACSLNAMO  PIC X(25).
+      * --- Address output fields ---
            02  FILLER PICTURE X(3).
            02  ACSADL1C    PICTURE X.
            02  ACSADL1P    PICTURE X.
@@ -636,6 +679,7 @@
            02  ACSPFLGH    PICTURE X.
            02  ACSPFLGV    PICTURE X.
            02  ACSPFLGO  PIC X(1).
+      * --- Message and key legend output ---
            02  FILLER PICTURE X(3).
            02  INFOMSGC    PICTURE X.
            02  INFOMSGP    PICTURE X.

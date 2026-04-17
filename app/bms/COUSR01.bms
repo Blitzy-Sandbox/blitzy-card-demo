@@ -16,6 +16,29 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*---------------------------------------------------------------*
+* BMS SCREEN DEFINITION: Add User (COUSR01 / COUSR1A)
+*---------------------------------------------------------------*
+* This BMS source defines the Add User screen for the
+* CardDemo application. Used by program COUSR01C
+* (transaction CU01).
+*
+* Admin-only screen for creating new user accounts in the
+* USRSEC VSAM KSDS dataset.
+*
+* Collected fields:
+*   First Name, Last Name, User ID, Password, User Type
+*
+* Mapset: COUSR01    Map: COUSR1A
+* Generated symbolic map: app/cpy-bms/COUSR01.CPY
+*---------------------------------------------------------------*
+* DFHMSD: Mapset definition - COUSR01
+*   CTRL=(ALARM,FREEKB) - alarm and free keyboard on send
+*   EXTATT=YES  - extended attributes (color, highlight)
+*   LANG=COBOL  - generate COBOL symbolic map
+*   MODE=INOUT  - map used for both input and output
+*   STORAGE=AUTO - automatic storage allocation
+*   TIOAPFX=YES - include TIOA prefix in symbolic map
 COUSR01 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                EXTATT=YES,                                             -
                LANG=COBOL,                                             -
@@ -23,9 +46,16 @@ COUSR01 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+* DFHMDI: Map COUSR1A - 24x80 terminal screen layout
+*   Starting at LINE=1, COLUMN=1 (full-screen map)
 COUSR1A DFHMDI COLUMN=1,                                               -
                LINE=1,                                                 -
                SIZE=(24,80)
+*---------------------------------------------------------------*
+* HEADER AREA (Screen lines 1-2)
+* Standard header: Tran ID, Program Name, Title, Date, Time
+* Layout mirrors the common CardDemo screen header pattern
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
@@ -72,11 +102,23 @@ CURTIME DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss'
+*---------------------------------------------------------------*
+* SCREEN TITLE (Screen line 4)
+* "Add User" displayed centered, bright, neutral color
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,BRT),                                      -
                COLOR=NEUTRAL,                                          -
                LENGTH=9,                                               -
                POS=(4,35),                                             -
                INITIAL='Add User'
+*---------------------------------------------------------------*
+* USER DATA ENTRY FIELDS (Screen lines 8, 11, 14)
+* All input fields use UNPROT for user entry with GREEN color
+* and UNDERLINE highlight to indicate editable fields.
+*---------------------------------------------------------------*
+* First Name: FNAME - 20-char first name entry field
+*   UNPROT with IC (Initial Cursor) - cursor lands here
+*   Stopper field follows to delimit input boundary
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=11,                                              -
                POS=(8,6),                                              -
@@ -89,6 +131,9 @@ FNAME   DFHMDF ATTRB=(FSET,IC,NORM,UNPROT),                            -
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                LENGTH=0,                                               -
                POS=(8,39)
+* Last Name: LNAME - 20-char last name entry field
+*   UNPROT, same row as First Name (line 8, col 56)
+*   Stopper field follows to delimit input boundary
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=10,                                              -
@@ -103,6 +148,9 @@ LNAME   DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                LENGTH=0,                                               -
                POS=(8,77)
+* User ID: USERID - 8-char user identifier entry
+*   UNPROT. This value becomes the VSAM key in USRSEC
+*   "(8 Char)" hint displayed to the right of input
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=8,                                               -
@@ -118,6 +166,9 @@ USERID  DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                LENGTH=8,                                               -
                POS=(11,24),                                            -
                INITIAL='(8 Char)'
+* Password: PASSWD - 8-char password entry field
+*   DRK (dark) attribute hides typed characters for security
+*   UNPROT for input. "(8 Char)" hint shown to the right
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=9,                                               -
@@ -133,6 +184,9 @@ PASSWD  DFHMDF ATTRB=(DRK,FSET,UNPROT),                                -
                LENGTH=8,                                               -
                POS=(11,64),                                            -
                INITIAL='(8 Char)'
+* User Type: USRTYPE - 1-char user type indicator
+*   UNPROT. Valid values: A=Admin, U=User
+*   "(A=Admin, U=User)" hint displayed to the right
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=11,                                              -
@@ -148,10 +202,20 @@ USRTYPE DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                LENGTH=17,                                              -
                POS=(14,19),                                            -
                INITIAL='(A=Admin, U=User)'
+*---------------------------------------------------------------*
+* ERROR MESSAGE AREA (Screen line 23)
+* ERRMSG - 78-char message field, RED and BRT (bright)
+* Displays validation errors: duplicate user ID, missing
+* fields, or informational messages from COUSR01C
+*---------------------------------------------------------------*
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=78,                                              -
                POS=(23,1)
+*---------------------------------------------------------------*
+* FUNCTION KEY LEGEND (Screen line 24)
+* ENTER=Add User, F3=Back, F4=Clear, F12=Exit
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=43,                                              -

@@ -16,495 +16,739 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*
+*---------------------------------------------------------------*
+* BMS Source: Account Update Screen (COACTUP / CACTUPA)
+*---------------------------------------------------------------*
+* Program:   COACTUPC (online CICS, transaction CAUP)
+* Mapset:    COACTUP
+* Map:       CACTUPA
+* Symbolic:  app/cpy-bms/COACTUP.CPY
+*
+* This screen allows maintenance of account details:
+*   - Account status, open/expiry/reissue dates
+*   - Credit limit, cash advance limit, balances
+*   - Customer identity (name, SSN, DOB, FICO)
+*   - Address, phone numbers, government ID
+*   - EFT indicator, primary cardholder flag
+*
+* Uses DSATTS/MAPATTS for extended attribute support
+* (COLOR, HILIGHT, PS, VALIDN) on the 3270 terminal.
+*---------------------------------------------------------------*
+*
         TITLE 'BMS MAP FOR ACCOUNT UPDATE'
+*---------------------------------------------------------------*
+* DFHMSD - Mapset definition for COACTUP
+*---------------------------------------------------------------*
+* LANG=COBOL     - Generate COBOL-compatible symbolic map
+* MODE=INOUT     - Allow SEND MAP and RECEIVE MAP
+* STORAGE=AUTO   - Allocate map storage per CICS task
+* TIOAPFX=YES    - Include 12-byte TIOA prefix for BLL
+* TYPE=&&SYSPARM - Assembly-time MAP vs DSECT switch
+*---------------------------------------------------------------*
 COACTUP DFHMSD LANG=COBOL,                                             -
                MODE=INOUT,                                             -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+*---------------------------------------------------------------*
+* DFHMDI - Map definition for CACTUPA
+*---------------------------------------------------------------*
+* CTRL=(FREEKB)  - Unlock keyboard after map send
+* DSATTS/MAPATTS - Extended field attributes enabled:
+*   COLOR   - Field foreground color control
+*   HILIGHT - Field highlighting (underline, reverse)
+*   PS      - Programmed symbols support
+*   VALIDN  - Field validation attributes
+* SIZE=(24,80)   - Standard 3270 Model 2 terminal
+*---------------------------------------------------------------*
 CACTUPA DFHMDI CTRL=(FREEKB),                                          -
                DSATTS=(COLOR,HILIGHT,PS,VALIDN),                       -
                MAPATTS=(COLOR,HILIGHT,PS,VALIDN),                      -
                SIZE=(24,80)
+*---------------------------------------------------------------*
+* HEADER AREA - Row 1 (screen line 1)
+* Standard header: transaction name, title, and date.
+* All fields ASKIP (protected). Populated by COBOL
+* program from COTTL01Y copybook values.
+*---------------------------------------------------------------*
+* 'Tran:' label - transaction identifier prefix
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
                POS=(1,1),                                              -
                INITIAL='Tran:'
+* TRNNAME - CICS transaction ID (4 chars, ASKIP display)
 TRNNAME DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                COLOR=BLUE,                                             -
                LENGTH=4,                                               -
                POS=(1,7)
+* TITLE01 - Application title line 1 (ASKIP, yellow)
 TITLE01 DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=40,                                              -
                POS=(1,21)
+* 'Date:' label
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
                POS=(1,65),                                             -
                INITIAL='Date:'
+* CURDATE - Current date display (mm/dd/yy format)
 CURDATE DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=8,                                               -
                POS=(1,71),                                             -
                INITIAL='mm/dd/yy'
+*---------------------------------------------------------------*
+* HEADER AREA - Row 2 (screen line 2)
+* Program name, secondary title, and time display.
+*---------------------------------------------------------------*
+* 'Prog:' label - program name prefix
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
                POS=(2,1),                                              -
                INITIAL='Prog:'
+* PGMNAME - Current program name (8 chars, ASKIP)
 PGMNAME DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=8,                                               -
                POS=(2,7)
+* TITLE02 - Application title line 2 (ASKIP, yellow)
 TITLE02 DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=40,                                              -
                POS=(2,21)
+* 'Time:' label
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
                POS=(2,65),                                             -
                INITIAL='Time:'
+* CURTIME - Current time display (hh:mm:ss format)
 CURTIME DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss'
+*---------------------------------------------------------------*
+* SCREEN TITLE (screen line 4)
+* Centered title in neutral color identifies this screen.
+*---------------------------------------------------------------*
         DFHMDF COLOR=NEUTRAL,                                          -
                LENGTH=14,                                              -
                POS=(4,33),                                             -
                INITIAL='Update Account'
+*---------------------------------------------------------------*
+* ACCOUNT KEY ENTRY (screen line 5)
+* Account number input with initial cursor (IC). The
+* user enters an account ID to retrieve details for
+* update. UNPROT allows data entry; ASKIP label is
+* display-only. Active Y/N toggles account status.
+*---------------------------------------------------------------*
+* 'Account Number :' label (ASKIP, turquoise)
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=16,                                              -
                POS=(5,19),                                             -
                INITIAL='Account Number :'
+* ACCTSID - Account ID input (UNPROT, IC=initial cursor)
 ACCTSID DFHMDF ATTRB=(IC,UNPROT),                                      -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=11,                                              -
                POS=(5,38)
+* Stopper field after ACCTSID
         DFHMDF LENGTH=0,                                               -
                POS=(5,50)
+* 'Active Y/N:' label for account status toggle
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=12,                                              -
                POS=(5,57),                                             -
                INITIAL='Active Y/N: '
+* ACSTTUS - Account active status (UNPROT, 1 char Y/N)
 ACSTTUS DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=1,                                               -
                POS=(5,70)
+* Stopper field after ACSTTUS
         DFHMDF LENGTH=0,                                               -
                POS=(5,72)
+*---------------------------------------------------------------*
+* ACCOUNT DATA SECTION (screen lines 6-10)
+* Left side: date fields (opened, expiry, reissue)
+*   and account group. Dates use YYYY-MM-DD segments
+*   with UNPROT for editable year/month/day parts.
+* Right side: financial fields (credit limit, cash
+*   advance limit, balances, cycle credit/debit).
+*   FSET+UNPROT ensures modified data tag on transmit.
+*---------------------------------------------------------------*
+* -- Line 6: Opened date (left) / Credit Limit (right) --
+* 'Opened :' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=8,                                               -
                POS=(6,8),                                              -
                INITIAL='Opened :'
+* OPNYEAR - Account open year (UNPROT, FSET, 4 digits)
 OPNYEAR DFHMDF ATTRB=(FSET,UNPROT),                                    -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=4,                                               -
                POS=(6,17)
+* Date separator dash
         DFHMDF LENGTH=1,                                               -
                POS=(6,22),                                             -
                INITIAL='-'
+* OPNMON - Account open month (UNPROT, 2 digits)
 OPNMON  DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=2,                                               -
                POS=(6,24)
+* Date separator dash
         DFHMDF LENGTH=1,                                               -
                POS=(6,27),                                             -
                INITIAL='-'
+* OPNDAY - Account open day (UNPROT, 2 digits)
 OPNDAY  DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=2,                                               -
                POS=(6,29)
+* Stopper after opened date
         DFHMDF LENGTH=0,                                               -
                POS=(6,32)
+* 'Credit Limit' label (ASKIP, turquoise)
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=21,                                              -
                POS=(6,39),                                             -
                INITIAL='Credit Limit        :'
+* ACRDLIM - Credit limit amount (UNPROT, FSET, 15 ch)
 ACRDLIM DFHMDF ATTRB=(FSET,UNPROT),                                    -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=15,                                              -
                POS=(6,61)
+* Stopper after credit limit
         DFHMDF LENGTH=0,                                               -
                POS=(6,77)
+* -- Line 7: Expiry date (left) / Cash Credit Limit (right) --
+* 'Expiry :' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=8,                                               -
                POS=(7,8),                                              -
                INITIAL='Expiry :'
+* EXPYEAR - Account expiry year (UNPROT, 4 digits)
 EXPYEAR DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=4,                                               -
                POS=(7,17)
+* Date separator dash
         DFHMDF LENGTH=1,                                               -
                POS=(7,22),                                             -
                INITIAL='-'
+* EXPMON - Account expiry month (UNPROT, 2 digits)
 EXPMON  DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=2,                                               -
                POS=(7,24)
+* Date separator dash
         DFHMDF LENGTH=1,                                               -
                POS=(7,27),                                             -
                INITIAL='-'
+* EXPDAY - Account expiry day (UNPROT, 2 digits)
 EXPDAY  DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=2,                                               -
                POS=(7,29)
+* Stopper after expiry date
         DFHMDF LENGTH=0,                                               -
                POS=(7,32)
+* 'Cash credit Limit' label (ASKIP, turquoise)
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=21,                                              -
                POS=(7,39),                                             -
                INITIAL='Cash credit Limit   :'
+* ACSHLIM - Cash advance limit (UNPROT, FSET, 15 ch)
 ACSHLIM DFHMDF ATTRB=(FSET,UNPROT),                                    -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=15,                                              -
                POS=(7,61)
+* Stopper after cash credit limit
         DFHMDF LENGTH=0,                                               -
                POS=(7,77)
+* -- Line 8: Reissue date (left) / Current Balance (right) --
+* 'Reissue:' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=8,                                               -
                POS=(8,8),                                              -
                INITIAL='Reissue:'
+* RISYEAR - Card reissue year (UNPROT, 4 digits)
 RISYEAR DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=4,                                               -
                POS=(8,17)
+* Date separator dash
         DFHMDF LENGTH=1,                                               -
                POS=(8,22),                                             -
                INITIAL='-'
+* RISMON - Card reissue month (UNPROT, 2 digits)
 RISMON  DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=2,                                               -
                POS=(8,24)
+* Date separator dash
         DFHMDF LENGTH=1,                                               -
                POS=(8,27),                                             -
                INITIAL='-'
+* RISDAY - Card reissue day (UNPROT, 2 digits)
 RISDAY  DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=2,                                               -
                POS=(8,29)
+* Stopper after reissue date
         DFHMDF LENGTH=0,                                               -
                POS=(8,32)
+* 'Current Balance' label (ASKIP, turquoise)
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=21,                                              -
                POS=(8,39),                                             -
                INITIAL='Current Balance     :'
+* ACURBAL - Current account balance (UNPROT, FSET)
 ACURBAL DFHMDF ATTRB=(FSET,UNPROT),                                    -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=15,                                              -
                POS=(8,61)
+* Stopper after current balance
         DFHMDF LENGTH=0,                                               -
                POS=(8,77)
+* -- Line 9: Current Cycle Credit (right side only) --
+* 'Current Cycle Credit:' label (ASKIP)
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=21,                                              -
                POS=(9,39),                                             -
                INITIAL='Current Cycle Credit:'
+* ACRCYCR - Current billing cycle credits (UNPROT, FSET)
 ACRCYCR DFHMDF ATTRB=(FSET,UNPROT),                                    -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=15,                                              -
                POS=(9,61)
+* Stopper after cycle credit
         DFHMDF LENGTH=0,                                               -
                POS=(9,77)
+* -- Line 10: Account Group (left) / Cycle Debit (right) --
+* 'Account Group:' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=14,                                              -
                POS=(10,8),                                             -
                INITIAL='Account Group:'
+* AADDGRP - Account group code (UNPROT, 10 chars)
 AADDGRP DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=10,                                              -
                POS=(10,23)
+* Stopper after account group
         DFHMDF LENGTH=0,                                               -
                POS=(10,34)
+* 'Current Cycle Debit' label (ASKIP)
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=21,                                              -
                POS=(10,39),                                            -
                INITIAL='Current Cycle Debit :'
+* ACRCYDB - Current billing cycle debits (UNPROT, FSET)
 ACRCYDB DFHMDF ATTRB=(FSET,UNPROT),                                    -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=15,                                              -
                POS=(10,61)
+* Stopper after cycle debit
         DFHMDF LENGTH=0,                                               -
                POS=(10,77)
+*---------------------------------------------------------------*
+* CUSTOMER IDENTITY SECTION (screen lines 11-15)
+* Section divider and customer-related fields: ID, SSN
+* (segmented 3-2-4 format), date of birth, FICO score,
+* and name (first/middle/last). All UNPROT for editing.
+*---------------------------------------------------------------*
+* 'Customer Details' section divider (neutral color)
         DFHMDF COLOR=NEUTRAL,                                          -
                LENGTH=16,                                              -
                POS=(11,32),                                            -
                INITIAL='Customer Details'
+* -- Line 12: Customer ID (left) / SSN (right) --
+* 'Customer id  :' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=14,                                              -
                POS=(12,8),                                             -
                INITIAL='Customer id  :'
+* ACSTNUM - Customer ID number (UNPROT, 9 chars)
 ACSTNUM DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=9,                                               -
                POS=(12,23)
+* Stopper after customer ID
         DFHMDF LENGTH=0,                                               -
                POS=(12,33)
+* 'SSN:' label for Social Security Number
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=4,                                               -
                POS=(12,49),                                            -
                INITIAL='SSN:'
+* ACTSSN1 - SSN area code segment (UNPROT, 3 digits)
 ACTSSN1 DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=3,                                               -
                POS=(12,55),                                            -
                INITIAL='999'
+* SSN segment dash separator
         DFHMDF LENGTH=1,                                               -
                POS=(12,59),                                            -
                INITIAL='-'
+* ACTSSN2 - SSN group segment (UNPROT, 2 digits)
 ACTSSN2 DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=2,                                               -
                POS=(12,61),                                            -
                INITIAL='99'
+* SSN segment dash separator
         DFHMDF LENGTH=1,                                               -
                POS=(12,64),                                            -
                INITIAL='-'
+* ACTSSN3 - SSN serial segment (UNPROT, 4 digits)
 ACTSSN3 DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=4,                                               -
                POS=(12,66),                                            -
                INITIAL='9999'
+* Stopper after SSN
         DFHMDF LENGTH=0,                                               -
                POS=(12,71)
+* -- Line 13: Date of Birth (left) / FICO Score (right) --
+* 'Date of birth:' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=14,                                              -
                POS=(13,8),                                             -
                INITIAL='Date of birth:'
+* DOBYEAR - Date of birth year (UNPROT, 4 digits)
 DOBYEAR DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=4,                                               -
                POS=(13,23)
+* Date separator dash
         DFHMDF LENGTH=1,                                               -
                POS=(13,28),                                            -
                INITIAL='-'
+* DOBMON - Date of birth month (UNPROT, 2 digits)
 DOBMON  DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=2,                                               -
                POS=(13,30)
+* Date separator dash
         DFHMDF LENGTH=1,                                               -
                POS=(13,33),                                            -
                INITIAL='-'
+* DOBDAY - Date of birth day (UNPROT, 2 digits)
 DOBDAY  DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=2,                                               -
                POS=(13,35)
+* Stopper after date of birth
         DFHMDF LENGTH=0,                                               -
                POS=(13,38)
+* 'FICO Score:' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=11,                                              -
                POS=(13,49),                                            -
                INITIAL='FICO Score:'
+* ACSTFCO - FICO credit score (UNPROT, 3 digits)
 ACSTFCO DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=3,                                               -
                POS=(13,62)
+* Stopper after FICO score
         DFHMDF LENGTH=0,                                               -
                POS=(13,66)
+* -- Lines 14-15: Name labels (line 14) / inputs (line 15) --
+* 'First Name' column label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=10,                                              -
                POS=(14,1),                                             -
                INITIAL='First Name'
+* 'Middle Name:' column label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=13,                                              -
                POS=(14,28),                                            -
                INITIAL='Middle Name: '
+* 'Last Name :' column label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=12,                                              -
                POS=(14,55),                                            -
                INITIAL='Last Name : '
+* ACSFNAM - Customer first name (UNPROT, 25 chars)
 ACSFNAM DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=25,                                              -
                POS=(15,1)
+* Stopper after first name
         DFHMDF LENGTH=0,                                               -
                POS=(15,27)
+* ACSMNAM - Customer middle name (UNPROT, 25 chars)
 ACSMNAM DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=25,                                              -
                POS=(15,28)
+* Stopper after middle name
         DFHMDF LENGTH=0,                                               -
                POS=(15,54)
+* ACSLNAM - Customer last name (UNPROT, 25 chars)
 ACSLNAM DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=25,                                              -
                POS=(15,55)
+*---------------------------------------------------------------*
+* ADDRESS SECTION (screen lines 16-18)
+* Two address lines, city, state (2-char code), ZIP
+* (5-digit), and country (3-char code). All UNPROT.
+*---------------------------------------------------------------*
+* -- Line 16: Address line 1 (left) / State (right) --
+* 'Address:' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=8,                                               -
                POS=(16,1),                                             -
                INITIAL='Address:'
+* ACSADL1 - Address line 1 (UNPROT, 50 chars)
 ACSADL1 DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=50,                                              -
                POS=(16,10)
+* Stopper after address line 1
         DFHMDF LENGTH=0,                                               -
                POS=(16,61)
+* 'State' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=6,                                               -
                POS=(16,63),                                            -
                INITIAL='State '
+* ACSSTTE - US state code (UNPROT, 2 chars)
 ACSSTTE DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=2,                                               -
                POS=(16,73)
+* Stopper after state
         DFHMDF LENGTH=0,                                               -
                POS=(16,76)
+* -- Line 17: Address line 2 (left) / ZIP code (right) --
+* ACSADL2 - Address line 2 (UNPROT, 50 chars)
 ACSADL2 DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=50,                                              -
                POS=(17,10)
+* Stopper after address line 2
         DFHMDF LENGTH=0,                                               -
                POS=(17,61)
+* 'Zip' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=3,                                               -
                POS=(17,63),                                            -
                INITIAL='Zip'
+* ACSZIPC - ZIP code (UNPROT, 5 digits)
 ACSZIPC DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=5,                                               -
                POS=(17,73)
+* Stopper after ZIP
         DFHMDF LENGTH=0,                                               -
                POS=(17,79)
+* -- Line 18: City (left) / Country (right) --
+* 'City' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=5,                                               -
                POS=(18,1),                                             -
                INITIAL='City '
+* ACSCITY - City name (UNPROT, 50 chars)
 ACSCITY DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=50,                                              -
                POS=(18,10)
+* Stopper after city
         DFHMDF LENGTH=0,                                               -
                POS=(18,61)
+* 'Country' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=7,                                               -
                POS=(18,63),                                            -
                INITIAL='Country'
+* ACSCTRY - Country code (UNPROT, 3 chars)
 ACSCTRY DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=3,                                               -
                POS=(18,73)
+* Stopper after country
         DFHMDF LENGTH=0,                                               -
                POS=(18,77)
+*---------------------------------------------------------------*
+* CONTACT / ID SECTION (screen line 19)
+* Primary phone (3-3-4 segments) and government issued
+* identification reference number.
+*---------------------------------------------------------------*
+* 'Phone 1:' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=8,                                               -
                POS=(19,1),                                             -
                INITIAL='Phone 1:'
+* ACSPH1A - Phone 1 area code (UNPROT, 3 digits)
 ACSPH1A DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=3,                                               -
                POS=(19,10)
+* ACSPH1B - Phone 1 exchange (UNPROT, 3 digits)
 ACSPH1B DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=3,                                               -
                POS=(19,14)
+* ACSPH1C - Phone 1 subscriber (UNPROT, 4 digits)
 ACSPH1C DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=4,                                               -
                POS=(19,18)
+* Stopper after phone 1
         DFHMDF LENGTH=0,                                               -
                POS=(19,23)
+* 'Government Issued Id Ref' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=30,                                              -
                POS=(19,24),                                            -
                INITIAL='Government Issued Id Ref    : '
+* ACSGOVT - Government ID reference (UNPROT, 20 chars)
 ACSGOVT DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=20,                                              -
                POS=(19,58)
+* Stopper after government ID
         DFHMDF LENGTH=0,                                               -
                POS=(19,79)
+*---------------------------------------------------------------*
+* BANKING SECTION (screen line 20)
+* Secondary phone (3-3-4), EFT account indicator, and
+* primary card holder flag (Y/N).
+*---------------------------------------------------------------*
+* 'Phone 2:' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=8,                                               -
                POS=(20,1),                                             -
                INITIAL='Phone 2:'
+* ACSPH2A - Phone 2 area code (UNPROT, 3 digits)
 ACSPH2A DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=3,                                               -
                POS=(20,10)
+* ACSPH2B - Phone 2 exchange (UNPROT, 3 digits)
 ACSPH2B DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=3,                                               -
                POS=(20,14)
+* ACSPH2C - Phone 2 subscriber (UNPROT, 4 digits)
 ACSPH2C DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=4,                                               -
                POS=(20,18)
+* Stopper after phone 2
         DFHMDF LENGTH=0,                                               -
                POS=(20,23)
+* 'EFT Account Id:' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=16,                                              -
                POS=(20,24),                                            -
                INITIAL='EFT Account Id: '
+* ACSEFTC - EFT account identifier (UNPROT, 10 chars)
 ACSEFTC DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=10,                                              -
                POS=(20,41)
+* Stopper after EFT account ID
         DFHMDF LENGTH=0,                                               -
                POS=(20,52)
+* 'Primary Card Holder Y/N:' label
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=24,                                              -
                POS=(20,53),                                            -
                INITIAL='Primary Card Holder Y/N:'
+* ACSPFLG - Primary cardholder flag (UNPROT, 1 char Y/N)
 ACSPFLG DFHMDF ATTRB=(UNPROT),                                         -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=1,                                               -
                POS=(20,78)
+* Stopper after primary card holder flag
         DFHMDF LENGTH=0,                                               -
                POS=(20,80)
+*---------------------------------------------------------------*
+* INFORMATION / STATUS AREA (screen lines 22-23)
+* INFOMSG displays neutral informational messages.
+* ERRMSG displays error messages in RED with BRT
+* (bright) for high visibility. Both are ASKIP.
+*---------------------------------------------------------------*
+* INFOMSG - Informational message (ASKIP, neutral, 45 ch)
 INFOMSG DFHMDF ATTRB=(ASKIP),                                          -
                COLOR=NEUTRAL,                                          -
                HILIGHT=OFF,                                            -
                LENGTH=45,                                              -
                POS=(22,23)
+* Stopper after INFOMSG
         DFHMDF LENGTH=0,                                               -
                POS=(22,69)
+* Attribute byte at screen origin (buffer wrap marker)
         DFHMDF LENGTH=9,                                               -
                POS=(1,1)
+* ERRMSG - Error message (ASKIP, RED, BRT for emphasis)
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=78,                                              -
                POS=(23,1)
+*---------------------------------------------------------------*
+* FUNCTION KEY LEGEND (screen line 24)
+* Displays available action keys. FKEY05 and FKEY12
+* default to DRK (hidden) and are made visible by the
+* COBOL program when save/cancel actions are valid.
+*---------------------------------------------------------------*
+* FKEYS - Base key legend (ENTER=Process, F3=Exit)
 FKEYS   DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=21,                                              -
                POS=(24,1),                                             -
                INITIAL='ENTER=Process F3=Exit'
+* FKEY05 - Save action key (DRK until enabled by pgm)
 FKEY05  DFHMDF ATTRB=(ASKIP,DRK),                                      -
                COLOR=YELLOW,                                           -
                LENGTH=7,                                               -
                POS=(24,23),                                            -
                INITIAL='F5=Save'
+* FKEY12 - Cancel action key (DRK until enabled by pgm)
 FKEY12  DFHMDF ATTRB=(ASKIP,DRK),                                      -
                COLOR=YELLOW,                                           -
                LENGTH=10,                                              -
                POS=(24,31),                                            -
                INITIAL='F12=Cancel'
+*---------------------------------------------------------------*
+* End of mapset definition
+*---------------------------------------------------------------*
         DFHMSD TYPE=FINAL
         END
 *

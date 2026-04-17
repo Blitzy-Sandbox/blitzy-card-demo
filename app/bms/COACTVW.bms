@@ -16,25 +16,67 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*---------------------------------------------------------------*
+* BMS Source: Account View Screen (COACTVW)
+*---------------------------------------------------------------*
+* Program:     COACTVWC (online CICS program)
+* Transaction: CAVW
+* Mapset:      COACTVW
+* Map:         CACTVWA
+* Symbolic:    app/cpy-bms/COACTVW.CPY
+*
+* Displays account details, customer demographic
+* data, and card cross-reference information in
+* read-only mode. The single input field (ACCTSID)
+* accepts an 11-digit account number for lookup.
+* All other fields are protected display-only.
+*
+* Extended attributes enabled via DSATTS/MAPATTS
+* for COLOR, HILIGHT, programmed symbols (PS),
+* and field VALIDN support.
+*---------------------------------------------------------------*
         TITLE 'BMS MAP FOR ACCOUNT VIEWING'
+*---------------------------------------------------------------*
+* DFHMSD - Mapset definition for COACTVW
+*   LANG=COBOL    - Generate COBOL symbolic map
+*   MODE=INOUT    - Map used for both SEND/RECEIVE
+*   STORAGE=AUTO  - BMS allocates storage per task
+*   TIOAPFX=YES   - Include 12-byte TIOA prefix
+*   TYPE=&&SYSPARM - Build type set at assembly
+*---------------------------------------------------------------*
 COACTVW DFHMSD LANG=COBOL,                                             -
                MODE=INOUT,                                             -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+*---------------------------------------------------------------*
+* DFHMDI - Map definition for CACTVWA
+*   CTRL=(FREEKB) - Unlock keyboard after SEND
+*   DSATTS/MAPATTS=(COLOR,HILIGHT,PS,VALIDN)
+*     Enables extended field-level attributes
+*   SIZE=(24,80)  - Standard 3270 Model 2 screen
+*---------------------------------------------------------------*
 CACTVWA DFHMDI CTRL=(FREEKB),                                          -
                DSATTS=(COLOR,HILIGHT,PS,VALIDN),                       -
                MAPATTS=(COLOR,HILIGHT,PS,VALIDN),                      -
                SIZE=(24,80)
+*---------------------------------------------------------------*
+* Header Area - Screen rows 1-2
+*   Static labels and dynamic fields for transaction
+*   name, title, date, program name, and time.
+*   All header fields are ASKIP (protected).
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
                POS=(1,1),                                              -
                INITIAL='Tran:'
+* TRNNAME - Transaction ID display (from EIBTRNID)
 TRNNAME DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                COLOR=BLUE,                                             -
                LENGTH=4,                                               -
                POS=(1,7)
+* TITLE01 - Application title banner (row 1 center)
 TITLE01 DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=40,                                              -
@@ -44,6 +86,7 @@ TITLE01 DFHMDF ATTRB=(ASKIP,NORM),                                     -
                LENGTH=5,                                               -
                POS=(1,65),                                             -
                INITIAL='Date:'
+* CURDATE - Current date (MM/DD/YY from EIBDATE)
 CURDATE DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=8,                                               -
@@ -54,10 +97,12 @@ CURDATE DFHMDF ATTRB=(ASKIP,NORM),                                     -
                LENGTH=5,                                               -
                POS=(2,1),                                              -
                INITIAL='Prog:'
+* PGMNAME - Running program name display
 PGMNAME DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=8,                                               -
                POS=(2,7)
+* TITLE02 - Screen subtitle banner (row 2 center)
 TITLE02 DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=40,                                              -
@@ -67,20 +112,35 @@ TITLE02 DFHMDF ATTRB=(ASKIP,NORM),                                     -
                LENGTH=5,                                               -
                POS=(2,65),                                             -
                INITIAL='Time:'
+* CURTIME - Current time (HH:MM:SS from EIBTIME)
 CURTIME DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss'
+*---------------------------------------------------------------*
+* Screen Title - Row 4
+*   "View Account" heading in NEUTRAL color
+*---------------------------------------------------------------*
         DFHMDF COLOR=NEUTRAL,                                          -
                LENGTH=12,                                              -
                POS=(4,33),                                             -
                INITIAL='View Account'
+*---------------------------------------------------------------*
+* Account Key Entry and Status - Row 5
+*   ACCTSID is the sole input field (UNPROT, IC).
+*   User enters 11-digit account number for lookup
+*   against ACCTDAT VSAM KSDS. MUSTFILL validation
+*   requires all positions filled before transmit.
+*   ACSTTUS shows active status Y/N (display-only).
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=16,                                              -
                POS=(5,19),                                             -
                INITIAL='Account Number :'
+* ACCTSID - Account number input (UNPROT, IC)
+*   Source: ACCTDAT VSAM KSDS key field
 ACCTSID DFHMDF ATTRB=(FSET,IC,NORM,UNPROT),                            -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -94,16 +154,25 @@ ACCTSID DFHMDF ATTRB=(FSET,IC,NORM,UNPROT),                            -
                LENGTH=12,                                              -
                POS=(5,57),                                             -
                INITIAL='Active Y/N: '
+* ACSTTUS - Account active status Y/N (ASKIP)
+*   Source: ACCTDAT status field
 ACSTTUS DFHMDF ATTRB=(ASKIP),                                          -
                HILIGHT=UNDERLINE,                                      -
                LENGTH=1,                                               -
                POS=(5,70)
         DFHMDF LENGTH=0,                                               -
                POS=(5,72)
+*---------------------------------------------------------------*
+* Account Data Display - Rows 6-10
+*   Read-only fields from ACCTDAT VSAM KSDS.
+*   Left column: dates and group. Right column:
+*   financial amounts with PICOUT currency format.
+*---------------------------------------------------------------*
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=7,                                               -
                POS=(6,8),                                              -
                INITIAL='Opened:'
+* ADTOPEN - Account open date (display-only)
 ADTOPEN DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=10,                                              -
                POS=(6,17)
@@ -114,6 +183,7 @@ ADTOPEN DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=21,                                              -
                POS=(6,39),                                             -
                INITIAL='Credit Limit        :'
+* ACRDLIM - Credit limit, formatted currency
 ACRDLIM DFHMDF HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=15,                                              -
@@ -125,6 +195,7 @@ ACRDLIM DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=7,                                               -
                POS=(7,8),                                              -
                INITIAL='Expiry:'
+* AEXPDT  - Card expiry date (display-only)
 AEXPDT  DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=10,                                              -
                POS=(7,17)
@@ -135,6 +206,7 @@ AEXPDT  DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=21,                                              -
                POS=(7,39),                                             -
                INITIAL='Cash credit Limit   :'
+* ACSHLIM - Cash credit limit, formatted currency
 ACSHLIM DFHMDF HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=15,                                              -
@@ -146,6 +218,7 @@ ACSHLIM DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=8,                                               -
                POS=(8,8),                                              -
                INITIAL='Reissue:'
+* AREISDT - Card reissue date (display-only)
 AREISDT DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=10,                                              -
                POS=(8,17)
@@ -156,6 +229,7 @@ AREISDT DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=21,                                              -
                POS=(8,39),                                             -
                INITIAL='Current Balance     :'
+* ACURBAL - Current balance, formatted currency
 ACURBAL DFHMDF HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=15,                                              -
@@ -168,6 +242,7 @@ ACURBAL DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=21,                                              -
                POS=(9,39),                                             -
                INITIAL='Current Cycle Credit:'
+* ACRCYCR - Current cycle credit amount
 ACRCYCR DFHMDF HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=15,                                              -
@@ -179,6 +254,7 @@ ACRCYCR DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=14,                                              -
                POS=(10,8),                                             -
                INITIAL='Account Group:'
+* AADDGRP - Account group code (display-only)
 AADDGRP DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=10,                                              -
                POS=(10,23)
@@ -189,6 +265,7 @@ AADDGRP DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=21,                                              -
                POS=(10,39),                                            -
                INITIAL='Current Cycle Debit :'
+* ACRCYDB - Current cycle debit amount
 ACRCYDB DFHMDF HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=15,                                              -
@@ -196,6 +273,12 @@ ACRCYDB DFHMDF HILIGHT=UNDERLINE,                                      -
                POS=(10,61)
         DFHMDF LENGTH=0,                                               -
                POS=(10,77)
+*---------------------------------------------------------------*
+* Customer Details Section - Rows 11-15
+*   Heading plus demographic fields populated from
+*   CUSTDAT VSAM KSDS. Includes customer ID, SSN,
+*   DOB, FICO score, and full name. All display-only.
+*---------------------------------------------------------------*
         DFHMDF COLOR=NEUTRAL,                                          -
                LENGTH=16,                                              -
                POS=(11,32),                                            -
@@ -204,6 +287,7 @@ ACRCYDB DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=14,                                              -
                POS=(12,8),                                             -
                INITIAL='Customer id  :'
+* ACSTNUM - Customer ID (display-only, from CUSTDAT)
 ACSTNUM DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=9,                                               -
                POS=(12,23)
@@ -213,6 +297,7 @@ ACSTNUM DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=4,                                               -
                POS=(12,49),                                            -
                INITIAL='SSN:'
+* ACSTSSN - Social Security Number (display-only)
 ACSTSSN DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=12,                                              -
                POS=(12,54)
@@ -222,6 +307,7 @@ ACSTSSN DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=14,                                              -
                POS=(13,8),                                             -
                INITIAL='Date of birth:'
+* ACSTDOB - Date of birth (display-only)
 ACSTDOB DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=10,                                              -
                POS=(13,23)
@@ -231,11 +317,13 @@ ACSTDOB DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=11,                                              -
                POS=(13,49),                                            -
                INITIAL='FICO Score:'
+* ACSTFCO - FICO credit score (display-only)
 ACSTFCO DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=3,                                               -
                POS=(13,61)
         DFHMDF LENGTH=0,                                               -
                POS=(13,65)
+* Customer name column labels (First, Middle, Last)
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=10,                                              -
                POS=(14,1),                                             -
@@ -248,23 +336,33 @@ ACSTFCO DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=12,                                              -
                POS=(14,55),                                            -
                INITIAL='Last Name : '
+* ACSFNAM - Customer first name (display-only)
 ACSFNAM DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=25,                                              -
                POS=(15,1)
         DFHMDF LENGTH=0,                                               -
                POS=(15,27)
+* ACSMNAM - Customer middle name (display-only)
 ACSMNAM DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=25,                                              -
                POS=(15,28)
         DFHMDF LENGTH=0,                                               -
                POS=(15,54)
+* ACSLNAM - Customer last name (display-only)
 ACSLNAM DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=25,                                              -
                POS=(15,55)
+*---------------------------------------------------------------*
+* Address and Contact Display - Rows 16-20
+*   Full customer address, phone numbers, govt ID,
+*   EFT account, and primary cardholder flag.
+*   All display-only fields from CUSTDAT VSAM KSDS.
+*---------------------------------------------------------------*
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=8,                                               -
                POS=(16,1),                                             -
                INITIAL='Address:'
+* ACSADL1 - Address line 1 (display-only)
 ACSADL1 DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=50,                                              -
                POS=(16,10)
@@ -274,11 +372,13 @@ ACSADL1 DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=6,                                               -
                POS=(16,63),                                            -
                INITIAL='State '
+* ACSSTTE - State code, 2-char (display-only)
 ACSSTTE DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=2,                                               -
                POS=(16,73)
         DFHMDF LENGTH=0,                                               -
                POS=(16,76)
+* ACSADL2 - Address line 2 (display-only)
 ACSADL2 DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=50,                                              -
                POS=(17,10)
@@ -288,6 +388,7 @@ ACSADL2 DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=3,                                               -
                POS=(17,63),                                            -
                INITIAL='Zip'
+* ACSZIPC - ZIP code, 5-digit right-justified
 ACSZIPC DFHMDF HILIGHT=UNDERLINE,                                      -
                JUSTIFY=(RIGHT),                                        -
                LENGTH=5,                                               -
@@ -298,6 +399,7 @@ ACSZIPC DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=5,                                               -
                POS=(18,1),                                             -
                INITIAL='City '
+* ACSCITY - City name (display-only)
 ACSCITY DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=50,                                              -
                POS=(18,10)
@@ -307,6 +409,7 @@ ACSCITY DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=7,                                               -
                POS=(18,63),                                            -
                INITIAL='Country'
+* ACSCTRY - Country code, 3-char (display-only)
 ACSCTRY DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=3,                                               -
                POS=(18,73)
@@ -316,6 +419,7 @@ ACSCTRY DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=8,                                               -
                POS=(19,1),                                             -
                INITIAL='Phone 1:'
+* ACSPHN1 - Primary phone number (display-only)
 ACSPHN1 DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=13,                                              -
                POS=(19,10)
@@ -323,6 +427,7 @@ ACSPHN1 DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=30,                                              -
                POS=(19,24),                                            -
                INITIAL='Government Issued Id Ref    : '
+* ACSGOVT - Government-issued ID ref (display-only)
 ACSGOVT DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=20,                                              -
                POS=(19,58)
@@ -332,6 +437,7 @@ ACSGOVT DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=8,                                               -
                POS=(20,1),                                             -
                INITIAL='Phone 2:'
+* ACSPHN2 - Secondary phone number (display-only)
 ACSPHN2 DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=13,                                              -
                POS=(20,10)
@@ -339,6 +445,7 @@ ACSPHN2 DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=16,                                              -
                POS=(20,24),                                            -
                INITIAL='EFT Account Id: '
+* ACSEFTC - EFT account ID (display-only)
 ACSEFTC DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=10,                                              -
                POS=(20,41)
@@ -348,11 +455,18 @@ ACSEFTC DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=24,                                              -
                POS=(20,53),                                            -
                INITIAL='Primary Card Holder Y/N:'
+* ACSPFLG - Primary cardholder flag Y/N
 ACSPFLG DFHMDF HILIGHT=UNDERLINE,                                      -
                LENGTH=1,                                               -
                POS=(20,78)
         DFHMDF LENGTH=0,                                               -
                POS=(20,80)
+*---------------------------------------------------------------*
+* Status and Error Message Area - Rows 22-23
+*   INFOMSG shows informational text (NEUTRAL).
+*   ERRMSG shows error messages in RED with BRT.
+*---------------------------------------------------------------*
+* INFOMSG - Informational message (PROT, NEUTRAL)
 INFOMSG DFHMDF ATTRB=(PROT),                                           -
                COLOR=NEUTRAL,                                          -
                HILIGHT=OFF,                                            -
@@ -362,15 +476,23 @@ INFOMSG DFHMDF ATTRB=(PROT),                                           -
                POS=(22,69)
         DFHMDF LENGTH=9,                                               -
                POS=(1,1)
+* ERRMSG  - Error message (RED, BRT, ASKIP, FSET)
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=78,                                              -
                POS=(23,1)
+*---------------------------------------------------------------*
+* Function Key Legend - Row 24
+*   F3=Exit returns to main menu via XCTL
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=60,                                              -
                POS=(24,1),                                             -
                INITIAL='  F3=Exit '
+*---------------------------------------------------------------*
+* End of mapset definition
+*---------------------------------------------------------------*
         DFHMSD TYPE=FINAL
         END
 *

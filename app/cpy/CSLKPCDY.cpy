@@ -21,6 +21,15 @@
       * language governing permissions and limitations under the License
       ****************************************************************** 
 
+      * Section 1: North American phone area code validation
+      * Three 88-level conditions provide different subsets
+      * for validation:
+      *   VALID-PHONE-AREA-CODE - all valid NANPA area codes
+      *   VALID-GENERAL-PURP-CODE - general purpose
+      *     (non-toll-free, non-special) codes
+      *   VALID-EASY-RECOG-AREA-CODE - easily recognizable
+      *     codes (X00 pattern)
+      * Consuming program: COACTUPC.cbl (address validation)
        01 WS-US-PHONE-AREA-CODE-TO-EDIT PIC XXX.
       ******************************************************************
       *North America Phone area codes List obtained from North America 
@@ -1009,6 +1018,10 @@
 		                             '988',
 		                             '999'.
       *Search list of valid Phone area codes
+      * Section 2: US state and territory code validation
+      * VALID-US-STATE-CODE - 2-letter abbreviations for
+      *   50 states + DC + territories
+      *   (AS, GU, MH, MP, PR, PW, VI)
        01 US-STATE-CODE-TO-EDIT  PIC X(2).
           88 VALID-US-STATE-CODE VALUES 
  		                            'AL',
@@ -1068,6 +1081,13 @@
  		                            'PR',
  		                            'VI'.
       *State Zip Code Combinations
+      * Section 3: State + ZIP prefix combination validation
+      * Validates that the first 2 digits of a ZIP code
+      *   are valid for the given state
+      * VALID-US-STATE-ZIP-CD2-COMBO - concatenated
+      *   state + 2-digit-ZIP pairs
+      * LAST-3-OF-ZIP holds remaining 3 digits
+      *   (not validated)
        01 US-STATE-ZIPCODE-TO-EDIT.
           02 US-STATE-AND-FIRST-ZIP2 PIC X(4).
              88 VALID-US-STATE-ZIP-CD2-COMBO VALUES

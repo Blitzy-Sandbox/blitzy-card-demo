@@ -16,16 +16,57 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*
+*-----------------------------------------------------------------*
+* BMS Source:  COCRDUP.bms
+* Screen:     Card Update (Update Credit Card Details)
+* Program:    COCRDUPC (app/cbl/COCRDUPC.cbl)
+* Transaction: CCUP
+* Mapset:     COCRDUP   Map: CCRDUPA
+* Symbolic:   app/cpy-bms/COCRDUP.CPY
+*
+* This screen allows authorized users to edit card
+* attributes including cardholder name, card active
+* status, and expiration date (month/year). The COCRDUPC
+* program implements optimistic concurrency by comparing
+* before/after images of the card record to detect
+* conflicts prior to VSAM REWRITE.
+*
+* Extended attributes (COLOR, HILIGHT, PS, VALIDN) are
+* enabled at the DFHMDI level via DSATTS and MAPATTS.
+*-----------------------------------------------------------------*
         TITLE 'BMS MAP FOR UPDATE CARDS  '
+*-----------------------------------------------------------------*
+* DFHMSD: Mapset definition for COCRDUP
+* LANG=COBOL generates COBOL-compatible symbolic map
+* MODE=INOUT supports both input and output operations
+* STORAGE=AUTO allocates map storage dynamically
+* TIOAPFX=YES reserves space for the TIOA prefix
+* TYPE=&&SYSPARM set at assembly time (MAP, DSECT, or both)
+*-----------------------------------------------------------------*
 COCRDUP DFHMSD LANG=COBOL,                                             -
                MODE=INOUT,                                             -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+*-----------------------------------------------------------------*
+* DFHMDI: Map definition for CCRDUPA
+* CTRL=(FREEKB) unlocks keyboard after each SEND MAP
+* DSATTS and MAPATTS enable extended attributes:
+*   COLOR, HILIGHT, PS (programmed symbols), VALIDN
+* SIZE=(24,80) standard 3270 terminal dimensions
+*-----------------------------------------------------------------*
 CCRDUPA DFHMDI CTRL=(FREEKB),                                          -
                DSATTS=(COLOR,HILIGHT,PS,VALIDN),                       -
                MAPATTS=(COLOR,HILIGHT,PS,VALIDN),                      -
                SIZE=(24,80)
+*-----------------------------------------------------------------*
+* Header area (screen rows 1-2)
+* Row 1: Transaction ID, application title, current date
+* Row 2: Program name, subtitle, current time
+* All header fields are ASKIP (auto-skip, protected)
+* Labels displayed in BLUE, title fields in YELLOW
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
@@ -72,10 +113,22 @@ CURTIME DFHMDF ATTRB=(ASKIP,NORM),                                     -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss'
+*-----------------------------------------------------------------*
+* Screen title (row 4, centered at column 30)
+* Displays "Update Credit Card Details" in NEUTRAL color
+*-----------------------------------------------------------------*
         DFHMDF COLOR=NEUTRAL,                                          -
                LENGTH=26,                                              -
                POS=(4,30),                                             -
                INITIAL='Update Credit Card Details'
+*-----------------------------------------------------------------*
+* Card identification area (rows 7-8)
+* Account Number: ACCTSID is PROT (protected, read-only)
+*   with FSET (field set) and IC (initial cursor position)
+* Card Number: CARDSID is UNPROT allowing card number
+*   entry or modification for card selection
+* Trailing stopper fields (LENGTH=0) delimit input areas
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=19,                                              -
@@ -100,6 +153,14 @@ CARDSID DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                POS=(8,45)
         DFHMDF LENGTH=0,                                               -
                POS=(8,62)
+*-----------------------------------------------------------------*
+* Editable card detail fields (rows 11-15)
+* These UNPROT fields allow user modification. Values
+* are read via RECEIVE MAP and written back to VSAM via
+* REWRITE in COCRDUPC after concurrency validation.
+* Labels are TURQUOISE; input fields have UNDERLINE.
+*-----------------------------------------------------------------*
+* CRDNAME: Cardholder name (50 chars, UNPROT for editing)
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=20,                                              -
                POS=(11,4),                                             -
@@ -110,6 +171,7 @@ CRDNAME DFHMDF ATTRB=(UNPROT),                                         -
                POS=(11,25)
         DFHMDF LENGTH=0,                                               -
                POS=(11,76)
+* CRDSTCD: Card active status (1 char Y/N, UNPROT)
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=20,                                              -
                POS=(13,4),                                             -
@@ -120,6 +182,10 @@ CRDSTCD DFHMDF ATTRB=(UNPROT),                                         -
                POS=(13,25)
         DFHMDF LENGTH=0,                                               -
                POS=(13,27)
+* Expiry date: month (EXPMON, 2 chars) / year (EXPYEAR,
+*   4 chars), both UNPROT with RIGHT justify
+* EXPDAY is defined but hidden (DRK,PROT) on this screen;
+*   unlike COCRDSL which omits the day field entirely
         DFHMDF COLOR=TURQUOISE,                                        -
                LENGTH=20,                                              -
                POS=(15,4),                                             -
@@ -146,6 +212,13 @@ EXPDAY  DFHMDF ATTRB=(DRK,FSET,PROT),                                  -
                POS=(15,36)
         DFHMDF LENGTH=0,                                               -
                POS=(15,39)
+*-----------------------------------------------------------------*
+* Information and error message area (rows 20, 23)
+* INFOMSG: Status and informational messages (PROT,
+*   NEUTRAL color, 40 chars) at row 20
+* ERRMSG: Validation/error messages (ASKIP, BRT, RED,
+*   80 chars full width) at row 23
+*-----------------------------------------------------------------*
 INFOMSG DFHMDF ATTRB=(PROT),                                           -
                COLOR=NEUTRAL,                                          -
                HILIGHT=OFF,                                            -
@@ -155,6 +228,12 @@ ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=80,                                              -
                POS=(23,1)
+*-----------------------------------------------------------------*
+* Function key legend (row 24)
+* FKEYS: Always visible - ENTER=Process, F3=Exit
+* FKEYSC: Initially hidden (DRK) - F5=Save, F12=Cancel
+*   Revealed by COCRDUPC when edit/confirm mode is active
+*-----------------------------------------------------------------*
 FKEYS   DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=21,                                              -
@@ -165,6 +244,9 @@ FKEYSC  DFHMDF ATTRB=(ASKIP,DRK),                                      -
                LENGTH=18,                                              -
                POS=(24,23),                                            -
                INITIAL='F5=Save F12=Cancel'
+*-----------------------------------------------------------------*
+* End of COCRDUP mapset definition
+*-----------------------------------------------------------------*
         DFHMSD TYPE=FINAL
         END
 *

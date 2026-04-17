@@ -16,8 +16,22 @@
 //* either express or implied. See the License for the specific     
 //* language governing permissions and limitations under the License
 //******************************************************************            
+//* JOB: PRTCATBL - Print Transaction Category Balance File
+//* Unloads the TCATBALF VSAM KSDS file to a sequential
+//* backup, then sorts and formats it into a printable
+//* report showing account balances by category.
+//* Uses: REPROC cataloged procedure for VSAM unload,
+//*   SORT utility for reformat and report generation
+//* Input: AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS
+//* Output: AWS.M2.CARDDEMO.TCATBALF.REPT (formatted)
+//* Intermediate: AWS.M2.CARDDEMO.TCATBALF.BKUP(+1) (GDG)
+//* NOTE: Existing comment on STEP10R section divider
+//*   contains garbled text ("TCATBALFions") - as-is.
 //JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')                                  
 //*
+//* DELDEF: IEFBR14 - Delete prior report output file
+//*   Removes TCATBALF.REPT from a previous run.
+//*   DISP=(MOD,DELETE) deletes if exists, no error if not.
 //DELDEF   EXEC PGM=IEFBR14
 //THEFILE  DD DISP=(MOD,DELETE),
 //         UNIT=SYSDA,
@@ -26,6 +40,12 @@
 //* ********************************************************`***********        
 //* Unload the processed transaction category balance file                      
 //* *******************************************************************         
+//* STEP05R: REPROC - Unload TCATBALF VSAM to sequential
+//*   Uses cataloged procedure REPROC from CNTL library
+//*   to REPRO VSAM KSDS records to a GDG generation.
+//*   PRC001.FILEIN: Source VSAM KSDS (TCATBALF)
+//*   PRC001.FILEOUT: GDG output TCATBALF.BKUP(+1)
+//*     LRECL=50, RECFM=FB
 //STEP05R EXEC PROC=REPROC,                                                     
 // CNTLLIB=AWS.M2.CARDDEMO.CNTL                                                 
 //*                                                                             
@@ -40,6 +60,16 @@
 //* *******************************************************************         
 //* Filter the TCATBALFions for a the parm date and sort by card num            
 //* *******************************************************************         
+//* STEP10R: SORT - Format and sort for printable report
+//*   SYMNAMES: Define symbolic field names for SORT:
+//*     TRANCAT-ACCT-ID (pos 1, 11 bytes, ZD)
+//*     TRANCAT-TYPE-CD (pos 12, 2 bytes, CH)
+//*     TRANCAT-CD (pos 14, 4 bytes, ZD)
+//*     TRAN-CAT-BAL (pos 18, 11 bytes, ZD)
+//*   SORT: Ascending by acct-id, type, category
+//*   OUTREC: Reformat with spaces and edited balance
+//*     (EDIT mask TTTTTTTTT.TT for decimal display)
+//*   Output: TCATBALF.REPT (LRECL=40, FB)
 //STEP10R  EXEC PGM=SORT                                                        
 //SORTIN   DD DISP=SHR,                                                         
 //         DSN=AWS.M2.CARDDEMO.TCATBALF.BKUP(+1)                                

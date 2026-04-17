@@ -16,6 +16,44 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*----------------------------------------------------------------*
+* BMS Source: Delete User Screen (COUSR03 / COUSR3A)
+*----------------------------------------------------------------*
+* This BMS source defines the Delete User screen used by
+* program COUSR03C under CICS transaction CU03.
+*
+* Purpose: Admin-only screen for removing user accounts
+* from the USRSEC VSAM KSDS dataset.
+*
+* Two-phase operation:
+*   Phase 1 - Enter a user ID to fetch the user record
+*   Phase 2 - View fetched details and confirm deletion
+*
+* COUSR03C performs a READ on USRSEC to display the user
+* record, then a DELETE upon confirmation via F5.
+*
+* All user detail fields (First Name, Last Name, User Type)
+* are display-only (ASKIP) to prevent accidental editing.
+* No password field is shown on this screen (security best
+* practice: do not expose credentials on delete confirm).
+*
+* Mapset:  COUSR03
+* Map:     COUSR3A
+* Program: COUSR03C
+* Tran:    CU03
+* Symbolic map: app/cpy-bms/COUSR03.CPY
+*----------------------------------------------------------------*
+*
+*----------------------------------------------------------------*
+* DFHMSD - Mapset definition for COUSR03
+*   CTRL=(ALARM,FREEKB) : Sound alarm, free keyboard
+*   EXTATT=YES           : Extended attributes (color)
+*   LANG=COBOL           : Generate COBOL copybook
+*   MODE=INOUT           : Both input and output support
+*   STORAGE=AUTO         : Automatic storage allocation
+*   TIOAPFX=YES          : Include TIOA prefix for BMS
+*   TYPE=&&SYSPARM       : Mapset type set at assembly
+*----------------------------------------------------------------*
 COUSR03 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                EXTATT=YES,                                             -
                LANG=COBOL,                                             -
@@ -23,9 +61,20 @@ COUSR03 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+*----------------------------------------------------------------*
+* DFHMDI - Map COUSR3A: Delete User screen layout
+*   24 rows x 80 columns (standard 3270 terminal)
+*   Starts at column 1, line 1 (full-screen map)
+*----------------------------------------------------------------*
 COUSR3A DFHMDI COLUMN=1,                                               -
                LINE=1,                                                 -
                SIZE=(24,80)
+*----------------------------------------------------------------*
+* Header Area - Screen lines 1-2
+*   Standard CardDemo header with transaction ID, program
+*   name, application title, current date, and time.
+*   All header fields are ASKIP (protected, display-only).
+*----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
@@ -72,11 +121,24 @@ CURTIME DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss'
+*----------------------------------------------------------------*
+* Screen Title - Line 4
+*   "Delete User" displayed bright, centered at col 35.
+*   Identifies this screen's function to the operator.
+*----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,BRT),                                      -
                COLOR=NEUTRAL,                                          -
                LENGTH=11,                                              -
                POS=(4,35),                                             -
                INITIAL='Delete User'
+*----------------------------------------------------------------*
+* User ID Lookup - Line 6
+*   "Enter User ID:" prompt with 8-char UNPROT input.
+*   IC (Insert Cursor) places cursor here on map send.
+*   Operator enters a user ID; COUSR03C reads USRSEC to
+*   fetch the matching record for display below.
+*   Stopper field (LENGTH=0) terminates the input area.
+*----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=GREEN,                                            -
                LENGTH=14,                                              -
@@ -90,11 +152,27 @@ USRIDIN DFHMDF ATTRB=(FSET,IC,NORM,UNPROT),                            -
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                LENGTH=0,                                               -
                POS=(6,30)
+*----------------------------------------------------------------*
+* Visual Separator - Line 8
+*   Asterisk row separating the lookup area from the
+*   user detail display area below.
+*----------------------------------------------------------------*
         DFHMDF COLOR=YELLOW,                                           -
                LENGTH=70,                                              -
                POS=(8,6),                                              -
                INITIAL='***********************************************-
                ***********************'
+*----------------------------------------------------------------*
+* User Detail Display Area - Lines 11-15
+*   All fields below are ASKIP (protected/read-only)
+*   populated by COUSR03C after fetching the record
+*   from USRSEC. The operator cannot edit these fields.
+*   No password field is displayed (security best
+*   practice: do not show credentials on delete screen).
+*----------------------------------------------------------------*
+*   Line 11: "First Name:" label + FNAME display field
+*   FNAME - 20-char protected field showing the user's
+*   first name as retrieved from the USRSEC record.
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=11,                                              -
@@ -108,6 +186,9 @@ FNAME   DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                LENGTH=0,                                               -
                POS=(11,39)
+*   Line 13: "Last Name:" label + LNAME display field
+*   LNAME - 20-char protected field showing the user's
+*   last name from USRSEC.
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=10,                                              -
@@ -122,6 +203,9 @@ LNAME   DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                COLOR=GREEN,                                            -
                LENGTH=0,                                               -
                POS=(13,39)
+*   Line 15: "User Type:" label + USRTYPE display field
+*   USRTYPE - 1-char protected field (A=Admin, U=User).
+*   Legend displayed inline to clarify valid type codes.
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=11,                                              -
@@ -137,10 +221,26 @@ USRTYPE DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=17,                                              -
                POS=(15,19),                                            -
                INITIAL='(A=Admin, U=User)'
+*----------------------------------------------------------------*
+* Error Message Area - Line 23
+*   ERRMSG - 78-char bright RED field for error/status
+*   messages (e.g., user not found, delete failed, or
+*   delete successful). Set by COUSR03C before map send.
+*----------------------------------------------------------------*
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=78,                                              -
                POS=(23,1)
+*----------------------------------------------------------------*
+* Function Key Legend - Line 24
+*   Displays available actions:
+*     ENTER  = Fetch user record by entered User ID
+*     F3     = Return to previous screen (admin menu)
+*     F4     = Clear screen fields
+*     F5     = Delete the displayed user from USRSEC
+*   No separate CONFIRM field exists; the operator uses
+*   F5 to confirm and execute the delete operation.
+*----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=58,                                              -

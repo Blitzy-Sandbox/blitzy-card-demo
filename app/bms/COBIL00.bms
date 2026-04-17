@@ -16,6 +16,34 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*
+*-----------------------------------------------------------------*
+* BMS SOURCE: Bill Payment Screen
+*-----------------------------------------------------------------*
+* This BMS source defines the Bill Payment screen used by
+* the COBIL00C online COBOL program (transaction CB00).
+*
+* The screen allows users to enter an account ID, view
+* the current balance, and confirm payment.
+*
+* Mapset: COBIL00     Map: COBIL0A
+* Program: COBIL00C   Transaction: CB00
+* Symbolic map: app/cpy-bms/COBIL00.CPY
+*
+* NOTE: The license header above reads "Main Menu Screen"
+* due to a copy error in the original source. This is
+* actually the Bill Payment screen.
+*-----------------------------------------------------------------*
+*
+*-----------------------------------------------------------------*
+* DFHMSD: Mapset definition for COBIL00
+*   CTRL=(ALARM,FREEKB) - Sound alarm, free keyboard
+*   EXTATT=YES  - Extended attributes (color, highlight)
+*   LANG=COBOL  - Generate COBOL symbolic map
+*   MODE=INOUT  - Supports SEND MAP and RECEIVE MAP
+*   STORAGE=AUTO - Automatic BMS storage allocation
+*   TIOAPFX=YES - Include TIOA prefix in symbolic map
+*-----------------------------------------------------------------*
 COBIL00 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                EXTATT=YES,                                             -
                LANG=COBOL,                                             -
@@ -23,9 +51,19 @@ COBIL00 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM 
+*-----------------------------------------------------------------*
+* DFHMDI: Map COBIL0A - full 24x80 3270 screen layout
+*   Starting at column 1, line 1
+*-----------------------------------------------------------------*
 COBIL0A DFHMDI COLUMN=1,                                               -
                LINE=1,                                                 -
                SIZE=(24,80) 
+*-----------------------------------------------------------------*
+* Header Area (screen lines 1-2)
+* Standard application header with transaction ID, program
+* name, title bar, and current date/time fields.
+* All header fields are ASKIP (protected) in BLUE.
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
@@ -72,11 +110,23 @@ CURTIME DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss' 
+*-----------------------------------------------------------------*
+* Screen Title (screen line 4)
+* "Bill Payment" displayed bright neutral, centered
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,BRT),                                      -
                COLOR=NEUTRAL,                                          -
                LENGTH=12,                                              -
                POS=(4,35),                                             -
                INITIAL='Bill Payment' 
+*-----------------------------------------------------------------*
+* Account Entry (screen line 6)
+* "Enter Acct ID:" label + ACTIDIN input field
+* ACTIDIN: 11-char UNPROT with IC (initial cursor) and
+*   UNDERLINE highlight. User types account number here
+*   for balance lookup from ACCTDAT VSAM.
+* Stopper field at POS=(6,33) prevents cursor overrun.
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=GREEN,                                            -
                LENGTH=14,                                              -
@@ -90,11 +140,24 @@ ACTIDIN DFHMDF ATTRB=(FSET,IC,NORM,UNPROT),                            -
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                LENGTH=0,                                               -
                POS=(6,33) 
+*-----------------------------------------------------------------*
+* Separator (screen line 8)
+* Decorative dash line in YELLOW separating the account
+* entry area from the balance display area below.
+*-----------------------------------------------------------------*
         DFHMDF COLOR=YELLOW,                                           -
                LENGTH=70,                                              -
                POS=(8,6),                                              -
                INITIAL='------------------------------------------------
                -----------------------' 
+*-----------------------------------------------------------------*
+* Balance Display (screen line 11)
+* "Your current balance is:" label in TURQUOISE
+* CURBAL: 14-char ASKIP protected display in BLUE.
+*   Program populates from ACCTDAT VSAM after account
+*   lookup. See COBIL00C for balance retrieval logic.
+* Stopper field at POS=(11,47) terminates the display.
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=25,                                              -
@@ -106,6 +169,13 @@ CURBAL  DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                POS=(11,32) 
         DFHMDF LENGTH=0,                                               -
                POS=(11,47) 
+*-----------------------------------------------------------------*
+* Payment Confirmation (screen line 15)
+* Prompt text in TURQUOISE asking user to confirm.
+* CONFIRM: 1-char UNPROT Y/N entry with UNDERLINE.
+* Stopper at POS=(15,62) limits input to 1 character.
+* "(Y/N)" hint in NEUTRAL follows the input field.
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=53,                                              -
@@ -124,10 +194,21 @@ CONFIRM DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                LENGTH=5,                                               -
                POS=(15,63),                                            -
                INITIAL='(Y/N)' 
+*-----------------------------------------------------------------*
+* Error Message (screen line 23)
+* ERRMSG: 78-char RED bright field for error/info msgs.
+*   Program sets this to show validation errors or
+*   status messages to the user.
+*-----------------------------------------------------------------*
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=78,                                              -
                POS=(23,1) 
+*-----------------------------------------------------------------*
+* Function Key Legend (screen line 24)
+* "ENTER=Continue  F3=Back  F4=Clear" in YELLOW
+* Guides user on available keyboard actions.
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=33,                                              -

@@ -14,8 +14,22 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      * Symbolic map copybook for the Admin Menu screen.
+      * BMS Source: app/bms/COADM01.bms (Mapset COADM01, Map COADM1A)
+      * COBOL Program: app/cbl/COADM01C.cbl (Transaction CA00)
+      * Provides admin-only menu with 4 options: User List, User Add,
+      * User Update, User Delete. Layout mirrors COMEN01 (Main Menu).
+      * Only accessible to admin-type users.
+      * ---------------------------------------------------------------
+      * Input buffer layout (AI) -- populated by EXEC CICS RECEIVE MAP
+      * Fields use L/F/A/I suffixes:
+      *   L = Length (COMP PIC S9(4))  F = Flag (PICTURE X)
+      *   A = Attribute (PICTURE X)    I = Input data (PICTURE X(n))
+      * ---------------------------------------------------------------
        01  COADM1AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES on the mapset
            02  FILLER PIC X(12).
+      * --- Header fields: transaction ID, titles, date/time ---
            02  TRNNAMEL    COMP  PIC  S9(4).
            02  TRNNAMEF    PICTURE X.
            02  FILLER REDEFINES TRNNAMEF.
@@ -52,6 +66,8 @@
              03 CURTIMEA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CURTIMEI  PIC X(8).
+      * --- Menu option lines (12 slots, 40-char each) ---
+      * COADM01C populates 4 options; remaining 8 are blank
            02  OPTN001L    COMP  PIC  S9(4).
            02  OPTN001F    PICTURE X.
            02  FILLER REDEFINES OPTN001F.
@@ -124,20 +140,31 @@
              03 OPTN012A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  OPTN012I  PIC X(40).
+      * --- Menu selection input (2-char numeric) ---
            02  OPTIONL    COMP  PIC  S9(4).
            02  OPTIONF    PICTURE X.
            02  FILLER REDEFINES OPTIONF.
              03 OPTIONA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  OPTIONI  PIC X(2).
+      * --- Error message area (78-char, RED) ---
            02  ERRMSGL    COMP  PIC  S9(4).
            02  ERRMSGF    PICTURE X.
            02  FILLER REDEFINES ERRMSGF.
              03 ERRMSGA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ERRMSGI  PIC X(78).
+      * ---------------------------------------------------------------
+      * Output buffer layout (AO) -- populated by program for
+      * EXEC CICS SEND MAP. REDEFINES the AI layout.
+      * Fields use C/P/H/V/O suffixes:
+      *   C = Color    P = Programmed symbol   H = Highlighting
+      *   V = Validation   O = Output data (REDEFINES I field)
+      * ---------------------------------------------------------------
        01  COADM1AO REDEFINES COADM1AI.
+      * 12-byte TIOA prefix (AO)
            02  FILLER PIC X(12).
+      * --- Header output fields: transaction ID, titles, date/time ---
            02  FILLER PICTURE X(3).
            02  TRNNAMEC    PICTURE X.
            02  TRNNAMEP    PICTURE X.
@@ -174,6 +201,7 @@
            02  CURTIMEH    PICTURE X.
            02  CURTIMEV    PICTURE X.
            02  CURTIMEO  PIC X(8).
+      * --- Menu option output fields (12 slots) ---
            02  FILLER PICTURE X(3).
            02  OPTN001C    PICTURE X.
            02  OPTN001P    PICTURE X.
@@ -246,12 +274,14 @@
            02  OPTN012H    PICTURE X.
            02  OPTN012V    PICTURE X.
            02  OPTN012O  PIC X(40).
+      * --- Menu selection output fields ---
            02  FILLER PICTURE X(3).
            02  OPTIONC    PICTURE X.
            02  OPTIONP    PICTURE X.
            02  OPTIONH    PICTURE X.
            02  OPTIONV    PICTURE X.
            02  OPTIONO  PIC X(2).
+      * --- Error message output fields ---
            02  FILLER PICTURE X(3).
            02  ERRMSGC    PICTURE X.
            02  ERRMSGP    PICTURE X.

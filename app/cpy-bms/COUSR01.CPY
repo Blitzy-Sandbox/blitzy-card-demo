@@ -14,8 +14,22 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      * Symbolic map copybook for the User Add screen.
+      * BMS Source: app/bms/COUSR01.bms (Mapset: COUSR01, Map: COUSR1A)
+      * COBOL Program: app/cbl/COUSR01C.cbl (Transaction: CU01)
+      * Admin-only screen for creating new user accounts.
+      * Collects first/last name, user ID, password, and user type.
+      * COUSR01C validates and writes new record to USRSEC VSAM.
+      * ---------------------------------------------------------------
+      * Input buffer layout (AI) -- populated by EXEC CICS RECEIVE MAP.
+      * Fields use L/F/A/I suffixes:
+      *   L = Length (COMP PIC S9(4))  F = Flag (PICTURE X)
+      *   A = Attribute (PICTURE X)    I = Input data (PICTURE X(n))
+      * ---------------------------------------------------------------
        01  COUSR1AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
+      * --- Header fields: transaction ID, titles, date/time ---
            02  TRNNAMEL    COMP  PIC  S9(4).
            02  TRNNAMEF    PICTURE X.
            02  FILLER REDEFINES TRNNAMEF.
@@ -52,6 +66,7 @@
              03 CURTIMEA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CURTIMEI  PIC X(8).
+      * --- User data entry fields (all UNPROT/editable) ---
            02  FNAMEL    COMP  PIC  S9(4).
            02  FNAMEF    PICTURE X.
            02  FILLER REDEFINES FNAMEF.
@@ -64,31 +79,43 @@
              03 LNAMEA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  LNAMEI  PIC X(20).
+      * User ID -- becomes VSAM KSDS key in USRSEC
            02  USERIDL    COMP  PIC  S9(4).
            02  USERIDF    PICTURE X.
            02  FILLER REDEFINES USERIDF.
              03 USERIDA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  USERIDI  PIC X(8).
+      * Password -- may use DRK attribute for hidden entry
            02  PASSWDL    COMP  PIC  S9(4).
            02  PASSWDF    PICTURE X.
            02  FILLER REDEFINES PASSWDF.
              03 PASSWDA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  PASSWDI  PIC X(8).
+      * User type -- A=Admin, U=Regular User
            02  USRTYPEL    COMP  PIC  S9(4).
            02  USRTYPEF    PICTURE X.
            02  FILLER REDEFINES USRTYPEF.
              03 USRTYPEA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  USRTYPEI  PIC X(1).
+      * --- Error message area (78-char, RED) ---
            02  ERRMSGL    COMP  PIC  S9(4).
            02  ERRMSGF    PICTURE X.
            02  FILLER REDEFINES ERRMSGF.
              03 ERRMSGA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ERRMSGI  PIC X(78).
+      * ---------------------------------------------------------------
+      * Output buffer layout (AO) -- populated by program for
+      * EXEC CICS SEND MAP. REDEFINES the AI layout.
+      * Fields use C/P/H/V/O suffixes:
+      *   C = Color    P = Programmed symbol   H = Highlighting
+      *   V = Validation   O = Output data (REDEFINES I field)
+      * ---------------------------------------------------------------
        01  COUSR1AO REDEFINES COUSR1AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
            02  FILLER PICTURE X(3).
            02  TRNNAMEC    PICTURE X.

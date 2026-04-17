@@ -14,8 +14,23 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      * Symbolic map copybook for the Transaction Add screen.
+      * BMS Source: app/bms/COTRN02.bms (Mapset: COTRN02, Map: COTRN2A)
+      * COBOL Program: app/cbl/COTRN02C.cbl (Transaction: CT02)
+      * Data entry form for adding new credit card transactions.
+      * Includes account/card identification, transaction attributes,
+      * amount, dates, merchant info, and Y/N confirmation.
+      * COTRN02C generates next transaction ID via browse-to-end.
+      * ---------------------------------------------------------------
+      * Input buffer layout (AI) -- populated by EXEC CICS RECEIVE MAP.
+      * Fields use L/F/A/I suffixes:
+      *   L = Length (COMP PIC S9(4))  F = Flag (PICTURE X)
+      *   A = Attribute (PICTURE X)    I = Input data (PICTURE X(n))
+      * ---------------------------------------------------------------
        01  COTRN2AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
+      * --- Header fields: transaction ID, titles, date/time ---
            02  TRNNAMEL    COMP  PIC  S9(4).
            02  TRNNAMEF    PICTURE X.
            02  FILLER REDEFINES TRNNAMEF.
@@ -52,6 +67,7 @@
              03 CURTIMEA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CURTIMEI  PIC X(8).
+      * --- Account/card identification entry ---
            02  ACTIDINL    COMP  PIC  S9(4).
            02  ACTIDINF    PICTURE X.
            02  FILLER REDEFINES ACTIDINF.
@@ -64,6 +80,7 @@
              03 CARDNINA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CARDNINI  PIC X(16).
+      * --- Transaction data entry fields (all UNPROT/editable) ---
            02  TTYPCDL    COMP  PIC  S9(4).
            02  TTYPCDF    PICTURE X.
            02  FILLER REDEFINES TTYPCDF.
@@ -106,6 +123,7 @@
              03 TPROCDTA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  TPROCDTI  PIC X(10).
+      * --- Merchant information entry ---
            02  MIDL    COMP  PIC  S9(4).
            02  MIDF    PICTURE X.
            02  FILLER REDEFINES MIDF.
@@ -130,19 +148,29 @@
              03 MZIPA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  MZIPI  PIC X(10).
+      * --- Submission confirmation (Y/N) ---
            02  CONFIRML    COMP  PIC  S9(4).
            02  CONFIRMF    PICTURE X.
            02  FILLER REDEFINES CONFIRMF.
              03 CONFIRMA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CONFIRMI  PIC X(1).
+      * --- Error message area (78-char, RED) ---
            02  ERRMSGL    COMP  PIC  S9(4).
            02  ERRMSGF    PICTURE X.
            02  FILLER REDEFINES ERRMSGF.
              03 ERRMSGA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ERRMSGI  PIC X(78).
+      * ---------------------------------------------------------------
+      * Output buffer layout (AO) -- populated by program for
+      * EXEC CICS SEND MAP. REDEFINES the AI layout.
+      * Fields use C/P/H/V/O suffixes:
+      *   C = Color    P = Programmed symbol   H = Highlighting
+      *   V = Validation   O = Output data (REDEFINES I field)
+      * ---------------------------------------------------------------
        01  COTRN2AO REDEFINES COTRN2AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
            02  FILLER PICTURE X(3).
            02  TRNNAMEC    PICTURE X.

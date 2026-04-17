@@ -14,6 +14,42 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      *----------------------------------------------------------------*
+      * CSSTRPFY.cpy - EIBAID-to-AID Condition Mapping Copybook
+      *----------------------------------------------------------------*
+      * PROCEDURE DIVISION copybook included via COPY CSSTRPFY
+      * in online CICS programs to translate the raw CICS EIBAID
+      * byte into a human-readable AID condition flag stored in
+      * the CCARD-AID field within CC-WORK-AREAS (defined in
+      * CVCRD01Y.cpy).
+      *
+      * EIBAID is a 1-byte field in the CICS Execute Interface
+      * Block (EIB), populated after every terminal I/O. It holds
+      * the Attention Identifier indicating which key the operator
+      * pressed (ENTER, CLEAR, PA1-PA2, PF1-PF24).
+      *
+      * The EVALUATE TRUE block maps each DFHxxxx constant (from
+      * the system DFHAID copybook) to the corresponding
+      * CCARD-AID-* 88-level condition in CVCRD01Y.cpy, setting
+      * the 5-byte CCARD-AID field to a readable text value
+      * such as 'ENTER', 'CLEAR', 'PFK01', etc.
+      *
+      * Paragraph Naming: The YYYY prefix is a placeholder
+      * convention used across multiple CardDemo copybooks.
+      * Consuming programs include this copybook as-is.
+      *
+      * Consuming Programs:
+      *   - COACTUPC.cbl  (Account Update)
+      *   - COACTVWC.cbl  (Account View)
+      *   - COCRDLIC.cbl  (Card List Browse)
+      *   - COCRDSLC.cbl  (Card Detail View)
+      *   - COCRDUPC.cbl  (Card Update)
+      *
+      * Cross-References:
+      *   AID flags:    CVCRD01Y.cpy (CCARD-AID-* 88-levels)
+      *   CICS consts:  DFHAID system copybook
+      *   Peer:         CSSETATY.cpy (BMS attribute setting)
+      *----------------------------------------------------------------*
        YYYY-STORE-PFKEY.                                                        
       *****************************************************************         
       * Map AID to PFKey in COMMON Area                                         
@@ -51,6 +87,15 @@
                SET CCARD-AID-PFK11 TO TRUE                                      
              WHEN EIBAID IS EQUAL TO DFHPF12                                    
                SET CCARD-AID-PFK12 TO TRUE                                      
+      *----------------------------------------------------------------*
+      * PF Key Folding: PF13-PF24 are mapped to PFK01-PFK12.
+      * Many 3270 terminals lack separate PF13-PF24 keys;
+      * operators press SHIFT+PFn to generate PF(n+12). This
+      * folding treats PF13 the same as PF1, PF14 as PF2,
+      * and so on - a common mainframe convention ensuring
+      * consistent behavior regardless of terminal model or
+      * keyboard layout.
+      *----------------------------------------------------------------*
              WHEN EIBAID IS EQUAL TO DFHPF13                                    
                SET CCARD-AID-PFK01 TO TRUE                                      
              WHEN EIBAID IS EQUAL TO DFHPF14                                    

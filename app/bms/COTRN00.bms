@@ -16,6 +16,47 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*
+*---------------------------------------------------------------*
+* BMS SOURCE: COTRN00 - Transaction List Screen
+*---------------------------------------------------------------*
+* This BMS source defines the Transaction List screen used by
+* online program COTRN00C (CICS transaction CT00).
+*
+* The screen displays a paginated, filterable list of credit
+* card transactions with 10 selectable data rows per page.
+* Users can page forward (F8) and backward (F7) through the
+* result set and filter by Transaction ID via a search input.
+*
+*   Mapset : COTRN00
+*   Map    : COTRN0A
+*   Program: COTRN00C  (Source: app/cbl/COTRN00C.cbl)
+*   Tran ID: CT00
+*   Symbolic map copybook: app/cpy-bms/COTRN00.CPY
+*
+* Screen layout (24 rows x 80 columns):
+*   Row  1-2 : Standard header (Tran/Prog/Title/Date/Time)
+*   Row  4   : Screen title "List Transactions" + page number
+*   Row  6   : Transaction ID search filter input
+*   Row  8   : Column header labels
+*   Row  9   : Column separator dashes
+*   Row 10-19: 10 data rows (Sel, Tran ID, Date, Desc, Amt)
+*   Row 21   : Informational message / user guidance
+*   Row 23   : Error message area (78-char, RED)
+*   Row 24   : Function key legend (Enter/F3/F7/F8)
+*---------------------------------------------------------------*
+*
+*---------------------------------------------------------------*
+* DFHMSD - Mapset definition for COTRN00
+*---------------------------------------------------------------*
+* CTRL=(ALARM,FREEKB): Sound alarm on SEND, free keyboard
+* EXTATT=YES:          Enable extended attributes (color, etc.)
+* LANG=COBOL:          Generate COBOL symbolic map copybook
+* MODE=INOUT:          Map supports both input and output
+* STORAGE=AUTO:        Automatic storage allocation per task
+* TIOAPFX=YES:         Include 12-byte TIOA prefix in map I/O
+* TYPE=&&SYSPARM:      Map type set via assembly SYSPARM parm
+*---------------------------------------------------------------*
 COTRN00 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                EXTATT=YES,                                             -
                LANG=COBOL,                                             -
@@ -23,9 +64,33 @@ COTRN00 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+*---------------------------------------------------------------*
+* DFHMDI - Map COTRN0A definition
+*---------------------------------------------------------------*
+* Defines a single 24-row by 80-column 3270 screen map.
+* COLUMN=1, LINE=1: Map starts at top-left corner of screen.
+* SIZE=(24,80): Full standard 3270 Model 2 terminal screen.
+*---------------------------------------------------------------*
 COTRN0A DFHMDI COLUMN=1,                                               -
                LINE=1,                                                 -
                SIZE=(24,80)
+*---------------------------------------------------------------*
+* HEADER AREA - Screen rows 1-2
+*---------------------------------------------------------------*
+* Standard CardDemo header present on all application screens.
+* All header fields are ASKIP (auto-skip, protected) so the
+* user cannot modify them.
+*
+* Row 1 layout:
+*   Col  1: "Tran:" label (BLUE) + TRNNAME (4-char tran ID)
+*   Col 21: TITLE01 (40-char application title line 1, YELLOW)
+*   Col 65: "Date:" label (BLUE) + CURDATE (8-char mm/dd/yy)
+*
+* Row 2 layout:
+*   Col  1: "Prog:" label (BLUE) + PGMNAME (8-char program)
+*   Col 21: TITLE02 (40-char application title line 2, YELLOW)
+*   Col 65: "Time:" label (BLUE) + CURTIME (8-char hh:mm:ss)
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
@@ -72,6 +137,14 @@ CURTIME DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss'
+*---------------------------------------------------------------*
+* SCREEN TITLE AND PAGE NUMBER - Row 4
+*---------------------------------------------------------------*
+* Centered title "List Transactions" in bright neutral color.
+* Right side shows "Page:" label (TURQUOISE) with PAGENUM
+* dynamic field for the current page number in the paginated
+* browse sequence. PAGENUM is populated by COTRN00C at runtime.
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,BRT),                                      -
                COLOR=NEUTRAL,                                          -
                LENGTH=17,                                              -
@@ -87,6 +160,16 @@ PAGENUM DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=8,                                               -
                POS=(4,71),                                             -
                INITIAL=' '
+*---------------------------------------------------------------*
+* SEARCH FILTER - Row 6
+*---------------------------------------------------------------*
+* Transaction ID search filter area. The "Search Tran ID:"
+* label (TURQUOISE) precedes TRNIDIN, a 16-character unprotected
+* input field (UNPROT, GREEN, UNDERLINE) where the user can
+* type a transaction ID prefix to filter the displayed list.
+* A zero-length stopper field (ASKIP) follows at POS=(6,38)
+* to delimit the input area and prevent cursor overrun.
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=15,                                              -
@@ -100,6 +183,17 @@ TRNIDIN DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                LENGTH=0,                                               -
                POS=(6,38)
+*---------------------------------------------------------------*
+* COLUMN HEADERS - Row 8
+*---------------------------------------------------------------*
+* Column header labels for the transaction data grid.
+* All headers are ASKIP (protected), NEUTRAL color.
+*   Col  2: "Sel"              (3 chars)  - Selection indicator
+*   Col  8: " Transaction ID " (16 chars) - Unique tran ID
+*   Col 27: "  Date  "         (8 chars)  - Transaction date
+*   Col 38: "     Description" (26 chars) - Description text
+*   Col 67: "   Amount   "    (12 chars)  - Transaction amount
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=NEUTRAL,                                          -
                LENGTH=3,                                               -
@@ -125,6 +219,13 @@ TRNIDIN DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                LENGTH=12,                                              -
                POS=(8,67),                                             -
                INITIAL='   Amount   '
+*---------------------------------------------------------------*
+* COLUMN SEPARATORS - Row 9
+*---------------------------------------------------------------*
+* Dash separator line under column headers for visual
+* alignment. Each dash group matches the width of its
+* corresponding column above. All are ASKIP, NEUTRAL.
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=NEUTRAL,                                          -
                LENGTH=3,                                               -
@@ -150,6 +251,34 @@ TRNIDIN DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                LENGTH=12,                                              -
                POS=(9,67),                                             -
                INITIAL='------------'
+*---------------------------------------------------------------*
+* DATA ROWS - Rows 10-19 (10 repeating row groups)
+*---------------------------------------------------------------*
+* Each row occupies one screen line and contains 5 fields:
+*
+*   SELnnnn  - 1-char UNPROT selection field (GREEN, UNDERLINE)
+*              User types 'S' to select a transaction for
+*              detail view. Followed by a 0-length ASKIP
+*              stopper field to delimit input.
+*   TRNIDnn  - 16-char transaction ID display (ASKIP, BLUE)
+*   TDATEnn  - 8-char transaction date display (ASKIP, BLUE)
+*   TDESCnn  - 26-char transaction description (ASKIP, BLUE)
+*   TAMTnnn  - 12-char transaction amount (ASKIP, BLUE)
+*
+* Field naming convention (suffix = row number):
+*   SEL   uses 4-digit suffix: SEL0001 through SEL0010
+*   TRNID uses 2-digit suffix: TRNID01 through TRNID10
+*   TDATE uses 2-digit suffix: TDATE01 through TDATE10
+*   TDESC uses 2-digit suffix: TDESC01 through TDESC10
+*   TAMT  uses 3-digit suffix: TAMT001 through TAMT010
+*
+* All display fields are ASKIP/FSET (auto-skip, field-set).
+* All selection fields are FSET/UNPROT with UNDERLINE highlight.
+* Row layout per line:
+*   Col 3: Sel | Col 8: Tran ID | Col 27: Date |
+*   Col 38: Description | Col 67: Amount
+*---------------------------------------------------------------*
+* --- Data Row 01 (screen row 10) ---
 SEL0001 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -179,6 +308,7 @@ TAMT001 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=12,                                              -
                POS=(10,67),                                            -
                INITIAL=' '
+* --- Data Row 02 (screen row 11) ---
 SEL0002 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -208,6 +338,7 @@ TAMT002 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=12,                                              -
                POS=(11,67),                                            -
                INITIAL=' '
+* --- Data Row 03 (screen row 12) ---
 SEL0003 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -237,6 +368,7 @@ TAMT003 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=12,                                              -
                POS=(12,67),                                            -
                INITIAL=' '
+* --- Data Row 04 (screen row 13) ---
 SEL0004 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -266,6 +398,7 @@ TAMT004 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=12,                                              -
                POS=(13,67),                                            -
                INITIAL=' '
+* --- Data Row 05 (screen row 14) ---
 SEL0005 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -295,6 +428,7 @@ TAMT005 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=12,                                              -
                POS=(14,67),                                            -
                INITIAL=' '
+* --- Data Row 06 (screen row 15) ---
 SEL0006 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -324,6 +458,7 @@ TAMT006 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=12,                                              -
                POS=(15,67),                                            -
                INITIAL=' '
+* --- Data Row 07 (screen row 16) ---
 SEL0007 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -353,6 +488,7 @@ TAMT007 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=12,                                              -
                POS=(16,67),                                            -
                INITIAL=' '
+* --- Data Row 08 (screen row 17) ---
 SEL0008 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -382,6 +518,7 @@ TAMT008 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=12,                                              -
                POS=(17,67),                                            -
                INITIAL=' '
+* --- Data Row 09 (screen row 18) ---
 SEL0009 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -411,6 +548,7 @@ TAMT009 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=12,                                              -
                POS=(18,67),                                            -
                INITIAL=' '
+* --- Data Row 10 (screen row 19) ---
 SEL0010 DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -440,6 +578,14 @@ TAMT010 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=12,                                              -
                POS=(19,67),                                            -
                INITIAL=' '
+*---------------------------------------------------------------*
+* INFORMATIONAL MESSAGE - Row 21
+*---------------------------------------------------------------*
+* Static guidance text instructing the user to type 'S' in a
+* row selection field to view that transaction's details.
+* ASKIP/BRT (bright), NEUTRAL color, 50 characters wide,
+* centered at column 12.
+*---------------------------------------------------------------*
 
         DFHMDF ATTRB=(ASKIP,BRT),                                      -
                COLOR=NEUTRAL,                                          -
@@ -447,16 +593,38 @@ TAMT010 DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                POS=(21,12),                                            -
                INITIAL='Type ''S'' to View Transaction details from the-
                 list'
+*---------------------------------------------------------------*
+* ERROR MESSAGE - Row 23
+*---------------------------------------------------------------*
+* ERRMSG: 78-character error/status message field at row 23.
+* RED color, BRT (bright), FSET (field-set on SEND).
+* Populated by COTRN00C when validation errors, I/O errors,
+* or informational status messages need to be displayed.
+* Spans nearly the full screen width for detailed messages.
+*---------------------------------------------------------------*
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=78,                                              -
                POS=(23,1)
+*---------------------------------------------------------------*
+* FUNCTION KEY LEGEND - Row 24
+*---------------------------------------------------------------*
+* Bottom-of-screen key legend showing available actions:
+*   ENTER    = Continue / confirm selection
+*   F3       = Back (return to previous screen)
+*   F7       = Backward (page up in the transaction list)
+*   F8       = Forward (page down in the transaction list)
+* ASKIP/NORM, YELLOW color, 48 characters at row 24 col 1.
+*---------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=48,                                              -
                POS=(24,1),                                             -
                INITIAL='ENTER=Continue  F3=Back  F7=Backward  F8=Forwar-
                d'
+*---------------------------------------------------------------*
+* END OF MAP DEFINITION
+*---------------------------------------------------------------*
         DFHMSD TYPE=FINAL
         END
 *

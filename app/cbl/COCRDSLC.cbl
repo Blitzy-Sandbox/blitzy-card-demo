@@ -18,6 +18,19 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ******************************************************************        
+      *================================================================*
+      * Program:     COCRDSLC
+      * Transaction: CCDL
+      * BMS Map:     COCRDSL / CCRDSL
+      * Function:    Card detail (view-only) screen. Reads CARDDAT VSAM
+      *              KSDS by card number to display card details. May
+      *              also look up by account ID using the card-file
+      *              alternate index (ACCTID path). Validates account
+      *              and card number inputs before reading.
+      * Files:       CARDDAT (READ), CARDAIX (READ via ACCTID path)
+      * Navigation:  PF3 returns to calling program (usually COCRDLIC).
+      *              Enter re-displays after processing input criteria.
+      *================================================================*
                                                                                 
        IDENTIFICATION DIVISION.                                                 
        PROGRAM-ID.                                                              
@@ -34,10 +47,16 @@
                                                                                 
        WORKING-STORAGE SECTION.                                                 
        01  WS-MISC-STORAGE.                                                     
+      * WS-MISC-STORAGE aggregates all local working variables
+      * for CICS processing, input validation, screen output,
+      * file I/O keys, and user-facing messages.
       ******************************************************************        
       * General CICS related                                                    
       ******************************************************************        
          05 WS-CICS-PROCESSNG-VARS.                                             
+      * WS-RESP-CD / WS-REAS-CD capture CICS RESP/RESP2
+      * return codes. WS-TRANID stores this program's
+      * transaction ID (CCDL).
             07 WS-RESP-CD                          PIC S9(09) COMP              
                                                    VALUE ZEROS.                 
             07 WS-REAS-CD                          PIC S9(09) COMP              
@@ -48,6 +67,8 @@
       *      Input edits                                                        
       ******************************************************************        
                                                                                 
+      * WS-INPUT-FLAG tracks overall validation outcome.
+      * INPUT-OK='0', INPUT-ERROR='1', PENDING=LOW-VALUES.
          05  WS-INPUT-FLAG                         PIC X(1).                    
            88  INPUT-OK                            VALUE '0'.                   
            88  INPUT-ERROR                         VALUE '1'.                   
@@ -56,6 +77,8 @@
            88  FLG-ACCTFILTER-NOT-OK               VALUE '0'.                   
            88  FLG-ACCTFILTER-ISVALID              VALUE '1'.                   
            88  FLG-ACCTFILTER-BLANK                VALUE ' '.                   
+      * WS-EDIT-CARD-FLAG mirrors the account flag for
+      * the 16-digit card number field.
          05  WS-EDIT-CARD-FLAG                     PIC X(1).                    
            88  FLG-CARDFILTER-NOT-OK               VALUE '0'.                   
            88  FLG-CARDFILTER-ISVALID             VALUE '1'.                    
@@ -66,10 +89,16 @@
          05  WS-PFK-FLAG                           PIC X(1).                    
            88  PFK-VALID                           VALUE '0'.                   
            88  PFK-INVALID                         VALUE '1'.                   
+      * Only ENTER and PF3 are valid AID keys for this
+      * screen. Any other key defaults to ENTER.
       ******************************************************************        
       * Output edits                                                            
       ******************************************************************        
          05 CICS-OUTPUT-EDIT-VARS.                                              
+      * Output edit variables hold numeric-to-display
+      * conversions for card fields. REDEFINES clauses
+      * allow both alphanumeric and numeric access.
+      * Expiration date splits into year/month/day.
            10  CARD-ACCT-ID-X                      PIC X(11).                   
            10  CARD-ACCT-ID-N REDEFINES CARD-ACCT-ID-X                          
                                                    PIC 9(11).                   
@@ -95,11 +124,16 @@
       *      File and data Handling                                             
       ******************************************************************        
          05  WS-CARD-RID.                                                       
+      * WS-CARD-RID is the composite RIDFLD for CICS READ.
+      * CARDNUM (16 bytes) = primary key for CARDDAT;
+      * ACCT-ID (11 bytes) = alternate index key.
            10  WS-CARD-RID-CARDNUM                 PIC X(16).                   
            10  WS-CARD-RID-ACCT-ID                 PIC 9(11).                   
            10  WS-CARD-RID-ACCT-ID-X REDEFINES                                  
                   WS-CARD-RID-ACCT-ID              PIC X(11).                   
          05  WS-FILE-ERROR-MESSAGE.                                             
+      * WS-FILE-ERROR-MESSAGE builds: 'File Error: <op>
+      * on <file> returned RESP <code>,RESP2 <code>'.
            10  FILLER                              PIC X(12)                    
                                                    VALUE 'File Error: '.        
            10  ERROR-OPNAME                        PIC X(8)                     
@@ -123,6 +157,7 @@
       *      Output Message Construction                                        
       ******************************************************************        
          05  WS-LONG-MSG                           PIC X(500).                  
+      * WS-LONG-MSG: debug text buffer for SEND TEXT.
          05  WS-INFO-MSG                           PIC X(40).                   
            88  WS-NO-INFO-MESSAGE                 VALUES                        
                                                   SPACES LOW-VALUES.            
@@ -131,6 +166,10 @@
            88  WS-PROMPT-FOR-INPUT                 VALUE                        
                'Please enter Account and Card Number'.                          
                                                                                 
+      * WS-RETURN-MSG holds error/status text for the
+      * screen error line (ERRMSG row 23). 88-level
+      * conditions set predefined messages for each
+      * validation failure and lookup outcome.
          05  WS-RETURN-MSG                         PIC X(75).                   
            88  WS-RETURN-MSG-OFF                   VALUE SPACES.                
            88  WS-EXIT-MESSAGE                     VALUE                        
@@ -160,6 +199,11 @@
       *      Literals and Constants                                             
       ******************************************************************        
        01 WS-LITERALS.                                                          
+      * WS-LITERALS holds compile-time constants for
+      * this program (COCRDSLC/CCDL), its BMS map
+      * (COCRDSL/CCRDSLA), card list (COCRDLIC/CCLI),
+      * main menu (COMEN01C/CM00), and VSAM files
+      * (CARDDAT, CARDAIX).
           05 LIT-THISPGM                           PIC X(8)                     
                                                    VALUE 'COCRDSLC'.            
           05 LIT-THISTRANID                        PIC X(4)                     
@@ -192,39 +236,69 @@
       *Other common working storage Variables                                   
       ******************************************************************        
        COPY CVCRD01Y.                                                           
+      * CVCRD01Y: card work area with AID key flags
+      * (CCARD-AID-*), navigation fields, and
+      * account/card filter fields (CC-ACCT-ID,
+      * CC-CARD-NUM). See app/cpy/CVCRD01Y.cpy
                                                                                 
       ******************************************************************        
       *Application Commmarea Copybook                                           
        COPY COCOM01Y.                                                           
+      * COCOM01Y: CARDDEMO-COMMAREA with routing
+      * fields (FROM/TO program/tranid), user ID,
+      * PGM-CONTEXT flag, and account/card carry-
+      * forward. See app/cpy/COCOM01Y.cpy
                                                                                 
        01 WS-THIS-PROGCOMMAREA.                                                 
           05 CA-CALL-CONTEXT.                                                   
              10 CA-FROM-PROGRAM                    PIC X(08).                   
              10 CA-FROM-TRANID                     PIC X(04).                   
+      * WS-THIS-PROGCOMMAREA holds local call context
+      * (calling program and transaction) appended
+      * beyond the shared CARDDEMO-COMMAREA.
                                                                                 
        01  WS-COMMAREA                             PIC X(2000).                 
+      * WS-COMMAREA: 2000-byte buffer passed on
+      * CICS RETURN. Concatenates CARDDEMO-COMMAREA
+      * and WS-THIS-PROGCOMMAREA.
                                                                                 
       *IBM SUPPLIED COPYBOOKS                                                   
        COPY DFHBMSCA.                                                           
        COPY DFHAID.                                                             
+      * DFHBMSCA: BMS attribute constants (DFHBMPRF,
+      * DFHBMFSE, DFHRED, DFHDFCOL, DFHBMDAR, etc.).
+      * DFHAID: AID byte values for EIBAID mapping.
                                                                                 
       *COMMON COPYBOOKS                                                         
       *Screen Titles                                                            
        COPY COTTL01Y.                                                           
+      * COTTL01Y: CCDA-TITLE01/02 banner text.
+      * See app/cpy/COTTL01Y.cpy
       *Credit Card Search Screen Layout                                         
        COPY COCRDSL.                                                            
+      * COCRDSL: symbolic BMS map from COCRDSL.bms.
+      * Defines CCRDSLAI (input), CCRDSLAO (output)
+      * with ACCTSID, CARDSID, CRDNAME, CRDSTCD,
+      * EXPMON, EXPYEAR, ERRMSG, INFOMSG fields.
                                                                                 
       *Current Date                                                             
        COPY CSDAT01Y.                                                           
+      * CSDAT01Y: date/time working storage for the
+      * screen header. See app/cpy/CSDAT01Y.cpy
                                                                                 
       *Common Messages                                                          
        COPY CSMSG01Y.                                                           
+      * CSMSG01Y: common messages (thank-you, invalid
+      * key). See app/cpy/CSMSG01Y.cpy
                                                                                 
       *Abend Variables                                                          
        COPY CSMSG02Y.                                                           
+      * CSMSG02Y: abend data work area (ABEND-MSG,
+      * ABEND-CULPRIT, ABEND-CODE) for the handler.
                                                                                 
       *Signed on user data                                                      
        COPY CSUSR01Y.                                                           
+      * CSUSR01Y: signed-on user security record.
                                                                                 
       *Dataset layouts                                                          
       *ACCOUNT RECORD LAYOUT                                                    
@@ -232,28 +306,53 @@
                                                                                 
       *CARD RECORD LAYOUT                                                       
        COPY CVACT02Y.                                                           
+      * CVACT02Y: 150-byte CARD-RECORD — CARD-NUM(16),
+      * CARD-ACCT-ID(11), CARD-CVV-CD(3),
+      * CARD-EMBOSSED-NAME(50), CARD-EXPIRAION-DATE(10),
+      * CARD-ACTIVE-STATUS(1). See app/cpy/CVACT02Y.cpy
                                                                                 
       *CARD XREF LAYOUT                                                         
       *COPY CVACT03Y.                                                           
                                                                                 
       *CUSTOMER LAYOUT                                                          
        COPY CVCUS01Y.                                                           
+      * CVCUS01Y: 500-byte customer record layout.
+      * Included for potential cross-entity lookups.
                                                                                 
+      *----------------------------------------------------------------*
+      * LINKAGE SECTION: receives DFHCOMMAREA from CICS.
+      * Variable-length FILLER accepts up to 32767 bytes,
+      * sized by EIBCALEN at runtime.
+      *----------------------------------------------------------------*
        LINKAGE SECTION.                                                         
        01  DFHCOMMAREA.                                                         
          05  FILLER                                PIC X(1)                     
              OCCURS 1 TO 32767 TIMES DEPENDING ON EIBCALEN.                     
                                                                                 
+      *================================================================*
+      * PROCEDURE DIVISION — pseudo-conversational flow.
+      * Each user interaction triggers a new CICS task.
+      * COMMAREA preserves state between interactions.
+      * Main EVALUATE routes on AID key and PGM-CONTEXT.
+      *================================================================*
        PROCEDURE DIVISION.                                                      
        0000-MAIN.                                                               
+      * 0000-MAIN: entry point for each task invocation.
+      * Registers abend handler, clears work areas,
+      * restores COMMAREA, maps PF keys, validates AID,
+      * and routes to the appropriate processing path.
                                                                                 
            EXEC CICS HANDLE ABEND                                               
                      LABEL(ABEND-ROUTINE)                                       
            END-EXEC                                                             
+      * Registers ABEND-ROUTINE as the abend handler
+      * for unexpected failures during this task.
                                                                                 
            INITIALIZE CC-WORK-AREA                                              
                       WS-MISC-STORAGE                                           
                       WS-COMMAREA                                               
+      * Clears card work area, misc storage, and the
+      * return COMMAREA to remove residual data.
       *****************************************************************         
       * Store our context                                                       
       *****************************************************************         
@@ -277,12 +376,18 @@
                                LENGTH OF WS-THIS-PROGCOMMAREA ) TO              
                                 WS-THIS-PROGCOMMAREA                            
            END-IF                                                               
+      * If first invocation or from main menu without
+      * reenter context, clears COMMAREA. Otherwise
+      * restores the shared CARDDEMO-COMMAREA and local
+      * call-context from DFHCOMMAREA passed by CICS.
       *****************************************************************         
       * Remap PFkeys as needed.                                                 
       * Store the Mapped PF Key                                                 
       *****************************************************************         
            PERFORM YYYY-STORE-PFKEY                                             
               THRU YYYY-STORE-PFKEY-EXIT                                        
+      * YYYY-STORE-PFKEY (CSSTRPFY copybook) maps the
+      * EIBAID byte to CCARD-AID-* 88-level conditions.
       *****************************************************************         
       * Check the AID to see if its valid at this point               *         
       * F3 - Exit                                                               
@@ -297,12 +402,17 @@
            IF PFK-INVALID                                                       
               SET CCARD-AID-ENTER TO TRUE                                       
            END-IF                                                               
+      * Unrecognized AID key defaults to ENTER behavior
+      * to prevent navigation errors.
                                                                                 
       *****************************************************************         
       * Decide what to do based on inputs received                              
       *****************************************************************         
            EVALUATE TRUE                                                        
               WHEN CCARD-AID-PFK03                                              
+      * PF3: transfers control back to the calling
+      * program via XCTL. Defaults to main menu if
+      * no caller is recorded in COMMAREA.
       ******************************************************************        
       *            XCTL TO CALLING PROGRAM OR MAIN MENU                         
       ******************************************************************        
@@ -332,12 +442,17 @@
                              PROGRAM (CDEMO-TO-PROGRAM)                         
                              COMMAREA(CARDDEMO-COMMAREA)                        
                    END-EXEC                                                     
+      * EXEC CICS XCTL transfers control with COMMAREA
+      * to the target program. This task ends.
       ******************************************************************        
       *            COMING FROM CREDIT CARD LIST SCREEN                          
       *            SELECTION CRITERIA ALREADY VALIDATED                         
       ******************************************************************        
               WHEN CDEMO-PGM-ENTER                                              
                AND CDEMO-FROM-PROGRAM  EQUAL LIT-CCLISTPGM                      
+      * From card list (COCRDLIC): account and card
+      * numbers are pre-validated. Copies them from
+      * COMMAREA, reads card record, sends the map.
                    SET INPUT-OK TO TRUE                                         
                    MOVE CDEMO-ACCT-ID       TO CC-ACCT-ID-N                     
                    MOVE CDEMO-CARD-NUM      TO CC-CARD-NUM-N                    
@@ -354,7 +469,12 @@
                    PERFORM 1000-SEND-MAP THRU                                   
                            1000-SEND-MAP-EXIT                                   
                    GO TO COMMON-RETURN                                          
+      * From another context without pre-set criteria:
+      * sends a blank search form for user input.
               WHEN CDEMO-PGM-REENTER                                            
+      * Re-enter: user submitted search criteria.
+      * Processes inputs, reads data if valid, and
+      * re-displays screen with results or errors.
                    PERFORM 2000-PROCESS-INPUTS                                  
                       THRU 2000-PROCESS-INPUTS-EXIT                             
                    IF INPUT-ERROR                                               
@@ -371,6 +491,8 @@
                    END-IF                                                       
                                                                                 
               WHEN OTHER                                                        
+      * Unexpected program context: sets abend info
+      * and sends a plain text error message.
                    MOVE LIT-THISPGM    TO ABEND-CULPRIT                         
                    MOVE '0001'         TO ABEND-CODE                            
                    MOVE SPACES         TO ABEND-REASON                          
@@ -392,6 +514,10 @@
            .                                                                    
                                                                                 
        COMMON-RETURN.                                                           
+      * COMMON-RETURN: pseudo-conversational return.
+      * Copies error message to work area, builds the
+      * concatenated COMMAREA, and issues CICS RETURN
+      * with TRANSID(CCDL) to re-invoke on next input.
            MOVE WS-RETURN-MSG     TO CCARD-ERROR-MSG                            
                                                                                 
            MOVE  CARDDEMO-COMMAREA    TO WS-COMMAREA                            
@@ -404,12 +530,18 @@
                 COMMAREA (WS-COMMAREA)                                          
                 LENGTH(LENGTH OF WS-COMMAREA)                                   
            END-EXEC                                                             
+      * CICS RETURN with TRANSID and COMMAREA ends
+      * this task. Next user input starts a new task
+      * with the saved COMMAREA restored.
            .                                                                    
        0000-MAIN-EXIT.                                                          
            EXIT                                                                 
            .                                                                    
                                                                                 
        1000-SEND-MAP.                                                           
+      * 1000-SEND-MAP: orchestrates screen output by
+      * calling init, variable setup, attribute setup,
+      * and the actual CICS SEND MAP in sequence.
            PERFORM 1100-SCREEN-INIT                                             
               THRU 1100-SCREEN-INIT-EXIT                                        
            PERFORM 1200-SETUP-SCREEN-VARS                                       
@@ -425,7 +557,12 @@
            .                                                                    
                                                                                 
        1100-SCREEN-INIT.                                                        
+      * 1100-SCREEN-INIT: clears the output map buffer
+      * (CCRDSLAO) and populates header fields (titles,
+      * transaction name, program name, date, time).
            MOVE LOW-VALUES TO CCRDSLAO                                          
+      * Clears all output map fields to LOW-VALUES
+      * to prevent residual data on screen.
                                                                                 
            MOVE FUNCTION CURRENT-DATE  TO WS-CURDATE-DATA                       
                                                                                 
@@ -441,12 +578,14 @@
            MOVE WS-CURDATE-YEAR(3:2)   TO WS-CURDATE-YY                         
                                                                                 
            MOVE WS-CURDATE-MM-DD-YY    TO CURDATEO OF CCRDSLAO                  
+      * Formats current date as MM/DD/YY for header.
                                                                                 
            MOVE WS-CURTIME-HOURS       TO WS-CURTIME-HH                         
            MOVE WS-CURTIME-MINUTE      TO WS-CURTIME-MM                         
            MOVE WS-CURTIME-SECOND      TO WS-CURTIME-SS                         
                                                                                 
            MOVE WS-CURTIME-HH-MM-SS    TO CURTIMEO OF CCRDSLAO                  
+      * Formats current time as HH:MM:SS for header.
                                                                                 
            .                                                                    
                                                                                 
@@ -455,6 +594,11 @@
            .                                                                    
                                                                                 
        1200-SETUP-SCREEN-VARS.                                                  
+      * 1200-SETUP-SCREEN-VARS: populates the card
+      * detail fields on the BMS map. Maps record
+      * fields: CARD-EMBOSSED-NAME -> CRDNAMEO,
+      * CARD-ACTIVE-STATUS -> CRDSTCDO, expiration
+      * date components -> EXPMONO/EXPYEARO.
       *    INITIALIZE SEARCH CRITERIA                                           
            IF EIBCALEN = 0                                                      
               SET  WS-PROMPT-FOR-INPUT TO TRUE                                  
@@ -482,6 +626,10 @@
                  MOVE CARD-EXPIRY-YEAR  TO EXPYEARO OF CCRDSLAO                 
                                                                                 
                  MOVE CARD-ACTIVE-STATUS TO CRDSTCDO OF CCRDSLAO                
+      * Field mapping: CARD-EMBOSSED-NAME -> CRDNAMEO,
+      * CARD-EXPIRY-MONTH -> EXPMONO,
+      * CARD-EXPIRY-YEAR -> EXPYEARO,
+      * CARD-ACTIVE-STATUS -> CRDSTCDO.
               END-IF                                                            
             END-IF                                                              
                                                                                 
@@ -500,6 +648,9 @@
            EXIT                                                                 
            .                                                                    
        1300-SETUP-SCREEN-ATTRS.                                                 
+      * 1300-SETUP-SCREEN-ATTRS: sets BMS field
+      * attributes (protection, cursor, color) based
+      * on validation results and caller context.
                                                                                 
       *    PROTECT OR UNPROTECT BASED ON CONTEXT                                
            IF  CDEMO-LAST-MAPSET  EQUAL LIT-CCLISTMAPSET 
@@ -510,6 +661,9 @@
               MOVE DFHBMFSE      TO ACCTSIDA OF CCRDSLAI                        
               MOVE DFHBMFSE      TO CARDSIDA OF CCRDSLAI                        
            END-IF                                                               
+      * Protects account/card fields (DFHBMPRF) when
+      * arriving from card list (read-only view).
+      * Otherwise sets them editable (DFHBMFSE).
                                                                                 
       *    POSITION CURSOR                                                      
            EVALUATE TRUE                                                        
@@ -522,6 +676,8 @@
               WHEN OTHER                                                        
                    MOVE -1             TO ACCTSIDL OF CCRDSLAI                  
            END-EVALUATE                                                         
+      * Places cursor on the first field with an
+      * error or blank condition for user correction.
                                                                                 
       *    SETUP COLOR                                                          
            IF  CDEMO-LAST-MAPSET   EQUAL LIT-CCLISTMAPSET
@@ -549,6 +705,8 @@
                MOVE '*'                TO CARDSIDO OF CCRDSLAO                  
                MOVE DFHRED             TO CARDSIDC OF CCRDSLAO                  
            END-IF                                                               
+      * Sets error fields to red (DFHRED). Blank
+      * required fields show '*' marker in red.
                                                                                 
            IF  WS-NO-INFO-MESSAGE                                               
                MOVE DFHBMDAR           TO INFOMSGC OF CCRDSLAO                  
@@ -561,6 +719,9 @@
                                                                                 
                                                                                 
        1400-SEND-SCREEN.                                                        
+      * 1400-SEND-SCREEN: issues CICS SEND MAP to
+      * display the card detail screen. Sets
+      * PGM-CONTEXT to reenter for the next task.
                                                                                 
            MOVE LIT-THISMAPSET         TO CCARD-NEXT-MAPSET                     
            MOVE LIT-THISMAP            TO CCARD-NEXT-MAP                        
@@ -574,12 +735,18 @@
                           FREEKB                                                
                           RESP(WS-RESP-CD)                                      
            END-EXEC                                                             
+      * SEND MAP with CURSOR positions at the field
+      * set in 1300. ERASE clears the terminal.
+      * FREEKB unlocks the keyboard for input.
            .                                                                    
        1400-SEND-SCREEN-EXIT.                                                   
            EXIT                                                                 
            .                                                                    
                                                                                 
        2000-PROCESS-INPUTS.                                                     
+      * 2000-PROCESS-INPUTS: receives BMS map input,
+      * validates fields, and stores error/navigation
+      * context for re-display.
            PERFORM 2100-RECEIVE-MAP                                             
               THRU 2100-RECEIVE-MAP-EXIT                                        
            PERFORM 2200-EDIT-MAP-INPUTS                                         
@@ -594,18 +761,27 @@
            EXIT                                                                 
            .                                                                    
        2100-RECEIVE-MAP.                                                        
+      * 2100-RECEIVE-MAP: issues CICS RECEIVE MAP to
+      * read user input from the terminal into the
+      * CCRDSLAI input buffer.
            EXEC CICS RECEIVE MAP(LIT-THISMAP)                                   
                      MAPSET(LIT-THISMAPSET)                                     
                      INTO(CCRDSLAI)                                             
                      RESP(WS-RESP-CD)                                           
                      RESP2(WS-REAS-CD)                                          
            END-EXEC                                                             
+      * Reads the 3270 data stream into CCRDSLAI,
+      * capturing ACCTSIDI and CARDSIDI fields.
            .                                                                    
                                                                                 
        2100-RECEIVE-MAP-EXIT.                                                   
            EXIT                                                                 
            .                                                                    
        2200-EDIT-MAP-INPUTS.                                                    
+      * 2200-EDIT-MAP-INPUTS: validates user input.
+      * Sanitizes '*' and spaces to LOW-VALUES, then
+      * delegates to account and card field editors.
+      * Cross-checks that at least one criterion exists.
                                                                                 
            SET INPUT-OK                  TO TRUE                                
            SET FLG-CARDFILTER-ISVALID    TO TRUE                                
@@ -645,6 +821,10 @@
            .                                                                    
                                                                                 
        2210-EDIT-ACCOUNT.                                                       
+      * 2210-EDIT-ACCOUNT: validates account number.
+      * Checks blank/zero (prompts user), then
+      * non-numeric (rejects with error). On success,
+      * stores value in CDEMO-ACCT-ID.
            SET FLG-ACCTFILTER-NOT-OK TO TRUE                                    
                                                                                 
       *    Not supplied                                                         
@@ -683,6 +863,9 @@
            .                                                                    
                                                                                 
        2220-EDIT-CARD.                                                          
+      * 2220-EDIT-CARD: validates 16-digit card number.
+      * Checks blank/zero, then non-numeric. On success,
+      * stores in CDEMO-CARD-NUM.
       *    Not numeric                                                          
       *    Not 16 characters                                                    
            SET FLG-CARDFILTER-NOT-OK TO TRUE                                    
@@ -724,6 +907,8 @@
            .                                                                    
                                                                                 
        9000-READ-DATA.                                                          
+      * 9000-READ-DATA: delegates to the appropriate
+      * VSAM read routine to fetch the card record.
                                                                                 
            PERFORM 9100-GETCARD-BYACCTCARD                                      
               THRU 9100-GETCARD-BYACCTCARD-EXIT                                 
@@ -734,6 +919,10 @@
            .                                                                    
                                                                                 
        9100-GETCARD-BYACCTCARD.                                                 
+      * 9100-GETCARD-BYACCTCARD: reads CARDDAT VSAM
+      * KSDS by primary key (card number, 16 bytes).
+      * Evaluates RESP: NORMAL=success, NOTFND=error,
+      * OTHER=builds file error message.
       *    Read the Card file                                                   
       *                                                                         
       *    MOVE CC-ACCT-ID-N      TO WS-CARD-RID-ACCT-ID                        
@@ -748,6 +937,9 @@
                 RESP      (WS-RESP-CD)                                          
                 RESP2     (WS-REAS-CD)                                          
            END-EXEC                                                             
+      * Reads CARDDAT by card number. RIDFLD points
+      * to WS-CARD-RID-CARDNUM (16-byte primary key).
+      * INTO loads the 150-byte CARD-RECORD layout.
                                                                                 
            EVALUATE WS-RESP-CD                                                  
                WHEN DFHRESP(NORMAL)                                             
@@ -770,6 +962,9 @@
                   MOVE WS-REAS-CD                    TO ERROR-RESP2             
                   MOVE WS-FILE-ERROR-MESSAGE         TO WS-RETURN-MSG           
            END-EVALUATE                                                         
+      * NORMAL: card found, sets display flag.
+      * NOTFND: no match, flags both account and card.
+      * OTHER: unexpected VSAM error, builds error msg.
            .                                                                    
                                                                                 
        9100-GETCARD-BYACCTCARD-EXIT.                                            
@@ -777,6 +972,9 @@
            .                                                                    
                                                                                 
        9150-GETCARD-BYACCT.                                                     
+      * 9150-GETCARD-BYACCT: reads CARDAIX alternate
+      * index path by account ID (11 bytes). Used when
+      * only an account number is available.
                                                                                 
       *    Read the Card file. Access via alternate index ACCTID                
       *                                                                         
@@ -789,6 +987,8 @@
                 RESP      (WS-RESP-CD)                                          
                 RESP2     (WS-REAS-CD)                                          
            END-EXEC                                                             
+      * Reads via alternate index path CARDAIX by
+      * account ID. Returns the first matching card.
                                                                                 
            EVALUATE WS-RESP-CD                                                  
                WHEN DFHRESP(NORMAL)                                             
@@ -806,6 +1006,9 @@
                   MOVE WS-REAS-CD                 TO ERROR-RESP2                
                   MOVE WS-FILE-ERROR-MESSAGE      TO WS-RETURN-MSG              
            END-EVALUATE                                                         
+      * NORMAL: card found via account AIX lookup.
+      * NOTFND: account not in card cross-reference.
+      * OTHER: builds formatted file error message.
            .                                                                    
        9150-GETCARD-BYACCT-EXIT.                                                
            EXIT                                                                 
@@ -855,6 +1058,10 @@
        COPY 'CSSTRPFY'
            .
        ABEND-ROUTINE.                                                           
+      * ABEND-ROUTINE: handles unexpected abends.
+      * Sends abend data area to the terminal,
+      * cancels further abend handling, then issues
+      * CICS ABEND with code '9999' to terminate.
                                                                                 
            IF ABEND-MSG EQUAL LOW-VALUES                                        
               MOVE 'UNEXPECTED ABEND OCCURRED.' TO ABEND-MSG                    

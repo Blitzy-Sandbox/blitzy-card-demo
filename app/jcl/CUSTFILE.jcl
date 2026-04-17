@@ -16,9 +16,21 @@
 //* either express or implied. See the License for the specific     
 //* language governing permissions and limitations under the License
 //******************************************************************            
+//* JOB: CUSTFILE - Provision Customer Data VSAM File
+//* Rebuilds the Customer Data VSAM KSDS file with CICS
+//* file close/reopen cycle since CUSTDAT is an active
+//* CICS resource.
+//* Dataset: AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS
+//* KSDS key: 9 bytes at offset 0 (customer ID)
+//* Record size: 500 bytes (fixed, largest in CardDemo)
+//* Seed data: AWS.M2.CARDDEMO.CUSTDATA.PS
+//* Copybook layout: CVCUS01Y.cpy
+//* Consumed by: COACTVWC (account view joins customer),
+//*   CBCUS01C (batch read), CREASTMT (CBSTM03A)
 //*********************************************************************         
 //* Close files in CICS region                                                  
 //*********************************************************************         
+//* CLCIFIL: SDSF - Close CUSTDAT in CICS region CICSAWSA
 //CLCIFIL EXEC PGM=SDSF                                                         
 //ISFOUT DD SYSOUT=*                                                            
 //CMDOUT DD SYSOUT=*                                                            
@@ -29,6 +41,8 @@
 //* *******************************************************************         
 //* DELETE CUSTOMER VSAM FILE IF ONE ALREADY EXISTS                             
 //* *******************************************************************         
+//* STEP05: IDCAMS DELETE - Remove existing CUSTDATA cluster
+//*   IF MAXCC LE 08 for safe rerun
 //STEP05 EXEC PGM=IDCAMS                                                        
 //SYSPRINT DD   SYSOUT=*                                                        
 //SYSIN    DD   *                                                               
@@ -40,6 +54,11 @@
 //* *******************************************************************         
 //* DEFINE CUSTOMER VSAM FILE                                                   
 //* *******************************************************************         
+//* STEP10: IDCAMS DEFINE CLUSTER - Create CUSTDATA KSDS
+//*   KEYS(9 0) = 9-byte customer ID key at offset 0
+//*   RECORDSIZE(500 500) = fixed 500-byte records
+//*   (largest record in the CardDemo application)
+//*   SHAREOPTIONS(2 3), ERASE, INDEXED
 //STEP10 EXEC PGM=IDCAMS                                                        
 //SYSPRINT DD   SYSOUT=*                                                        
 //SYSIN    DD   *                                                               
@@ -61,10 +80,13 @@
 //* *******************************************************************         
 //* COPY DATA FROM FLAT FILE TO VSAM FILE                                       
 //* *******************************************************************         
+//* STEP15: IDCAMS REPRO - Load customer seed data
 //STEP15 EXEC PGM=IDCAMS                                                        
 //SYSPRINT DD   SYSOUT=*                                                        
+//*   CUSTDATA DD: Source flat file (CUSTDATA.PS)
 //CUSTDATA DD DISP=SHR,                                                         
 //         DSN=AWS.M2.CARDDEMO.CUSTDATA.PS                                      
+//*   CUSTVSAM DD: Target VSAM KSDS
 //CUSTVSAM DD DISP=SHR,                                                         
 //         DSN=AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS                               
 //SYSIN    DD   *                                                               
@@ -73,6 +95,7 @@
 //*********************************************************************         
 //* Open files in CICS region                                                   
 //*********************************************************************         
+//* OPCIFIL: SDSF - Reopen CUSTDAT in CICS region
 //OPCIFIL EXEC PGM=SDSF                                                         
 //ISFOUT DD SYSOUT=*                                                            
 //CMDOUT DD SYSOUT=*                                                            

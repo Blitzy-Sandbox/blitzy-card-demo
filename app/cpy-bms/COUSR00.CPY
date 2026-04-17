@@ -14,8 +14,23 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      * Symbolic map copybook for the User List screen.
+      * BMS Source: app/bms/COUSR00.bms (Mapset: COUSR00, Map: COUSR0A)
+      * COBOL Program: app/cbl/COUSR00C.cbl (Transaction: CU00)
+      * Admin-only paginated user list with 10 selectable rows.
+      * Supports user ID filtering and F7/F8 paging.
+      * Row selection routes to User Update (COUSR02C) or
+      * User Delete (COUSR03C).
+      * ---------------------------------------------------------------
+      * Input buffer layout (AI) -- populated by EXEC CICS RECEIVE MAP.
+      * Fields use L/F/A/I suffixes:
+      *   L = Length (COMP PIC S9(4))  F = Flag (PICTURE X)
+      *   A = Attribute (PICTURE X)    I = Input data (PICTURE X(n))
+      * ---------------------------------------------------------------
        01  COUSR0AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
+      * --- Header fields: transaction ID, titles, date/time ---
            02  TRNNAMEL    COMP  PIC  S9(4).
            02  TRNNAMEF    PICTURE X.
            02  FILLER REDEFINES TRNNAMEF.
@@ -52,18 +67,21 @@
              03 CURTIMEA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CURTIMEI  PIC X(8).
+      * --- Page number display ---
            02  PAGENUML    COMP  PIC  S9(4).
            02  PAGENUMF    PICTURE X.
            02  FILLER REDEFINES PAGENUMF.
              03 PAGENUMA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  PAGENUMI  PIC X(8).
+      * --- User ID filter/search input ---
            02  USRIDINL    COMP  PIC  S9(4).
            02  USRIDINF    PICTURE X.
            02  FILLER REDEFINES USRIDINF.
              03 USRIDINA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  USRIDINI  PIC X(8).
+      * --- Data rows (10 rows: selection + user ID, name, type) ---
            02  SEL0001L    COMP  PIC  S9(4).
            02  SEL0001F    PICTURE X.
            02  FILLER REDEFINES SEL0001F.
@@ -94,6 +112,7 @@
              03 UTYPE01A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  UTYPE01I  PIC X(1).
+      * --- Row 2 ---
            02  SEL0002L    COMP  PIC  S9(4).
            02  SEL0002F    PICTURE X.
            02  FILLER REDEFINES SEL0002F.
@@ -124,6 +143,7 @@
              03 UTYPE02A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  UTYPE02I  PIC X(1).
+      * --- Row 3 ---
            02  SEL0003L    COMP  PIC  S9(4).
            02  SEL0003F    PICTURE X.
            02  FILLER REDEFINES SEL0003F.
@@ -154,6 +174,7 @@
              03 UTYPE03A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  UTYPE03I  PIC X(1).
+      * --- Row 4 ---
            02  SEL0004L    COMP  PIC  S9(4).
            02  SEL0004F    PICTURE X.
            02  FILLER REDEFINES SEL0004F.
@@ -184,6 +205,7 @@
              03 UTYPE04A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  UTYPE04I  PIC X(1).
+      * --- Row 5 ---
            02  SEL0005L    COMP  PIC  S9(4).
            02  SEL0005F    PICTURE X.
            02  FILLER REDEFINES SEL0005F.
@@ -214,6 +236,7 @@
              03 UTYPE05A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  UTYPE05I  PIC X(1).
+      * --- Row 6 ---
            02  SEL0006L    COMP  PIC  S9(4).
            02  SEL0006F    PICTURE X.
            02  FILLER REDEFINES SEL0006F.
@@ -244,6 +267,7 @@
              03 UTYPE06A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  UTYPE06I  PIC X(1).
+      * --- Row 7 ---
            02  SEL0007L    COMP  PIC  S9(4).
            02  SEL0007F    PICTURE X.
            02  FILLER REDEFINES SEL0007F.
@@ -274,6 +298,7 @@
              03 UTYPE07A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  UTYPE07I  PIC X(1).
+      * --- Row 8 ---
            02  SEL0008L    COMP  PIC  S9(4).
            02  SEL0008F    PICTURE X.
            02  FILLER REDEFINES SEL0008F.
@@ -304,6 +329,7 @@
              03 UTYPE08A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  UTYPE08I  PIC X(1).
+      * --- Row 9 ---
            02  SEL0009L    COMP  PIC  S9(4).
            02  SEL0009F    PICTURE X.
            02  FILLER REDEFINES SEL0009F.
@@ -334,6 +360,7 @@
              03 UTYPE09A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  UTYPE09I  PIC X(1).
+      * --- Row 10 ---
            02  SEL0010L    COMP  PIC  S9(4).
            02  SEL0010F    PICTURE X.
            02  FILLER REDEFINES SEL0010F.
@@ -364,14 +391,24 @@
              03 UTYPE10A    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  UTYPE10I  PIC X(1).
+      * --- Error message area ---
            02  ERRMSGL    COMP  PIC  S9(4).
            02  ERRMSGF    PICTURE X.
            02  FILLER REDEFINES ERRMSGF.
              03 ERRMSGA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ERRMSGI  PIC X(78).
+      * ---------------------------------------------------------------
+      * Output buffer layout (AO) -- populated by program for
+      * EXEC CICS SEND MAP. REDEFINES the AI layout.
+      * Fields use C/P/H/V/O suffixes:
+      *   C = Color    P = Programmed symbol   H = Highlighting
+      *   V = Validation   O = Output data (REDEFINES I field)
+      * ---------------------------------------------------------------
        01  COUSR0AO REDEFINES COUSR0AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
+      * --- Header fields (output) ---
            02  FILLER PICTURE X(3).
            02  TRNNAMEC    PICTURE X.
            02  TRNNAMEP    PICTURE X.
@@ -408,18 +445,21 @@
            02  CURTIMEH    PICTURE X.
            02  CURTIMEV    PICTURE X.
            02  CURTIMEO  PIC X(8).
+      * --- Page number display (output) ---
            02  FILLER PICTURE X(3).
            02  PAGENUMC    PICTURE X.
            02  PAGENUMP    PICTURE X.
            02  PAGENUMH    PICTURE X.
            02  PAGENUMV    PICTURE X.
            02  PAGENUMO  PIC X(8).
+      * --- User ID filter (output) ---
            02  FILLER PICTURE X(3).
            02  USRIDINC    PICTURE X.
            02  USRIDINP    PICTURE X.
            02  USRIDINH    PICTURE X.
            02  USRIDINV    PICTURE X.
            02  USRIDINO  PIC X(8).
+      * --- Data rows (output: 10 rows) ---
            02  FILLER PICTURE X(3).
            02  SEL0001C    PICTURE X.
            02  SEL0001P    PICTURE X.
@@ -450,6 +490,7 @@
            02  UTYPE01H    PICTURE X.
            02  UTYPE01V    PICTURE X.
            02  UTYPE01O  PIC X(1).
+      * --- Row 2 (output) ---
            02  FILLER PICTURE X(3).
            02  SEL0002C    PICTURE X.
            02  SEL0002P    PICTURE X.
@@ -480,6 +521,7 @@
            02  UTYPE02H    PICTURE X.
            02  UTYPE02V    PICTURE X.
            02  UTYPE02O  PIC X(1).
+      * --- Row 3 (output) ---
            02  FILLER PICTURE X(3).
            02  SEL0003C    PICTURE X.
            02  SEL0003P    PICTURE X.
@@ -510,6 +552,7 @@
            02  UTYPE03H    PICTURE X.
            02  UTYPE03V    PICTURE X.
            02  UTYPE03O  PIC X(1).
+      * --- Row 4 (output) ---
            02  FILLER PICTURE X(3).
            02  SEL0004C    PICTURE X.
            02  SEL0004P    PICTURE X.
@@ -540,6 +583,7 @@
            02  UTYPE04H    PICTURE X.
            02  UTYPE04V    PICTURE X.
            02  UTYPE04O  PIC X(1).
+      * --- Row 5 (output) ---
            02  FILLER PICTURE X(3).
            02  SEL0005C    PICTURE X.
            02  SEL0005P    PICTURE X.
@@ -570,6 +614,7 @@
            02  UTYPE05H    PICTURE X.
            02  UTYPE05V    PICTURE X.
            02  UTYPE05O  PIC X(1).
+      * --- Row 6 (output) ---
            02  FILLER PICTURE X(3).
            02  SEL0006C    PICTURE X.
            02  SEL0006P    PICTURE X.
@@ -600,6 +645,7 @@
            02  UTYPE06H    PICTURE X.
            02  UTYPE06V    PICTURE X.
            02  UTYPE06O  PIC X(1).
+      * --- Row 7 (output) ---
            02  FILLER PICTURE X(3).
            02  SEL0007C    PICTURE X.
            02  SEL0007P    PICTURE X.
@@ -630,6 +676,7 @@
            02  UTYPE07H    PICTURE X.
            02  UTYPE07V    PICTURE X.
            02  UTYPE07O  PIC X(1).
+      * --- Row 8 (output) ---
            02  FILLER PICTURE X(3).
            02  SEL0008C    PICTURE X.
            02  SEL0008P    PICTURE X.
@@ -660,6 +707,7 @@
            02  UTYPE08H    PICTURE X.
            02  UTYPE08V    PICTURE X.
            02  UTYPE08O  PIC X(1).
+      * --- Row 9 (output) ---
            02  FILLER PICTURE X(3).
            02  SEL0009C    PICTURE X.
            02  SEL0009P    PICTURE X.
@@ -690,6 +738,7 @@
            02  UTYPE09H    PICTURE X.
            02  UTYPE09V    PICTURE X.
            02  UTYPE09O  PIC X(1).
+      * --- Row 10 (output) ---
            02  FILLER PICTURE X(3).
            02  SEL0010C    PICTURE X.
            02  SEL0010P    PICTURE X.
@@ -720,6 +769,7 @@
            02  UTYPE10H    PICTURE X.
            02  UTYPE10V    PICTURE X.
            02  UTYPE10O  PIC X(1).
+      * --- Error message area (output) ---
            02  FILLER PICTURE X(3).
            02  ERRMSGC    PICTURE X.
            02  ERRMSGP    PICTURE X.

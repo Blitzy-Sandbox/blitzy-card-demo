@@ -16,12 +16,33 @@
 //* either express or implied. See the License for the specific     
 //* language governing permissions and limitations under the License
 //******************************************************************
+//* JOB: CLOSEFIL - Close CICS File Resources
+//* Closes CardDemo VSAM file resources in the CICS
+//* region CICSAWSA using SDSF batch command submission.
+//* Files must be closed before VSAM datasets can be
+//* deleted and redefined by provisioning jobs.
+//* Run order: Execute before dataset rebuild jobs
+//*   (ACCTFILE, CARDFILE, CUSTFILE, XREFFILE, TRANFILE)
+//* Companion job: OPENFIL.jcl (reopens files after rebuild)
 //*********************************************************************         
 //* Close files in CICS region                                                  
 //*********************************************************************         
+//* CLCIFIL: SDSF - Submit CEMT commands to CICS region
+//*   Uses /F (modify) MVS command to send CICS CEMT
+//*   transactions to the CICSAWSA region
 //CLCIFIL EXEC PGM=SDSF                                                         
+//* ISFOUT: SDSF output messages (captures SDSF responses)
 //ISFOUT DD SYSOUT=*                                                            
+//* CMDOUT: SDSF command response output (CEMT results)
 //CMDOUT DD SYSOUT=*                                                            
+//* ISFIN: SDSF command input stream (inline data)
+//*   Contains 5 MVS /F (modify) commands targeting CICSAWSA
+//*   Closes 5 CICS file definitions:
+//*     TRANSACT - Transaction master VSAM file
+//*     CCXREF   - Card-account cross-reference file
+//*     ACCTDAT  - Account data VSAM file
+//*     CXACAIX  - Cross-reference alternate index path
+//*     USRSEC   - User security VSAM file
 //ISFIN  DD *                                                                   
  /F CICSAWSA,'CEMT SET FIL(TRANSACT ) CLO'                                      
  /F CICSAWSA,'CEMT SET FIL(CCXREF ) CLO'                                        

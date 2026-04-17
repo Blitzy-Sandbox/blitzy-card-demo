@@ -16,6 +16,29 @@
 //* either express or implied. See the License for the specific     
 //* language governing permissions and limitations under the License
 //******************************************************************
+//* JOB: CBADMCDJ - CICS CSD Resource Definitions
+//* Runs DFHCSDUP (CSD utility) to define all CardDemo
+//* CICS resources in GROUP(CARDDEMO). This includes:
+//*   - 1 LIBRARY definition (COM2DOLL -> LOADLIB)
+//*   - 20 MAPSET definitions (15 unique, 5 duplicated)
+//*   - 19 PROGRAM definitions (15 unique, 4 duplicated)
+//*   - 5 TRANSACTION definitions (CCDM, CCT1-CCT4)
+//* Run order: Execute once during initial CICS setup.
+//*   Install with CEDA INSTALL GROUP(CARDDEMO).
+//* Target CSD: OEM.CICSTS.DFHCSD
+//* CICS load library: OEM.CICSTS.V05R06M0.CICS.SDFHLOAD
+//* NOTE: Some DEFINE statements appear duplicated.
+//*   This is the original code - document as-is.
+//*   LIBRARY COM2DOLL: Maps to &HLQ..LOADLIB for program
+//*     loading at runtime
+//*   MAPSETs: COSGN00M (login), COMEN01M (main menu),
+//*     COADM01M (admin), COACTVWS/COACTUPS (account),
+//*     COCRDLI/COCRDSL/COCRDUP (card), COTRN00S-02S
+//*     (transaction), COBIL00S (billing), CORPT00S
+//*     (reports), COUSR00-03S (user admin)
+//*   PROGRAMs: Online programs with DA(ANY) attribute
+//*     COSGN00C has TRANSID(CC00) - entry point
+//*   TRANSACTIONs: CCDM (admin menu), CCT1-CCT4 (test)
 //*********************************************************************
 //****  Create Resources for Card Demo application               ******
 //*********************************************************************
@@ -24,8 +47,19 @@
 //*  ---------------------------
 //   SET HLQ=AWS.M2.CARDDEMO
 //*
+//* STEP1: DFHCSDUP - CICS CSD batch update utility
+//*   PARM: CSD(READWRITE) - open CSD for updates
+//*         PAGESIZE(60) - report page size
+//*         NOCOMPAT - no compatibility mode
+//*   REGION=0M - let z/OS determine region size
 //STEP1   EXEC PGM=DFHCSDUP,REGION=0M,
 //          PARM='CSD(READWRITE),PAGESIZE(60),NOCOMPAT'
+//*   STEPLIB  - CICS system load library (SDFHLOAD)
+//*   DFHCSD   - CICS System Definition dataset (shared)
+//*   OUTDD    - DFHCSDUP formatted report output
+//*   SYSPRINT - Utility system messages
+//*   SYSIN    - CSD definition commands (inline)
+//*              Uses SYMBOLS=JCLONLY for &HLQ substitution
 //STEPLIB  DD  DSN=OEM.CICSTS.V05R06M0.CICS.SDFHLOAD,DISP=SHR
 //DFHCSD   DD  UNIT=SYSDA,DISP=SHR,DSN=OEM.CICSTS.DFHCSD
 //OUTDD    DD  SYSOUT=*

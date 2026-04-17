@@ -14,8 +14,21 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      * Symbolic map copybook for the Card Detail screen.
+      * BMS Source: app/bms/COCRDSL.bms (Mapset: COCRDSL, Map: CCRDSLA)
+      * COBOL Program: app/cbl/COCRDSLC.cbl (Transaction: CCDL)
+      * Read-only card detail display. User enters account/card
+      * numbers for lookup; card attributes shown as protected fields.
+      * ---------------------------------------------------------------
+      * Input buffer layout (AI) — populated by EXEC CICS RECEIVE MAP.
+      * Fields use L/F/A/I suffixes:
+      *   L = Length (COMP PIC S9(4))  F = Flag (PICTURE X)
+      *   A = Attribute (PICTURE X)    I = Input data (PICTURE X(n))
+      * ---------------------------------------------------------------
        01  CCRDSLAI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
+      * --- Header fields: transaction ID, titles, date/time ---
            02  TRNNAMEL    COMP  PIC  S9(4).
            02  TRNNAMEF    PICTURE X.
            02  FILLER REDEFINES TRNNAMEF.
@@ -52,6 +65,7 @@
              03 CURTIMEA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CURTIMEI  PIC X(8).
+      * --- Card lookup inputs (account and card number) ---
            02  ACCTSIDL    COMP  PIC  S9(4).
            02  ACCTSIDF    PICTURE X.
            02  FILLER REDEFINES ACCTSIDF.
@@ -64,6 +78,7 @@
              03 CARDSIDA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CARDSIDI  PIC X(16).
+      * --- Card detail display (all read-only/protected) ---
            02  CRDNAMEL    COMP  PIC  S9(4).
            02  CRDNAMEF    PICTURE X.
            02  FILLER REDEFINES CRDNAMEF.
@@ -88,6 +103,7 @@
              03 EXPYEARA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  EXPYEARI  PIC X(4).
+      * --- Information and error message areas ---
            02  INFOMSGL    COMP  PIC  S9(4).
            02  INFOMSGF    PICTURE X.
            02  FILLER REDEFINES INFOMSGF.
@@ -106,7 +122,15 @@
              03 FKEYSA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  FKEYSI  PIC X(75).
+      * ---------------------------------------------------------------
+      * Output buffer layout (AO) — populated by program for
+      * EXEC CICS SEND MAP. REDEFINES the AI layout.
+      * Fields use C/P/H/V/O suffixes:
+      *   C = Color    P = Programmed symbol   H = Highlighting
+      *   V = Validation   O = Output data (REDEFINES I field)
+      * ---------------------------------------------------------------
        01  CCRDSLAO REDEFINES CCRDSLAI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
            02  FILLER PICTURE X(3).
            02  TRNNAMEC    PICTURE X.

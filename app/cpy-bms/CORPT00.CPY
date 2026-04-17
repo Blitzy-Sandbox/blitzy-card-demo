@@ -14,8 +14,22 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      * Symbolic map copybook for the Report Criteria screen.
+      * BMS Source: app/bms/CORPT00.bms (Mapset: CORPT00, Map: CORPT0A)
+      * COBOL Program: app/cbl/CORPT00C.cbl (Transaction: CR00)
+      * Collects report parameters: type (monthly/yearly/custom),
+      * date range, and confirmation. CORPT00C writes job request
+      * to CICS TDQ (JOBS queue) for batch report generation.
+      * ---------------------------------------------------------------
+      * Input buffer layout (AI) -- populated by EXEC CICS RECEIVE MAP.
+      * Fields use L/F/A/I suffixes:
+      *   L = Length (COMP PIC S9(4))  F = Flag (PICTURE X)
+      *   A = Attribute (PICTURE X)    I = Input data (PICTURE X(n))
+      * ---------------------------------------------------------------
        01  CORPT0AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
+      * --- Header fields: transaction ID, titles, date/time ---
            02  TRNNAMEL    COMP  PIC  S9(4).
            02  TRNNAMEF    PICTURE X.
            02  FILLER REDEFINES TRNNAMEF.
@@ -52,6 +66,7 @@
              03 CURTIMEA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CURTIMEI  PIC X(8).
+      * --- Report type selection (3 mutually exclusive indicators) ---
            02  MONTHLYL    COMP  PIC  S9(4).
            02  MONTHLYF    PICTURE X.
            02  FILLER REDEFINES MONTHLYF.
@@ -70,6 +85,7 @@
              03 CUSTOMA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CUSTOMI  PIC X(1).
+      * --- Start date components (MM/DD/YYYY) ---
            02  SDTMML    COMP  PIC  S9(4).
            02  SDTMMF    PICTURE X.
            02  FILLER REDEFINES SDTMMF.
@@ -88,6 +104,7 @@
              03 SDTYYYYA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  SDTYYYYI  PIC X(4).
+      * --- End date components (MM/DD/YYYY) ---
            02  EDTMML    COMP  PIC  S9(4).
            02  EDTMMF    PICTURE X.
            02  FILLER REDEFINES EDTMMF.
@@ -106,19 +123,29 @@
              03 EDTYYYYA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  EDTYYYYI  PIC X(4).
+      * --- Submission confirmation (Y/N) ---
            02  CONFIRML    COMP  PIC  S9(4).
            02  CONFIRMF    PICTURE X.
            02  FILLER REDEFINES CONFIRMF.
              03 CONFIRMA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  CONFIRMI  PIC X(1).
+      * --- Error message area (78-char, RED) ---
            02  ERRMSGL    COMP  PIC  S9(4).
            02  ERRMSGF    PICTURE X.
            02  FILLER REDEFINES ERRMSGF.
              03 ERRMSGA    PICTURE X.
            02  FILLER   PICTURE X(4).
            02  ERRMSGI  PIC X(78).
+      * ---------------------------------------------------------------
+      * Output buffer layout (AO) -- populated by program for
+      * EXEC CICS SEND MAP. REDEFINES the AI layout.
+      * Fields use C/P/H/V/O suffixes:
+      *   C = Color    P = Programmed symbol   H = Highlighting
+      *   V = Validation   O = Output data (REDEFINES I field)
+      * ---------------------------------------------------------------
        01  CORPT0AO REDEFINES CORPT0AI.
+      * 12-byte TIOA prefix -- required by TIOAPFX=YES
            02  FILLER PIC X(12).
            02  FILLER PICTURE X(3).
            02  TRNNAMEC    PICTURE X.

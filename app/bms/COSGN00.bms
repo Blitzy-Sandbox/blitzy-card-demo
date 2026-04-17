@@ -16,6 +16,39 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*
+*-----------------------------------------------------------------*
+* BMS SOURCE: COSGN00 - Sign-On (Login) Screen Definition
+*-----------------------------------------------------------------*
+* This BMS mapset defines the Sign-On screen, which is the
+* application entry point for the CardDemo system.
+*
+* Program: COSGN00C          Transaction: CC00
+* Mapset:  COSGN00           Map: COSGN0A
+*
+* Authenticates user credentials against the USRSEC VSAM
+* dataset. On success, routes to Main Menu (COMEN01C) or
+* Admin Menu (COADM01C) based on user type.
+*
+* Generated symbolic map: app/cpy-bms/COSGN00.CPY
+*
+* Unique features of this screen:
+*   - CICS APPLID and SYSID on header line 3 (unique to
+*     sign-on; not present on other CardDemo screens)
+*   - Decorative ASCII art dollar bill branding
+*   - DRK (dark) attribute on password field for security
+*-----------------------------------------------------------------*
+*
+*-----------------------------------------------------------------*
+* DFHMSD - Mapset Definition
+*   CTRL=(ALARM,FREEKB) - Alarm on SEND, keyboard unlocked
+*   EXTATT=YES - Extended color/highlight attributes enabled
+*   LANG=COBOL - Generate COBOL-compatible symbolic map
+*   MODE=INOUT - Map used for both input and output
+*   STORAGE=AUTO - CICS manages map storage automatically
+*   TIOAPFX=YES - Include TIOA prefix for BMS compatibility
+*   TYPE=&&SYSPARM - Mapset type set via assembly parameter
+*-----------------------------------------------------------------*
 COSGN00 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                EXTATT=YES,                                             -
                LANG=COBOL,                                             -
@@ -23,9 +56,28 @@ COSGN00 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+*-----------------------------------------------------------------*
+* DFHMDI - Map Definition: COSGN0A
+*   24-row by 80-column standard 3270 terminal screen
+*   Starting at COLUMN=1, LINE=1 (full-screen map)
+*-----------------------------------------------------------------*
 COSGN0A DFHMDI COLUMN=1,                                               -
                LINE=1,                                                 -
                SIZE=(24,80)
+*-----------------------------------------------------------------*
+* HEADER AREA (Screen lines 1-3) - Extended 3-line header
+*   Unlike other CardDemo screens (2 header lines), the
+*   sign-on screen adds a third line for CICS region
+*   identity (APPLID and SYSID).
+*
+*   Line 1: "Tran :" + TRNNAME + TITLE01 + "Date:" + CURDATE
+*   Line 2: "Prog :" + PGMNAME + TITLE02 + "Time:" + CURTIME
+*   Line 3: "AppID:" + APPLID  +           "SysID:" + SYSID
+*
+*   Note: TRNNAME at POS=(1,8) uses 6-char label vs 5-char
+*   spacing on other screens.
+*   All header fields are ASKIP or PROT (display-only).
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=6,                                               -
@@ -91,12 +143,24 @@ SYSID   DFHMDF ATTRB=(FSET,NORM,PROT),                                 -
                LENGTH=8,                                               -
                POS=(3,71),                                             -
                INITIAL='        '
+*-----------------------------------------------------------------*
+* BRANDING BANNER (Screen line 5)
+*   Application title in NEUTRAL color, 66 chars centered.
+*   "This is a Credit Card Demo Application for Mainframe
+*    Modernization"
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=NEUTRAL,                                          -
                LENGTH=66,                                              -
                POS=(5,6),                                              -
                INITIAL='This is a Credit Card Demo Application for Main-
                frame Modernization'
+*-----------------------------------------------------------------*
+* ASCII ART DOLLAR BILL (Screen lines 7-15)
+*   Decorative visual in BLUE color, 42 chars wide.
+*   Nine rows of ASKIP static art forming a bordered
+*   currency bill design. All fields are display-only.
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=42,                                              -
@@ -142,12 +206,26 @@ SYSID   DFHMDF ATTRB=(FSET,NORM,PROT),                                 -
                LENGTH=42,                                              -
                POS=(15,21),                                            -
                INITIAL='+========================================+'
+*-----------------------------------------------------------------*
+* CREDENTIAL PROMPT (Screen line 17)
+*   Instruction text in TURQUOISE, 49 chars at POS=(17,16)
+*   "Type your User ID and Password, then press ENTER:"
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=49,                                              -
                POS=(17,16),                                            -
                INITIAL='Type your User ID and Password, then press ENTE-
                R:'
+*-----------------------------------------------------------------*
+* USER ID ENTRY (Screen line 19)
+*   "User ID     :" label in TURQUOISE at POS=(19,29)
+*   USERID field: 8-char UNPROT with IC (initial cursor),
+*     FSET (force send), GREEN, HILIGHT=OFF
+*   Zero-length ASKIP terminator at POS=(19,52) stops
+*     attribute bleed to adjacent fields
+*   "(8 Char)" hint in BLUE follows the terminator
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=13,                                              -
@@ -167,6 +245,21 @@ USERID  DFHMDF ATTRB=(FSET,IC,NORM,UNPROT),                            -
                LENGTH=8,                                               -
                POS=(19,52),                                            -
                INITIAL='(8 Char)'
+*-----------------------------------------------------------------*
+* PASSWORD ENTRY (Screen line 20)
+*   "Password    :" label in TURQUOISE at POS=(20,29)
+*   PASSWD field: 8-char UNPROT with DRK (dark/hidden)
+*     attribute for security - typed chars not visible.
+*     FSET, GREEN, HILIGHT=OFF.
+*     INITIAL='________' shows placeholder underscores.
+*   Zero-length ASKIP terminator at POS=(20,52) stops bleed
+*   "(8 Char)" hint in BLUE
+*   1-char DRK,UNPROT overflow trap at POS=(20,61) prevents
+*     password characters from bleeding into visible fields
+*     if user types beyond 8 characters.
+*   Final ASKIP,NORM terminator at POS=(20,63) ends the
+*     unprotected input region.
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=13,                                              -
@@ -194,15 +287,31 @@ PASSWD  DFHMDF ATTRB=(DRK,FSET,UNPROT),                                -
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                LENGTH=0,                                               -
                POS=(20,63)
+*-----------------------------------------------------------------*
+* ERROR MESSAGE (Screen line 23)
+*   ERRMSG: 78-char ASKIP,BRT,FSET in RED color.
+*   Displays authentication error messages from COSGN00C.
+*   Bright attribute ensures high visibility for errors.
+*-----------------------------------------------------------------*
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=78,                                              -
                POS=(23,1)
+*-----------------------------------------------------------------*
+* FUNCTION KEY LEGEND (Screen line 24)
+*   "ENTER=Sign-on  F3=Exit" in YELLOW at POS=(24,1).
+*   Informs user: ENTER to authenticate, F3 to exit.
+*-----------------------------------------------------------------*
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=22,                                              -
                POS=(24,1),                                             -
                INITIAL='ENTER=Sign-on  F3=Exit'
+*-----------------------------------------------------------------*
+* MAPSET TERMINATION
+*   DFHMSD TYPE=FINAL closes the mapset definition.
+*   END signals end of BMS source assembly.
+*-----------------------------------------------------------------*
         DFHMSD TYPE=FINAL
         END
 *

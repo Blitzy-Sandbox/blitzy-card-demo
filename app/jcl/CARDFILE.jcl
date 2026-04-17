@@ -16,9 +16,28 @@
 //* either express or implied. See the License for the specific     
 //* language governing permissions and limitations under the License
 //******************************************************************       
+//* JOB: CARDFILE - Provision Card Data VSAM File with AIX
+//* Full rebuild of the Card Data VSAM KSDS file including
+//* its alternate index (AIX) and PATH for account-based
+//* card lookups. Includes CICS file close/reopen cycle
+//* since CARDDAT and CARDAIX are active CICS resources.
+//* Dataset: AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS
+//* KSDS key: 16 bytes at offset 0 (card number)
+//* Record size: 150 bytes (fixed)
+//* AIX: CARDDATA.VSAM.AIX - key=KEYS(11 16) on account ID
+//*   at offset 16, NONUNIQUEKEY (multiple cards per acct)
+//* PATH: CARDDATA.VSAM.AIX.PATH
+//* Seed data: AWS.M2.CARDDEMO.CARDDATA.PS
+//* Copybook layout: CVACT02Y.cpy
+//* Consumed by: COCRDLIC, COCRDSLC, COCRDUPC (online card
+//*   programs), CBACT02C (batch read)
 //*********************************************************************         
 //* Close files in CICS region                                                  
 //*********************************************************************         
+//* CLCIFIL: SDSF - Close CICS files before VSAM rebuild
+//*   Closes CARDDAT and CARDAIX in CICS region CICSAWSA
+//*   Required because CICS holds file allocations that
+//*   prevent IDCAMS DELETE/DEFINE operations
 //CLCIFIL EXEC PGM=SDSF                                                         
 //ISFOUT DD SYSOUT=*                                                            
 //CMDOUT DD SYSOUT=*                                                            
@@ -30,6 +49,9 @@
 //* *******************************************************************         
 //* DELETE CARD DATA VSAM FILE IF ONE ALREADY EXISTS                            
 //* *******************************************************************         
+//* STEP05: IDCAMS DELETE - Remove existing base cluster
+//*   and alternate index. IF MAXCC LE 08 handles
+//*   'not found' for safe rerun.
 //STEP05 EXEC PGM=IDCAMS                                                        
 //SYSPRINT DD   SYSOUT=*                                                        
 //SYSIN    DD   *                                                               
@@ -44,6 +66,10 @@
 //* *******************************************************************         
 //* DEFINE CARD DATA VSAM FILE                                                  
 //* *******************************************************************         
+//* STEP10: IDCAMS DEFINE CLUSTER - Create CARDDATA KSDS
+//*   KEYS(16 0) = 16-byte card number key at offset 0
+//*   RECORDSIZE(150 150) = fixed 150-byte card records
+//*   SHAREOPTIONS(2 3), ERASE, INDEXED
 //STEP10 EXEC PGM=IDCAMS                                                        
 //SYSPRINT DD   SYSOUT=*                                                        
 //SYSIN    DD   *                                                               
@@ -65,6 +91,7 @@
 //* *******************************************************************         
 //* COPY DATA FROM FLAT FILE TO VSAM FILE                                       
 //* *******************************************************************         
+//* STEP15: IDCAMS REPRO - Load card seed data from PS
 //STEP15 EXEC PGM=IDCAMS                                                        
 //SYSPRINT DD   SYSOUT=*                                                        
 //CARDDATA DD DISP=SHR,                                                         
@@ -77,6 +104,10 @@
 //*-------------------------------------------------------------------*         
 //* CREATE ALTERNATE INDEX ON ACCT ID                                           
 //*-------------------------------------------------------------------*         
+//* STEP40: IDCAMS DEFINE ALTERNATEINDEX on account ID
+//*   KEYS(11 16) = 11-byte account ID at offset 16
+//*   NONUNIQUEKEY - multiple cards per account
+//*   UPGRADE - auto-update AIX on base cluster changes
 //STEP40  EXEC PGM=IDCAMS                                                       
 //SYSPRINT DD  SYSOUT=*                                                         
 //SYSIN    DD  *                                                                
@@ -94,6 +125,8 @@
 //*-------------------------------------------------------------------*         
 //* DEFINE PATH IS USED TO RELATE THE ALTERNATE INDEX TO BASE CLUSTER           
 //*-------------------------------------------------------------------*         
+//* STEP50: IDCAMS DEFINE PATH - Create access path
+//*   Links AIX to base cluster for browse via AIX key
 //STEP50  EXEC PGM=IDCAMS                                                       
 //SYSPRINT DD  SYSOUT=*                                                         
 //SYSIN    DD  *                                                                
@@ -104,6 +137,8 @@
 //*------------------------------------------------------------------           
 //* BUILD ALTERNATE INDEX CLUSTER                                               
 //*-------------------------------------------------------------------*         
+//* STEP60: IDCAMS BLDINDEX - Build AIX from base data
+//*   Scans base KSDS and populates AIX entries
 //STEP60  EXEC PGM=IDCAMS                                                       
 //SYSPRINT DD  SYSOUT=*                                                         
 //SYSIN    DD  *                                                                
@@ -115,6 +150,8 @@
 //*********************************************************************         
 //* Open files in CICS region                                                   
 //*********************************************************************         
+//* OPCIFIL: SDSF - Reopen CICS files after rebuild
+//*   Opens CARDDAT and CARDAIX in CICS region CICSAWSA
 //OPCIFIL EXEC PGM=SDSF                                                         
 //ISFOUT DD SYSOUT=*                                                            
 //CMDOUT DD SYSOUT=*                                                            

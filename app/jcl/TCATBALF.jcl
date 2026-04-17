@@ -16,9 +16,24 @@
 //* either express or implied. See the License for the specific     
 //* language governing permissions and limitations under the License
 //******************************************************************            
+//* JOB: TCATBALF - Provision Transaction Category Balance
+//* Deletes, defines, and loads the Transaction Category
+//* Balance VSAM KSDS file used for tracking accumulated
+//* transaction balances by account, type, and category.
+//* Dataset: AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS
+//* KSDS key: 17 bytes at offset 0 (acct-id + type + cat)
+//* Record size: 50 bytes (fixed)
+//* Seed data: AWS.M2.CARDDEMO.TCATBALF.PS
+//* Copybook layout: CVTRA01Y.cpy
+//* Consumed by: POSTTRAN (CBTRN02C), INTCALC (CBACT04C),
+//*   PRTCATBL (unload/print utility)
+//*
 //* *******************************************************************         
 //* DELETE TRANSACTION CATEGORY BALANCE VSAM FILE IF ONE ALREADY EXISTS         
 //* *******************************************************************         
+//* STEP05: IDCAMS DELETE - Removes existing TCATBALF
+//* cluster. SET MAXCC=0 makes job rerunnable if cluster
+//* does not exist.
 //STEP05 EXEC PGM=IDCAMS                                                        
 //SYSPRINT DD   SYSOUT=*                                                        
 //SYSIN    DD   *                                                               
@@ -30,6 +45,11 @@
 //* *******************************************************************         
 //* DEFINE TRANSACTION CATEGORY BALANCE VSAM FILE                               
 //* *******************************************************************         
+//* STEP10: IDCAMS DEFINE CLUSTER - Creates TCATBALF
+//* VSAM KSDS. KEYS(17 0) = 17-byte composite key at
+//* offset 0. RECORDSIZE(50 50) = fixed 50-byte records.
+//* SHAREOPTIONS(2 3) = cross-region/cross-system read
+//* sharing. ERASE = securely clears data on deletion.
 //STEP10 EXEC PGM=IDCAMS                                                        
 //SYSPRINT DD   SYSOUT=*                                                        
 //SYSIN    DD   *                                                               
@@ -51,10 +71,15 @@
 //* *******************************************************************         
 //* COPY DATA FROM FLAT FILE TO VSAM FILE                                       
 //* *******************************************************************         
+//* STEP15: IDCAMS REPRO - Loads seed data from flat file
+//* (TCATBALF.PS) into VSAM KSDS.
 //STEP15 EXEC PGM=IDCAMS                                                        
 //SYSPRINT DD   SYSOUT=*                                                        
+//* TCATBAL DD: Input flat file with seed data (DISP=SHR)
 //TCATBAL DD DISP=SHR,                                                          
 //         DSN=AWS.M2.CARDDEMO.TCATBALF.PS                                      
+//* TCATBALV DD: Output VSAM KSDS target (DISP=OLD for
+//*   exclusive access during load)
 //TCATBALV DD DISP=OLD,                                                         
 //         DSN=AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS                               
 //SYSIN    DD   *                                                               

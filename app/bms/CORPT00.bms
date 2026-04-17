@@ -16,6 +16,41 @@
 * either express or implied. See the License for the specific     
 * language governing permissions and limitations under the License
 ******************************************************************
+*
+*-----------------------------------------------------------------
+* BMS Source:  CORPT00 (Report Criteria Screen)
+*-----------------------------------------------------------------
+* This BMS source defines the Report Criteria screen used by
+* program CORPT00C (CICS transaction CR00).
+*
+* The screen collects report parameters from the user:
+*   - Report type: Monthly, Yearly, or Custom date range
+*   - Custom date range: start and end dates (MM/DD/YYYY)
+*   - Confirmation (Y/N) before submitting the report job
+*
+* CORPT00C writes the job request to the CICS Transient Data
+* Queue (TDQ) named JOBS for batch report generation.
+*
+* Mapset: CORPT00    Map: CORPT0A
+* Generated symbolic map: app/cpy-bms/CORPT00.CPY
+*
+* Note: The license header above reads "Main Menu Screen"
+* which is a copy error. This is actually the Report
+* Criteria screen.
+*-----------------------------------------------------------------
+*
+*-----------------------------------------------------------------
+* DFHMSD - Mapset definition for CORPT00
+*-----------------------------------------------------------------
+* CTRL=(ALARM,FREEKB) - Sound alarm on send, unlock keyboard
+* EXTATT=YES          - Enable extended attributes (color,
+*                       highlighting, etc.)
+* LANG=COBOL          - Generate COBOL symbolic map copybook
+* MODE=INOUT          - Map used for both input and output
+* STORAGE=AUTO        - CICS allocates map storage auto
+* TIOAPFX=YES         - Include TIOA prefix for BMS I/O area
+* TYPE=&&SYSPARM      - Map type set at assembly time via PARM
+*-----------------------------------------------------------------
 CORPT00 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                EXTATT=YES,                                             -
                LANG=COBOL,                                             -
@@ -23,9 +58,26 @@ CORPT00 DFHMSD CTRL=(ALARM,FREEKB),                                    -
                STORAGE=AUTO,                                           -
                TIOAPFX=YES,                                            -
                TYPE=&&SYSPARM
+*
+*-----------------------------------------------------------------
+* DFHMDI - Map CORPT0A: Report Criteria input/output screen
+*-----------------------------------------------------------------
+* SIZE=(24,80) - Full 3270 terminal screen (24 rows x 80 cols)
+* COLUMN=1, LINE=1 - Map starts at top-left corner
+*-----------------------------------------------------------------
 CORPT0A DFHMDI COLUMN=1,                                               -
                LINE=1,                                                 -
                SIZE=(24,80)
+*
+*-----------------------------------------------------------------
+* Header Area (screen lines 1-2)
+*-----------------------------------------------------------------
+* Standard CardDemo header with transaction ID, program name,
+* two title lines, and current date/time display.
+* All header fields are ASKIP (protected, auto-skip).
+*   Line 1: Tran (TRNNAME), Title (TITLE01), Date (CURDATE)
+*   Line 2: Prog (PGMNAME), Title (TITLE02), Time (CURTIME)
+*-----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=BLUE,                                             -
                LENGTH=5,                                               -
@@ -72,11 +124,37 @@ CURTIME DFHMDF ATTRB=(ASKIP,FSET,NORM),                                -
                LENGTH=8,                                               -
                POS=(2,71),                                             -
                INITIAL='hh:mm:ss'
+*
+*-----------------------------------------------------------------
+* Screen Title (screen line 4)
+*-----------------------------------------------------------------
+* "Transaction Reports" centered at row 4, column 30.
+* Bright neutral color for visual prominence.
+*-----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,BRT),                                      -
                COLOR=NEUTRAL,                                          -
                LENGTH=19,                                              -
                POS=(4,30),                                             -
                INITIAL='Transaction Reports'
+*
+*-----------------------------------------------------------------
+* Report Type Selection (screen lines 7, 9, 11)
+*-----------------------------------------------------------------
+* Three mutually exclusive 1-character indicator fields allow
+* the user to select one report type. The user marks exactly
+* one field to indicate the desired report:
+*   MONTHLY (line 7)  - Current month report
+*   YEARLY  (line 9)  - Current year report
+*   CUSTOM  (line 11) - Custom date range report
+*
+* Each indicator is UNPROT (editable) with FSET (field set on
+* send) and GREEN with UNDERLINE highlighting. A stopper field
+* (LENGTH=0) follows each indicator to limit input to 1 char.
+* The corresponding label is ASKIP BRT TURQUOISE.
+*-----------------------------------------------------------------
+* Monthly report option - 1-char indicator with initial cursor
+* (IC attribute places cursor here when map is displayed)
+*-----------------------------------------------------------------
 MONTHLY DFHMDF ATTRB=(FSET,IC,NORM,UNPROT),                            -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -91,6 +169,9 @@ MONTHLY DFHMDF ATTRB=(FSET,IC,NORM,UNPROT),                            -
                LENGTH=23,                                              -
                POS=(7,15),                                             -
                INITIAL='Monthly (Current Month)'
+*
+* Yearly report option - 1-char indicator
+*-----------------------------------------------------------------
 YEARLY  DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -105,6 +186,9 @@ YEARLY  DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                LENGTH=23,                                              -
                POS=(9,15),                                             -
                INITIAL='Yearly (Current Year)'
+*
+* Custom date range option - 1-char indicator
+*-----------------------------------------------------------------
 CUSTOM  DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                COLOR=GREEN,                                            -
                HILIGHT=UNDERLINE,                                      -
@@ -119,6 +203,22 @@ CUSTOM  DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                LENGTH=23,                                              -
                POS=(11,15),                                            -
                INITIAL='Custom (Date Range)'
+*
+*-----------------------------------------------------------------
+* Date Range Entry (screen lines 13-14)
+*-----------------------------------------------------------------
+* Two date fields allow custom date range entry when the
+* CUSTOM report type is selected. Each date is broken into
+* three separate UNPROT NUM fields for month, day, and year:
+*   Start Date: SDTMM / SDTDD / SDTYYYY  (MM/DD/YYYY)
+*   End Date:   EDTMM / EDTDD / EDTYYYY  (MM/DD/YYYY)
+*
+* NUM attribute restricts input to numeric characters only.
+* Slash separators and format hint (MM/DD/YYYY) are ASKIP
+* display-only labels between the editable fields.
+*-----------------------------------------------------------------
+* Start Date label and entry fields (screen line 13)
+*-----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=12,                                              -
@@ -158,6 +258,9 @@ SDTYYYY DFHMDF ATTRB=(FSET,NORM,NUM,UNPROT),                           -
                LENGTH=12,                                              -
                POS=(13,46),                                            -
                INITIAL='(MM/DD/YYYY)'
+*
+* End Date label and entry fields (screen line 14)
+*-----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=12,                                              -
@@ -197,6 +300,16 @@ EDTYYYY DFHMDF ATTRB=(FSET,NORM,NUM,UNPROT),                           -
                LENGTH=12,                                              -
                POS=(14,46),                                            -
                INITIAL='(MM/DD/YYYY)'
+*
+*-----------------------------------------------------------------
+* Confirmation Prompt (screen line 19)
+*-----------------------------------------------------------------
+* Displays a confirmation message asking the user to confirm
+* before the report job is submitted. The CONFIRM field is a
+* 1-char UNPROT input for Y/N entry. A (Y/N) hint label
+* follows the input field. The user must confirm before
+* CORPT00C writes the job to the CICS TDQ (JOBS queue).
+*-----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=TURQUOISE,                                        -
                LENGTH=59,                                              -
@@ -215,10 +328,27 @@ CONFIRM DFHMDF ATTRB=(FSET,NORM,UNPROT),                               -
                LENGTH=5,                                               -
                POS=(19,69),                                            -
                INITIAL='(Y/N)'
+*
+*-----------------------------------------------------------------
+* Error Message Area (screen line 23)
+*-----------------------------------------------------------------
+* ERRMSG - 78-char RED field for displaying validation errors
+* or informational messages. BRT+FSET ensures the message is
+* visible and sent back to the program on RECEIVE MAP.
+*-----------------------------------------------------------------
 ERRMSG  DFHMDF ATTRB=(ASKIP,BRT,FSET),                                 -
                COLOR=RED,                                              -
                LENGTH=78,                                              -
                POS=(23,1)
+*
+*-----------------------------------------------------------------
+* Function Key Legend (screen line 24)
+*-----------------------------------------------------------------
+* Displays available function keys at the bottom of the screen:
+*   ENTER - Continue (submit report request)
+*   F3    - Back (return to previous screen)
+* YELLOW ASKIP text anchored at screen row 24.
+*-----------------------------------------------------------------
         DFHMDF ATTRB=(ASKIP,NORM),                                     -
                COLOR=YELLOW,                                           -
                LENGTH=23,                                              -

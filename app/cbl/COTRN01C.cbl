@@ -19,6 +19,19 @@
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
       ****************************************************************** 
+      *================================================================*
+      * Program:     COTRN01C
+      * Transaction: CT01
+      * BMS Map:     COTRN01 / COTRN1A
+      * Function:    Transaction detail view. Accepts a transaction ID
+      *              (from user input or passed via COMMAREA from the
+      *              transaction list), reads the TRANSACT VSAM file,
+      *              and displays all fields: amount, type, category,
+      *              source, description, merchant info, timestamps.
+      * Files:       TRANSACT (READ — keyed read by transaction ID)
+      * Navigation:  PF3 returns to caller (COTRN00C or main menu).
+      *              PF4 clears screen. PF5 returns to COTRN00C list.
+      *================================================================*
        IDENTIFICATION DIVISION.
        PROGRAM-ID. COTRN01C.
        AUTHOR.     AWS.
@@ -32,24 +45,39 @@
       *----------------------------------------------------------------*
        WORKING-STORAGE SECTION.
 
+      * Program-level working variables for identification,
+      * CICS communication, error handling, and formatting
        01 WS-VARIABLES.
+      * Program name used in COMMAREA and screen header
          05 WS-PGMNAME                 PIC X(08) VALUE 'COTRN01C'.
+      * CICS transaction ID for pseudo-conversational RETURN
          05 WS-TRANID                  PIC X(04) VALUE 'CT01'.
+      * User feedback message displayed on screen error line
          05 WS-MESSAGE                 PIC X(80) VALUE SPACES.
+      * VSAM file name constant for EXEC CICS READ
          05 WS-TRANSACT-FILE             PIC X(08) VALUE 'TRANSACT'.
+      * Error flag — controls flow after validation or I/O
          05 WS-ERR-FLG                 PIC X(01) VALUE 'N'.
            88 ERR-FLG-ON                         VALUE 'Y'.
            88 ERR-FLG-OFF                        VALUE 'N'.
+      * CICS response and reason codes from READ operations
          05 WS-RESP-CD                 PIC S9(09) COMP VALUE ZEROS.
          05 WS-REAS-CD                 PIC S9(09) COMP VALUE ZEROS.
+      * Tracks whether user modified data (unused in view)
          05 WS-USR-MODIFIED            PIC X(01) VALUE 'N'.
            88 USR-MODIFIED-YES                   VALUE 'Y'.
            88 USR-MODIFIED-NO                    VALUE 'N'.
 
+      * Formatted transaction amount for screen display
          05 WS-TRAN-AMT                PIC +99999999.99.
+      * Formatted date field (not actively used in view)
          05 WS-TRAN-DATE               PIC X(08) VALUE '00/00/00'.
 
+      * COMMAREA structure for inter-program communication
        COPY COCOM01Y.
+      * Extended COMMAREA fields for the transaction view
+      * flow. Carries the selected transaction ID from the
+      * list screen (COTRN00C) and paging context for return.
           05 CDEMO-CT01-INFO.
              10 CDEMO-CT01-TRNID-FIRST     PIC X(16).
              10 CDEMO-CT01-TRNID-LAST      PIC X(16).
@@ -60,21 +88,30 @@
              10 CDEMO-CT01-TRN-SEL-FLG     PIC X(01).
              10 CDEMO-CT01-TRN-SELECTED    PIC X(16).
 
+      * BMS symbolic map for transaction detail screen (COTRN1A)
        COPY COTRN01.
 
+      * Application title and banner text
        COPY COTTL01Y.
+      * Date/time working storage fields
        COPY CSDAT01Y.
+      * Common user message definitions
        COPY CSMSG01Y.
 
+      * 350-byte transaction record layout (TRAN-RECORD)
        COPY CVTRA05Y.
 
+      * CICS attention identifier constants (ENTER, PF keys)
        COPY DFHAID.
+      * BMS attribute constants (colors, highlights)
        COPY DFHBMSCA.
 
       *----------------------------------------------------------------*
       *                        LINKAGE SECTION
       *----------------------------------------------------------------*
        LINKAGE SECTION.
+      * CICS communication area — variable length up to
+      * 32767 bytes, actual size carried in EIBCALEN
        01  DFHCOMMAREA.
          05  LK-COMMAREA                           PIC X(01)
              OCCURS 1 TO 32767 TIMES DEPENDING ON EIBCALEN.
@@ -83,6 +120,10 @@
       *                       PROCEDURE DIVISION
       *----------------------------------------------------------------*
        PROCEDURE DIVISION.
+      * Main entry point. If a transaction ID was passed via
+      * COMMAREA (CDEMO-CT01-TRN-SELECTED), auto-populate and
+      * look up. Otherwise wait for user input. Dispatches on
+      * AID key: Enter=lookup, PF3=back, PF4=clear, PF5=list.
        MAIN-PARA.
 
            SET ERR-FLG-OFF     TO TRUE
@@ -91,15 +132,21 @@
            MOVE SPACES TO WS-MESSAGE
                           ERRMSGO OF COTRN1AO
 
+      * No COMMAREA means direct start — redirect to sign-on
+      * since this program requires navigation context
            IF EIBCALEN = 0
                MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM
                PERFORM RETURN-TO-PREV-SCREEN
            ELSE
                MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA
+      * First entry — initialize output map and check for a
+      * pre-selected transaction ID from COMMAREA
                IF NOT CDEMO-PGM-REENTER
                    SET CDEMO-PGM-REENTER    TO TRUE
                    MOVE LOW-VALUES          TO COTRN1AO
                    MOVE -1       TO TRNIDINL OF COTRN1AI
+      * If a transaction ID was passed from the list screen,
+      * auto-populate the input field and fetch the record
                    IF CDEMO-CT01-TRN-SELECTED NOT =
                                               SPACES AND LOW-VALUES
                        MOVE CDEMO-CT01-TRN-SELECTED TO
@@ -108,10 +155,13 @@
                    END-IF
                    PERFORM SEND-TRNVIEW-SCREEN
                ELSE
+      * Re-entry — receive user input and dispatch by AID
                    PERFORM RECEIVE-TRNVIEW-SCREEN
                    EVALUATE EIBAID
+      * ENTER — look up the entered transaction ID
                        WHEN DFHENTER
                            PERFORM PROCESS-ENTER-KEY
+      * PF3 — return to calling program or main menu
                        WHEN DFHPF3
                            IF CDEMO-FROM-PROGRAM = SPACES OR LOW-VALUES
                                MOVE 'COMEN01C' TO CDEMO-TO-PROGRAM
@@ -120,11 +170,14 @@
                                CDEMO-TO-PROGRAM
                            END-IF
                            PERFORM RETURN-TO-PREV-SCREEN
+      * PF4 — clear all fields and redisplay blank form
                        WHEN DFHPF4
                            PERFORM CLEAR-CURRENT-SCREEN
+      * PF5 — return to transaction list (COTRN00C)
                        WHEN DFHPF5
                            MOVE 'COTRN00C' TO CDEMO-TO-PROGRAM
                            PERFORM RETURN-TO-PREV-SCREEN
+      * Any other key — display invalid key message
                        WHEN OTHER
                            MOVE 'Y'                       TO WS-ERR-FLG
                            MOVE CCDA-MSG-INVALID-KEY      TO WS-MESSAGE
@@ -133,6 +186,7 @@
                END-IF
            END-IF
 
+      * Return to CICS with pseudo-conversational wait
            EXEC CICS RETURN
                      TRANSID (WS-TRANID)
                      COMMAREA (CARDDEMO-COMMAREA)
@@ -141,8 +195,12 @@
       *----------------------------------------------------------------*
       *                      PROCESS-ENTER-KEY
       *----------------------------------------------------------------*
+      * Validate the transaction ID is non-empty, then read the
+      * TRANSACT file. On success, map all record fields to the
+      * BMS output area for display on screen.
        PROCESS-ENTER-KEY.
 
+      * Validate that transaction ID input is non-empty
            EVALUATE TRUE
                WHEN TRNIDINI OF COTRN1AI = SPACES OR LOW-VALUES
                    MOVE 'Y'     TO WS-ERR-FLG
@@ -155,6 +213,8 @@
                    CONTINUE
            END-EVALUATE
 
+      * Clear all display fields, copy the entered
+      * transaction ID to the key, and read the record
            IF NOT ERR-FLG-ON
                MOVE SPACES      TO TRNIDI   OF COTRN1AI
                                    CARDNUMI OF COTRN1AI
@@ -173,6 +233,9 @@
                PERFORM READ-TRANSACT-FILE
            END-IF.
 
+      * Map transaction record fields to BMS output area.
+      * Displays raw type and category codes directly from
+      * the record without description lookup resolution.
            IF NOT ERR-FLG-ON
                MOVE TRAN-AMT TO WS-TRAN-AMT
                MOVE TRAN-ID      TO TRNIDI    OF COTRN1AI
@@ -194,14 +257,20 @@
       *----------------------------------------------------------------*
       *                      RETURN-TO-PREV-SCREEN
       *----------------------------------------------------------------*
+      * Transfer control to the previous screen via EXEC CICS
+      * XCTL, passing the COMMAREA.
        RETURN-TO-PREV-SCREEN.
 
+      * Default navigation target to sign-on if unset
            IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES
                MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM
            END-IF
+      * Save current program and transaction as origin
            MOVE WS-TRANID    TO CDEMO-FROM-TRANID
            MOVE WS-PGMNAME   TO CDEMO-FROM-PROGRAM
+      * Reset context so target program enters fresh
            MOVE ZEROS        TO CDEMO-PGM-CONTEXT
+      * Transfer control — does not return to this point
            EXEC CICS
                XCTL PROGRAM(CDEMO-TO-PROGRAM)
                COMMAREA(CARDDEMO-COMMAREA)
@@ -210,10 +279,13 @@
       *----------------------------------------------------------------*
       *                      SEND-TRNVIEW-SCREEN
       *----------------------------------------------------------------*
+      * Populate header and send BMS map COTRN1A with ERASE
+      * and CURSOR positioning to the terminal.
        SEND-TRNVIEW-SCREEN.
 
            PERFORM POPULATE-HEADER-INFO
 
+      * Copy any pending message to the screen error line
            MOVE WS-MESSAGE TO ERRMSGO OF COTRN1AO
 
            EXEC CICS SEND
@@ -227,6 +299,8 @@
       *----------------------------------------------------------------*
       *                      RECEIVE-TRNVIEW-SCREEN
       *----------------------------------------------------------------*
+      * Receive user input from BMS map COTRN1A into the
+      * symbolic input area COTRN1AI.
        RECEIVE-TRNVIEW-SCREEN.
 
            EXEC CICS RECEIVE
@@ -240,21 +314,27 @@
       *----------------------------------------------------------------*
       *                      POPULATE-HEADER-INFO
       *----------------------------------------------------------------*
+      * Fill screen header: application titles, transaction
+      * name, program name, current date and time.
        POPULATE-HEADER-INFO.
 
+      * Retrieve current system date and time
            MOVE FUNCTION CURRENT-DATE  TO WS-CURDATE-DATA
 
+      * Set application banner and program identification
            MOVE CCDA-TITLE01           TO TITLE01O OF COTRN1AO
            MOVE CCDA-TITLE02           TO TITLE02O OF COTRN1AO
            MOVE WS-TRANID              TO TRNNAMEO OF COTRN1AO
            MOVE WS-PGMNAME             TO PGMNAMEO OF COTRN1AO
 
+      * Format date as MM/DD/YY for screen header
            MOVE WS-CURDATE-MONTH       TO WS-CURDATE-MM
            MOVE WS-CURDATE-DAY         TO WS-CURDATE-DD
            MOVE WS-CURDATE-YEAR(3:2)   TO WS-CURDATE-YY
 
            MOVE WS-CURDATE-MM-DD-YY    TO CURDATEO OF COTRN1AO
 
+      * Format time as HH:MM:SS for screen header
            MOVE WS-CURTIME-HOURS       TO WS-CURTIME-HH
            MOVE WS-CURTIME-MINUTE      TO WS-CURTIME-MM
            MOVE WS-CURTIME-SECOND      TO WS-CURTIME-SS
@@ -264,8 +344,13 @@
       *----------------------------------------------------------------*
       *                      READ-TRANSACT-FILE
       *----------------------------------------------------------------*
+      * Read transaction record from TRANSACT VSAM KSDS by
+      * primary key (TRAN-ID). Handles NORMAL (found),
+      * NOTFND (invalid ID), and OTHER (unexpected error).
        READ-TRANSACT-FILE.
 
+      * Note: Uses UPDATE option which acquires a record
+      * lock on the VSAM file until the task ends
            EXEC CICS READ
                 DATASET   (WS-TRANSACT-FILE)
                 INTO      (TRAN-RECORD)
@@ -277,15 +362,18 @@
                 RESP2     (WS-REAS-CD)
            END-EXEC.
 
+      * Evaluate CICS response code from the READ
            EVALUATE WS-RESP-CD
                WHEN DFHRESP(NORMAL)
                    CONTINUE
+      * Transaction ID does not exist in the VSAM file
                WHEN DFHRESP(NOTFND)
                    MOVE 'Y'     TO WS-ERR-FLG
                    MOVE 'Transaction ID NOT found...' TO
                                    WS-MESSAGE
                    MOVE -1       TO TRNIDINL OF COTRN1AI
                    PERFORM SEND-TRNVIEW-SCREEN
+      * Unexpected error — log RESP/REAS to SYSOUT
                WHEN OTHER
                    DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD
                    MOVE 'Y'     TO WS-ERR-FLG
@@ -298,6 +386,7 @@
       *----------------------------------------------------------------*
       *                      CLEAR-CURRENT-SCREEN
       *----------------------------------------------------------------*
+      * Reset all screen fields and re-send the blank form.
        CLEAR-CURRENT-SCREEN.
 
            PERFORM INITIALIZE-ALL-FIELDS.
@@ -306,6 +395,8 @@
       *----------------------------------------------------------------*
       *                      INITIALIZE-ALL-FIELDS
       *----------------------------------------------------------------*
+      * Clear all symbolic map input fields, the transaction ID
+      * input, and the message area to spaces.
        INITIALIZE-ALL-FIELDS.
 
            MOVE -1              TO TRNIDINL OF COTRN1AI
