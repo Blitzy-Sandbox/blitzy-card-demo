@@ -32,6 +32,10 @@
        ENVIRONMENT DIVISION.                                                    
        INPUT-OUTPUT SECTION.                                                    
        FILE-CONTROL.                                                            
+      * CARDFILE: CARDDAT VSAM KSDS accessed sequentially
+      * for full-file dump. Primary key is the 16-byte card
+      * number (FD-CARD-NUM).
+      * FILE STATUS checked after every I/O operation.
            SELECT CARDFILE-FILE ASSIGN TO   CARDFILE                            
                   ORGANIZATION IS INDEXED                                       
                   ACCESS MODE  IS SEQUENTIAL                                    
@@ -42,15 +46,20 @@
        FILE SECTION.                                                            
        FD  CARDFILE-FILE.                                                       
        01  FD-CARDFILE-REC.                                                     
+      * 16-byte card number primary key
            05 FD-CARD-NUM                       PIC X(16).                      
+      * Remaining 134 bytes of the 150-byte card record
            05 FD-CARD-DATA                      PIC X(134).                     
                                                                                 
        WORKING-STORAGE SECTION.                                                 
                                                                                 
       *****************************************************************         
-      * CARD-RECORD layout: see CVACT02Y.cpy for field details
+      * Includes 150-byte CARD-RECORD layout from CVACT02Y:
+      * card number, account link, CVV, embossed name,
+      * expiration date, active status
        COPY CVACT02Y.                                                           
-      * Two-byte FILE STATUS: '00'=OK, '10'=EOF, other=error
+      * Two-byte FILE STATUS: '00'=OK, '10'=EOF,
+      * '35'=file not found, other=error
        01  CARDFILE-STATUS.                                                     
            05  CARDFILE-STAT1      PIC X.                                       
            05  CARDFILE-STAT2      PIC X.                                       
@@ -81,8 +90,9 @@
        01  TIMING                  PIC S9(9) BINARY.                            
                                                                                 
       *****************************************************************         
-      * PROCEDURE DIVISION: Opens card file, reads all records
-      * sequentially until EOF, displays each, then closes.
+      * PROCEDURE DIVISION: Opens CARDDAT, reads all card
+      * records sequentially until EOF, displays each to
+      * SYSOUT, then closes the file and terminates.
        PROCEDURE DIVISION.                                                      
            DISPLAY 'START OF EXECUTION OF PROGRAM CBACT02C'.                    
       * Opens CARDFILE VSAM KSDS for sequential input
@@ -112,23 +122,30 @@
       * CARD-RECORD working storage area (CVACT02Y layout).
       * Sets APPL-RESULT: 0=OK, 16=EOF, 12=I/O error.
        1000-CARDFILE-GET-NEXT.                                                  
+      * Reads next sequential record into CARD-RECORD
            READ CARDFILE-FILE INTO CARD-RECORD.                                 
+      * Status '00': successful read
            IF  CARDFILE-STATUS = '00'                                           
                MOVE 0 TO APPL-RESULT                                            
       *        DISPLAY CARD-RECORD                                              
            ELSE                                                                 
+      * Status '10': end of file reached
                IF  CARDFILE-STATUS = '10'                                       
                    MOVE 16 TO APPL-RESULT                                       
                ELSE                                                             
+      * Any other status: I/O error
                    MOVE 12 TO APPL-RESULT                                       
                END-IF                                                           
            END-IF                                                               
+      * Evaluate APPL-RESULT via 88-level conditions
            IF  APPL-AOK                                                         
                CONTINUE                                                         
            ELSE                                                                 
                IF  APPL-EOF                                                     
+      * Signals main loop to terminate
                    MOVE 'Y' TO END-OF-FILE                                      
                ELSE                                                             
+      * I/O error: display status and abend
                    DISPLAY 'ERROR READING CARDFILE'                             
                    MOVE CARDFILE-STATUS TO IO-STATUS                            
                    PERFORM 9910-DISPLAY-IO-STATUS                               
@@ -137,15 +154,20 @@
            END-IF                                                               
            EXIT.                                                                
       *---------------------------------------------------------------*         
-      * Opens CARDFILE for sequential input. Abends on failure.
+      * Opens CARDFILE for sequential INPUT with FILE STATUS
+      * check. Abends via 9999-ABEND-PROGRAM on failure.
        0000-CARDFILE-OPEN.                                                      
+      * Preset APPL-RESULT to non-zero before OPEN attempt
            MOVE 8 TO APPL-RESULT.                                               
+      * Opens CARDDAT VSAM KSDS for sequential input
            OPEN INPUT CARDFILE-FILE                                             
+      * Status '00': file opened successfully
            IF  CARDFILE-STATUS = '00'                                           
                MOVE 0 TO APPL-RESULT                                            
            ELSE                                                                 
                MOVE 12 TO APPL-RESULT                                           
            END-IF                                                               
+      * On failure, display status and abend program
            IF  APPL-AOK                                                         
                CONTINUE                                                         
            ELSE                                                                 
@@ -156,15 +178,20 @@
            END-IF                                                               
            EXIT.                                                                
       *---------------------------------------------------------------*         
-      * Closes CARDFILE. Abends on close failure.
+      * Closes CARDFILE and verifies clean close via FILE
+      * STATUS. Abends via 9999-ABEND-PROGRAM on failure.
        9000-CARDFILE-CLOSE.                                                     
+      * Preset APPL-RESULT to 8 (non-zero) before CLOSE
            ADD 8 TO ZERO GIVING APPL-RESULT.                                    
+      * Closes CARDDAT VSAM dataset
            CLOSE CARDFILE-FILE                                                  
+      * Status '00': zeroes APPL-RESULT (SUBTRACT X FROM X)
            IF  CARDFILE-STATUS = '00'                                           
                SUBTRACT APPL-RESULT FROM APPL-RESULT                            
            ELSE                                                                 
                ADD 12 TO ZERO GIVING APPL-RESULT                                
            END-IF                                                               
+      * On failure, display status and abend program
            IF  APPL-AOK                                                         
                CONTINUE                                                         
            ELSE                                                                 
@@ -186,6 +213,7 @@
       * Formats FILE STATUS into 4-digit display. Handles both
       * numeric and non-numeric status codes.
        9910-DISPLAY-IO-STATUS.                                                  
+      * Non-numeric or class-9: binary status byte handling
            IF  IO-STATUS NOT NUMERIC                                            
            OR  IO-STAT1 = '9'                                                   
                MOVE IO-STAT1 TO IO-STATUS-04(1:1)                               
@@ -194,6 +222,7 @@
                MOVE TWO-BYTES-BINARY TO IO-STATUS-0403                          
                DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04                      
            ELSE                                                                 
+      * Standard numeric status: display as 4-digit value
                MOVE '0000' TO IO-STATUS-04                                      
                MOVE IO-STATUS TO IO-STATUS-04(3:2)                              
                DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04                      
