@@ -285,6 +285,21 @@
       *Application Commmarea Copybook                                           
        COPY COCOM01Y.                                                           
                                                                                 
+      *----------------------------------------------------------------*
+      * Card update screen state machine. CCUP-CHANGE-ACTION
+      * tracks the current phase of the update workflow:
+      *   LOW-VALUES/SPACES = details not fetched yet
+      *   'S' = details shown to user for editing
+      *   'E' = validation errors found in user input
+      *   'N' = changes validated, awaiting PF5 confirm
+      *   'C' = update committed successfully
+      *   'L' = could not lock record for update
+      *   'F' = locked but REWRITE failed
+      * CCUP-OLD-DETAILS stores the before-image captured
+      * at fetch time. CCUP-NEW-DETAILS stores screen edits
+      * received via RECEIVE MAP. CARD-UPDATE-RECORD is the
+      * assembled 150-byte buffer written by REWRITE.
+      *----------------------------------------------------------------*
        01 WS-THIS-PROGCOMMAREA.                                                 
           05 CARD-UPDATE-SCREEN-DATA.                                           
              10 CCUP-CHANGE-ACTION                 PIC X(1)                     
@@ -372,12 +387,39 @@
       *CUSTOMER LAYOUT                                                          
        COPY CVCUS01Y.                                                           
                                                                                 
+      *----------------------------------------------------------------*
+      * LINKAGE SECTION receives the COMMAREA passed by
+      * CICS on pseudo-conversational RETURN TRANSID.
+      * DFHCOMMAREA is variable-length up to 32767 bytes,
+      * sized by EIBCALEN on each invocation.
+      *----------------------------------------------------------------*
        LINKAGE SECTION.                                                         
        01  DFHCOMMAREA.                                                         
          05  FILLER                                PIC X(1)                     
              OCCURS 1 TO 32767 TIMES DEPENDING ON EIBCALEN.                     
                                                                                 
+      *----------------------------------------------------------------*
+      * PROCEDURE DIVISION — pseudo-conversational model.
+      * Each user interaction triggers a new task. The
+      * program restores state from COMMAREA, processes
+      * the current AID key, sends the next screen, then
+      * issues EXEC CICS RETURN TRANSID to suspend.
+      * 
+      * Flow overview:
+      *   0000-MAIN: Entry, restore state, route by AID
+      *   1000: RECEIVE MAP, edit inputs
+      *   2000: Decide next action based on edit results
+      *   3000: Build and SEND MAP to terminal
+      *   9000: READ data and save before-image
+      *   9200: READ UPDATE, concurrency check, REWRITE
+      *   9300: Compare before-image with current record
+      *----------------------------------------------------------------*
        PROCEDURE DIVISION.                                                      
+      * 0000-MAIN — Program entry point. Registers the
+      * abend handler, initializes work areas, restores
+      * COMMAREA state from the previous pseudo-conv task,
+      * maps the AID key, validates it, and routes to the
+      * appropriate processing path via EVALUATE TRUE.
        0000-MAIN.                                                               
                                                                                 
                                                                                 
@@ -557,6 +599,14 @@
            END-EVALUATE                                                         
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*
+      * COMMON-RETURN — Pseudo-conversational return point.
+      * Copies current error message to the CCARD work area,
+      * packs both CARDDEMO-COMMAREA and the local
+      * WS-THIS-PROGCOMMAREA into WS-COMMAREA, then issues
+      * EXEC CICS RETURN TRANSID to suspend the task and
+      * await the next terminal input from the user.
+      *----------------------------------------------------------------*
        COMMON-RETURN.                                                           
            MOVE WS-RETURN-MSG     TO CCARD-ERROR-MSG                            
                                                                                 
@@ -575,6 +625,13 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*
+      * 1000-PROCESS-INPUTS — Orchestrates input processing.
+      * Calls 1100 to receive the BMS map data from the
+      * terminal, then 1200 to validate all input fields.
+      * Stores any error messages and sets navigation
+      * context to this program for re-display.
+      *----------------------------------------------------------------*
        1000-PROCESS-INPUTS.                                                     
            PERFORM 1100-RECEIVE-MAP                                             
               THRU 1100-RECEIVE-MAP-EXIT                                        
@@ -589,6 +646,15 @@
        1000-PROCESS-INPUTS-EXIT.                                                
            EXIT                                                                 
            .                                                                    
+      *----------------------------------------------------------------*
+      * 1100-RECEIVE-MAP — Issues EXEC CICS RECEIVE MAP to
+      * read the CCRDUPA screen data into the symbolic map
+      * input buffer CCRDUPAI. Transfers each field from the
+      * map input area to CCUP-NEW-DETAILS, replacing '*'
+      * or spaces with LOW-VALUES to indicate empty fields.
+      * Fields transferred: account ID, card number, card
+      * name, active status, expiry month, expiry year.
+      *----------------------------------------------------------------*
        1100-RECEIVE-MAP.                                                        
            EXEC CICS RECEIVE MAP(LIT-THISMAP)                                   
                      MAPSET(LIT-THISMAPSET)                                     
@@ -652,6 +718,16 @@
        1100-RECEIVE-MAP-EXIT.                                                   
            EXIT                                                                 
            .                                                                    
+      *----------------------------------------------------------------*
+      * 1200-EDIT-MAP-INPUTS — Routes field validation based
+      * on the current update state. If details have not yet
+      * been fetched, validates only the search keys (account
+      * and card number). If details are already displayed,
+      * compares new values to old values for change detect,
+      * then validates each editable field (name, status,
+      * expiry month, expiry year). Sets CCUP state flags
+      * to reflect validation outcome.
+      *----------------------------------------------------------------*
        1200-EDIT-MAP-INPUTS.                                                    
                                                                                 
            SET INPUT-OK                  TO TRUE                                
@@ -732,6 +808,12 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*
+      * 1210-EDIT-ACCOUNT — Validates the account number
+      * search key. Rejects if blank, non-numeric, or zero.
+      * Sets FLG-ACCTFILTER-ISVALID on success. Stores the
+      * validated value in CDEMO-ACCT-ID for COMMAREA.
+      *----------------------------------------------------------------*
        1210-EDIT-ACCOUNT.                                                       
            SET FLG-ACCTFILTER-NOT-OK TO TRUE                                    
                                                                                 
@@ -773,6 +855,12 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*
+      * 1220-EDIT-CARD — Validates the 16-digit card number
+      * search key. Rejects if blank, non-numeric, or zero.
+      * Sets FLG-CARDFILTER-ISVALID on success. Stores the
+      * value in CDEMO-CARD-NUM for COMMAREA persistence.
+      *----------------------------------------------------------------*
        1220-EDIT-CARD.                                                          
       *    Not numeric                                                          
       *    Not 16 characters                                                    
@@ -817,6 +905,13 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*
+      * 1230-EDIT-NAME — Validates the cardholder embossed
+      * name. Rejects if blank. Uses INSPECT CONVERTING to
+      * strip all alphabetic characters, then checks if any
+      * non-alpha/non-space characters remain. Only letters
+      * and spaces are accepted. Sets FLG-CARDNAME-ISVALID.
+      *----------------------------------------------------------------*
        1230-EDIT-NAME.                                                          
       *    Not BLANK                                                            
            SET FLG-CARDNAME-NOT-OK      TO TRUE                                 
@@ -856,6 +951,12 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*
+      * 1240-EDIT-CARDSTATUS — Validates the card active
+      * status. Accepts only 'Y' (active) or 'N' (inactive).
+      * Uses the FLG-YES-NO-CHECK field with 88-level
+      * FLG-YES-NO-VALID for the range check.
+      *----------------------------------------------------------------*
        1240-EDIT-CARDSTATUS.                                                    
       *    Must be Y or N                                                       
            SET FLG-CARDSTATUS-NOT-OK      TO TRUE                               
@@ -888,6 +989,11 @@
        1240-EDIT-CARDSTATUS-EXIT.                                               
            EXIT                                                                 
            .                                                                    
+      *----------------------------------------------------------------*
+      * 1250-EDIT-EXPIRY-MON — Validates the card expiry
+      * month. Rejects if blank or not in the range 1-12.
+      * Uses CARD-MONTH-CHECK-N with 88-level VALID-MONTH.
+      *----------------------------------------------------------------*
        1250-EDIT-EXPIRY-MON.                                                    
                                                                                 
                                                                                 
@@ -924,6 +1030,11 @@
        1250-EDIT-EXPIRY-MON-EXIT.                                               
            EXIT                                                                 
            .                                                                    
+      *----------------------------------------------------------------*
+      * 1260-EDIT-EXPIRY-YEAR — Validates the card expiry
+      * year. Rejects if blank or not in 1950-2099 range.
+      * Uses CARD-YEAR-CHECK-N with 88-level VALID-YEAR.
+      *----------------------------------------------------------------*
        1260-EDIT-EXPIRY-YEAR.                                                   
                                                                                 
       *    Not supplied                                                         
@@ -959,6 +1070,18 @@
        1260-EDIT-EXPIRY-YEAR-EXIT.                                              
            EXIT                                                                 
            .                                                                    
+      *----------------------------------------------------------------*
+      * 2000-DECIDE-ACTION — State machine transition logic.
+      * Evaluates the current CCUP state and decides the
+      * next action:
+      *   DETAILS-NOT-FETCHED / PF12: Fetch card data
+      *   SHOW-DETAILS: If edits OK, move to confirm state
+      *   CHANGES-NOT-OK: Stay in edit state (errors shown)
+      *   OK-NOT-CONFIRMED + PF5: Execute 9200-WRITE
+      *   OK-NOT-CONFIRMED (no PF5): Re-show confirm prompt
+      *   OKAYED-AND-DONE: Reset for next search
+      *   OTHER: Unexpected state triggers programmed ABEND
+      *----------------------------------------------------------------*
        2000-DECIDE-ACTION.                                                      
            EVALUATE TRUE                                                        
       ******************************************************************        
@@ -1046,6 +1169,14 @@
                                                                                 
                                                                                 
                                                                                 
+      *----------------------------------------------------------------*
+      * 3000-SEND-MAP — Orchestrates building and sending
+      * the CCRDUPA screen. Calls 3100 to initialize header
+      * fields, 3200 to populate data fields, 3250 to set
+      * the info/error messages, 3300 to configure field
+      * attributes and cursor position, then 3400 to issue
+      * the EXEC CICS SEND MAP command.
+      *----------------------------------------------------------------*
        3000-SEND-MAP.                                                           
            PERFORM 3100-SCREEN-INIT                                             
               THRU 3100-SCREEN-INIT-EXIT                                        
@@ -1063,6 +1194,13 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*
+      * 3100-SCREEN-INIT — Initializes the output map buffer
+      * CCRDUPAO with LOW-VALUES, populates the application
+      * title lines from COTTL01Y, sets the transaction and
+      * program name fields, and formats the current date
+      * and time from FUNCTION CURRENT-DATE.
+      *----------------------------------------------------------------*
        3100-SCREEN-INIT.                                                        
            MOVE LOW-VALUES TO CCRDUPAO                                          
                                                                                 
@@ -1093,6 +1231,15 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*
+      * 3200-SETUP-SCREEN-VARS — Populates the card detail
+      * fields on the screen based on the current state:
+      *   NOT-FETCHED: Clears all card fields
+      *   SHOW-DETAILS: Displays the before-image (old) data
+      *   CHANGES-MADE: Displays the user's new input values
+      *   OTHER: Falls back to before-image values
+      * Always shows account and card number when available.
+      *----------------------------------------------------------------*
        3200-SETUP-SCREEN-VARS.                                                  
       *    INITIALIZE SEARCH CRITERIA                                           
            IF CDEMO-PGM-ENTER                                                   
@@ -1149,6 +1296,13 @@
        3200-SETUP-SCREEN-VARS-EXIT.                                             
            EXIT                                                                 
            .                                                                    
+      *----------------------------------------------------------------*
+      * 3250-SETUP-INFOMSG — Selects the information message
+      * based on the current state. Maps each CCUP state to
+      * a user-facing prompt (search, edit, confirm, success,
+      * failure). Copies the selected message to the BMS
+      * map output fields INFOMSGO and ERRMSGO.
+      *----------------------------------------------------------------*
        3250-SETUP-INFOMSG.                                                      
       *    SETUP INFORMATION MESSAGE                                            
            EVALUATE TRUE                                                        
@@ -1179,6 +1333,17 @@
        3250-SETUP-INFOMSG-EXIT.                                                 
            EXIT                                                                 
            .                                                                    
+      *----------------------------------------------------------------*
+      * 3300-SETUP-SCREEN-ATTRS — Configures BMS field
+      * attributes (DFHBMFSE=unprotected, DFHBMPRF=protect)
+      * based on the update phase:
+      *   NOT-FETCHED: Account/card editable, rest protected
+      *   SHOW/ERRORS: Search keys locked, card fields open
+      *   CONFIRMED/DONE: All fields protected (read-only)
+      * Also positions the cursor on the first error field,
+      * sets red color on invalid fields, and places '*' in
+      * blank required fields to prompt the user.
+      *----------------------------------------------------------------*
        3300-SETUP-SCREEN-ATTRS.                                                 
                                                                                 
                                                                                 
@@ -1335,6 +1500,13 @@
            .                                                                    
                                                                                 
                                                                                 
+      *----------------------------------------------------------------*
+      * 3400-SEND-SCREEN — Issues EXEC CICS SEND MAP to
+      * write the CCRDUPAO output buffer to the 3270
+      * terminal. Uses CURSOR option to position at the
+      * field set by 3300, ERASE to clear the screen, and
+      * FREEKB to unlock the keyboard for user input.
+      *----------------------------------------------------------------*
        3400-SEND-SCREEN.                                                        
                                                                                 
            MOVE LIT-THISMAPSET         TO CCARD-NEXT-MAPSET                     
@@ -1354,6 +1526,17 @@
            .                                                                    
                                                                                 
                                                                                 
+      *----------------------------------------------------------------*
+      * 9000-READ-DATA — Fetch phase. Reads the card record
+      * by primary key via 9100, then saves the fetched
+      * field values (CVV, name, expiry, status) into the
+      * CCUP-OLD-DETAILS before-image area. This before-
+      * image is preserved across pseudo-conversational
+      * returns in WS-THIS-PROGCOMMAREA and is used later
+      * by 9300 to detect concurrent changes.
+      * Converts embossed name to uppercase via INSPECT
+      * CONVERTING before saving for consistent comparison.
+      *----------------------------------------------------------------*
        9000-READ-DATA.                                                          
                                                                                 
            INITIALIZE CCUP-OLD-DETAILS                                          
@@ -1387,6 +1570,15 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*
+      * 9100-GETCARD-BYACCTCARD — Issues EXEC CICS READ on
+      * the CARDDAT VSAM KSDS using the 16-byte card number
+      * as the primary key (RIDFLD). Reads the 150-byte
+      * CARD-RECORD (see CVACT02Y.cpy for layout).
+      * Evaluates RESP: NORMAL sets success, NOTFND sets
+      * error flags and 'card not found' message, OTHER
+      * builds a diagnostic error message with RESP/RESP2.
+      *----------------------------------------------------------------*
        9100-GETCARD-BYACCTCARD.                                                 
       *    Read the Card file                                                   
       *                                                                         
@@ -1431,6 +1623,20 @@
            .                                                                    
                                                                                 
                                                                                 
+      *----------------------------------------------------------------*
+      * 9200-WRITE-PROCESSING — Submit phase (optimistic
+      * concurrency). Performs the READ UPDATE + REWRITE
+      * pattern on the CARDDAT VSAM KSDS:
+      *   1. Issues READ with UPDATE option to lock record
+      *   2. If lock fails, sets COULD-NOT-LOCK error
+      *   3. Calls 9300 to compare the current record with
+      *      the before-image saved at fetch time
+      *   4. If another user changed the record, sets
+      *      DATA-WAS-CHANGED-BEFORE-UPDATE and exits
+      *   5. Assembles CARD-UPDATE-RECORD from new values
+      *   6. Issues EXEC CICS REWRITE to persist changes
+      *   7. Evaluates REWRITE RESP for success or failure
+      *----------------------------------------------------------------*
        9200-WRITE-PROCESSING.                                                   
                                                                                 
       *    Read the Card file                                                   
@@ -1509,6 +1715,18 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*
+      * 9300-CHECK-CHANGE-IN-REC — Optimistic concurrency
+      * check. Compares the current CARD-RECORD (just read
+      * with UPDATE lock) against the CCUP-OLD before-image
+      * saved during the original fetch. Checks CVV, name,
+      * expiry date components, and active status. If any
+      * field differs, another user modified this record
+      * between our fetch and submit. In that case, sets
+      * DATA-WAS-CHANGED-BEFORE-UPDATE, refreshes the
+      * before-image with current values, and aborts the
+      * update so the user can review the new data.
+      *----------------------------------------------------------------*
        9300-CHECK-CHANGE-IN-REC.                                                
            INSPECT CARD-EMBOSSED-NAME                                           
            CONVERTING LIT-LOWER                                                 
@@ -1542,6 +1760,13 @@
        COPY 'CSSTRPFY'
            .                                                           
                                                                         340000
+      *----------------------------------------------------------------*
+      * ABEND-ROUTINE — Handles unexpected program abends.
+      * Sends the ABEND-DATA block (from CSMSG02Y.cpy) to
+      * the terminal, cancels the abend handler to prevent
+      * recursion, then issues EXEC CICS ABEND with code
+      * '9999' to force a controlled termination.
+      *----------------------------------------------------------------*
        ABEND-ROUTINE.                                                           
                                                                                 
            IF ABEND-MSG EQUAL LOW-VALUES                                        
