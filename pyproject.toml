@@ -95,6 +95,11 @@ no_implicit_optional = true
 check_untyped_defs = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
+# Required because "src/" is a namespace package (no __init__.py). Without this,
+# mypy resolves modules under both "shared.models" and "src.shared.models",
+# causing "Source file found twice under different module names" errors when
+# scanning directories like "src". See mypy docs on mapping file paths to modules.
+explicit_package_bases = true
 plugins = [
     "pydantic.mypy",
     "sqlalchemy.ext.mypy.plugin",
