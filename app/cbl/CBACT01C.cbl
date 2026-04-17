@@ -18,18 +18,28 @@
       * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,    
       * either express or implied. See the License for the specific     
       * language governing permissions and limitations under the License
-      * Batch diagnostic utility: sequentially reads all records from
-      * the ACCTDAT VSAM KSDS (account master file) and displays
-      * each record's key fields to SYSOUT. Uses CVACT01Y copybook
-      * for the 300-byte ACCOUNT-RECORD layout. Invoked by JCL job
-      * READACCT.jcl. Abends via CEE3ABD on any I/O error.
       ******************************************************************
+      *
+      * Batch utility program: Sequential read and display of
+      * the account master file (ACCTDAT VSAM KSDS dataset).
+      * Reads all records in ACCT-ID key sequence and outputs
+      * each account record to SYSOUT via DISPLAY statements.
+      * Used for data verification and diagnostic dump during
+      * development and environment validation.
+      *
+      * Record layout: ACCOUNT-RECORD (300 bytes) defined in
+      *   copybook CVACT01Y (app/cpy/CVACT01Y.cpy)
+      * VSAM access: Sequential read via INDEXED organization
+      * JCL wrapper: app/jcl/READACCT.jcl
+      * Abends via CEE3ABD on any I/O error
+      *
        IDENTIFICATION DIVISION.                                                 
        PROGRAM-ID.    CBACT01C.                                                 
        AUTHOR.        AWS.                                                      
                                                                                 
        ENVIRONMENT DIVISION.                                                    
        INPUT-OUTPUT SECTION.                                                    
+      * File I/O configuration for batch account file
        FILE-CONTROL.                                                            
       * ACCTFILE: VSAM KSDS accessed sequentially for full-file scan.
       * Key is the 11-digit account ID (FD-ACCT-ID).
@@ -39,8 +49,11 @@
                   ACCESS MODE  IS SEQUENTIAL                                    
                   RECORD KEY   IS FD-ACCT-ID                                    
                   FILE STATUS  IS ACCTFILE-STATUS.                              
+      * INDEXED SEQUENTIAL access reads records in
+      * ascending ACCT-ID (11-digit account ID) key order
       *                                                                         
        DATA DIVISION.                                                           
+      * File descriptor for the ACCTDAT VSAM dataset
        FILE SECTION.                                                            
        FD  ACCTFILE-FILE.                                                       
        01  FD-ACCTFILE-REC.                                                     
@@ -48,13 +61,18 @@
            05 FD-ACCT-ID                        PIC 9(11).                      
       * Remaining 289 bytes of the 300-byte account record
            05 FD-ACCT-DATA                      PIC X(289).                     
+      * FD-ACCT-ID(11) + FD-ACCT-DATA(289) = 300-byte rec
                                                                                 
+      * Working storage for account record processing
        WORKING-STORAGE SECTION.                                                 
                                                                                 
       *****************************************************************         
-      * ACCOUNT-RECORD layout: see CVACT01Y.cpy for field details
+      * Includes 300-byte ACCOUNT-RECORD layout from copybook
+      * CVACT01Y (app/cpy/CVACT01Y.cpy) — account fields:
+      * ACCT-ID, balances, dates, status, limits, group ID
        COPY CVACT01Y.                                                           
-      * Two-byte FILE STATUS: '00'=OK, '10'=EOF, other=error
+      * Two-byte FILE STATUS: '00'=success, '10'=EOF,
+      * '35'=file not found, other=I/O error
        01  ACCTFILE-STATUS.                                                     
            05  ACCTFILE-STAT1      PIC X.                                       
            05  ACCTFILE-STAT2      PIC X.                                       
@@ -117,7 +135,9 @@
       * ACCOUNT-RECORD working storage area (CVACT01Y layout).
       * Sets APPL-RESULT: 0=OK, 16=EOF, 12=I/O error.
        1000-ACCTFILE-GET-NEXT.                                                  
+      * Read next VSAM record into ACCOUNT-RECORD area
            READ ACCTFILE-FILE INTO ACCOUNT-RECORD.                              
+      * Check FILE STATUS: '00'=OK, '10'=EOF, other=err
            IF  ACCTFILE-STATUS = '00'                                           
                MOVE 0 TO APPL-RESULT                                            
                PERFORM 1100-DISPLAY-ACCT-RECORD                                 
@@ -128,6 +148,7 @@
                    MOVE 12 TO APPL-RESULT                                       
                END-IF                                                           
            END-IF                                                               
+      * Evaluate result: continue, set EOF, or abend
            IF  APPL-AOK                                                         
                CONTINUE                                                         
            ELSE                                                                 
@@ -161,13 +182,17 @@
       *---------------------------------------------------------------*         
       * Opens ACCTFILE for sequential input. Abends on failure.
        0000-ACCTFILE-OPEN.                                                      
+      * Initialize result to 8 (pending I/O operation)
            MOVE 8 TO APPL-RESULT.                                               
+      * Open ACCTDAT for read-only sequential access
            OPEN INPUT ACCTFILE-FILE                                             
+      * Validate FILE STATUS after OPEN -- abend on fail
            IF  ACCTFILE-STATUS = '00'                                           
                MOVE 0 TO APPL-RESULT                                            
            ELSE                                                                 
                MOVE 12 TO APPL-RESULT                                           
            END-IF                                                               
+      * If OPEN failed, display error and abend
            IF  APPL-AOK                                                         
                CONTINUE                                                         
            ELSE                                                                 
@@ -180,13 +205,17 @@
       *---------------------------------------------------------------*         
       * Closes ACCTFILE. Abends on close failure.
        9000-ACCTFILE-CLOSE.                                                     
+      * Initialize result to 8 (pending I/O operation)
            ADD 8 TO ZERO GIVING APPL-RESULT.                                    
+      * Close ACCTDAT VSAM file to release dataset
            CLOSE ACCTFILE-FILE                                                  
+      * Check close status -- zeros result on success
            IF  ACCTFILE-STATUS = '00'                                           
                SUBTRACT APPL-RESULT FROM APPL-RESULT                            
            ELSE                                                                 
                ADD 12 TO ZERO GIVING APPL-RESULT                                
            END-IF                                                               
+      * If close failed, display error and abend
            IF  APPL-AOK                                                         
                CONTINUE                                                         
            ELSE                                                                 
@@ -197,11 +226,15 @@
            END-IF                                                               
            EXIT.                                                                
                                                                                 
-      * Abends program via IBM LE CEE3ABD with abend code 999.
+      * Terminates program abnormally via CEE3ABD (Language
+      * Environment abend service) with abend code 999 and
+      * CLEANUP timing for resource cleanup
        9999-ABEND-PROGRAM.                                                      
            DISPLAY 'ABENDING PROGRAM'                                           
+      * Set CLEANUP timing (0=immediate) and abend code
            MOVE 0 TO TIMING                                                     
            MOVE 999 TO ABCODE                                                   
+      * Calls LE abend handler to terminate the program
            CALL 'CEE3ABD'.                                                      
                                                                                 
       *****************************************************************         
@@ -209,6 +242,7 @@
       * numeric (e.g., '00', '10') and non-numeric (binary stat2)
       * status codes for diagnostic output.
        9910-DISPLAY-IO-STATUS.                                                  
+      * Non-numeric or class-9: convert binary byte
            IF  IO-STATUS NOT NUMERIC                                            
            OR  IO-STAT1 = '9'                                                   
                MOVE IO-STAT1 TO IO-STATUS-04(1:1)                               
@@ -216,6 +250,7 @@
                MOVE IO-STAT2 TO TWO-BYTES-RIGHT                                 
                MOVE TWO-BYTES-BINARY TO IO-STATUS-0403                          
                DISPLAY 'FILE STATUS IS: NNNN' IO-STATUS-04                      
+      * Numeric status: pad to 4 digits for display
            ELSE                                                                 
                MOVE '0000' TO IO-STATUS-04                                      
                MOVE IO-STATUS TO IO-STATUS-04(3:2)                              
