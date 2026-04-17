@@ -170,6 +170,7 @@ The following matrix shows which COBOL programs include each copybook via `COPY`
 > Sources: `COPY` statement analysis across all 28 programs in `app/cbl/`
 
 **Usage highlights:**
+
 - `COCOM01Y`, `COTTL01Y`, `CSDAT01Y`, and `CSMSG01Y` form the "universal quartet" — included by all 17 online programs
 - `CVACT01Y` and `CVACT03Y` are the most cross-cutting record layouts, consumed by 9–10 programs each (online + batch)
 - `COACTUPC` (Account Update) is the most copybook-intensive program, consuming 4 validation/utility copybooks that no other program uses
@@ -299,7 +300,7 @@ Copybooks are the **shared contract layer** of the CardDemo application — they
 
 ### Role Within the CardDemo Architecture
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────┐
 │                     CICS Online Programs                        │
 │            (app/cbl/CO*.cbl — 18 programs)                      │

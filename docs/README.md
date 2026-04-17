@@ -67,10 +67,12 @@ All documentation pages are standard Markdown files (`.md`) stored in this `docs
 - **Diagrams:** Mermaid diagrams are supported via fenced code blocks with the `mermaid` language identifier. They are rendered by the `mermaid2` plugin.
 - **Adding a new page:** Create a `.md` file in this directory and add a corresponding entry to the `nav` section in [`mkdocs.yml`](../mkdocs.yml). The navigation structure is explicitly defined — pages are not auto-discovered.
 - **Existing navigation pattern:** Follow the label-to-file mapping style already present in `mkdocs.yml`:
+
   ```yaml
   nav:
     - Label: filename.md
   ```
+
 - **General contribution guidelines:** See [`CONTRIBUTING.md`](../CONTRIBUTING.md) for the repository-wide contribution process, including issue reporting and pull request procedures.
 
 Documentation changes merged into the default branch are automatically reflected in the Backstage TechDocs site.

@@ -257,7 +257,7 @@ The 29 jobs in this directory use several recurring JCL patterns documented belo
 **Idempotent Cluster Deletion:**
 Most provisioning jobs use this pattern to safely delete existing clusters before redefining:
 
-```
+```text
 DELETE AWS.M2.CARDDEMO.<dataset>.VSAM.KSDS -
        CLUSTER
 IF MAXCC LE 08 THEN SET MAXCC = 0
@@ -267,6 +267,7 @@ The `SET MAXCC = 0` (or `IF MAXCC LE 08 THEN SET MAXCC = 0`) suppresses the non-
 
 **VSAM KSDS Cluster Definition:**
 Standard `DEFINE CLUSTER` specifies:
+
 - `KEYS(length offset)` — primary key definition
 - `RECORDSIZE(avg max)` — fixed-length records (avg equals max)
 - `SHAREOPTIONS(cross-region cross-system)` — concurrent access control
@@ -277,13 +278,15 @@ Standard `DEFINE CLUSTER` specifies:
 
 **Alternate Index (AIX) Pattern:**
 Jobs like CARDFILE, XREFFILE, TRANFILE, and TRANIDX use a three-step AIX creation sequence:
+
 1. `DEFINE ALTERNATEINDEX` — creates AIX with `RELATE` to base cluster, `NONUNIQUEKEY`, and `UPGRADE`
 2. `DEFINE PATH` — links AIX to its base cluster, enabling browse access through the alternate key
 3. `BLDINDEX` — populates AIX entries from existing base cluster data
 
 **REPRO (Data Copy):**
 Loads flat PS datasets into VSAM clusters:
-```
+
+```text
 REPRO INFILE(ddname) OUTFILE(ddname)
 ```
 
@@ -291,7 +294,7 @@ REPRO INFILE(ddname) OUTFILE(ddname)
 
 The CLOSEFIL and OPENFIL jobs use `PGM=SDSF` to send MVS modify commands directly to the CICS region:
 
-```
+```text
 /F CICSAWSA,'CEMT SET FIL(<filename>) CLO'
 /F CICSAWSA,'CEMT SET FIL(<filename>) OPE'
 ```
@@ -302,7 +305,7 @@ This issues CICS CEMT (Master Terminal) commands to close or open file definitio
 
 Several jobs invoke the `REPROC` procedure from `AWS.M2.CARDDEMO.PROC` to unload VSAM data to sequential format:
 
-```
+```text
 //JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')
 //stepname EXEC PROC=REPROC,
 // CNTLLIB=AWS.M2.CARDDEMO.CNTL

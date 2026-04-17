@@ -117,7 +117,7 @@ Each ASCII fixture file corresponds to a COBOL copybook that defines the byte-le
 | `trantype.txt` | `CVTRA03Y.cpy` | `TRAN-TYPE-RECORD` | 60 | 60 | 7 | Transaction type — 2-byte type code mapped to 50-character description |
 
 > **Note on ASCII line sizes vs. VSAM record sizes:** Most ASCII fixture files carry the full VSAM record length per line (including trailing FILLER spaces). The exception is `cardxref.txt`, where ASCII lines contain only the 36 data-bearing bytes (XREF-CARD-NUM 16 + XREF-CUST-ID 9 + XREF-ACCT-ID 11 = 36) while the VSAM `CARD-XREF-RECORD` is 50 bytes (with a 14-byte FILLER defined in `CVACT03Y.cpy`). The IDCAMS REPRO process pads records to the full VSAM record size during load.
-
+>
 > Source: Record layout definitions from `app/cpy/CVACT01Y.cpy`, `CVACT02Y.cpy`, `CVACT03Y.cpy`, `CVCUS01Y.cpy`, `CVTRA01Y.cpy`, `CVTRA02Y.cpy`, `CVTRA03Y.cpy`, `CVTRA04Y.cpy`, `CVTRA06Y.cpy`
 
 ---

@@ -195,6 +195,7 @@ The following table lists the COBOL `COPY` statement dependencies for each progr
 | CBSTM03B   | *(none — uses LINKAGE SECTION parameters)* |
 
 **Common copybook groupings:**
+
 - **All online programs** share: `COCOM01Y` (COMMAREA), `COTTL01Y` (title text), `CSDAT01Y` (date/time), `CSMSG01Y` (messages), `DFHAID` (attention IDs), `DFHBMSCA` (BMS attributes)
 - **Account/card programs** add: `CVACT01Y` (account record), `CVACT02Y` (card record), `CVACT03Y` (cross-reference), `CVCUS01Y` (customer record), `CVCRD01Y` (card work area)
 - **COACTUPC** uniquely adds: `CSSETATY` (attribute setting via COPY REPLACING), `CSUTLDPY` (date validation paragraphs), `CSLKPCDY` (area code/state/ZIP lookup tables), `CSUTLDWY` (date-edit working storage)
@@ -329,13 +330,13 @@ For complete installation and environment setup instructions, see the root [READ
 
 Online CICS programs require the CICS translator and are compiled using the sample JCL wrapper:
 
-```
+```text
 samples/jcl/CICCMP.jcl
 ```
 
 After compilation, programs must be defined to the CICS region via the CSD resource definition job:
 
-```
+```text
 app/jcl/CBADMCDJ.jcl
 ```
 
@@ -343,7 +344,7 @@ app/jcl/CBADMCDJ.jcl
 
 Batch programs are compiled using the standard batch compile wrapper:
 
-```
+```text
 samples/jcl/BATCMP.jcl
 ```
 

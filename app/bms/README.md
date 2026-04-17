@@ -79,7 +79,7 @@ All 17 mapsets share a core set of DFHMSD-level parameters, with variation in ho
 
 Used by: `COSGN00`, `COMEN01`, `COADM01`, `COTRN00`, `COTRN01`, `COTRN02`, `COBIL00`, `CORPT00`, `COUSR00`, `COUSR01`, `COUSR02`, `COUSR03`
 
-```
+```text
 mapset  DFHMSD CTRL=(ALARM,FREEKB),
                EXTATT=YES,
                LANG=COBOL, ...
@@ -96,7 +96,7 @@ map     DFHMDI COLUMN=1,
 
 Used by: `COACTVW`, `COACTUP`, `COCRDLI`, `COCRDSL`, `COCRDUP`
 
-```
+```text
 mapset  DFHMSD LANG=COBOL,
                MODE=INOUT, ...
 map     DFHMDI CTRL=(FREEKB),
@@ -244,7 +244,7 @@ flowchart TD
 
 BMS maps are the **presentation layer** of the CardDemo CICS application. They sit between the 3270 terminal hardware and the COBOL business logic programs:
 
-```
+```text
 ┌─────────────┐    ┌──────────────┐    ┌──────────────┐    ┌───────────┐
 │ 3270        │◄──►│ CICS BMS     │◄──►│ COBOL        │◄──►│ VSAM      │
 │ Terminal    │    │ Physical Map │    │ Program      │    │ Datasets  │
@@ -325,7 +325,7 @@ Source: `app/bms/COBIL00.bms`, `app/bms/COTRN02.bms`, `app/bms/CORPT00.bms`.
 
 Zero-length DFHMDF fields (`LENGTH=0`) are used extensively throughout all screens to stop attribute bleed. When one field has a specific color or protection attribute, a zero-length field is placed immediately after it to reset the attribute byte before the next visible field. Example from `COSGN00.bms`:
 
-```
+```text
 USERID  DFHMDF ATTRB=(FSET,IC,NORM,UNPROT), COLOR=GREEN, LENGTH=8, ...
         DFHMDF ATTRB=(ASKIP,NORM), COLOR=GREEN, LENGTH=0, POS=(19,52)
 ```
