@@ -51,6 +51,11 @@
        DATA DIVISION.                                                           
                                                                                 
        WORKING-STORAGE SECTION.                                                 
+      *----------------------------------------------------------------*        
+      * Working storage contains CICS processing variables, input               
+      * validation flags, screen row arrays, file-handling fields,              
+      * literal constants, and all COPY-included shared copybooks.              
+      *----------------------------------------------------------------*        
                                                                                 
                                                                                 
        01  WS-MISC-STORAGE.                                                     
@@ -233,12 +238,17 @@
       ******************************************************************        
       *Other common working storage Variables                                   
       ******************************************************************        
+      * CVCRD01Y provides CC-WORK-AREAS with AID key flags                      
+      * (CCARD-AID-ENTER, CCARD-AID-CLEAR, PFK01-PFK12),                        
+      * next-program routing fields, and card work area vars.                   
        COPY CVCRD01Y.                                                           
                                                                                 
       ******************************************************************        
       *  Commarea manipulations                                                 
       ******************************************************************        
       *Application Commmarea Copybook                                           
+      * COCOM01Y defines CARDDEMO-COMMAREA shared across all                    
+      * programs for inter-program state via CICS XCTL/LINK.                    
        COPY COCOM01Y.                                                           
                                                                                 
        01 WS-THIS-PROGCOMMAREA.                                                 
@@ -279,37 +289,70 @@
                                                                                 
                                                                                 
       *IBM SUPPLIED COPYBOOKS                                                   
+      * DFHBMSCA provides BMS attribute byte constants                          
+      * (DFHBMPRF, DFHBMPRO, DFHBMFSE, DFHRED) for fields.                      
        COPY DFHBMSCA.                                                           
+      * DFHAID provides attention identifier constants                          
+      * (DFHENTER, DFHCLEAR, DFHPF1-PF24) for EIBAID test.                      
        COPY DFHAID.                                                             
                                                                                 
       *COMMON COPYBOOKS                                                         
       *Screen Titles                                                            
+      * COTTL01Y provides application banner text fields                        
+      * (CCDA-TITLE01, CCDA-TITLE02) for screen headers.                        
        COPY COTTL01Y.                                                           
       *Credit Card Search Screen Layout                                         
       *COPY COCRDSL.                                                            
       *Credit Card List Screen Layout                                           
+      * COCRDLI provides symbolic map for card list screen                      
+      * (CCRDLIA) with 7 selectable row field arrays.                           
        COPY COCRDLI.                                                            
                                                                                 
       *Current Date                                                             
+      * CSDAT01Y provides date/time working storage fields                      
+      * (WS-CURDATE, WS-CURTIME) for screen header display.                     
        COPY CSDAT01Y.                                                           
       *Common Messages                                                          
+      * CSMSG01Y provides common user-facing message literals                   
+      * (CCDA-MSG-THANK-YOU, CCDA-MSG-INVALID-KEY).                             
        COPY CSMSG01Y.                                                           
       *Abend Variables                                                          
+      * CSMSG02Y (commented out) provides abend data capture                    
+      * fields (ABEND-CODE, ABEND-CULPRIT, ABEND-REASON).                       
       *COPY CSMSG02Y.                                                           
       *Signed on user data                                                      
+      * CSUSR01Y provides user security record layout                           
+      * (SEC-USR-ID, SEC-USR-FNAME, SEC-USR-TYPE) for auth.                     
        COPY CSUSR01Y.                                                           
                                                                                 
       *Dataset layouts                                                          
                                                                                 
       *CARD RECORD LAYOUT                                                       
+      * CVACT02Y defines 150-byte CARD-RECORD with CARD-NUM                     
+      * (X(16)), CARD-ACCT-ID (9(11)), CARD-ACTIVE-STATUS.                      
        COPY CVACT02Y.                                                           
                                                                                 
+      *----------------------------------------------------------------*        
+      * Linkage Section receives DFHCOMMAREA passed by CICS                     
+      * on each pseudo-conversational re-entry. Length varies                   
+      * per EIBCALEN; zero on first invocation.                                 
+      *----------------------------------------------------------------*        
        LINKAGE SECTION.                                                         
        01  DFHCOMMAREA.                                                         
          05  FILLER                                PIC X(1)                     
              OCCURS 1 TO 32767 TIMES DEPENDING ON EIBCALEN.                     
                                                                                 
+      *----------------------------------------------------------------*        
+      * Procedure Division implements pseudo-conversational                     
+      * card list browse using STARTBR/READNEXT/READPREV/ENDBR                  
+      * on CARDDAT VSAM KSDS. Dispatches on AID key: ENTER                      
+      * for selection, PF3 exit, PF7 page back, PF8 page fwd.                   
+      *----------------------------------------------------------------*        
        PROCEDURE DIVISION.                                                      
+      * 0000-MAIN: Entry point for pseudo-conversational flow.                  
+      * Initializes work areas, checks EIBCALEN for first vs                    
+      * re-entry, maps EIBAID to AID flags via CSSTRPFY, then                   
+      * dispatches to action based on AID key pressed.                          
        0000-MAIN.                                                               
                                                                                 
            INITIALIZE CC-WORK-AREA                                              
@@ -616,6 +659,12 @@
            GO TO COMMON-RETURN                                                  
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*        
+      * COMMON-RETURN: Stores COMMAREA and PROGCOMMAREA state                   
+      * then issues CICS RETURN TRANSID to suspend and re-enter                 
+      * on next terminal input. Preserves page position, filter                 
+      * criteria, and last-card key for browse continuation.                    
+      *----------------------------------------------------------------*        
        COMMON-RETURN.                                                           
            MOVE  LIT-THISTRANID TO CDEMO-FROM-TRANID                            
            MOVE  LIT-THISPGM     TO CDEMO-FROM-PROGRAM                          
@@ -633,9 +682,16 @@
                 LENGTH(LENGTH OF WS-COMMAREA)                                   
            END-EXEC                                                             
            .                                                                    
+      * 0000-MAIN-EXIT: Normal exit point via GOBACK.                           
        0000-MAIN-EXIT.                                                          
            EXIT                                                                 
            .                                                                    
+      *----------------------------------------------------------------*        
+      * 1000-SEND-MAP: Orchestrates screen output by calling                    
+      * 1100 (screen init), 1200 (array populate), 1250 (array                  
+      * attribs), 1300 (screen attribs), 1400 (message), and                    
+      * 1500 (CICS SEND MAP) in sequence.                                       
+      *----------------------------------------------------------------*        
        1000-SEND-MAP.                                                           
            PERFORM 1100-SCREEN-INIT                                             
               THRU 1100-SCREEN-INIT-EXIT                                        
@@ -654,6 +710,11 @@
        1000-SEND-MAP-EXIT.                                                      
            EXIT                                                                 
            .                                                                    
+      *----------------------------------------------------------------*        
+      * 1100-SCREEN-INIT: Populates screen header fields with                   
+      * current date, time, application titles from COTTL01Y,                   
+      * page number, and signed-in user information.                            
+      *----------------------------------------------------------------*        
        1100-SCREEN-INIT.                                                        
            MOVE LOW-VALUES             TO CCRDLIAO                              
                                                                                 
@@ -690,6 +751,12 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*        
+      * 1200-SCREEN-ARRAY-INIT: Populates 7 screen rows                         
+      * (CRDSELn, ACCTNOn, CRDNUMn, CRDSTSn) from the                           
+      * WS-SCREEN-DATA array after browse read fills buffer.                    
+      * Handles partial pages when fewer than 7 records exist.                  
+      *----------------------------------------------------------------*        
        1200-SCREEN-ARRAY-INIT.                                                  
       *    USE REDEFINES AND CLEAN UP REPETITIVE CODE !!                        
            IF   WS-EACH-CARD(1)            EQUAL LOW-VALUES                     
@@ -760,6 +827,12 @@
        1200-SCREEN-ARRAY-INIT-EXIT.                                             
            EXIT                                                                 
            .                                                                    
+      *----------------------------------------------------------------*        
+      * 1250-SETUP-ARRAY-ATTRIBS: Sets BMS field attributes                     
+      * for all 7 row selection fields. Uses DFHBMPRF for                       
+      * protected, DFHBMPRO for normal, DFHBMFSE for editable.                  
+      * Highlights selected row in DFHRED color.                                
+      *----------------------------------------------------------------*        
        1250-SETUP-ARRAY-ATTRIBS.                                                
       *    USE REDEFINES AND CLEAN UP REPETITIVE CODE !!                        
                                                                                 
@@ -849,6 +922,12 @@
        1250-SETUP-ARRAY-ATTRIBS-EXIT.                                           
            EXIT                                                                 
            .                                                                    
+      *----------------------------------------------------------------*        
+      * 1300-SETUP-SCREEN-ATTRS: Initializes search criteria                    
+      * display fields (ACCTSIDO, CARDSIDO) and positions                       
+      * cursor on account or card filter input based on                         
+      * validation state and errors.                                            
+      *----------------------------------------------------------------*        
        1300-SETUP-SCREEN-ATTRS.                                                 
       *    INITIALIZE SEARCH CRITERIA                                           
            IF EIBCALEN = 0                                                      
@@ -907,6 +986,12 @@
            .                                                                    
                                                                                 
                                                                                 
+      *----------------------------------------------------------------*        
+      * 1400-SETUP-MESSAGE: Selects user-facing status message                  
+      * via EVALUATE TRUE: no previous pages, no more pages,                    
+      * record action prompts, or error messages from AID key                   
+      * processing.                                                             
+      *----------------------------------------------------------------*        
        1400-SETUP-MESSAGE.                                                      
       *    SETUP MESSAGE                                                        
            EVALUATE TRUE                                                        
@@ -950,6 +1035,11 @@
            .                                                                    
                                                                                 
                                                                                 
+      *----------------------------------------------------------------*        
+      * 1500-SEND-SCREEN: Issues EXEC CICS SEND MAP CCRDLIA                     
+      * MAPSET COCRDLI to transmit assembled screen to 3270                     
+      * terminal. Uses ERASE on first send, MAPONLY as needed.                  
+      *----------------------------------------------------------------*        
        1500-SEND-SCREEN.                                                        
            EXEC CICS SEND MAP(LIT-THISMAP)                                      
                           MAPSET(LIT-THISMAPSET)                                
@@ -963,6 +1053,12 @@
        1500-SEND-SCREEN-EXIT.                                                   
            EXIT                                                                 
            .                                                                    
+      *----------------------------------------------------------------*        
+      * 2000-RECEIVE-MAP: Orchestrates user input processing.                   
+      * Calls 2100-RECEIVE-SCREEN to capture BMS map data and                   
+      * 2200-EDIT-INPUTS to validate account/card filters and                   
+      * row selection array entries.                                            
+      *----------------------------------------------------------------*        
        2000-RECEIVE-MAP.                                                        
            PERFORM 2100-RECEIVE-SCREEN                                          
               THRU 2100-RECEIVE-SCREEN-EXIT                                     
@@ -974,6 +1070,12 @@
        2000-RECEIVE-MAP-EXIT.                                                   
            EXIT                                                                 
            .                                                                    
+      *----------------------------------------------------------------*        
+      * 2100-RECEIVE-SCREEN: Issues EXEC CICS RECEIVE MAP                       
+      * CCRDLIA to read terminal input. Extracts account                        
+      * filter (ACCTSIDI), card filter (CARDSIDI), and row                      
+      * selection fields (CRDSELnI) into working storage.                       
+      *----------------------------------------------------------------*        
        2100-RECEIVE-SCREEN.                                                     
            EXEC CICS RECEIVE MAP(LIT-THISMAP)                                   
                           MAPSET(LIT-THISMAPSET)                                
@@ -997,6 +1099,12 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*        
+      * 2200-EDIT-INPUTS: Validates user input by calling                       
+      * 2210-EDIT-ACCOUNT for account filter, 2220-EDIT-CARD                    
+      * for card filter, and 2250-EDIT-ARRAY for row selection                  
+      * array. Sets INPUT-OK or INPUT-ERROR flags.                              
+      *----------------------------------------------------------------*        
        2200-EDIT-INPUTS.                                                        
            SET INPUT-OK                   TO TRUE                               
            SET FLG-PROTECT-SELECT-ROWS-NO TO TRUE                               
@@ -1015,6 +1123,12 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*        
+      * 2210-EDIT-ACCOUNT: Validates account number filter.                     
+      * Accepts blank/spaces/zeros as no-filter. Rejects                        
+      * non-numeric values with error message. Stores valid                     
+      * account in CDEMO-ACCT-ID for STARTBR positioning.                       
+      *----------------------------------------------------------------*        
        2210-EDIT-ACCOUNT.                                                       
            SET FLG-ACCTFILTER-BLANK TO TRUE                                     
                                                                                 
@@ -1048,6 +1162,12 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*        
+      * 2220-EDIT-CARD: Validates 16-digit card number filter.                  
+      * Accepts blank/spaces/zeros as no-filter. Rejects                        
+      * non-numeric values with error message. Stores valid                     
+      * card number in CC-CARD-NUM for STARTBR positioning.                     
+      *----------------------------------------------------------------*        
        2220-EDIT-CARD.                                                          
       *    Not numeric                                                          
       *    Not 16 characters                                                    
@@ -1085,6 +1205,12 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*        
+      * 2250-EDIT-ARRAY: Validates selection field array for                    
+      * 7 rows. Uses INSPECT/TALLYING to count S (detail) and                   
+      * U (update) picks. Enforces single selection per page.                   
+      * Routes to COCRDSLC (view) or COCRDUPC (update).                         
+      *----------------------------------------------------------------*        
        2250-EDIT-ARRAY.                                                         
                                                                                 
            IF INPUT-ERROR                                                       
@@ -1135,6 +1261,15 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*        
+      * 9000-READ-FORWARD: Reads card records forward using                     
+      * EXEC CICS STARTBR GTEQ on CARDDAT VSAM KSDS by                          
+      * composite key (card-num + acct-id). Loops READNEXT                      
+      * to fill 7 screen rows, applies 9500 filter, captures                    
+      * first/last keys, performs peek-ahead READNEXT for                       
+      * next-page indicator, then issues ENDBR. Handles                         
+      * NOTFND and ENDFILE conditions.                                          
+      *----------------------------------------------------------------*        
        9000-READ-FORWARD.                                                       
            MOVE LOW-VALUES           TO WS-ALL-ROWS                             
                                                                                 
@@ -1276,6 +1411,13 @@
        9000-READ-FORWARD-EXIT.                                                  
            EXIT                                                                 
            .                                                                    
+      *----------------------------------------------------------------*        
+      * 9100-READ-BACKWARDS: Reads card records backward for                    
+      * PF7 page-up. Issues STARTBR then READPREV in a loop                     
+      * to fill 7 rows in reverse order. Applies 9500 filter,                   
+      * captures first card key for page repositioning, and                     
+      * decrements page counter. Issues ENDBR after scan.                       
+      *----------------------------------------------------------------*        
        9100-READ-BACKWARDS.                                                     
                                                                                 
            MOVE LOW-VALUES           TO WS-ALL-ROWS                             
@@ -1394,6 +1536,13 @@
            EXIT                                                                 
            .                                                                    
                                                                                 
+      *----------------------------------------------------------------*        
+      * 9500-FILTER-RECORDS: Evaluates current card record                      
+      * against active filters. Checks FLG-ACCTFILTER-ISVALID                   
+      * for account number match and FLG-CARDFILTER-ISVALID                     
+      * for card number prefix match. Excludes non-matching                     
+      * records from the browse display.                                        
+      *----------------------------------------------------------------*        
        9500-FILTER-RECORDS.                                                     
            SET WS-DONOT-EXCLUDE-THIS-RECORD TO TRUE                             
                                                                                 
@@ -1428,12 +1577,17 @@
       *****************************************************************
       *Common code to store PFKey                                      
       *****************************************************************
+      * CSSTRPFY provides YYYY-STORE-PFKEY paragraph mapping                    
+      * EIBAID to CCARD-AID-* flags in CVCRD01Y work areas.                     
+      * Folds PF13-PF24 onto PF01-PF12 for consistency.                         
        COPY 'CSSTRPFY'
            .
 
       *****************************************************************         
       * Plain text exit - Dont use in production                      *         
       *****************************************************************         
+      * Sends short diagnostic text to terminal via CICS SEND                   
+      * TEXT then RETURN. Development/debug utility only.                       
        SEND-PLAIN-TEXT.                                                         
            EXEC CICS SEND TEXT                                                  
                      FROM(WS-ERROR-MSG)                                         
@@ -1453,6 +1607,9 @@
       * This is primarily for debugging and should not be used in     *         
       * regular course                                                *         
       *****************************************************************         
+      * Sends longer diagnostic message to terminal via CICS                    
+      * SEND TEXT then RETURN. Handles messages exceeding                       
+      * single-line SEND TEXT length limits. Debug only.                        
        SEND-LONG-TEXT.                                                          
            EXEC CICS SEND TEXT                                                  
                      FROM(WS-LONG-MSG)                                          
