@@ -316,20 +316,34 @@ def format_validation_message(
 ) -> str:
     """Build the 80-character ``WS-MESSAGE`` string emitted by ``CSUTLDTC.cbl``.
 
-    The original COBOL layout (from ``CSUTLDTC.cbl`` lines 106-132) is::
+    The original COBOL layout (from ``CSUTLDTC.cbl`` lines 42-57) is::
 
-        01  WS-MESSAGE.
-            05  FILLER                  PIC X(04).    WS-SEVERITY   (4)
-            05  FILLER                  PIC X(10).    'Mesg Code:'  (10)
-            05  FILLER                  PIC X(04).    WS-MSG-NO     (4)
-            05  FILLER                  PIC X(01).    SPACE         (1)
-            05  FILLER                  PIC X(15).    WS-RESULT     (15)
-            05  FILLER                  PIC X(01).    SPACE         (1)
-            05  FILLER                  PIC X(08).    'TstDate:'    (8)
-            05  FILLER                  PIC X(10).    TEST-DATE     (10)
-            05  FILLER                  PIC X(01).    SPACE         (1)
-            05  FILLER                  PIC X(10).    'Mask used:'  (10)
-            05  FILLER                  PIC X(10).    DATE-FORMAT   (10)
+        01  WS-MESSAGE.                                          (Total 80)
+            02  WS-SEVERITY PIC X(04).                            ( 4)
+            02  FILLER      PIC X(11) VALUE 'Mesg Code:'.         (11)
+            02  WS-MSG-NO   PIC X(04).                            ( 4)
+            02  FILLER      PIC X(01) VALUE SPACE.                ( 1)
+            02  WS-RESULT   PIC X(15).                            (15)
+            02  FILLER      PIC X(01) VALUE SPACE.                ( 1)
+            02  FILLER      PIC X(09) VALUE 'TstDate:'.           ( 9)
+            02  WS-DATE     PIC X(10) VALUE SPACES.               (10)
+            02  FILLER      PIC X(01) VALUE SPACE.                ( 1)
+            02  FILLER      PIC X(10) VALUE 'Mask used:'.         (10)
+            02  WS-DATE-FMT PIC X(10).                            (10)
+            02  FILLER      PIC X(01) VALUE SPACE.                ( 1)
+            02  FILLER      PIC X(03) VALUE SPACES.               ( 3)
+
+    NOTE: COBOL PIC X(n) literal assignments right-pad the string to the
+    declared width with spaces.  Thus ``PIC X(11) VALUE 'Mesg Code:'``
+    stores ``'Mesg Code: '`` (11 bytes, 10 literal chars + 1 trailing
+    space) and ``PIC X(09) VALUE 'TstDate:'`` stores ``'TstDate: '``
+    (9 bytes, 8 literal chars + 1 trailing space).  ``PIC X(10) VALUE
+    'Mask used:'`` is an exact fit.  The Python literals below include
+    the trailing spaces explicitly so the emitted 80-byte string is
+    column-for-column identical to the COBOL output (preserving the
+    "maintain existing business logic without modification" rule from
+    AAP §0.7.1 and enabling byte-compatible parsing by any downstream
+    log consumer that relies on column positions).
 
     The concatenation is truncated / padded to exactly 80 characters to
     match the ``PIC X(80)`` ``LS-RESULT`` parameter in the CSUTLDTC
@@ -362,22 +376,28 @@ def format_validation_message(
     date_field = f"{test_date:<10s}"[:10]
     mask_field = f"{mask_used:<10s}"[:10]
 
+    # Build the 80-byte WS-MESSAGE record column-for-column.
+    # Field widths annotated inline; sum equals 80 exactly.
     raw = (
-        f"{severity_field}"
-        f"Mesg Code:"
-        f"{msg_no_field}"
-        f" "
-        f"{result_field}"
-        f" "
-        f"TstDate:"
-        f"{date_field}"
-        f" "
-        f"Mask used:"
-        f"{mask_field}"
-        f"   "
+        f"{severity_field}"   #  4 — WS-SEVERITY PIC X(04)
+        f"Mesg Code: "        # 11 — FILLER PIC X(11) VALUE 'Mesg Code:' (10+space)
+        f"{msg_no_field}"     #  4 — WS-MSG-NO PIC X(04)
+        f" "                  #  1 — FILLER PIC X(01) VALUE SPACE
+        f"{result_field}"     # 15 — WS-RESULT PIC X(15)
+        f" "                  #  1 — FILLER PIC X(01) VALUE SPACE
+        f"TstDate: "          #  9 — FILLER PIC X(09) VALUE 'TstDate:' (8+space)
+        f"{date_field}"       # 10 — WS-DATE PIC X(10)
+        f" "                  #  1 — FILLER PIC X(01) VALUE SPACE
+        f"Mask used:"         # 10 — FILLER PIC X(10) VALUE 'Mask used:' (exact fit)
+        f"{mask_field}"       # 10 — WS-DATE-FMT PIC X(10)
+        f" "                  #  1 — FILLER PIC X(01) VALUE SPACE
+        f"   "                #  3 — FILLER PIC X(03) VALUE SPACES
     )
     # Pad or truncate to exactly 80 characters, matching the LS-RESULT
-    # PIC X(80) parameter in the CSUTLDTC linkage section.
+    # PIC X(80) parameter in the CSUTLDTC linkage section.  With correct
+    # field widths above the raw string is already 80 bytes; this
+    # invariant is retained defensively in case any field argument is
+    # longer than its declared PIC width (slicing guarantees exact 80).
     return f"{raw:<80s}"[:80]
 
 
@@ -1013,10 +1033,13 @@ def validate_date_of_birth(
     # date: "IF WS-CURDATE-N > WS-EDIT-DATE-CCYYMMDD-N" (line 359-361)
     # means today is strictly greater than the DOB -> DOB is not in the
     # future -> OK.  Any other case (today <= DOB, i.e. DOB is today or
-    # in the future) triggers the error.  We replicate the strictly-less
-    # semantics: future means "today < edit_date".
+    # in the future) triggers the error.  The equivalent Python predicate
+    # for the error case "NOT (today > edit_date)" is "today <= edit_date",
+    # i.e. "edit_date >= today".  A DOB equal to today is therefore
+    # rejected because a customer cannot be 0 days old (matching COBOL
+    # CSUTLDTC behaviour for F-005 Account Update and F-019 User Add).
     today = _datetime.date.today()
-    if edit_date > today:
+    if edit_date >= today:
         return DateValidationResult(
             is_valid=False,
             severity=12,

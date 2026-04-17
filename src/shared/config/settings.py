@@ -29,7 +29,8 @@ Mainframe → Cloud Mapping
   ``CARDDEMO-COMMAREA`` structure carrying ``CDEMO-USER-ID`` /
   ``CDEMO-USER-TYPE`` across CICS program transfers — is replaced by
   stateless JWT tokens. The JWT signing parameters (``JWT_SECRET_KEY``,
-  ``JWT_ALGORITHM``, ``JWT_EXPIRE_MINUTES``) are configured here.
+  ``JWT_ALGORITHM``, ``JWT_ACCESS_TOKEN_EXPIRE_MINUTES``) are configured
+  here.
 * **CICS sign-on security** (``app/cbl/COSGN00C.cbl`` reading
   ``app/cpy/CSUSR01Y.cpy`` via ``WS-USRSEC-FILE`` DD ``USRSEC``) —
   becomes BCrypt password verification + JWT issuance. The BCrypt
@@ -54,13 +55,17 @@ Design Principles
 * **`.env` file support via python-dotenv** — For local development
   with ``docker-compose``, a ``.env`` file at the project root is
   automatically loaded.
-* **Credentials via AWS Secrets Manager** — The ``JWT_SECRET_KEY``
-  default is a *placeholder* intended only for local development;
-  production deployments on AWS ECS must override it via Secrets
-  Manager (referenced by the ECS task definition). ``DB_SECRET_NAME``
-  names the Secrets Manager secret holding Aurora PostgreSQL
-  credentials (``username``, ``password``, ``host``, ``port``,
-  ``dbname``).
+* **Credentials via AWS Secrets Manager (fail-fast, no defaults)** —
+  Sensitive credentials (``JWT_SECRET_KEY``, ``DATABASE_URL``,
+  ``DATABASE_URL_SYNC``) have **no default values**; Pydantic raises
+  ``ValidationError`` at process startup if any is missing (CWE-798
+  protection, AAP §0.7.2). For local ``docker-compose`` development
+  these values are provided by the compose file's ``environment:``
+  block; production deployments on AWS ECS inject them via the task
+  definition's ``secrets`` block referencing AWS Secrets Manager.
+  ``DB_SECRET_NAME`` names the Secrets Manager secret holding Aurora
+  PostgreSQL credentials (``username``, ``password``, ``host``,
+  ``port``, ``dbname``).
 * **IAM-based AWS auth** — No AWS access keys are stored in settings;
   all AWS clients rely on IAM roles attached to the ECS task role or
   Glue job execution role (see AAP §0.7.2 Security Requirements).
@@ -76,9 +81,7 @@ AAP §0.7.2 — Security Requirements
 AAP §0.7.3 — User-Specified Implementation Rules
 """
 
-from typing import Optional  # noqa: F401 — re-exported type alias for consumers
-
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -105,13 +108,19 @@ class Settings(BaseSettings):
     Sources of values at runtime (in precedence order):
         1. Environment variables (case-sensitive)
         2. ``.env`` file in the project root (local development only)
-        3. Field defaults declared below
+        3. Field defaults declared below (only non-secret fields have
+           defaults; see below)
 
-    For local ``docker-compose`` development, the defaults point at the
-    locally-provisioned PostgreSQL container (``host=localhost:5432``)
-    and ``carddemo`` / ``carddemo`` credentials — these are explicitly
-    unsafe for production and must be overridden via environment
-    variables or AWS Secrets Manager in staging/production.
+    Credential-bearing fields (``DATABASE_URL``, ``DATABASE_URL_SYNC``,
+    ``JWT_SECRET_KEY``) have **no defaults** — they must be supplied via
+    environment variables (or the ``.env`` file). Pydantic raises
+    ``ValidationError`` at process startup if any is missing, making
+    accidental runtime use of placeholder credentials impossible
+    (CWE-798 protection, AAP §0.7.2). For local ``docker-compose``
+    development these are provided by the compose file's
+    ``environment:`` block (``postgres`` hostname, dev-only credentials);
+    production deployments on AWS ECS inject them via the task
+    definition's ``secrets`` block referencing AWS Secrets Manager.
     """
 
     # ------------------------------------------------------------------
@@ -126,20 +135,30 @@ class Settings(BaseSettings):
     # PostgreSQL database reachable via the connection string below.
     # ------------------------------------------------------------------
     DATABASE_URL: str = Field(
-        default="postgresql+asyncpg://carddemo:carddemo@localhost:5432/carddemo",
+        ...,
         description=(
             "Aurora PostgreSQL connection string for async SQLAlchemy. "
             "Replaces VSAM DD statements (e.g., DSN=AWS.M2.CARDDEMO."
             "ACCTDATA.VSAM.KSDS). Uses the `postgresql+asyncpg://` scheme "
-            "for the FastAPI async engine."
+            "for the FastAPI async engine. "
+            "REQUIRED — no default (AAP §0.7.2, CWE-798); provided via "
+            "docker-compose ``environment:`` for local dev or AWS Secrets "
+            "Manager → ECS task definition ``secrets`` in staging/"
+            "production. Pydantic raises ValidationError at startup if "
+            "unset, preventing accidental use of placeholder credentials."
         ),
     )
     DATABASE_URL_SYNC: str = Field(
-        default="postgresql+psycopg2://carddemo:carddemo@localhost:5432/carddemo",
+        ...,
         description=(
             "Synchronous PostgreSQL connection string for Alembic "
             "migrations, PySpark Glue JDBC fallback, and any blocking "
-            "batch operations. Uses the `postgresql+psycopg2://` scheme."
+            "batch operations. Uses the `postgresql+psycopg2://` scheme. "
+            "REQUIRED — no default (AAP §0.7.2, CWE-798); provided via "
+            "docker-compose ``environment:`` for local dev or AWS Secrets "
+            "Manager → ECS task definition ``secrets`` in staging/"
+            "production. Pydantic raises ValidationError at startup if "
+            "unset, preventing accidental use of placeholder credentials."
         ),
     )
     DB_SECRET_NAME: str = Field(
@@ -182,12 +201,17 @@ class Settings(BaseSettings):
     # claims mirroring the COMMAREA fields.
     # ------------------------------------------------------------------
     JWT_SECRET_KEY: str = Field(
-        default="CHANGE_ME_IN_PRODUCTION",
+        ...,
         description=(
             "JWT signing secret. Replaces CICS COMMAREA session state "
             "(CDEMO-USER-ID, CDEMO-USER-TYPE from COCOM01Y.cpy). "
-            "MUST be overridden in production via AWS Secrets Manager; "
-            "the default is a placeholder for local development only."
+            "REQUIRED — no default (AAP §0.7.2, CWE-798); provided via "
+            "docker-compose ``environment:`` for local dev or AWS "
+            "Secrets Manager → ECS task definition ``secrets`` in "
+            "staging/production. Pydantic raises ValidationError at "
+            "startup if unset, preventing accidental use of a "
+            "placeholder signing key that would render JWTs trivially "
+            "forgeable."
         ),
     )
     JWT_ALGORITHM: str = Field(
@@ -198,12 +222,17 @@ class Settings(BaseSettings):
             "deployment; switch to RS256 for multi-service federation."
         ),
     )
-    JWT_EXPIRE_MINUTES: int = Field(
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(
         default=30,
         description=(
             "JWT access token expiration in minutes. Replaces the CICS "
             "transaction RTIMOUT timeout. Tune to match session length "
-            "requirements of the card-demo UI."
+            "requirements of the card-demo UI. The canonical env-var "
+            "name ``JWT_ACCESS_TOKEN_EXPIRE_MINUTES`` matches the "
+            "``docker-compose.yml`` ``environment:`` key and the "
+            "README setup instructions — renamed from the earlier "
+            "``JWT_EXPIRE_MINUTES`` to eliminate silent config drift "
+            "(see code-review Finding #4)."
         ),
     )
 
@@ -218,10 +247,16 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     AWS_REGION: str = Field(
         default="us-east-1",
+        validation_alias=AliasChoices("AWS_REGION", "AWS_DEFAULT_REGION"),
         description=(
             "AWS region for all service clients (S3, SQS, Secrets "
             "Manager, Glue, CloudWatch). Applied to boto3.Config at "
-            "client construction time in aws_config.py."
+            "client construction time in aws_config.py. Accepts both "
+            "``AWS_REGION`` (boto3 convention, GitHub Actions deploy "
+            "workflows) and ``AWS_DEFAULT_REGION`` (AWS CLI/SDK "
+            "convention, ``docker-compose.yml`` and ``ci.yml``) via "
+            "Pydantic validation alias — prevents silent config drift "
+            "across deployment contexts (see code-review Finding #4)."
         ),
     )
     S3_BUCKET_NAME: str = Field(

@@ -36,8 +36,17 @@ strawberry-graphql[fastapi]>=0.254,<1.0
 # Authentication & security
 #   - JWT tokens replace CICS COMMAREA session state
 #   - BCrypt password hashing preserves existing COBOL-era security behavior
+#
+# Version policy for python-jose:
+#   - Minimum 3.4.0 is REQUIRED to pick up the fixes for:
+#       * CVE-2024-33663 — algorithm confusion with OpenSSH ECDSA keys
+#         (unauthorized-action risk in JWT verification)
+#       * CVE-2024-33664 — DoS via compressed JWE tokens
+#     Both CVEs affect 3.3.0 and earlier and are fixed in 3.4.0.
+#   - Upper bound <4.0 to avoid any future major-version API breakage.
+#   - See code-review Finding #1 and AAP §0.7.2 (security requirements).
 # ---------------------------------------------------------------------------
-python-jose[cryptography]==3.3.0
+python-jose[cryptography]>=3.4.0,<4.0
 passlib[bcrypt]==1.7.4
 bcrypt>=4.2,<5.0
 
