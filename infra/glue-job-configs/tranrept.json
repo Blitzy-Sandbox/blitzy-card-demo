@@ -1,0 +1,43 @@
+{
+  "Name": "carddemo-tranrept",
+  "Description": "Stage 4b: Transaction reporting - Generates date-filtered transaction reports with 3-level totals (card, account, grand total). Runs in PARALLEL with Stage 4a (creastmt). Converted from TRANREPT.jcl (CBTRN03C).",
+  "Role": "arn:aws:iam::ACCOUNT_ID:role/carddemo-glue-role",
+  "GlueVersion": "5.0",
+  "WorkerType": "G.1X",
+  "NumberOfWorkers": 2,
+  "Timeout": 120,
+  "MaxRetries": 0,
+  "Command": {
+    "Name": "glueetl",
+    "ScriptLocation": "s3://BUCKET_NAME/glue-scripts/tranrept_job.py",
+    "PythonVersion": "3"
+  },
+  "DefaultArguments": {
+    "--job-language": "python",
+    "--job-bookmark-option": "job-bookmark-enable",
+    "--enable-metrics": "true",
+    "--enable-continuous-cloudwatch-log": "true",
+    "--enable-spark-ui": "true",
+    "--spark-event-logs-path": "s3://BUCKET_NAME/glue-spark-logs/tranrept/",
+    "--TempDir": "s3://BUCKET_NAME/glue-temp/tranrept/",
+    "--aurora_connection_name": "carddemo-aurora-connection",
+    "--s3_report_output_path": "s3://BUCKET_NAME/carddemo/transaction-reports/",
+    "--s3_transact_bkup_path": "s3://BUCKET_NAME/carddemo/transact-bkup/",
+    "--report_start_date": "2022-01-01",
+    "--report_end_date": "2022-07-06",
+    "--extra-py-files": "s3://BUCKET_NAME/glue-scripts/common/"
+  },
+  "Connections": {
+    "Connections": ["carddemo-aurora-connection"]
+  },
+  "ExecutionProperty": {
+    "MaxConcurrentRuns": 1
+  },
+  "Tags": {
+    "project": "carddemo",
+    "pipeline-stage": "4b-tranrept",
+    "source": "TRANREPT.jcl",
+    "cobol-program": "CBTRN03C",
+    "environment": "production"
+  }
+}
