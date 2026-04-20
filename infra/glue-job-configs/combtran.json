@@ -1,0 +1,42 @@
+{
+  "Name": "carddemo-combtran",
+  "Description": "Stage 3: Transaction merge/sort - Merges backed-up transactions (TRANSACT.BKUP) with system-generated transactions (SYSTRAN), sorts by transaction ID, and loads into transactions table. Pure PySpark merge/sort replacing DFSORT+REPRO (no COBOL program). Converted from COMBTRAN.jcl.",
+  "Role": "arn:aws:iam::ACCOUNT_ID:role/carddemo-glue-role",
+  "GlueVersion": "5.0",
+  "WorkerType": "G.1X",
+  "NumberOfWorkers": 2,
+  "Timeout": 120,
+  "MaxRetries": 0,
+  "Command": {
+    "Name": "glueetl",
+    "ScriptLocation": "s3://BUCKET_NAME/glue-scripts/combtran_job.py",
+    "PythonVersion": "3"
+  },
+  "DefaultArguments": {
+    "--job-language": "python",
+    "--job-bookmark-option": "job-bookmark-enable",
+    "--enable-metrics": "true",
+    "--enable-continuous-cloudwatch-log": "true",
+    "--enable-spark-ui": "true",
+    "--spark-event-logs-path": "s3://BUCKET_NAME/glue-spark-logs/combtran/",
+    "--TempDir": "s3://BUCKET_NAME/glue-temp/combtran/",
+    "--aurora_connection_name": "carddemo-aurora-connection",
+    "--s3_transact_bkup_path": "s3://BUCKET_NAME/carddemo/transact-bkup/",
+    "--s3_systran_path": "s3://BUCKET_NAME/carddemo/systran/",
+    "--s3_combined_output_path": "s3://BUCKET_NAME/carddemo/transact-combined/",
+    "--extra-py-files": "s3://BUCKET_NAME/glue-scripts/common/"
+  },
+  "Connections": {
+    "Connections": ["carddemo-aurora-connection"]
+  },
+  "ExecutionProperty": {
+    "MaxConcurrentRuns": 1
+  },
+  "Tags": {
+    "project": "carddemo",
+    "pipeline-stage": "3-combtran",
+    "source": "COMBTRAN.jcl",
+    "cobol-program": "none-dfsort-repro",
+    "environment": "production"
+  }
+}
