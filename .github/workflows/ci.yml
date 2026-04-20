@@ -1,166 +1,462 @@
-# ============================================================================
+# =============================================================================
 # CardDemo — Continuous Integration Pipeline
-# ----------------------------------------------------------------------------
-# Lints, type-checks, and tests the Python codebase on every push/pull
-# request targeting the main branch. Replaces the z/OS build/deploy JCL.
+# -----------------------------------------------------------------------------
+# GitHub Actions workflow that lints, type-checks, and tests the Python
+# codebase on every push and pull request targeting the "main" branch.
 #
-# Per AAP §0.4.4 "CI pipeline: lint -> type-check -> unit tests ->
-# integration tests".
-# ============================================================================
+# Replaces the following z/OS mainframe compile / link / deploy artifacts
+# (per AAP §0.7.1 "Document all technology-specific changes with clear
+# comments"):
+#
+#   - samples/jcl/BATCMP.jcl — Batch COBOL compile JCL that invoked
+#                              `EXEC BUILDBAT,MEM=&MEMNAME,HLQ=&HLQ` against
+#                              each batch program (CBACT01C.cbl, CBTRN02C.cbl,
+#                              CBACT04C.cbl, CBSTM03A.CBL, CBTRN03C.cbl, etc.)
+#                              to produce load modules.  Replaced by:
+#                                Python lint (ruff) + static type-check (mypy)
+#                                + pytest unit and integration tests against
+#                                the src/batch/** PySpark Glue jobs and
+#                                src/shared/** modules.
+#
+#   - samples/jcl/BMSCMP.jcl — BMS screen-map compile JCL that invoked
+#                              `EXEC BUILDBMS,MAPNAME=CICSMAP,HLQ=&HLQ`
+#                              followed by the SDSF NEWCOPY command
+#                                /MODIFY CICSAWSA,'CEMT SET PROG(CICSMAP)
+#                                                  NEWCOPY'
+#                              to hot-swap the compiled mapset into CICS.
+#                              Replaced by: no BMS compile step is required
+#                              in the target architecture because all 17 BMS
+#                              mapsets are modeled as Pydantic request /
+#                              response schemas (src/shared/schemas/**) and
+#                              Strawberry GraphQL types (src/api/graphql/**),
+#                              which are validated by the pytest suite run
+#                              below.
+#
+#   - samples/jcl/CICCMP.jcl — CICS COBOL compile JCL that invoked
+#                              `EXEC BUILDONL,MEM=&MEMNAME,HLQ=&HLQ` against
+#                              each online program (COSGN00C.cbl, COMEN01C.cbl,
+#                              COACTVWC.cbl, COACTUPC.cbl, COCRDLIC.cbl, etc.)
+#                              followed by the SDSF NEWCOPY command
+#                                /MODIFY CICSAWSA,'CEMT SET PROG(CICSPGMN)
+#                                                  NEWCOPY'
+#                              to hot-swap the compiled module into CICS.
+#                              Replaced by:
+#                                Python lint (ruff) + static type-check (mypy)
+#                                + pytest unit and integration tests against
+#                                the src/api/** FastAPI routers, services,
+#                                and middleware.  The NEWCOPY deploy step is
+#                                owned by .github/workflows/deploy-api.yml
+#                                (ECS Fargate rolling deployment).
+#
+# Pipeline architecture (per AAP §0.4.4 "CI pipeline: lint -> type-check ->
+# unit tests -> integration tests"):
+#
+#   lint ---------\
+#                  +--> unit-tests          (coverage uploaded as artifact)
+#   type-check ---/
+#                  \
+#                   +--> integration-tests  (uses PostgreSQL 16 service
+#                                            container matching Aurora
+#                                            PostgreSQL compatibility)
+#
+# Security (per AAP §0.7.2):
+#   - No long-lived AWS access keys are used.  Runtime AWS credentials are
+#     resolved by production deployments via IAM role assumption in
+#     .github/workflows/deploy-api.yml and .github/workflows/deploy-glue.yml.
+#     The CI workflow does not need real AWS credentials because all AWS
+#     interactions in the test suite are mocked with the `moto` library;
+#     the placeholder environment variables set on the integration-tests
+#     job below (AWS_ACCESS_KEY_ID=testing, AWS_SECRET_ACCESS_KEY=testing)
+#     are the documented moto convention that prevents boto3 from probing
+#     the CI runner's instance metadata and does NOT represent real access
+#     keys.
+#   - The workflow declares the minimum permission set (`contents: read`)
+#     required to check out the repository.
+#
+# Testing (per AAP §0.7.2 "Automated testing as much as possible",
+# "pytest as the primary test framework", "Target coverage: parity with the
+# documented 81.5% from the existing specification"):
+#   - pytest is the primary runner.
+#   - Unit tests (tests/unit/**) run without external dependencies.
+#   - Integration tests (tests/integration/**) run against a real
+#     PostgreSQL 16 service container with the Flyway-style migrations
+#     applied from db/migrations/**.
+#   - End-to-end batch-pipeline tests (tests/e2e/**) run in the same job
+#     as integration tests, sharing the migrated PostgreSQL instance.
+#   - The `--cov-fail-under=80` threshold is enforced via the defaults
+#     declared in pyproject.toml `[tool.pytest.ini_options]`.
+# =============================================================================
 
-name: ci
+name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  # Allow manual invocation from the Actions UI for on-demand validation of
+  # long-lived branches or after reverting a change without a new commit.
   workflow_dispatch:
 
+# Cancel superseded runs of this workflow for the same branch / PR.  A newer
+# commit should always win, and running stale CI on older commits wastes
+# runner minutes.  See:
+# https://docs.github.com/actions/using-jobs/using-concurrency
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege token (per AAP §0.7.2 "AWS services must have required
+# access via IAM roles and policies (not access keys)"): this CI workflow
+# only needs to read the repository contents.  No write scopes are granted.
+permissions:
+  contents: read
+
+# Workflow-level environment variables shared across every job.
+#   PYTHON_VERSION   — Per AAP §0.6.1, Python 3.11 is the pinned runtime
+#                      version that matches AWS Glue 5.1 (Spark 3.5.6,
+#                      Python 3.11) and the FastAPI-on-ECS base image
+#                      (python:3.11-slim).
+#   DATABASE_URL     — Async SQLAlchemy URL consumed by pytest integration
+#                      tests when they instantiate the API app.  Points at
+#                      the PostgreSQL 16 service container started inside
+#                      the integration-tests job.  Non-sensitive by design.
+#   PIP_DISABLE_PIP_VERSION_CHECK / PYTHONDONTWRITEBYTECODE
+#                    — Quality-of-life flags: suppress "pip is out of date"
+#                      notices and prevent .pyc files from polluting the
+#                      runner filesystem.
 env:
   PYTHON_VERSION: "3.11"
+  DATABASE_URL: postgresql+asyncpg://carddemo:carddemo@localhost:5432/carddemo
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
-  # --------------------------------------------------------------------------
-  # Lint & format check (ruff)
-  # --------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Job 1 — lint
+  # Enforces style and common-mistake checks via ruff (lint + format).
+  # Runs independently of the other jobs so a formatting glitch surfaces
+  # quickly without waiting for the heavier test job.
+  # ---------------------------------------------------------------------------
   lint:
     name: Lint (ruff)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
+
+      # Explicit pip cache via actions/cache@v4 (per AAP Phase 3 step 3:
+      # "Cache pip dependencies using `actions/cache@v4` with
+      #  `key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}`").
+      # Using the hash of *every* requirements*.txt file guarantees the cache
+      # is invalidated whenever any declared dependency changes.
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install dev dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      - name: Ruff lint
-        run: ruff check src tests
+      # Ruff lint — runs the configured rule set from pyproject.toml
+      # ([tool.ruff.lint]).  Covers pycodestyle, pyflakes, isort, pep8-naming,
+      # pyupgrade, and flake8-bugbear rules.
+      - name: Ruff lint check
+        run: ruff check src/ tests/
 
+      # Ruff format check — validates formatting without mutating files.
+      # If this step fails, developers can fix it locally with
+      # `ruff format src/ tests/` before re-pushing.
       - name: Ruff format check
-        run: ruff format --check src tests
+        run: ruff format --check src/ tests/
 
-  # --------------------------------------------------------------------------
-  # Static type checking (mypy)
-  # --------------------------------------------------------------------------
-  typecheck:
+  # ---------------------------------------------------------------------------
+  # Job 2 — type-check
+  # Static type analysis via mypy with the strict settings declared in
+  # pyproject.toml `[tool.mypy]` (strict = true, disallow_untyped_defs, etc.).
+  # Installs all three application requirement sets so that mypy sees every
+  # import path — API, batch, and shared — the same way production does.
+  # ---------------------------------------------------------------------------
+  type-check:
     name: Type-check (mypy)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
 
-      - name: Install dev dependencies
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # Install dev + api + glue so mypy can resolve every imported symbol
+      # across both the FastAPI-on-ECS workload (src/api/**) and the
+      # PySpark-on-Glue workload (src/batch/**).  `requirements-dev.txt`
+      # already transitively installs `requirements.txt` and
+      # `requirements-api.txt` via `-r` references, but passing all three
+      # files explicitly mirrors the AAP Phase 4 step 4 instruction.
+      - name: Install all dependencies (dev + api + glue)
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -r requirements-dev.txt -r requirements-api.txt -r requirements-glue.txt
 
-      - name: Run mypy
-        run: mypy src
+      - name: Run mypy (strict)
+        run: mypy src/
 
-  # --------------------------------------------------------------------------
-  # Unit + integration tests with PostgreSQL service container
-  # --------------------------------------------------------------------------
-  test:
-    name: Test (pytest)
+  # ---------------------------------------------------------------------------
+  # Job 3 — unit-tests
+  # Fast, isolated unit tests in tests/unit/** covering:
+  #   * SQLAlchemy ORM models (src/shared/models/**)
+  #   * Pydantic request / response schemas (src/shared/schemas/**)
+  #   * FastAPI routers (src/api/routers/**)
+  #   * Service-layer business logic (src/api/services/**)
+  #   * PySpark transformation helpers (src/batch/**)
+  #
+  # Gated on `lint` and `type-check` passing to avoid burning runner minutes
+  # on a test matrix that we already know fails static checks (per AAP
+  # Phase 5: "needs: [lint, type-check] — Run after lint and type-check pass").
+  # ---------------------------------------------------------------------------
+  unit-tests:
+    name: Unit tests (pytest + coverage)
     runs-on: ubuntu-latest
+    needs: [lint, type-check]
+
+    # Dummy AWS credentials required by boto3 for client instantiation
+    # during unit tests that exercise AWS client factories.  `moto` patches
+    # the AWS SDK at runtime; these placeholders are the documented moto
+    # convention and do NOT represent real credentials.  See AAP §0.7.2
+    # note on IAM-based access control for production workloads.
+    env:
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: testing
+      AWS_SECRET_ACCESS_KEY: testing
+      # JWT signing key scoped to the CI run.  Production reads this from
+      # AWS Secrets Manager via the ECS task definition's `secrets` stanza.
+      JWT_SECRET_KEY: ci-unit-test-secret-key
+      JWT_ALGORITHM: HS256
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "30"
+      ENVIRONMENT: test
+      LOG_LEVEL: INFO
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install all dependencies (dev + api + glue)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt -r requirements-api.txt -r requirements-glue.txt
+
+      # Run unit tests only.  Coverage reporting (XML + terminal) is
+      # declared both inline and in pyproject.toml `[tool.pytest.ini_options]`
+      # addopts; the inline flags are kept for clarity and to match the
+      # exact command specified in AAP §0.5.1 Phase 5 step 5.  The 80%
+      # coverage floor is enforced by `--cov-fail-under=80` declared in
+      # pyproject.toml, satisfying AAP §0.7.2 "Target coverage: parity
+      # with the documented 81.5% from the existing specification".
+      - name: Run pytest unit tests
+        run: |
+          pytest tests/unit/ \
+            --cov=src \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            -v
+
+      # Preserve the coverage report even on failure so reviewers can
+      # inspect which lines lack coverage without re-running CI.
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report-unit
+          path: coverage.xml
+          retention-days: 14
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Job 4 — integration-tests
+  # Runs integration tests (tests/integration/**) and end-to-end batch
+  # pipeline tests (tests/e2e/**) against a real PostgreSQL 16 instance.
+  #
+  # Uses a GitHub Actions `services:` container so the database is
+  # pre-started and health-checked before the "Apply database migrations"
+  # step executes.  The PostgreSQL 16 choice matches:
+  #   * The local dev stack (docker-compose.yml uses postgres:16-alpine).
+  #   * The production target Aurora PostgreSQL (wire-compatible with
+  #     PostgreSQL 16 per AAP §0.4.4 "Aurora PostgreSQL 16").
+  #
+  # Gated on `lint` and `type-check` passing (per AAP Phase 6:
+  # "needs: [lint, type-check] — Run after lint and type-check pass").
+  # ---------------------------------------------------------------------------
+  integration-tests:
+    name: Integration + e2e tests (pytest + PostgreSQL 16)
+    runs-on: ubuntu-latest
+    needs: [lint, type-check]
+
+    # PostgreSQL 16 service container that emulates Aurora PostgreSQL for
+    # the integration suite.  The container is started by the runner
+    # before any workflow step executes; `--health-cmd pg_isready` blocks
+    # subsequent steps until the database is accepting connections.
     services:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: carddemo_test
+          POSTGRES_DB: carddemo
           POSTGRES_USER: carddemo
           POSTGRES_PASSWORD: carddemo
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U carddemo"
+          --health-cmd pg_isready
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
 
+    # Environment variables consumed by src/shared/config/settings.py when
+    # the integration tests instantiate the FastAPI app and the PySpark
+    # JDBC connector.  Values match the `services.postgres` credentials
+    # declared above.
     env:
-      DATABASE_URL: postgresql+asyncpg://carddemo:carddemo@localhost:5432/carddemo_test
-      DATABASE_URL_SYNC: postgresql+psycopg2://carddemo:carddemo@localhost:5432/carddemo_test
+      # Async SQLAlchemy URL used by the FastAPI app and async integration
+      # tests (already set at workflow level; repeated here for clarity).
+      DATABASE_URL: postgresql+asyncpg://carddemo:carddemo@localhost:5432/carddemo
+      # Sync URL used by Alembic migrations, psycopg2-based utilities, and
+      # Flyway-style schema loaders in the test suite.
+      DATABASE_URL_SYNC: postgresql+psycopg2://carddemo:carddemo@localhost:5432/carddemo
+      # PGPASSWORD is consumed by the `psql` CLI when applying the Flyway
+      # migrations (V1__schema.sql, V2__indexes.sql, V3__seed_data.sql).
+      PGPASSWORD: carddemo
+      # Dummy AWS credentials for moto (see rationale on unit-tests job).
       AWS_DEFAULT_REGION: us-east-1
       AWS_ACCESS_KEY_ID: testing
       AWS_SECRET_ACCESS_KEY: testing
-      JWT_SECRET_KEY: ci-test-secret-key
+      # JWT signing key scoped to the CI run.  Production reads this from
+      # AWS Secrets Manager via the ECS task definition's `secrets` stanza.
+      JWT_SECRET_KEY: ci-integration-test-secret-key
       JWT_ALGORITHM: HS256
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "30"
+      ENVIRONMENT: test
+      LOG_LEVEL: INFO
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
 
-      - name: Install system dependencies
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # The postgresql-client package provides the `psql` binary used to
+      # apply the Flyway-style SQL migrations in the next step.  The
+      # headers (libpq-dev) are needed by psycopg2-binary's wheel on some
+      # minor version combinations.
+      - name: Install system dependencies (psql, libpq-dev)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libpq-dev
+          sudo apt-get install -y --no-install-recommends postgresql-client libpq-dev
 
-      - name: Install Python dependencies
+      - name: Install Python dependencies (dev + api)
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
-          pip install -r requirements-glue.txt
+          pip install -r requirements-dev.txt -r requirements-api.txt
 
-      - name: Run tests with coverage
+      # Wait loop guards against racy runners where the `services.postgres`
+      # health check reports ready slightly before the database accepts
+      # authenticated connections.  Bounded to ~60 seconds so an actual
+      # container failure surfaces instead of hanging CI indefinitely.
+      - name: Wait for PostgreSQL to accept connections
         run: |
-          pytest -v --cov=src --cov-report=xml --cov-report=term-missing
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if pg_isready -h localhost -p 5432 -U carddemo -d carddemo -t 1; then
+              echo "PostgreSQL accepted connection on attempt ${attempt}."
+              exit 0
+            fi
+            echo "PostgreSQL not ready yet (attempt ${attempt}/30); sleeping 2s..."
+            sleep 2
+          done
+          echo "::error::PostgreSQL service container did not become ready within 60 seconds."
+          exit 1
 
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+      # Apply the Flyway-style migrations in strict version order.  V1
+      # creates the 11 relational tables that replaced the 10 VSAM KSDS
+      # clusters + 1 user security dataset; V2 creates the 3 B-tree
+      # indexes that replaced the VSAM AIX paths; V3 seeds 626 rows of
+      # fixture data converted from app/data/ASCII/*.txt.  Per AAP §0.5.1
+      # Phase 6 step 5.
+      - name: Apply database migrations (Flyway-style)
+        run: |
+          set -euo pipefail
+          echo "Applying db/migrations/V1__schema.sql (11 tables)..."
+          psql -h localhost -U carddemo -d carddemo -v ON_ERROR_STOP=1 -f db/migrations/V1__schema.sql
+          echo "Applying db/migrations/V2__indexes.sql (3 B-tree indexes)..."
+          psql -h localhost -U carddemo -d carddemo -v ON_ERROR_STOP=1 -f db/migrations/V2__indexes.sql
+          echo "Applying db/migrations/V3__seed_data.sql (626 rows of fixture data)..."
+          psql -h localhost -U carddemo -d carddemo -v ON_ERROR_STOP=1 -f db/migrations/V3__seed_data.sql
+          echo "All migrations applied successfully."
+
+      # Integration tests — exercise the API against the real PostgreSQL
+      # service container and validate SQLAlchemy ORM -> table mappings,
+      # transactional rollback semantics, and dual-write patterns.
+      - name: Run integration tests
+        run: pytest tests/integration/ -v
+
+      # End-to-end batch pipeline tests — validate the 5-stage pipeline
+      # (POSTTRAN -> INTCALC -> COMBTRAN -> CREASTMT || TRANREPT) end to
+      # end against the same migrated database.  Matches AAP §0.7.2
+      # "The 5-stage batch pipeline must execute in the correct order".
+      - name: Run end-to-end pipeline tests
+        run: pytest tests/e2e/ -v
+
+      # Preserve any coverage artifact produced by integration / e2e runs.
+      # The job is not expected to fail the overall coverage check (that
+      # is owned by the unit-tests job), but the XML is still useful for
+      # reviewers investigating integration-path coverage gaps.
+      - name: Upload coverage report (integration + e2e)
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
+          name: coverage-report-integration
           path: coverage.xml
           retention-days: 14
-
-  # --------------------------------------------------------------------------
-  # Docker build smoke-test for the API image
-  # --------------------------------------------------------------------------
-  docker-build:
-    name: Docker build (API image)
-    runs-on: ubuntu-latest
-    needs: [lint, typecheck, test]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build API image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          push: false
-          tags: carddemo-api:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          if-no-files-found: ignore
