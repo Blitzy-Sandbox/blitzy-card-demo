@@ -122,7 +122,6 @@ AAP §0.7.2 — Security Requirements (IAM roles, Secrets Manager,
 
 from __future__ import annotations
 
-import json  # noqa: F401  # Retained for JSON-based credential/logging extensions (schema-specified import)
 import logging
 from typing import Any
 

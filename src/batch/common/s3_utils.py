@@ -710,25 +710,34 @@ def list_generations(
     # ``YYYY/MM/DD/HHMMSS/`` has four nested segments — a delimiter-based
     # approach would only expose the first segment (year) and require
     # four additional API calls per GDG to drill down. Recursive listing
-    # returns all keys in a single paginated call and is the canonical
+    # returns all keys via the boto3 paginator and is the canonical
     # pattern used by AWS SDK documentation.
+    #
+    # A boto3 paginator is used here instead of a single
+    # ``list_objects_v2`` call because a single call is capped at the
+    # S3 server-side limit of 1000 keys per response. A GDG with the
+    # maximum LIMIT of 10 (TRANREPT) may legitimately contain more than
+    # 1000 objects over its lifetime (e.g., multi-page statements or
+    # per-account reports), and a non-paginated call would silently
+    # truncate results — breaking the subsequent cleanup logic which
+    # depends on seeing the full generation set.
     #
     # For YYYY/MM/DD/HHMMSS paths we want the 5-segment prefix:
     # <gdg_prefix>/YYYY/MM/DD/HHMMSS/
     generation_prefixes: set[str] = set()
-    paginator_response = s3_client.list_objects_v2(
-        Bucket=bucket,
-        Prefix=f"{prefix}/",
-    )
-    for obj in paginator_response.get("Contents", []):
-        obj_key: str = obj["Key"]
-        # Strip the GDG prefix, then take the first 4 path components
-        # (YYYY/MM/DD/HHMMSS) to form the generation prefix.
-        relative = obj_key.removeprefix(f"{prefix}/")
-        parts = relative.split("/", 4)
-        if len(parts) >= 5:
-            # parts = [YYYY, MM, DD, HHMMSS, rest_of_key]
-            generation_prefixes.add(f"{prefix}/{parts[0]}/{parts[1]}/{parts[2]}/{parts[3]}/")
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=f"{prefix}/"):
+        for obj in page.get("Contents", []):
+            obj_key: str = obj["Key"]
+            # Strip the GDG prefix, then take the first 4 path components
+            # (YYYY/MM/DD/HHMMSS) to form the generation prefix.
+            relative = obj_key.removeprefix(f"{prefix}/")
+            parts = relative.split("/", 4)
+            if len(parts) >= 5:
+                # parts = [YYYY, MM, DD, HHMMSS, rest_of_key]
+                generation_prefixes.add(
+                    f"{prefix}/{parts[0]}/{parts[1]}/{parts[2]}/{parts[3]}/"
+                )
 
     # Sort descending (newest first). Lexicographic descending sort is
     # equivalent to chronological descending sort because the path
@@ -897,16 +906,27 @@ def cleanup_old_generations(gdg_name: str, bucket: str | None = None) -> int:
     s3_client: Any = get_s3_client()
 
     deleted_generation_count = 0
+    # One paginator is sufficient — it is re-used for every generation
+    # via multiple ``paginate(...)`` calls. This avoids the overhead of
+    # building a new paginator object on each iteration.
+    paginator = s3_client.get_paginator("list_objects_v2")
     for old_prefix in old_generations:
         # List all objects under the old generation's prefix. This is a
         # flat list (no delimiter) because we want to delete every
         # object regardless of virtual subfolder structure.
-        obj_response = s3_client.list_objects_v2(
-            Bucket=bucket,
-            Prefix=old_prefix,
-        )
-        objects = obj_response.get("Contents", [])
-        if not objects:
+        #
+        # A paginator is used here instead of a single
+        # ``list_objects_v2`` call because a single call is capped at
+        # the S3 server-side limit of 1000 keys per response. A
+        # generation that spans more than 1000 objects (rare but
+        # possible for per-account statements or multi-page reports)
+        # would be silently truncated by a non-paginated call, leaving
+        # orphan objects behind after SCRATCH — a correctness bug.
+        all_keys: list[dict[str, str]] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=old_prefix):
+            for obj in page.get("Contents", []):
+                all_keys.append({"Key": obj["Key"]})
+        if not all_keys:
             # The generation prefix has no objects (possibly already
             # deleted by a concurrent caller). Skip it — we still count
             # the generation as "deleted" because from the caller's
@@ -921,11 +941,6 @@ def cleanup_old_generations(gdg_name: str, bucket: str | None = None) -> int:
                 },
             )
             continue
-
-        # Build the delete request payload. S3's ``delete_objects`` API
-        # accepts a list of ``{"Key": ...}`` dicts under ``Delete.Objects``.
-        # The 1000-object cap is handled below by chunking.
-        all_keys = [{"Key": obj["Key"]} for obj in objects]
 
         # Chunk into batches of 1000 (the S3 ``delete_objects`` limit).
         # In practice each generation has 1-3 objects so chunking is

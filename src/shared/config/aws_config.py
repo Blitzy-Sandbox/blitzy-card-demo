@@ -221,6 +221,53 @@ def _get_default_region() -> str:
     return Settings().AWS_REGION
 
 
+def _get_endpoint_url() -> str | None:
+    """Resolve the optional AWS endpoint URL override for LocalStack.
+
+    Returns the value of :attr:`Settings.AWS_ENDPOINT_URL` when it has
+    been configured to a non-empty string; otherwise returns ``None``
+    so that boto3 falls back to the standard AWS-managed regional
+    endpoint discovery. This enables the ``docker-compose.yml`` local
+    development stack (which sets
+    ``AWS_ENDPOINT_URL=http://localstack:4566``) to fully exercise
+    every AWS integration code path against the
+    ``localstack/localstack:3`` container while keeping production
+    deployments untouched (AAP 0.4.2 LocalStack local-dev
+    requirement).
+
+    The value is re-read on every call -- we intentionally do NOT
+    cache the endpoint URL the way :func:`_get_default_region` caches
+    the region. ``AWS_ENDPOINT_URL`` is an *override* that developers
+    may toggle at runtime (e.g., by editing ``.env`` and restarting a
+    single process) whereas ``AWS_REGION`` is a near-immutable
+    process-scoped attribute. Re-reading per call costs a single
+    ``Settings()`` construction (Pydantic's ``BaseSettings`` caches
+    its environment parsing internally) and correctly reflects any
+    runtime overrides for test harnesses.
+
+    Returns
+    -------
+    str | None
+        The override URL (e.g., ``"http://localstack:4566"``) when
+        :attr:`Settings.AWS_ENDPOINT_URL` is non-empty, otherwise
+        ``None`` (signals boto3 to use the default regional
+        endpoint).
+    """
+    # Lazy import for the same circular-import-avoidance rationale as
+    # ``_get_default_region``: importing ``src.shared.config.settings``
+    # at module load time can trigger environment-variable parsing in
+    # contexts where the environment has not been configured yet
+    # (for example, during ``mypy`` analysis of ``aws_config.py`` in
+    # isolation).
+    from src.shared.config.settings import Settings
+
+    endpoint_url = Settings().AWS_ENDPOINT_URL
+    # An empty-string sentinel is treated identically to "unset" --
+    # matches the default defined on the Settings model and the
+    # production deployment expectation that this env var is absent.
+    return endpoint_url or None
+
+
 def _get_boto_config() -> BotoConfig:
     """Build the shared botocore ``Config`` object used by every client.
 
@@ -304,9 +351,17 @@ def get_s3_client(region: str | None = None) -> Any:
         client objects are dynamically generated and lack static
         type stubs.
     """
+    # ``endpoint_url`` is threaded through from
+    # :attr:`Settings.AWS_ENDPOINT_URL` so local-development
+    # invocations honor the ``AWS_ENDPOINT_URL=http://localstack:4566``
+    # override defined in ``docker-compose.yml``. Production ECS
+    # Fargate tasks leave the env var unset, so ``_get_endpoint_url``
+    # returns ``None`` and boto3 uses its default regional endpoint
+    # (AAP 0.4.2 LocalStack local-dev requirement).
     return boto3.client(
         "s3",
         region_name=region or _get_default_region(),
+        endpoint_url=_get_endpoint_url(),
         config=_get_boto_config(),
     )
 
@@ -350,9 +405,14 @@ def get_sqs_client(region: str | None = None) -> Any:
         A boto3 ``sqs`` low-level client bound to the resolved region
         and the shared retry policy.
     """
+    # See ``get_s3_client`` for the rationale behind threading
+    # ``endpoint_url`` through to boto3 (LocalStack local-dev
+    # override, no-op in production when Settings.AWS_ENDPOINT_URL
+    # is empty).
     return boto3.client(
         "sqs",
         region_name=region or _get_default_region(),
+        endpoint_url=_get_endpoint_url(),
         config=_get_boto_config(),
     )
 
@@ -390,9 +450,14 @@ def get_secrets_manager_client(region: str | None = None) -> Any:
         A boto3 ``secretsmanager`` low-level client bound to the
         resolved region and the shared retry policy.
     """
+    # See ``get_s3_client`` for the rationale behind threading
+    # ``endpoint_url`` through to boto3 (LocalStack local-dev
+    # override, no-op in production when Settings.AWS_ENDPOINT_URL
+    # is empty).
     return boto3.client(
         "secretsmanager",
         region_name=region or _get_default_region(),
+        endpoint_url=_get_endpoint_url(),
         config=_get_boto_config(),
     )
 
@@ -435,9 +500,14 @@ def get_glue_client(region: str | None = None) -> Any:
         A boto3 ``glue`` low-level client bound to the resolved
         region and the shared retry policy.
     """
+    # See ``get_s3_client`` for the rationale behind threading
+    # ``endpoint_url`` through to boto3 (LocalStack local-dev
+    # override, no-op in production when Settings.AWS_ENDPOINT_URL
+    # is empty).
     return boto3.client(
         "glue",
         region_name=region or _get_default_region(),
+        endpoint_url=_get_endpoint_url(),
         config=_get_boto_config(),
     )
 

@@ -230,6 +230,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.exc import StaleDataError
 
+from src.shared.constants.lookup_codes import VALID_GENERAL_PURPOSE_CODES
 from src.shared.models.account import Account
 from src.shared.models.card_cross_reference import CardCrossReference
 from src.shared.models.customer import Customer
@@ -372,17 +373,49 @@ _MSG_UPDATE_SUCCESS: str = "Changes committed to database"
 _MSG_UPDATE_FAILED: str = "Changes unsuccessful. Please try again"
 """Generic update-failure message (COACTUPC.cbl INFORM-FAILURE)."""
 
+# Dedicated internal-integrity-violation message used when ``_parse_request``
+# raises :class:`ValueError` despite ``_validate_request`` having returned
+# success.  In COBOL this condition would never arise because the validator
+# and the parser share identical working-storage; in Python the two functions
+# operate on the request string separately and a validator/parser contract
+# violation (e.g., a validator gap) would surface here.  Per CP3 review
+# finding MINOR #11 ("Parse errors indistinguishable from validation errors
+# — loss of COBOL error-code fidelity") we use a DISTINCT literal so the
+# user-facing message, the structured log record, and any downstream
+# monitoring can tell apart:
+#
+#   * Field-level validation failure (specific COBOL message via
+#     ``_validate_request`` -> ``error_message``)
+#   * Internal parse-phase inconsistency (this message)
+#   * Database-layer update failure (``_MSG_UPDATE_FAILED``)
+#
+# The message is phrased to signal "this request cannot be processed" rather
+# than inviting a retry — a retry on the same input would reproduce the
+# parser/validator disagreement.  Not a COBOL-sourced literal (the condition
+# is Python-specific); documented explicitly as AAP-consistent reporting.
+_MSG_PARSE_FAILED: str = (
+    "Unable to process update request due to internal validation mismatch"
+)
+"""Defensive-in-depth internal-integrity message (CP3 MINOR #11)."""
+
 _MSG_UPDATE_STALE: str = "Record changed by some one else. Please review"
 """Optimistic-concurrency mismatch (COACTUPC.cbl DATA-WAS-CHANGED-BEFORE-UPDATE)."""
 
-# COBOL source (COACTUPC.cbl) carries the literal "No change detected
-# with respect to values fetched." (50 chars), but the BMS INFOMSGO
-# output field is defined as ``PIC X(45)`` — the original flow would
-# truncate. The Pydantic schema enforces the same 45-char ceiling via
-# ``AccountUpdateResponse.info_message`` (max_length=_INFO_MSG_LEN=45),
-# so we use a semantically-equivalent string that fits the column.
-_MSG_NO_CHANGES: str = "No change detected in submitted values."
-"""No-op update — request equals stored values (COACTUPC.cbl NO-CHANGES-DETECTED)."""
+# COBOL source (COACTUPC.cbl line 492) carries the verbatim literal
+# "No change detected with respect to values fetched." (50 characters
+# including the trailing period). The BMS ``INFOMSGO`` output field
+# is declared as ``PIC X(45)`` — on the mainframe this 50-char
+# literal would silently truncate for display to 45 characters. Per
+# AAP §0.7.1 ("Preserve existing functionality exactly as-is") we
+# restore the full authored 50-character literal here; the modernized
+# API has no BMS screen painter and therefore no natural truncation
+# step, so the full string is surfaced to the client. The Pydantic
+# schema ``AccountUpdateResponse.info_message`` has been widened in
+# tandem from ``max_length=45`` to ``max_length=50`` to admit this
+# COBOL-verbatim value (see ``src/shared/schemas/account_schema.py``
+# ``_INFO_MSG_LEN``). (Code Review Finding MAJOR #5.)
+_MSG_NO_CHANGES: str = "No change detected with respect to values fetched."
+"""No-op update — request equals stored values (COACTUPC.cbl line 492, NO-CHANGES-DETECTED)."""
 
 _MSG_VIEW_XREF_NOT_FOUND: str = (
     "Did not find this account in account card xref file"
@@ -397,83 +430,308 @@ _MSG_VIEW_ACCT_NOT_FOUND: str = (
 _MSG_VIEW_CUST_NOT_FOUND: str = "Did not find associated customer in master file"
 """Customer miss on CUSTDAT primary key (COACTVWC.cbl DID-NOT-FIND-CUST-IN-CUSTDAT)."""
 
+# ----------------------------------------------------------------------------
+# Standalone literals — STANDALONE COBOL error strings (no WS-EDIT-VARIABLE-NAME
+# prefix, emitted verbatim by the source program).
+# ----------------------------------------------------------------------------
+# The following literals are emitted by COACTUPC.cbl / COACTVWC.cbl **without**
+# the ``FUNCTION TRIM(WS-EDIT-VARIABLE-NAME) + suffix`` template pattern that
+# dominates the rest of the validation cascade. They appear as standalone
+# ``STRING`` / ``MOVE`` statements and therefore carry no field-name prefix.
+# ----------------------------------------------------------------------------
+
 _MSG_ACCT_MISSING: str = "Account number not provided"
 """Blank account_id on the request (COACTVWC.cbl ACCT-NUMBER-NOT-SUPPLIED)."""
 
-_MSG_ACCT_INVALID: str = "Account number must be a non zero 11 digit number"
-"""Bad account_id format (COACTVWC.cbl SEARCHED-ACCT-NOT-NUMERIC / COACTUPC.cbl 1210-EDIT-ACCOUNT)."""
+# COACTUPC.cbl ``1210-EDIT-ACCOUNT`` paragraph (lines 1787-1817) emits this
+# STANDALONE literal as a STRING of two fragments: ``'Account Number if
+# supplied must be a 11 digit'`` + ``' Non-Zero Number'``. There is NO TRIM
+# prefix and NO trailing period.
+_MSG_ACCT_INVALID: str = (
+    "Account Number if supplied must be a 11 digit Non-Zero Number"
+)
+"""Bad account_id format (COACTUPC.cbl 1210-EDIT-ACCOUNT lines 1787-1817)."""
 
-_MSG_STATUS_INVALID: str = "Account Active Status must be Y or N"
-"""Bad active_status flag (COACTUPC.cbl ACCT-STATUS-MUST-BE-YES-NO)."""
+# Dedicated message for the REST-specific path/body account_id mismatch
+# condition.  COACTUPC.cbl has only ONE account-number input field on its BMS
+# screen (ACCTSIDI), so the legacy program never encountered this mismatch
+# scenario — it is purely a by-product of the modern REST routing where the
+# account identifier appears in BOTH the URL path (``/accounts/{acct_id}``)
+# AND the request body (``AccountUpdateRequest.account_id``).  The schema's
+# contract (``account_schema.py`` line 959) states "the service layer MUST
+# verify that the body's account_id matches the URL path".  Using
+# ``_MSG_ACCT_INVALID`` here was misleading because that message describes a
+# format error; at Guard 3 both IDs are already known to be valid 11-digit
+# non-zero numbers — they simply disagree with each other.  This dedicated
+# literal accurately reports the actual condition, addressing CP3 review
+# finding MINOR #10 ("path/body msg mismatch").  NOT a COBOL-sourced message.
+_MSG_ACCT_PATH_BODY_MISMATCH: str = (
+    "Account number in URL path does not match request body"
+)
+"""Path/body account_id disagreement (REST-specific; no COBOL equivalent)."""
 
-_MSG_PRI_CARD_INVALID: str = "Pri Holder Ind must be Y or N"
-"""Bad pri_card_holder_ind flag (COACTUPC.cbl PRI-CARD-IND-MUST-BE-Y-N)."""
+# COACTUPC.cbl ``1280-EDIT-US-STATE-ZIP-CD`` paragraph emits this STANDALONE
+# literal on a bad state/zip combo check (line ~2550). No TRIM prefix and no
+# trailing period.
+_MSG_ZIP_STATE_INVALID: str = "Invalid zip code for state"
+"""Mismatched zip/state combination (COACTUPC.cbl 1280-EDIT-US-STATE-ZIP-CD)."""
 
-_MSG_CREDIT_LIMIT_MISSING: str = "Credit Limit must be supplied"
-"""Blank credit_limit (COACTUPC.cbl CREDIT-LIMIT-MUST-BE-SUPPLIED)."""
 
-_MSG_CREDIT_LIMIT_INVALID: str = "Credit Limit is not valid"
-"""Bad credit_limit format (COACTUPC.cbl CREDIT-LIMIT-IS-NOT-VALID)."""
+# ----------------------------------------------------------------------------
+# WS-EDIT-VARIABLE-NAME values — COBOL field labels per COACTUPC.cbl 1472-1657
+# ----------------------------------------------------------------------------
+# Before each field-level ``PERFORM 1215-EDIT-MANDATORY`` / ``1220-EDIT-YESNO`` /
+# ``1245-EDIT-NUM-REQD`` / etc., COACTUPC.cbl sets ``WS-EDIT-VARIABLE-NAME`` to
+# a field label (e.g. ``'Account Status'``, ``'FICO Score'``). The edit
+# paragraph then builds the error via
+# ``STRING FUNCTION TRIM(WS-EDIT-VARIABLE-NAME) DELIMITED BY SIZE, <suffix>``
+# so the label becomes a prefix on every error message. We reproduce the same
+# labels verbatim here and feed them through :func:`_field_msg` below.
+# ----------------------------------------------------------------------------
 
-_MSG_CASH_LIMIT_MISSING: str = "Cash credit Limit must be supplied"
-"""Blank cash_credit_limit (COACTUPC.cbl CASH-CREDIT-LIMIT-MUST-BE-SUPPLIED)."""
+_FLD_ACCT_STATUS: str = "Account Status"
+"""COACTUPC.cbl L1472 WS-EDIT-VARIABLE-NAME for active_status."""
 
-_MSG_CASH_LIMIT_INVALID: str = "Cash credit Limit is not valid"
-"""Bad cash_credit_limit format (COACTUPC.cbl CASH-CREDIT-LIMIT-IS-NOT-VALID)."""
+_FLD_OPEN_DATE: str = "Open Date"
+"""COACTUPC.cbl L1478 WS-EDIT-VARIABLE-NAME for open_date."""
 
-_MSG_CURR_BAL_INVALID: str = "Current Balance is not valid"
-"""Bad current_balance format (COACTUPC.cbl CURR-BAL-IS-NOT-VALID)."""
+_FLD_CREDIT_LIMIT: str = "Credit Limit"
+"""COACTUPC.cbl L1484 WS-EDIT-VARIABLE-NAME for credit_limit."""
 
-_MSG_CYC_CREDIT_INVALID: str = "Current Cycle Credit is not valid"
-"""Bad curr_cyc_credit format (COACTUPC.cbl CURR-CYC-CR-IS-NOT-VALID)."""
+_FLD_EXPIRY_DATE: str = "Expiry Date"
+"""COACTUPC.cbl L1490 WS-EDIT-VARIABLE-NAME for expiration_date."""
 
-_MSG_CYC_DEBIT_INVALID: str = "Current Cycle Debit is not valid"
-"""Bad curr_cyc_debit format (COACTUPC.cbl CURR-CYC-DB-IS-NOT-VALID)."""
+_FLD_CASH_CREDIT_LIMIT: str = "Cash Credit Limit"
+"""COACTUPC.cbl L1496 WS-EDIT-VARIABLE-NAME for cash_credit_limit."""
 
-_MSG_OPEN_DATE_INVALID: str = "Account Opening Date is not valid"
-"""Bad open_date format (COACTUPC.cbl OPEN-DATE-NOT-VALID)."""
+_FLD_REISSUE_DATE: str = "Reissue Date"
+"""COACTUPC.cbl L1503 WS-EDIT-VARIABLE-NAME for reissue_date."""
 
-_MSG_EXPIRY_DATE_INVALID: str = "Account Expiry Date is not valid"
-"""Bad expiration_date format (COACTUPC.cbl EXPIRY-DATE-NOT-VALID)."""
+_FLD_CURRENT_BALANCE: str = "Current Balance"
+"""COACTUPC.cbl L1509 WS-EDIT-VARIABLE-NAME for current_balance."""
 
-_MSG_REISSUE_DATE_INVALID: str = "Account Reissue Date is not valid"
-"""Bad reissue_date format (COACTUPC.cbl REISSUE-DATE-NOT-VALID)."""
+_FLD_CURR_CYC_CREDIT: str = "Current Cycle Credit Limit"
+"""COACTUPC.cbl L1515 WS-EDIT-VARIABLE-NAME for curr_cyc_credit."""
 
-_MSG_DOB_INVALID: str = "Customer Date of Birth is not valid"
-"""Bad customer_dob format (COACTUPC.cbl DOB-NOT-VALID)."""
+_FLD_CURR_CYC_DEBIT: str = "Current Cycle Debit Limit"
+"""COACTUPC.cbl L1522 WS-EDIT-VARIABLE-NAME for curr_cyc_debit."""
 
-_MSG_DOB_FUTURE: str = "Customer Date of Birth is in future"
-"""DOB in the future (COACTUPC.cbl DOB-IN-FUTURE)."""
+_FLD_DOB: str = "Date of Birth"
+"""COACTUPC.cbl L1533 WS-EDIT-VARIABLE-NAME for customer_dob."""
 
-_MSG_FICO_INVALID: str = "FICO Score must be between 300 and 850"
-"""Bad customer_fico_score value (COACTUPC.cbl FICO-OUT-OF-RANGE)."""
+_FLD_FICO: str = "FICO Score"
+"""COACTUPC.cbl L1545 WS-EDIT-VARIABLE-NAME for customer_fico_score."""
 
-_MSG_SSN_INVALID: str = "SSN must be 9 digits and all numeric"
-"""Bad SSN format (COACTUPC.cbl CUST-SSN-IS-NOT-VALID)."""
+_FLD_FIRST_NAME: str = "First Name"
+"""COACTUPC.cbl L1560 WS-EDIT-VARIABLE-NAME for customer_first_name."""
 
-_MSG_SSN_PART1_INVALID: str = "Invalid SSN area number"
-"""Bad SSN area segment — 0, 666, or 900-999 (COACTUPC.cbl INVALID-SSN-PART1)."""
+_FLD_MIDDLE_NAME: str = "Middle Name"
+"""COACTUPC.cbl L1568 WS-EDIT-VARIABLE-NAME for customer_middle_name."""
 
-_MSG_STATE_INVALID: str = "US State code must be 2 alphabetic characters"
-"""Bad state_cd format (COACTUPC.cbl CUST-STATE-NOT-VALID)."""
+_FLD_LAST_NAME: str = "Last Name"
+"""COACTUPC.cbl L1576 WS-EDIT-VARIABLE-NAME for customer_last_name."""
 
-_MSG_COUNTRY_INVALID: str = "Country code must be 3 alphabetic characters"
-"""Bad country_cd format (COACTUPC.cbl CUST-COUNTRY-NOT-VALID)."""
+_FLD_ADDR_LINE_1: str = "Address Line 1"
+"""COACTUPC.cbl L1584 WS-EDIT-VARIABLE-NAME for customer_addr_line_1."""
 
-_MSG_PHONE_AREA_INVALID: str = "Phone area code must be 3 digits"
-"""Bad phone area segment (COACTUPC.cbl PHONE-AREA-NOT-VALID)."""
+_FLD_STATE: str = "State"
+"""COACTUPC.cbl L1592 WS-EDIT-VARIABLE-NAME for customer_state_cd."""
 
-_MSG_PHONE_PREFIX_INVALID: str = "Phone prefix must be 3 digits"
-"""Bad phone prefix segment (COACTUPC.cbl PHONE-PREFIX-NOT-VALID)."""
+_FLD_ZIP: str = "Zip"
+"""COACTUPC.cbl L1605 WS-EDIT-VARIABLE-NAME for customer_zip."""
 
-_MSG_PHONE_LINE_INVALID: str = "Phone line number must be 4 digits"
-"""Bad phone line segment (COACTUPC.cbl PHONE-LINE-NOT-VALID)."""
+_FLD_CITY: str = "City"
+"""COACTUPC.cbl L1615 WS-EDIT-VARIABLE-NAME for customer_city."""
 
-_MSG_ZIP_INVALID: str = "ZIP code must be 5 digits"
-"""Bad ZIP code format (COACTUPC.cbl CUST-ZIP-NOT-VALID)."""
+_FLD_COUNTRY: str = "Country"
+"""COACTUPC.cbl L1623 WS-EDIT-VARIABLE-NAME for customer_country_cd."""
 
-_MSG_NAME_MISSING: str = "First name and Last name must be supplied"
-"""Mandatory name fields blank (COACTUPC.cbl CUST-NAME-MUST-BE-SUPPLIED)."""
+_FLD_PHONE_1: str = "Phone Number 1"
+"""COACTUPC.cbl L1632 WS-EDIT-VARIABLE-NAME for phone_number_1."""
+
+_FLD_PHONE_2: str = "Phone Number 2"
+"""COACTUPC.cbl L1640 WS-EDIT-VARIABLE-NAME for phone_number_2."""
+
+_FLD_EFT_ACCOUNT_ID: str = "EFT Account Id"
+"""COACTUPC.cbl L1648 WS-EDIT-VARIABLE-NAME for eft_account_id."""
+
+_FLD_PRIMARY_CARD_HOLDER: str = "Primary Card Holder"
+"""COACTUPC.cbl L1657 WS-EDIT-VARIABLE-NAME for pri_card_holder_ind."""
+
+# SSN WS-EDIT-VARIABLE-NAME overrides — COACTUPC.cbl ``1265-EDIT-US-SSN``
+# paragraph MOVEs a different label for each of the three SSN segments before
+# calling ``1245-EDIT-NUM-REQD``, producing three distinct prefixes on the
+# downstream "must be supplied / all numeric / not zero" errors.
+_FLD_SSN_PART1: str = "SSN: First 3 chars"
+"""COACTUPC.cbl L2439 override for 1245-EDIT-NUM-REQD on SSN part 1."""
+
+_FLD_SSN_PART2: str = "SSN 4th & 5th chars"
+"""COACTUPC.cbl L2469 override for 1245-EDIT-NUM-REQD on SSN part 2."""
+
+_FLD_SSN_PART3: str = "SSN Last 4 chars"
+"""COACTUPC.cbl L2481 override for 1245-EDIT-NUM-REQD on SSN part 3."""
+
+
+# ----------------------------------------------------------------------------
+# Edit-paragraph suffix constants — verbatim COBOL STRING fragments
+# ----------------------------------------------------------------------------
+# The COBOL edit paragraphs emit the error message as:
+#
+#     STRING FUNCTION TRIM(WS-EDIT-VARIABLE-NAME) DELIMITED BY SIZE
+#            <SUFFIX-LITERAL>                     DELIMITED BY SIZE
+#         INTO WS-ERROR-MESSAGE
+#
+# For paragraphs 1215-1250 (required/optional alpha/alnum/numeric/monetary),
+# the suffix starts with a SPACE (e.g. ``' must be supplied.'``) so the
+# concatenated output is ``"<field_name> must be supplied."``.
+#
+# For paragraph 1260 (phone) and 1265 (SSN Part1 invalid-area) / 1270 (state)
+# / 1275 (FICO), the suffix starts with ``': '`` (colon-space) so the
+# concatenated output is ``"<field_name>: <suffix>"``.
+#
+# A handful of suffixes omit the trailing period — preserved exactly here.
+# ----------------------------------------------------------------------------
+
+# 1215-EDIT-MANDATORY / 1220-EDIT-YESNO blank / 1225-EDIT-ALPHA-REQD blank /
+# 1230-EDIT-ALPHANUM-REQD blank / 1245-EDIT-NUM-REQD blank /
+# 1250-EDIT-SIGNED-9V2 blank.
+_SFX_MUST_BE_SUPPLIED: str = " must be supplied."
+"""COACTUPC.cbl edit-paragraph suffix for mandatory-blank errors."""
+
+# 1220-EDIT-YESNO invalid Y/N.
+_SFX_MUST_BE_Y_OR_N: str = " must be Y or N."
+"""COACTUPC.cbl 1220-EDIT-YESNO invalid-value suffix (line 1890)."""
+
+# 1225-EDIT-ALPHA-REQD / 1235-EDIT-ALPHA-OPT non-alphabetic.
+_SFX_CAN_HAVE_ALPHABETS_ONLY: str = " can have alphabets only."
+"""COACTUPC.cbl alpha-edit paragraphs non-alphabetic suffix."""
+
+# 1230-EDIT-ALPHANUM-REQD / 1240-EDIT-ALPHANUM-OPT non-alphanumeric.
+_SFX_CAN_HAVE_ALNUM_ONLY: str = " can have numbers or alphabets only."
+"""COACTUPC.cbl alnum-edit paragraphs non-alphanumeric suffix."""
+
+# 1245-EDIT-NUM-REQD not-numeric.
+_SFX_MUST_BE_ALL_NUMERIC: str = " must be all numeric."
+"""COACTUPC.cbl 1245-EDIT-NUM-REQD non-numeric suffix."""
+
+# 1245-EDIT-NUM-REQD zero.
+_SFX_MUST_NOT_BE_ZERO: str = " must not be zero."
+"""COACTUPC.cbl 1245-EDIT-NUM-REQD zero-value suffix."""
+
+# 1250-EDIT-SIGNED-9V2 NUMVAL-C failure. NOTE: no trailing period — preserved
+# verbatim from COACTUPC.cbl line 2209.
+_SFX_IS_NOT_VALID: str = " is not valid"
+"""COACTUPC.cbl 1250-EDIT-SIGNED-9V2 invalid-number suffix (NO PERIOD)."""
+
+# 1260-EDIT-US-PHONE-NUM area-code sub-paragraph.
+_SFX_AREA_MUST_BE_SUPPLIED: str = ": Area code must be supplied."
+"""COACTUPC.cbl EDIT-AREA-CODE blank suffix (line 2254)."""
+
+# NOTE: "A 3 digit number" uses a CAPITAL A in the COBOL source — preserved
+# verbatim even though it is grammatically unusual.
+_SFX_AREA_MUST_BE_3_DIGIT: str = ": Area code must be A 3 digit number."
+"""COACTUPC.cbl EDIT-AREA-CODE non-numeric suffix (line 2272, CAPITAL A)."""
+
+# NOTE: NO trailing period — preserved verbatim from COACTUPC.cbl line 2286.
+_SFX_AREA_CANNOT_BE_ZERO: str = ": Area code cannot be zero"
+"""COACTUPC.cbl EDIT-AREA-CODE zero suffix (NO PERIOD)."""
+
+# NOTE: NO trailing period — preserved verbatim from COACTUPC.cbl line 2306.
+_SFX_AREA_NOT_VALID_NANPA: str = (
+    ": Not valid North America general purpose area code"
+)
+"""COACTUPC.cbl EDIT-AREA-CODE NANPA-lookup-fail suffix (NO PERIOD)."""
+
+# 1260 phone prefix sub-paragraph.
+_SFX_PREFIX_MUST_BE_SUPPLIED: str = ": Prefix code must be supplied."
+"""COACTUPC.cbl EDIT-US-PHONE-PREFIX blank suffix (line 2325)."""
+
+_SFX_PREFIX_MUST_BE_3_DIGIT: str = ": Prefix code must be A 3 digit number."
+"""COACTUPC.cbl EDIT-US-PHONE-PREFIX non-numeric suffix (CAPITAL A)."""
+
+# NOTE: NO trailing period.
+_SFX_PREFIX_CANNOT_BE_ZERO: str = ": Prefix code cannot be zero"
+"""COACTUPC.cbl EDIT-US-PHONE-PREFIX zero suffix (NO PERIOD)."""
+
+# 1260 phone line sub-paragraph.
+_SFX_LINE_MUST_BE_SUPPLIED: str = ": Line number code must be supplied."
+"""COACTUPC.cbl EDIT-US-PHONE-LINENUM blank suffix (line 2378)."""
+
+_SFX_LINE_MUST_BE_4_DIGIT: str = ": Line number code must be A 4 digit number."
+"""COACTUPC.cbl EDIT-US-PHONE-LINENUM non-numeric suffix (CAPITAL A, 4 digits)."""
+
+# NOTE: NO trailing period.
+_SFX_LINE_CANNOT_BE_ZERO: str = ": Line number code cannot be zero"
+"""COACTUPC.cbl EDIT-US-PHONE-LINENUM zero suffix (NO PERIOD)."""
+
+# 1265-EDIT-US-SSN INVALID-SSN-PART1 check (invalid SSA area). NOTE: NO
+# trailing period — preserved verbatim from COACTUPC.cbl line ~2464.
+_SFX_SSN_PART1_INVALID: str = (
+    ": should not be 000, 666, or between 900 and 999"
+)
+"""COACTUPC.cbl 1265-EDIT-US-SSN INVALID-SSN-PART1 suffix (NO PERIOD)."""
+
+# 1270-EDIT-US-STATE-CD invalid state. NOTE: NO trailing period — preserved
+# verbatim from COACTUPC.cbl line 2503.
+_SFX_IS_NOT_A_VALID_STATE: str = ": is not a valid state code"
+"""COACTUPC.cbl 1270-EDIT-US-STATE-CD suffix (NO PERIOD)."""
+
+# 1275-EDIT-FICO-SCORE out-of-range. NOTE: NO trailing period — preserved
+# verbatim from COACTUPC.cbl line 2523.
+_SFX_FICO_OUT_OF_RANGE: str = ": should be between 300 and 850"
+"""COACTUPC.cbl 1275-EDIT-FICO-SCORE out-of-range suffix (NO PERIOD)."""
+
+
+# ----------------------------------------------------------------------------
+# Message-builder helper
+# ----------------------------------------------------------------------------
+
+
+def _field_msg(field_name: str, suffix: str) -> str:
+    """Concatenate a WS-EDIT-VARIABLE-NAME label with a COBOL suffix literal.
+
+    Replicates the COBOL ``STRING`` statement used by every edit
+    paragraph (1215-EDIT-MANDATORY, 1220-EDIT-YESNO, 1225-EDIT-ALPHA-REQD,
+    1230-EDIT-ALPHANUM-REQD, 1245-EDIT-NUM-REQD, 1250-EDIT-SIGNED-9V2,
+    1260-EDIT-US-PHONE-NUM, 1265-EDIT-US-SSN, 1270-EDIT-US-STATE-CD,
+    1275-EDIT-FICO-SCORE) of COACTUPC.cbl:
+
+    .. code-block:: cobol
+
+        STRING FUNCTION TRIM(WS-EDIT-VARIABLE-NAME) DELIMITED BY SIZE,
+               ' must be supplied.'                 DELIMITED BY SIZE
+            INTO WS-ERROR-MESSAGE
+
+    ``FUNCTION TRIM`` in COBOL removes both leading and trailing spaces
+    from the field label, which we replicate with :meth:`str.strip`.
+
+    Parameters
+    ----------
+    field_name : str
+        The WS-EDIT-VARIABLE-NAME label (see the ``_FLD_*`` constants
+        defined above). Typically 2-30 characters.
+    suffix : str
+        The COBOL suffix literal — one of the ``_SFX_*`` constants
+        defined above. Preserved byte-for-byte including any leading
+        space or leading ``": "`` prefix, and INCLUDING or EXCLUDING
+        the trailing period exactly as the COBOL source does.
+
+    Returns
+    -------
+    str
+        The concatenated error message string. Per AAP §0.7.1
+        ("Preserve existing functionality exactly as-is") the output
+        is byte-for-byte identical to what the COBOL STRING statement
+        produces.
+
+    Examples
+    --------
+    >>> _field_msg(_FLD_FICO, _SFX_FICO_OUT_OF_RANGE)
+    'FICO Score: should be between 300 and 850'
+    >>> _field_msg(_FLD_ACCT_STATUS, _SFX_MUST_BE_Y_OR_N)
+    'Account Status must be Y or N.'
+    """
+    return f"{field_name.strip()}{suffix}"
 
 
 # ----------------------------------------------------------------------------
@@ -860,6 +1118,18 @@ class AccountService:
             )
 
         # --- Guard 3: URL-path acct_id must match request body ----------
+        # When the body account_id is supplied AND differs from the
+        # URL-path value, both IDs have already been shown to be
+        # well-formed 11-digit non-zero numbers (otherwise Guard 2 or
+        # Pydantic validation would have intercepted earlier).  The
+        # condition is therefore NOT a format error — it is a
+        # disagreement between two valid identifiers.  Using the
+        # dedicated ``_MSG_ACCT_PATH_BODY_MISMATCH`` literal addresses
+        # CP3 review finding MINOR #10 by making the error message
+        # describe the actual condition rather than misreporting it as
+        # a format error.  This is a REST-specific concern; COACTUPC.cbl
+        # has no parallel because BMS screens carry a single
+        # ``ACCTSIDI`` input field.
         if (
             request.account_id
             and request.account_id.strip() != normalized_id
@@ -872,7 +1142,7 @@ class AccountService:
                 },
             )
             return _build_update_error_response(
-                normalized_id, request, _MSG_ACCT_INVALID
+                normalized_id, request, _MSG_ACCT_PATH_BODY_MISMATCH
             )
 
         # --- Step 1: Read existing state (xref + account + customer) ---
@@ -992,18 +1262,31 @@ class AccountService:
         try:
             parsed: _ParsedRequest = _parse_request(request)
         except ValueError as exc:
-            # Should not occur after _validate_request, but defend in
-            # depth against a validator gap.
-            logger.warning(
+            # Defensive in depth: this branch is reachable only if the
+            # validator/parser contract is violated — i.e.,
+            # ``_validate_request`` returned ``None`` (success) yet
+            # ``_parse_request`` could not complete.  In COBOL the two
+            # phases share identical working storage so the condition
+            # cannot arise; in Python they operate on the request string
+            # independently.  Per CP3 review finding MINOR #11 we use
+            # (a) a dedicated ``_MSG_PARSE_FAILED`` message so the
+            # response is distinguishable from both validation errors
+            # (specific COBOL messages) and ``_MSG_UPDATE_FAILED``
+            # (DB-level failure expected to be retryable), and (b)
+            # ``logger.error`` (not ``warning``) with
+            # ``exc_info=True`` because this represents an internal
+            # contract violation worthy of operator investigation.
+            logger.error(
                 "Account update rejected: parse failure",
                 extra={
                     **log_context,
                     "error_type": type(exc).__name__,
                     "error_message": str(exc),
                 },
+                exc_info=True,
             )
             return _build_update_error_response(
-                normalized_id, request, _MSG_UPDATE_FAILED
+                normalized_id, request, _MSG_PARSE_FAILED
             )
 
         # --- Step 4: Change detection (1205-COMPARE-OLD-NEW) ----------
@@ -1295,11 +1578,25 @@ def _validate_fico_score(value: str) -> int | None:
 
 
 def _validate_us_ssn(part1: str, part2: str, part3: str) -> str | None:
-    """Validate the 3-2-4 SSN segmentation.
+    """Validate the 3-2-4 SSN segmentation per COACTUPC.cbl 1265-EDIT-US-SSN.
 
-    Maps to the COBOL ``1265-EDIT-US-SSN`` paragraph plus the SSA
-    area-number blacklist defined at COACTUPC.cbl lines 118-135
-    (``88 INVALID-SSN-PART1 VALUES 0, 666, 900 THRU 999``).
+    Maps to the COBOL ``1265-EDIT-US-SSN`` paragraph (lines 2431-2491)
+    plus the SSA area-number blacklist defined at COACTUPC.cbl lines
+    118-135 (``88 INVALID-SSN-PART1 VALUES 0, 666, 900 THRU 999``).
+
+    The COBOL paragraph calls ``1245-EDIT-NUM-REQD`` for each of the
+    three SSN segments in turn, substituting a segment-specific label
+    into ``WS-EDIT-VARIABLE-NAME`` before each call:
+
+    - Part 1 (3 chars): label ``'SSN: First 3 chars'``  (line 2439)
+    - Part 2 (2 chars): label ``'SSN 4th & 5th chars'`` (line 2469)
+    - Part 3 (4 chars): label ``'SSN Last 4 chars'``    (line 2481)
+
+    If the three segments are structurally valid (all numeric, none
+    zero), a final ``INVALID-SSN-PART1`` check rejects the SSA-reserved
+    area numbers (000, 666, 900-999), emitting the COBOL
+    ``': should not be 000, 666, or between 900 and 999'`` suffix with
+    the ``'SSN: First 3 chars'`` label as prefix.
 
     Parameters
     ----------
@@ -1310,53 +1607,66 @@ def _validate_us_ssn(part1: str, part2: str, part3: str) -> str | None:
     Returns
     -------
     str | None
-        A COBOL error-message string describing the violation if
-        the SSN is invalid, or ``None`` if valid.
+        A COBOL-byte-exact error-message string describing the
+        violation if the SSN is invalid, or ``None`` if valid.
+
+    Notes
+    -----
+    The structural check ordering matches the COBOL cascade: blank
+    first, non-numeric second, zero third — then SSA area blacklist
+    as a post-validation check. Each segment is validated with its
+    own label, so the error message pinpoints WHICH segment failed.
     """
-    if (
-        len(part1) != _SSN_PART1_LEN
-        or len(part2) != _SSN_PART2_LEN
-        or len(part3) != _SSN_PART3_LEN
-    ):
-        return _MSG_SSN_INVALID
-    if not (
-        _RE_DIGITS_ONLY.match(part1)
-        and _RE_DIGITS_ONLY.match(part2)
-        and _RE_DIGITS_ONLY.match(part3)
-    ):
-        return _MSG_SSN_INVALID
+    segments: tuple[tuple[str, str, int], ...] = (
+        (_FLD_SSN_PART1, part1, _SSN_PART1_LEN),
+        (_FLD_SSN_PART2, part2, _SSN_PART2_LEN),
+        (_FLD_SSN_PART3, part3, _SSN_PART3_LEN),
+    )
+    # 1245-EDIT-NUM-REQD cascade for each segment: blank → not-numeric
+    # → zero. The COBOL paragraph short-circuits on the first failure
+    # within each segment.
+    for label, value, expected_len in segments:
+        if value == "" or value.strip() == "":
+            return _field_msg(label, _SFX_MUST_BE_SUPPLIED)
+        if len(value) != expected_len or not _RE_DIGITS_ONLY.match(value):
+            return _field_msg(label, _SFX_MUST_BE_ALL_NUMERIC)
+        if int(value) == 0:
+            return _field_msg(label, _SFX_MUST_NOT_BE_ZERO)
     # SSA rules: 000, 666, 900-999 are never issued as area numbers.
+    # COACTUPC.cbl 1265-EDIT-US-SSN INVALID-SSN-PART1 check. (The
+    # 000 sub-case is already handled by the zero check above but
+    # the area-range check also rejects the other reserved blocks.)
     if part1 in _INVALID_SSN_AREAS:
-        return _MSG_SSN_PART1_INVALID
-    # Group number and serial number must also be non-zero (SSA rule).
-    if part2 == "00" or part3 == "0000":
-        return _MSG_SSN_INVALID
+        return _field_msg(_FLD_SSN_PART1, _SFX_SSN_PART1_INVALID)
     return None
 
 
-def _validate_us_phone(area: str, prefix: str, line: str) -> str | None:
-    """Validate the 3-3-4 phone number segmentation.
+def _validate_us_phone(
+    phone_label: str, area: str, prefix: str, line: str
+) -> str | None:
+    """Validate the 3-3-4 phone number segmentation per COACTUPC.cbl 1260.
 
-    Maps to the COBOL ``1260-EDIT-US-PHONE-NUM`` paragraph. Phone
-    numbers are OPTIONAL per COACTUPC.cbl — an all-blank phone is
-    accepted and stored as blank. When ANY segment is supplied,
-    ALL three segments must pass validation.
+    Maps to the COBOL ``1260-EDIT-US-PHONE-NUM`` paragraph and its
+    three sub-paragraphs:
 
-    Note
-    ----
-    The COBOL source additionally cross-references the area code
-    against the ``VALID-GENERAL-PURP-CODE`` lookup table
-    (``app/cpy/CSLKPCDY.cpy`` line 521, ~410 NANPA codes). That
-    lookup table exists in the target codebase as
-    ``src/shared/constants/lookup_codes.py`` but that module is
-    NOT in the dependency whitelist for this service, so we apply
-    only the minimum structural validation (3-digit numeric) here.
-    Callers wanting the full NANPA lookup validation should go
-    through :func:`src.shared.utils.phone_utils.validate_area_code`
-    (not yet implemented) in a future iteration.
+    - ``EDIT-AREA-CODE``         (lines 2246-2314)
+    - ``EDIT-US-PHONE-PREFIX``   (lines 2316-2368)
+    - ``EDIT-US-PHONE-LINENUM``  (lines 2370-2425)
+
+    Each sub-paragraph runs its own cascade: blank → not-numeric →
+    zero → (area only) NANPA-lookup. Per COACTUPC.cbl lines 2234-2244
+    an all-blank phone is accepted as a valid OPTIONAL submission.
+
+    The error message built by the COBOL source is the concatenation
+    of the parent ``WS-EDIT-VARIABLE-NAME`` (e.g. ``'Phone Number 1'``)
+    and the sub-paragraph suffix (which itself starts with ``': '``),
+    e.g. ``"Phone Number 1: Area code must be supplied."``.
 
     Parameters
     ----------
+    phone_label : str
+        The COBOL WS-EDIT-VARIABLE-NAME label for the parent phone
+        field — either ``_FLD_PHONE_1`` or ``_FLD_PHONE_2``.
     area, prefix, line : str
         The three phone segments: area code (3 digits), prefix
         (3 digits), line number (4 digits).
@@ -1364,38 +1674,73 @@ def _validate_us_phone(area: str, prefix: str, line: str) -> str | None:
     Returns
     -------
     str | None
-        A COBOL error-message string describing the violation if
-        the phone is invalid, or ``None`` if valid (including the
-        all-blank case).
+        A COBOL-byte-exact error-message string describing the
+        violation, or ``None`` if valid (including the all-blank
+        case).
+
+    Notes
+    -----
+    The COBOL source additionally cross-references the area code
+    against the ``VALID-GENERAL-PURP-CODE`` 88-level lookup at
+    ``app/cpy/CSLKPCDY.cpy`` line 521 — approximately 410 real NANPA
+    geographic codes that explicitly EXCLUDE the 80 "easily
+    recognizable codes" (ERC) such as ``211`` / ``800`` / ``911``.
+    We import the Python translation of that lookup from
+    :data:`src.shared.constants.lookup_codes.VALID_GENERAL_PURPOSE_CODES`
+    (produced from the same COBOL source at import-time) and apply
+    the exact same membership test the COBOL ``IF
+    VALID-GENERAL-PURP-CODE`` performs at COACTUPC.cbl line 2298.
+    A stricter N11-only check (rejecting codes starting with 0 or 1
+    but accepting ERC codes) would both false-positive and
+    false-negative relative to the COBOL source and is therefore
+    inappropriate.
     """
-    # All-blank phone is a valid OPTIONAL submission.
-    if area == "" and prefix == "" and line == "":
+    # All-blank phone is a valid OPTIONAL submission (COACTUPC.cbl
+    # lines 2234-2244): ``IF WS-EDIT-US-PHONE-NUMA = SPACES AND
+    # WS-EDIT-US-PHONE-NUMP = SPACES AND WS-EDIT-US-PHONE-NUML = SPACES
+    # CONTINUE``.  Any fixed-width PIC X field is padded with spaces
+    # so the COBOL ``= SPACES`` test is equivalent to ``.strip() == ""``
+    # in Python — this covers both the empty-string case (caller
+    # supplied ``""``) and the all-spaces case (caller supplied the
+    # BMS-padded form ``"   "``).
+    if area.strip() == "" and prefix.strip() == "" and line.strip() == "":
         return None
 
-    if (
-        len(area) != _PHONE_AREA_LEN
-        or not _RE_DIGITS_ONLY.match(area)
-    ):
-        return _MSG_PHONE_AREA_INVALID
-    if (
-        len(prefix) != _PHONE_PREFIX_LEN
-        or not _RE_DIGITS_ONLY.match(prefix)
-    ):
-        return _MSG_PHONE_PREFIX_INVALID
-    if (
-        len(line) != _PHONE_LINE_LEN
-        or not _RE_DIGITS_ONLY.match(line)
-    ):
-        return _MSG_PHONE_LINE_INVALID
+    # --- Area code sub-paragraph (EDIT-AREA-CODE, COACTUPC.cbl 2246-2314) ---
+    if area == "" or area.strip() == "":
+        return _field_msg(phone_label, _SFX_AREA_MUST_BE_SUPPLIED)
+    if len(area) != _PHONE_AREA_LEN or not _RE_DIGITS_ONLY.match(area):
+        return _field_msg(phone_label, _SFX_AREA_MUST_BE_3_DIGIT)
+    if int(area) == 0:
+        return _field_msg(phone_label, _SFX_AREA_CANNOT_BE_ZERO)
+    # NANPA general-purpose area-code membership check.  Directly
+    # mirrors COACTUPC.cbl line 2298 ``IF VALID-GENERAL-PURP-CODE``
+    # (the 88-level condition whose value list is enumerated at
+    # CSLKPCDY.cpy line 521 and mechanically translated into the
+    # ``VALID_GENERAL_PURPOSE_CODES`` frozenset).  This replaces the
+    # earlier N11 heuristic (``area[0] in {'0','1'}``) which was
+    # simultaneously (a) too loose — it accepted ERC codes like
+    # ``211``/``800``/``911`` that COBOL rejects — and (b) too strict
+    # in edge cases; per MINOR #13 alignment with COACTUPC.cbl L2298
+    # the full lookup is required.
+    if area not in VALID_GENERAL_PURPOSE_CODES:
+        return _field_msg(phone_label, _SFX_AREA_NOT_VALID_NANPA)
 
-    # Additional NANPA structural rules per COACTUPC.cbl cascade:
-    # area and prefix segments must start with a digit >= 2 (no N11
-    # codes like 000, 111, etc.). This is a minimum safeguard in
-    # lieu of the full ``VALID-GENERAL-PURP-CODE`` lookup.
-    if area[0] in ("0", "1"):
-        return _MSG_PHONE_AREA_INVALID
-    if prefix[0] in ("0", "1"):
-        return _MSG_PHONE_PREFIX_INVALID
+    # --- Prefix sub-paragraph (EDIT-US-PHONE-PREFIX, COACTUPC.cbl 2316-2368) ---
+    if prefix == "" or prefix.strip() == "":
+        return _field_msg(phone_label, _SFX_PREFIX_MUST_BE_SUPPLIED)
+    if len(prefix) != _PHONE_PREFIX_LEN or not _RE_DIGITS_ONLY.match(prefix):
+        return _field_msg(phone_label, _SFX_PREFIX_MUST_BE_3_DIGIT)
+    if int(prefix) == 0:
+        return _field_msg(phone_label, _SFX_PREFIX_CANNOT_BE_ZERO)
+
+    # --- Line-number sub-paragraph (EDIT-US-PHONE-LINENUM, COACTUPC.cbl 2370-2425) ---
+    if line == "" or line.strip() == "":
+        return _field_msg(phone_label, _SFX_LINE_MUST_BE_SUPPLIED)
+    if len(line) != _PHONE_LINE_LEN or not _RE_DIGITS_ONLY.match(line):
+        return _field_msg(phone_label, _SFX_LINE_MUST_BE_4_DIGIT)
+    if int(line) == 0:
+        return _field_msg(phone_label, _SFX_LINE_CANNOT_BE_ZERO)
     return None
 
 
@@ -1485,6 +1830,15 @@ def _validate_request(request: AccountUpdateRequest) -> str | None:
     error-message string of the first failure and letting the
     caller return an error response to the client.
 
+    Error messages are built through :func:`_field_msg` which
+    concatenates a WS-EDIT-VARIABLE-NAME label (the ``_FLD_*``
+    constants) with a COBOL suffix literal (the ``_SFX_*`` constants)
+    so every output is byte-for-byte identical to what the COBOL
+    source emits. For date fields the message is passed through from
+    :func:`validate_date_ccyymmdd` / :func:`validate_date_of_birth`
+    in ``src.shared.utils.date_utils``, both of which already emit
+    COBOL-verbatim error messages with the correct field-name prefix.
+
     Parameters
     ----------
     request : AccountUpdateRequest
@@ -1494,16 +1848,24 @@ def _validate_request(request: AccountUpdateRequest) -> str | None:
     Returns
     -------
     str | None
-        The COBOL error-message string of the first failure, or
-        ``None`` if every field passes validation.
+        The COBOL-byte-exact error-message string of the first
+        failure, or ``None`` if every field passes validation.
     """
     # --- Account flags (1220-EDIT-YESNO) ---------------------------
+    # COACTUPC.cbl L1472 sets WS-EDIT-VARIABLE-NAME = 'Account Status'
+    # then PERFORMs 1220-EDIT-YESNO, which builds a byte-for-byte
+    # concatenation of the label and ' must be Y or N.' (with trailing
+    # period) on an invalid Y/N.
+    if request.active_status.strip() == "":
+        return _field_msg(_FLD_ACCT_STATUS, _SFX_MUST_BE_SUPPLIED)
     if not _validate_yes_no(request.active_status):
-        return _MSG_STATUS_INVALID
-    if not _validate_yes_no(request.customer_pri_cardholder):
-        return _MSG_PRI_CARD_INVALID
+        return _field_msg(_FLD_ACCT_STATUS, _SFX_MUST_BE_Y_OR_N)
 
     # --- Monetary fields (1250-EDIT-SIGNED-9V2) --------------------
+    # COACTUPC.cbl L1484, L1496, L1509, L1515, L1522 each set
+    # WS-EDIT-VARIABLE-NAME = '<Credit Limit|Cash Credit Limit|...>'
+    # then PERFORM 1250-EDIT-SIGNED-9V2. The ``' is not valid'``
+    # suffix explicitly has NO trailing period (COACTUPC.cbl L2209).
     # Pydantic has already enforced the Decimal type via the schema
     # validator ``_validate_monetary_non_negative``; the remaining
     # check is that the value is in a reasonable scale. We attempt
@@ -1511,65 +1873,111 @@ def _validate_request(request: AccountUpdateRequest) -> str | None:
     try:
         round_financial(request.credit_limit)
     except (ValueError, ArithmeticError):
-        return _MSG_CREDIT_LIMIT_INVALID
+        return _field_msg(_FLD_CREDIT_LIMIT, _SFX_IS_NOT_VALID)
     try:
         round_financial(request.cash_credit_limit)
     except (ValueError, ArithmeticError):
-        return _MSG_CASH_LIMIT_INVALID
+        return _field_msg(_FLD_CASH_CREDIT_LIMIT, _SFX_IS_NOT_VALID)
 
     # --- Date validation (1285-EDIT-DATE-CCYYMMDD) -----------------
+    # COACTUPC.cbl L1478, L1490, L1503 set WS-EDIT-VARIABLE-NAME =
+    # 'Open Date' / 'Expiry Date' / 'Reissue Date' then PERFORM
+    # 1285-EDIT-DATE-CCYYMMDD, which delegates to CSUTLDPY.cpy
+    # paragraphs that already emit byte-exact error messages
+    # prefixed with the field name (see validate_date_ccyymmdd in
+    # src/shared/utils/date_utils.py). We pass the WS-EDIT-VARIABLE-
+    # NAME through and return the DateValidationResult.error_message
+    # verbatim per AAP §0.7.1.
     open_date_ccyymmdd: str = _join_date(
         request.open_date_year,
         request.open_date_month,
         request.open_date_day,
     )
-    if not validate_date_ccyymmdd(open_date_ccyymmdd).is_valid:
-        return _MSG_OPEN_DATE_INVALID
+    open_date_result = validate_date_ccyymmdd(
+        open_date_ccyymmdd, field_name=_FLD_OPEN_DATE
+    )
+    if not open_date_result.is_valid:
+        return open_date_result.error_message or _field_msg(
+            _FLD_OPEN_DATE, _SFX_IS_NOT_VALID
+        )
 
     expiry_date_ccyymmdd: str = _join_date(
         request.expiration_date_year,
         request.expiration_date_month,
         request.expiration_date_day,
     )
-    if not validate_date_ccyymmdd(expiry_date_ccyymmdd).is_valid:
-        return _MSG_EXPIRY_DATE_INVALID
+    expiry_date_result = validate_date_ccyymmdd(
+        expiry_date_ccyymmdd, field_name=_FLD_EXPIRY_DATE
+    )
+    if not expiry_date_result.is_valid:
+        return expiry_date_result.error_message or _field_msg(
+            _FLD_EXPIRY_DATE, _SFX_IS_NOT_VALID
+        )
 
     reissue_date_ccyymmdd: str = _join_date(
         request.reissue_date_year,
         request.reissue_date_month,
         request.reissue_date_day,
     )
-    if not validate_date_ccyymmdd(reissue_date_ccyymmdd).is_valid:
-        return _MSG_REISSUE_DATE_INVALID
+    reissue_date_result = validate_date_ccyymmdd(
+        reissue_date_ccyymmdd, field_name=_FLD_REISSUE_DATE
+    )
+    if not reissue_date_result.is_valid:
+        return reissue_date_result.error_message or _field_msg(
+            _FLD_REISSUE_DATE, _SFX_IS_NOT_VALID
+        )
 
-    # --- Date of birth (1280-EDIT-DATE-OF-BIRTH) -------------------
+    # --- Date of birth (EDIT-DATE-OF-BIRTH) ------------------------
+    # COACTUPC.cbl L1533 sets WS-EDIT-VARIABLE-NAME = 'Date of Birth'
+    # then PERFORM EDIT-DATE-OF-BIRTH (CSUTLDPY.cpy lines 341-372),
+    # which first delegates to EDIT-DATE-CCYYMMDD and, on structural
+    # success, additionally rejects future dates with the literal
+    # ':cannot be in the future ' (trailing space, no period).
+    # validate_date_of_birth in date_utils.py already emits both
+    # branches byte-exact; we pass the field name through and return
+    # its error message verbatim.
     dob_ccyymmdd: str = _join_date(
         request.customer_dob_year,
         request.customer_dob_month,
         request.customer_dob_day,
     )
-    dob_result = validate_date_of_birth(dob_ccyymmdd)
+    dob_result = validate_date_of_birth(
+        dob_ccyymmdd, field_name=_FLD_DOB
+    )
     if not dob_result.is_valid:
-        # Distinguish structurally-invalid from future-dated DOB by
-        # inspecting the result_text / error_message. The date utility
-        # sets a specific message for the "future" case.
-        err_msg: str = dob_result.error_message or ""
-        if "future" in err_msg.lower():
-            return _MSG_DOB_FUTURE
-        return _MSG_DOB_INVALID
+        return dob_result.error_message or _field_msg(
+            _FLD_DOB, _SFX_IS_NOT_VALID
+        )
 
-    # --- Customer name (1215-EDIT-MANDATORY) -----------------------
-    if (
-        not request.customer_first_name.strip()
-        or not request.customer_last_name.strip()
-    ):
-        return _MSG_NAME_MISSING
+    # --- Customer name (1215-EDIT-MANDATORY / 1225-EDIT-ALPHA-REQD) ---
+    # COACTUPC.cbl L1560, L1576 set WS-EDIT-VARIABLE-NAME =
+    # 'First Name' / 'Last Name' then PERFORM 1225-EDIT-ALPHA-REQD,
+    # which emits ' must be supplied.' on blank and
+    # ' can have alphabets only.' on a non-alpha character. The
+    # COBOL cascade is blank → non-alpha; we check First Name first,
+    # then Last Name, matching the COACTUPC source order. (The
+    # middle-name check uses 1235-EDIT-ALPHA-OPT — it's optional so
+    # a blank is accepted and only a non-alpha triggers an error.)
+    if request.customer_first_name.strip() == "":
+        return _field_msg(_FLD_FIRST_NAME, _SFX_MUST_BE_SUPPLIED)
+    if request.customer_last_name.strip() == "":
+        return _field_msg(_FLD_LAST_NAME, _SFX_MUST_BE_SUPPLIED)
 
     # --- FICO score (1275-EDIT-FICO-SCORE) -------------------------
+    # COACTUPC.cbl L1545 sets WS-EDIT-VARIABLE-NAME = 'FICO Score'
+    # then PERFORM 1275-EDIT-FICO-SCORE. The COBOL suffix
+    # ': should be between 300 and 850' explicitly has NO trailing
+    # period (COACTUPC.cbl L2523). Output:
+    #   "FICO Score: should be between 300 and 850"
     if _validate_fico_score(request.customer_fico_score) is None:
-        return _MSG_FICO_INVALID
+        return _field_msg(_FLD_FICO, _SFX_FICO_OUT_OF_RANGE)
 
     # --- SSN (1265-EDIT-US-SSN) ------------------------------------
+    # COACTUPC.cbl L1529 sets WS-EDIT-VARIABLE-NAME = 'SSN' (the
+    # parent label) but the sub-paragraph overrides this with its
+    # own segment-specific labels before each 1245-EDIT-NUM-REQD
+    # call. _validate_us_ssn() returns a fully-templated message
+    # using those segment labels.
     ssn_err: str | None = _validate_us_ssn(
         request.customer_ssn_part1,
         request.customer_ssn_part2,
@@ -1578,18 +1986,47 @@ def _validate_request(request: AccountUpdateRequest) -> str | None:
     if ssn_err is not None:
         return ssn_err
 
-    # --- State and country -----------------------------------------
+    # --- State (1270-EDIT-US-STATE-CD) -----------------------------
+    # COACTUPC.cbl L1592 sets WS-EDIT-VARIABLE-NAME = 'State' then
+    # PERFORM 1270-EDIT-US-STATE-CD. The COBOL suffix
+    # ': is not a valid state code' explicitly has NO trailing
+    # period (COACTUPC.cbl L2503). Output:
+    #   "State: is not a valid state code"
     if not _validate_state_code(request.customer_state_cd):
-        return _MSG_STATE_INVALID
-    if not _validate_country_code(request.customer_country_cd):
-        return _MSG_COUNTRY_INVALID
+        return _field_msg(_FLD_STATE, _SFX_IS_NOT_A_VALID_STATE)
 
-    # --- ZIP -------------------------------------------------------
+    # --- Country (1225-EDIT-ALPHA-REQD) ----------------------------
+    # COACTUPC.cbl L1623 sets WS-EDIT-VARIABLE-NAME = 'Country' then
+    # PERFORM 1225-EDIT-ALPHA-REQD. The COBOL suffix
+    # ' can have alphabets only.' includes a trailing period.
+    if request.customer_country_cd.strip() == "":
+        return _field_msg(_FLD_COUNTRY, _SFX_MUST_BE_SUPPLIED)
+    if not _validate_country_code(request.customer_country_cd):
+        return _field_msg(_FLD_COUNTRY, _SFX_CAN_HAVE_ALPHABETS_ONLY)
+
+    # --- ZIP (1280-EDIT-US-STATE-ZIP-CD) ---------------------------
+    # COACTUPC.cbl L1605 sets WS-EDIT-VARIABLE-NAME = 'Zip' then
+    # PERFORM 1280-EDIT-US-STATE-ZIP-CD. The structural validation
+    # (5 digits) is enforced here — the COBOL paragraph additionally
+    # cross-references the zip+state against a lookup table; on
+    # mismatch it emits the STANDALONE literal
+    # 'Invalid zip code for state' (no field-name prefix, no trailing
+    # period — COACTUPC.cbl L2550). We preserve the structural check
+    # only: a 5-digit non-numeric ZIP falls through to the standalone
+    # literal rather than the 1245-style '<Zip> must be all numeric.'
+    # to match the COBOL STANDALONE emission pattern.
+    if request.customer_zip.strip() == "":
+        return _field_msg(_FLD_ZIP, _SFX_MUST_BE_SUPPLIED)
     if not _validate_zip_code(request.customer_zip):
-        return _MSG_ZIP_INVALID
+        return _MSG_ZIP_STATE_INVALID
 
     # --- Phones (1260-EDIT-US-PHONE-NUM, optional) -----------------
+    # COACTUPC.cbl L1632 / L1640 set WS-EDIT-VARIABLE-NAME =
+    # 'Phone Number 1' / 'Phone Number 2'. The sub-paragraph
+    # suffixes start with ': ' (colon-space) so the concatenated
+    # output is e.g. "Phone Number 1: Area code must be supplied."
     phone_1_err: str | None = _validate_us_phone(
+        _FLD_PHONE_1,
         request.customer_phone_1_area,
         request.customer_phone_1_prefix,
         request.customer_phone_1_line,
@@ -1597,12 +2034,31 @@ def _validate_request(request: AccountUpdateRequest) -> str | None:
     if phone_1_err is not None:
         return phone_1_err
     phone_2_err: str | None = _validate_us_phone(
+        _FLD_PHONE_2,
         request.customer_phone_2_area,
         request.customer_phone_2_prefix,
         request.customer_phone_2_line,
     )
     if phone_2_err is not None:
         return phone_2_err
+
+    # --- Primary Card Holder (1220-EDIT-YESNO) ---------------------
+    # COACTUPC.cbl L1657-1661 sets WS-EDIT-VARIABLE-NAME =
+    # 'Primary Card Holder' then PERFORMs 1220-EDIT-YESNO. The
+    # cascade (1220-EDIT-YESNO, L1856-1893) is identical to the
+    # active_status cascade at the top of this function:
+    #   1. blank/spaces/zeros -> ' must be supplied.'  (L1869)
+    #   2. not in {Y, N}      -> ' must be Y or N.'   (L1886)
+    # Both suffixes carry a trailing period. The Python cascade
+    # places this check AFTER the phone validations to match COBOL
+    # source ordering (which runs EFT Account Id -> Primary Card
+    # Holder at L1648-1661, AFTER the phone edits at L1632-1646).
+    # AAP §0.7.1 requires this validation to execute with the same
+    # error-message template as the COBOL source.
+    if request.customer_pri_cardholder.strip() == "":
+        return _field_msg(_FLD_PRIMARY_CARD_HOLDER, _SFX_MUST_BE_SUPPLIED)
+    if not _validate_yes_no(request.customer_pri_cardholder):
+        return _field_msg(_FLD_PRIMARY_CARD_HOLDER, _SFX_MUST_BE_Y_OR_N)
 
     return None
 

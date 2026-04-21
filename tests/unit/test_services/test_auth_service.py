@@ -1090,6 +1090,264 @@ async def test_authenticate_empty_password(
 
 
 # ============================================================================
+# Phase 4: UPPER-CASE Normalization Regression Tests
+# ============================================================================
+#
+# These tests protect against regression of MAJOR finding #2 from the
+# Checkpoint 3 code review, which flagged that the original Python
+# implementation did NOT apply ``FUNCTION UPPER-CASE`` to ``user_id``
+# and ``password`` before the database lookup and BCrypt verification.
+# The COBOL original (``app/cbl/COSGN00C.cbl`` lines 132-135) does::
+#
+#     MOVE FUNCTION UPPER-CASE(USERIDI OF COSGN0AI)
+#             TO WS-USER-ID
+#     MOVE FUNCTION UPPER-CASE(PASSWDI OF COSGN0AI)
+#             TO WS-USER-PWD
+#
+# before the ``EXEC CICS READ FILE('USRSEC')`` call. The seed-data
+# loader in ``db/migrations/V3__seed_data.sql`` persists user IDs in
+# upper-case AND BCrypt-hashes upper-case plaintext passwords --
+# without UPPER-CASE normalization on the request side, legacy users
+# accustomed to typing lowercase on the CICS terminal would be locked
+# out. That is an AAP §0.7.1 "Preserve all existing functionality
+# exactly as-is" violation. The guard below catches any future edit
+# that removes the ``.upper()`` calls in
+# :meth:`AuthService.authenticate` (lines 499-500).
+# ============================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_authenticate_lowercase_credentials_succeed(
+    auth_service: AuthService,
+    mock_db_session: AsyncMock,
+    sample_user: UserSecurity,
+) -> None:
+    """Lowercase ``user_id`` + ``password`` authenticate successfully.
+
+    This is the PRIMARY regression guard for Checkpoint 3 MAJOR #2
+    (UPPER-CASE normalization). It proves BOTH of the
+    :func:`str.upper` calls in :meth:`AuthService.authenticate`
+    (``src/api/services/auth_service.py`` lines 499-500) fire before
+    the database lookup (``WHERE user_id = :user_id_upper``) and
+    before the BCrypt verification (``pwd_context.verify(password_upper,
+    user.password)``).
+
+    Arrange
+        * ``sample_user`` has ``user_id="TESTUSER"`` (upper-case) and
+          ``password`` = BCrypt hash of ``_TEST_PLAINTEXT_PASSWORD``
+          which is the literal string ``"PASSWORD"`` (upper-case).
+          This mirrors ``db/migrations/V3__seed_data.sql`` which
+          persists user IDs in upper-case and BCrypt-hashes
+          upper-case plaintext passwords.
+        * The mocked session's ``execute(...).scalar_one_or_none()``
+          returns ``sample_user`` regardless of the compiled SQL's
+          WHERE-clause literal -- the mock does not filter by
+          parameter binding.
+    Act
+        Construct a :class:`SignOnRequest` with ALL-LOWERCASE
+        ``user_id="testuser"`` and ``password="password"``, then
+        invoke ``auth_service.authenticate(request)``.
+    Assert
+        * A :class:`SignOnResponse` is returned (success path), with
+          ``user_id == "TESTUSER"`` (upper-case, from the DB row --
+          NOT the raw lowercase request).
+        * ``user_type == "U"`` (regular user).
+        * ``access_token`` is a non-empty compact-serialized JWT.
+        * ``mock_db_session.execute`` was awaited exactly once.
+        * The compiled SQL for that ``execute`` call -- when rendered
+          with :class:`literal_binds` -- contains the upper-case
+          literal ``"TESTUSER"``. This proves ``user_id.upper()``
+          was applied before the SQLAlchemy ``select`` was built.
+        * The compiled SQL does NOT contain the raw lowercase
+          ``"testuser"`` literal (guards against a future edit that
+          accidentally lower-cases the bound parameter).
+
+    Why BCrypt success proves the password UPPER-CASE applied
+    ---------------------------------------------------------
+    The BCrypt hash in ``sample_user.password`` was produced at
+    fixture-construction time from ``_TEST_PWD_CONTEXT.hash(
+    _TEST_PLAINTEXT_PASSWORD)`` which hashes the literal bytes
+    ``"PASSWORD"`` (upper-case, see line 206). BCrypt is a
+    cryptographic hash -- a 1:1 mapping between plaintext and digest
+    with no case-insensitivity. If the service had NOT upper-cased
+    the request's password ``"password"`` before calling
+    :func:`pwd_context.verify`, BCrypt would reject the match and
+    the service would raise :class:`AuthenticationError` with
+    :data:`MSG_WRONG_PASSWORD`. A :class:`SignOnResponse` reaching
+    the caller therefore proves the ``.upper()`` call on line 500
+    of ``auth_service.py`` fired.
+
+    COBOL mapping
+    -------------
+    Defends the translation of ``COSGN00C.cbl`` lines 132-135::
+
+        MOVE FUNCTION UPPER-CASE(USERIDI OF COSGN0AI)
+                TO WS-USER-ID
+        MOVE FUNCTION UPPER-CASE(PASSWDI OF COSGN0AI)
+                TO WS-USER-PWD
+
+    Without this pattern, users migrated from the legacy CICS
+    terminal (which is case-insensitive by convention for sign-on)
+    would be unable to authenticate into the cloud-native API --
+    a user-visible regression forbidden by AAP §0.7.1.
+    """
+    # Arrange: configure the mock to return the upper-case seed user.
+    _configure_db_user(mock_db_session, sample_user)
+    # Lowercase both fields -- the service MUST upper-case them
+    # before the DB query and the BCrypt verify.
+    lowercase_user_id: str = _TEST_USER_ID.lower()  # "testuser"
+    lowercase_password: str = _TEST_PLAINTEXT_PASSWORD.lower()  # "password"
+    # Sanity: our lowercase inputs differ from the canonical upper-case
+    # forms. If this ever fails, the test is no longer exercising
+    # what its name claims.
+    assert lowercase_user_id != _TEST_USER_ID, (
+        "Test precondition: lowercased user_id must differ from canonical."
+    )
+    assert lowercase_password != _TEST_PLAINTEXT_PASSWORD, (
+        "Test precondition: lowercased password must differ from canonical."
+    )
+    request = SignOnRequest(
+        user_id=lowercase_user_id,
+        password=lowercase_password,
+    )
+
+    # Act.
+    response = await auth_service.authenticate(request)
+
+    # Assert: success envelope.
+    assert isinstance(response, SignOnResponse), (
+        "authenticate() must return a SignOnResponse when both "
+        ".upper() calls in auth_service.py L499-500 fire. A "
+        "failure here would mean MAJOR #2 has regressed."
+    )
+    assert response.user_id == _TEST_USER_ID, (
+        "Response user_id must echo the upper-case form stored in "
+        "the DB row (COBOL: CDEMO-USER-ID from the SEC-USER-DATA "
+        f"record); got {response.user_id!r}, expected {_TEST_USER_ID!r}."
+    )
+    assert response.user_type == "U", (
+        f"Response user_type must be 'U' for CDEMO-USRTYP-USER path; got {response.user_type!r}"
+    )
+    assert isinstance(response.access_token, str) and response.access_token, (
+        "access_token must be a non-empty JWT (success path issues "
+        "the replacement for the CICS COMMAREA session state)."
+    )
+    assert response.access_token.count(".") == 2, (
+        f"access_token must be a compact-serialized JWT; got {response.access_token!r}"
+    )
+    assert response.token_type == "bearer", (
+        f"token_type must be 'bearer' (OAuth2 compliance); got {response.token_type!r}"
+    )
+
+    # Assert: DB was queried once (mirrors EXEC CICS READ FILE('USRSEC')).
+    assert mock_db_session.execute.await_count == 1, (
+        "authenticate() must call db.execute() exactly once per "
+        f"sign-on attempt; got {mock_db_session.execute.await_count}."
+    )
+
+    # Assert: the compiled SQL contains the UPPER-CASE user_id literal.
+    # This is the authoritative proof that ``user_id.upper()`` was
+    # applied to the ``where(UserSecurity.user_id == user_id_upper)``
+    # parameter at auth_service.py line 522. We render the statement
+    # with ``literal_binds=True`` so bound parameters appear inline as
+    # quoted string literals in the compiled SQL text.
+    executed_stmt = mock_db_session.execute.await_args[0][0]
+    compiled_sql: str = str(
+        executed_stmt.compile(compile_kwargs={"literal_binds": True})
+    )
+    assert _TEST_USER_ID in compiled_sql, (
+        f"Compiled WHERE clause must contain the upper-case user_id "
+        f"literal {_TEST_USER_ID!r}. If the assertion fails, "
+        f"AuthService.authenticate() likely dropped the .upper() "
+        f"normalization from line 499 of auth_service.py -- MAJOR "
+        f"#2 regression. Full compiled SQL:\n{compiled_sql}"
+    )
+    assert lowercase_user_id not in compiled_sql, (
+        f"Compiled WHERE clause must NOT contain the raw lowercase "
+        f"user_id literal {lowercase_user_id!r} -- its presence "
+        f"would indicate the request payload was bound directly "
+        f"without the FUNCTION UPPER-CASE normalization. Full "
+        f"compiled SQL:\n{compiled_sql}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_authenticate_mixed_case_credentials_succeed(
+    auth_service: AuthService,
+    mock_db_session: AsyncMock,
+    sample_user: UserSecurity,
+) -> None:
+    """Mixed-case ``user_id`` + ``password`` authenticate successfully.
+
+    Secondary UPPER-CASE regression guard -- exercises inputs that
+    are neither fully lowercase nor fully uppercase, protecting
+    against a partial fix (e.g. a future edit that lowercases inputs
+    first then compares against an upper-case stored value, which
+    would pass the all-lowercase test but fail on mixed-case input).
+
+    Arrange
+        ``sample_user`` has upper-case ``user_id="TESTUSER"`` and a
+        BCrypt hash of the upper-case plaintext ``"PASSWORD"``.
+    Act
+        Submit ``SignOnRequest(user_id="TestUser", password="Password")``
+        (mixed case on both fields) to ``authenticate()``.
+    Assert
+        Success envelope with ``user_id="TESTUSER"`` returned -- the
+        COBOL ``FUNCTION UPPER-CASE`` folds any case mixture to the
+        canonical upper-case form before the file lookup and
+        password comparison.
+
+    COBOL mapping
+    -------------
+    Same as :func:`test_authenticate_lowercase_credentials_succeed`:
+    ``COSGN00C.cbl`` lines 132-135 apply
+    ``FUNCTION UPPER-CASE`` unconditionally regardless of which
+    case the terminal operator typed in.
+    """
+    # Arrange.
+    _configure_db_user(mock_db_session, sample_user)
+    # Mixed case: first character upper, rest lower.
+    mixed_user_id: str = "TestUser"  # Differs from both "TESTUSER" and "testuser"
+    mixed_password: str = "Password"  # Differs from both "PASSWORD" and "password"
+    assert mixed_user_id != _TEST_USER_ID and mixed_user_id != _TEST_USER_ID.lower()
+    assert mixed_password != _TEST_PLAINTEXT_PASSWORD and mixed_password != _TEST_PLAINTEXT_PASSWORD.lower()
+    request = SignOnRequest(user_id=mixed_user_id, password=mixed_password)
+
+    # Act.
+    response = await auth_service.authenticate(request)
+
+    # Assert: success path.
+    assert isinstance(response, SignOnResponse), (
+        "authenticate() must accept mixed-case credentials and fold "
+        "them via UPPER-CASE (COBOL COSGN00C.cbl L132-135)."
+    )
+    assert response.user_id == _TEST_USER_ID, (
+        f"Response user_id must be the upper-case canonical form {_TEST_USER_ID!r}; got {response.user_id!r}"
+    )
+    assert response.user_type == "U"
+    assert response.access_token and response.access_token.count(".") == 2
+
+    # Assert: the compiled SQL contains the UPPER-CASE user_id literal.
+    executed_stmt = mock_db_session.execute.await_args[0][0]
+    compiled_sql: str = str(
+        executed_stmt.compile(compile_kwargs={"literal_binds": True})
+    )
+    assert _TEST_USER_ID in compiled_sql, (
+        f"Compiled WHERE clause must contain the upper-case canonical "
+        f"user_id literal {_TEST_USER_ID!r} even when the request "
+        f"supplied the mixed-case {mixed_user_id!r}. MAJOR #2 "
+        f"regression guard. Full compiled SQL:\n{compiled_sql}"
+    )
+    assert mixed_user_id not in compiled_sql, (
+        f"Compiled WHERE clause must NOT contain the raw mixed-case "
+        f"user_id literal {mixed_user_id!r}. Full compiled SQL:\n"
+        f"{compiled_sql}"
+    )
+
+
+# ============================================================================
 # Phase 5: Token Verification Tests (verify_token)
 # ============================================================================
 #

@@ -165,7 +165,8 @@ byte-for-byte per AAP §0.7.1:
                                            (COCRDLIC.cbl L121-122; list empty)
 * ``'NO MORE RECORDS TO SHOW'``            (COCRDLIC.cbl L1219; end of list)
 * ``'Did not find cards for this search condition'``
-                                           (COCRDSLC.cbl / COCRDUPC.cbl L203-204; NOTFND)
+                                           (COCRDSLC.cbl L153-154 /
+                                           COCRDUPC.cbl L203-204; NOTFND)
 * ``'Error reading Card Data File'``       (COCRDSLC.cbl XREF-READ-ERROR; OTHER lookup error)
 * ``'Changes committed to database'``      (COCRDUPC.cbl L168-169; update success)
 * ``'Update of record failed'``            (COCRDUPC.cbl L209-210; LOCKED-BUT-UPDATE-FAILED)
@@ -265,23 +266,6 @@ The COBOL source also declares this page height as
 ``COCRDLIC.cbl``.
 """
 
-_CARD_NUM_WIDTH: int = 16
-"""Byte-width of the VSAM CARD-NUM key.
-
-Declared as ``PIC X(16)`` in ``CVACT02Y.cpy`` (CARD-RECORD) and
-``CVACT03Y.cpy`` (CARD-XREF-RECORD). This is the primary key of
-the ``cards`` table in Aurora PostgreSQL.
-"""
-
-_ACCT_ID_WIDTH: int = 11
-"""Byte-width of the VSAM CARD-ACCT-ID field.
-
-Declared as ``PIC X(11)`` in ``CVACT02Y.cpy``. Not the primary key
-of the ``cards`` table (the ``acct_id`` column is the foreign key
-to ``accounts.acct_id``), but it IS the search key on the
-``ix_card_acct_id`` B-tree index (see AAP §0.5.1 — V2 migration).
-"""
-
 # ---------------------------------------------------------------------------
 # User-facing messages (preserved byte-for-byte from COBOL source)
 # ---------------------------------------------------------------------------
@@ -299,14 +283,104 @@ _MSG_LIST_NO_RECORDS: str = "NO RECORDS FOUND FOR THIS SEARCH CONDITION."
 _MSG_LIST_NO_MORE_RECORDS: str = "NO MORE RECORDS TO SHOW"
 """COCRDLIC.cbl L1219 ``WS-NO-NEXT-PAGE`` — reached end of list during forward paging."""
 
-_MSG_LIST_AT_FIRST_PAGE: str = "You are already at the top of the page."
-"""COCRDLIC.cbl L1239 ``WS-AT-TOP-OF-PAGE`` — tried to page backwards from page 1."""
+# COCRDLIC.cbl L153-171 defines ``WS-FILE-ERROR-MESSAGE`` as an 80-character
+# fixed-width concatenation used at every STARTBR/READNEXT/ENDBR failure
+# site (L1226-1230, L1250-1254, L1312-1316, L1365-1369):
+#
+#   'File Error:' (12) + ERROR-OPNAME (8) + ' on ' (4) + ERROR-FILE (9) +
+#   ' returned RESP ' (15) + ERROR-RESP (10) + ',RESP2 ' (7) + ERROR-RESP2 (10)
+#   + filler (5) = 80 chars total
+#
+# Each call site MOVEs the specific operation name (e.g. 'READ'), file name
+# (e.g. 'CARDDAT'), and RESP/RESP2 response-code strings before copying the
+# composed message to WS-ERROR-MSG. There is no separate ``Unable to lookup
+# cards...`` literal in the COBOL source — previous implementations
+# fabricated that string. We now generate a COBOL-pattern-faithful message
+# via :func:`_format_file_error_message` below, truncated to the 78-char
+# ERRMSGI capacity on the List screen (COCRDLI.CPY ERRMSGI PIC X(78)).
 
-_MSG_LIST_LOOKUP_ERROR: str = "Unable to lookup cards..."
-"""Generic list-lookup failure — COCRDLIC.cbl ``WHEN OTHER`` fallback."""
+
+def _format_file_error_message(
+    op_name: str, file_name: str, resp: str, resp2: str
+) -> str:
+    """Build a COCRDLIC-pattern ``File Error`` message.
+
+    Faithfully reproduces the COCRDLIC.cbl L153-171 ``WS-FILE-ERROR-MESSAGE``
+    fixed-width template:
+
+    ::
+
+        File Error:<op name padded to 8> on <file name padded to 9> returned
+        RESP <resp padded to 10>,RESP2 <resp2 padded to 10>
+
+    Parameters
+    ----------
+    op_name : str
+        VSAM operation (READ, STARTBR, READNEXT, ENDBR, REWRITE). Padded
+        to 8 characters with trailing spaces, matching COCRDLIC's
+        ``ERROR-OPNAME PIC X(8)``.
+    file_name : str
+        DDNAME or logical file name (e.g. ``CARDDAT``). Padded to 9
+        characters, matching ``ERROR-FILE PIC X(9)``.
+    resp : str
+        CICS RESP code or equivalent string. Padded to 10 characters,
+        matching ``ERROR-RESP PIC X(10)``.
+    resp2 : str
+        CICS RESP2 code or equivalent. Padded to 10 characters,
+        matching ``ERROR-RESP2 PIC X(10)``.
+
+    Returns
+    -------
+    str
+        Fully concatenated error message. May be truncated to 78 chars
+        by the caller before emission to the COCRDLI ERRMSGI field.
+    """
+    return (
+        f"File Error:{op_name[:8]:<8} on {file_name[:9]:<9} "
+        f"returned RESP {resp[:10]:<10},RESP2 {resp2[:10]:<10}"
+    )
+
+
+def _list_lookup_error_message(exc: Exception) -> str:
+    """Convert a SQLAlchemy exception to a COCRDLIC File Error message.
+
+    Replaces the fabricated ``"Unable to lookup cards..."`` literal with
+    a COCRDLIC.cbl L1226-1230 pattern message — faithful to the COBOL
+    ``WHEN OTHER`` branch at L1226 where STARTBR-on-CARDDAT failures
+    populate ``WS-FILE-ERROR-MESSAGE`` with ``'READ'`` as ``ERROR-OPNAME``
+    and ``LIT-CARD-FILE`` (``'CARDDAT  '``) as ``ERROR-FILE``. The Python
+    RESP/RESP2 equivalents are the exception class name and first line
+    of the exception message (truncated to the COBOL field widths).
+
+    Parameters
+    ----------
+    exc : Exception
+        The underlying SQLAlchemy / driver exception raised during
+        STARTBR-equivalent (SELECT) or READNEXT-equivalent (LIMIT/OFFSET
+        fetch) execution.
+
+    Returns
+    -------
+    str
+        A COCRDLIC-pattern ``File Error:`` message truncated to 78
+        characters (the COCRDLI.CPY ``ERRMSGI PIC X(78)`` capacity).
+    """
+    resp_code: str = type(exc).__name__
+    # Use only the first line of exception repr to stay within PIC X(10)
+    resp2_code: str = str(exc).split("\n", 1)[0].strip()
+    message: str = _format_file_error_message(
+        op_name="READ",
+        file_name="CARDDAT",
+        resp=resp_code,
+        resp2=resp2_code,
+    )
+    # COCRDLI.CPY ERRMSGI is PIC X(78); truncate to avoid schema
+    # rejection. The COBOL source fixes the total at 80 chars but only
+    # 78 are displayed on the List screen.
+    return message[:78]
 
 _MSG_DETAIL_NOT_FOUND: str = "Did not find cards for this search condition"
-"""COCRDSLC.cbl L203-204 ``DID-NOT-FIND-ACCTCARD-COMBO`` — card_num not in CARDDAT."""
+"""COCRDSLC.cbl L153-154 ``DID-NOT-FIND-ACCTCARD-COMBO`` — card_num not in CARDDAT."""
 
 _MSG_DETAIL_LOOKUP_ERROR: str = "Error reading Card Data File"
 """COCRDSLC.cbl ``XREF-READ-ERROR`` — unexpected I/O failure on keyed read."""
@@ -322,9 +396,6 @@ _MSG_UPDATE_FAILED: str = "Update of record failed"
 
 _MSG_UPDATE_NOT_FOUND: str = "Did not find cards for this search condition"
 """COCRDUPC.cbl L203-204 — card_num not in CARDDAT at UPDATE time."""
-
-_MSG_CARD_NUM_INVALID: str = "Card number if supplied must be a 16 digit number"
-"""COCRDUPC.cbl ``SEARCHED-CARD-NOT-NUMERIC`` — schema-level fallback (Pydantic validates first)."""
 
 
 # ---------------------------------------------------------------------------
@@ -531,12 +602,16 @@ class CardService:
                 extra={**log_context, "error_type": type(exc).__name__},
                 exc_info=True,
             )
+            # COCRDLIC.cbl L1226-1230: populates WS-FILE-ERROR-MESSAGE
+            # with 'READ' / LIT-CARD-FILE / RESP / RESP2 and moves it
+            # to WS-ERROR-MSG. Python equivalent: map SQLAlchemy
+            # exception to the COBOL File Error template.
             return CardListResponse(
                 cards=[],
                 page_number=request.page_number,
                 total_pages=0,
                 info_message=None,
-                error_message=_MSG_LIST_LOOKUP_ERROR,
+                error_message=_list_lookup_error_message(exc),
             )
 
         # ---- Build response items ---------------------------------------

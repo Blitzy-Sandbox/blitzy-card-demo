@@ -160,6 +160,24 @@ logger = logging.getLogger(__name__)
 #:                       ReDoc; must be publicly readable so that the
 #:                       docs endpoints can load it.
 #: * ``/``             — root path (used by some health-check proxies).
+#:
+#: **GraphQL endpoint (``/graphql``) authentication strategy**
+#:
+#: The ``/graphql`` endpoint is deliberately *not* in this set. The
+#: ``JWTAuthMiddleware`` therefore requires a valid
+#: ``Authorization: Bearer <jwt>`` header for every GraphQL POST —
+#: matching the CICS model where every transaction that invokes a
+#: program (CT00, CM00, CA00, etc.) must present a valid COMMAREA
+#: session. Schema introspection queries (``__schema``, ``__type``)
+#: are covered by this same middleware-level check; any public
+#: introspection, if ever required, is an explicit future design
+#: decision that would add ``/graphql`` to ``PUBLIC_PATHS`` and
+#: delegate authorization to per-resolver guards inside the
+#: Strawberry schema. This matches AAP §0.7.2 "IAM roles (no access
+#: keys)" for the API boundary and preserves the COSGN00C.cbl
+#: security posture that *all* business transactions require
+#: authentication. (Code Review Finding INFO / `S2` — documented
+#: strategy for CP5 GraphQL integration.)
 PUBLIC_PATHS: set[str] = {
     "/",
     "/auth/login",

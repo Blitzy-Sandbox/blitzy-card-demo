@@ -458,7 +458,47 @@ class AuthService:
               (COBOL ``WHEN 0`` with ``SEC-USR-PWD ≠ WS-USER-PWD``).
             * :data:`MSG_UNABLE_TO_VERIFY` — any other SQLAlchemy /
               driver / BCrypt failure (COBOL ``WHEN OTHER``).
+
+        Notes
+        -----
+        **UPPER-CASE normalization** — Both ``user_id`` and
+        ``password`` are folded to upper-case before the database
+        lookup and BCrypt verification. This mirrors
+        ``app/cbl/COSGN00C.cbl`` lines 132-135::
+
+            MOVE FUNCTION UPPER-CASE(USERIDI OF COSGN0AI)
+                    TO WS-USER-ID
+            MOVE FUNCTION UPPER-CASE(PASSWDI OF COSGN0AI)
+                    TO WS-USER-PWD
+
+        which uppercase the sign-on screen inputs before any
+        file lookup or password comparison. Without this
+        normalization a user who typed their credentials in
+        lowercase on the original CICS terminal could log in
+        successfully but the same lowercase credentials would be
+        rejected by the Python API — a user-visible regression
+        forbidden by AAP §0.7.1 "Preserve all existing functionality
+        exactly as-is." The ten seed users
+        (``db/migrations/V3__seed_data.sql``) have upper-case
+        ``user_id`` and upper-case-hashed passwords, so this
+        behavior is also required for the out-of-the-box seed
+        data to authenticate successfully.
         """
+        # ------------------------------------------------------------
+        # UPPER-CASE normalization (COSGN00C.cbl lines 132-135).
+        #
+        # We compute upper-case variants of both inputs and use them
+        # exclusively from this point forward — the ``request``
+        # object is left untouched (Pydantic models are immutable
+        # via ``model_config['frozen']`` in most of the codebase,
+        # but even when mutable we prefer not to rewrite request
+        # payloads in-place because downstream logging / auditing
+        # should surface the *normalized* form rather than the raw
+        # form to faithfully reproduce the COBOL behavior).
+        # ------------------------------------------------------------
+        user_id_upper: str = request.user_id.upper()
+        password_upper: str = request.password.upper()
+
         # ------------------------------------------------------------
         # Step 1: Query the user_security table by user_id.
         #
@@ -479,7 +519,7 @@ class AuthService:
         # is effectively O(1) via the B-tree index that replaced the
         # VSAM KSDS primary key.
         # ------------------------------------------------------------
-        stmt = select(UserSecurity).where(UserSecurity.user_id == request.user_id)
+        stmt = select(UserSecurity).where(UserSecurity.user_id == user_id_upper)
 
         try:
             result = await self.db.execute(stmt)
@@ -493,7 +533,7 @@ class AuthService:
             # COBOL WHEN OTHER catch-all with the exact COBOL message.
             logger.exception(
                 "Authentication database query failed",
-                extra={"user_id": request.user_id},
+                extra={"user_id": user_id_upper},
             )
             raise AuthenticationError(MSG_UNABLE_TO_VERIFY) from exc
 
@@ -513,7 +553,7 @@ class AuthService:
         if user is None:
             logger.warning(
                 "Sign-on failed: user not found",
-                extra={"user_id": request.user_id, "reason": "user_not_found"},
+                extra={"user_id": user_id_upper, "reason": "user_not_found"},
             )
             raise AuthenticationError(MSG_USER_NOT_FOUND)
 
@@ -533,7 +573,10 @@ class AuthService:
         # persisted.
         # ------------------------------------------------------------
         try:
-            password_matches: bool = pwd_context.verify(request.password, user.password)
+            # ``password_upper`` is the COBOL-normalized form
+            # (FUNCTION UPPER-CASE) — see the docstring and the
+            # normalization block above.
+            password_matches: bool = pwd_context.verify(password_upper, user.password)
         except Exception as exc:  # noqa: BLE001 — passlib can raise ValueError
             # A malformed hash in the database (corruption, a stub
             # password from an early migration, etc.) should be

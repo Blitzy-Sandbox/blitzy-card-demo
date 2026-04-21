@@ -162,24 +162,55 @@ logger = logging.getLogger(__name__)
 # vastly sufficient for a user-initiated batch-job submission flow.
 _MESSAGE_GROUP_ID: str = "report-submissions"
 
-# Success message returned in :class:`ReportSubmissionResponse.message`
-# after the SQS ``send_message`` call succeeds (or the fallback log
-# path executes). Mirrors the COBOL success string ``'<report-name>
-# report submitted for printing ...'`` assembled in CORPT00C at the
-# paragraph that flows into ``SEND-TRNRPT-SCREEN`` after a successful
-# ``WIRTE-JOBSUB-TDQ``.  Kept under the 78-character ``ERRMSGI`` limit.
-_SUCCESS_MSG: str = "Report submitted for processing."
+# Success-message format-template returned in
+# :class:`ReportSubmissionResponse.message` after the SQS
+# ``send_message`` call succeeds. Mirrors the dynamic COBOL
+# ``STRING`` statement at CORPT00C lines 449-450:
+#
+#     STRING WS-REPORT-NAME   DELIMITED BY SPACE
+#           ' report submitted for printing ...'
+#                               DELIMITED BY SIZE
+#         INTO WS-MESSAGE
+#
+# The STRING produces one of three byte-exact outputs depending on
+# which ``MOVE`` populated ``WS-REPORT-NAME`` earlier in the program:
+#
+#     'Monthly report submitted for printing ...'   (41 chars)
+#     'Yearly report submitted for printing ...'    (40 chars)
+#     'Custom report submitted for printing ...'    (40 chars)
+#
+# Note the leading space on ``' report submitted for printing ...'``
+# (required because the STRING concatenates without separator
+# insertion) and the trailing space-ellipsis (three dots, **no
+# period**). The Python format template preserves every byte; the
+# ``report_name`` placeholder is populated by
+# :func:`_report_name_for_message` which returns the exact
+# WS-REPORT-NAME literal. All three resolved messages are well
+# within the 78-character ``ERRMSGI`` limit imposed by CORPT00.CPY.
+_SUCCESS_MSG_FMT: str = "{report_name} report submitted for printing ..."
 
 # Message returned when the SQS queue URL is empty (local development
-# fallback path — see the docstring of :meth:`submit_report`). Also
-# kept within the 78-character ``ERRMSGI`` bound.
+# fallback path — see the docstring of :meth:`submit_report`). This
+# is a Python-only concept with no COBOL counterpart (CICS TDQ is
+# always configured in a production region), so the literal is
+# chosen for developer clarity rather than COBOL fidelity. Kept
+# within the 78-character ``ERRMSGI`` bound.
 _FALLBACK_MSG: str = "Report logged (SQS disabled in local dev)."
 
-# Error prefix used when ``send_message`` raises. Mirrors the COBOL
-# error string ``'Unable to Write TDQ (JOBS)...'`` (CORPT00C line 531)
-# that the CICS program wrote to ``WS-MESSAGE`` before re-displaying
-# the screen via ``SEND-TRNRPT-SCREEN``.
-_ERROR_MSG_PREFIX: str = "Unable to submit report"
+# Error message returned when ``send_message`` raises. Mirrors the
+# COBOL STANDALONE literal at CORPT00C line 531:
+#
+#     MOVE 'Unable to Write TDQ (JOBS)...' TO WS-MESSAGE
+#
+# Byte-exact preservation: 29 characters including the trailing
+# three-dot ellipsis — NO trailing period, NO appended exception
+# detail (which would violate the COBOL byte-exact contract). The
+# underlying exception object is logged at ERROR level with
+# ``exc_info=True`` — mirroring the CICS ``DISPLAY 'RESP:'
+# WS-RESP-CD 'REAS:' WS-REAS-CD`` at CORPT00C line 529 — so
+# operators retain full diagnostic detail in CloudWatch Logs
+# without that detail leaking into the user-visible response.
+_ERROR_MSG: str = "Unable to Write TDQ (JOBS)..."
 
 # Maximum length of the error/info message in
 # :class:`ReportSubmissionResponse.message` — matches the CORPT00
@@ -463,12 +494,18 @@ class ReportService:
                 exc,
                 exc_info=True,
             )
-            error_detail: str = f"{_ERROR_MSG_PREFIX}: {exc}"
+            # COBOL byte-exact: CORPT00C line 531 moves the literal
+            # ``'Unable to Write TDQ (JOBS)...'`` to ``WS-MESSAGE`` —
+            # the exception object (equivalent to WS-RESP-CD /
+            # WS-REAS-CD) is NOT concatenated into the user-visible
+            # message. Full exception diagnostics are preserved in
+            # CloudWatch via the ``logger.error(..., exc_info=True)``
+            # call above (mirroring CORPT00C line 529 ``DISPLAY``).
             return ReportSubmissionResponse(
                 report_id=report_id,
                 report_type=request.report_type,
                 confirm=_CONFIRM_NO,
-                message=_truncate_message(error_detail),
+                message=_truncate_message(_ERROR_MSG),
             )
 
         # -------------------------------------------------------------
@@ -510,13 +547,22 @@ class ReportService:
         # -------------------------------------------------------------
         # Maps to CORPT00C ``SEND-TRNRPT-SCREEN`` after the successful
         # ``WIRTE-JOBSUB-TDQ`` path. The COBOL program cleared WS-ERR-FLG
-        # and set WS-MESSAGE to the success text before re-displaying
-        # the screen; here we assemble the equivalent JSON response.
+        # and set WS-MESSAGE to the success text (via the STRING
+        # statement at lines 449-450, producing e.g. ``'Monthly report
+        # submitted for printing ...'``) before re-displaying the
+        # screen. Here we reproduce the same dynamic concatenation
+        # via :data:`_SUCCESS_MSG_FMT` and
+        # :func:`_report_name_for_message` so that each of the three
+        # possible outputs matches the COBOL bytes exactly.
         return ReportSubmissionResponse(
             report_id=report_id,
             report_type=request.report_type,
             confirm=_CONFIRM_YES,
-            message=_truncate_message(_SUCCESS_MSG),
+            message=_truncate_message(
+                _SUCCESS_MSG_FMT.format(
+                    report_name=_report_name_for_message(request.report_type),
+                ),
+            ),
         )
 
     # -----------------------------------------------------------------
@@ -673,6 +719,48 @@ def _report_type_value(report_type: ReportType) -> str:
         downstream Glue worker expect.
     """
     return report_type.value
+
+
+def _report_name_for_message(report_type: ReportType) -> str:
+    """Convert a :class:`ReportType` to the COBOL ``WS-REPORT-NAME`` value.
+
+    The CICS program CORPT00C stores the active report-type choice in
+    a 10-byte work area ``WS-REPORT-NAME`` (CORPT00C line 58) and
+    MOVEs one of three title-cased string literals into it before
+    building the success message via the STRING statement at lines
+    449-450. The three MOVE statements are::
+
+        line 214    MOVE 'Monthly' TO WS-REPORT-NAME
+        line 240    MOVE 'Yearly'  TO WS-REPORT-NAME
+        line 433    MOVE 'Custom'  TO WS-REPORT-NAME
+
+    This helper reproduces those literals byte-for-byte from the
+    corresponding :class:`ReportType` enum member. We use an
+    explicit dictionary mapping rather than ``.value.capitalize()``
+    both for clarity (the intent — "match the three WS-REPORT-NAME
+    MOVEs" — is immediately visible) and for defense against
+    future enum renames (a missing mapping key raises ``KeyError``
+    loudly rather than silently producing a wrong string).
+
+    Parameters
+    ----------
+    report_type : ReportType
+        The enum member to convert. MUST be one of the three
+        documented values; any other value raises ``KeyError``.
+
+    Returns
+    -------
+    str
+        The title-cased report-name string — one of ``"Monthly"``,
+        ``"Yearly"``, or ``"Custom"`` — exactly as CORPT00C
+        populates ``WS-REPORT-NAME`` at lines 214, 240, and 433.
+    """
+    mapping: dict[ReportType, str] = {
+        ReportType.monthly: "Monthly",
+        ReportType.yearly: "Yearly",
+        ReportType.custom: "Custom",
+    }
+    return mapping[report_type]
 
 
 __all__: list[str] = [

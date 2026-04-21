@@ -207,6 +207,17 @@ _FEBRUARY: int = 2
 #: offset; here we only need the boolean "all numeric" answer).
 _ALL_DIGITS_RE: re.Pattern[str] = re.compile(r"^\d+$")
 
+#: Regular expression matching an 8-character ``CCYYMMDD`` date string and
+#: capturing the three components.  Used by :func:`validate_date_of_birth`
+#: as an explicit structural guard before parsing, replacing the prior
+#: pattern that relied on :class:`datetime.date` raising
+#: :class:`ValueError` to signal malformed input.  The explicit regex
+#: makes the intent obvious and prevents any uncaught exception path from
+#: propagating to callers — a defensive belt-and-suspenders check even
+#: though :func:`validate_date_ccyymmdd` guarantees the components are
+#: numeric when :attr:`DateValidationResult.is_valid` is ``True``.
+_CCYYMMDD_RE: re.Pattern[str] = re.compile(r"^(\d{4})(\d{2})(\d{2})$")
+
 
 # ============================================================================
 # DateValidationResult — replaces the COBOL WS-EDIT-DATE-FLGS working storage
@@ -1021,16 +1032,47 @@ def validate_date_of_birth(
         return base
 
     # Step 2 — future-date check.  At this point we know the date is
-    # structurally valid so the substrings can be safely parsed.
+    # structurally valid so the substrings can be safely parsed.  We
+    # perform the parse via explicit regex match + try/except on the
+    # date constructor rather than relying on an unguarded exception
+    # path.  This addresses the CP3 review finding ("DOB validation
+    # uses date constructor exception-based check — brittle") by
+    # making the parse strategy explicit: (a) regex validates that
+    # padded[0:4], padded[4:6], padded[6:8] are all digits, and (b) a
+    # try/except on ``_datetime.date`` catches any residual invalid
+    # value (a theoretically unreachable path given validate_date_ccyymmdd
+    # already succeeded, but defensive programming guards against
+    # future refactors that might weaken the contract).
     raw = date_str if date_str is not None else ""
     padded = raw.ljust(8) if len(raw) < 8 else raw[:8]
-    year_int = int(padded[0:4])
-    month_int = int(padded[4:6])
-    day_int = int(padded[6:8])
-    edit_date = _datetime.date(year_int, month_int, day_int)
 
-    # COBOL uses INTEGER-OF-DATE to compare WS-CURDATE-N with the edit
-    # date: "IF WS-CURDATE-N > WS-EDIT-DATE-CCYYMMDD-N" (line 359-361)
+    match = _CCYYMMDD_RE.match(padded)
+    if match is None:
+        # Defensive: base.is_valid was True but padded is not digit-only
+        # CCYYMMDD.  Unreachable per the contract of
+        # validate_date_ccyymmdd (which requires numeric year/month/day),
+        # but if a future refactor breaks the contract we return the
+        # base result rather than letting a ValueError escape.
+        return base
+
+    year_int = int(match.group(1))
+    month_int = int(match.group(2))
+    day_int = int(match.group(3))
+    try:
+        edit_date = _datetime.date(year_int, month_int, day_int)
+    except (ValueError, TypeError):
+        # Defensive: regex confirms numeric structure, but if the ints
+        # somehow form an invalid date (e.g., month=00, day=32), fall
+        # back to the base result instead of crashing.  Again unreachable
+        # because validate_date_ccyymmdd's Step 4 (validate_day_month_year)
+        # and Step 5 (``_datetime.date(...)`` construction) already
+        # rejected such values — but the explicit guard is preferable
+        # to implicit propagation.
+        return base
+
+    # Step 3 — explicit range check.  COBOL uses INTEGER-OF-DATE to
+    # compare WS-CURDATE-N with the edit date:
+    # "IF WS-CURDATE-N > WS-EDIT-DATE-CCYYMMDD-N" (line 359-361)
     # means today is strictly greater than the DOB -> DOB is not in the
     # future -> OK.  Any other case (today <= DOB, i.e. DOB is today or
     # in the future) triggers the error.  The equivalent Python predicate

@@ -157,7 +157,9 @@ Error message fidelity
 The COBOL error messages from the three source programs are preserved
 byte-for-byte including the trailing ellipses per AAP §0.7.1:
 
-* ``'Unable to lookup Transactions...'``  (COTRN00C line ~322; list error)
+* ``'Unable to lookup transaction...'``   (COTRN00C lines 615/649/683;
+                                           list error — lowercase ``t``,
+                                           singular)
 * ``'Tran ID can NOT be empty...'``       (COTRN01C line ~152; blank filter)
 * ``'Transaction ID NOT found...'``       (COTRN01C line ~290; NOTFND)
 * ``'Unable to lookup Transaction...'``   (COTRN01C line ~295; WHEN OTHER)
@@ -167,8 +169,12 @@ byte-for-byte including the trailing ellipses per AAP §0.7.1:
                                           (COTRN02C line ~600)
 * ``'Account or Card Number must be entered...'``
                                           (COTRN02C line ~226; both blank)
-* ``'Transaction added successfully. Your Tran ID is <id>'``
-                                          (COTRN02C ADD-TRANSACTION success)
+* ``'Transaction added successfully.  Your Tran ID is <id>.'``
+                                          (COTRN02C lines 728-732;
+                                           STRING concatenation yields
+                                           DOUBLE SPACE after "successfully."
+                                           and a TRAILING PERIOD after the
+                                           tran ID)
 
 Observability
 -------------
@@ -324,9 +330,12 @@ _DETAIL_DESC_WIDTH: int = 60
 # ----------------------------------------------------------------------------
 
 #: Message displayed when the paginated list query fails
-#: unexpectedly. Source: COTRN00C.cbl WHEN OTHER catch-all on the
-#: STARTBR/READNEXT failure path (line ~322).
-_MSG_UNABLE_TO_LOOKUP_LIST: str = "Unable to lookup Transactions..."
+#: unexpectedly. Source: ``app/cbl/COTRN00C.cbl`` lines 615, 649,
+#: 683 — each site contains the literal ``'Unable to lookup
+#: transaction...'`` (lowercase ``t``, **singular** "transaction").
+#: Preserved byte-for-byte per AAP §0.7.1 "Preserve all existing
+#: functionality exactly as-is."
+_MSG_UNABLE_TO_LOOKUP_LIST: str = "Unable to lookup transaction..."
 
 #: Message displayed when a detail lookup is issued with an empty /
 #: missing ``tran_id``. Source: COTRN01C.cbl line ~152 ("Tran ID can
@@ -364,10 +373,22 @@ _MSG_ACCT_CARD_MISMATCH: str = "Account/Card mismatch in XREF..."
 _MSG_UNABLE_TO_ADD: str = "Unable to Add Transaction..."
 
 #: Success message format string — populated with the generated
-#: ``tran_id``. Source: COTRN02C.cbl ADD-TRANSACTION success
-#: branch which emitted "Transaction added successfully. Your Tran
-#: ID is <id>" via the BMS response.
-_MSG_ADD_SUCCESS_FMT: str = "Transaction added successfully. Your Tran ID is {tran_id}"
+#: ``tran_id``. Source: ``app/cbl/COTRN02C.cbl`` lines 728-732,
+#: which emits via a 4-fragment ``STRING`` concatenation::
+#:
+#:     STRING 'Transaction added successfully. ' DELIMITED BY SIZE
+#:            ' Your Tran ID is ' DELIMITED BY SIZE
+#:            TRAN-ID DELIMITED BY SPACE
+#:            '.' DELIMITED BY SIZE
+#:       INTO WS-MESSAGE
+#:
+#: The two leading space-padded fragments concatenate to produce a
+#: **DOUBLE SPACE** between "successfully." and "Your" in the
+#: runtime output, and the final fragment ``'.'`` appends a
+#: **TRAILING PERIOD** after the interpolated tran ID:
+#:     ``"Transaction added successfully.  Your Tran ID is 0000000000000042."``
+#: Preserved byte-for-byte per AAP §0.7.1.
+_MSG_ADD_SUCCESS_FMT: str = "Transaction added successfully.  Your Tran ID is {tran_id}."
 
 
 # ============================================================================

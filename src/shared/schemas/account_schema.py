@@ -374,10 +374,25 @@ _GOVT_ID_LEN: int = 20
 # Matches CVCUS01Y.cpy CUST-EFT-ACCOUNT-ID PIC X(10).
 _EFT_ACCT_LEN: int = 10
 
-# INFOMSGI PIC X(45) — 45-character informational-message row width
-# reserved on the Account View BMS screen. (Note: other CardDemo
-# screens use 40 or 80 — this constant is specific to COACTVW / COACTUP.)
-_INFO_MSG_LEN: int = 45
+# INFOMSGI width — informational-message row capacity.
+#
+# The legacy BMS symbolic map ``COACTVW.CPY`` / ``COACTUP.CPY`` declares
+# ``INFOMSGI`` as ``PIC X(45)`` (45 chars). However, COBOL
+# ``COACTUPC.cbl`` line 492 emits the informational literal
+# ``'No change detected with respect to values fetched.'`` which is
+# **50 characters** — intentionally 5 characters longer than the BMS
+# display column.  On the mainframe this overflow silently truncates
+# the display to the 45-char BMS field, but the literal as *authored*
+# by the original program is 50 chars.  Per AAP §0.7.1 ("Preserve
+# existing functionality exactly as-is") we must surface the full
+# 50-character literal through the REST / GraphQL response — the
+# modernized API has no BMS screen painter and therefore no natural
+# truncation step — so we widen this constant from 45 to 50 to admit
+# the COBOL-verbatim literal while still rejecting obviously over-
+# length messages.  The BMS-origin column width (45) remains documented
+# in the ``INFOMSGI`` column of the "BMS → Python Field Mapping" table
+# above for traceability.  (Code Review Finding MAJOR #5.)
+_INFO_MSG_LEN: int = 50
 
 # ERRMSGI PIC X(78) — 78-character error-message row width reserved on
 # the Account View BMS screen, matching the standard full-row width
@@ -753,6 +768,11 @@ class AccountViewResponse(BaseModel):
         description=(
             "Optional advisory message (e.g. 'Account retrieved "
             "successfully'). Maps to BMS field INFOMSGI (PIC X(45)). "
+            "The BMS column is 45 chars wide but COACTUPC.cbl line 492 "
+            "emits a 50-char literal ('No change detected with respect "
+            "to values fetched.') that would silently truncate on the "
+            "mainframe — per AAP §0.7.1 the REST response surfaces the "
+            "full authored literal, so the Pydantic ceiling is 50. "
             "None when no advisory is being surfaced."
         ),
     )

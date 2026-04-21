@@ -245,8 +245,15 @@ _MSG_UPDATE_FAILED: str = "Changes unsuccessful. Please try again"
 _MSG_UPDATE_STALE: str = "Record changed by some one else. Please review"
 """COBOL diagnostic: optimistic concurrency conflict on READ UPDATE / REWRITE."""
 
-_MSG_NO_CHANGES: str = "No change detected in submitted values."
-"""COBOL status: 1205-COMPARE-OLD-NEW detected no field differences."""
+# -----------------------------------------------------------------------------
+# NO_CHANGES literal — COBOL COACTUPC.cbl line 492 (50 characters, trailing
+# period). Code Review Finding MAJOR #5 restored this to the full authored
+# 50-character literal (from the previous 39-char rewrite). The service
+# schema ``AccountUpdateResponse.info_message`` was widened to
+# ``max_length=50`` to admit this COBOL-verbatim value.
+# -----------------------------------------------------------------------------
+_MSG_NO_CHANGES: str = "No change detected with respect to values fetched."
+"""COBOL status (COACTUPC.cbl L492): 1205-COMPARE-OLD-NEW detected no differences."""
 
 _MSG_VIEW_XREF_NOT_FOUND: str = "Did not find this account in account card xref file"
 """COBOL NOTFND: CXACAIX key not found for the supplied account_id."""
@@ -260,26 +267,96 @@ _MSG_VIEW_CUST_NOT_FOUND: str = "Did not find associated customer in master file
 _MSG_ACCT_MISSING: str = "Account number not provided"
 """COBOL validation: account_id was empty / whitespace-only."""
 
-_MSG_ACCT_INVALID: str = "Account number must be a non zero 11 digit number"
-"""COBOL validation: account_id failed the 11-digit non-zero check."""
+# -----------------------------------------------------------------------------
+# ACCT_INVALID — STANDALONE COBOL literal emitted by COACTUPC.cbl
+# 1210-EDIT-ACCOUNT paragraph (lines 1787-1817) as a STRING concatenation
+# of two fragments without a TRIM prefix and without a trailing period.
+# Code Review Finding MAJOR #6 restored the COBOL-verbatim form.
+# -----------------------------------------------------------------------------
+_MSG_ACCT_INVALID: str = "Account Number if supplied must be a 11 digit Non-Zero Number"
+"""COBOL validation (COACTUPC.cbl L1787-1817): account_id 11-digit non-zero check."""
 
-_MSG_STATUS_INVALID: str = "Account Active Status must be Y or N"
-"""COBOL 1220-EDIT-YESNO: active_status not in ('Y', 'N')."""
+# -----------------------------------------------------------------------------
+# ACCT_PATH_BODY_MISMATCH — REST-specific path/body disagreement message
+# (no COBOL equivalent; COACTUPC had ONE BMS field ACCTSIDI).  Code Review
+# Finding MINOR #10 split this out from ``_MSG_ACCT_INVALID`` because the
+# latter describes a format error whereas Guard 3 triggers AFTER both IDs
+# are already known to be format-valid — they simply disagree.
+# -----------------------------------------------------------------------------
+_MSG_ACCT_PATH_BODY_MISMATCH: str = (
+    "Account number in URL path does not match request body"
+)
+"""Path/body acct_id disagreement (REST-specific; no COBOL equivalent)."""
 
-_MSG_PRI_CARD_INVALID: str = "Pri Holder Ind must be Y or N"
-"""COBOL 1220-EDIT-YESNO: primary cardholder indicator not in ('Y', 'N')."""
+# -----------------------------------------------------------------------------
+# PARSE_FAILED — defensive-in-depth internal-integrity message (Code Review
+# Finding MINOR #11).  Signals a validator/parser contract violation that
+# would never arise in COBOL (where the validator and parser share working-
+# storage) but could surface in Python if a future refactor breaks the
+# invariant that validator-PASS implies parser-SUCCESS.  Distinct from
+# ``_MSG_UPDATE_FAILED`` (retryable DB failure) and from the per-field
+# validation messages (retryable with corrected input).
+# -----------------------------------------------------------------------------
+_MSG_PARSE_FAILED: str = (
+    "Unable to process update request due to internal validation mismatch"
+)
+"""Internal validator/parser contract violation (CP3 MINOR #11)."""
 
-_MSG_FICO_INVALID: str = "FICO Score must be between 300 and 850"
-"""COBOL 1275-EDIT-FICO-SCORE: FICO out of range [300, 850]."""
+# -----------------------------------------------------------------------------
+# TEMPLATE-BASED MESSAGES — COACTUPC.cbl edit paragraphs 1215-1275 all
+# follow the pattern:
+#
+#     STRING FUNCTION TRIM(WS-EDIT-VARIABLE-NAME) DELIMITED BY SIZE,
+#            <SUFFIX-LITERAL>                     DELIMITED BY SIZE
+#         INTO WS-ERROR-MESSAGE
+#
+# Code Review Finding MAJOR #6 restored this template pattern across all
+# validation paths.  The test expectations below reconstruct the exact
+# COBOL concatenation by pairing a WS-EDIT-VARIABLE-NAME field-label
+# fragment with the verbatim COBOL suffix literal.  Each is duplicated
+# here (rather than imported from the service) so the test serves as an
+# independent control for wire-format drift.
+# -----------------------------------------------------------------------------
 
-_MSG_SSN_INVALID: str = "SSN must be 9 digits and all numeric"
-"""COBOL 1265-EDIT-US-SSN: format / length / digit violation."""
+_MSG_STATUS_INVALID: str = "Account Status must be Y or N."
+"""COACTUPC.cbl 1220-EDIT-YESNO (L1890) with WS-EDIT-VARIABLE-NAME='Account Status'."""
 
-_MSG_SSN_PART1_INVALID: str = "Invalid SSN area number"
-"""COBOL SSA blacklist: area in {000, 666, 900..999}."""
+_MSG_PRI_CARD_INVALID: str = "Primary Card Holder must be Y or N."
+"""COACTUPC.cbl 1220-EDIT-YESNO with WS-EDIT-VARIABLE-NAME='Primary Card Holder'."""
 
-_MSG_OPEN_DATE_INVALID: str = "Account Opening Date is not valid"
-"""COBOL 1285-EDIT-DATE-CCYYMMDD: open_date failed structural validation."""
+_MSG_FICO_INVALID: str = "FICO Score: should be between 300 and 850"
+"""COACTUPC.cbl 1275-EDIT-FICO-SCORE (L2523) with WS-EDIT-VARIABLE-NAME='FICO Score' (NO PERIOD)."""
+
+# -----------------------------------------------------------------------------
+# SSN per-segment zero messages — COACTUPC.cbl 1265-EDIT-US-SSN runs
+# ``1245-EDIT-NUM-REQD`` on each of the three SSN segments in turn,
+# substituting a segment-specific label into ``WS-EDIT-VARIABLE-NAME`` before
+# each call (L2439, L2469, L2481).  The ``1245-EDIT-NUM-REQD`` cascade
+# (L2109-2176) checks blank -> not-numeric -> zero, emitting the
+# per-segment ``' must not be zero.'`` suffix (L2162-2165) on a zero-value
+# failure.  Because this zero-check runs BEFORE the part-1 SSA-area
+# blacklist (L2450 ``INVALID-SSN-PART1``), a value of ``000`` for part 1
+# produces the PART1-specific zero message rather than the area-blacklist
+# message.  Similarly, ``00`` for part 2 and ``0000`` for part 3 produce
+# their segment-specific zero messages.
+# -----------------------------------------------------------------------------
+
+_MSG_SSN_PART1_ZERO: str = "SSN: First 3 chars must not be zero."
+"""COACTUPC.cbl 1245-EDIT-NUM-REQD (L2162) with WS-EDIT-VARIABLE-NAME='SSN: First 3 chars' — SSN part-1 value '000' triggers this message BEFORE the INVALID-SSN-PART1 blacklist at L2450."""
+
+_MSG_SSN_PART2_ZERO: str = "SSN 4th & 5th chars must not be zero."
+"""COACTUPC.cbl 1245-EDIT-NUM-REQD (L2162) with WS-EDIT-VARIABLE-NAME='SSN 4th & 5th chars' — SSN part-2 value '00'."""
+
+_MSG_SSN_PART3_ZERO: str = "SSN Last 4 chars must not be zero."
+"""COACTUPC.cbl 1245-EDIT-NUM-REQD (L2162) with WS-EDIT-VARIABLE-NAME='SSN Last 4 chars' — SSN part-3 value '0000'."""
+
+_MSG_SSN_PART1_INVALID: str = (
+    "SSN: First 3 chars: should not be 000, 666, or between 900 and 999"
+)
+"""COACTUPC.cbl 1265-EDIT-US-SSN INVALID-SSN-PART1 (L2464, NO PERIOD)."""
+
+_MSG_OPEN_DATE_INVALID: str = "Open Date: Month must be a number between 1 and 12."
+"""CSUTLDPY.cpy EDIT-MONTH (L119) bad-month label routed through Open Date field (test uses month='13')."""
 
 
 # =============================================================================
@@ -633,7 +710,7 @@ def _make_account_update_request(
         "customer_pri_cardholder": "Y",
     }
     defaults.update(overrides)
-    return AccountUpdateRequest(**defaults)  # type: ignore[arg-type]
+    return AccountUpdateRequest(**defaults)
 
 
 def _configure_view_mocks(
@@ -1663,11 +1740,16 @@ async def test_update_account_ssn_format_validation(
     This test covers:
 
     1. **Valid** SSN (123-45-6789): passes.
-    2. **Blacklisted area** (000-XX-XXXX): → SSN_PART1_INVALID.
+    2. **Zero area** (000-XX-XXXX): → per-segment PART1_ZERO
+       (NOT the blacklist message — the COBOL 1245-EDIT-NUM-REQD
+       zero-check at L2156-2171 runs BEFORE the INVALID-SSN-PART1
+       area-blacklist check at L2450, so ``000`` triggers the
+       per-segment zero message, not the blacklist).
     3. **Blacklisted area** (666-XX-XXXX): → SSN_PART1_INVALID.
     4. **Blacklisted area** (900-XX-XXXX): → SSN_PART1_INVALID.
-    5. **Zero group** (NNN-00-NNNN): → SSN_INVALID.
-    6. **Zero serial** (NNN-NN-0000): → SSN_INVALID.
+    5. **Blacklisted area** (999-XX-XXXX): → SSN_PART1_INVALID.
+    6. **Zero group** (NNN-00-NNNN): → per-segment PART2_ZERO.
+    7. **Zero serial** (NNN-NN-0000): → per-segment PART3_ZERO.
 
     Arrange (per path)
     ------------------
@@ -1684,17 +1766,27 @@ async def test_update_account_ssn_format_validation(
     COACTUPC.cbl 1265-EDIT-US-SSN: validates SSN structure and
     applies the SSA-issued-area blacklist.
     """
-    # Cases: (part1, part2, part3, expected_error)
+    # Cases: (part1, part2, part3, expected_error).  The expected
+    # message reflects the COBOL cascade ordering documented in the
+    # docstring above — specifically that per-segment zero-checks in
+    # 1245-EDIT-NUM-REQD run BEFORE the part-1 SSA-area blacklist.
     invalid_cases: list[tuple[str, str, str, str]] = [
-        # Blacklisted areas → PART1_INVALID (specific message).
-        ("000", "45", "6789", _MSG_SSN_PART1_INVALID),
+        # '000' for part 1 fails the 1245-EDIT-NUM-REQD zero check
+        # (L2156) with the 'SSN: First 3 chars' label BEFORE reaching
+        # the INVALID-SSN-PART1 blacklist at L2450.
+        ("000", "45", "6789", _MSG_SSN_PART1_ZERO),
+        # '666', '900', '999' pass the zero check (non-zero values)
+        # and fail the INVALID-SSN-PART1 blacklist — producing the
+        # area-blacklist-specific message.
         ("666", "45", "6789", _MSG_SSN_PART1_INVALID),
         ("900", "45", "6789", _MSG_SSN_PART1_INVALID),
         ("999", "45", "6789", _MSG_SSN_PART1_INVALID),
-        # Zero group → generic SSN_INVALID.
-        ("123", "00", "6789", _MSG_SSN_INVALID),
-        # Zero serial → generic SSN_INVALID.
-        ("123", "45", "0000", _MSG_SSN_INVALID),
+        # '00' for part 2 fails 1245-EDIT-NUM-REQD zero check with
+        # the 'SSN 4th & 5th chars' label (L2469).
+        ("123", "00", "6789", _MSG_SSN_PART2_ZERO),
+        # '0000' for part 3 fails 1245-EDIT-NUM-REQD zero check with
+        # the 'SSN Last 4 chars' label (L2481).
+        ("123", "45", "0000", _MSG_SSN_PART3_ZERO),
     ]
 
     for part1, part2, part3, expected_msg in invalid_cases:
@@ -2122,6 +2214,251 @@ async def test_update_account_not_found(
     assert mock_db_session.rollback.await_count == 0
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_account_path_body_acct_id_mismatch(
+    account_service: AccountService,
+    mock_db_session: AsyncMock,
+) -> None:
+    """Guard 3 rejects a request whose body account_id differs from the URL path.
+
+    This test covers CP3 review finding MINOR #10 — the service's
+    third guard rail. When both the URL-path ``acct_id`` and the
+    request-body ``account_id`` are well-formed 11-digit non-zero
+    numbers but disagree, the service must emit a dedicated
+    mismatch message (``_MSG_ACCT_PATH_BODY_MISMATCH``) rather
+    than the format-error literal ``_MSG_ACCT_INVALID``.  The
+    distinction matters because the guard fires AFTER Pydantic and
+    ``_validate_account_id`` have confirmed both values are
+    format-valid; the error is a disagreement between two
+    well-formed identifiers, not an invalid format.
+
+    This condition is REST-specific and has no COBOL parallel.
+    COACTUPC.cbl has a single BMS input field ``ACCTSIDI`` — the
+    user types the account number exactly once, so there is no
+    pair of values that could disagree.  The RESTful URL-plus-body
+    design inherently introduces the opportunity for the two to
+    diverge, and per CP3 MINOR #10 the error surface must be
+    distinguishable from format errors so the client can respond
+    appropriately (e.g. refuse the request at the API gateway
+    layer rather than prompting for field-level correction).
+
+    Arrange
+    -------
+    * URL-path ``acct_id`` = ``"00000000001"`` (``_TEST_ACCT_ID``).
+    * Body ``account_id`` = ``"00000000099"`` (``_TEST_ACCT_ID_ALT``,
+      a distinct valid identifier).
+    * Both values pass ``_validate_account_id``; the ONLY problem
+      is that they disagree.
+
+    Act
+    ---
+    * Call ``account_service.update_account(_TEST_ACCT_ID,
+      request)`` with the mismatched body.
+
+    Assert
+    ------
+    * ``error_message == _MSG_ACCT_PATH_BODY_MISMATCH`` (REST-
+      specific literal, byte-for-byte).
+    * ``info_message is None`` — this is an error, not a status.
+    * ``account_id`` on the response echoes the URL-path value
+      (``_TEST_ACCT_ID``), NOT the mismatched body value.  This is
+      a defensive choice:
+      ``_build_update_error_response`` prefers the URL-path when
+      valid so the client is told which identifier the server
+      believes is authoritative.
+    * NO database interaction — Guard 3 runs BEFORE the 3-entity
+      read chain, so every ``AsyncMock`` method on the session has
+      ``await_count == 0``.  This is the "fail-fast" optimisation
+      that prevents wasteful reads when the request is obviously
+      malformed.
+
+    Maps to
+    -------
+    * ``src.api.services.account_service.update_account`` Guard 3
+      (lines 1133-1146).  Triggers when
+      ``request.account_id.strip() != normalized_id`` after both
+      format checks have passed.
+    * CP3 review finding MINOR #10: distinct error message for
+      path/body disagreement.
+    """
+    # Arrange: valid but mismatched body account_id. The service's
+    # default 3-entity read fixtures are NOT wired up because Guard 3
+    # must reject the request BEFORE any DB read is issued.
+    request: AccountUpdateRequest = _make_account_update_request(
+        account_id=_TEST_ACCT_ID_ALT,  # Valid 11-digit non-zero, but != path.
+    )
+
+    # Act
+    response: AccountUpdateResponse = await account_service.update_account(
+        _TEST_ACCT_ID, request
+    )
+
+    # Assert: REST-specific mismatch literal (byte-for-byte).
+    assert response.error_message == _MSG_ACCT_PATH_BODY_MISMATCH
+    assert response.info_message is None
+
+    # Assert: response echoes the URL-path account_id as authoritative.
+    # ``_build_update_error_response`` preferentially returns the
+    # URL-path value because it is the server's authoritative key.
+    assert response.account_id == _TEST_ACCT_ID
+
+    # Assert: fail-fast — Guard 3 runs BEFORE any DB interaction,
+    # so the mock session must NOT have been touched.  This confirms
+    # the guard is correctly placed BEFORE the xref read at the top
+    # of Step 1 (``_validate_request`` is Step 2, parse is Step 3).
+    assert mock_db_session.execute.await_count == 0
+    assert mock_db_session.get.await_count == 0
+    assert mock_db_session.flush.await_count == 0
+    assert mock_db_session.commit.await_count == 0
+    assert mock_db_session.rollback.await_count == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_account_parse_failure(
+    account_service: AccountService,
+    mock_db_session: AsyncMock,
+    sample_xref: CardCrossReference,
+    sample_account: Account,
+    sample_customer: Customer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Parse failure surfaces the dedicated internal-contract message.
+
+    This test covers CP3 review finding MINOR #11 — the
+    defensive-in-depth branch in ``update_account`` that catches a
+    ``ValueError`` raised by ``_parse_request`` AFTER the
+    validator has already returned ``None`` (success).
+
+    In the COBOL original (``COACTUPC.cbl``) the validator and the
+    parser share working storage — the same EBCDIC bytes are
+    examined by 1200-EDIT-MAP-INPUTS and subsequently assembled
+    into ACCT-UPDATE-RECORD / CUST-UPDATE-RECORD by paragraphs
+    9200-WRITE.  A validator-PASS therefore guarantees a
+    parser-SUCCESS; the two cannot disagree.
+
+    The Python migration operates on the request string differently:
+    ``_validate_request`` inspects string segments individually,
+    whereas ``_parse_request`` assembles them into canonical forms
+    (joining SSN parts, formatting dates, parsing FICO as int).
+    A future refactor that changes either side's string-handling
+    semantics could break the implicit invariant that
+    ``_validate_request`` returns ``None`` iff ``_parse_request``
+    succeeds.  The parse-failure branch is a defensive guard
+    against this class of regression.
+
+    Per CP3 MINOR #11 the error message ``_MSG_PARSE_FAILED`` must
+    be distinguishable from:
+
+    * Per-field validation messages (retryable with corrected
+      input) — those are emitted by the Step 2 validator.
+    * ``_MSG_UPDATE_FAILED`` ("Changes unsuccessful. Please try
+      again") — that is a DB-level failure emitted after a commit
+      error, typically transient and retryable.
+
+    ``_MSG_PARSE_FAILED`` signals an internal contract violation
+    worthy of operator investigation — NOT a user-input problem
+    and NOT a transient DB issue.
+
+    Arrange
+    -------
+    * All 3 view-chain reads hit (xref + account + customer).
+    * ``_make_account_update_request`` with an overridden
+      ``active_status`` so ``_detect_changes`` would WANT to write
+      (confirms parse failure halts processing even on a
+      change-worthy request).
+    * ``monkeypatch`` replaces the module-level ``_parse_request``
+      symbol with a stub that unconditionally raises
+      ``ValueError("forced parse failure for test")``.
+
+    Act
+    ---
+    * Call ``account_service.update_account(_TEST_ACCT_ID,
+      request)``.
+
+    Assert
+    ------
+    * ``error_message == _MSG_PARSE_FAILED`` (byte-for-byte).
+    * ``info_message is None`` — this is an error, not a status.
+    * ``account_id`` on the response echoes the URL-path
+      ``_TEST_ACCT_ID``.
+    * All 3 reads occurred (execute: 1, get: 2) — the branch fires
+      AFTER the read chain completes and AFTER
+      ``_validate_request`` returns ``None``.
+    * NO writes and NO rollback — the session was never dirtied
+      (only reads were issued), so there is nothing to revert.
+
+    Maps to
+    -------
+    * ``src.api.services.account_service.update_account`` parse
+      branch (lines 1262-1290).  Triggers when ``_parse_request``
+      raises ``ValueError`` after ``_validate_request`` has
+      returned ``None``.
+    * CP3 review finding MINOR #11: dedicated ``_MSG_PARSE_FAILED``
+      message distinguishable from validation errors and
+      ``_MSG_UPDATE_FAILED``.
+    """
+    # Arrange: hit the happy path for reads so the service reaches
+    # Step 3 (parse).  The request must carry a change so that
+    # change-detection (which runs AFTER parse) would proceed —
+    # but the parse stub fires first and short-circuits.
+    _configure_view_mocks(
+        mock_db_session,
+        xref=sample_xref,
+        account=sample_account,
+        customer=sample_customer,
+    )
+
+    # Build a request with a change so the happy path would write;
+    # the monkeypatched parser will raise before we reach write.
+    request: AccountUpdateRequest = _make_account_update_request(
+        active_status="N",  # Change from sample_account's "Y".
+    )
+
+    # Arrange: inject a ValueError into ``_parse_request`` to
+    # simulate the defensive-in-depth branch.  We patch the
+    # module-level symbol ``_parse_request`` in the service
+    # module; because ``update_account`` references the name by
+    # ordinary module-scope lookup, the patched function is
+    # resolved at call time.
+    def _raise_parse_error(
+        _: AccountUpdateRequest,
+    ) -> object:  # pragma: no cover — body never executes normally
+        """Test double that unconditionally raises ``ValueError``."""
+        raise ValueError("forced parse failure for test")
+
+    monkeypatch.setattr(
+        "src.api.services.account_service._parse_request",
+        _raise_parse_error,
+    )
+
+    # Act
+    response: AccountUpdateResponse = await account_service.update_account(
+        _TEST_ACCT_ID, request
+    )
+
+    # Assert: dedicated internal-contract error literal (byte-for-byte).
+    assert response.error_message == _MSG_PARSE_FAILED
+    assert response.info_message is None
+
+    # Assert: response echoes the URL-path account_id.
+    assert response.account_id == _TEST_ACCT_ID
+
+    # Assert: all 3 reads occurred — the parse branch fires AFTER
+    # the full view chain and AFTER _validate_request succeeds.
+    assert mock_db_session.execute.await_count == 1
+    assert mock_db_session.get.await_count == 2
+
+    # Assert: NO writes and NO rollback — the session was only
+    # used for reads, so there is nothing to revert.  This differs
+    # from the DB-error path which DOES call rollback after a
+    # flush failure.
+    assert mock_db_session.flush.await_count == 0
+    assert mock_db_session.commit.await_count == 0
+    assert mock_db_session.rollback.await_count == 0
+
+
 # =============================================================================
 # End of test_account_service.py
 # =============================================================================
@@ -2143,6 +2480,12 @@ async def test_update_account_not_found(
 #       - test_update_account_yesno_validation
 #       - test_update_account_monetary_decimal_precision
 #       - test_update_account_not_found
+#   * Phase 6 (REST-Specific Guards / Defensive Branches): 2 tests
+#       - test_update_account_path_body_acct_id_mismatch (CP3 MINOR #10)
+#       - test_update_account_parse_failure (CP3 MINOR #11)
 #
-# Total: 14 tests covering COACTVWC.cbl (F-004) and COACTUPC.cbl (F-005).
+# Total: 16 tests covering COACTVWC.cbl (F-004) and COACTUPC.cbl (F-005),
+# plus 2 REST-specific guards addressing CP3 review findings MINOR #10
+# (path/body acct_id disagreement) and MINOR #11 (validator/parser
+# contract-violation defensive branch).
 # =============================================================================

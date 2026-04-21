@@ -48,14 +48,28 @@
 # 0.7.1 "Preserve exact error messages from COBOL" -- each one tracked below
 # is asserted verbatim (including trailing ellipsis of three periods):
 #
-#   * 'Unable to lookup Transactions...'       (list DB error)
+#   * 'Unable to lookup transaction...'        (list DB error;
+#                                               lowercase 't',
+#                                               singular -- from
+#                                               COTRN00C.cbl L615/
+#                                               L649/L683)
 #   * 'Tran ID can NOT be empty...'            (detail empty input)
 #   * 'Transaction ID NOT found...'            (detail NOTFND)
-#   * 'Unable to lookup Transaction...'        (detail WHEN OTHER)
+#   * 'Unable to lookup Transaction...'        (detail WHEN OTHER;
+#                                               capital 'T' --
+#                                               COTRN01C.cbl is a
+#                                               DIFFERENT program
+#                                               from COTRN00C)
 #   * 'Unable to lookup Card # in XREF file...'(add xref NOTFND)
 #   * 'Account/Card mismatch in XREF...'       (add xref acct_id mismatch)
 #   * 'Unable to Add Transaction...'           (add other failure)
-#   * 'Transaction added successfully. Your Tran ID is {tran_id}' (add success)
+#   * 'Transaction added successfully.  Your Tran ID is {tran_id}.'
+#                                               (add success -- DOUBLE
+#                                               space before 'Your'
+#                                               AND trailing period;
+#                                               from COTRN02C.cbl
+#                                               L728-732 STRING
+#                                               concatenation)
 # ----------------------------------------------------------------------------
 # Copyright Amazon.com, Inc. or its affiliates.
 # All Rights Reserved.
@@ -288,7 +302,24 @@ _MSG_UNABLE_TO_ADD: str = "Unable to Add Transaction..."
 
 #: Success-message format string -- ``transaction_service.py`` formats
 #: this with ``tran_id=new_tran_id`` after a successful dual-write.
-_MSG_ADD_SUCCESS_FMT: str = "Transaction added successfully. Your Tran ID is {tran_id}"
+#:
+#: COBOL-exact literal from ``COTRN02C.cbl`` lines 728-732 STRING
+#: concatenation::
+#:
+#:     STRING 'Transaction added successfully. ' DELIMITED BY SIZE
+#:            ' Your Tran ID is ' DELIMITED BY SIZE
+#:            WS-TRAN-ID-N DELIMITED BY SIZE
+#:            '.' DELIMITED BY SIZE
+#:         INTO WS-MESSAGE
+#:     END-STRING
+#:
+#: Concatenation produces ``"Transaction added successfully.  Your
+#: Tran ID is <id>."`` -- note the DOUBLE space between 'successfully.'
+#: and 'Your' (from the trailing space in the first literal plus the
+#: leading space in the second) AND the trailing period. Both are
+#: required for byte-for-byte COBOL fidelity per AAP §0.7.1 and
+#: Checkpoint 3 MAJOR #4.
+_MSG_ADD_SUCCESS_FMT: str = "Transaction added successfully.  Your Tran ID is {tran_id}."
 
 
 # ============================================================================
@@ -531,7 +562,15 @@ _DETAIL_DATE_WIDTH: int = 10
 
 #: COBOL list-lookup error message -- from
 #: ``COTRN00C.cbl`` DFHRESP(OTHER) branch in PROCESS-PAGE-FORWARD.
-_MSG_UNABLE_TO_LOOKUP_LIST: str = "Unable to lookup Transactions..."
+#:
+#: COBOL-exact literal at L615/L649/L683: ``'Unable to lookup
+#: transaction...'`` -- note LOWERCASE 't' and SINGULAR 'transaction'.
+#: This differs deliberately from the detail-endpoint message at
+#: ``COTRN01C.cbl`` (which uses capital 'T' as 'Transaction'), because
+#: the two programs were authored separately and the message literals
+#: are NOT shared. Preserved byte-for-byte per AAP §0.7.1 and
+#: Checkpoint 3 MAJOR #3.
+_MSG_UNABLE_TO_LOOKUP_LIST: str = "Unable to lookup transaction..."
 
 #: COBOL empty-input guard message on detail endpoint -- from
 #: ``COTRN01C.cbl`` empty-key check against TRNIDINL / TRNIDINI.
@@ -1147,8 +1186,9 @@ async def test_list_transactions_db_error_returns_empty_message(
     * Catch the exception (not propagate it).
     * Return an empty-but-well-formed TransactionListResponse
       carrying the COBOL-exact message
-      ``"Unable to lookup Transactions..."``
-      (from COTRN00C.cbl DFHRESP(OTHER) on the initial STARTBR).
+      ``"Unable to lookup transaction..."`` (lowercase 't',
+      singular -- from COTRN00C.cbl DFHRESP(OTHER) on the initial
+      STARTBR at lines 615 / 649 / 683).
     * Include ``transactions=[]`` and ``total_count=0``.
 
     Maps to COBOL: COTRN00C ``WHEN OTHER`` branch on STARTBR /
