@@ -2,7 +2,7 @@
   "Name": "carddemo-creastmt",
   "Description": "Stage 4a: Statement generation - Creates text and HTML statements for each card using 4-entity join (transactions, cross-references, accounts, customers). Runs in PARALLEL with Stage 4b (tranrept). Converted from CREASTMT.JCL (CBSTM03A + CBSTM03B).",
   "Role": "arn:aws:iam::ACCOUNT_ID:role/carddemo-glue-role",
-  "GlueVersion": "5.0",
+  "GlueVersion": "5.1",
   "WorkerType": "G.1X",
   "NumberOfWorkers": 2,
   "Timeout": 1440,

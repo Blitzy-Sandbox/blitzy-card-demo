@@ -2,7 +2,7 @@
   "Name": "carddemo-posttran",
   "Description": "Stage 1: Transaction posting - Processes daily transaction file, validates against cross-reference and account data, updates transaction master and category balances, writes rejects to S3. Converted from POSTTRAN.jcl (CBTRN02C).",
   "Role": "arn:aws:iam::ACCOUNT_ID:role/carddemo-glue-role",
-  "GlueVersion": "5.0",
+  "GlueVersion": "5.1",
   "WorkerType": "G.1X",
   "NumberOfWorkers": 2,
   "Timeout": 120,

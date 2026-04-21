@@ -2,7 +2,7 @@
   "Name": "carddemo-intcalc",
   "Description": "Stage 2: Interest calculation - Computes interest and fees from category balances using disclosure group rates. Formula: (TRAN-CAT-BAL * DIS-INT-RATE) / 1200. Writes system-generated transactions to S3. Converted from INTCALC.jcl (CBACT04C).",
   "Role": "arn:aws:iam::ACCOUNT_ID:role/carddemo-glue-role",
-  "GlueVersion": "5.0",
+  "GlueVersion": "5.1",
   "WorkerType": "G.1X",
   "NumberOfWorkers": 2,
   "Timeout": 120,

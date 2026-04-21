@@ -2,7 +2,7 @@
   "Name": "carddemo-combtran",
   "Description": "Stage 3: Transaction merge/sort - Merges backed-up transactions (TRANSACT.BKUP) with system-generated transactions (SYSTRAN), sorts by transaction ID, and loads into transactions table. Pure PySpark merge/sort replacing DFSORT+REPRO (no COBOL program). Converted from COMBTRAN.jcl.",
   "Role": "arn:aws:iam::ACCOUNT_ID:role/carddemo-glue-role",
-  "GlueVersion": "5.0",
+  "GlueVersion": "5.1",
   "WorkerType": "G.1X",
   "NumberOfWorkers": 2,
   "Timeout": 120,

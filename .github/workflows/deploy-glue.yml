@@ -75,9 +75,15 @@ env:
   # mainframe &HLQ..CARDDEMO.PRC.UTIL dataset naming from samples/jcl/BATCMP.jcl.
   S3_GLUE_BUCKET: ${{ vars.S3_GLUE_BUCKET || 'carddemo-glue-scripts' }}
   # AWS Glue runtime version. Per AAP §0.4.4: "AWS Glue 5.1 (Spark 3.5.6,
-  # Python 3.11)". The API accepts "5.0" as the value for the Glue 5.x GA
-  # family; the latest image in that family maps to Spark 3.5.6.
-  GLUE_VERSION: "5.0"
+  # Python 3.11, Scala 2.12.18)". Glue 5.0 (Spark 3.5.4) and Glue 5.1
+  # (Spark 3.5.6) are distinct GlueVersion values in the CreateJob/UpdateJob
+  # API — see the AWS Glue "Migrating to version 5.1" guide. This value is
+  # injected via `jq` into each job configuration JSON at deploy time (see
+  # the `--arg glue_version` usages below) so it overrides the value stored
+  # in infra/glue-job-configs/*.json; the two sources must therefore stay
+  # in sync. Keep this aligned with the `GlueVersion` field in every file
+  # under infra/glue-job-configs/.
+  GLUE_VERSION: "5.1"
   # Python runtime major version (Glue's --python-version).
   PYTHON_VERSION: "3"
   # Worker type and count per AAP §0.5.1: "Glue 5.1, G.1X, 2 workers".

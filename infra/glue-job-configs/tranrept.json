@@ -2,7 +2,7 @@
   "Name": "carddemo-tranrept",
   "Description": "Stage 4b: Transaction reporting - Generates date-filtered transaction reports with 3-level totals (card, account, grand total). Runs in PARALLEL with Stage 4a (creastmt). Converted from TRANREPT.jcl (CBTRN03C).",
   "Role": "arn:aws:iam::ACCOUNT_ID:role/carddemo-glue-role",
-  "GlueVersion": "5.0",
+  "GlueVersion": "5.1",
   "WorkerType": "G.1X",
   "NumberOfWorkers": 2,
   "Timeout": 120,

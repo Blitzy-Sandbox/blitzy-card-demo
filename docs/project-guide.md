@@ -1,14 +1,18 @@
 # CardDemo COBOL-to-Python Migration — Blitzy Project Guide
 
 <!--
-Technology-specific comment (per AAP §0.7.3):
-This project guide has been updated in place from the prior Java 25 + Spring
-Boot 3.5.11 migration narrative to describe the Python 3.11 / FastAPI /
-PySpark / Aurora PostgreSQL / AWS cloud-native modernization target defined
-by AAP §0.4 (Target Design) and §0.6 (Dependency Inventory). Document
-structure, section numbering (1-10 + A-G), Mermaid diagrams, and level of
-detail are preserved per AAP §0.7.1 minimal-change clause; only
-technology-specific references have been updated.
+Project guide for the CardDemo COBOL-to-Python modernization project.
+
+Target stack per AAP §0.1.1:
+  - Online workload: FastAPI (REST + Strawberry GraphQL) on AWS ECS Fargate
+  - Batch workload: PySpark on AWS Glue 5.1 (Spark 3.5.6, Python 3.11)
+  - Database:       AWS Aurora PostgreSQL (Aurora-compatible PostgreSQL 16 locally)
+  - Supporting:     AWS S3 (GDG replacement), AWS SQS FIFO (TDQ replacement),
+                    AWS Secrets Manager, AWS CloudWatch, AWS Step Functions
+
+This document describes the **current checkpoint state** of the migration.
+It deliberately distinguishes between what is already implemented in the
+repository at this checkpoint and what remains planned per AAP §0.5.1.
 -->
 
 ---
@@ -17,345 +21,361 @@ technology-specific references have been updated.
 
 ### 1.1 Project Overview
 
-This project migrates the AWS CardDemo mainframe COBOL application — comprising 28 programs (19,254 lines), 28 copybooks, 17 BMS mapsets, 29 JCL jobs, and 9 data fixture files — to a fully operational Python 3.11 + FastAPI + PySpark application with Aurora PostgreSQL, AWS Glue, ECS Fargate, and S3/SQS integration (via LocalStack for local development). The migration targets 100% behavioral parity across all 22 features (F-001 through F-022), spanning 18 interactive online programs and 10 batch programs. The application serves as a credit card management system with account, card, transaction, billing, reporting, and user administration capabilities.
+The CardDemo COBOL-to-Python migration is an in-progress modernization that
+takes the mainframe credit-card management application (28 COBOL programs,
+28 copybooks, 17 BMS mapsets, 17 symbolic map copybooks, 29 JCL job members,
+9 ASCII fixture files) and re-platforms it onto a Python / AWS cloud-native
+stack. The target architecture, documented in
+[`docs/architecture.md`](architecture.md), splits the original monolithic
+CICS/JCL workload into two independent workload types:
 
-### 1.2 Completion Status
+- **Online workload** — FastAPI (Uvicorn / Python 3.11) serving REST + GraphQL
+  endpoints from a Docker container on **AWS ECS Fargate**, replacing the 18
+  online CICS COBOL programs and the CICS COMMAREA session with stateless
+  JWT authentication.
+- **Batch workload** — PySpark scripts executed as serverless **AWS Glue 5.1**
+  jobs (Spark 3.5.6, Python 3.11), replacing the 10 batch COBOL programs
+  and the JCL `COND` chaining with an **AWS Step Functions** state machine.
 
-```mermaid
-pie title Project Completion Status
-    "Completed (391h)" : 391
-    "Remaining (43h)" : 43
-```
+Both workloads share a single **Aurora PostgreSQL** database (11 tables
+replacing 10 VSAM KSDS datasets and 3 alternate-index paths) and a common
+Python domain model under `src/shared/` (SQLAlchemy 2.x async ORM models,
+Pydantic v2 schemas, constants, utilities, configuration).
 
-| Metric | Value |
-|--------|-------|
-| **Total Project Hours** | **434** |
-| **Completed Hours (AI)** | **391** |
-| **Remaining Hours** | **43** |
-| **Completion Percentage** | **90.1%** |
+### 1.2 Implementation Status at This Checkpoint
 
-**Formula:** 391 completed hours / (391 + 43) total hours = **90.1% complete**
+The migration is being delivered in iterative checkpoints. The table below
+reflects the **verified filesystem state at this checkpoint** — each row was
+confirmed against the repository by counting files on disk rather than by
+copy-pasting from prior narratives.
 
-### 1.3 Key Accomplishments
+| Workstream | Status | Evidence on Disk |
+|------------|--------|------------------|
+| Shared domain models (SQLAlchemy ORM) | ✅ Implemented | 11 files under `src/shared/models/` (account, card, card_cross_reference, customer, daily_transaction, disclosure_group, transaction, transaction_category, transaction_category_balance, transaction_type, user_security) |
+| Shared Pydantic v2 request/response schemas | ✅ Implemented | 8 files under `src/shared/schemas/` (account, auth, bill, card, customer, report, transaction, user) |
+| Shared constants (from copybooks) | ✅ Implemented | 3 files under `src/shared/constants/` (lookup_codes, menu_options, messages) |
+| Shared utilities | ✅ Implemented | 3 files under `src/shared/utils/` (date_utils, decimal_utils, string_utils) |
+| Shared configuration | ✅ Implemented | 2 files under `src/shared/config/` (settings, aws_config) |
+| Aurora PostgreSQL SQL migrations | ✅ Implemented | `db/migrations/V1__schema.sql` (11 CREATE TABLE), `V2__indexes.sql` (3 indexes), `V3__seed_data.sql` (636 rows) |
+| AWS Glue job configurations | ✅ Implemented | 5 files under `infra/glue-job-configs/` (posttran, intcalc, combtran, creastmt, tranrept) — all pinned at `GlueVersion 5.1` |
+| AWS ECS task definition | ✅ Implemented | `infra/ecs-task-definition.json` |
+| CloudWatch dashboard template | ✅ Implemented | `infra/cloudwatch/dashboard.json` |
+| Step Functions state machine definition | ✅ Implemented | `src/batch/pipeline/step_functions_definition.json` (Stage 1 → 2 → 3 → Parallel(4a, 4b), with `PipelineFailed` error routing) |
+| GitHub Actions workflows | ✅ Implemented | `.github/workflows/ci.yml`, `deploy-api.yml`, `deploy-glue.yml` |
+| Dockerfile (API container) | ✅ Implemented | Single-stage `python:3.11-slim` image with FastAPI/Uvicorn entry-point |
+| Docker Compose stack (local dev) | ✅ Implemented | `docker-compose.yml` (api + postgres:16-alpine + localstack) |
+| Root project metadata | ✅ Implemented | `pyproject.toml`, `requirements.txt`, `requirements-api.txt`, `requirements-glue.txt`, `requirements-dev.txt` |
+| FastAPI application entry point (`src/api/main.py`) | 🏗 Planned | Only `src/api/__init__.py` exists at this checkpoint |
+| FastAPI routers (`src/api/routers/*.py`) | 🏗 Planned | Directory not yet created |
+| FastAPI services (`src/api/services/*.py`) | 🏗 Planned | Directory not yet created |
+| FastAPI middleware (`src/api/middleware/*.py`) | 🏗 Planned | Directory not yet created |
+| FastAPI dependencies / database session (`src/api/dependencies.py`, `database.py`) | 🏗 Planned | Files not yet created |
+| Strawberry GraphQL schema (`src/api/graphql/**`) | 🏗 Planned | Only `src/api/graphql/__init__.py` exists |
+| PySpark Glue job scripts (`src/batch/jobs/*.py`) | 🏗 Planned | Only `src/batch/jobs/__init__.py` exists; no job scripts yet |
+| Batch common helpers (`src/batch/common/*.py`) | 🏗 Planned | Directory not yet created |
+| Automated test suite (`tests/**`) | 🏗 Planned | Only `__init__.py` shell files; no `conftest.py`, no test modules, no fixtures |
 
-- ✅ All 28 COBOL programs translated to ~110 Python source files with full business logic preservation
-- ✅ All 11 VSAM datasets mapped to Aurora PostgreSQL tables with Flyway-style SQL migrations (V1 schema, V2 indexes, V3 seed data)
-- ✅ Complete 5-stage AWS Step Functions + PySpark pipeline (POSTTRAN → INTCALC → COMBTRAN → CREASTMT/TRANREPT)
-- ✅ 8 FastAPI routers replacing 17 BMS terminal screens with full API endpoint coverage (REST + GraphQL via Strawberry)
-- ✅ 888/888 tests passing (729 unit + 159 integration/E2E) with zero failures
-- ✅ 81.5% line coverage (pytest-cov) exceeding the 80% threshold
-- ✅ Zero-violation build with `ruff check` and strict `mypy` type-checking
-- ✅ `decimal.Decimal` precision for all financial fields — zero float substitution
-- ✅ BCrypt password hashing (security upgrade from COBOL plaintext)
-- ✅ Optimistic locking via SQLAlchemy `@version` column on Account and Card entities
-- ✅ SQLAlchemy session context managers with rollback semantics for multi-dataset operations
-- ✅ AWS S3/SQS integration via boto3 verified against LocalStack
-- ✅ Full observability stack: CloudWatch monitoring, structured JSON logging, X-Ray tracing, health checks
-- ✅ Comprehensive documentation: Decision Log (18 decisions), Traceability Matrix (100% paragraph coverage), Architecture Guide, API Contracts, Onboarding Guide, Validation Gates
+All rows marked 🏗 Planned correspond to target files listed in
+AAP §0.5.1 and are described in
+[`docs/architecture.md`](architecture.md) §8 (Project Structure Reference)
+and §9 (Feature Coverage Summary).
 
-### 1.4 Critical Unresolved Issues
+### 1.3 Accomplishments at This Checkpoint
 
-| Issue | Impact | Owner | ETA |
-|-------|--------|-------|-----|
-| CI/CD pipeline hardening | GitHub Actions workflows created (`.github/workflows/ci.yml`, `deploy-api.yml`, `deploy-glue.yml`) but require AWS credentials and ECR/S3 configuration for production | DevOps Engineer | 1 week |
-| Python dependency vulnerability scan (safety/pip-audit) not executed | Potential CVE vulnerabilities unverified in production dependencies | Security Engineer | 2 days |
-| Production environment configuration (`settings.py` externalization) | Cannot deploy to real AWS/Aurora PostgreSQL without Secrets Manager integration for runtime env vars | Backend Engineer | 3 days |
-| JWT secret hardcoded in config | Security risk if deployed without AWS Secrets Manager-backed JWT signing key | Security Engineer | 1 day |
+The accomplishments below are scoped to work actually present in the
+repository at this checkpoint:
 
-### 1.5 Access Issues
+- **All 28 COBOL copybooks required by the AAP** were translated into the
+  shared Python domain model under `src/shared/`. Each Python source file
+  carries a header comment referencing its originating COBOL copybook (see
+  AAP §0.7.3 and [`docs/architecture.md`](architecture.md) §10 on
+  traceability).
+- **11 SQLAlchemy ORM models** were created from the VSAM record layouts
+  (`app/cpy/CVACT01Y.cpy`, `CVACT02Y.cpy`, `CVACT03Y.cpy`, `CVCUS01Y.cpy`,
+  `CVTRA01Y.cpy`, `CVTRA02Y.cpy`, `CVTRA03Y.cpy`, `CVTRA04Y.cpy`,
+  `CVTRA05Y.cpy`, `CVTRA06Y.cpy`, `CSUSR01Y.cpy`). Monetary fields use
+  SQLAlchemy `Numeric(15, 2)` mapped to Python `decimal.Decimal` to preserve
+  COBOL `PIC S9(n)V99` precision.
+- **Composite primary keys** (TransactionCategoryBalance, DisclosureGroup,
+  TransactionCategory) are declared on the SQLAlchemy models exactly as in
+  the COBOL copybooks.
+- **8 Pydantic v2 schemas** translate the BMS symbolic map copybooks
+  (`app/cpy-bms/*.CPY`) into REST/GraphQL request/response contracts.
+- **Shared constants** translate message copybooks (`CSMSG01Y.cpy`,
+  `CSMSG02Y.cpy`, `COTTL01Y.cpy`), lookup-code copybook (`CSLKPCDY.cpy`),
+  and menu-option copybooks (`COMEN02Y.cpy`, `COADM02Y.cpy`) into Python
+  modules.
+- **Shared utilities** translate COBOL date (`CSUTLDTC.cbl`, `CSDAT01Y.cpy`,
+  `CSUTLDWY.cpy`, `CSUTLDPY.cpy`) and string (`CSSTRPFY.cpy`) helpers into
+  Python modules; a `decimal_utils` helper centralizes `Decimal`
+  quantization semantics.
+- **Database migration scripts** provision the 11 Aurora PostgreSQL tables
+  (V1), the 3 B-tree indexes (V2) that replace the VSAM alternate indexes
+  (`card.acct_id`, `card_cross_reference.acct_id`, `transaction.proc_ts`),
+  and 636 seed rows (V3).
+- **AWS infrastructure templates** (ECS task definition, 5 Glue job configs
+  pinned at Glue 5.1, CloudWatch dashboard) and the 3 GitHub Actions
+  workflows are in place.
+- **Step Functions state machine** enforces the 5-stage batch pipeline
+  ordering (`POSTTRAN → INTCALC → COMBTRAN → Parallel(CREASTMT, TRANREPT)`)
+  with a `PipelineFailed` error-routing state that preserves the
+  `COND=(0,NE)` semantics of the original JCL.
+- **Local-development stack** (Docker Compose) starts Aurora-compatible
+  PostgreSQL 16, LocalStack 3 (S3 + SQS + Secrets Manager), and the API
+  container behind port 8000 (container port 80). The API container cannot
+  serve requests yet because `src/api/main.py` is planned but not
+  implemented.
 
-| System/Resource | Type of Access | Issue Description | Resolution Status | Owner |
-|-----------------|---------------|-------------------|-------------------|-------|
-| LocalStack Pro | Auth Token | `LOCALSTACK_AUTH_TOKEN` required for local development; provided via environment variable; boto3 integrates via `AWS_ENDPOINT_URL` | ✅ Resolved | DevOps |
-| AWS Production | IAM Credentials | No production AWS credentials configured; only LocalStack endpoints exist; ECS/Glue require IAM role-based access | ⚠ Pending | Cloud Architect |
-| Container Registry (ECR) | Push Access | AWS ECR configured for ECS Fargate images but no registry credentials set in GitHub Actions secrets | ⚠ Pending | DevOps Engineer |
+### 1.4 Known Gaps at This Checkpoint
 
-### 1.6 Recommended Next Steps
+The following items are tracked as planned work per AAP §0.5.1 and are
+described in [`docs/architecture.md`](architecture.md):
 
-1. **[High]** Harden GitHub Actions CI/CD (already created in `.github/workflows/`): add ECR push, S3 upload for Glue scripts, ECS service update
-2. **[High]** Run Python dependency vulnerability scan (`pip-audit` or `safety check`) and remediate any critical/high CVEs
-3. **[High]** Externalize production configuration: integrate `src/shared/config/settings.py` with AWS Secrets Manager for `DATABASE_URL`, `JWT_SECRET_KEY`
-4. **[Medium]** Deploy ECS task definition (`infra/ecs-task-definition.json`) and register Glue job configurations (`infra/glue-job-configs/*.json`)
-5. **[Medium]** Conduct security hardening review: JWT rotation, TLS termination at ALB, rate limiting via FastAPI middleware
+1. **FastAPI service layer is not yet implemented.** `src/api/` contains
+   only `__init__.py` files. Starting the API container or running
+   `uvicorn src.api.main:app` will fail with `ModuleNotFoundError`. All
+   router/service/middleware/database modules listed in AAP §0.5.1 are
+   pending.
+2. **PySpark Glue job scripts are not yet implemented.** `src/batch/jobs/`
+   contains only `__init__.py`. The Step Functions state-machine
+   definition and Glue job configs assume these scripts will be uploaded
+   to S3 by the `deploy-glue.yml` workflow; until the scripts exist, the
+   deployment workflow will fail at the upload step.
+3. **Automated test suite is not yet implemented.** `tests/` contains
+   only empty package-init files. Running `pytest` collects zero tests;
+   the `--cov-fail-under=80` gate in `pyproject.toml` cannot be exercised
+   until tests are added.
+4. **Supplementary documentation is not yet written.** `DECISION_LOG.md`,
+   `TRACEABILITY_MATRIX.md`, `docs/api-contracts.md`,
+   `docs/onboarding-guide.md`, and `docs/validation-gates.md` are planned
+   artifacts that do not exist at this checkpoint. Only `README.md`,
+   `docs/index.md`, `docs/architecture.md`, `docs/project-guide.md`
+   (this file), and `docs/technical-specifications.md` are present.
+
+### 1.5 Recommended Next Steps
+
+1. Implement the `src/api/` tree (main, dependencies, database, middleware,
+   routers, services, GraphQL schema) starting with the `/health` endpoint
+   used by the Dockerfile `HEALTHCHECK` and the `src/api/middleware/auth.py`
+   JWT validator required by every other router.
+2. Implement the `src/batch/common/` helpers (GlueContext factory, JDBC
+   connector via Secrets Manager, S3 utilities) and the 5 core Glue job
+   scripts (`posttran_job.py`, `intcalc_job.py`, `combtran_job.py`,
+   `creastmt_job.py`, `tranrept_job.py`) referenced by the Step Functions
+   state machine.
+3. Create `tests/conftest.py` with the shared fixtures (PostgreSQL
+   testcontainer, FastAPI `TestClient`, moto AWS mocks) and populate
+   `tests/unit/`, `tests/integration/`, and `tests/e2e/` so the
+   `--cov-fail-under=80` gate can be exercised.
+4. Re-validate the three GitHub Actions workflows end-to-end once the
+   source tree and tests are in place.
+5. Externalize `JWT_SECRET_KEY` and database credentials via AWS Secrets
+   Manager using `src/shared/config/aws_config.py`.
 
 ---
 
-## 2. Project Hours Breakdown
+## 2. Scope Alignment With the AAP
 
-### 2.1 Completed Work Detail
-
-| Component | Hours | Description |
-|-----------|-------|-------------|
-| Foundation & Build Infrastructure | 14 | `pyproject.toml` (Python 3.11, project metadata, ruff+mypy+pytest config), `requirements.txt`, `requirements-api.txt`, `requirements-glue.txt`, `requirements-dev.txt`, Dockerfile (Python 3.11-slim multi-stage), docker-compose.yml (3 services: api + postgres + localstack), `.gitignore` |
-| Data Model Layer | 28 | 11 SQLAlchemy ORM models with `decimal.Decimal` precision and `@version` optimistic locking, 9 Pydantic request/response schemas from BMS symbolic maps, enums for transaction types, 3 composite primary keys (TransactionCategoryBalance, DisclosureGroup, TransactionCategory) |
-| Data Access Layer | 12 | SQLAlchemy async queries replacing 11 VSAM READ/WRITE/REWRITE/DELETE patterns, custom queries for pagination, alternate indexes, and composite key access |
-| Database Migrations | 10 | Flyway-style SQL migrations under `db/migrations/`: V1__schema.sql (11 tables), V2__indexes.sql (3 B-tree indexes replacing VSAM AIX paths), V3__seed_data.sql (626 rows from 9 ASCII fixtures) |
-| Validation Resources | 5 | NANPA area codes, US state codes, state-ZIP prefix combinations (extracted from `app/cpy/CSLKPCDY.cpy` into `src/shared/constants/lookup_codes.py`) |
-| Online Services (18 programs) | 72 | Full business logic translation from 18 COBOL online programs → FastAPI services: Auth, Account (view/update), Card (list/detail/update), Transaction (list/detail/add), Billing, Report, User Admin (CRUD), Menu (main/admin) |
-| Shared Utility Services | 14 | `src/shared/utils/date_utils.py` (CSUTLDTC.cbl replacement), `string_utils.py` (CSSTRPFY.cpy), `decimal_utils.py` (COMP-3 arithmetic); NANPA/state/ZIP validation; FILE STATUS → Python exception mapping |
-| FastAPI Routers | 20 | 8 FastAPI routers mapping all 17 BMS screens to REST endpoints with Pydantic validation, global error handling, and structured JSON responses + GraphQL schema via Strawberry |
-| Batch Jobs & Orchestration | 24 | 11 PySpark Glue jobs + pipeline definition: 5-stage pipeline (posttran_job, intcalc_job, combtran_job, creastmt_job, tranrept_job) + 6 utility/diagnostic jobs + Step Functions state machine in `src/batch/pipeline/step_functions_definition.json` with condition code logic |
-| Batch Processors | 24 | 5 PySpark transformation functions: 4-stage validation cascade (reject codes 100-109), interest calculation with DEFAULT fallback, DataFrame merge sort, dual-format statement generation, date-filtered reporting |
-| Batch Readers & Writers | 16 | 5 readers (S3 DataFrame reader, account/card/crossref/customer utility readers via SQLAlchemy) + 3 writers (DB+S3 transaction, S3 rejection file, S3 statement output) |
-| Configuration Layer | 14 | JWT middleware + BCrypt auth (`src/api/middleware/auth.py`), `src/batch/common/glue_context.py`, AWS client factories (`src/shared/config/aws_config.py`), `src/api/database.py`, CloudWatch logging configuration + Pydantic `BaseSettings` configuration |
-| Observability | 10 | CloudWatch structured logging, custom business metrics (auth attempts, batch records, transactions), health check endpoint (`/health`), X-Ray tracing hooks, Python `logging` JSON formatter |
-| Exception Hierarchy | 4 | 7 custom exception classes mapping COBOL FILE STATUS codes to Python exceptions |
-| Application Entry Point | 2 | `src/api/main.py` with FastAPI instance, router includes, Strawberry GraphQL mount, startup/shutdown events |
-| Unit Tests | 40 | 729 tests across 30+ test modules using pytest + pytest-asyncio, covering all services, PySpark transformations, models, Pydantic schemas, enums, validation |
-| Integration Tests | 28 | 131 tests using testcontainers[postgres]: 11 repository ITs, 5 batch pipeline ITs, 3 AWS ITs (S3/SQS via moto[all]), 2 validation ITs |
-| E2E Tests | 14 | 28 tests: BatchPipelineE2ETest (6), OnlineTransactionE2ETest (19) using FastAPI TestClient (httpx), GateVerificationTest (8) |
-| Documentation | 24 | README.md (complete rewrite), DECISION_LOG.md (18 decisions), TRACEABILITY_MATRIX.md (100% paragraph coverage), `docs/architecture.md`, `docs/technical-specifications.md`, onboarding-guide.md, validation-gates.md, api-contracts.md, CloudWatch dashboard JSON, logging config |
-| QA Fixes & Debugging | 16 | 12 fix commits: integration test alignment, security hardening, batch pipeline corrections, observability wiring, documentation QA, performance testing fixes |
-| **Total** | **391** | |
-
-### 2.2 Remaining Work Detail
-
-| Category | Hours | Priority |
-|----------|-------|----------|
-| CI/CD Pipeline Setup (GitHub Actions) — now addressed in `.github/workflows/` | 8 | High |
-| Python Dependency Vulnerability Scan (pip-audit/safety) & Remediation | 3 | High |
-| Production `settings.py` + Secrets Manager Integration | 6 | High |
-| Security Hardening (JWT rotation, TLS at ALB, rate limiting) | 4 | High |
-| Performance Testing & Optimization | 4 | Medium |
-| ECS Task Definition + Glue Configs deployment | 8 | Medium |
-| Production Data Migration Strategy | 4 | Medium |
-| CloudWatch Dashboard + Alerts | 4 | Medium |
-| FastAPI auto-generated OpenAPI/Swagger publishing | 2 | Low |
-| **Total** | **43** | |
-
-### 2.3 Hours Verification
-
-- Section 2.1 Total (Completed): **391 hours**
-- Section 2.2 Total (Remaining): **43 hours**
-- Sum: 391 + 43 = **434 hours** ✅ (matches Section 1.2 Total Project Hours)
-- Completion: 391 / 434 = **90.1%** ✅ (matches Section 1.2)
+| AAP Section | Expectation | Status at Checkpoint |
+|-------------|-------------|----------------------|
+| §0.1.1 Batch COBOL → PySpark on AWS Glue | 10 batch programs become PySpark scripts | 🏗 Planned — Glue job configs and Step Functions definition present; PySpark scripts pending |
+| §0.1.1 Online CICS COBOL → REST/GraphQL on AWS ECS | 18 online programs become FastAPI endpoints | 🏗 Planned — FastAPI scaffolding pending |
+| §0.1.1 Database: AWS Aurora PostgreSQL | 10 VSAM + 3 AIX → 11 tables + 3 B-tree indexes | ✅ Implemented via `db/migrations/V1__schema.sql` and `V2__indexes.sql` |
+| §0.1.1 Deployment: GitHub Actions | CI + two deployment workflows | ✅ 3 workflows implemented; full execution depends on `src/api/` and `src/batch/jobs/` being completed |
+| §0.4.4 AWS Glue 5.1 | All Glue jobs run on Glue 5.1 (Spark 3.5.6, Python 3.11) | ✅ All 5 `infra/glue-job-configs/*.json` pin `GlueVersion 5.1` |
+| §0.5.1 `docs/index.md` UPDATE | Landing page describes Python/AWS target | ✅ Rewritten for Python/AWS stack |
+| §0.5.1 `docs/architecture.md` CREATE | New architecture document | ✅ Present; status annotations mark planned modules |
+| §0.5.1 `docs/project-guide.md` UPDATE | Python/AWS-focused project guide | ✅ This document |
+| §0.5.1 `README.md` UPDATE | Setup, run, deploy, inventory | ✅ Updated to describe the Python/AWS stack; planned modules clearly annotated |
+| §0.7.1 Minimal change clause | Preserve existing COBOL source tree | ✅ `app/` retained unchanged |
+| §0.7.2 Security — Secrets Manager, IAM, BCrypt, JWT | Security configuration and dependencies in place | ✅ `requirements-api.txt` pins `passlib[bcrypt]` and `python-jose[cryptography]>=3.4.0,<4.0`; planned modules will wire them up |
+| §0.7.2 Financial precision (`decimal.Decimal` / `NUMERIC(15,2)`) | No float substitution anywhere | ✅ Verified in `src/shared/models/*.py` and `db/migrations/V1__schema.sql` |
+| §0.7.2 Automated testing as much as possible | pytest framework configured | 🏗 Pending — `pyproject.toml` configured; test modules not yet written |
 
 ---
 
-## 3. Test Results
+## 3. Test Coverage Status
 
-All tests were executed autonomously by Blitzy's validation pipeline. Final commit: `408481d`.
+At this checkpoint, `tests/` contains only empty `__init__.py` package-init
+files under `tests/`, `tests/unit/`, `tests/integration/`, `tests/e2e/`,
+`tests/unit/test_models/`, `tests/unit/test_services/`,
+`tests/unit/test_routers/`, and `tests/unit/test_batch/`. No
+`tests/conftest.py` exists, and **no test modules have been written**.
 
-| Test Category | Framework | Total Tests | Passed | Failed | Coverage % | Notes |
-|---------------|-----------|-------------|--------|--------|-----------|-------|
-| Unit — Service Layer | pytest + unittest.mock | 355 | 355 | 0 | 81.5% line | All 20 services tested |
-| Unit — Batch Processors | pytest + unittest.mock | 82 | 82 | 0 | Included above | 5 PySpark transformations: validation, interest, combine, statement, report |
-| Unit — Model/Schema/Enum | pytest | 148 | 148 | 0 | Included above | SQLAlchemy model attributes, Pydantic schemas, enum, exception hierarchy |
-| Unit — Validation | pytest | 144 | 144 | 0 | Included above | Date validation, file status mapper, lookup service |
-| Integration — Repository | pytest + testcontainers[postgres] | 98 | 98 | 0 | Included above | 11 SQLAlchemy repositories against PostgreSQL Testcontainer |
-| Integration — Batch Pipeline | pytest + testcontainers[postgres] | 32 | 32 | 0 | Included above | 5 PySpark Glue jobs: POSTTRAN, INTCALC, COMBTRAN, CREASTMT, TRANREPT |
-| Integration — AWS (S3/SQS) | pytest + moto[all] | 4 | 4 | 0 | Included above | S3, SQS FIFO integration via moto mock |
-| E2E — Batch Pipeline | pytest + testcontainers[postgres] | 6 | 6 | 0 | Included above | Full 5-stage pipeline end-to-end |
-| E2E — Online Transaction | pytest + FastAPI TestClient | 19 | 19 | 0 | Included above | Auth, Account, Card, Transaction, Billing, Report, User Admin REST APIs |
-| E2E — Gate Verification | pytest + testcontainers[postgres] | 8 | 8 | 0 | Included above | Programmatic evidence for Validation Gates 1-8 |
-| **Total** | | **888** | **888** | **0** | **81.5%** | **100% pass rate** |
+Running `pytest` at this checkpoint collects **0 items** and therefore:
 
-**Coverage Breakdown (pytest-cov merged — unit + integration):**
-- Line Coverage: **81.5%** (4,347 / 5,334 lines) — ✅ exceeds 80% threshold
-- Branch Coverage: 64.0% (1,001 / 1,563 branches)
-- Method/Function Coverage: 88.4% (949 / 1,074 functions)
-- Statement Coverage: 78.8% (17,871 / 22,665 statements)
+- The `--cov-fail-under=80` gate configured in `pyproject.toml` cannot yet
+  be exercised.
+- The `pytest-cov` HTML coverage report cannot be generated until at least
+  one test file exists.
+
+Once the planned `src/api/` and `src/batch/` modules are delivered, the
+corresponding unit, integration, and end-to-end tests described in
+AAP §0.5.1 (Test Suite) will be added under `tests/unit/`,
+`tests/integration/`, and `tests/e2e/`. The CI workflow
+(`.github/workflows/ci.yml`) is already wired to invoke
+`pytest --cov=src --cov-report=term-missing --cov-fail-under=80`, so test
+results and coverage will be enforced automatically once the test suite
+is in place.
 
 ---
 
-## 4. Runtime Validation & UI Verification
+## 4. Runtime Validation Status
 
-### Application Runtime
+The runtime entry points documented below require the planned
+`src/api/main.py` and its routers (see §1.2). They are **not currently
+reachable** because those modules have not been implemented yet.
 
-- ✅ **Uvicorn/FastAPI Startup**: Application starts on port 80 (container) / 8000 (host) in under 6 seconds
-- ✅ **Health Endpoint** (`GET /health`): Returns `{"status": "UP"}` with composite indicators for Aurora PostgreSQL, S3, and SQS
-- ✅ **SQL Migrations**: All 3 migration scripts (`db/migrations/V1__schema.sql`, `V2__indexes.sql`, `V3__seed_data.sql`) applied successfully on container startup
+| Endpoint | Source Program (COBOL) | Status | Notes |
+|----------|------------------------|--------|-------|
+| `POST /auth/login` | `app/cbl/COSGN00C.cbl` | 🏗 Planned | Will live in `src/api/routers/auth_router.py` with `src/api/services/auth_service.py` invoking `passlib[bcrypt]` |
+| `GET /accounts/{id}` | `app/cbl/COACTVWC.cbl` | 🏗 Planned | Will perform the 3-entity join (`Account` × `Customer` × `CardCrossReference`) |
+| `PUT /accounts/{id}` | `app/cbl/COACTUPC.cbl` | 🏗 Planned | Will preserve the dual-write + `async with session.begin()` SYNCPOINT rollback semantics |
+| `GET /cards` | `app/cbl/COCRDLIC.cbl` | 🏗 Planned | Paginated list (7 rows/page) matching COCRDLIC browse semantics |
+| `GET /cards/{id}` | `app/cbl/COCRDSLC.cbl` | 🏗 Planned | Card detail view |
+| `PUT /cards/{id}` | `app/cbl/COCRDUPC.cbl` | 🏗 Planned | Optimistic concurrency via SQLAlchemy `version_id_col` |
+| `GET /transactions` | `app/cbl/COTRN00C.cbl` | 🏗 Planned | Paginated list (10 rows/page) |
+| `GET /transactions/{id}` | `app/cbl/COTRN01C.cbl` | 🏗 Planned | Transaction detail |
+| `POST /transactions` | `app/cbl/COTRN02C.cbl` | 🏗 Planned | Auto-ID generation and card cross-reference resolution |
+| `POST /bills/pay` | `app/cbl/COBIL00C.cbl` | 🏗 Planned | Dual-write (Transaction INSERT + Account balance UPDATE) |
+| `POST /reports/submit` | `app/cbl/CORPT00C.cbl` | 🏗 Planned | Publishes to SQS FIFO queue (TDQ replacement) |
+| `GET /users`, `POST /users`, `PUT /users/{id}`, `DELETE /users/{id}` | `app/cbl/COUSR0{0..3}C.cbl` | 🏗 Planned | Full CRUD with BCrypt hashing |
+| `GET /menu` | `app/cbl/COMEN01C.cbl`, `app/cbl/COADM01C.cbl` | 🏗 Planned | Main/admin menu navigation; exact path will be finalized in the router implementation |
+| `GET /health` | n/a | 🏗 Planned | Used by the `Dockerfile` `HEALTHCHECK` and by Docker Compose |
+| `GET /docs`, `GET /redoc`, `POST /graphql` | FastAPI built-ins, Strawberry | 🏗 Planned | Available automatically once `src/api/main.py` mounts the routers and the Strawberry schema |
 
-### REST API Verification
+### Database Migrations
 
-- ✅ **Authentication** (`POST /auth/login`): 200 OK with JWT token for valid credentials
-- ✅ **Account View** (`GET /accounts/{id}`): 200 OK with full account data including `decimal.Decimal` balances
-- ✅ **Menu** (`GET /api/menu/main`): 200 OK with 10 menu options matching `src/shared/constants/menu_options.py` (COMEN02Y.cpy source)
-- ✅ **Card List** (`GET /cards`): Paginated response matching COCRDLIC browse semantics (7 rows/page)
-- ✅ **Transaction Operations**: List, detail, and add endpoints operational
-- ✅ **User Admin CRUD**: Full create, read, update, delete cycle verified
+Database migrations (`db/migrations/V1-V3`) are in place and are
+auto-applied by the PostgreSQL 16 container on first startup via the
+`/docker-entrypoint-initdb.d/` mount declared in `docker-compose.yml`.
+Counts verified against the SQL source files:
+
+| Migration | Artifact | Count |
+|-----------|----------|-------|
+| V1 | `CREATE TABLE` statements | 11 |
+| V2 | `CREATE INDEX` statements | 3 |
+| V3 | Seed rows inserted | 636 |
 
 ### Batch Pipeline Verification
 
-- ✅ **Stage 1 — POSTTRAN** (PySpark on AWS Glue): Daily transaction posting with 4-stage validation cascade
-- ✅ **Stage 2 — INTCALC** (PySpark on AWS Glue): Interest calculation with rate lookup and DEFAULT fallback
-- ✅ **Stage 3 — COMBTRAN** (PySpark on AWS Glue): DataFrame merge sort replacing DFSORT+REPRO
-- ✅ **Stage 4a — CREASTMT** (PySpark on AWS Glue): Dual-format (text + HTML) statement generation
-- ✅ **Stage 4b — TRANREPT** (PySpark on AWS Glue): Date-filtered transaction reporting
+The Step Functions state machine in
+`src/batch/pipeline/step_functions_definition.json` defines the 5-stage
+pipeline ordering:
 
-### Observability Verification
-
-- ✅ **Structured JSON Logging**: Python `logging` module emits JSON records forwarded to CloudWatch with `correlation_id`, `request_id`, and `user_id` fields
-- ✅ **Distributed Tracing**: AWS X-Ray / CloudWatch tracing hooks operational for both API and batch components
-- ✅ **CloudWatch Custom Metrics**: Business metrics (auth attempts, batch records, transactions) published via `boto3` CloudWatch PutMetricData
-- ✅ **CloudWatch Health Monitoring**: Composite health indicators for Aurora PostgreSQL, S3, SQS exposed via `/health`
-
-### AWS Integration (LocalStack for local dev; real AWS in prod)
-
-- ✅ **S3**: Statement output and Glue script storage (GDG replacement) verified — buckets `carddemo-statements`, `carddemo-reports`, `carddemo-glue-scripts`
-- ✅ **SQS**: Report submission queue (FIFO) verified — `carddemo-report-queue.fifo`
-
----
-
-## 5. Compliance & Quality Review
-
-| AAP Requirement | Status | Evidence |
-|----------------|--------|----------|
-| 100% Behavioral Parity — All 28 COBOL programs migrated | ✅ Pass | ~110 Python source files, 20 service modules, 11 PySpark Glue jobs |
-| `decimal.Decimal` for all COMP-3/COMP fields — zero float | ✅ Pass | 33 source files use `decimal.Decimal`; 0 float types in models/schemas |
-| SQLAlchemy `@version` optimistic locking (COACTUPC, COCRDUPC) | ✅ Pass | `Account` and `Card` SQLAlchemy models declare a version column |
-| SQLAlchemy session context managers with rollback (SYNCPOINT) | ✅ Pass | Used across all service classes with `async with session.begin():` idiom |
-| BCrypt password hashing (C-003 upgrade) | ✅ Pass | `auth_service.py` uses `passlib[bcrypt]` for hashing and verification |
-| SQLAlchemy composite primary keys | ✅ Pass | TransactionCategoryBalance, DisclosureGroup, TransactionCategory |
-| S3 integration for GDG replacement | ✅ Pass | PySpark jobs write to S3 via `boto3` / `s3a://` URIs; health indicator monitors S3 |
-| SQS for TDQ replacement | ✅ Pass | `report_service.py` publishes to SQS FIFO queue |
-| Structured JSON logging with correlation IDs | ✅ Pass | Python logging configuration with JSON formatter; correlation middleware |
-| Distributed tracing (X-Ray / CloudWatch) | ✅ Pass | CloudWatch integration module; `aws-xray-sdk` instrumentation |
-| CloudWatch custom metrics | ✅ Pass | Business metrics: auth attempts, batch records, transactions |
-| Health/readiness checks | ✅ Pass | `/health` endpoint with composite checks for PostgreSQL, S3, SQS |
-| ≥80% line coverage (pytest-cov) | ✅ Pass | 81.5% line coverage — "All coverage checks have been met" |
-| Clean static checks (`ruff` + `mypy`) | ✅ Pass | `ruff check src/` and `mypy --strict src/` pass with zero violations |
-| 11 VSAM datasets → Aurora PostgreSQL tables | ✅ Pass | `db/migrations/V1__schema.sql` creates all 11 tables from VSAM cluster specs |
-| 5-stage batch pipeline preservation | ✅ Pass | PySpark on AWS Glue + Step Functions: POSTTRAN → INTCALC → COMBTRAN → CREASTMT/TRANREPT |
-| Decision Log (≥15 decisions) | ✅ Pass | DECISION_LOG.md with 18 architectural decisions |
-| Traceability Matrix (100% paragraph coverage) | ✅ Pass | TRACEABILITY_MATRIX.md — 1,191 lines of bidirectional mapping |
-| Architecture Guide | ✅ Pass | `docs/architecture.md` with Mermaid diagrams for Python/AWS stack |
-| Onboarding Guide | ✅ Pass | `docs/onboarding-guide.md` — clean-machine-to-running-app |
-| CloudWatch Dashboard Template | ✅ Pass | `infra/cloudwatch/dashboard.json` |
-| No hardcoded credentials | ⚠ Partial | Environment variables used; JWT secret needs AWS Secrets Manager externalization for production |
-| Python dependency scan — zero critical/high CVEs | ⚠ Pending | `pip-audit` tooling available; scan execution not confirmed |
-| CI/CD pipeline | ✅ Pass | `.github/workflows/ci.yml`, `deploy-api.yml`, `deploy-glue.yml` created |
-
-**Fixes Applied During Autonomous Validation:**
-1. Integration test assertions aligned with actual V3 seed data counts (test_transaction_category_repository, test_disclosure_group_repository)
-2. 17 QA findings resolved from online API testing
-3. 5 security findings resolved (checkpoint 6)
-4. 6 batch pipeline findings fixed (condition code decider, report totals, S3 overwrite)
-5. Observability wiring corrected (CloudWatch metric namespace, custom dimensions)
-6. 37 documentation QA findings resolved across 9 files
-7. 4 performance testing findings addressed
-
----
-
-## 6. Risk Assessment
-
-| Risk | Category | Severity | Probability | Mitigation | Status |
-|------|----------|----------|------------|------------|--------|
-| Python dependency vulnerabilities unverified | Security | High | Medium | Run `pip-audit` or `safety check`; remediate findings | ⚠ Open |
-| GitHub Actions CI/CD requires AWS secrets | Operational | High | High | `.github/workflows/` created; configure ECR/S3 credentials in repo secrets | ⚠ In Progress |
-| JWT secret not externalized for production | Security | High | High | Use AWS Secrets Manager to source `JWT_SECRET_KEY` at runtime via `src/shared/config/aws_config.py` | ⚠ Open |
-| No production `settings.py` configuration | Operational | High | High | Extend `src/shared/config/settings.py` with production env profile backed by Secrets Manager | ⚠ Open |
-| LocalStack-only AWS testing | Integration | Medium | Medium | Add integration tests against real AWS in staging environment (ECS + Glue) | ⚠ Open |
-| Branch coverage at 64% | Technical | Medium | Low | Add pytest tests for uncovered branches; focus on error paths | ⚠ Open |
-| ECR configured for ECS deployment, not wired | Operational | Medium | High | Complete GitHub Actions `deploy-api.yml` ECR push step and ECS service update | ⚠ Open |
-| Production data migration from EBCDIC | Technical | Medium | Medium | Develop EBCDIC-to-Aurora PostgreSQL migration scripts using AWS DMS with validation | ⚠ Open |
-| No rate limiting on REST endpoints | Security | Medium | Medium | Add FastAPI middleware (e.g., `slowapi`) for per-IP rate limiting | ⚠ Open |
-| No TLS/HTTPS configured | Security | Medium | High | Configure TLS termination at ALB in front of ECS Fargate service | ⚠ Open |
-| Database connection pooling not tuned | Technical | Low | Medium | Configure SQLAlchemy connection pool (pool_size, max_overflow) based on production workload analysis | ⚠ Open |
-| FastAPI OpenAPI docs not published | Technical | Low | Low | FastAPI auto-generates OpenAPI/Swagger at `/docs` and `/redoc`; publish to API Gateway or ReadTheDocs | ⚠ Open |
-
----
-
-## 7. Visual Project Status
-
-```mermaid
-pie title Project Hours Breakdown
-    "Completed Work" : 391
-    "Remaining Work" : 43
+```
+Stage1_PostTran → Stage2_IntCalc → Stage3_CombTran → Stage4_Parallel(Stage4a_CreAStmt, Stage4b_TranRept) → PipelineComplete
 ```
 
-**Hours Distribution by Completed Component:**
-
-```mermaid
-pie title Completed Work Distribution (391h)
-    "Online Services" : 86
-    "Batch Processing" : 64
-    "Data Layer" : 55
-    "Tests" : 82
-    "Configuration" : 38
-    "Documentation" : 24
-    "Build Infrastructure" : 14
-    "Observability" : 10
-    "QA Fixes" : 16
-    "Routers" : 20
-```
-
-**Remaining Work by Priority:**
-
-| Priority | Category | Hours |
-|----------|----------|-------|
-| 🔴 High | CI/CD Hardening, Dependency Scan, Production Config, Security | 21 |
-| 🟡 Medium | Deployment, Performance, Data Migration, Monitoring | 20 |
-| 🟢 Low | OpenAPI Documentation Publishing | 2 |
-| **Total** | | **43** |
+Each stage's failure path routes to `PipelineFailed`, preserving the
+`COND=(0,NE)` semantics of the original JCL. End-to-end execution
+requires the planned PySpark scripts under `src/batch/jobs/` to be
+deployed to S3 by the `deploy-glue.yml` workflow.
 
 ---
 
-## 8. Summary & Recommendations
+## 5. Compliance Snapshot
 
-### Achievement Summary
+| AAP Requirement | Status at Checkpoint | Evidence |
+|-----------------|----------------------|----------|
+| 11 Aurora PostgreSQL tables replacing 10 VSAM + 3 AIX | ✅ | `db/migrations/V1__schema.sql` defines all 11 tables; `V2__indexes.sql` defines 3 B-tree indexes |
+| 636 seed rows loaded from 9 ASCII fixture files | ✅ | `db/migrations/V3__seed_data.sql` — 50 accounts, 50 cards, 50 customers, 50 card_cross_references, 50 transaction_category_balances, 51 disclosure_groups, 18 transaction_categories, 7 transaction_types, 10 user_security, 300 daily_transactions |
+| `decimal.Decimal` across all monetary fields (no `float`) | ✅ | Verified in 11 SQLAlchemy models under `src/shared/models/` and 8 Pydantic schemas under `src/shared/schemas/`; database columns use `NUMERIC(15, 2)` |
+| SQLAlchemy composite primary keys on `TransactionCategoryBalance`, `DisclosureGroup`, `TransactionCategory` | ✅ | Verified in `src/shared/models/transaction_category_balance.py`, `disclosure_group.py`, `transaction_category.py` |
+| SQLAlchemy `version_id_col` optimistic concurrency on `Account`, `Card` (COACTUPC, COCRDUPC semantics) | ✅ | Declared in the respective model classes; the planned service modules will exercise these on update |
+| BCrypt password hashing (C-003) | ⏳ Dependency installed | `passlib[bcrypt]==1.7.4` and `bcrypt>=4.2,<5.0` pinned in `requirements-api.txt`; the auth service that uses them is planned |
+| JWT stateless authentication (replaces CICS COMMAREA) | ⏳ Dependency installed | `python-jose[cryptography]>=3.4.0,<4.0` pinned in `requirements-api.txt` (`>=3.4.0` required to avoid CVE-2024-33663 and CVE-2024-33664); the middleware that uses it is planned |
+| AWS SQS FIFO for TDQ replacement | ⏳ Configured | `Settings.SQS_QUEUE_URL` exposed; `boto3` SQS client constructed in `src/shared/config/aws_config.py`; the report service that publishes to it is planned |
+| AWS S3 for GDG replacement | ⏳ Configured | `Settings.S3_BUCKET_NAME` default `carddemo-data`; `boto3` S3 client constructed in `src/shared/config/aws_config.py`; the PySpark jobs that read/write S3 are planned |
+| AWS Secrets Manager for database credentials | ⏳ Configured | `Settings.DB_SECRET_NAME` default `carddemo/aurora-credentials`; resolution wired in `aws_config.py` |
+| AWS Step Functions preserving JCL COND semantics | ✅ | `src/batch/pipeline/step_functions_definition.json` — `PipelineFailed` error state on every stage |
+| AWS Glue 5.1 (Spark 3.5.6, Python 3.11) | ✅ | All 5 `infra/glue-job-configs/*.json` pin `"GlueVersion": "5.1"` |
+| AWS ECS Fargate container | ✅ Scaffolded | `Dockerfile` (single-stage `python:3.11-slim`, port 80), `infra/ecs-task-definition.json` |
+| GitHub Actions CI/CD | ✅ Scaffolded | `.github/workflows/ci.yml`, `deploy-api.yml`, `deploy-glue.yml` |
+| Ruff / Mypy static checks | ✅ Configured | `ruff check src/` and `mypy --strict src/` pass with zero violations against the 27 implemented source files under `src/shared/` |
+| pytest test framework | ✅ Configured | `pyproject.toml` sets `--cov=src --cov-fail-under=80`; test modules are planned (see §1.4) |
+| FastAPI OpenAPI docs (`/docs`, `/redoc`) | 🏗 Planned | Enabled automatically by FastAPI once `src/api/main.py` is implemented |
+| Strawberry GraphQL | 🏗 Planned | Dependency pinned in `requirements-api.txt`; schema implementation pending |
+| CloudWatch dashboard template | ✅ | `infra/cloudwatch/dashboard.json` |
+| Structured JSON logging with correlation IDs | 🏗 Planned | Logging configuration will be wired in `src/api/main.py` |
 
-The CardDemo COBOL-to-Python migration has reached **90.1% completion** (391 of 434 total project hours). All core AAP deliverables have been implemented:
+Legend: ✅ implemented / ⏳ dependency or configuration present but consuming
+module is planned / 🏗 planned per AAP §0.5.1 but not yet implemented.
 
-- **All 28 COBOL programs** have been translated to idiomatic Python 3.11 with FastAPI and PySpark orchestration
-- **All 11 VSAM datasets** have been mapped to Aurora PostgreSQL tables with SQL migration-managed schema
-- **The complete 5-stage batch pipeline** (POSTTRAN → INTCALC → COMBTRAN → CREASTMT/TRANREPT) is operational with PySpark on AWS Glue + Step Functions
-- **All 8 FastAPI routers** replace the 17 BMS terminal screens with full API coverage (REST + GraphQL)
-- **888 tests pass** (729 unit + 159 integration/E2E) with **81.5% line coverage**
-- **Clean build** confirmed with `ruff` + `mypy` clean checks
-- **Full observability** is operational: structured JSON logging, X-Ray/CloudWatch tracing, CloudWatch metrics, and health checks
-- **`decimal.Decimal` precision** is enforced across all financial fields with zero float substitution
-- **Comprehensive documentation** including Decision Log, Traceability Matrix, Architecture Guide, and Onboarding Guide
+---
 
-### Remaining Gaps
+## 6. Risk Register
 
-The remaining **43 hours** (9.9%) are primarily path-to-production activities:
+| Risk | Category | Severity | Mitigation |
+|------|----------|----------|------------|
+| `src/api/` not yet implemented — API container cannot serve requests | Functional | High | Deliver `src/api/main.py`, routers, services, middleware, and `database.py` per AAP §0.5.1; wire `/health` endpoint before other routers so Docker Compose `HEALTHCHECK` passes |
+| `src/batch/jobs/*.py` not yet implemented — batch pipeline cannot execute end-to-end | Functional | High | Deliver the 5 core PySpark jobs (`posttran_job`, `intcalc_job`, `combtran_job`, `creastmt_job`, `tranrept_job`) and the `src/batch/common/` helpers; `deploy-glue.yml` uploads them to S3 and updates the Glue job definitions |
+| `tests/` contains no test modules — `--cov-fail-under=80` gate cannot yet be enforced | Quality | High | Create `tests/conftest.py` with the PostgreSQL testcontainer, FastAPI `TestClient`, and moto AWS mock fixtures; add `tests/unit/`, `tests/integration/`, `tests/e2e/` modules alongside each delivered service |
+| `JWT_SECRET_KEY` provided as an environment variable in `docker-compose.yml` | Security | High | Source `JWT_SECRET_KEY` and database credentials via AWS Secrets Manager in production; `src/shared/config/aws_config.py` already exposes the Secrets Manager client |
+| `python-jose` must remain at `>=3.4.0` to avoid CVE-2024-33663 and CVE-2024-33664 | Security | High | `requirements-api.txt` pins `>=3.4.0,<4.0`; verify periodically with `pip-audit` or `safety check` |
+| Production TLS termination not yet configured | Security | Medium | Terminate TLS at the ALB in front of ECS Fargate; ECS task exposes only HTTP on container port 80 |
+| Rate limiting not yet applied at the API edge | Security | Medium | Add a FastAPI middleware (e.g. `slowapi`) in `src/api/middleware/` once the service layer is in place |
+| LocalStack-only AWS testing | Integration | Medium | Add end-to-end tests against a real AWS staging environment after `src/api/` and `src/batch/jobs/` are implemented |
+| Production data migration from EBCDIC | Operational | Medium | Use AWS DMS (or a PySpark ingestion job) to move production EBCDIC data into Aurora PostgreSQL with validation before cutover |
+| Database connection pooling defaults (`DB_POOL_SIZE=10`, `DB_MAX_OVERFLOW=20`) may require tuning | Technical | Low | Adjust via environment variables once real-traffic profiles are collected in staging |
+| FastAPI OpenAPI docs not yet published | Documentation | Low | FastAPI exposes `/docs` and `/redoc` automatically once `src/api/main.py` is in place |
 
-1. **CI/CD pipeline hardening** (8h) — GitHub Actions workflows exist in `.github/workflows/`; AWS credentials, ECR push, and ECS update steps need completion
-2. **Production configuration** (6h) — `src/shared/config/settings.py` needs Secrets Manager integration for real AWS/Aurora deployment
-3. **Deployment infrastructure** (8h) — `infra/ecs-task-definition.json` and `infra/glue-job-configs/*.json` exist but need registration against AWS account
-4. **Security hardening** (4h) — JWT secret externalization, TLS at ALB, rate limiting
-5. **Dependency vulnerability verification** (3h) — `pip-audit` execution not confirmed
-6. **Performance/monitoring** (8h) — Load testing and CloudWatch alerting setup
-7. **Data migration** (4h) — EBCDIC production data migration strategy (e.g., AWS DMS)
-8. **API documentation publishing** (2h) — FastAPI auto-generates OpenAPI; publish to API Gateway or developer portal
+---
 
-### Production Readiness Assessment
+## 7. Project Outlook
 
-The application is **development-complete and validation-ready**. For production deployment, the critical path requires:
-1. CI/CD pipeline with automated testing (GitHub Actions workflows already present)
-2. Production environment configuration with AWS Secrets Manager-backed secrets
-3. Python dependency vulnerability scan clearance
-4. Deployment automation (ECS service update + Glue job registration)
+The migration is being delivered iteratively. Future checkpoints are
+expected to address the planned work in this order:
 
-### Success Metrics
+1. **API service core** — `src/api/main.py`, `dependencies.py`, `database.py`,
+   middleware, `/health`, `/auth/login`.
+2. **Domain routers/services** — account, card, transaction, bill, report,
+   user, menu routers and corresponding service modules.
+3. **GraphQL mount** — Strawberry schema, types, queries, mutations under
+   `src/api/graphql/`.
+4. **Batch common helpers** — `src/batch/common/glue_context.py`,
+   `db_connector.py`, `s3_utils.py`.
+5. **Core batch jobs** — `posttran_job.py`, `intcalc_job.py`,
+   `combtran_job.py`, `creastmt_job.py`, `tranrept_job.py`.
+6. **Diagnostic and driver batch jobs** — `daily_tran_driver_job.py`,
+   `prtcatbl_job.py`, `read_account_job.py`, `read_card_job.py`,
+   `read_customer_job.py`, `read_xref_job.py`.
+7. **Automated tests** — `tests/conftest.py` plus unit, integration, and
+   end-to-end test modules covering every delivered service/job.
+8. **Supplementary documentation** — decision log, traceability matrix,
+   API contracts, onboarding guide, validation-gate evidence.
 
-| Metric | Target | Actual | Status |
-|--------|--------|--------|--------|
-| COBOL programs migrated | 28 | 28 | ✅ |
-| Test pass rate | 100% | 100% (888/888) | ✅ |
-| Line coverage | ≥80% | 81.5% | ✅ |
-| Lint/type-check violations | 0 | 0 | ✅ |
-| Float substitution in financial fields | 0 | 0 | ✅ |
-| Decision log entries | ≥15 | 18 | ✅ |
+---
+
+## 8. Summary
+
+At this checkpoint the CardDemo migration has delivered the shared domain
+model, the Aurora PostgreSQL schema and seed data, the AWS infrastructure
+configuration, the Step Functions pipeline definition, the local Docker
+Compose stack, and the GitHub Actions scaffolding. The FastAPI service
+layer, the PySpark Glue job scripts, and the automated test suite are
+planned per AAP §0.5.1 and have not yet been implemented. The
+[`docs/architecture.md`](architecture.md) document specifies the exact
+target module layout, AWS service topology, and design patterns for the
+remaining work.
 
 ---
 
 ## 9. Development Guide
 
-### System Prerequisites
+### 9.1 System Prerequisites
 
 | Software | Version | Purpose |
 |----------|---------|---------|
-| Python | 3.11 (CPython) | Application compilation and runtime (aligned with AWS Glue 5.1) |
-| Docker | 28.x+ | Container runtime for PostgreSQL, LocalStack, and the API service |
-| Docker Compose | v5.x+ (Docker Compose v2 plugin) | Multi-service orchestration |
+| Python | 3.11 (CPython) | Application runtime (aligned with AWS Glue 5.1) |
+| Docker | 20.x+ | Container runtime for PostgreSQL, LocalStack, and the API service |
+| Docker Compose | v2.x+ (Docker Compose v2 plugin) | Multi-service orchestration |
 | Git | 2.x+ | Version control |
 | AWS CLI | v2 | Glue job registration, ECS service updates, Secrets Manager interaction |
 
-### Environment Setup
+### 9.2 Environment Setup
 
-**1. Clone the repository:**
+**1. Clone the repository and enter the project directory:**
 ```bash
 git clone <repository-url>
 cd carddemo
@@ -367,7 +387,8 @@ python3 --version
 # Expected: Python 3.11.x
 ```
 
-If Python 3.11 is not the default, install via pyenv or the system package manager, then create and activate a virtual environment:
+If Python 3.11 is not the default, install it via `pyenv` or the system
+package manager, then create and activate a virtual environment:
 ```bash
 python3.11 -m venv venv
 source venv/bin/activate
@@ -376,14 +397,14 @@ export PYTHONPATH=$PWD
 
 **3. Start local infrastructure:**
 ```bash
-# Set LocalStack auth token (required for Pro features, optional for community)
+# LocalStack auth token (required only for Pro features)
 export LOCALSTACK_AUTH_TOKEN=<your-token>
 
-# Start the API service, PostgreSQL, and LocalStack defined in docker-compose.yml
+# Start the API container, PostgreSQL, and LocalStack from docker-compose.yml
 docker compose up -d
 ```
 
-Verify services are running:
+Verify services are healthy:
 ```bash
 # PostgreSQL
 docker compose exec postgres pg_isready -U carddemo
@@ -391,151 +412,167 @@ docker compose exec postgres pg_isready -U carddemo
 
 # LocalStack
 curl -s http://localhost:4566/_localstack/health | python3 -m json.tool
-# Expected: {"services": {"s3": "available", "sqs": "available", "secretsmanager": "available"}}
+# Expected: services shown with "available" for s3, sqs, secretsmanager
 ```
 
-### Dependency Installation & Build
+Note that the `api` service will start but its readiness depends on
+`src/api/main.py` being implemented (planned — see §1.4). The
+`postgres` and `localstack` services are fully functional at this
+checkpoint.
+
+### 9.3 Dependency Installation
 
 ```bash
 # Install core + API + dev dependencies into the active venv
 pip install -r requirements.txt -r requirements-api.txt -r requirements-dev.txt
 
-# Run unit tests (729 tests)
-pytest tests/unit/
-
-# Run full verification (unit + integration + E2E + coverage)
-pytest --cov=src --cov-report=term-missing
+# Batch layer dependencies (PySpark, pg8000) — install only if you need
+# to run PySpark locally; these are heavier and not required for API work
+pip install -r requirements-glue.txt
 ```
 
-### Application Startup
+### 9.4 Static Checks
+
+At this checkpoint, `ruff` and `mypy` run against the 27 source files
+under `src/shared/`:
 
 ```bash
-# Run FastAPI with hot-reload for local development (connects to Docker Compose services)
+ruff check src/
+mypy --strict src/
+```
+
+Both checks are clean at this checkpoint. The same commands will run
+over the full `src/` tree as additional modules are delivered.
+
+### 9.5 Application Startup
+
+Starting the API server requires the planned `src/api/main.py` (see
+§1.4). Once it is in place:
+
+```bash
 uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### Verification Steps
+Planned verification endpoints (once `src/api/main.py` exists):
 
-**Health Check:**
 ```bash
-curl -s http://localhost:8000/health | python3 -m json.tool
-# Expected: {"status": "UP", "components": {"db": {"status": "UP"}, ...}}
-```
+# Health check (used by Dockerfile HEALTHCHECK)
+curl -s http://localhost:8000/health
 
-**Authentication:**
-```bash
+# Authentication (default local credentials — see docker-compose seed data)
 curl -s -X POST http://localhost:8000/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"userId": "USER0001", "password": "PASSWORD"}' | python3 -m json.tool
-# Expected: 200 OK with JWT token
+  -d '{"userId": "USER0001", "password": "PASSWORD"}'
+
+# OpenAPI UI
+open http://localhost:8000/docs
+
+# ReDoc
+open http://localhost:8000/redoc
+
+# GraphQL endpoint
+open http://localhost:8000/graphql
 ```
 
-**Account View:**
-```bash
-curl -s http://localhost:8000/accounts/00000000001 \
-  -H "Authorization: Bearer <token>" | python3 -m json.tool
-# Expected: 200 OK with account data
-```
-
-**Menu Options:**
-```bash
-curl -s http://localhost:8000/api/menu/main | python3 -m json.tool
-# Expected: 200 OK with 10 menu options
-```
-
-### Observability Access
+### 9.6 Observability Access
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
-| Application Health | http://localhost:8000/health | N/A |
-| FastAPI OpenAPI Docs | http://localhost:8000/docs | N/A |
-| FastAPI ReDoc | http://localhost:8000/redoc | N/A |
-| LocalStack Health | http://localhost:4566/_localstack/health | N/A |
+| Application Health | `http://localhost:8000/health` (planned) | N/A |
+| FastAPI OpenAPI Docs | `http://localhost:8000/docs` (planned) | N/A |
+| FastAPI ReDoc | `http://localhost:8000/redoc` (planned) | N/A |
+| LocalStack Health | `http://localhost:4566/_localstack/health` | N/A |
 | CloudWatch Dashboard (prod) | AWS Console → CloudWatch → Dashboards → `CardDemo` (defined in `infra/cloudwatch/dashboard.json`) | IAM |
 
-### Troubleshooting
+### 9.7 Troubleshooting
 
 | Issue | Resolution |
 |-------|-----------|
-| `python: command not found` or wrong version | Install Python 3.11 via `pyenv install 3.11` or system package manager; activate venv: `source venv/bin/activate` |
-| Docker Compose port conflicts | Check for existing services: `lsof -i :5432`, `lsof -i :4566`, `lsof -i :8000` |
-| LocalStack init fails | Verify `LOCALSTACK_AUTH_TOKEN` is set (optional for community edition) and LocalStack container healthcheck passes |
-| SQL migration fails — check PostgreSQL connection | Ensure PostgreSQL is healthy: `docker compose exec postgres pg_isready -U carddemo` and migration files are mounted into `/docker-entrypoint-initdb.d/` |
-| Testcontainers connection refused | Ensure Docker daemon is running and user has Docker socket access |
-| `ModuleNotFoundError: src.*` | Set `PYTHONPATH`: `export PYTHONPATH=$PWD` from the project root |
+| `ModuleNotFoundError: No module named 'src.api.main'` | Expected at this checkpoint — `src/api/main.py` is planned but not yet implemented (see §1.4). |
+| `python: command not found` or wrong version | Install Python 3.11 via `pyenv install 3.11` or the system package manager; activate the venv: `source venv/bin/activate`. |
+| Docker Compose port conflicts | Check for existing services: `lsof -i :5432`, `lsof -i :4566`, `lsof -i :8000`. |
+| LocalStack initialization fails | Verify `LOCALSTACK_AUTH_TOKEN` is set (optional for community edition) and the LocalStack container health check passes. |
+| SQL migration fails on PostgreSQL startup | Ensure PostgreSQL is healthy: `docker compose exec postgres pg_isready -U carddemo` and that the migration files are mounted into `/docker-entrypoint-initdb.d/`. |
+| Testcontainers connection refused | Ensure the Docker daemon is running and your user has access to the Docker socket. |
+| `ModuleNotFoundError: src.*` when running scripts directly | Set `PYTHONPATH`: `export PYTHONPATH=$PWD` from the project root. |
 
 ---
 
 ## 10. Appendices
 
-### A. Command Reference
+### Appendix A. Command Reference
 
-| Command | Purpose |
-|---------|---------|
-| `ruff check src/` | Lint all Python source files (zero-violation gate) |
-| `mypy --strict src/` | Strict static type-check |
-| `pytest tests/unit/` | Run unit tests (729 tests) |
-| `pytest --cov=src --cov-report=term-missing` | Run all tests with coverage report (888 tests, pytest-cov) |
-| `uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload` | Start FastAPI application with hot-reload |
-| `pip list` / `pip freeze` | Display installed dependency tree |
-| `docker compose up -d` | Start all infrastructure services |
-| `docker compose down -v` | Stop services and remove volumes |
-| `docker compose logs -f postgres` | Tail PostgreSQL logs |
+| Command | Purpose | Availability at This Checkpoint |
+|---------|---------|----------------------------------|
+| `ruff check src/` | Lint all Python source files | ✅ Works against `src/shared/` |
+| `mypy --strict src/` | Strict static type-check | ✅ Works against `src/shared/` |
+| `pytest` / `pytest --cov=src` | Run tests with coverage | 🏗 Collects 0 items until `tests/` is populated |
+| `uvicorn src.api.main:app --reload` | Start FastAPI application | 🏗 Requires planned `src/api/main.py` |
+| `docker compose up -d` | Start all infrastructure services | ✅ Starts PostgreSQL + LocalStack; API container starts but fails to serve until `src/api/main.py` exists |
+| `docker compose down -v` | Stop services and remove volumes | ✅ |
+| `docker compose logs -f postgres` | Tail PostgreSQL logs | ✅ |
+| `docker compose exec postgres psql -U carddemo -d carddemo` | Connect to the local PostgreSQL instance | ✅ |
+| `spark-submit src/batch/jobs/<job>.py` | Run a PySpark Glue job locally | 🏗 Requires planned job scripts |
 
-### B. Port Reference
+### Appendix B. Port Reference
 
 | Port | Service | Protocol |
 |------|---------|----------|
-| 5432 | Aurora PostgreSQL (local: PostgreSQL 16 via Docker) | TCP |
+| 5432 | Aurora-compatible PostgreSQL 16 (Docker) | TCP |
 | 4566 | LocalStack (S3, SQS, Secrets Manager) | HTTP |
-| 8000 | CardDemo FastAPI Application (host) / 80 (container) | HTTP |
+| 8000 → 80 | CardDemo FastAPI API (host → container) | HTTP |
 
-### C. Key File Locations
+### Appendix C. Key File Locations
 
-| File | Purpose |
-|------|---------|
-| `pyproject.toml` | Python project metadata and tool configuration (ruff, mypy, pytest) |
-| `requirements.txt` | Core shared dependencies (boto3, pydantic, python-dotenv) |
-| `requirements-api.txt` | FastAPI layer dependencies (FastAPI, SQLAlchemy, Strawberry, etc.) |
-| `requirements-glue.txt` | PySpark batch layer dependencies (pyspark, pg8000) |
-| `requirements-dev.txt` | Development and testing dependencies (pytest, moto, testcontainers, ruff, mypy) |
-| `src/shared/config/settings.py` | Pydantic `BaseSettings` — central application configuration from env vars |
-| `.env` (local only) | Local development environment variables (not committed) |
-| `tests/conftest.py` | pytest fixtures: PostgreSQL testcontainer, FastAPI TestClient, moto mocks |
-| `db/migrations/V1__schema.sql` | Aurora PostgreSQL schema (11 tables) |
-| `db/migrations/V2__indexes.sql` | B-tree indexes (replacing VSAM AIX paths) |
-| `db/migrations/V3__seed_data.sql` | Seed data from COBOL fixtures (626 rows) |
-| Python logging configuration (`src/shared/config/`) | JSON structured logging with correlation IDs |
-| `docker-compose.yml` | Local infrastructure (API, PostgreSQL, LocalStack) |
-| `Dockerfile` | API service container (Python 3.11-slim base) |
-| `.github/workflows/ci.yml` | CI pipeline: lint → type-check → unit → integration |
-| `.github/workflows/deploy-api.yml` | API deployment: build → ECR → ECS service update |
-| `.github/workflows/deploy-glue.yml` | Glue deployment: upload PySpark to S3 → update job definitions |
-| `infra/ecs-task-definition.json` | ECS Fargate task definition |
-| `infra/glue-job-configs/*.json` | Glue job configurations (posttran, intcalc, combtran, creastmt, tranrept) |
-| `infra/cloudwatch/dashboard.json` | CloudWatch unified monitoring dashboard |
-| `DECISION_LOG.md` | 18 architectural decisions with rationale |
-| `TRACEABILITY_MATRIX.md` | COBOL → Python bidirectional mapping |
-| `docs/architecture.md` | Architecture guide with Mermaid diagrams |
-| `docs/api-contracts.md` | REST + GraphQL API endpoint specifications |
-| `docs/onboarding-guide.md` | New developer quickstart |
-| `docs/validation-gates.md` | Gate 1-8 evidence documentation |
+| File / Directory | Purpose | Status |
+|------------------|---------|--------|
+| `pyproject.toml` | Python project metadata; ruff / mypy / pytest config | ✅ |
+| `requirements.txt` | Core shared dependencies (boto3, pydantic, python-dotenv) | ✅ |
+| `requirements-api.txt` | FastAPI layer dependencies (FastAPI, SQLAlchemy, Strawberry, python-jose ≥3.4.0, passlib, asyncpg) | ✅ |
+| `requirements-glue.txt` | PySpark batch layer dependencies (pyspark 3.5.6, pg8000) | ✅ |
+| `requirements-dev.txt` | Development and testing dependencies (pytest, moto, testcontainers, ruff, mypy) | ✅ |
+| `src/shared/config/settings.py` | Pydantic v2 `BaseSettings` — central configuration | ✅ |
+| `.env` (local only, not committed) | Local development environment variable overrides | ⚪ Optional |
+| `db/migrations/V1__schema.sql` | Aurora PostgreSQL schema (11 tables) | ✅ |
+| `db/migrations/V2__indexes.sql` | B-tree indexes (replacing VSAM AIX paths) | ✅ |
+| `db/migrations/V3__seed_data.sql` | Seed data (636 rows) from COBOL fixtures | ✅ |
+| `docker-compose.yml` | Local infrastructure (API, PostgreSQL 16, LocalStack 3) | ✅ |
+| `Dockerfile` | API service container (single-stage `python:3.11-slim`) | ✅ |
+| `.github/workflows/ci.yml` | CI pipeline: lint → type-check → unit → integration → coverage gate | ✅ |
+| `.github/workflows/deploy-api.yml` | API deployment: build → ECR → ECS service update | ✅ |
+| `.github/workflows/deploy-glue.yml` | Glue deployment: upload PySpark to S3 → update Glue job definitions | ✅ |
+| `infra/ecs-task-definition.json` | ECS Fargate task definition | ✅ |
+| `infra/glue-job-configs/*.json` | 5 Glue job configurations (posttran, intcalc, combtran, creastmt, tranrept) | ✅ |
+| `infra/cloudwatch/dashboard.json` | CloudWatch unified monitoring dashboard | ✅ |
+| `src/batch/pipeline/step_functions_definition.json` | AWS Step Functions state machine for the 5-stage pipeline | ✅ |
+| `docs/index.md` | Documentation landing page | ✅ |
+| `docs/architecture.md` | Architecture guide (Mermaid diagrams, project structure, feature coverage) | ✅ |
+| `docs/project-guide.md` | This document | ✅ |
+| `docs/technical-specifications.md` | Feature catalog (F-001 through F-022), business rules carried forward from the mainframe baseline | ✅ |
+| `app/` | Original COBOL / BMS / JCL / copybook / fixture sources (retained unchanged per AAP §0.7.1) | ✅ |
+| `tests/conftest.py` | Shared pytest fixtures (PostgreSQL testcontainer, FastAPI TestClient, moto AWS mocks) | 🏗 Planned |
+| `src/api/main.py` and all `routers/`, `services/`, `middleware/`, `graphql/` modules | FastAPI application and service layer | 🏗 Planned |
+| `src/batch/jobs/*.py`, `src/batch/common/*.py` | PySpark Glue job scripts and common helpers | 🏗 Planned |
 
-### D. Technology Versions
+### Appendix D. Technology Versions
 
 | Technology | Version | Notes |
 |-----------|---------|-------|
 | Python (CPython) | 3.11 | Aligned with AWS Glue 5.1 runtime |
-| FastAPI | 0.115.x | Web framework — REST + GraphQL (via Strawberry) |
-| SQLAlchemy | 2.0.x | Async ORM for Aurora PostgreSQL (Hibernate/JPA replacement) |
+| FastAPI | 0.115.x | Web framework (REST + GraphQL via Strawberry) |
+| SQLAlchemy | 2.0.x | Async ORM for Aurora PostgreSQL |
 | asyncpg | 0.30.x | Async PostgreSQL driver for SQLAlchemy |
-| PySpark (on AWS Glue 5.1) | 3.5.6 | Spark 3.5.6, Scala 2.12.18, Python 3.11 runtime |
-| passlib[bcrypt] | 1.7.4 | BCrypt password hashing (preserves COBOL-era security) |
-| python-jose[cryptography] | 3.3.0 | JWT token encoding/decoding |
-| pydantic | 2.10.x | Data validation (Pydantic v2 with Rust-backed core) |
+| psycopg2-binary | 2.9.x | Sync PostgreSQL driver for migrations and seed scripts |
+| Alembic | 1.14.x | Alternative migration tool (SQL scripts used in this checkpoint) |
 | Strawberry GraphQL | 0.254.x | GraphQL schema for FastAPI |
-| PostgreSQL | 16 (Alpine) — Aurora-compatible | Via Docker locally; Aurora PostgreSQL in prod |
-| Flyway-style SQL migrations | `db/migrations/V1-V3` | Schema migration scripts auto-applied on container start |
+| PySpark (on AWS Glue 5.1) | 3.5.6 | Spark 3.5.6, Scala 2.12.18, Python 3.11 runtime |
+| passlib[bcrypt] | 1.7.4 | BCrypt password hashing |
+| bcrypt | 4.2.x | Pure Python BCrypt backend for passlib |
+| python-jose[cryptography] | ≥3.4.0,<4.0 | JWT encoding / decoding. `>=3.4.0` required to pick up the fixes for CVE-2024-33663 and CVE-2024-33664. |
+| pydantic | 2.10.x | Data validation (Pydantic v2 with Rust-backed core) |
+| pydantic-settings | 2.7.x | Environment-variable management for `BaseSettings` |
+| PostgreSQL | 16 (Alpine) — Aurora-compatible | Aurora PostgreSQL in production; PostgreSQL 16 in Docker locally |
+| SQL migration scripts | `db/migrations/V1-V3` | Auto-applied on PostgreSQL 16 container start via `/docker-entrypoint-initdb.d/` |
 | boto3 | 1.35.x | AWS SDK (Secrets Manager, SQS, S3) |
 | testcontainers[postgres] | 4.8.x | PostgreSQL container fixtures for integration tests |
 | moto[all] | 5.0.x | AWS service mocks (S3, SQS, Secrets Manager, Glue) |
@@ -544,53 +581,82 @@ curl -s http://localhost:8000/api/menu/main | python3 -m json.tool
 | pytest-cov | 6.0.x | Code coverage reporting |
 | Ruff | 0.8.x | Linter and formatter |
 | mypy | 1.13.x | Static type checking |
-| Docker | 28.x | Container runtime |
-| LocalStack (community or Pro) | Latest | AWS service emulation for local development |
+| Docker | 20.x+ | Container runtime |
+| Docker Compose | v2.x+ | Multi-service orchestration |
+| LocalStack (community or Pro) | 3.x | AWS service emulation for local development |
 
-### E. Environment Variable Reference
+### Appendix E. Environment Variable Reference
 
-| Variable | Required | Default | Purpose |
-|----------|----------|---------|---------|
-| `DATABASE_URL` | Yes | None (fail-fast) | Async PostgreSQL connection string, e.g. `postgresql+asyncpg://carddemo:carddemo@postgres:5432/carddemo` |
-| `DATABASE_URL_SYNC` | Yes | None (fail-fast) | Sync PostgreSQL connection string for migrations/seeds, e.g. `postgresql+psycopg2://...` |
-| `JWT_SECRET_KEY` | Yes | None (fail-fast; via Secrets Manager in prod) | Signing key for JWT tokens (replaces CICS COMMAREA session state) |
-| `JWT_ALGORITHM` | No | `HS256` | JWT signing algorithm |
-| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | No | `60` | JWT access-token lifetime in minutes |
-| `ENVIRONMENT` | No | `development` | Deployment environment marker (`development`, `staging`, `production`) |
-| `AWS_ENDPOINT_URL` | No | unset (use real AWS) | LocalStack endpoint for local development (e.g. `http://localstack:4566`) |
-| `LOCALSTACK_AUTH_TOKEN` | Yes (local dev, Pro only) | None | LocalStack Pro authentication |
-| `POSTGRES_DB` | No | `carddemo` | PostgreSQL database name (container-side) |
-| `POSTGRES_USER` | No | `carddemo` | PostgreSQL username (container-side) |
-| `POSTGRES_PASSWORD` | No | `carddemo` | PostgreSQL password (container-side) |
-| `AWS_ACCESS_KEY_ID` | No | `test` (local) | AWS access key (LocalStack: any value; prod: IAM role-based) |
-| `AWS_SECRET_ACCESS_KEY` | No | `test` (local) | AWS secret key (LocalStack: any value; prod: IAM role-based) |
-| `AWS_DEFAULT_REGION` | No | `us-east-1` | AWS region |
-| `LOG_LEVEL` | No | `INFO` | Python logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+The variables below correspond to the fields declared on
+`src.shared.config.settings.Settings` and the environment variables set in
+`docker-compose.yml`. `Settings` uses `extra="ignore"`, so any unrecognized
+environment variable is silently dropped.
 
-### F. Developer Tools Guide
+| Variable | Recognized by `Settings` | Default | Purpose |
+|----------|:------------------------:|---------|---------|
+| `DATABASE_URL` | ✅ | None (required) | Async PostgreSQL connection string, e.g. `postgresql+asyncpg://carddemo:carddemo@postgres:5432/carddemo` |
+| `DATABASE_URL_SYNC` | ✅ | None (required) | Sync PostgreSQL connection string, e.g. `postgresql+psycopg2://carddemo:carddemo@postgres:5432/carddemo` |
+| `DB_SECRET_NAME` | ✅ | `carddemo/aurora-credentials` | AWS Secrets Manager secret identifier for Aurora credentials in production |
+| `DB_POOL_SIZE` | ✅ | `10` | SQLAlchemy connection-pool size |
+| `DB_MAX_OVERFLOW` | ✅ | `20` | SQLAlchemy connection-pool overflow limit |
+| `JWT_SECRET_KEY` | ✅ | None (required) | Signing key for JWT tokens (replaces CICS COMMAREA). Use AWS Secrets Manager in production. |
+| `JWT_ALGORITHM` | ✅ | `HS256` | JWT signing algorithm |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | ✅ | `30` | JWT access-token lifetime in minutes. `docker-compose.yml` overrides this to `60` for local development. |
+| `AWS_REGION` (aliased from `AWS_DEFAULT_REGION`) | ✅ | `us-east-1` | AWS region for all service clients |
+| `S3_BUCKET_NAME` | ✅ | `carddemo-data` | S3 bucket (statement / report / reject output; GDG replacement) |
+| `SQS_QUEUE_URL` | ✅ | `` (empty) | SQS FIFO queue URL (report submission; TDQ replacement) |
+| `GLUE_JOB_ROLE_ARN` | ✅ | `` (empty) | IAM role ARN used by AWS Glue jobs |
+| `AWS_ENDPOINT_URL` | ✅ | `` (empty) | LocalStack endpoint for local development (e.g. `http://localstack:4566`); unset in production to use real AWS |
+| `LOG_LEVEL` | ✅ | `INFO` | Python logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `APP_NAME` | ✅ | `carddemo` | Application name used in logs and metrics |
+| `APP_VERSION` | ✅ | `1.0.0` | Application version stamped onto logs and metrics |
+| `DEBUG` | ✅ | `False` | Debug mode; when `True` FastAPI exposes stack traces and SQLAlchemy echoes SQL. **Must be `False` in production.** |
+| `AWS_ACCESS_KEY_ID` | ⚪ Consumed by `boto3` directly | `test` (local) | AWS access key (LocalStack: any value; production: IAM role–based) |
+| `AWS_SECRET_ACCESS_KEY` | ⚪ Consumed by `boto3` directly | `test` (local) | AWS secret key (LocalStack: any value; production: IAM role–based) |
+| `POSTGRES_DB` | ⚪ Consumed by the Postgres container, not by `Settings` | `carddemo` | PostgreSQL database name inside the container |
+| `POSTGRES_USER` | ⚪ Consumed by the Postgres container, not by `Settings` | `carddemo` | PostgreSQL username inside the container |
+| `POSTGRES_PASSWORD` | ⚪ Consumed by the Postgres container, not by `Settings` | `carddemo` | PostgreSQL password inside the container |
+| `LOCALSTACK_AUTH_TOKEN` | ⚪ Consumed by LocalStack Pro | None | LocalStack Pro authentication |
+| `ENVIRONMENT` | ❌ Not a `Settings` field (silently ignored) | `development` in `docker-compose.yml` | Deployment marker used only by external tooling / CI at this checkpoint |
 
-**Running a specific test module:**
+### Appendix F. Developer Tools Guide
+
+Once the planned test suite exists:
+
+**Run a specific test module:**
 ```bash
 pytest tests/unit/test_services/test_account_service.py -v
 ```
 
-**Running integration tests only:**
+**Run integration tests only:**
 ```bash
 pytest tests/integration/ -v
 ```
 
-**Generating coverage report (HTML):**
+**Generate an HTML coverage report:**
 ```bash
 pytest --cov=src --cov-report=html
 # Report at: htmlcov/index.html
 ```
 
-**Building Docker image:**
+Independently of the test suite:
+
+**Build the API Docker image:**
 ```bash
 docker build -t carddemo:latest .
 ```
 
-### G. Glossary
+**Inspect the Glue job configuration for a stage:**
+```bash
+cat infra/glue-job-configs/posttran.json
+```
+
+**Inspect the Step Functions state-machine definition:**
+```bash
+python3 -m json.tool src/batch/pipeline/step_functions_definition.json
+```
+
+### Appendix G. Glossary
 
 | Term | Definition |
 |------|-----------|
@@ -600,10 +666,13 @@ docker build -t carddemo:latest .
 | TDQ | Transient Data Queue — CICS message queue (→ AWS SQS) |
 | GDG | Generation Data Group — Versioned dataset generations (→ S3 versioned objects) |
 | COMP-3 | Packed decimal storage — COBOL numeric type (→ Python `decimal.Decimal`) |
-| SYNCPOINT | CICS transaction commit/rollback point (→ SQLAlchemy session context managers) |
+| SYNCPOINT | CICS transaction commit/rollback point (→ SQLAlchemy session context managers with rollback on exception) |
 | FILE STATUS | COBOL I/O result code (→ Python exception hierarchy) |
-| POSTTRAN | Daily transaction posting batch job (Stage 1 of 5-stage pipeline) |
+| POSTTRAN | Daily transaction posting batch job (Stage 1 of the 5-stage pipeline) |
 | INTCALC | Interest calculation batch job (Stage 2) |
 | COMBTRAN | Transaction combine/sort batch job (Stage 3 — DFSORT replacement) |
 | CREASTMT | Statement generation batch job (Stage 4a) |
-| TRANREPT | Transaction report batch job (Stage 4b — parallel with 4a) |
+| TRANREPT | Transaction report batch job (Stage 4b — runs in parallel with 4a) |
+| AIX | Alternate Index — VSAM secondary-key path (→ PostgreSQL B-tree index) |
+| CICS | Customer Information Control System — the transaction server that hosted the 18 online COBOL programs (→ AWS ECS Fargate + FastAPI) |
+| JCL | Job Control Language — the z/OS batch job descriptor (→ AWS Step Functions + Glue job configs) |
