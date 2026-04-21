@@ -312,7 +312,7 @@ class DailyTransaction(Base):
         its read patterns are full-scan within a single batch run.
     """
 
-    __tablename__ = "daily_transaction"
+    __tablename__ = "daily_transactions"
 
     # ------------------------------------------------------------------
     # Primary key: 16-character daily transaction ID

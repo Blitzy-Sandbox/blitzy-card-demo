@@ -93,9 +93,16 @@ repository at this checkpoint:
 - **11 SQLAlchemy ORM models** were created from the VSAM record layouts
   (`app/cpy/CVACT01Y.cpy`, `CVACT02Y.cpy`, `CVACT03Y.cpy`, `CVCUS01Y.cpy`,
   `CVTRA01Y.cpy`, `CVTRA02Y.cpy`, `CVTRA03Y.cpy`, `CVTRA04Y.cpy`,
-  `CVTRA05Y.cpy`, `CVTRA06Y.cpy`, `CSUSR01Y.cpy`). Monetary fields use
-  SQLAlchemy `Numeric(15, 2)` mapped to Python `decimal.Decimal` to preserve
-  COBOL `PIC S9(n)V99` precision.
+  `CVTRA05Y.cpy`, `CVTRA06Y.cpy`, `CSUSR01Y.cpy`). Monetary fields map
+  Python `decimal.Decimal` to DDL `NUMERIC(p, 2)` columns whose precision
+  matches the originating COBOL `PIC S9(n)V99` clause exactly
+  (`NUMERIC(12, 2)` for `PIC S9(10)V99` account balance/limit fields,
+  `NUMERIC(11, 2)` for `PIC S9(09)V99` transaction amounts, `NUMERIC(6, 2)`
+  for the `PIC S9(04)V99` disclosure interest rate). The ORM widens most
+  monetary attributes to `Numeric(15, 2)` for arithmetic headroom and
+  mirrors the DDL `Numeric(6, 2)` for `disclosure_group.int_rate`. See
+  [`docs/architecture.md`](architecture.md) §3.3 for the full per-field
+  precision table.
 - **Composite primary keys** (TransactionCategoryBalance, DisclosureGroup,
   TransactionCategory) are declared on the SQLAlchemy models exactly as in
   the COBOL copybooks.
@@ -189,7 +196,7 @@ described in [`docs/architecture.md`](architecture.md):
 | §0.5.1 `README.md` UPDATE | Setup, run, deploy, inventory | ✅ Updated to describe the Python/AWS stack; planned modules clearly annotated |
 | §0.7.1 Minimal change clause | Preserve existing COBOL source tree | ✅ `app/` retained unchanged |
 | §0.7.2 Security — Secrets Manager, IAM, BCrypt, JWT | Security configuration and dependencies in place | ✅ `requirements-api.txt` pins `passlib[bcrypt]` and `python-jose[cryptography]>=3.4.0,<4.0`; planned modules will wire them up |
-| §0.7.2 Financial precision (`decimal.Decimal` / `NUMERIC(15,2)`) | No float substitution anywhere | ✅ Verified in `src/shared/models/*.py` and `db/migrations/V1__schema.sql` |
+| §0.7.2 Financial precision (`decimal.Decimal` / `NUMERIC(p, 2)` matching COBOL `PIC S9(n)V99`) | No float substitution anywhere; DDL precision matches COBOL PIC | ✅ Verified in `src/shared/models/*.py` (Python `decimal.Decimal`, `Numeric(15, 2)` for most monetary fields, `Numeric(6, 2)` for interest rate) and `db/migrations/V1__schema.sql` (`NUMERIC(12, 2)` for `PIC S9(10)V99`, `NUMERIC(11, 2)` for `PIC S9(09)V99`, `NUMERIC(6, 2)` for `PIC S9(04)V99`) |
 | §0.7.2 Automated testing as much as possible | pytest framework configured | 🏗 Pending — `pyproject.toml` configured; test modules not yet written |
 
 ---
@@ -280,7 +287,7 @@ deployed to S3 by the `deploy-glue.yml` workflow.
 |-----------------|----------------------|----------|
 | 11 Aurora PostgreSQL tables replacing 10 VSAM + 3 AIX | ✅ | `db/migrations/V1__schema.sql` defines all 11 tables; `V2__indexes.sql` defines 3 B-tree indexes |
 | 636 seed rows loaded from 9 ASCII fixture files | ✅ | `db/migrations/V3__seed_data.sql` — 50 accounts, 50 cards, 50 customers, 50 card_cross_references, 50 transaction_category_balances, 51 disclosure_groups, 18 transaction_categories, 7 transaction_types, 10 user_security, 300 daily_transactions |
-| `decimal.Decimal` across all monetary fields (no `float`) | ✅ | Verified in 11 SQLAlchemy models under `src/shared/models/` and 8 Pydantic schemas under `src/shared/schemas/`; database columns use `NUMERIC(15, 2)` |
+| `decimal.Decimal` across all monetary fields (no `float`) | ✅ | Verified in 11 SQLAlchemy models under `src/shared/models/` and 8 Pydantic schemas under `src/shared/schemas/`; database columns use `NUMERIC(12, 2)` for account fields (from `PIC S9(10)V99`), `NUMERIC(11, 2)` for transaction amounts (from `PIC S9(09)V99`), and `NUMERIC(6, 2)` for the disclosure interest rate (from `PIC S9(04)V99`) — matching each COBOL `PIC S9(n)V99` clause exactly |
 | SQLAlchemy composite primary keys on `TransactionCategoryBalance`, `DisclosureGroup`, `TransactionCategory` | ✅ | Verified in `src/shared/models/transaction_category_balance.py`, `disclosure_group.py`, `transaction_category.py` |
 | SQLAlchemy `version_id_col` optimistic concurrency on `Account`, `Card` (COACTUPC, COCRDUPC semantics) | ✅ | Declared in the respective model classes; the planned service modules will exercise these on update |
 | BCrypt password hashing (C-003) | ⏳ Dependency installed | `passlib[bcrypt]==1.7.4` and `bcrypt>=4.2,<5.0` pinned in `requirements-api.txt`; the auth service that uses them is planned |

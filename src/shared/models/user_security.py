@@ -32,7 +32,7 @@ COBOL to Python Field Mapping
 ================  ==============  ================  =======================
 COBOL Field       COBOL Type      Python Column     SQLAlchemy Type
 ================  ==============  ================  =======================
-SEC-USR-ID        ``PIC X(08)``   ``usr_id``        ``String(8)`` — PK
+SEC-USR-ID        ``PIC X(08)``   ``user_id``       ``String(8)`` — PK
 SEC-USR-FNAME     ``PIC X(20)``   ``first_name``    ``String(20)``
 SEC-USR-LNAME     ``PIC X(20)``   ``last_name``     ``String(20)``
 SEC-USR-PWD       ``PIC X(08)``†  ``password``      ``String(60)`` — BCrypt
@@ -105,13 +105,16 @@ class UserSecurity(Base):
 
     Attributes
     ----------
-    usr_id : str
+    user_id : str
         **Primary key.** 8-character user ID (from COBOL ``SEC-USR-ID``,
         ``PIC X(08)``). Used as the login identifier in the sign-on
         screen (``COSGN00.bms``) and as the logical audit key across the
         application. Preserved at the original COBOL width so that
         existing user records migrated from VSAM remain addressable with
-        their historical identifiers.
+        their historical identifiers. The Python attribute name matches
+        the SQL column name (``user_id``) defined in
+        ``db/migrations/V1__schema.sql`` — they are bound 1-to-1 by
+        SQLAlchemy's default column-name resolution.
     first_name : str
         Up to 20-character given name (from COBOL ``SEC-USR-FNAME``,
         ``PIC X(20)``). Displayed in the admin user-list screen
@@ -138,8 +141,16 @@ class UserSecurity(Base):
 
     # ------------------------------------------------------------------
     # Primary key: 8-character user ID (COBOL ``SEC-USR-ID`` PIC X(08))
+    #
+    # Attribute name ``user_id`` deliberately matches the SQL column name
+    # defined by ``CREATE TABLE user_security ... user_id CHAR(8) ...``
+    # in ``db/migrations/V1__schema.sql``. SQLAlchemy's default
+    # column-name resolution binds the Python attribute to a same-named
+    # column, so all SELECT / INSERT / UPDATE / DELETE statements emitted
+    # by the ORM reference ``user_security.user_id`` — exactly matching
+    # the DDL contract (V1) and the seed-data contract (V3).
     # ------------------------------------------------------------------
-    usr_id: Mapped[str] = mapped_column(
+    user_id: Mapped[str] = mapped_column(
         String(8),
         primary_key=True,
     )
@@ -207,12 +218,12 @@ class UserSecurity(Base):
         -------
         str
             Representation of the form
-            ``UserSecurity(usr_id='ADMIN001', first_name='ADMIN',
+            ``UserSecurity(user_id='ADMIN001', first_name='ADMIN',
             last_name='USER', usr_type='A')``.
         """
         return (
             f"UserSecurity("
-            f"usr_id={self.usr_id!r}, "
+            f"user_id={self.user_id!r}, "
             f"first_name={self.first_name!r}, "
             f"last_name={self.last_name!r}, "
             f"usr_type={self.usr_type!r}"

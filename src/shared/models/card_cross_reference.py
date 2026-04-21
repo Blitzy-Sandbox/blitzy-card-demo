@@ -242,7 +242,7 @@ class CardCrossReference(Base):
         docstring).
     """
 
-    __tablename__ = "card_cross_reference"
+    __tablename__ = "card_cross_references"
 
     # ------------------------------------------------------------------
     # Non-unique B-tree index on the owning account ID.

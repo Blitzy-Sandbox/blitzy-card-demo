@@ -396,7 +396,7 @@ class Transaction(Base):
         Defaults to empty string.
     """
 
-    __tablename__ = "transaction"
+    __tablename__ = "transactions"
 
     # ------------------------------------------------------------------
     # Table-level constraints and indexes

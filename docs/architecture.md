@@ -332,10 +332,27 @@ database-state evolution and are in place at this checkpoint.
 
 **Key engineering invariants**
 
-- All monetary fields are declared as `NUMERIC(15,2)` at the DDL layer and
-  `decimal.Decimal` at the ORM layer — preserving the semantics of COBOL
-  `PIC S9(n)V99` literally, with no intermediate floating-point
-  representation.
+- All monetary fields are declared in the DDL as `NUMERIC(p, 2)` where `p`
+  matches the precision of the originating COBOL `PIC S9(n)V99` clause
+  **exactly**, and as `decimal.Decimal` at the Python layer with no
+  intermediate floating-point representation. The concrete mapping is:
+
+  | COBOL `PIC` | DDL column (V1) | ORM attribute | Fields |
+  |---|---|---|---|
+  | `PIC S9(10)V99` | `NUMERIC(12, 2)` | `Numeric(15, 2)` † | `accounts.curr_bal`, `accounts.credit_limit`, `accounts.cash_credit_limit`, `accounts.curr_cyc_credit`, `accounts.curr_cyc_debit` |
+  | `PIC S9(09)V99` | `NUMERIC(11, 2)` | `Numeric(15, 2)` † | `transactions.amount`, `transaction_category_balances.balance`, `daily_transactions.amount` |
+  | `PIC S9(04)V99` | `NUMERIC(6, 2)`  | `Numeric(6, 2)`    | `disclosure_groups.int_rate` |
+
+  † The ORM intentionally widens most monetary columns to `Numeric(15, 2)`
+  to simplify Python-side arithmetic (addition, multiplication, scaled
+  division) without risk of overflow at the Python layer; because
+  `Numeric(15, 2) ≥ NUMERIC(12, 2) ≥ NUMERIC(11, 2)` at all values, the
+  widening is safe in both directions (SELECTs cannot overflow,
+  INSERTs/UPDATEs are validated by PostgreSQL against the tighter DDL
+  precision). `disclosure_groups.int_rate` is the exception: the ORM
+  mirrors the DDL precision `Numeric(6, 2)` because interest rates are
+  rate values, not running balances, and no arithmetic widening is
+  needed.
 - Composite primary keys replicate the original VSAM composite-key
   structure for `transaction_category_balances`, `disclosure_groups`, and
   `transaction_categories`.
@@ -382,7 +399,7 @@ database-state evolution and are in place at this checkpoint.
 | DISCGRP | `CVTRA02Y.cpy` | `disclosure_groups` | (`group_id`, `type`, `code`) |
 | TRANTYPE | `CVTRA03Y.cpy` | `transaction_types` | `type_code` (2-char) |
 | TRANCATG | `CVTRA04Y.cpy` | `transaction_categories` | (`type_code`, `cat_code`) |
-| USRSEC | `CSUSR01Y.cpy` | `user_security` | `usr_id` (8-char) |
+| USRSEC | `CSUSR01Y.cpy` | `user_security` | `user_id` (8-char) |
 
 **Alternate index paths preserved via B-tree indexes**
 
@@ -411,8 +428,16 @@ application. This module is **fully implemented at this checkpoint**.
 **Key invariants enforced by the shared module**
 
 - Every monetary field uses `decimal.Decimal` at the Python layer and maps
-  to `NUMERIC(15,2)` at the database layer — with no intermediate
-  floating-point representation.
+  to a DDL column whose `NUMERIC(p, 2)` precision matches the originating
+  COBOL `PIC S9(n)V99` clause (`NUMERIC(12, 2)` for `PIC S9(10)V99` account
+  fields, `NUMERIC(11, 2)` for `PIC S9(09)V99` transaction amounts,
+  `NUMERIC(6, 2)` for the `PIC S9(04)V99` disclosure interest rate) — with
+  no intermediate floating-point representation. The ORM widens most
+  monetary attributes to `Numeric(15, 2)` to give Python-side arithmetic
+  extra headroom while preserving bit-exact round-trips against the tighter
+  DDL precision; `disclosure_groups.int_rate` keeps the narrower
+  `Numeric(6, 2)` to mirror the DDL exactly. See §3.3 for the full
+  per-field table.
 - Every ORM model includes the provenance comment referencing its source
   copybook so the migration trail is traceable in-code.
 - Every Pydantic schema has validators that mirror the COBOL

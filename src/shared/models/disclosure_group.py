@@ -209,7 +209,7 @@ class DisclosureGroup(Base):
         to ``Decimal("0.00")`` for safe fallback semantics.
     """
 
-    __tablename__ = "disclosure_group"
+    __tablename__ = "disclosure_groups"
 
     # ------------------------------------------------------------------
     # Primary key part 1 of 3: account-group identifier

@@ -279,7 +279,7 @@ class TransactionCategoryBalance(Base):
         combination is first written by the POSTTRAN job.
     """
 
-    __tablename__ = "transaction_category_balance"
+    __tablename__ = "transaction_category_balances"
 
     # ------------------------------------------------------------------
     # Primary key part 1 of 3: account identifier

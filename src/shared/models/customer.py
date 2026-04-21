@@ -252,7 +252,7 @@ class Customer(Base):
         credit-tier reporting.
     """
 
-    __tablename__ = "customer"
+    __tablename__ = "customers"
 
     # ------------------------------------------------------------------
     # Primary key: 9-digit customer ID (COBOL ``CUST-ID`` PIC 9(09))

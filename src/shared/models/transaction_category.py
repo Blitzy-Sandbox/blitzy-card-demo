@@ -219,7 +219,7 @@ class TransactionCategory(Base):
         (``TRANREPT``).
     """
 
-    __tablename__ = "transaction_category"
+    __tablename__ = "transaction_categories"
 
     # ------------------------------------------------------------------
     # Primary key part 1 of 2: transaction-type code

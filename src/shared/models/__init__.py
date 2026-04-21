@@ -138,11 +138,19 @@ def load_all_models() -> MetaData:
     -------
     sqlalchemy.MetaData
         The :attr:`Base.metadata` instance, after registration of all
-        11 entity tables: ``account``, ``card``, ``card_cross_reference``,
-        ``customer``, ``daily_transaction``, ``disclosure_group``,
-        ``transaction``, ``transaction_category``,
-        ``transaction_category_balance``, ``transaction_type``,
-        ``user_security``.
+        11 entity tables: ``accounts``, ``cards``, ``card_cross_references``,
+        ``customers``, ``daily_transactions``, ``disclosure_groups``,
+        ``transactions``, ``transaction_categories``,
+        ``transaction_category_balances``, ``transaction_types``,
+        ``user_security``. Plural table names match the Aurora
+        PostgreSQL DDL defined in ``db/migrations/V1__schema.sql``;
+        ``user_security`` is the lone singular table because its name
+        is an invariant noun phrase (a security *record type*, not a
+        collection of "securities"). Python module filenames remain
+        singular (e.g., ``account.py``) because each file defines a
+        single entity class — this follows the Python filename
+        convention for entities and is independent of the SQL table
+        name contract.
 
     Examples
     --------

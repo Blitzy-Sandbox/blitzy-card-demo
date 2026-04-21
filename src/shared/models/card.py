@@ -264,7 +264,7 @@ class Card(Base):
         must be maintained".
     """
 
-    __tablename__ = "card"
+    __tablename__ = "cards"
 
     # ------------------------------------------------------------------
     # Non-unique B-tree index on the owning account ID.

@@ -135,7 +135,7 @@ class TransactionType(Base):
         (``CREASTMT``) and transaction reports (``TRANREPT``).
     """
 
-    __tablename__ = "transaction_type"
+    __tablename__ = "transaction_types"
 
     # ------------------------------------------------------------------
     # Primary key: 2-character transaction-type code

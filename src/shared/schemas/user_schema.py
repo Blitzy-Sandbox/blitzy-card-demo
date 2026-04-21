@@ -242,7 +242,7 @@ class UserListRequest(BaseModel):
         therefore preserve ``None`` as-is and only enforce the length
         ceiling when a value is supplied. The value is NOT stripped:
         the service layer compares against the fixed-width
-        ``user_security.usr_id`` column and incidental leading/trailing
+        ``user_security.user_id`` column and incidental leading/trailing
         whitespace carries meaning when the user_id is right-padded
         with spaces from the COBOL era.
         """
@@ -296,7 +296,7 @@ class UserListItem(BaseModel):
         ...,
         max_length=_USER_ID_MAX_LEN,
         description=(
-            "User ID — maps to COUSR00 USRID0nI PIC X(08) and to SEC-USR-ID in CSUSR01Y.cpy / user_security.usr_id."
+            "User ID — maps to COUSR00 USRID0nI PIC X(08) and to SEC-USR-ID in CSUSR01Y.cpy / user_security.user_id."
         ),
     )
     first_name: str = Field(
@@ -417,7 +417,7 @@ class UserCreateRequest(BaseModel):
         New user ID. Max 8 characters (COBOL ``USERIDI`` ``PIC X(08)``).
         Must be non-empty. Becomes the primary key of the
         ``user_security`` row. The service layer rejects duplicates at
-        the database layer (unique constraint on ``usr_id``).
+        the database layer (unique constraint on ``user_id``).
     first_name : str
         First name. Max 20 characters (``FNAMEI`` ``PIC X(20)``).
     last_name : str
@@ -478,7 +478,7 @@ class UserCreateRequest(BaseModel):
         the Add attempt with a "Please enter User ID..." message (from
         ``CSMSG01Y.cpy``) when ``USERIDI`` was blank or zero-length.
         Preserves the original value (no strip) — the service layer
-        compares against the fixed-width ``user_security.usr_id`` key.
+        compares against the fixed-width ``user_security.user_id`` key.
         """
         if value is None:
             raise ValueError("user_id must not be null")
@@ -568,7 +568,7 @@ class UserCreateResponse(BaseModel):
     user_id: str = Field(
         ...,
         max_length=_USER_ID_MAX_LEN,
-        description=("Created user's ID — echoes COUSR01 USERIDI PIC X(08) (persisted as user_security.usr_id)."),
+        description=("Created user's ID — echoes COUSR01 USERIDI PIC X(08) (persisted as user_security.user_id)."),
     )
     first_name: str = Field(
         ...,

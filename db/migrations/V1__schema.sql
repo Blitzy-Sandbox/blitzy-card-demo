@@ -123,6 +123,14 @@ CREATE TABLE accounts (
     acct_curr_cyc_debit     NUMERIC(12,2) NOT NULL DEFAULT 0,       -- ACCT-CURR-CYC-DEBIT    PIC S9(10)V99
     acct_addr_zip           VARCHAR(10),                            -- ACCT-ADDR-ZIP          PIC X(10)
     acct_group_id           CHAR(10),                               -- ACCT-GROUP-ID          PIC X(10)  links to disclosure_groups
+    -- SQLAlchemy optimistic-concurrency column backing the Account ORM model's
+    -- __mapper_args__ = {"version_id_col": version_id}.  F-005 Account Update
+    -- (COACTUPC) depends on this column to implement the CICS READ UPDATE /
+    -- REWRITE SYNCPOINT ROLLBACK semantics in Aurora PostgreSQL: SQLAlchemy
+    -- issues UPDATE ... WHERE acct_id = :id AND version_id = :expected and
+    -- increments version_id on every commit.  DEFAULT 0 keeps V3 seed data
+    -- (which does not set this column explicitly) compatible with fresh loads.
+    version_id              INTEGER       NOT NULL DEFAULT 0,       -- SQLAlchemy version_id_col (F-005 optimistic concurrency)
     PRIMARY KEY (acct_id)
 );
 
@@ -195,6 +203,14 @@ CREATE TABLE cards (
     card_embossed_name    VARCHAR(50),                          -- CARD-EMBOSSED-NAME   PIC X(50)
     card_expiration_date  VARCHAR(10),                          -- CARD-EXPIRAION-DATE  PIC X(10)  YYYY-MM-DD (typo normalised)
     card_active_status    CHAR(1)     NOT NULL DEFAULT 'Y',     -- CARD-ACTIVE-STATUS   PIC X(01)
+    -- SQLAlchemy optimistic-concurrency column backing the Card ORM model's
+    -- __mapper_args__ = {"version_id_col": version_id}.  F-008 Card Update
+    -- (COCRDUPC) depends on this column to implement the CICS READ UPDATE /
+    -- REWRITE optimistic-concurrency check in Aurora PostgreSQL: SQLAlchemy
+    -- issues UPDATE ... WHERE card_num = :id AND version_id = :expected and
+    -- increments version_id on every commit.  DEFAULT 0 keeps V3 seed data
+    -- (which does not set this column explicitly) compatible with fresh loads.
+    version_id            INTEGER     NOT NULL DEFAULT 0,       -- SQLAlchemy version_id_col (F-008 optimistic concurrency)
     PRIMARY KEY (card_num)
 );
 

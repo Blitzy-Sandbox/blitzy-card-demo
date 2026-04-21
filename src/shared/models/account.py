@@ -281,7 +281,7 @@ class Account(Base):
         mismatch. See AAP §0.7.1 (Account Update must be atomic).
     """
 
-    __tablename__ = "account"
+    __tablename__ = "accounts"
 
     # ------------------------------------------------------------------
     # Primary key: 11-character zero-padded account ID
