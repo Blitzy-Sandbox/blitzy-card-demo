@@ -1,0 +1,1865 @@
+# ============================================================================
+# CardDemo - Unit tests for CardService (Mainframe-to-Cloud migration)
+# ============================================================================
+# Source:
+#   * app/cbl/COCRDLIC.cbl     - CICS card list program (transaction
+#                                CCLI, Feature F-006, ~1,459 lines).
+#                                Browse-mode card lookup 7 rows/page via
+#                                STARTBR / READNEXT on CARDDAT-FILE with
+#                                OCCURS 7 TIMES screen array
+#                                (COCRDLI.CPY symbolic map).
+#   * app/cbl/COCRDSLC.cbl     - CICS card detail program (transaction
+#                                CCDL, Feature F-007, ~887 lines). Keyed
+#                                READ on CARDDAT-FILE by CARD-NUM with
+#                                NOTFND / DFHRESP("NORMAL") outcome
+#                                reporting.
+#   * app/cbl/COCRDUPC.cbl     - CICS card update program (transaction
+#                                CCUP, Feature F-008, ~1,560 lines).
+#                                Optimistic-concurrency READ UPDATE /
+#                                REWRITE pattern with
+#                                DATA-WAS-CHANGED-BEFORE-UPDATE detection.
+#   * app/cpy/CVACT02Y.cpy     - CARD-RECORD (150-byte VSAM KSDS layout):
+#                                CARD-NUM            PIC X(16),
+#                                CARD-ACCT-ID        PIC 9(11),
+#                                CARD-CVV-CD         PIC 9(03),
+#                                CARD-EMBOSSED-NAME  PIC X(50),
+#                                CARD-EXPIRAION-DATE PIC X(10),
+#                                CARD-ACTIVE-STATUS  PIC X(01),
+#                                FILLER              PIC X(59).
+#   * app/cpy/CVACT03Y.cpy     - CARD-XREF-RECORD (50-byte VSAM KSDS
+#                                layout used for account-based card
+#                                filtering):
+#                                XREF-CARD-NUM PIC X(16),
+#                                XREF-CUST-ID  PIC 9(09),
+#                                XREF-ACCT-ID  PIC 9(11).
+# ----------------------------------------------------------------------------
+# Features F-006 (Card List), F-007 (Card Detail), and F-008 (Card Update).
+# Target implementation under test:
+# src/api/services/card_service.py (CardService class).
+#
+# The COBOL-exact error messages are preserved byte-for-byte per AAP Section
+# 0.7.1 "Preserve exact error messages from COBOL" -- each one tracked below
+# is asserted verbatim (including trailing ellipsis of three periods):
+#
+#   * 'NO RECORDS FOUND FOR THIS SEARCH CONDITION.'        (list empty)
+#   * 'NO MORE RECORDS TO SHOW'                            (list past end)
+#   * 'Unable to lookup cards...'                          (list DB error)
+#   * 'Did not find cards for this search condition'       (detail/update
+#                                                           not found)
+#   * 'Error reading Card Data File'                       (detail error)
+#   * 'Changes committed to database'                      (update success)
+#   * 'Record changed by some one else. Please review'     (stale-data)
+#   * 'Update of record failed'                            (update other)
+# ----------------------------------------------------------------------------
+# CRITICAL PARITY INVARIANTS (AAP Section 0.7.1):
+#   * Page size is 7 (NOT 10) -- from COCRDLI.CPY OCCURS 7 TIMES (CRDSEL1..
+#     CRDSEL7, ACCTNO1..ACCTNO7, CRDNUM1..CRDNUM7, CRDSTS1..CRDSTS7). This
+#     MUST be preserved exactly; the Card list page size differs from the
+#     Transaction list page size (10, from COTRN00.CPY) because the 3270
+#     terminal layout allocated different row budgets to each.
+#   * Optimistic-concurrency check uses SQLAlchemy's ``version_id_col``
+#     (``Card.version_id``) which raises :class:`StaleDataError` on the
+#     second concurrent update. This replaces the COBOL
+#     DATA-WAS-CHANGED-BEFORE-UPDATE check via CARD-RECORD-BEFORE-UPDATE
+#     compared against the fresh READ result in COCRDUPC.cbl.
+#   * Card number is always exactly 16 characters (CVACT02Y.cpy CARD-NUM
+#     PIC X(16)); account ID is always exactly 11 characters (CARD-ACCT-ID
+#     PIC 9(11)). These widths are asserted in field-length validation
+#     tests to catch any width drift between the COBOL source and the
+#     SQLAlchemy model / Pydantic schema layers.
+# ----------------------------------------------------------------------------
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ============================================================================
+"""Unit tests for :class:`CardService`.
+
+Validates the three card operations converted from
+``app/cbl/COCRDLIC.cbl`` (Feature F-006 -- paginated list, 7 rows/page),
+``app/cbl/COCRDSLC.cbl`` (Feature F-007 -- keyed detail read), and
+``app/cbl/COCRDUPC.cbl`` (Feature F-008 -- optimistic-concurrency
+update). Field widths and error-message strings are asserted verbatim
+against the COBOL source per AAP Section 0.7.1 "Preserve all existing
+functionality exactly as-is".
+
+COBOL -> Python Verification Surface
+------------------------------------
+==============================================================  =======================================================
+COBOL paragraph / statement                                     Python test (this module)
+==============================================================  =======================================================
+COCRDLIC 2100-PROCESS-ENTER-KEY (paginated browse, 7/page)      ``test_list_cards_default_page_size_7``
+COCRDLIC page offset / pagination                               ``test_list_cards_pagination_offset``
+COCRDLIC 2210-EDIT-ACCOUNT filter                               ``test_list_cards_filter_by_account_id``
+COCRDLIC STARTBR / READNEXT NOTFND (no rows)                    ``test_list_cards_empty_result``
+COCRDLIC execute() OTHER failure branch                         ``test_list_cards_db_error_returns_empty_message``
+COCRDLIC 9000-READ-FORWARD (STARTBR GTEQ + READNEXT)            ``test_list_cards_forward_paging``
+COCRDLIC 9100-READ-BACKWARDS (STARTBR + READPREV)               ``test_list_cards_backward_paging``
+COCRDSLC 9000-READ-DATA (EXEC CICS READ CARDDAT RIDFLD)         ``test_get_card_detail_success``
+COCRDSLC DFHRESP(NOTFND) branch                                 ``test_get_card_detail_not_found``
+COCRDUPC 9200-WRITE-PROCESSING (READ UPDATE + REWRITE)          ``test_update_card_success``
+COCRDUPC DATA-WAS-CHANGED-BEFORE-UPDATE (stale record)          ``test_update_card_optimistic_concurrency_conflict``
+COCRDUPC DFHRESP(NOTFND) on READ UPDATE                         ``test_update_card_not_found``
+CVACT02Y.cpy CARD-NUM PIC X(16) width invariant                 ``test_update_card_validation_card_number_length``
+CVACT02Y.cpy CARD-ACTIVE-STATUS PIC X(01) width invariant       ``test_update_card_validation_status_code``
+CVACT02Y.cpy CARD-EXPIRAION-DATE PIC X(10) format invariant     ``test_update_card_validation_expiry_date``
+==============================================================  =======================================================
+
+Test Design
+-----------
+* **Mocked database**: All tests use ``AsyncMock(spec=AsyncSession)``
+  rather than a real database, so the test suite runs in milliseconds
+  with no PostgreSQL dependency. The mock replicates the SQLAlchemy 2.x
+  async contract -- ``execute()`` / ``get()`` / ``flush()`` / ``commit()``
+  / ``rollback()`` are async, while Result accessor methods
+  (``scalar_one``, ``scalars``) are synchronous -- matching the distinct
+  query patterns each service method issues:
+
+    * :meth:`CardService.list_cards`: 2 execute calls in strict order
+      (count via ``result.scalar_one()``; page via
+      ``result.scalars().all()``). Note the ORDER differs from
+      TransactionService which does page-first, count-second -- card
+      service does count-first, page-second. See
+      :func:`_make_list_execute_side_effect` for the ordering contract.
+    * :meth:`CardService.list_cards_forward` /
+      :meth:`CardService.list_cards_backward`: 1 execute call each
+      (keyset-based cursor pagination), consumed via
+      ``result.scalars().all()``.
+    * :meth:`CardService.get_card_detail`: uses
+      :meth:`AsyncSession.get` for a PK-by-value lookup (NOT
+      ``execute``). The mock is configured with ``session.get`` as an
+      :class:`AsyncMock` that returns either a Card instance or None.
+    * :meth:`CardService.update_card`: uses ``session.get`` for the
+      initial read, then ``session.flush()`` and ``session.commit()``
+      for the write. The optimistic-concurrency ``StaleDataError`` is
+      raised from ``flush()`` (SQLAlchemy's behavior when UPDATE returns
+      0 affected rows due to version_id mismatch).
+
+* **Preserved COBOL error literals**: Every test that exercises an
+  error branch asserts the exact COBOL-source message text as a literal
+  string. The tests duplicate the literals locally (not imported from
+  ``card_service.py``) so that drift between the service constants and
+  the COBOL source will be caught rather than silently propagated.
+
+* **Page-size invariant is FIRST test**: The very first list-test
+  (:func:`test_list_cards_default_page_size_7`) asserts the page size
+  is 7 (not 10). This is the most load-bearing parity check in the
+  module -- the COBOL BMS screen COCRDLI.bms has exactly 7 screen-row
+  groups, and changing the API's page size would silently corrupt
+  every downstream BMS-compatible client.
+
+* **Optimistic-concurrency invariant**: The update-conflict test
+  simulates the :class:`StaleDataError` that SQLAlchemy raises when a
+  concurrent modification is detected via the version_id column. The
+  test asserts that the service:
+    1. Does NOT commit (the flush fails before commit is attempted).
+    2. Calls ``rollback`` on the session.
+    3. Returns a response with the COBOL-exact error message
+       'Record changed by some one else. Please review'.
+
+See Also
+--------
+* ``src/api/services/card_service.py``  -- The service under test.
+* ``src/shared/models/card.py``         -- Card ORM model (from
+                                           CVACT02Y.cpy).
+* ``src/shared/schemas/card_schema.py`` -- Pydantic request / response
+                                           schemas.
+* AAP Section 0.7.1 -- Refactoring-Specific Rules (preserve exact COBOL
+                       error messages; optimistic-concurrency fidelity).
+* AAP Section 0.7.2 -- Testing Requirements (unit tests for all
+                       business logic; mock AWS services).
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.exc import StaleDataError
+
+from src.api.services.card_service import CardService
+from src.shared.models.card import Card
+from src.shared.schemas.card_schema import (
+    CardDetailResponse,
+    CardListRequest,
+    CardListResponse,
+    CardUpdateRequest,
+    CardUpdateResponse,
+)
+
+# ============================================================================
+# Module-level test constants.
+# ============================================================================
+#
+# These constants encode the COBOL-exact wire values from
+# app/cbl/COCRDLIC.cbl, app/cbl/COCRDSLC.cbl, app/cbl/COCRDUPC.cbl, and
+# the VSAM-record copybook app/cpy/CVACT02Y.cpy. They are defined
+# locally in this test module (not imported from card_service.py or
+# card_schema.py) so that the tests verify the wire values
+# independently of the service / schema implementations -- any drift
+# between the COBOL source and the Python constants will be caught by
+# the tests rather than silently propagated.
+# ============================================================================
+
+#: 16-character test card number (PAN). Matches the COBOL
+#: ``CARD-NUM PIC X(16)`` width from CVACT02Y.cpy. Uses a synthetic
+#: test-only PAN with Visa prefix (no Luhn verification at this layer).
+_TEST_CARD_NUM: str = "4111111111111111"
+
+#: Alternate 16-character card number used in multi-row fixtures.
+#: Same length and numeric format as ``_TEST_CARD_NUM`` but distinct
+#: so that sample cards have unique primary keys.
+_TEST_CARD_NUM_ALT: str = "5555555555554444"
+
+#: 11-character zero-padded test account ID. Matches the COBOL
+#: ``CARD-ACCT-ID PIC 9(11)`` width from CVACT02Y.cpy. The model
+#: column is ``String(11)`` (not ``Integer``) to preserve leading zeros.
+_TEST_ACCT_ID: str = "00000000001"
+
+#: Alternate 11-character test account ID -- used in account-filter
+#: tests where a card belongs to an account different from
+#: ``_TEST_ACCT_ID``.
+_TEST_ACCT_ID_ALT: str = "00000000099"
+
+#: Width of the ``card_num`` primary-key column -- matches COBOL
+#: ``CARD-NUM PIC X(16)`` and the model ``Card.card_num String(16)``
+#: column. Card numbers are always EXACTLY this width (not <=).
+_EXPECTED_CARD_NUM_WIDTH: int = 16
+
+#: Width of the ``acct_id`` foreign-key column -- matches COBOL
+#: ``CARD-ACCT-ID PIC 9(11)`` and the model ``Card.acct_id String(11)``
+#: column. Account IDs are always EXACTLY this width.
+_EXPECTED_ACCT_ID_WIDTH: int = 11
+
+#: Width of the ``cvv_cd`` column -- matches COBOL
+#: ``CARD-CVV-CD PIC 9(03)`` and the model ``Card.cvv_cd String(3)``
+#: column. Exactly 3 digits. Never emitted in API responses (PCI-DSS).
+_EXPECTED_CVV_WIDTH: int = 3
+
+#: Max width of the ``embossed_name`` column -- matches COBOL
+#: ``CARD-EMBOSSED-NAME PIC X(50)`` and ``Card.embossed_name
+#: String(50)``. Up to 50 chars (VARCHAR(50)), space-padded on the
+#: mainframe but Python stores the value as-is.
+_EXPECTED_EMBOSSED_NAME_MAX_WIDTH: int = 50
+
+#: Width of the ``expiration_date`` column -- matches COBOL
+#: ``CARD-EXPIRAION-DATE PIC X(10)`` (note the typo in the COBOL
+#: copybook is preserved) and ``Card.expiration_date String(10)``.
+#: Format is ``YYYY-MM-DD``.
+_EXPECTED_EXPIRATION_DATE_WIDTH: int = 10
+
+#: Width of the ``active_status`` column -- matches COBOL
+#: ``CARD-ACTIVE-STATUS PIC X(01)`` and ``Card.active_status
+#: String(1)``. Exactly 1 char: ``'Y'`` (active) or ``'N'`` (inactive).
+_EXPECTED_STATUS_WIDTH: int = 1
+
+#: Default card list page size. Mirrors the COBOL ``OCCURS 7 TIMES``
+#: screen array in ``COCRDLI.CPY`` (symbolic map) and the ``_PAGE_SIZE``
+#: constant in ``card_service.py`` / ``card_schema.py``.
+#:
+#: CRITICAL: This MUST be 7 (not 10). The 3270 terminal layout for the
+#: Card List BMS screen allocated exactly 7 rows for card records.
+#: Transaction list uses 10 rows (COTRN00.CPY) because its screen
+#: layout was different -- do NOT conflate the two.
+_DEFAULT_PAGE_SIZE: int = 7
+
+# ----------------------------------------------------------------------------
+# COBOL-exact error-message literals. Each one is asserted byte-for-byte
+# (including trailing ellipsis) in the corresponding error-branch test.
+# These must match the values in ``src/api/services/card_service.py``
+# EXACTLY -- the test declarations here serve as the COBOL source of
+# truth and any drift will be caught by the test suite.
+# ----------------------------------------------------------------------------
+
+#: COBOL list empty-result message -- from ``COCRDLIC.cbl``
+#: ``WS-NO-RECORDS-FOUND`` text. Emitted when the filter produces zero
+#: matches (total_count == 0). Length: 43 chars (fits in 45-char
+#: INFOMSGI field on COCRDLI.CPY).
+_MSG_LIST_NO_RECORDS: str = "NO RECORDS FOUND FOR THIS SEARCH CONDITION."
+
+#: COBOL list past-end message -- from ``COCRDLIC.cbl``
+#: ``WS-NO-MORE-RECORDS`` text. Emitted when the user has paged beyond
+#: the last page of results (e.g. page 3 of a 2-page result set).
+_MSG_LIST_NO_MORE_RECORDS: str = "NO MORE RECORDS TO SHOW"
+
+#: COBOL list lookup-failure message -- from ``COCRDLIC.cbl``
+#: DFHRESP(OTHER) branch. Emitted on any SQLAlchemy / driver-level
+#: error during the list queries. Length: 25 chars.
+_MSG_LIST_LOOKUP_ERROR: str = "Unable to lookup cards..."
+
+#: COBOL detail not-found message -- from ``COCRDSLC.cbl``
+#: DFHRESP(NOTFND) branch. Also reused by the update-not-found and
+#: update-mismatch error paths. Length: 44 chars.
+_MSG_DETAIL_NOT_FOUND: str = "Did not find cards for this search condition"
+
+#: COBOL detail lookup-failure message -- from ``COCRDSLC.cbl``
+#: DFHRESP(OTHER) branch. Emitted on driver-level errors during the
+#: detail PK lookup. Length: 28 chars.
+_MSG_DETAIL_LOOKUP_ERROR: str = "Error reading Card Data File"
+
+#: COBOL update-success message -- from ``COCRDUPC.cbl``
+#: ``CONFIRM-UPDATE-SUCCESS`` text. Emitted on successful commit
+#: (after flush + commit both succeed). Length: 29 chars.
+_MSG_UPDATE_SUCCESS: str = "Changes committed to database"
+
+#: COBOL update optimistic-concurrency-conflict message -- from
+#: ``COCRDUPC.cbl`` ``DATA-WAS-CHANGED-BEFORE-UPDATE`` text. Emitted
+#: when the version_id check fails during flush (SQLAlchemy raises
+#: StaleDataError). Length: 46 chars.
+_MSG_UPDATE_STALE: str = "Record changed by some one else. Please review"
+
+#: COBOL update generic-failure message -- from ``COCRDUPC.cbl``
+#: ``LOCKED-BUT-UPDATE-FAILED`` text. Emitted when the flush fails
+#: with a non-StaleDataError exception (driver error, constraint
+#: violation, etc.). Length: 23 chars.
+_MSG_UPDATE_FAILED: str = "Update of record failed"
+
+
+# ============================================================================
+# Phase 2: Test Fixtures
+# ============================================================================
+#
+# Fixtures are kept module-local (not moved to a shared conftest.py) so
+# that this test file is self-contained and the AAP "isolate new
+# implementations in dedicated files/modules" rule (Section 0.7.1) is
+# honored. The test-services package __init__.py explicitly permits
+# this pattern.
+# ============================================================================
+
+
+@pytest.fixture
+def mock_db_session() -> AsyncMock:
+    """Create a mocked :class:`~sqlalchemy.ext.asyncio.AsyncSession`.
+
+    Replaces the real database connection that :class:`CardService`
+    uses to issue the different query patterns for each of its methods
+    under test:
+
+    * :meth:`CardService.list_cards` -- issues TWO queries via
+      ``self.db.execute`` in strict order:
+
+        1. ``SELECT COUNT(*) FROM cards [WHERE filters]``
+           -- consumed via ``result.scalar_one()``.
+        2. ``SELECT Card [WHERE filters] ORDER BY card_num LIMIT 7
+           OFFSET :offset``
+           -- consumed via ``result.scalars().all()``.
+
+      Note this ORDER DIFFERS from TransactionService (which does page
+      first, count second). Do NOT reorder without updating the
+      service. See :func:`_make_list_execute_side_effect` for the
+      per-test helper that emits mock results in the correct order.
+
+    * :meth:`CardService.list_cards_forward` -- issues ONE query via
+      ``self.db.execute``:
+
+        * ``SELECT Card WHERE card_num > :last_card_num ORDER BY
+          card_num ASC LIMIT 7`` -- consumed via
+          ``result.scalars().all()``.
+
+    * :meth:`CardService.list_cards_backward` -- issues ONE query via
+      ``self.db.execute``:
+
+        * ``SELECT Card WHERE card_num < :first_card_num ORDER BY
+          card_num DESC LIMIT 7`` -- consumed via
+          ``result.scalars().all()`` (then reversed in Python).
+
+    * :meth:`CardService.get_card_detail` -- uses ``self.db.get(Card,
+      card_num)`` for the PK lookup (NOT ``execute``). The mock is
+      configured with ``session.get`` as an :class:`AsyncMock` whose
+      ``return_value`` is overridden per-test to simulate either a
+      Card hit or a None miss.
+
+    * :meth:`CardService.update_card` -- uses ``session.get`` for the
+      initial read, then ``session.flush()`` and ``session.commit()``
+      for the write. The mock's ``flush`` can be configured with a
+      ``side_effect=StaleDataError(...)`` to simulate the
+      optimistic-concurrency conflict.
+
+    The mock is configured with:
+
+    * ``execute`` as an :class:`AsyncMock` (matching SQLAlchemy 2.x's
+      async ``execute`` contract). Individual tests override its
+      ``side_effect`` with a list of query-result mocks via
+      :func:`_make_list_execute_side_effect` for the list methods.
+    * ``get`` as an :class:`AsyncMock` (async in 2.x). Tests override
+      its ``return_value`` to supply a Card or None.
+    * ``flush`` / ``commit`` / ``rollback`` as :class:`AsyncMock`
+      instances (all async in 2.x). The rollback mock is the critical
+      assertion target for the error-path tests where the COBOL
+      service requires an explicit rollback.
+
+    Returns
+    -------
+    AsyncMock
+        A mock ``AsyncSession`` preconfigured with async ``execute`` /
+        ``get`` / ``flush`` / ``commit`` / ``rollback`` methods. The
+        default ``execute`` ``return_value`` is a result whose
+        accessors all return neutral empty values -- individual tests
+        override via ``side_effect`` for the method-specific query
+        sequences. The default ``get`` returns ``None`` (card not
+        found); tests override via ``return_value``.
+    """
+    session = AsyncMock(spec=AsyncSession)
+
+    # Default result: all accessors return neutral empty values.
+    # Individual tests override via session.execute.side_effect to
+    # provide a per-query sequence (see _make_list_execute_side_effect
+    # below).
+    default_result = MagicMock()
+    default_result.scalar_one_or_none = MagicMock(return_value=None)
+    default_result.scalar_one = MagicMock(return_value=0)
+    default_result.scalar = MagicMock(return_value=None)
+    default_scalars = MagicMock()
+    default_scalars.all = MagicMock(return_value=[])
+    default_scalars.first = MagicMock(return_value=None)
+    default_result.scalars = MagicMock(return_value=default_scalars)
+
+    session.execute = AsyncMock(return_value=default_result)
+    session.get = AsyncMock(return_value=None)  # async PK lookup (get_card_detail / update_card)
+    session.flush = AsyncMock(return_value=None)
+    session.commit = AsyncMock(return_value=None)
+    session.rollback = AsyncMock(return_value=None)
+
+    return session
+
+
+@pytest.fixture
+def card_service(mock_db_session: AsyncMock) -> CardService:
+    """Instantiate :class:`CardService` with the mocked session.
+
+    :class:`CardService`'s constructor takes a single ``db`` parameter
+    (``AsyncSession``) and stores it on ``self.db``. The service
+    intentionally has no other state, so this fixture produces a fresh
+    service for each test with a mock session that the test can
+    further configure.
+
+    Parameters
+    ----------
+    mock_db_session : AsyncMock
+        The mocked session produced by :func:`mock_db_session`.
+
+    Returns
+    -------
+    CardService
+        A fresh service instance wired to the mocked session.
+    """
+    return CardService(db=mock_db_session)
+
+
+@pytest.fixture
+def sample_card() -> Card:
+    """Build a sample :class:`Card` row with COBOL-compatible fields.
+
+    Maps each field to its COBOL copybook counterpart
+    (``app/cpy/CVACT02Y.cpy``):
+
+    ===================  ====================  =====================================
+    COBOL Field          ORM Attribute         Test Value
+    ===================  ====================  =====================================
+    CARD-NUM             card_num              ``"4111111111111111"`` (16 chars)
+    CARD-ACCT-ID         acct_id               ``"00000000001"`` (11 digits)
+    CARD-CVV-CD          cvv_cd                ``"123"`` (3 digits)
+    CARD-EMBOSSED-NAME   embossed_name         ``"JOHN Q DOE"``
+    CARD-EXPIRAION-DATE  expiration_date       ``"2030-12-31"`` (YYYY-MM-DD)
+    CARD-ACTIVE-STATUS   active_status         ``"Y"`` (active)
+    (version_id_col)     version_id            ``0`` (initial optimistic-lock
+                                                 version)
+    ===================  ====================  =====================================
+
+    The ``expiration_date`` is stored as a 10-character string (not a
+    :class:`datetime.date` object) to match the COBOL ``PIC X(10)``
+    byte-for-byte representation. The ``active_status`` is a single
+    character ``'Y'`` or ``'N'``. ``version_id=0`` represents a freshly
+    inserted row; subsequent updates will increment this value via
+    SQLAlchemy's ``version_id_col`` feature.
+
+    Returns
+    -------
+    Card
+        A detached ORM instance (not added to any session).
+    """
+    return Card(
+        card_num=_TEST_CARD_NUM,
+        acct_id=_TEST_ACCT_ID,
+        cvv_cd="123",
+        embossed_name="JOHN Q DOE",
+        expiration_date="2030-12-31",
+        active_status="Y",
+        version_id=0,
+    )
+
+
+@pytest.fixture
+def sample_cards() -> list[Card]:
+    """Build a list of 10 :class:`Card` rows for pagination testing.
+
+    10 rows is chosen deliberately to exceed the default page size of
+    7 (from ``COCRDLI.CPY`` OCCURS 7 TIMES) so that pagination
+    boundaries can be exercised: page 1 covers rows 1-7, page 2 covers
+    rows 8-10 (partial final page).
+
+    Each row has:
+
+    * A unique 16-character card_num in sequence -- generated by
+      zero-padding an index 1..10 to exactly 16 chars (e.g.
+      ``"0000000000000001"`` .. ``"0000000000000010"``).
+    * ``acct_id`` alternating between ``_TEST_ACCT_ID``
+      (``"00000000001"``) for odd-index cards and ``_TEST_ACCT_ID_ALT``
+      (``"00000000099"``) for even-index cards -- permits
+      account-filter tests to assert that only odd-index (or only
+      even-index) cards are returned.
+    * ``cvv_cd`` in sequence ``"100"``..``"109"`` (distinct values so
+      that PCI-related length assertions can distinguish rows).
+    * ``embossed_name`` derived from index for human-readable logs.
+    * ``expiration_date`` = ``"2030-12-31"`` for all rows (kept
+      constant so date-related tests can isolate date handling).
+    * ``active_status`` = ``"Y"`` for all rows (kept constant so
+      status-related tests are not conflated with pagination tests).
+    * ``version_id`` = 0 for all rows (fresh-insert semantics).
+
+    Returns
+    -------
+    list[Card]
+        Exactly 10 detached ORM instances in ascending ``card_num``
+        order.
+    """
+    cards: list[Card] = []
+    for i in range(1, 11):
+        # Zero-pad numeric index to exactly 16 characters to match
+        # CVACT02Y.cpy CARD-NUM PIC X(16) field width.
+        card_num = str(i).zfill(_EXPECTED_CARD_NUM_WIDTH)
+        # Odd 1-based index (i == 1, 3, 5, 7, 9) uses the primary test
+        # account; even 1-based index uses the alternate account. This
+        # produces 5 rows per account across the 10-card fixture.
+        if i % 2 == 1:
+            acct_id = _TEST_ACCT_ID
+        else:
+            acct_id = _TEST_ACCT_ID_ALT
+        # CVV codes 100..109 -- distinct 3-char strings, one per row.
+        cvv_cd = str(99 + i).zfill(_EXPECTED_CVV_WIDTH)
+        cards.append(
+            Card(
+                card_num=card_num,
+                acct_id=acct_id,
+                cvv_cd=cvv_cd,
+                embossed_name=f"TEST CARDHOLDER {i:02d}",
+                expiration_date="2030-12-31",
+                active_status="Y",
+                version_id=0,
+            )
+        )
+    return cards
+
+
+# ============================================================================
+# Phase 3: Card List Tests (from COCRDLIC.cbl, Feature F-006)
+# ============================================================================
+#
+# These tests verify the core list_cards method and the two cursor-based
+# variants (list_cards_forward, list_cards_backward). Each test maps to a
+# specific COBOL paragraph or invariant from app/cbl/COCRDLIC.cbl and the
+# screen layout defined in app/cpy-bms/COCRDLI.CPY (which enforces the
+# OCCURS 7 TIMES row budget on the 3270 terminal).
+# ============================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_list_cards_default_page_size_7(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+    sample_cards: list[Card],
+) -> None:
+    """Page size is 7 (NOT 10) -- CRITICAL behavioral parity invariant.
+
+    The COBOL source ``COCRDLIC.cbl`` uses the screen-layout constant
+    ``WS-MAX-SCREEN-LINES = 7`` (derived from ``COCRDLI.CPY``'s
+    ``OCCURS 7 TIMES`` arrays: ``CRDSEL1..CRDSEL7``, ``ACCTNO1..
+    ACCTNO7``, ``CRDNUM1..CRDNUM7``, ``CRDSTS1..CRDSTS7``). The BMS
+    screen literally cannot display more than 7 rows in the card list,
+    and every COBOL pagination decision (``READNEXT`` loop bounds,
+    ``WS-NEXT-PAGE-EXISTS`` probe, "NO MORE RECORDS" check) is keyed
+    to this value.
+
+    **THIS IS THE MOST LOAD-BEARING PARITY CHECK IN THIS MODULE.** If
+    the Python implementation ever changes the page size away from 7,
+    every BMS-compatible downstream client will silently receive the
+    wrong number of rows. This test MUST fail loudly before any such
+    change is accepted.
+
+    Note the distinction from transaction list (``COTRN00C.cbl``)
+    which uses page size 10 -- the two screens allocated DIFFERENT row
+    budgets on the 3270 terminal and the API must preserve BOTH sizes
+    independently.
+
+    Arrange
+    -------
+    * Mock database returns exactly 7 cards (the first full page).
+    * ``total_count`` = 7 (so total_pages = 1).
+
+    Act
+    ---
+    * Call ``list_cards()`` with the default request (page_number = 1,
+      no filters).
+
+    Assert
+    ------
+    * Response contains exactly 7 items.
+    * ``total_pages == 1``.
+    * ``page_number == 1``.
+    * No info or error message (full non-empty page is a quiet
+      response).
+
+    Maps to
+    -------
+    COCRDLIC.cbl ``2100-PROCESS-ENTER-KEY`` + ``WS-MAX-SCREEN-LINES``.
+    COCRDLI.CPY ``OCCURS 7 TIMES`` symbolic-map screen array.
+    """
+    # Arrange: return exactly 7 cards on the page query, with a total
+    # count of 7 matching.
+    page_cards = sample_cards[:_DEFAULT_PAGE_SIZE]
+    mock_db_session.execute.side_effect = _make_list_execute_side_effect(
+        cards=page_cards,
+        total_count=_DEFAULT_PAGE_SIZE,
+    )
+    request = CardListRequest()  # defaults: no filters, page_number=1
+
+    # Act
+    response: CardListResponse = await card_service.list_cards(request)
+
+    # Assert: page size invariant
+    assert isinstance(response, CardListResponse)
+    assert len(response.cards) == _DEFAULT_PAGE_SIZE, (
+        f"Card list page size MUST be {_DEFAULT_PAGE_SIZE} (COCRDLI.CPY OCCURS 7 TIMES). Got {len(response.cards)}."
+    )
+    assert response.page_number == 1
+    assert response.total_pages == 1
+    assert response.info_message is None
+    assert response.error_message is None
+
+    # Assert: execute called exactly twice (count + page).
+    assert mock_db_session.execute.await_count == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_list_cards_pagination_offset(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+    sample_cards: list[Card],
+) -> None:
+    """Page 2 applies OFFSET = (page_number - 1) * 7 = 7.
+
+    Verifies that the paginated query shifts the OFFSET by exactly
+    ``_PAGE_SIZE`` (= 7) rows between page 1 and page 2. With 10
+    sample cards and a page size of 7, page 2 should contain
+    cards 8-10 (3 rows -- the partial final page).
+
+    Arrange
+    -------
+    * Mock database returns only the 3 cards that "would" be on
+      page 2 (rows 8, 9, 10 of the 10-card fixture).
+    * ``total_count`` = 10 (10 rows total across 2 pages).
+
+    Act
+    ---
+    * Call ``list_cards()`` with ``page_number=2`` and no filters.
+
+    Assert
+    ------
+    * Response contains 3 items (the partial final page).
+    * ``total_pages == 2`` (10 / 7 rounded up).
+    * ``page_number == 2`` (echoed from the request).
+    * No info or error message.
+
+    Maps to
+    -------
+    COCRDLIC.cbl STARTBR with cursor position and OFFSET semantics.
+    """
+    # Arrange: simulate a 2-page result where page 2 has 3 rows (10
+    # total, 7-per-page, so page 2 is partial).
+    page_2_cards = sample_cards[_DEFAULT_PAGE_SIZE:]  # rows 8, 9, 10
+    assert len(page_2_cards) == 3  # self-check on fixture shape
+    mock_db_session.execute.side_effect = _make_list_execute_side_effect(
+        cards=page_2_cards,
+        total_count=10,
+    )
+    request = CardListRequest(page_number=2)
+
+    # Act
+    response: CardListResponse = await card_service.list_cards(request)
+
+    # Assert
+    assert len(response.cards) == 3
+    assert response.page_number == 2
+    assert response.total_pages == 2  # ceil(10 / 7) == 2
+    assert response.info_message is None
+    assert response.error_message is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_list_cards_filter_by_account_id(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+    sample_cards: list[Card],
+) -> None:
+    """Filter by ``account_id`` narrows results via xref semi-join.
+
+    Maps to ``COCRDLIC.cbl`` ``2210-EDIT-ACCOUNT`` (lines 1003-1033)
+    + ``9500-FILTER-RECORDS`` (lines 1382-1459) which use the VSAM
+    alternate index ``CARDFILE.CARDAIX.PATH`` (keyed by CARD-ACCT-ID)
+    to restrict the browse to cards belonging to a single account.
+    The Python translation uses a sub-SELECT semi-join against
+    :class:`CardCrossReference` (``CVACT03Y.cpy``'s ``CARD-XREF-RECORD``).
+
+    Pydantic validation on ``CardListRequest`` enforces the 11-digit
+    exact-width rule before the service is invoked; this test supplies
+    a well-formed 11-digit account_id to exercise the happy-path
+    filter application.
+
+    Arrange
+    -------
+    * Supply a valid 11-digit ``account_id`` (``_TEST_ACCT_ID``).
+    * Mock database returns the 5 odd-indexed cards (which belong to
+      this account in the sample_cards fixture).
+
+    Act
+    ---
+    * Call ``list_cards()`` with the filter.
+
+    Assert
+    ------
+    * All returned cards have ``account_id == _TEST_ACCT_ID``
+      (enforced by fixture: odd-indexed cards are assigned this
+      account).
+    * Response is well-formed with correct pagination metadata.
+
+    Maps to
+    -------
+    COCRDLIC.cbl ``2210-EDIT-ACCOUNT`` and ``9500-FILTER-RECORDS``.
+    CVACT03Y.cpy CARD-XREF-RECORD for account-based filtering.
+    """
+    # Arrange: odd-indexed cards belong to _TEST_ACCT_ID (see fixture).
+    filtered_cards = [c for c in sample_cards if c.acct_id == _TEST_ACCT_ID]
+    assert len(filtered_cards) == 5  # self-check on fixture semantics
+    mock_db_session.execute.side_effect = _make_list_execute_side_effect(
+        cards=filtered_cards,
+        total_count=5,
+    )
+    request = CardListRequest(account_id=_TEST_ACCT_ID)
+
+    # Act
+    response: CardListResponse = await card_service.list_cards(request)
+
+    # Assert: every returned item has the requested account ID.
+    assert len(response.cards) == 5
+    for item in response.cards:
+        assert item.account_id == _TEST_ACCT_ID, f"Expected account_id={_TEST_ACCT_ID!r}, got {item.account_id!r}"
+    assert response.page_number == 1
+    assert response.total_pages == 1
+    # The service still issues both queries (count + page); the filter
+    # is applied symmetrically to both.
+    assert mock_db_session.execute.await_count == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_list_cards_empty_result(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+) -> None:
+    """Zero-row result sets the COBOL empty-search info message.
+
+    When the filter produces no matches (total_count == 0), the
+    service populates ``info_message`` with the COBOL-exact text
+    ``'NO RECORDS FOUND FOR THIS SEARCH CONDITION.'`` (with the
+    trailing period -- this is byte-for-byte preserved from
+    COCRDLIC.cbl's ``WS-NO-RECORDS-FOUND`` literal).
+
+    Arrange
+    -------
+    * Mock database returns 0 cards and ``total_count=0``.
+
+    Act
+    ---
+    * Call ``list_cards()`` with a card_number filter that matches
+      nothing.
+
+    Assert
+    ------
+    * Response has an empty ``cards`` list.
+    * ``total_pages == 0`` (no data at all).
+    * ``info_message`` is the COBOL-exact empty-result text.
+    * ``error_message`` is None (this is a successful empty result,
+      not an error).
+
+    Maps to
+    -------
+    COCRDLIC.cbl ``STARTBR`` -> ``READNEXT`` NOTFND (no rows matched)
+    and ``WS-NO-RECORDS-FOUND`` display-text assignment.
+    """
+    # Arrange: empty result set with 0 total count.
+    mock_db_session.execute.side_effect = _make_list_execute_side_effect(
+        cards=[],
+        total_count=0,
+    )
+    request = CardListRequest(card_number=_TEST_CARD_NUM)
+
+    # Act
+    response: CardListResponse = await card_service.list_cards(request)
+
+    # Assert
+    assert response.cards == []
+    assert response.page_number == 1
+    assert response.total_pages == 0
+    # COBOL-exact message preserved byte-for-byte (trailing period is
+    # part of the literal -- see COCRDLIC.cbl WS-NO-RECORDS-FOUND).
+    assert response.info_message == _MSG_LIST_NO_RECORDS
+    assert response.error_message is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_list_cards_past_end_sets_no_more_records(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+) -> None:
+    """Paging beyond the last page sets 'NO MORE RECORDS TO SHOW'.
+
+    Tests the edge case where ``total_count > 0`` but the requested
+    page is beyond the valid range (e.g. requesting page 5 of a
+    2-page result set). This differs from the zero-total case:
+    records DO exist, the user has simply paged past them. The COBOL
+    source maps this to a distinct ``WS-NO-MORE-RECORDS`` message
+    (``'NO MORE RECORDS TO SHOW'``) rather than the
+    ``WS-NO-RECORDS-FOUND`` empty-filter message.
+
+    Arrange
+    -------
+    * Mock database returns 0 cards for page 5 (nothing on this page)
+      but ``total_count=10`` (10 rows exist across 2 pages).
+
+    Act
+    ---
+    * Call ``list_cards()`` with ``page_number=5``.
+
+    Assert
+    ------
+    * Response has an empty ``cards`` list.
+    * ``total_pages == 2`` (10 / 7 rounded up).
+    * ``info_message`` is ``'NO MORE RECORDS TO SHOW'`` (COBOL-exact).
+    * ``error_message`` is None.
+
+    Maps to
+    -------
+    COCRDLIC.cbl L1219 ``WS-NO-NEXT-PAGE`` / ``NO-MORE-RECORDS`` flow.
+    """
+    # Arrange: total 10 rows exist, but page 5 returns nothing.
+    mock_db_session.execute.side_effect = _make_list_execute_side_effect(
+        cards=[],
+        total_count=10,
+    )
+    request = CardListRequest(page_number=5)
+
+    # Act
+    response: CardListResponse = await card_service.list_cards(request)
+
+    # Assert
+    assert response.cards == []
+    assert response.page_number == 5
+    assert response.total_pages == 2
+    assert response.info_message == _MSG_LIST_NO_MORE_RECORDS
+    assert response.error_message is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_list_cards_db_error_returns_empty_message(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+) -> None:
+    """Database errors surface as the COBOL 'Unable to lookup cards...' message.
+
+    When any SQLAlchemy / driver-level exception is raised during the
+    count or page query, the service catches it and returns a
+    structured error response with:
+
+    * ``cards=[]`` (empty)
+    * ``total_pages=0``
+    * ``error_message='Unable to lookup cards...'`` (byte-for-byte
+      preserved from COCRDLIC.cbl's ``WS-UNABLE-TO-LOOKUP-CARDS``
+      literal -- note the trailing ellipsis of exactly 3 periods).
+
+    The blanket catch is necessary because COBOL's ``EVALUATE OTHER``
+    / ``WHEN OTHER`` branch semantics apply to ANY unexpected
+    DFHRESP code, and the Python equivalent must exhibit the same
+    universal-fallback behavior for operational resilience.
+
+    Arrange
+    -------
+    * Mock database's ``execute`` raises a generic RuntimeError on
+      the first (count) query.
+
+    Act
+    ---
+    * Call ``list_cards()`` with default request.
+
+    Assert
+    ------
+    * Response has empty cards, total_pages=0.
+    * ``error_message`` is the COBOL-exact literal (trailing ellipsis
+      preserved).
+    * ``info_message`` is None (error takes precedence).
+
+    Maps to
+    -------
+    COCRDLIC.cbl ``EVALUATE OTHER`` / ``WHEN OTHER`` branches after
+    STARTBR/READNEXT failures.
+    """
+    # Arrange: first execute raises.
+    mock_db_session.execute.side_effect = RuntimeError("simulated database connection failure")
+    request = CardListRequest()
+
+    # Act
+    response: CardListResponse = await card_service.list_cards(request)
+
+    # Assert
+    assert response.cards == []
+    assert response.page_number == 1
+    assert response.total_pages == 0
+    assert response.error_message == _MSG_LIST_LOOKUP_ERROR
+    assert response.info_message is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_list_cards_forward_paging(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+    sample_cards: list[Card],
+) -> None:
+    """Forward paging returns cards with card_num > last_card_num (ASC).
+
+    Maps to ``COCRDLIC.cbl`` ``9000-READ-FORWARD`` (lines 1123-1263)
+    which uses ``EXEC CICS STARTBR FILE('CARDDAT') RIDFLD(last)
+    GTEQ`` followed by ``READNEXT`` up to 7 times. The Python
+    translation uses keyset pagination with
+    ``WHERE card_num > :last_card_num ORDER BY card_num ASC LIMIT 7``,
+    encoding the "skip equal key" semantics directly in the predicate.
+
+    Note: unlike :meth:`list_cards`, this method invokes
+    ``self.db.execute`` exactly ONCE (no count query -- keyset
+    pagination doesn't need total_pages for forward navigation).
+
+    Arrange
+    -------
+    * Last card from previous page has card_num
+      = "0000000000000003".
+    * Mock database returns rows 4-10 of the sample_cards fixture
+      (the next 7 cards after the cursor).
+
+    Act
+    ---
+    * Call ``list_cards_forward()`` with the cursor key.
+
+    Assert
+    ------
+    * Returned list contains exactly the 7 expected rows.
+    * All returned rows have card_num lexicographically greater than
+      the cursor value.
+    * ``execute`` is called exactly once (no count query).
+
+    Maps to
+    -------
+    COCRDLIC.cbl 9000-READ-FORWARD (STARTBR GTEQ + READNEXT loop).
+    """
+    # Arrange: cursor points to the 3rd card; next page is rows 4-10.
+    cursor_card_num = sample_cards[2].card_num  # "0000000000000003"
+    next_page_rows = sample_cards[3:]
+    assert len(next_page_rows) == 7  # exactly _DEFAULT_PAGE_SIZE
+    mock_db_session.execute.return_value = _make_single_scalars_all_result(rows=next_page_rows)
+
+    # Act
+    cards: list[Card] = await card_service.list_cards_forward(
+        last_card_num=cursor_card_num,
+        account_id=None,
+    )
+
+    # Assert: 7 rows in ascending key order, all > cursor.
+    assert len(cards) == _DEFAULT_PAGE_SIZE
+    for card in cards:
+        assert card.card_num > cursor_card_num, (
+            f"Forward paging returned card_num={card.card_num!r} which is not > cursor={cursor_card_num!r}"
+        )
+    # Only one query (no count query for cursor-based forward paging).
+    assert mock_db_session.execute.await_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_list_cards_backward_paging(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+    sample_cards: list[Card],
+) -> None:
+    """Backward paging returns cards with card_num < first_card_num, reversed to ASC.
+
+    Maps to ``COCRDLIC.cbl`` ``9100-READ-BACKWARDS`` (lines 1264-1380)
+    which uses ``EXEC CICS STARTBR`` + ``READPREV`` to walk backward
+    through the VSAM key space. The Python translation uses
+    ``WHERE card_num < :first_card_num ORDER BY card_num DESC
+    LIMIT 7`` at the SQL layer, then reverses the result in Python
+    so the caller receives rows in ASCENDING display order (matching
+    the BMS screen-array convention).
+
+    The reversal is critical: COBOL ``READPREV`` naturally returns
+    rows in reverse order but the BMS screen array is populated in
+    ascending visual order, so the COBOL code effectively iterated
+    backward AND filled slots in ascending order. The Python
+    equivalent collapses this to a single DESC-then-reverse pattern.
+
+    Arrange
+    -------
+    * First card on current page has card_num = "0000000000000008".
+    * Database returns rows 7, 6, 5, 4, 3, 2, 1 in DESC order (what
+      ``ORDER BY card_num DESC LIMIT 7`` would yield).
+
+    Act
+    ---
+    * Call ``list_cards_backward()`` with the cursor key.
+
+    Assert
+    ------
+    * Returned list is 7 cards in ASCENDING card_num order
+      (reversed from the DESC query result).
+    * All returned rows have card_num < cursor.
+    * ``execute`` is called exactly once.
+
+    Maps to
+    -------
+    COCRDLIC.cbl 9100-READ-BACKWARDS (STARTBR + READPREV loop).
+    """
+    # Arrange: cursor is the 8th card; previous page is rows 7..1 (DESC
+    # order as the DB would return them).
+    cursor_card_num = sample_cards[7].card_num  # "0000000000000008"
+    # Simulated DB returns rows 7..1 in DESC order (reversed slicing).
+    desc_rows = list(reversed(sample_cards[:7]))
+    assert desc_rows[0].card_num == sample_cards[6].card_num  # row 7 first
+    mock_db_session.execute.return_value = _make_single_scalars_all_result(rows=desc_rows)
+
+    # Act
+    cards: list[Card] = await card_service.list_cards_backward(
+        first_card_num=cursor_card_num,
+        account_id=None,
+    )
+
+    # Assert: 7 rows, all in ASCENDING order (service reversed them).
+    assert len(cards) == _DEFAULT_PAGE_SIZE
+    for i in range(1, len(cards)):
+        assert cards[i - 1].card_num < cards[i].card_num, (
+            "Backward paging must return rows in ascending order after "
+            "reversing the DESC query result. Got out-of-order pair: "
+            f"{cards[i - 1].card_num!r} >= {cards[i].card_num!r}"
+        )
+    for card in cards:
+        assert card.card_num < cursor_card_num, (
+            f"Backward paging returned card_num={card.card_num!r} which is not < cursor={cursor_card_num!r}"
+        )
+    # Only one query (no count query for cursor-based backward paging).
+    assert mock_db_session.execute.await_count == 1
+
+
+# ============================================================================
+# Helper functions (test-only)
+# ============================================================================
+
+
+def _make_list_execute_side_effect(
+    *,
+    cards: list[Card] | None = None,
+    total_count: int | None = None,
+) -> list[MagicMock]:
+    """Build the 2-element side_effect list for :meth:`list_cards`.
+
+    :meth:`CardService.list_cards` invokes ``self.db.execute`` exactly
+    TWICE on success, in STRICT ORDER:
+
+    ==  =====================================  ===========================
+    #   Query                                  Accessor invoked
+    ==  =====================================  ===========================
+    1   SELECT COUNT(*) FROM cards ...         ``scalar_one()``
+    2   SELECT Card ... LIMIT 7 OFFSET :o      ``scalars().all()``
+    ==  =====================================  ===========================
+
+    CRITICAL: The count query is issued FIRST, and the page query is
+    issued SECOND. This is OPPOSITE to TransactionService (which does
+    page first, count second). Any test that configures
+    ``session.execute.side_effect`` MUST use this helper to guarantee
+    the ordering matches the card-service implementation.
+
+    Parameters
+    ----------
+    cards : list[Card] | None, optional
+        Rows to return from the SECOND (page) ``scalars().all()`` call.
+        ``None`` defaults to an empty list (no rows on page).
+    total_count : int | None, optional
+        Value to return from the FIRST (count) ``scalar_one()`` call.
+        ``None`` defaults to ``len(cards or [])`` so the total matches
+        what the page query returned.
+
+    Returns
+    -------
+    list[MagicMock]
+        Ordered list of 2 MagicMock result objects for successive
+        ``await self.db.execute(...)`` calls: ``[count_result,
+        page_result]``.
+    """
+    rows: list[Card] = cards if cards is not None else []
+    count: int = total_count if total_count is not None else len(rows)
+
+    # Query 1: total count.
+    count_result = MagicMock()
+    count_result.scalar_one = MagicMock(return_value=count)
+
+    # Query 2: page of rows.
+    page_scalars = MagicMock()
+    page_scalars.all = MagicMock(return_value=rows)
+    page_result = MagicMock()
+    page_result.scalars = MagicMock(return_value=page_scalars)
+
+    return [count_result, page_result]
+
+
+def _make_single_scalars_all_result(rows: list[Card]) -> MagicMock:
+    """Build a single result mock for :meth:`list_cards_forward` /
+    :meth:`list_cards_backward`.
+
+    Both cursor-pagination methods invoke ``self.db.execute`` exactly
+    ONCE and consume the result via ``result.scalars().all()``. This
+    helper constructs the single-result MagicMock suitable for
+    ``session.execute.return_value = ...``.
+
+    Parameters
+    ----------
+    rows : list[Card]
+        Card rows to return from the ``scalars().all()`` accessor.
+
+    Returns
+    -------
+    MagicMock
+        A result mock whose ``scalars().all()`` returns ``rows``.
+    """
+    scalars = MagicMock()
+    scalars.all = MagicMock(return_value=rows)
+    result = MagicMock()
+    result.scalars = MagicMock(return_value=scalars)
+    return result
+
+
+# ============================================================================
+# Phase 4: Card Detail Tests (from COCRDSLC.cbl, Feature F-007)
+# ============================================================================
+#
+# These tests verify the get_card_detail method, which uses the SQLAlchemy
+# 2.x ``AsyncSession.get`` idiom for a PK-by-value lookup. Unlike the list
+# methods, detail does NOT use ``execute`` -- it uses ``session.get``
+# which is semantically identical to a ``SELECT * FROM cards WHERE
+# card_num = :card_num`` but with identity-map caching.
+# ============================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_card_detail_success(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+    sample_card: Card,
+) -> None:
+    """Successful PK lookup returns fully populated detail response.
+
+    Maps to ``COCRDSLC.cbl`` ``9000-READ-DATA`` paragraph which
+    issues ``EXEC CICS READ FILE('CARDDAT') INTO(CARD-RECORD)
+    RIDFLD(CARD-NUM) RESP(WS-RESP-CD)`` and on ``DFHRESP(NORMAL)``
+    populates the ACTVWI screen.
+
+    The Python implementation uses
+    :meth:`AsyncSession.get(Card, card_num)` for the PK lookup --
+    identical semantics to a ``SELECT * FROM cards WHERE card_num =
+    :pk`` query but with identity-map caching and no MultipleResults
+    risk (card_num IS the PK).
+
+    The service parses the stored ``expiration_date`` string
+    (``"2030-12-31"``) into ``expiry_year="2030"`` and
+    ``expiry_month="12"`` components for the response.
+
+    Arrange
+    -------
+    * Mock ``session.get`` to return the sample card.
+
+    Act
+    ---
+    * Call ``get_card_detail("4111111111111111")``.
+
+    Assert
+    ------
+    * Response is a CardDetailResponse with all fields populated:
+
+        - account_id = "00000000001"  (11 chars, matches fixture)
+        - card_number = "4111111111111111"  (16 chars, matches fixture)
+        - embossed_name = "JOHN Q DOE"
+        - status_code = "Y"  (1 char, matches fixture)
+        - expiry_month = "12"  (parsed from "2030-12-31")
+        - expiry_year = "2030"  (parsed from "2030-12-31")
+        - info_message = None  (quiet success)
+        - error_message = None
+
+    * Field widths match CVACT02Y.cpy COBOL PIC definitions exactly.
+    * ``session.get`` is called exactly once with (Card, card_num).
+    * ``session.execute`` is NOT called (PK lookup uses get, not execute).
+
+    Maps to
+    -------
+    COCRDSLC.cbl 9000-READ-DATA + EXEC CICS READ FILE('CARDDAT').
+    """
+    # Arrange
+    mock_db_session.get.return_value = sample_card
+
+    # Act
+    response: CardDetailResponse = await card_service.get_card_detail(_TEST_CARD_NUM)
+
+    # Assert: all fields populated correctly per CVACT02Y.cpy widths.
+    assert isinstance(response, CardDetailResponse)
+    assert response.account_id == _TEST_ACCT_ID
+    assert len(response.account_id) == _EXPECTED_ACCT_ID_WIDTH
+    assert response.card_number == _TEST_CARD_NUM
+    assert len(response.card_number) == _EXPECTED_CARD_NUM_WIDTH
+    assert response.embossed_name == "JOHN Q DOE"
+    assert len(response.embossed_name) <= _EXPECTED_EMBOSSED_NAME_MAX_WIDTH
+    assert response.status_code == "Y"
+    assert len(response.status_code) == _EXPECTED_STATUS_WIDTH
+    # Expiration date is split into month + year components.
+    assert response.expiry_year == "2030"
+    assert len(response.expiry_year) == 4
+    assert response.expiry_month == "12"
+    assert len(response.expiry_month) == 2
+    # Quiet success: neither message.
+    assert response.info_message is None
+    assert response.error_message is None
+
+    # Assert: exactly ONE session.get call, no execute.
+    assert mock_db_session.get.await_count == 1
+    mock_db_session.get.assert_awaited_once_with(Card, _TEST_CARD_NUM)
+    assert mock_db_session.execute.await_count == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_card_detail_not_found(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+) -> None:
+    """Missing card yields the COBOL not-found error message.
+
+    When the PK lookup returns ``None`` (no matching row), the
+    service returns a structured error response with
+    ``error_message='Did not find cards for this search condition'``
+    -- the COBOL-exact literal from ``COCRDSLC.cbl`` ``DFHRESP(NOTFND)``
+    branch (L178-185: ``WS-NOTFOUND-MSG``).
+
+    Note: empty fields (``account_id="", embossed_name="",
+    status_code=""``) are populated on the not-found response because
+    Pydantic v2 requires non-None values for required str fields.
+    The ``card_number`` field retains the original input (so the
+    client can echo it in an error UI).
+
+    Arrange
+    -------
+    * Mock ``session.get`` to return None.
+
+    Act
+    ---
+    * Call ``get_card_detail()`` with a 16-char card number.
+
+    Assert
+    ------
+    * ``error_message == 'Did not find cards for this search condition'``.
+    * ``info_message is None``.
+    * ``card_number`` echoes the input (preserves COBOL display
+      behavior).
+    * Empty-string placeholders for other fields (required by schema).
+
+    Maps to
+    -------
+    COCRDSLC.cbl DFHRESP(NOTFND) branch + WS-NOTFOUND-MSG.
+    """
+    # Arrange
+    mock_db_session.get.return_value = None
+
+    # Act
+    response: CardDetailResponse = await card_service.get_card_detail(_TEST_CARD_NUM)
+
+    # Assert: COBOL-exact error message, echo of input, empty placeholders.
+    assert response.error_message == _MSG_DETAIL_NOT_FOUND
+    assert response.info_message is None
+    # The service echoes the input card_number so the client can display it.
+    assert response.card_number == _TEST_CARD_NUM
+    # Required-str fields are populated with empty strings (schema contract).
+    assert response.account_id == ""
+    assert response.embossed_name == ""
+    assert response.status_code == ""
+    assert response.expiry_month == ""
+    assert response.expiry_year == ""
+
+
+# ============================================================================
+# Phase 5: Card Update Tests (from COCRDUPC.cbl, Feature F-008)
+# ============================================================================
+#
+# These tests verify the update_card method, which must preserve the
+# COBOL optimistic-concurrency semantics (READ UPDATE + REWRITE + RESP
+# code check) via SQLAlchemy's version_id_col feature. The most critical
+# test in this group is test_update_card_optimistic_concurrency_conflict
+# which simulates the StaleDataError that SQLAlchemy raises when a
+# concurrent UPDATE is detected (equivalent to COBOL's
+# DATA-WAS-CHANGED-BEFORE-UPDATE branch).
+# ============================================================================
+
+
+def _make_card_update_request(
+    *,
+    card_number: str = _TEST_CARD_NUM,
+    account_id: str = _TEST_ACCT_ID,
+    embossed_name: str = "JANE Q DOE",
+    status_code: str = "Y",
+    expiry_month: str = "06",
+    expiry_year: str = "2031",
+    expiry_day: str = "15",
+) -> CardUpdateRequest:
+    """Construct a valid :class:`CardUpdateRequest` for update tests.
+
+    Factory helper to avoid repetition in the update-test arrange
+    sections. Defaults to a card-update payload that targets
+    ``_TEST_CARD_NUM`` with name "JANE Q DOE" (changed from "JOHN Q
+    DOE" so tests can detect mutations), active status 'Y', and
+    expiration 2031-06-15 (moved forward from 2030-12-31).
+
+    Parameters
+    ----------
+    card_number : str, default _TEST_CARD_NUM
+        16-character card number.
+    account_id : str, default _TEST_ACCT_ID
+        11-character account ID.
+    embossed_name : str, default "JANE Q DOE"
+        Up to 50-character name.
+    status_code : str, default "Y"
+        Single-character active-status flag.
+    expiry_month : str, default "06"
+        2-character month ('01'..'12').
+    expiry_year : str, default "2031"
+        4-character year.
+    expiry_day : str, default "15"
+        2-character day.
+
+    Returns
+    -------
+    CardUpdateRequest
+        Pydantic-validated update request payload.
+    """
+    return CardUpdateRequest(
+        account_id=account_id,
+        card_number=card_number,
+        embossed_name=embossed_name,
+        status_code=status_code,
+        expiry_month=expiry_month,
+        expiry_year=expiry_year,
+        expiry_day=expiry_day,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_card_success(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+    sample_card: Card,
+) -> None:
+    """Happy-path update flushes changes and returns success message.
+
+    Maps to ``COCRDUPC.cbl`` ``9200-WRITE-PROCESSING`` (lines
+    1420-1496) which issues:
+
+    1. ``EXEC CICS READ FILE('CARDDAT') UPDATE``
+    2. ``MOVE`` new values into ``CARD-UPDATE-RECORD``
+    3. ``EXEC CICS REWRITE FILE('CARDDAT') FROM(CARD-UPDATE-RECORD)``
+    4. On RESP(NORMAL): ``CONFIRM-UPDATE-SUCCESS`` =
+       ``'Changes committed to database'``.
+
+    The Python implementation uses ``session.get`` to load the card,
+    applies attribute-level mutations (embossed_name, active_status,
+    expiration_date), then calls ``session.flush()`` and
+    ``session.commit()``. The COBOL-exact success message is placed
+    in ``info_message``.
+
+    Arrange
+    -------
+    * Mock ``session.get`` to return the sample card.
+    * Mock ``session.flush`` and ``session.commit`` to succeed (no
+      side_effect raised).
+
+    Act
+    ---
+    * Call ``update_card("4111111111111111", new_values)``.
+
+    Assert
+    ------
+    * Card attributes mutated in place (embossed_name, active_status,
+      expiration_date).
+    * ``session.flush`` and ``session.commit`` both called.
+    * ``session.rollback`` NOT called.
+    * Response has the COBOL-exact success message.
+    * Response echoes the post-update state (new embossed_name, etc).
+
+    Maps to
+    -------
+    COCRDUPC.cbl 9200-WRITE-PROCESSING + CONFIRM-UPDATE-SUCCESS.
+    """
+    # Arrange
+    mock_db_session.get.return_value = sample_card
+    request = _make_card_update_request(
+        card_number=_TEST_CARD_NUM,
+        account_id=_TEST_ACCT_ID,
+        embossed_name="JANE Q DOE",
+        status_code="N",
+        expiry_month="06",
+        expiry_year="2031",
+        expiry_day="15",
+    )
+
+    # Act
+    response: CardUpdateResponse = await card_service.update_card(
+        card_num=_TEST_CARD_NUM,
+        request=request,
+    )
+
+    # Assert: ORM instance mutated in-place.
+    assert sample_card.embossed_name == "JANE Q DOE"
+    assert sample_card.active_status == "N"
+    # Expiration date is assembled from Y/M/D components.
+    assert sample_card.expiration_date == "2031-06-15"
+
+    # Assert: session lifecycle.
+    mock_db_session.get.assert_awaited_once_with(Card, _TEST_CARD_NUM)
+    assert mock_db_session.flush.await_count == 1
+    assert mock_db_session.commit.await_count == 1
+    assert mock_db_session.rollback.await_count == 0
+
+    # Assert: COBOL-exact success message.
+    assert isinstance(response, CardUpdateResponse)
+    assert response.info_message == _MSG_UPDATE_SUCCESS
+    assert response.error_message is None
+    # Response echoes the post-update state.
+    assert response.card_number == _TEST_CARD_NUM
+    assert response.account_id == _TEST_ACCT_ID
+    assert response.embossed_name == "JANE Q DOE"
+    assert response.status_code == "N"
+    assert response.expiry_month == "06"
+    assert response.expiry_year == "2031"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_card_optimistic_concurrency_conflict(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+    sample_card: Card,
+) -> None:
+    """StaleDataError from flush() triggers COBOL optimistic-conflict path.
+
+    **CRITICAL TEST -- preserves F-008 optimistic-concurrency invariant.**
+
+    Maps to ``COCRDUPC.cbl`` ``DATA-WAS-CHANGED-BEFORE-UPDATE``
+    (L207-208) which sets ``'Record changed by some one else.
+    Please review'`` when the REWRITE-time stale-record check fires.
+
+    The COBOL source implements this by capturing
+    ``CARD-RECORD-BEFORE-UPDATE`` at display time and comparing it
+    against a fresh READ before the REWRITE, raising the conflict
+    error if they differ. The Python source uses SQLAlchemy's
+    ``version_id_col`` feature which appends
+    ``AND version_id = :old_version`` to the UPDATE's WHERE clause
+    -- a mismatch results in 0 affected rows, which SQLAlchemy
+    raises as :class:`StaleDataError`.
+
+    The service MUST:
+
+    1. Call ``session.flush()`` which raises ``StaleDataError``.
+    2. NOT call ``session.commit()`` (the flush failed first).
+    3. Call ``session.rollback()`` to clear dirty session state.
+    4. Return a response with the COBOL-exact error message.
+
+    Arrange
+    -------
+    * Mock ``session.get`` to return the sample card.
+    * Mock ``session.flush`` to raise ``StaleDataError``.
+
+    Act
+    ---
+    * Call ``update_card()``.
+
+    Assert
+    ------
+    * ``session.flush`` called (the conflict detection point).
+    * ``session.commit`` NOT called (flush raised first).
+    * ``session.rollback`` called (clears dirty state).
+    * Response has ``error_message='Record changed by some one else.
+      Please review'`` (COBOL-exact).
+    * Response has ``info_message=None``.
+
+    Maps to
+    -------
+    COCRDUPC.cbl DATA-WAS-CHANGED-BEFORE-UPDATE (L207-208).
+    Card.version_id SQLAlchemy version_id_col feature.
+    """
+    # Arrange: card exists, but flush raises StaleDataError simulating
+    # a concurrent UPDATE having incremented version_id.
+    mock_db_session.get.return_value = sample_card
+    mock_db_session.flush.side_effect = StaleDataError(
+        "UPDATE cards ... AND version_id = :old",
+        None,
+        None,
+    )
+    request = _make_card_update_request()
+
+    # Act
+    response: CardUpdateResponse = await card_service.update_card(
+        card_num=_TEST_CARD_NUM,
+        request=request,
+    )
+
+    # Assert: flush was attempted; commit NOT reached; rollback called.
+    assert mock_db_session.flush.await_count == 1
+    assert mock_db_session.commit.await_count == 0
+    assert mock_db_session.rollback.await_count == 1
+
+    # Assert: COBOL-exact stale-data message.
+    assert response.error_message == _MSG_UPDATE_STALE
+    assert response.info_message is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_card_not_found(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+) -> None:
+    """Missing card during update returns the not-found error message.
+
+    Maps to ``COCRDUPC.cbl`` ``DFHRESP(NOTFND)`` branch on the
+    initial ``READ UPDATE``. When the target card does not exist,
+    the service must:
+
+    1. NOT call ``session.flush`` or ``session.commit``.
+    2. Call ``session.rollback`` to clear any dirty state.
+    3. Return a response with ``error_message='Did not find cards
+       for this search condition'`` (COBOL-exact, same literal as
+       the detail not-found path).
+
+    Arrange
+    -------
+    * Mock ``session.get`` to return ``None``.
+
+    Act
+    ---
+    * Call ``update_card()``.
+
+    Assert
+    ------
+    * ``session.flush`` and ``session.commit`` NOT called.
+    * ``session.rollback`` called once.
+    * Response has the COBOL not-found message.
+
+    Maps to
+    -------
+    COCRDUPC.cbl DFHRESP(NOTFND) branch on EXEC CICS READ FILE UPDATE.
+    """
+    # Arrange
+    mock_db_session.get.return_value = None
+    request = _make_card_update_request()
+
+    # Act
+    response: CardUpdateResponse = await card_service.update_card(
+        card_num=_TEST_CARD_NUM,
+        request=request,
+    )
+
+    # Assert: no write attempted; rollback invoked; COBOL message.
+    assert mock_db_session.flush.await_count == 0
+    assert mock_db_session.commit.await_count == 0
+    assert mock_db_session.rollback.await_count == 1
+    assert response.error_message == _MSG_DETAIL_NOT_FOUND
+    assert response.info_message is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_card_validation_card_number_length(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+    sample_card: Card,
+) -> None:
+    """Card number width is EXACTLY 16 chars (CVACT02Y.cpy CARD-NUM PIC X(16)).
+
+    Enforces the width invariant from ``app/cpy/CVACT02Y.cpy``
+    ``CARD-NUM PIC X(16)``. The Pydantic schema
+    :class:`CardUpdateRequest` has a validator that rejects
+    ``card_number`` values with length != 16.
+
+    This test creates a :class:`CardUpdateRequest` with a 15-char
+    card_number and expects :class:`pydantic.ValidationError` (the
+    service never sees the request -- validation fails at schema
+    level, which is the COBOL-equivalent of 2220-EDIT-CARD failing
+    before the business logic runs).
+
+    Additionally tests that the positive-case (exactly 16 chars)
+    passes validation and reaches the service.
+
+    Arrange
+    -------
+    * Attempt to construct CardUpdateRequest with card_number
+      of wrong length (15 chars).
+
+    Act / Assert
+    ------------
+    * ValidationError is raised at the schema layer.
+    * Service is NOT invoked.
+    * Positive case (16 chars) succeeds.
+
+    Maps to
+    -------
+    CVACT02Y.cpy CARD-NUM PIC X(16) width invariant.
+    COCRDUPC.cbl 2220-EDIT-CARD validation.
+    """
+    import pydantic
+
+    # Assert: 15-char card_number is rejected.
+    with pytest.raises(pydantic.ValidationError):
+        CardUpdateRequest(
+            account_id=_TEST_ACCT_ID,
+            card_number="123456789012345",  # 15 chars — 1 too short
+            embossed_name="JANE Q DOE",
+            status_code="Y",
+            expiry_month="06",
+            expiry_year="2031",
+            expiry_day="15",
+        )
+
+    # Assert: 17-char card_number is also rejected.
+    with pytest.raises(pydantic.ValidationError):
+        CardUpdateRequest(
+            account_id=_TEST_ACCT_ID,
+            card_number="12345678901234567",  # 17 chars — 1 too long
+            embossed_name="JANE Q DOE",
+            status_code="Y",
+            expiry_month="06",
+            expiry_year="2031",
+            expiry_day="15",
+        )
+
+    # Assert: exactly-16-char card_number passes schema validation and
+    # reaches the service, where it successfully updates the card.
+    mock_db_session.get.return_value = sample_card
+    valid_request = _make_card_update_request(card_number=_TEST_CARD_NUM)
+    assert len(valid_request.card_number) == _EXPECTED_CARD_NUM_WIDTH
+    response: CardUpdateResponse = await card_service.update_card(
+        card_num=_TEST_CARD_NUM,
+        request=valid_request,
+    )
+    # Service accepted the valid request.
+    assert response.error_message is None
+    assert response.info_message == _MSG_UPDATE_SUCCESS
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_card_validation_status_code(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+    sample_card: Card,
+) -> None:
+    """Status code is EXACTLY 1 char (CVACT02Y.cpy CARD-ACTIVE-STATUS PIC X(01)).
+
+    Enforces the width invariant from ``app/cpy/CVACT02Y.cpy``
+    ``CARD-ACTIVE-STATUS PIC X(01)``. The Pydantic schema validator
+    rejects ``status_code`` values of length != 1.
+
+    Arrange
+    -------
+    * Attempt to construct CardUpdateRequest with status_code of
+      wrong length (2 chars).
+
+    Act / Assert
+    ------------
+    * ValidationError is raised at the schema layer.
+    * Service is NOT invoked.
+    * Positive case (exactly 1 char, 'Y' or 'N') succeeds.
+
+    Maps to
+    -------
+    CVACT02Y.cpy CARD-ACTIVE-STATUS PIC X(01) width invariant.
+    """
+    import pydantic
+
+    # Assert: 2-char status_code is rejected.
+    with pytest.raises(pydantic.ValidationError):
+        CardUpdateRequest(
+            account_id=_TEST_ACCT_ID,
+            card_number=_TEST_CARD_NUM,
+            embossed_name="JANE Q DOE",
+            status_code="YN",  # 2 chars — too long
+            expiry_month="06",
+            expiry_year="2031",
+            expiry_day="15",
+        )
+
+    # Assert: 0-char status_code is rejected.
+    with pytest.raises(pydantic.ValidationError):
+        CardUpdateRequest(
+            account_id=_TEST_ACCT_ID,
+            card_number=_TEST_CARD_NUM,
+            embossed_name="JANE Q DOE",
+            status_code="",  # empty — too short (min_length)
+            expiry_month="06",
+            expiry_year="2031",
+            expiry_day="15",
+        )
+
+    # Assert: single-char 'Y' passes validation.
+    mock_db_session.get.return_value = sample_card
+    valid_request = _make_card_update_request(status_code="Y")
+    assert len(valid_request.status_code) == _EXPECTED_STATUS_WIDTH
+    response: CardUpdateResponse = await card_service.update_card(
+        card_num=_TEST_CARD_NUM,
+        request=valid_request,
+    )
+    assert response.error_message is None
+    assert response.info_message == _MSG_UPDATE_SUCCESS
+
+    # Assert: single-char 'N' also passes (inactive status).
+    valid_request_n = _make_card_update_request(status_code="N")
+    assert len(valid_request_n.status_code) == _EXPECTED_STATUS_WIDTH
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_card_validation_expiry_date(
+    card_service: CardService,
+    mock_db_session: AsyncMock,
+    sample_card: Card,
+) -> None:
+    """Valid expiry components are accepted; invalid month is rejected.
+
+    Enforces the COBOL expiry-date validation rules from
+    ``COCRDUPC.cbl`` which check:
+
+    * ``CARD-EXPIRY-MONTH`` must be 2 digits in range '01'..'12'.
+    * ``CARD-EXPIRY-YEAR`` must be 4 digits.
+    * ``CARD-EXPIRY-DAY`` must be 2 digits.
+
+    The Pydantic schema enforces these at construction time:
+
+    * ``expiry_month`` validator requires exactly 2 digits in
+      '01'..'12' range (rejects '13', '00', non-numeric, wrong width).
+    * ``expiry_year`` has max_length=4.
+    * ``expiry_day`` has max_length=2.
+
+    When the service receives a valid request, it assembles the
+    components into the ORM's ``expiration_date`` column using the
+    ``YYYY-MM-DD`` format (via the module-private
+    ``_assemble_expiration_date`` helper).
+
+    Arrange
+    -------
+    * Attempt to construct a request with ``expiry_month='13'``
+      (out of range).
+
+    Act / Assert
+    ------------
+    * ValidationError is raised for invalid month.
+    * Service is NOT invoked for the invalid case.
+    * Valid components (06/2031/15) reach the service and are
+      assembled into ``2031-06-15``.
+
+    Maps to
+    -------
+    COCRDUPC.cbl expiry-date validation paragraphs.
+    CVACT02Y.cpy CARD-EXPIRAION-DATE PIC X(10) format invariant.
+    """
+    import pydantic
+
+    # Assert: expiry_month='13' is rejected (out of range).
+    with pytest.raises(pydantic.ValidationError):
+        CardUpdateRequest(
+            account_id=_TEST_ACCT_ID,
+            card_number=_TEST_CARD_NUM,
+            embossed_name="JANE Q DOE",
+            status_code="Y",
+            expiry_month="13",  # invalid month
+            expiry_year="2031",
+            expiry_day="15",
+        )
+
+    # Assert: expiry_month='00' is rejected.
+    with pytest.raises(pydantic.ValidationError):
+        CardUpdateRequest(
+            account_id=_TEST_ACCT_ID,
+            card_number=_TEST_CARD_NUM,
+            embossed_name="JANE Q DOE",
+            status_code="Y",
+            expiry_month="00",  # invalid month
+            expiry_year="2031",
+            expiry_day="15",
+        )
+
+    # Assert: non-digit expiry_month is rejected.
+    with pytest.raises(pydantic.ValidationError):
+        CardUpdateRequest(
+            account_id=_TEST_ACCT_ID,
+            card_number=_TEST_CARD_NUM,
+            embossed_name="JANE Q DOE",
+            status_code="Y",
+            expiry_month="JU",  # non-digit
+            expiry_year="2031",
+            expiry_day="15",
+        )
+
+    # Assert: valid components are accepted and assembled correctly.
+    mock_db_session.get.return_value = sample_card
+    valid_request = _make_card_update_request(
+        expiry_month="06",
+        expiry_year="2031",
+        expiry_day="15",
+    )
+    response: CardUpdateResponse = await card_service.update_card(
+        card_num=_TEST_CARD_NUM,
+        request=valid_request,
+    )
+    # The service assembled "YYYY-MM-DD" and persisted it.
+    assert sample_card.expiration_date == "2031-06-15"
+    assert len(sample_card.expiration_date) == _EXPECTED_EXPIRATION_DATE_WIDTH
+    assert response.error_message is None
+    assert response.info_message == _MSG_UPDATE_SUCCESS
+    # Response splits the date back into MM / YYYY components.
+    assert response.expiry_month == "06"
+    assert response.expiry_year == "2031"
