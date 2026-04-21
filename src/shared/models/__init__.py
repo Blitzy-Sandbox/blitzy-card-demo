@@ -1,6 +1,9 @@
 # ============================================================================
 # Source: COBOL copybook library (app/cpy/) — Mainframe-to-Cloud migration
 # ============================================================================
+# SQLAlchemy 2.x ORM model registry for CardDemo Aurora PostgreSQL database.
+# Maps 10 VSAM KSDS datasets + 3 AIX to 11 relational tables.
+# ============================================================================
 # Copyright Amazon.com, Inc. or its affiliates.
 # All Rights Reserved.
 #
@@ -18,210 +21,248 @@
 # ============================================================================
 """SQLAlchemy 2.x ORM model registry for the CardDemo Aurora PostgreSQL database.
 
-This package initializer defines the :class:`Base` declarative class that ALL
-CardDemo ORM entity models inherit from. It is the foundational module on
-which the entire ``src.shared.models`` package is built.
+This package initializer is the FOUNDATIONAL module of
+``src.shared.models``. It has two responsibilities:
 
-Maps 10 VSAM KSDS datasets + 3 alternate indexes (AIX) to 11 relational tables
-in AWS Aurora PostgreSQL (PostgreSQL-compatible edition), replacing the
-mainframe VSAM persistence layer as part of the CardDemo cloud-native
-modernization.
+1. **Define the :class:`Base` declarative class** that every CardDemo
+   ORM entity model inherits from. The class uses SQLAlchemy 2.x
+   :class:`~sqlalchemy.orm.DeclarativeBase` to enable typed
+   :class:`~sqlalchemy.orm.Mapped` annotations and the officially
+   recommended modern mapping style.
+
+2. **Eagerly import and re-export all 11 entity model classes** so
+   that a single ``from src.shared.models import ...`` statement both
+   gives consumers access to every model class AND guarantees every
+   table is registered on ``Base.metadata`` (required for
+   ``Base.metadata.create_all()``, Alembic autogenerate, Alembic
+   migrations, pytest schema fixtures, and any introspection tool
+   that walks the complete relational schema).
+
+COBOL to Aurora PostgreSQL Mapping
+----------------------------------
+Replaces the mainframe VSAM persistence layer — 10 VSAM KSDS clusters
+plus 3 Alternate Indexes (AIX) — with a normalized 11-table
+PostgreSQL 16 schema on AWS Aurora (PostgreSQL-compatible edition).
+Each ORM class is a faithful translation of a COBOL copybook record
+layout:
+
+============================================  ===========================  =========================
+COBOL Copybook (``app/cpy/``)                 Python Module                Class
+============================================  ===========================  =========================
+``CVACT01Y.cpy`` (ACCOUNT-RECORD, 300B)       ``account.py``               :class:`Account`
+``CVACT02Y.cpy`` (CARD-RECORD, 150B)          ``card.py``                  :class:`Card`
+``CVCUS01Y.cpy`` (CUSTOMER-RECORD, 500B)      ``customer.py``              :class:`Customer`
+``CVACT03Y.cpy`` (CARD-XREF, 50B)             ``card_cross_reference.py``  :class:`CardCrossReference`
+``CVTRA05Y.cpy`` (TRAN-RECORD, 350B)          ``transaction.py``           :class:`Transaction`
+``CVTRA01Y.cpy`` (TRAN-CAT-BAL, 50B)          ``transaction_category_      :class:`TransactionCategoryBalance`
+                                              balance.py``
+``CVTRA06Y.cpy`` (DAILY-TRAN, 350B)           ``daily_transaction.py``     :class:`DailyTransaction`
+``CVTRA02Y.cpy`` (DIS-GRP, 50B)               ``disclosure_group.py``      :class:`DisclosureGroup`
+``CVTRA03Y.cpy`` (TRAN-TYPE, 60B)             ``transaction_type.py``      :class:`TransactionType`
+``CVTRA04Y.cpy`` (TRAN-CAT, 60B)              ``transaction_category.py``  :class:`TransactionCategory`
+``CSUSR01Y.cpy`` (SEC-USER-DATA, 80B)         ``user_security.py``         :class:`UserSecurity`
+============================================  ===========================  =========================
 
 Design Notes
 ------------
-* ``Base`` is defined BEFORE any model imports — every entity module
-  (``account.py``, ``card.py``, ``customer.py``, ``user_security.py``, etc.)
-  performs ``from src.shared.models import Base`` and subclasses it, so the
-  Base class must exist at module load time.
-* Uses SQLAlchemy 2.x :class:`~sqlalchemy.orm.DeclarativeBase` (NOT the
-  legacy ``declarative_base()`` function). This provides typed
-  :class:`~sqlalchemy.orm.Mapped` annotations, improved static-analysis
-  support, and is the officially recommended pattern in SQLAlchemy 2.x.
-* Entity model classes (``Account``, ``Card``, ``Customer``,
-  ``CardCrossReference``, ``Transaction``, ``TransactionCategoryBalance``,
-  ``DailyTransaction``, ``DisclosureGroup``, ``TransactionType``,
-  ``TransactionCategory``, ``UserSecurity``) are intentionally NOT
-  eagerly imported here. This keeps the initialization of
-  ``src.shared.models`` minimal and side-effect free, avoids circular
-  imports between entity modules, and mirrors the lazy-loading pattern
-  used by the rest of ``src.shared``. Consumers should import entity
-  classes from their specific submodule paths (e.g., ``from
-  src.shared.models.user_security import UserSecurity``).
-* The :func:`load_all_models` helper is provided for callers — Alembic
-  ``env.py``, pytest fixtures that create/drop the test schema,
-  ``Base.metadata.create_all()`` bootstrap scripts, and QA tooling —
-  that need every entity registered on ``Base.metadata`` before they
-  introspect or materialize the full schema. Calling it triggers the
-  import of all 11 entity modules in a safe, idempotent, deterministic
-  manner. See the function's own docstring for full usage examples.
-* Python 3.11+ only (aligned with AWS Glue 5.1 runtime and FastAPI
-  deployment baseline).
+* ``Base`` is defined **BEFORE** the 11 entity-model imports. Every
+  entity module executes ``from src.shared.models import Base`` at
+  module-import-time, and Python resolves this against the partially
+  initialized ``src.shared.models`` namespace. Because ``Base`` is
+  registered in the namespace before the entity imports begin, the
+  circular-lookup succeeds immediately and no circular-import error
+  is raised. Reordering (putting entity imports before the ``class
+  Base`` statement) WILL break this file — do not change the
+  import / class ordering.
+
+* Entity imports are performed in alphabetical order so the resulting
+  ``MetaData.sorted_tables`` order is stable across runs. This
+  determinism matters for Alembic autogenerate (which renders CREATE
+  TABLE statements in metadata order) and for any DDL-diff tooling
+  that compares rendered schemas across commits.
+
+* SQLAlchemy 2.x :class:`~sqlalchemy.orm.DeclarativeBase` is used
+  (NOT the legacy ``declarative_base()`` function). This provides:
+
+  - Typed :class:`~sqlalchemy.orm.Mapped` column annotations
+    (enforced at import-time, visible to mypy / PyCharm / Pyright).
+  - First-class ``python typing`` support without plugins.
+  - Is the officially recommended mapping style in the SQLAlchemy
+    2.x release notes.
+
+* The ``Base`` class body is intentionally empty — no shared columns,
+  mixins, or type annotations are hoisted onto the base. Each entity
+  model declares its own columns so that the copybook-to-column
+  mapping remains explicit and auditable (AAP §0.7.1 "minimal change
+  clause" / "preserve existing functionality").
+
+* Python 3.11+ only (aligned with AWS Glue 5.1 PySpark runtime and
+  FastAPI / ECS Fargate deployment baseline — see AAP §0.6.1).
+
+Usage Patterns
+--------------
+Import the declarative base and one or more entity classes from the
+package (recommended for services, routers, batch jobs)::
+
+    from src.shared.models import Base, Account, Card, Transaction
+
+Bootstrap the full schema on an empty database — every entity table
+is already registered on ``Base.metadata`` by virtue of the eager
+re-exports in this file, so no explicit ``load_all_models()`` call
+is needed::
+
+    from sqlalchemy import create_engine
+    from src.shared.models import Base  # triggers import of all 11 models
+    engine = create_engine("postgresql+psycopg2://.../carddemo")
+    Base.metadata.create_all(engine)
+
+Alembic ``env.py`` ``target_metadata`` (autogenerate sees every
+entity because importing the package eagerly registers them)::
+
+    from src.shared.models import Base  # eager-registers all 11 tables
+    target_metadata = Base.metadata
+
+pytest schema fixture for test isolation::
+
+    @pytest.fixture
+    def db_schema(engine):
+        from src.shared.models import Base  # eager-registers all tables
+        Base.metadata.create_all(engine)
+        yield
+        Base.metadata.drop_all(engine)
 
 See Also
 --------
-AAP §0.4.1 — Refactored Structure Planning
-AAP §0.5.1 — File-by-File Transformation Plan (model mappings)
-AAP §0.7.2 — Financial Precision (``Decimal`` semantics on monetary fields)
+AAP §0.4.1 — Refactored Structure Planning.
+AAP §0.5.1 — File-by-File Transformation Plan (11 entity model mappings).
+AAP §0.7.1 — Refactoring-Specific Rules (minimal change / preserve logic).
+AAP §0.7.2 — Financial Precision (``Decimal`` semantics on monetary columns).
+``db/migrations/V1__schema.sql`` — Flyway DDL for the 11 tables
+(plural table names: ``accounts``, ``cards``, ``customers``,
+``card_cross_references``, ``transactions``,
+``transaction_category_balances``, ``daily_transactions``,
+``disclosure_groups``, ``transaction_types``,
+``transaction_categories``, ``user_security``).
 """
 
-from sqlalchemy import MetaData
+# ----------------------------------------------------------------------------
+# SQLAlchemy 2.x declarative base.
+#
+# MUST be defined BEFORE the entity-module re-exports below, because every
+# entity module (account.py, card.py, …) executes
+#     from src.shared.models import Base
+# at import-time. Placing `class Base` first ensures the name is already
+# resolvable in the partially loaded `src.shared.models` namespace when
+# the first entity module runs its top-level imports.
+# ----------------------------------------------------------------------------
 from sqlalchemy.orm import DeclarativeBase
 
 
 class Base(DeclarativeBase):
-    """SQLAlchemy 2.x declarative base class for all CardDemo ORM models.
+    """SQLAlchemy 2.x declarative base class for every CardDemo ORM model.
 
-    Every entity model in the ``src.shared.models`` package (``Account``,
-    ``Card``, ``Customer``, ``CardCrossReference``, ``Transaction``,
-    ``TransactionCategoryBalance``, ``DailyTransaction``, ``DisclosureGroup``,
-    ``TransactionType``, ``TransactionCategory``, ``UserSecurity``) inherits
-    from this class to register with a single shared
-    :class:`~sqlalchemy.MetaData` instance, enabling unified schema
-    management, Alembic migrations, and ``Base.metadata.create_all()``
-    bootstrap.
+    Every ORM entity in the ``src.shared.models`` package inherits from
+    this class so that all 11 tables register on a single shared
+    :class:`~sqlalchemy.MetaData` instance. This enables unified
+    schema management: one ``Base.metadata.create_all(engine)`` call
+    materializes the full CardDemo schema, one Alembic ``env.py``
+    ``target_metadata = Base.metadata`` assignment exposes every
+    entity to autogenerate, and one ``Base.metadata.drop_all(engine)``
+    call tears down the entire schema for test isolation.
 
-    Intentionally empty — no shared columns, mixins, or type annotations
-    are hoisted onto the base. Each entity model declares its own columns
-    so that the mapping to the originating COBOL copybook record layout
-    remains explicit and auditable (see AAP §0.7.1 "Refactoring-Specific
-    Rules" — preserve existing functionality / minimal change clause).
+    The class body is intentionally empty — the package deliberately
+    does NOT hoist shared columns, timestamps, audit fields, or mixin
+    behaviors onto the base. Each entity model declares its own
+    columns verbatim so that the mapping from the originating COBOL
+    copybook record layout remains explicit and audit-traceable
+    against the retained source artifacts in ``app/cpy/`` (see
+    AAP §0.7.1 "minimal change clause" and "preserve existing
+    functionality").
+
+    Exposes (via inheritance from :class:`~sqlalchemy.orm.DeclarativeBase`):
+
+    metadata : sqlalchemy.MetaData
+        The shared :class:`~sqlalchemy.MetaData` registry on which
+        every subclass's :class:`~sqlalchemy.Table` is registered.
+        Consumed by ``Base.metadata.create_all()``, Alembic
+        autogenerate (``env.py`` ``target_metadata``), schema-diff
+        tooling, and the pytest fixtures that drop-and-create the
+        test database.
+    registry : sqlalchemy.orm.registry
+        The underlying SQLAlchemy :class:`~sqlalchemy.orm.registry`
+        that holds the class-to-table mapping for every subclass.
+        Exposed for advanced use cases (e.g., imperative mapping,
+        cross-registry introspection). Ordinary application code
+        rarely touches this attribute directly.
     """
 
 
 # ----------------------------------------------------------------------------
-# load_all_models() — convenience helper for full-schema bootstrap
-# ----------------------------------------------------------------------------
-# QA Checkpoint 1 (Feature 10, Finding 2 [INFO]) observed that a bare
-# ``from src.shared.models import Base`` leaves ``Base.metadata.tables``
-# empty because no entity module has been imported. This is the
-# intentional lazy-loading contract of the package — but callers that
-# DO need the full schema registered (Alembic ``env.py``, pytest
-# fixtures that drop-and-create the test database, ad-hoc QA tooling,
-# ``Base.metadata.create_all(engine)`` bootstrap scripts) now have a
-# single, documented, idempotent entry point.
+# Eager re-exports of all 11 CardDemo entity model classes.
 #
-# Imports are performed in alphabetical order so the table order on
-# ``MetaData.sorted_tables`` is deterministic across runs — a property
-# that Alembic autogenerate and DDL diffing tools rely on for clean,
-# reproducible migrations.
+# These imports are placed AFTER ``class Base`` so that the entity modules
+# can resolve ``from src.shared.models import Base`` successfully against
+# the partially initialized ``src.shared.models`` namespace (Python's
+# cyclic-import protocol: the module is already registered in
+# ``sys.modules`` with ``Base`` defined, and entity modules therefore
+# receive the real ``Base`` object, not a ``ImportError``).
+#
+# Imports are listed in alphabetical order so ``Base.metadata.sorted_tables``
+# produces a stable ordering across runs. This determinism matters for:
+#
+# * Alembic autogenerate — renders CREATE TABLE statements in metadata
+#   order; unstable ordering produces noisy, unreviewable migration
+#   diffs across commits.
+# * Schema-diff tooling — a stable metadata order makes rendered DDL
+#   byte-reproducible so that CI can assert "no schema drift".
+# * ``Base.metadata.create_all()`` / ``drop_all()`` — executes tables
+#   in metadata order (respecting FK dependencies); a stable order
+#   aids debugging when a single table fails to materialize.
+#
+# The ``noqa: E402`` directives suppress the "module-level import not
+# at top of file" lint warning that would otherwise fire because these
+# imports deliberately come after the ``class Base`` statement. The
+# ordering is load-bearing and cannot be moved (see design note above).
 # ----------------------------------------------------------------------------
-def load_all_models() -> MetaData:
-    """Import every CardDemo entity module and return ``Base.metadata``.
-
-    Performs the one-time side-effect of importing all 11 ORM entity
-    modules so that every mapped class registers its table on
-    ``Base.metadata``. After the call returns, the metadata object
-    contains the complete CardDemo relational schema and can be used
-    for:
-
-    * :meth:`sqlalchemy.MetaData.create_all` — bootstrap the schema in
-      an empty database (tests, local development).
-    * :meth:`sqlalchemy.MetaData.drop_all` — tear down the schema for
-      test isolation.
-    * Alembic ``env.py`` ``target_metadata`` — enable autogenerate to
-      see the full model set when producing migration scripts.
-    * Introspection tools (QA validators, schema diff utilities) that
-      need to enumerate the full table set.
-
-    The function is **idempotent**: subsequent calls are no-ops because
-    Python caches imported modules in :data:`sys.modules` and SQLAlchemy
-    registers each table exactly once on the shared metadata registry.
-    Callers may invoke it unconditionally at startup without risking
-    duplicate-table errors.
-
-    Imports execute in alphabetical order so the resulting
-    ``MetaData.sorted_tables`` order is stable across runs — important
-    for Alembic autogenerate and any tool that compares rendered DDL
-    across commits.
-
-    Returns
-    -------
-    sqlalchemy.MetaData
-        The :attr:`Base.metadata` instance, after registration of all
-        11 entity tables: ``accounts``, ``cards``, ``card_cross_references``,
-        ``customers``, ``daily_transactions``, ``disclosure_groups``,
-        ``transactions``, ``transaction_categories``,
-        ``transaction_category_balances``, ``transaction_types``,
-        ``user_security``. Plural table names match the Aurora
-        PostgreSQL DDL defined in ``db/migrations/V1__schema.sql``;
-        ``user_security`` is the lone singular table because its name
-        is an invariant noun phrase (a security *record type*, not a
-        collection of "securities"). Python module filenames remain
-        singular (e.g., ``account.py``) because each file defines a
-        single entity class — this follows the Python filename
-        convention for entities and is independent of the SQL table
-        name contract.
-
-    Examples
-    --------
-    Bootstrap the full schema on an empty database::
-
-        from sqlalchemy import create_engine
-        from src.shared.models import Base, load_all_models
-
-        load_all_models()
-        engine = create_engine("postgresql+psycopg2://.../carddemo")
-        Base.metadata.create_all(engine)
-
-    Alembic ``env.py``::
-
-        from src.shared.models import Base, load_all_models
-
-        load_all_models()
-        target_metadata = Base.metadata
-
-    pytest fixture for a clean test database::
-
-        @pytest.fixture
-        def db_schema(engine):
-            from src.shared.models import Base, load_all_models
-            load_all_models()
-            Base.metadata.create_all(engine)
-            yield
-            Base.metadata.drop_all(engine)
-
-    See Also
-    --------
-    :class:`Base` — declarative base all entity models subclass.
-    AAP §0.5.1 — File-by-File Transformation Plan (11 entity modules).
-    """
-    # Imports are intentionally local to the function body. Placing them
-    # at module-import-time would defeat the lazy-loading contract this
-    # package is built on. Local imports are cheap after the first call
-    # because Python caches modules in ``sys.modules``.
-    #
-    # Each ``import ... as _`` discards the module reference — all we
-    # need is the side-effect of SQLAlchemy registering each subclass
-    # on ``Base.metadata``. ``noqa: F401`` suppresses the
-    # unused-import lint warning that would otherwise be raised for
-    # the side-effect imports.
-    from src.shared.models import account as _account  # noqa: F401
-    from src.shared.models import card as _card  # noqa: F401
-    from src.shared.models import card_cross_reference as _card_cross_reference  # noqa: F401
-    from src.shared.models import customer as _customer  # noqa: F401
-    from src.shared.models import daily_transaction as _daily_transaction  # noqa: F401
-    from src.shared.models import disclosure_group as _disclosure_group  # noqa: F401
-    from src.shared.models import transaction as _transaction  # noqa: F401
-    from src.shared.models import transaction_category as _transaction_category  # noqa: F401
-    from src.shared.models import transaction_category_balance as _transaction_category_balance  # noqa: F401
-    from src.shared.models import transaction_type as _transaction_type  # noqa: F401
-    from src.shared.models import user_security as _user_security  # noqa: F401
-
-    return Base.metadata
-
+from src.shared.models.account import Account  # noqa: E402
+from src.shared.models.card import Card  # noqa: E402
+from src.shared.models.card_cross_reference import CardCrossReference  # noqa: E402
+from src.shared.models.customer import Customer  # noqa: E402
+from src.shared.models.daily_transaction import DailyTransaction  # noqa: E402
+from src.shared.models.disclosure_group import DisclosureGroup  # noqa: E402
+from src.shared.models.transaction import Transaction  # noqa: E402
+from src.shared.models.transaction_category import TransactionCategory  # noqa: E402
+from src.shared.models.transaction_category_balance import (  # noqa: E402
+    TransactionCategoryBalance,
+)
+from src.shared.models.transaction_type import TransactionType  # noqa: E402
+from src.shared.models.user_security import UserSecurity  # noqa: E402
 
 # ----------------------------------------------------------------------------
 # Public re-export list.
 #
-# Advertises the declarative :class:`Base` and the :func:`load_all_models`
-# bootstrap helper. Entity classes are NOT re-exported here — consumers
-# must import them from their specific submodule path (e.g.,
-# ``from src.shared.models.user_security import UserSecurity``). This
-# mirrors the lazy-loading pattern used by ``src.shared.utils`` and
-# ``src.shared.schemas``, and avoids creating a circular-import risk
-# while the model package is being assembled file-by-file.
+# Advertises the declarative :class:`Base` and all 11 CardDemo entity
+# model classes as the package's public API. Consumers (services,
+# routers, batch jobs, GraphQL resolvers, tests) should import from
+# this package root:
+#
+#     from src.shared.models import Base, Account, Card, Transaction
+#
+# rather than drilling into submodule paths. The 12-entry list matches
+# the "Exports" schema contract (AAP / file schema): one entry for
+# :class:`Base` plus one for each of the 11 entity classes.
 # ----------------------------------------------------------------------------
 __all__: list[str] = [
     "Base",
-    "load_all_models",
+    "Account",
+    "Card",
+    "Customer",
+    "CardCrossReference",
+    "Transaction",
+    "TransactionCategoryBalance",
+    "DailyTransaction",
+    "DisclosureGroup",
+    "TransactionType",
+    "TransactionCategory",
+    "UserSecurity",
 ]
