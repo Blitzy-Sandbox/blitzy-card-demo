@@ -179,12 +179,30 @@ async def logout() -> SignOutResponse:
     required (``/auth/logout`` is in ``PUBLIC_PATHS``) so that clients
     can call it after the JWT has already been discarded.
 
+    COBOL mapping
+    -------------
+    In CICS, the pseudo-conversational session ended implicitly either
+    by ``EXEC CICS RETURN`` without a COMMAREA or by RTIMOUT on the
+    transaction. There was no explicit sign-out transaction. The
+    cloud-native equivalent is to discard the JWT bearer token — this
+    endpoint exists only to provide a consistent REST confirmation
+    envelope for clients that expect a 200 response on logout.
+
     Returns
     -------
     SignOutResponse
-        Fixed confirmation message.
+        Fixed confirmation message per AAP Phase 4 Step 2.
     """
-    return SignOutResponse(message="Signed out successfully")
+    # Structured log for CloudWatch Logs Insights — the route is
+    # anonymous by design (no JWT required), so we cannot log a
+    # user_id here. A sign-out event is still emitted to support
+    # session-lifecycle auditing correlated by client IP via ALB
+    # access logs.
+    logger.info("Sign-out acknowledged")
+
+    # Confirmation message per AAP §0.5.1 (auth_router.py row) and
+    # AAP Phase 4 "POST /auth/logout Endpoint" Step 2.
+    return SignOutResponse(message="Successfully signed out")
 
 
 __all__ = ["router"]
