@@ -115,7 +115,7 @@ _ACCT_ID_REGEX: str = r"^[0-9]{11}$"
         "from the legacy CACTVWAI BMS symbolic map)."
     ),
 )
-async def view_account(
+async def get_account(
     acct_id: str = Path(
         ...,
         pattern=_ACCT_ID_REGEX,

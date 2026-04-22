@@ -816,7 +816,7 @@ class AccountService:
             return AccountService(db)
 
         @router.get("/accounts/{account_id}")
-        async def view_account(
+        async def get_account(
             account_id: str,
             service: AccountService = Depends(get_account_service),
         ) -> AccountViewResponse:
