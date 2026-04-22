@@ -64,19 +64,32 @@ Error surfacing
 ``TransactionService`` uses two slightly different surfacing
 patterns — both handled uniformly here:
 
-* **List / Detail** (GET): on failure the service returns a
+* **List** (GET ``/transactions``): on failure the service returns a
   response with ``message`` populated (e.g.
-  ``_MSG_UNABLE_TO_LOOKUP_LIST``, ``_MSG_TRAN_NOT_FOUND``,
-  ``_MSG_UNABLE_TO_LOOKUP_DETAIL``) and an empty ``transactions``
-  list / minimally-populated detail record. The router translates a
-  populated ``message`` into :class:`HTTPException` (400).
-* **Add** (POST): the service returns
+  ``_MSG_UNABLE_TO_LOOKUP_LIST``) and an empty ``transactions``
+  list. The router translates a populated ``message`` into
+  :class:`HTTPException` (400).
+* **Detail** (GET ``/transactions/{tran_id}``): on failure the
+  service returns a response with ``message`` populated. The router
+  differentiates:
+
+    * ``_MSG_TRAN_NOT_FOUND`` ("Transaction ID NOT found...") →
+      :class:`HTTPException` (404).
+    * ``_MSG_TRAN_ID_EMPTY``, ``_MSG_UNABLE_TO_LOOKUP_DETAIL`` →
+      :class:`HTTPException` (400).
+
+* **Add** (POST ``/transactions``): the service returns
   :class:`TransactionAddResponse` with ``confirm='Y'`` on success,
   ``confirm='N'`` on failure (with ``message`` set to the reason).
-  The router translates ``confirm='N'`` into :class:`HTTPException`
-  (400).
+  The router differentiates:
 
-In both cases the global ABEND-DATA handler wraps the 400 for a
+    * ``_MSG_CARD_NOT_IN_XREF``, ``_MSG_ACCT_CARD_MISMATCH``
+      (card↔account cross-reference failure) →
+      :class:`HTTPException` (404).
+    * ``_MSG_UNABLE_TO_ADD`` and other validation errors →
+      :class:`HTTPException` (400).
+
+In all cases the global ABEND-DATA handler wraps the HTTP error for a
 consistent client-facing envelope.
 
 See Also
@@ -208,10 +221,11 @@ async def list_transactions(
         "Full 350-byte transaction record with merchant, dates, amount, description (CVTRA05Y layout)."
     ),
 )
-async def view_transaction(
+async def get_transaction(
     tran_id: str = Path(
         ...,
         pattern=_TRAN_ID_REGEX,
+        min_length=1,
         max_length=16,
         description="Transaction ID — up to 16 characters (COBOL PIC X(16))",
     ),
@@ -225,6 +239,16 @@ async def view_transaction(
     DATASET('TRANSACT') RIDFLD(TRAN-ID)`` and populated the
     ``CTRN01AI`` BMS map. The modernized equivalent is a SQLAlchemy
     primary-key lookup in :meth:`TransactionService.get_transaction_detail`.
+
+    Status-code semantics
+    ---------------------
+    * **200 OK** — record found; full 350-byte record returned.
+    * **404 Not Found** — service returned ``_MSG_TRAN_NOT_FOUND``
+      ("Transaction ID NOT found..."). The router uses the presence
+      of "NOT found" in the message as the discriminator (the only
+      service message that contains that phrase).
+    * **400 Bad Request** — any other service-returned error
+      (empty ID, DB lookup failure, etc.).
     """
     logger.info(
         "GET /transactions/%s initiated",
@@ -238,10 +262,35 @@ async def view_transaction(
     service = TransactionService(db)
     response = await service.get_transaction_detail(tran_id)
     if response.message:
-        # A populated message indicates failure: either the record
-        # was not found (_MSG_TRAN_NOT_FOUND) or the DB call errored
-        # (_MSG_UNABLE_TO_LOOKUP_DETAIL). In either case translate to
-        # 400 and let the global handler wrap it in ABEND-DATA.
+        # A populated message indicates failure. Differentiate:
+        #   * "Transaction ID NOT found..." (_MSG_TRAN_NOT_FOUND)
+        #     → 404 (semantically correct HTTP for missing resource).
+        #   * Everything else (_MSG_TRAN_ID_EMPTY,
+        #     _MSG_UNABLE_TO_LOOKUP_DETAIL) → 400.
+        # The substring "NOT found" is unique to _MSG_TRAN_NOT_FOUND
+        # among the service's detail-path messages.
+        if "NOT found" in response.message:
+            logger.info(
+                "Transaction not found",
+                extra={
+                    "user_id": current_user.user_id,
+                    "tran_id": tran_id,
+                    "endpoint": "transaction_detail",
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=response.message,
+            )
+        logger.warning(
+            "Transaction detail lookup failed",
+            extra={
+                "user_id": current_user.user_id,
+                "tran_id": tran_id,
+                "endpoint": "transaction_detail",
+                "service_message": response.message,
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=response.message,
@@ -295,12 +344,53 @@ async def add_transaction(
     response = await service.add_transaction(request)
     if response.confirm != "Y":
         # Business-level failure. The service has already rolled back
-        # and populated response.message with the specific reason
-        # (e.g. _MSG_CARD_NOT_IN_XREF, _MSG_UNABLE_TO_ADD).
+        # and populated response.message with the specific reason.
+        # Differentiate by service message:
+        #   * _MSG_CARD_NOT_IN_XREF  ("Unable to lookup Card # in XREF...")
+        #   * _MSG_ACCT_CARD_MISMATCH ("Account/Card mismatch in XREF...")
+        #     → 404 (missing / mismatched cross-reference resource).
+        #   * _MSG_UNABLE_TO_ADD and other validation errors → 400.
+        # The substring "XREF" is unique to the cross-reference
+        # failure messages in the service.
+        detail_message = response.message or "Transaction add failed"
+        if "XREF" in detail_message:
+            logger.info(
+                "Transaction add rejected: cross-reference lookup failed",
+                extra={
+                    "user_id": current_user.user_id,
+                    "card_num": request.card_num,
+                    "acct_id": request.acct_id,
+                    "endpoint": "transaction_add",
+                    "service_message": detail_message,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=detail_message,
+            )
+        logger.warning(
+            "Transaction add failed",
+            extra={
+                "user_id": current_user.user_id,
+                "card_num": request.card_num,
+                "endpoint": "transaction_add",
+                "service_message": detail_message,
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=response.message or "Transaction add failed",
+            detail=detail_message,
         )
+    logger.info(
+        "Transaction added successfully",
+        extra={
+            "user_id": current_user.user_id,
+            "tran_id": response.tran_id,
+            "card_num": response.card_num,
+            "acct_id": response.acct_id,
+            "endpoint": "transaction_add",
+        },
+    )
     return response
 
 
