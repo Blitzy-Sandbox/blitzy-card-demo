@@ -1,8 +1,9 @@
 # ============================================================================
-# Source: app/cbl/COADM01C.cbl  (Admin menu, Feature F-003)
-#         + app/cpy-bms/COADM01.CPY  (BMS symbolic map)
-#         + app/cpy/COADM02Y.cpy     (Admin menu options table) —
-#         Mainframe-to-Cloud migration
+# Source: app/cbl/COADM01C.cbl  (Admin menu, CICS transaction CA00, F-003)
+#         + app/cpy/COADM02Y.cpy    (Admin menu options table)
+#         + app/cpy/COCOM01Y.cpy    (CARDDEMO-COMMAREA — CDEMO-USER-TYPE)
+#         + app/cpy-bms/COADM01.CPY (BMS symbolic map — OPTIONI/ERRMSGI)
+#         -> Mainframe-to-Cloud migration (AAP Sec 0.5.1)
 # ============================================================================
 # Copyright Amazon.com, Inc. or its affiliates.
 # All Rights Reserved.
@@ -19,162 +20,348 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ============================================================================
-"""Admin router — HTTP transport for Feature F-003 (Admin menu).
+"""Admin menu router.
 
-Endpoint summary
+Converted from ``app/cbl/COADM01C.cbl`` (CICS transaction ``CA00``,
+Feature F-003). Provides admin-only endpoints requiring
+``user_type == 'A'`` (from ``app/cpy/COCOM01Y.cpy`` 88-level
+``CDEMO-USRTYP-ADMIN``). The original 4-option ``XCTL`` dispatch to
+``COUSR00C``/``COUSR01C``/``COUSR02C``/``COUSR03C`` is handled by the
+user_router; this router provides admin metadata and navigation.
+
+Mainframe-to-Cloud Mapping
+--------------------------
+The legacy ``COADM01C.cbl`` program is a pseudo-conversational CICS
+program that renders the admin menu (BMS mapset ``COADM01``) and
+dispatches to one of four user-management programs via
+``EXEC CICS XCTL PROGRAM('COUSR0nC')``. The transformation pattern
+applied here is:
+
+============================================================  ====================================
+COBOL / CICS construct                                        FastAPI / HTTP equivalent
+============================================================  ====================================
+``EXEC CICS RETURN TRANSID('CA00') COMMAREA(...)``            Stateless REST (no TRANSID)
+``IF CDEMO-USRTYP-ADMIN ...``  (88-level VALUE 'A')           :func:`get_current_admin_user`
+                                                              dependency -> HTTP 403 when false
+``SEND MAP('COADM1A') MAPSET('COADM01')``                     ``GET /admin/menu`` JSON response
+``RECEIVE MAP('COADM1A')`` + ``EVALUATE WS-OPTION``           Client selects option; calls the
+                                                              ``endpoint``+``method`` from payload
+``EXEC CICS XCTL PROGRAM(CDEMO-ADMIN-OPT-PGMNAME(IDX))``      Client invokes REST endpoint under
+                                                              ``/users`` (user_router.py)
+``PERFORM POPULATE-HEADER-INFO`` (title/date/time fields)     Embedded in ``menu_title`` + JSON
+                                                              payload (clients render their own
+                                                              chrome)
+``ERRMSGO OF COADM1AO`` (error message display)               ``HTTPException`` with detail text
+                                                              (via global exception handler)
+============================================================  ====================================
+
+The 4 admin menu rows originate from ``app/cpy/COADM02Y.cpy`` where
+``CDEMO-ADMIN-OPT-COUNT = 4`` and each ``CDEMO-ADMIN-OPT`` occurrence
+carries a numeric option, a 35-character label, and an 8-character
+COBOL program name. In this cloud-native replacement we drop the
+legacy program names from the payload (they are implementation
+details of the retired CICS architecture) and surface the equivalent
+REST route/method pair instead so that self-describing clients can
+invoke the target endpoint directly.
+
+Endpoint Summary
 ----------------
-``GET /admin/menu``   — Return the admin-menu option list
-                       (F-003, COADM01C.cbl).
-``GET /admin/status`` — Lightweight admin-liveness probe (cloud-
-                       native addition — the equivalent of a CICS
-                       "enter the admin region" landing page).
+``GET /admin/menu``   -> Admin-menu option list (replaces
+                         ``SEND MAP('COADM1A')`` in COADM01C).
+``GET /admin/status`` -> Admin-only liveness probe (cloud-native
+                         addition; the equivalent of a CICS "enter
+                         the admin region" landing screen).
 
-Both endpoints are admin-only. The :class:`JWTAuthMiddleware`
-enforces this globally via the ``/admin`` prefix being listed in
-``ADMIN_ONLY_PREFIXES``.
+Security
+--------
+Every endpoint in this module depends on
+:func:`src.api.dependencies.get_current_admin_user`, which:
 
-COBOL → HTTP mapping
---------------------
-======================================================  =======================
-COBOL construct                                         HTTP equivalent
-======================================================  =======================
-``SEND MAP('COADM01') FROM(ADMIN-MENU-RECORD)``         ``GET /admin/menu``
-``EVALUATE CDEMO-ADMIN-OPT-NUM``                        Client chooses option;
-                                                        follows ``route`` in
-                                                        the JSON payload
-``XCTL PROGRAM('COUSR0nC')``                            Equivalent REST
-                                                        endpoint under /users
-``RECEIVE MAP('COADM01')``                              N/A (REST is
-                                                        stateless)
-======================================================  =======================
+1. Decodes and validates the JWT bearer token (raises 401 on
+   failure -- corresponds to CICS refusing the transaction when
+   COMMAREA is missing or malformed).
+2. Enforces the ``CDEMO-USRTYP-ADMIN VALUE 'A'`` 88-level condition
+   by raising HTTP 403 Forbidden when ``current_user.is_admin`` is
+   ``False`` (the JWT's ``user_type`` claim was ``'U'``).
 
-Design note — why these are meta endpoints
--------------------------------------------
-The COBOL admin-menu screen is a **navigation** screen: it merely
-lists the four admin operations (User List, User Add, User Update,
-User Delete) and waits for the user to type an option number, at
-which point the CICS ``XCTL`` transfers control to the chosen
-program. In a REST architecture the "navigation" is client-side —
-the client already knows the four endpoints. But the menu JSON is
-still useful for:
-
-* Self-describing clients (React / Vue / CLI) that render a menu
-  programmatically from the server's payload;
-* Preserving the functional parity with COADM01C (AAP §0.7.1
-  "Preserve all existing functionality exactly as-is"); and
-* Supporting future permission-gated menus (return only the options
-  the current admin user is authorized to invoke).
+Non-admin users therefore receive 403 Forbidden from every route in
+this module, matching the COADM01C behavior of never dispatching to
+admin-only programs for regular users.
 
 See Also
 --------
-* AAP §0.5.1 — File-by-File Transformation Plan
-* :mod:`src.shared.constants.menu_options` — the single source of
-  truth for admin menu rows (converted from COADM02Y.cpy).
+* AAP Sec 0.5.1 -- File-by-File Transformation Plan (admin_router row)
+* AAP Sec 0.7.1 -- Preserve all existing functionality exactly as-is
+* :mod:`src.api.dependencies` -- :func:`get_current_admin_user`,
+  :class:`CurrentUser` (JWT-based replacement for CICS COMMAREA)
+* :mod:`src.api.routers.user_router` -- implements the 4 CRUD endpoints
+  that COADM01C's 4 ``XCTL`` targets (``COUSR00C``/``COUSR01C``/
+  ``COUSR02C``/``COUSR03C``) correspond to in the target architecture
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends
 
 from src.api.dependencies import CurrentUser, get_current_admin_user
-from src.shared.config import get_settings
-from src.shared.constants.menu_options import (
-    ADMIN_MENU_OPT_COUNT,
-    ADMIN_MENU_OPTIONS,
-    PROGRAM_TO_API_ROUTE,
-)
 
+# ----------------------------------------------------------------------------
+# Module logger.
+#
+# Structured records flow to CloudWatch Logs via the ECS awslogs driver
+# (AAP Sec 0.7.2 -- Monitoring Requirements). Filter by
+# ``logger_name = "src.api.routers.admin_router"`` in Logs Insights to
+# isolate admin menu / admin status audit events. The ``extra`` kwargs
+# passed to each ``logger.info(...)`` call below are indexed
+# individually by CloudWatch, so admin-specific dashboards can filter
+# on ``user_id`` and ``endpoint`` fields without parsing the message.
+# ----------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
 
+# ----------------------------------------------------------------------------
+# Admin router instance.
+#
+# Replaces CICS transaction CA00 (COADM01C admin menu for admin users).
+#
+# NOTE: No prefix here. The mount-site ``src/api/main.py`` applies
+# ``prefix="/admin"`` via ``app.include_router(admin_router.router,
+# prefix="/admin", ...)`` so this module remains mount-path agnostic --
+# useful for tests that mount the router directly without a prefix.
+# ----------------------------------------------------------------------------
 router: APIRouter = APIRouter()
 
 
-@router.get(
-    "/menu",
-    status_code=status.HTTP_200_OK,
-    summary="Admin menu — list of admin operations (F-003 COADM01C.cbl)",
-    response_description=(
-        "Array of admin menu options with option_num, option_name, "
-        "legacy program_name, and the target REST route so clients "
-        "can invoke the matching endpoint directly."
-    ),
-)
-async def admin_menu(
+# ============================================================================
+# GET /admin/menu -- Admin menu options
+# ============================================================================
+@router.get("/menu", summary="Admin Menu Options")
+async def get_admin_menu(
     current_user: CurrentUser = Depends(get_current_admin_user),
 ) -> dict[str, Any]:
-    """Return the list of admin menu options.
+    """Return the 4-option admin menu as JSON.
 
-    Equivalent of the COADM01C ``SEND MAP('COADM01')`` refresh. The
-    server is the single source of truth for the menu contents;
-    clients render the payload without hard-coding option labels.
+    Replaces the COADM01C ``SEND MAP('COADM1A') MAPSET('COADM01')``
+    refresh loop. The original program built 12 ``OPTNnnnO`` output
+    fields by iterating the ``CDEMO-ADMIN-OPTIONS`` table
+    (``app/cpy/COADM02Y.cpy`` lines 22-48) and calling
+    ``EXEC CICS SEND MAP``; this endpoint performs the same
+    responsibility in REST form.
 
-    The returned payload includes the legacy ``program_name`` for
-    traceability plus the ``route`` that the REST caller should hit
-    when that option is selected. The ``route`` is looked up from
-    :data:`PROGRAM_TO_API_ROUTE` — the same mapping used by
-    ``graphql/queries.py`` for GraphQL menu queries.
+    The admin menu option table (``app/cpy/COADM02Y.cpy``) is
+    preserved exactly with 4 entries corresponding to the 4 user-
+    management CICS programs:
+
+    ====== ================== ==================== ========
+    Option Label              Endpoint             Method
+    ====== ================== ==================== ========
+    1      User List          /users               GET
+    2      User Add           /users               POST
+    3      User Update        /users/{user_id}     PUT
+    4      User Delete        /users/{user_id}     DELETE
+    ====== ================== ==================== ========
+
+    In the cloud-native architecture, option selection is fully
+    client-side: the caller reads the ``options`` array, picks an
+    entry, and issues the declared ``method`` against ``endpoint``.
+    There is no server-side ``EVALUATE`` (COADM01C
+    ``PROCESS-ENTER-KEY``) because the server does not retain
+    conversational state between requests.
+
+    Parameters
+    ----------
+    current_user : :class:`CurrentUser`
+        Authenticated admin user injected by
+        :func:`get_current_admin_user`. The dependency has already
+        validated the JWT and enforced the ``user_type == 'A'`` gate
+        -- non-admin callers never reach this function body (403
+        Forbidden is raised upstream). Captured in the audit log
+        below so CloudWatch Logs Insights can trace admin-menu
+        access per user.
+
+    Returns
+    -------
+    dict[str, Any]
+        JSON payload with the admin menu title and the 4-option
+        navigation list. Shape::
+
+            {
+              "menu_title": "Administrative Menu",
+              "options": [
+                {"option": 1, "label": "User List",
+                 "endpoint": "/users",           "method": "GET"},
+                {"option": 2, "label": "User Add",
+                 "endpoint": "/users",           "method": "POST"},
+                {"option": 3, "label": "User Update",
+                 "endpoint": "/users/{user_id}", "method": "PUT"},
+                {"option": 4, "label": "User Delete",
+                 "endpoint": "/users/{user_id}", "method": "DELETE"}
+              ]
+            }
+
+    Raises
+    ------
+    fastapi.HTTPException
+        Status 401 (propagated from :func:`get_current_admin_user`
+        via :func:`src.api.dependencies.get_current_user`) if the
+        JWT is missing, malformed, or expired.
+    fastapi.HTTPException
+        Status 403 (raised by :func:`get_current_admin_user`) if the
+        authenticated user's ``user_type`` claim is ``'U'`` (regular
+        user) instead of ``'A'`` (admin).
     """
+    # ------------------------------------------------------------------
+    # Audit the admin menu access. Using ``extra`` (not f-string
+    # interpolation) so the fields are indexed individually by
+    # CloudWatch Logs Insights for precise admin-behavior analytics.
+    # Sensitive values (JWT, password) are NEVER written -- only the
+    # identity and endpoint marker.
+    # ------------------------------------------------------------------
     logger.info(
-        "GET /admin/menu initiated",
+        "GET /admin/menu accessed",
         extra={
-            "admin_user": current_user.user_id,
-            "endpoint": "admin_menu",
+            "user_id": current_user.user_id,
+            "endpoint": "/admin/menu",
+            "cobol_source": "COADM01C.cbl",
+            "feature": "F-003",
         },
     )
+
+    # ------------------------------------------------------------------
+    # Build the 4-entry options list. The content is a faithful
+    # translation of ``app/cpy/COADM02Y.cpy`` rows 24-42 (the 4
+    # populated entries of the ``CDEMO-ADMIN-OPTIONS-DATA`` table).
+    # Each entry carries the legacy option number as declared in the
+    # COBOL ``PIC 9(02) VALUE n.`` literal, the human-readable label
+    # (trimmed of the trailing space padding the COBOL ``PIC X(35)``
+    # field imposes), and the equivalent REST endpoint/method pair
+    # replacing the legacy ``PIC X(08)`` program name.
+    # ------------------------------------------------------------------
     options: list[dict[str, Any]] = [
+        # Option 1 -> COADM02Y.cpy lines 24-27 (was XCTL to COUSR00C,
+        # COBOL label "User List (Security)")
         {
-            "option_num": opt["option_num"],
-            "option_name": opt["option_name"],
-            "program_name": opt["program_name"],
-            "route": PROGRAM_TO_API_ROUTE.get(opt["program_name"], ""),
-        }
-        for opt in ADMIN_MENU_OPTIONS
+            "option": 1,
+            "label": "User List",
+            "endpoint": "/users",
+            "method": "GET",
+        },
+        # Option 2 -> COADM02Y.cpy lines 29-32 (was XCTL to COUSR01C,
+        # COBOL label "User Add (Security)")
+        {
+            "option": 2,
+            "label": "User Add",
+            "endpoint": "/users",
+            "method": "POST",
+        },
+        # Option 3 -> COADM02Y.cpy lines 34-37 (was XCTL to COUSR02C,
+        # COBOL label "User Update (Security)")
+        {
+            "option": 3,
+            "label": "User Update",
+            "endpoint": "/users/{user_id}",
+            "method": "PUT",
+        },
+        # Option 4 -> COADM02Y.cpy lines 39-42 (was XCTL to COUSR03C,
+        # COBOL label "User Delete (Security)")
+        {
+            "option": 4,
+            "label": "User Delete",
+            "endpoint": "/users/{user_id}",
+            "method": "DELETE",
+        },
     ]
+
+    # The top-level "menu_title" preserves the COBOL title string the
+    # terminal user would have seen on the BMS map -- the
+    # ``CCDA-TITLE01`` / ``CCDA-TITLE02`` fields populated by
+    # ``POPULATE-HEADER-INFO`` in COADM01C lines 202-221. We omit the
+    # run-time date/time header fields because they are now rendered
+    # client-side (the ``CURDATEO`` / ``CURTIMEO`` values were terminal
+    # chrome, not business data).
     return {
-        "title": "Admin Menu",
-        "option_count": ADMIN_MENU_OPT_COUNT,
+        "menu_title": "Administrative Menu",
         "options": options,
-        "user_id": current_user.user_id,
     }
 
 
-@router.get(
-    "/status",
-    status_code=status.HTTP_200_OK,
-    summary="Admin-liveness probe (admin-only)",
-    response_description=("Reports the admin-user identity, the current environment, and the server's UTC timestamp."),
-)
-async def admin_status(
+# ============================================================================
+# GET /admin/status -- Admin system status
+# ============================================================================
+@router.get("/status", summary="Admin System Status")
+async def get_admin_status(
     current_user: CurrentUser = Depends(get_current_admin_user),
 ) -> dict[str, Any]:
-    """Return the admin liveness / environment probe.
+    """Return the admin system status envelope.
 
-    Distinct from ``GET /health`` (which is public and DB-independent):
-    this endpoint requires an admin JWT and reports admin-only
-    context (environment, admin identity, build metadata). Useful for
-    admin-dashboard landing pages and on-call runbooks.
+    Cloud-native addition -- there is no direct COBOL equivalent. In
+    the legacy architecture the admin "system oversight" information
+    (file open/close state, CICS region health) was surfaced via
+    separate operations utilities (``CEMT``, ``CICS`` system
+    transactions) that are not part of CardDemo. Here we expose a
+    minimal admin-only liveness probe that:
+
+    * Confirms the admin JWT is valid (via
+      :func:`get_current_admin_user`).
+    * Returns the authenticated admin's user_id so dashboards and
+      on-call runbooks can verify the signed-in identity at a glance.
+    * Distinguishes from ``GET /health`` (public, DB-independent) by
+      requiring admin privileges.
+
+    Parameters
+    ----------
+    current_user : :class:`CurrentUser`
+        Authenticated admin user injected by
+        :func:`get_current_admin_user`. Only the ``user_id`` is
+        reflected in the response; ``user_type`` and ``is_admin`` are
+        implicit (both are always ``'A'`` / ``True`` here).
+
+    Returns
+    -------
+    dict[str, Any]
+        JSON payload with two keys::
+
+            {
+              "status": "operational",
+              "user":   "<admin user_id>"
+            }
+
+        The ``status`` value is a fixed literal for forward
+        compatibility -- additional operational fields (database
+        connectivity, worker queue depth, etc.) may be added in a
+        future revision without breaking existing clients.
+
+    Raises
+    ------
+    fastapi.HTTPException
+        Status 401 or 403, as described on
+        :func:`get_admin_menu`.
     """
-    settings = get_settings()
+    # Audit the admin status check. Same structured-logging approach
+    # as /admin/menu so the two admin endpoints produce comparable
+    # CloudWatch Logs Insights queries.
     logger.info(
-        "GET /admin/status initiated",
+        "GET /admin/status accessed",
         extra={
-            "admin_user": current_user.user_id,
-            "endpoint": "admin_status",
+            "user_id": current_user.user_id,
+            "endpoint": "/admin/status",
+            "cobol_source": "COADM01C.cbl",
+            "feature": "F-003",
         },
     )
     return {
-        "status": "ok",
-        "admin_user": current_user.user_id,
-        "user_type": current_user.user_type,
-        "app_name": settings.APP_NAME,
-        "app_version": settings.APP_VERSION,
-        "debug": settings.DEBUG,
-        "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "status": "operational",
+        "user": current_user.user_id,
     }
 
 
+# ----------------------------------------------------------------------------
+# Public API -- the single ``router`` attribute consumed by
+# :mod:`src.api.main` via ``app.include_router(admin_router.router,
+# prefix="/admin", ...)`` and re-exported by
+# :mod:`src.api.routers.__init__`. Keeping ``__all__`` explicit guards
+# against accidental inclusion of private helpers in future revisions.
+# ----------------------------------------------------------------------------
 __all__ = ["router"]
