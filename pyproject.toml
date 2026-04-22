@@ -126,8 +126,33 @@ module = [
     # Adding the packages here matches the pattern used for awsglue/pyspark.
     "boto3.*",
     "botocore.*",
+    # python-jose (the JWT library) has no type stubs bundled; types-python-jose
+    # exists but adds a dependency for a handful of jwt.encode/jwt.decode calls.
+    "jose",
+    "jose.*",
+    # passlib does not ship type stubs; types-passlib exists but carries the
+    # same objection as types-python-jose (a dev-only stub for a single CryptContext usage).
+    "passlib",
+    "passlib.*",
 ]
 ignore_missing_imports = true
+
+# factory-boy ships a py.typed marker, so ignore_missing_imports has no effect.
+# Its bundled .pyi stubs are incomplete (factory.Sequence and factory.LazyFunction
+# are not exported at the package root, and factory.Factory cannot be subclassed
+# in strict mode because it resolves to Any). Using follow_imports = "skip"
+# tells mypy to treat all symbols from factory as Any without analyzing the
+# package itself, which is the approach recommended in mypy docs for packages
+# with incorrectly marked py.typed. This keeps tests/conftest.py factory
+# definitions strict-mypy clean without disabling strict mode globally.
+[[tool.mypy.overrides]]
+module = [
+    "factory",
+    "factory.*",
+]
+follow_imports = "skip"
+ignore_missing_imports = true
+disable_error_code = ["attr-defined", "name-defined", "misc", "no-untyped-call"]
 
 # ----------------------------------------------------------------------------
 # Pytest configuration
