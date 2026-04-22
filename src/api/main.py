@@ -1,6 +1,8 @@
 # ============================================================================
 # Source: app/cbl/COMEN01C.cbl  (F-002 Main menu — 10-option dispatcher)
 #         app/cbl/COADM01C.cbl  (F-003 Admin menu — 4-option admin dispatcher)
+#         app/cpy/COMEN02Y.cpy  (Main menu option table — 10 entries)
+#         app/cpy/COADM02Y.cpy  (Admin menu option table — 4 entries)
 #         app/cbl/CO*.cbl       (All 18 online CICS programs, mounted as REST)
 #         app/cpy/COCOM01Y.cpy  (COMMAREA communication block -> JWT payload)
 # ============================================================================
@@ -23,24 +25,26 @@
 
 This module is the **ASGI app factory and composition root** for the
 CardDemo REST/GraphQL API service. It is the Python equivalent of the
-CICS region initialization that on the legacy mainframe was handled by
-:
+CICS region initialization that on the legacy mainframe was handled by:
 
-* ``app/cbl/COMEN01C.cbl`` — Main menu dispatcher (10 options: Account
-  view/update, Card list/detail/update, Transaction list/detail/add,
-  Bill payment, Report submission). In CICS the main menu was the
-  primary user-facing transaction; here it is split into 18 REST
-  endpoints and one GraphQL endpoint, each served by a dedicated
-  router module under :mod:`src.api.routers`.
-* ``app/cbl/COADM01C.cbl`` — Admin menu dispatcher (4 options: User
-  CRUD, Admin dashboard). Admin routes are mounted under the
-  ``/admin`` prefix and gated by the ``ADMIN_ONLY_PREFIXES`` check in
+* ``app/cbl/COMEN01C.cbl`` — Main menu dispatcher (10 options defined in
+  ``app/cpy/COMEN02Y.cpy``: Account view/update, Card list/detail/update,
+  Transaction list/detail/add, Bill payment, Report submission). In CICS
+  the main menu was the primary user-facing transaction (CM00) that
+  performed ``EXEC CICS XCTL`` to dispatch to the target program. Here
+  the menu is dissolved into 7 REST routers (some COBOL programs share a
+  router) and one GraphQL endpoint.
+* ``app/cbl/COADM01C.cbl`` — Admin menu dispatcher (4 options defined in
+  ``app/cpy/COADM02Y.cpy``: User List, User Add, User Update, User
+  Delete mapping to COUSR00C-COUSR03C). Admin transaction CA00 is
+  replaced by the ``admin_router`` and ``user_router`` modules. The
+  ``CDEMO-USRTYP-ADMIN`` 88-level check is enforced by
   :class:`src.api.middleware.auth.JWTAuthMiddleware`.
 
 Architectural role
 ------------------
 Per the Agent Action Plan (AAP §0.5.1), this module has four
-responsibilities:
+responsibilities, implemented by the :func:`create_app` factory:
 
 1. **Instantiate the FastAPI app** — configure title, description,
    version, OpenAPI metadata, and a ``lifespan`` context manager that
@@ -92,6 +96,14 @@ responsibilities:
    that injects a transactional :class:`~sqlalchemy.ext.asyncio.AsyncSession`
    into every resolver's ``info.context["db"]``.
 
+Factory pattern
+---------------
+The module exports **both** a :func:`create_app` factory function and
+a module-level :data:`app` constant (``app = create_app()``). The
+former supports test isolation and per-process configuration injection,
+while the latter preserves the canonical ASGI import path
+``uvicorn src.api.main:app`` required by deployed ECS containers.
+
 Additional endpoints provided by this module
 --------------------------------------------
 * ``GET /health`` — readiness/liveness probe used by the Dockerfile
@@ -124,12 +136,21 @@ Security posture
 Monitoring posture
 ------------------
 * Every router and service emits structured JSON log records via the
-  stdlib :mod:`logging` module, configured externally by the ECS task
-  definition (see ``infra/ecs-task-definition.json``). Log records
-  include ``extra={...}`` fields suitable for CloudWatch Logs
+  stdlib :mod:`logging` module. The :class:`JsonLogFormatter` installed
+  by :func:`_configure_json_logging` (invoked at ``lifespan`` startup
+  and at ``__main__`` entry) uses :func:`json.dumps` to serialize each
+  record as a single-line JSON document suitable for CloudWatch Logs
   Insights queries.
 * The ``/health`` endpoint is polled by CloudWatch synthetic canaries
   and by the ALB target-group health-check.
+
+Direct execution
+----------------
+Running ``python -m src.api.main`` (or ``python src/api/main.py``)
+invokes the ``if __name__ == "__main__"`` block, which starts a local
+Uvicorn server via :func:`uvicorn.run` for development workflows. In
+production (ECS Fargate), the container ``CMD`` directive uses
+``uvicorn src.api.main:app`` directly rather than this block.
 
 See Also
 --------
@@ -148,12 +169,14 @@ See Also
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
+import uvicorn
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -177,33 +200,216 @@ from src.api.routers import (
 from src.shared.config import get_settings
 
 # ----------------------------------------------------------------------------
-# Module-level logger. The root logger is configured externally by the ECS
-# task definition (LOG_LEVEL environment variable) so that log records are
-# shipped to CloudWatch Logs with structured JSON formatting.
+# Module-level logger. The root logger's handler set is installed (with a
+# structured JSON formatter) by ``_configure_json_logging`` at ``lifespan``
+# startup so that every log record produced by any module in the process
+# is serialized as a single-line JSON document for CloudWatch ingestion.
 # ----------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
+
+
+# ----------------------------------------------------------------------------
+# Default application version string. Matches the default of
+# :attr:`src.shared.config.settings.Settings.APP_VERSION` (currently
+# ``"1.0.0"``). The FastAPI ``version`` field is set to this literal at
+# factory time; in deployed environments the ``/openapi.json`` doc reflects
+# whatever env-var-driven ``APP_VERSION`` is in effect because operators
+# override the env var at container build/run time rather than mutating the
+# app object at startup.
+#
+# A literal is used rather than ``get_settings().APP_VERSION`` because
+# :class:`~src.shared.config.settings.Settings` validates required env vars
+# in its constructor (``DATABASE_URL``, ``DATABASE_URL_SYNC``,
+# ``JWT_SECRET_KEY``) and would raise :class:`pydantic.ValidationError`
+# during module import in environments where secrets have not yet been
+# provisioned (e.g., tooling like mypy/ruff/pytest collection).
+# ----------------------------------------------------------------------------
+DEFAULT_APP_VERSION: str = "1.0.0"
+
+
+# ----------------------------------------------------------------------------
+# Structured JSON logging for AWS CloudWatch compatibility.
+#
+# The :class:`JsonLogFormatter` serializes each :class:`logging.LogRecord`
+# as a single-line JSON document so that CloudWatch Logs Insights can parse
+# the fields natively (via the JSON parser rather than regex grok patterns).
+# The format matches the conventions documented in AAP §0.7.2 (Monitoring
+# Requirements):
+#
+# * ``timestamp`` — UTC ISO-8601 timestamp of the log record.
+# * ``level``     — e.g., ``"INFO"``, ``"ERROR"``.
+# * ``logger``    — the :attr:`LogRecord.name` (typically the module path).
+# * ``message``   — the fully rendered message (after ``%``-substitution).
+# * Any ``extra={}`` keys supplied by the caller are merged in flat (e.g.,
+#   ``logger.info("foo", extra={"event": "bar"})`` adds ``"event": "bar"``).
+# * ``exception`` — formatted traceback when ``exc_info=True`` is used.
+#
+# This formatter is idempotent: calling :func:`_configure_json_logging`
+# multiple times is a no-op after the first successful installation,
+# which keeps test harnesses (FastAPI TestClient triggers ``lifespan``
+# per test) from duplicating handlers and flooding stdout.
+# ----------------------------------------------------------------------------
+# Standard :class:`logging.LogRecord` attribute names that we should NOT
+# promote to top-level JSON keys (they are framework-internal or already
+# surfaced under a different name such as ``timestamp``/``level``/``message``).
+_LOG_RECORD_STANDARD_ATTRS: frozenset[str] = frozenset(
+    {
+        "args",
+        "asctime",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "module",
+        "msecs",
+        "message",
+        "msg",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "thread",
+        "threadName",
+        "taskName",
+    }
+)
+
+
+class JsonLogFormatter(logging.Formatter):
+    """Format log records as single-line JSON for CloudWatch ingestion.
+
+    The formatter produces one JSON object per record, with top-level
+    keys ``timestamp``, ``level``, ``logger``, ``message``, and any
+    ``extra={}`` fields supplied at the call site. Exception information
+    (when ``logger.exception(...)`` or ``exc_info=True`` is used) is
+    serialized under the ``exception`` key.
+
+    CloudWatch Logs Insights parses JSON log lines natively, so the
+    structured fields are queryable without regex extraction::
+
+        fields @timestamp, level, event, message
+        | filter level = "ERROR" and event = "db_write_failure"
+        | sort @timestamp desc
+
+    Notes
+    -----
+    * The ``default=str`` argument to :func:`json.dumps` ensures that
+      non-JSON-serializable objects (e.g., :class:`datetime`,
+      :class:`decimal.Decimal`) are coerced to their string
+      representation rather than raising :class:`TypeError`.
+    * The formatter never touches ``sys.stderr`` directly — it merely
+      returns the formatted string; emission is the handler's job.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Serialize a log record as a single-line JSON document.
+
+        Parameters
+        ----------
+        record
+            The :class:`logging.LogRecord` to serialize.
+
+        Returns
+        -------
+        str
+            A single-line JSON string (no trailing newline; the logging
+            handler adds one via its terminator).
+        """
+        log_data: dict[str, Any] = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        # Merge any ``extra={...}`` fields attached at the call site.
+        # These arrive on the record as attributes (Python's logging
+        # module's design), so we filter out the standard attributes
+        # and promote the rest to top-level JSON keys.
+        for key, value in record.__dict__.items():
+            if key in _LOG_RECORD_STANDARD_ATTRS:
+                continue
+            if key.startswith("_"):
+                # Private fields (e.g., ``_stack_info``) are framework
+                # internals and should not leak to the log payload.
+                continue
+            log_data[key] = value
+        if record.exc_info:
+            # ``self.formatException`` returns a multi-line traceback;
+            # we keep it as a single string value in the JSON payload
+            # so the entire log entry remains on one line (matching the
+            # "one JSON object per line" contract expected by CloudWatch).
+            log_data["exception"] = self.formatException(record.exc_info)
+        # ``default=str`` handles datetime, Decimal, UUID and similar
+        # non-JSON-primitive types that commonly appear in ``extra``.
+        return json.dumps(log_data, default=str)
+
+
+def _configure_json_logging(log_level: str = "INFO") -> None:
+    """Install the JSON log formatter on the root logger.
+
+    Idempotent: subsequent calls return without installing additional
+    handlers if a :class:`JsonLogFormatter` is already present on the
+    root logger. This keeps test harnesses (which trigger the
+    ``lifespan`` start-up multiple times via
+    :class:`fastapi.testclient.TestClient`) from stacking duplicate
+    handlers and producing every log line N times.
+
+    Parameters
+    ----------
+    log_level
+        Name of the desired log level (``"INFO"``, ``"DEBUG"``, etc.).
+        Defaults to ``"INFO"`` for production. Values that
+        :func:`logging.getLevelName` cannot resolve fall back to
+        ``INFO``.
+    """
+    root_logger = logging.getLogger()
+    # Idempotence guard: if a JSON formatter is already installed, do
+    # nothing. This matters for TestClient fixtures where the
+    # ``lifespan`` start-up block may run once per test function.
+    for existing_handler in root_logger.handlers:
+        if isinstance(existing_handler.formatter, JsonLogFormatter):
+            return
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonLogFormatter())
+    # Replace existing handlers rather than append — prevents duplicate
+    # output when a library (e.g., uvicorn) installs its own handler at
+    # import time. The JSON handler becomes the single source of truth
+    # for this process.
+    root_logger.handlers = [handler]
+    # Translate a free-form string to a numeric level. If the level
+    # name is unknown, default to INFO.
+    level_value = logging.getLevelName(log_level.upper() if log_level else "INFO")
+    if not isinstance(level_value, int):
+        level_value = logging.INFO
+    root_logger.setLevel(level_value)
 
 
 # ----------------------------------------------------------------------------
 # Application lifespan — replaces CICS "CEMT SET FILE(*) OPEN" bootstrap.
 #
 # The ``lifespan`` context manager is FastAPI's modern alternative to the
-# deprecated ``startup``/``shutdown`` event handlers. It runs exactly once
-# per worker process:
+# deprecated ``@app.on_event("startup")`` / ``@app.on_event("shutdown")``
+# event handlers. It runs exactly once per worker process:
 #
-#   * On entry (before the server begins accepting requests): initialize
-#     the Aurora PostgreSQL connection pool. Any error here fails the
-#     worker startup loudly, preventing the container from passing its
-#     ECS health check and blocking a bad deployment from serving
-#     traffic.
+#   * On entry (before the server begins accepting requests): configure
+#     structured JSON logging (CloudWatch-compatible), then initialize the
+#     Aurora PostgreSQL connection pool. Any error here fails the worker
+#     startup loudly, preventing the container from passing its ECS health
+#     check and blocking a bad deployment from serving traffic.
 #
 #   * On exit (after the server stops accepting requests): dispose of
 #     the pool cleanly so that Aurora's server-side connection counters
 #     decrement promptly rather than waiting for TCP RSTs to drain.
 #
 # This is the Python equivalent of the pair of CICS operations
-# performed at region startup (`CEMT SET FILE(ACCTDAT) OPEN` ...) and
-# region shutdown (`CEMT SET FILE(ACCTDAT) CLOSE`) on the legacy
+# performed at region startup (``CEMT SET FILE(ACCTDAT) OPEN`` ...) and
+# region shutdown (``CEMT SET FILE(ACCTDAT) CLOSE``) on the legacy
 # mainframe.
 # ----------------------------------------------------------------------------
 @asynccontextmanager
@@ -231,12 +437,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         health check.
     """
     settings = get_settings()
+    # Install structured JSON logging *first* so that every subsequent
+    # startup log record (including DB pool initialization) is already
+    # serialized as JSON for CloudWatch.
+    _configure_json_logging(log_level=settings.LOG_LEVEL)
     logger.info(
         "carddemo-api startup beginning",
         extra={
             "event": "api_startup_begin",
             "app_name": settings.APP_NAME,
             "app_version": settings.APP_VERSION,
+            "log_level": settings.LOG_LEVEL,
+            "debug": settings.DEBUG,
         },
     )
     # --- Startup: initialize DB pool --------------------------------------
@@ -265,235 +477,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 # ----------------------------------------------------------------------------
-# FastAPI application factory -- constructs the ASGI app at import time.
+# GraphQL context dependency.
 #
-# NOTE: We intentionally construct the app at module import (rather than
-# inside a factory function) because:
+# Strawberry resolvers access request-scoped resources via
+# ``info.context[...]``. This ``context_getter`` is an async FastAPI
+# dependency callable that injects:
 #
-#   1. ``uvicorn src.api.main:app`` requires ``app`` to be importable by
-#      path. Wrapping it in a factory would force every ASGI client
-#      (uvicorn, Gunicorn, the ``TestClient``) to know the factory's
-#      call signature.
+#   * ``db``        — a transactional :class:`AsyncSession`.
+#   * ``user_id``   — the authenticated user id (from JWT middleware).
+#   * ``user_type`` — ``'A'`` (admin) or ``'U'`` (user).
+#   * ``is_admin``  — boolean convenience flag.
 #
-#   2. ``strawberry.fastapi.GraphQLRouter`` and
-#      ``app.include_router(...)`` bind routes eagerly, so deferring
-#      construction would complicate testing (the TestClient needs a
-#      pre-configured ``app`` to instantiate its starlette test
-#      transport).
-#
-# We DELIBERATELY do NOT call ``get_settings()`` at import time. The
-# :class:`Settings` constructor fails with
-# :class:`pydantic.ValidationError` if required env vars
-# (``DATABASE_URL``, ``DATABASE_URL_SYNC``, ``JWT_SECRET_KEY``) are
-# absent. Deferring the call to request time (``/health``, ``/root``)
-# and to startup (``lifespan``) keeps the module importable by tooling
-# (mypy, pytest collection, ruff, IDE indexers) that has not configured
-# runtime secrets. The FastAPI ``version`` field is set to a literal
-# default matching ``Settings.APP_VERSION`` so that auto-docs continue
-# to show the correct value in production where env vars are set.
-# ----------------------------------------------------------------------------
-
-# Default application version string. Matches the default of
-# :attr:`src.shared.config.settings.Settings.APP_VERSION` (currently
-# ``"1.0.0"``). In deployed environments this literal is overridden
-# below at startup by copying ``get_settings().APP_VERSION`` onto
-# ``app.version`` so that the ``/openapi.json`` doc reflects whatever
-# env-var-driven version is in effect.
-DEFAULT_APP_VERSION: str = "1.0.0"
-
-app: FastAPI = FastAPI(
-    title="CardDemo API",
-    description=(
-        "REST and GraphQL API surface for the CardDemo credit-card "
-        "management system. Descendant of the legacy AWS CardDemo "
-        "mainframe application (CICS/COBOL/VSAM), modernized to run "
-        "on AWS ECS Fargate with Aurora PostgreSQL. Exposes 18 REST "
-        "endpoints across 8 feature areas (sign-on, account, card, "
-        "transaction, bill payment, report, user CRUD, admin) and a "
-        "single GraphQL endpoint at /graphql."
-    ),
-    version=DEFAULT_APP_VERSION,
-    lifespan=lifespan,
-    # Auto-docs surfaces. These paths are in the PUBLIC_PATHS set on
-    # :class:`JWTAuthMiddleware` so they do not require authentication.
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
-    # The default responses dict is fine; we do not need to override
-    # openapi.json ahead of time because FastAPI constructs it lazily
-    # from the routers' ``responses=...`` metadata.
-)
-
-
-# ----------------------------------------------------------------------------
-# Middleware configuration.
-#
-# Starlette / FastAPI middleware semantics:
-#
-#   * ``app.add_middleware(M1); app.add_middleware(M2)`` — M2 is the
-#     OUTERMOST middleware (requests hit M2 first, then M1, then the
-#     route). This is the reverse of the "first added = first
-#     executed" mental model used by some other frameworks.
-#
-#   * To put this in COBOL terms: middleware addition follows a
-#     LIFO stack -- the last ``add_middleware`` is the first to
-#     execute. See Starlette docs
-#     (https://www.starlette.io/middleware/).
-#
-# Our policy:
-#
-#   1. ``JWTAuthMiddleware`` is added FIRST so it is innermost. This
-#      means CORS preflights (OPTIONS requests with no Authorization
-#      header) are resolved by CORSMiddleware before the JWT validator
-#      has a chance to reject them as "missing token".
-#
-#   2. ``CORSMiddleware`` is added LAST so it is outermost.
-#
-# Order of request processing under this configuration:
-#
-#   Request -> CORSMiddleware -> JWTAuthMiddleware -> Routes
-#
-# Order of response processing (reverse):
-#
-#   Response <- JWTAuthMiddleware <- CORSMiddleware <- Routes
-#
-# Exception handlers registered via ``register_exception_handlers`` are
-# attached to the FastAPI app directly and fire inside the routes
-# layer -- after all middleware has run on the way in but before the
-# response passes through middleware on the way out.
-# ----------------------------------------------------------------------------
-
-# 1. JWT authentication middleware (inner).
-# Gates access to every non-public path; allows PUBLIC_PATHS (/health,
-# /auth/login, /auth/logout, /, /docs, /redoc, /openapi.json, /static/*)
-# through without an Authorization header. Rejects missing/invalid/
-# expired/malformed tokens with a 401 ABEND-DATA JSON response.
-app.add_middleware(JWTAuthMiddleware)
-
-# 2. CORS middleware (outer).
-#
-# Permissive defaults are used here to match the previous mainframe
-# model where the CICS region accepted any authenticated 3270 client.
-# Production deployments should override ``allow_origins`` via an
-# environment-driven config list once the target ALB domain is known.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["X-Request-ID"],
-)
-
-# ----------------------------------------------------------------------------
-# Global exception handlers.
-#
-# ``register_exception_handlers`` attaches handlers for:
-#
-#   * ``fastapi.HTTPException`` / ``starlette.HTTPException`` -> 4xx
-#     with ABEND-DATA envelope (uses ``NFND``, ``INVR``, ``FRBD``
-#     4-char codes per ``app/cpy/CSMSG01Y.cpy``).
-#   * ``fastapi.exceptions.RequestValidationError`` -> 422 with
-#     ``VALD`` code (Pydantic validation failure).
-#   * ``sqlalchemy.exc.SQLAlchemyError`` -> 500 with ``DBIO`` code,
-#     internal SQL text and bind parameters sanitized away.
-#   * Unhandled ``Exception`` -> 500 with ``ABND`` code (generic
-#     COBOL ABEND), stack trace stripped from client body.
-#
-# This replaces the CICS ``HANDLE ABEND`` blocks that wrapped every
-# COBOL transaction's PROCEDURE DIVISION.
-# ----------------------------------------------------------------------------
-register_exception_handlers(app)
-
-
-# ----------------------------------------------------------------------------
-# REST router mounting.
-#
-# Each symbol imported from :mod:`src.api.routers` above is an
-# ``APIRouter`` instance re-exported by ``src/api/routers/__init__.py``
-# (see that module's ``__all__`` and docstring). The re-export is done as
-# ``from src.api.routers.<mod> import router as <mod>``, which means the
-# names bound here are the routers themselves, not the Python modules —
-# so we pass them directly to ``app.include_router(...)``.
-#
-# The prefix/tag pairing mirrors the legacy COBOL feature areas.
-# ----------------------------------------------------------------------------
-
-# F-001 Sign-on / authentication
-app.include_router(
-    auth_router,
-    prefix="/auth",
-    tags=["Authentication"],
-)
-
-# F-004 Account view, F-005 Account update
-app.include_router(
-    account_router,
-    prefix="/accounts",
-    tags=["Accounts"],
-)
-
-# F-006 Card list, F-007 Card detail, F-008 Card update
-app.include_router(
-    card_router,
-    prefix="/cards",
-    tags=["Cards"],
-)
-
-# F-009 Transaction list, F-010 Transaction detail, F-011 Transaction add
-app.include_router(
-    transaction_router,
-    prefix="/transactions",
-    tags=["Transactions"],
-)
-
-# F-012 Bill payment
-app.include_router(
-    bill_router,
-    prefix="/bills",
-    tags=["Bills"],
-)
-
-# F-022 Report submission
-app.include_router(
-    report_router,
-    prefix="/reports",
-    tags=["Reports"],
-)
-
-# F-018 User list, F-019 User add, F-020 User update, F-021 User delete
-app.include_router(
-    user_router,
-    prefix="/users",
-    tags=["Users"],
-)
-
-# F-003 Admin menu
-app.include_router(
-    admin_router,
-    prefix="/admin",
-    tags=["Admin"],
-)
-
-
-# ----------------------------------------------------------------------------
-# GraphQL endpoint mounting.
-#
-# The GraphQL schema is a single Strawberry schema
-# (:data:`src.api.graphql.schema.schema`) that stitches together the
-# 7 Query resolvers (account, card, cards, transaction, transactions,
-# user, users) and the 4 Mutation resolvers (updateAccount, updateCard,
-# addTransaction, payBill).
-#
-# The ``context_getter`` is an async FastAPI dependency callable that
-# injects an :class:`AsyncSession` into every resolver's
-# ``info.context["db"]`` so that resolvers can share the request-scoped
-# transactional session with the REST routers.
-#
-# We intentionally do NOT include ``/graphql`` in the PUBLIC_PATHS of
-# :class:`JWTAuthMiddleware`. This means every GraphQL request is
-# authenticated before the schema sees it -- the legacy CICS model
-# where every transaction checked the signed-on user ID is preserved.
+# This matches the legacy CICS COSGN00 / COMEN01 / COADM01 flow, where
+# admin-only transactions checked ``CDEMO-USER-TYPE = 'A'`` (88-level
+# ``CDEMO-USRTYP-ADMIN``) before dispatching.
 # ----------------------------------------------------------------------------
 async def get_graphql_context(
     request: Request,
@@ -587,29 +584,8 @@ async def get_graphql_context(
     }
 
 
-# The ``context_getter`` argument carries a narrower type in the
-# Strawberry stubs (``Callable[..., Awaitable[None] | None] | None``)
-# than the runtime actually accepts — Strawberry documents and supports
-# context_getters that return a mapping which is then exposed to every
-# resolver via ``info.context``. The mismatch is a known typing gap in
-# ``strawberry-graphql``; see
-# https://strawberry.rocks/docs/integrations/fastapi#context_getter
-# for the officially supported usage. The targeted ignore is narrower
-# than a blanket mypy disable and will surface any other unrelated
-# type errors at this site.
-graphql_app: GraphQLRouter = GraphQLRouter(
-    graphql_schema,
-    context_getter=get_graphql_context,  # type: ignore[arg-type]
-)
-app.include_router(
-    graphql_app,
-    prefix="/graphql",
-    tags=["GraphQL"],
-)
-
-
 # ----------------------------------------------------------------------------
-# Health probe.
+# Health probe handler.
 #
 # Endpoint: ``GET /health``
 #
@@ -635,32 +611,6 @@ app.include_router(
 # ``CEMT INQ TASK`` from the console to confirm the region was
 # healthy.
 # ----------------------------------------------------------------------------
-@app.get(
-    "/health",
-    tags=["Health"],
-    summary="Liveness/readiness probe",
-    description=(
-        "Returns a 200 response as long as the ASGI process is "
-        "serving requests. Consumed by the Dockerfile HEALTHCHECK, "
-        "ECS target-group health check, and CloudWatch synthetic "
-        "canary probes. No authentication required."
-    ),
-    responses={
-        200: {
-            "description": "Service is alive and serving traffic.",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "status": "ok",
-                        "service": "carddemo",
-                        "version": "1.0.0",
-                        "timestamp": "2025-01-01T00:00:00+00:00",
-                    }
-                }
-            },
-        },
-    },
-)
 async def health() -> dict[str, str]:
     """Report service liveness.
 
@@ -687,7 +637,7 @@ async def health() -> dict[str, str]:
 
 
 # ----------------------------------------------------------------------------
-# Root endpoint ("/") -- a minimal landing page that confirms the
+# Root endpoint handler ("/") -- a minimal landing page that confirms the
 # service is reachable and points callers at the OpenAPI docs.
 #
 # Declared in :data:`PUBLIC_PATHS` so no authentication is required.
@@ -695,16 +645,6 @@ async def health() -> dict[str, str]:
 # hostname; programmatic callers should use ``/openapi.json`` or
 # ``/health``.
 # ----------------------------------------------------------------------------
-@app.get(
-    "/",
-    tags=["Meta"],
-    summary="API root",
-    description=(
-        "Human-friendly landing response. Returns basic service "
-        "identification and pointers to the OpenAPI documentation."
-    ),
-    include_in_schema=False,
-)
 async def root() -> dict[str, str]:
     """Return a small JSON payload pointing callers at the docs."""
     settings = get_settings()
@@ -719,17 +659,393 @@ async def root() -> dict[str, str]:
 
 
 # ----------------------------------------------------------------------------
+# Application factory.
+#
+# ``create_app()`` constructs a fully configured FastAPI application with
+# all middleware, exception handlers, REST routers, GraphQL endpoint, and
+# system routes (``/health`` and ``/``) in place. This factory pattern
+# serves three purposes:
+#
+#   1. **Test isolation.** Test suites can instantiate a fresh app per
+#      test function (or test class) so that route registrations,
+#      exception handlers, and middleware state do not leak between
+#      tests. Without a factory, the singleton module-level app would
+#      carry monkey-patched fixtures forward across tests.
+#
+#   2. **Configuration injection.** Future refactors may want to pass
+#      a pre-built :class:`Settings` instance, a custom logger, or a
+#      substitute database engine into the factory. The factory
+#      signature is the correct extension point for such hooks.
+#
+#   3. **Explicit composition root.** All wiring (middleware order,
+#      router mounting, GraphQL context binding) is centralized in one
+#      readable function body rather than scattered across module-level
+#      statements. This matches the architecture documented in
+#      AAP §0.4.3 ("Design Pattern Applications").
+#
+# The module-level ``app = create_app()`` binding is retained so that
+# ``uvicorn src.api.main:app`` (the canonical ASGI import path used by
+# the ECS ``CMD`` directive) continues to work unchanged.
+# ----------------------------------------------------------------------------
+def create_app() -> FastAPI:
+    """Construct and fully configure a CardDemo FastAPI application.
+
+    Composition root for the API service. Produces a
+    :class:`fastapi.FastAPI` instance with:
+
+    * All middleware (CORS, JWT authentication) attached in the correct
+      outermost-to-innermost order.
+    * Global exception handlers registered
+      (:func:`src.api.middleware.error_handler.register_exception_handlers`).
+    * All 8 REST routers included with the canonical URL prefix and
+      OpenAPI tag.
+    * The Strawberry GraphQL schema mounted at ``/graphql`` with
+      a transactional database session and authenticated user context.
+    * System routes for ``/health`` (readiness probe) and ``/``
+      (landing redirect).
+    * A ``lifespan`` context manager that initializes the Aurora
+      PostgreSQL connection pool on startup and disposes of it on
+      shutdown.
+
+    Returns
+    -------
+    FastAPI
+        A fully wired application instance, ready to be served by
+        :mod:`uvicorn` (either via ``uvicorn src.api.main:app`` or via
+        the ``if __name__ == "__main__"`` block below).
+
+    Notes
+    -----
+    The factory deliberately does NOT call :func:`get_settings` during
+    the app construction itself (only inside request handlers and the
+    ``lifespan`` callback). This keeps module import cheap and avoids
+    a :class:`pydantic.ValidationError` during tooling runs
+    (``mypy``, ``ruff``, ``pytest`` collection) where required env vars
+    may not yet be configured.
+    """
+    # ------------------------------------------------------------------
+    # 1. Instantiate the FastAPI app.
+    #
+    # ``version`` is set to the compile-time literal ``DEFAULT_APP_VERSION``
+    # rather than ``get_settings().APP_VERSION`` for the reasons
+    # described in the module docstring (import-safety during tooling).
+    # ------------------------------------------------------------------
+    new_app: FastAPI = FastAPI(
+        title="CardDemo API",
+        description=(
+            "REST and GraphQL API surface for the CardDemo credit-card "
+            "management system. Descendant of the legacy AWS CardDemo "
+            "mainframe application (CICS/COBOL/VSAM), modernized to run "
+            "on AWS ECS Fargate with Aurora PostgreSQL. Exposes 18 REST "
+            "endpoints across 8 feature areas (sign-on, account, card, "
+            "transaction, bill payment, report, user CRUD, admin) and a "
+            "single GraphQL endpoint at /graphql."
+        ),
+        version=DEFAULT_APP_VERSION,
+        lifespan=lifespan,
+        # Auto-docs surfaces. These paths are in the PUBLIC_PATHS set on
+        # :class:`JWTAuthMiddleware` so they do not require authentication.
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
+        # The default responses dict is fine; we do not need to override
+        # openapi.json ahead of time because FastAPI constructs it lazily
+        # from the routers' ``responses=...`` metadata.
+    )
+
+    # ------------------------------------------------------------------
+    # 2. Middleware configuration.
+    #
+    # Starlette / FastAPI middleware semantics:
+    #
+    #   * ``app.add_middleware(M1); app.add_middleware(M2)`` — M2 is the
+    #     OUTERMOST middleware (requests hit M2 first, then M1, then the
+    #     route). This is the reverse of the "first added = first
+    #     executed" mental model used by some other frameworks.
+    #
+    # Our policy:
+    #
+    #   1. ``JWTAuthMiddleware`` is added FIRST so it is innermost. This
+    #      means CORS preflights (OPTIONS requests with no Authorization
+    #      header) are resolved by CORSMiddleware before the JWT validator
+    #      has a chance to reject them as "missing token".
+    #
+    #   2. ``CORSMiddleware`` is added LAST so it is outermost.
+    #
+    # Order of request processing under this configuration:
+    #
+    #   Request -> CORSMiddleware -> JWTAuthMiddleware -> Routes
+    # ------------------------------------------------------------------
+
+    # 2a. JWT authentication middleware (inner).
+    # Gates access to every non-public path; allows PUBLIC_PATHS (/health,
+    # /auth/login, /auth/logout, /, /docs, /redoc, /openapi.json, /static/*)
+    # through without an Authorization header. Rejects missing/invalid/
+    # expired/malformed tokens with a 401 ABEND-DATA JSON response.
+    new_app.add_middleware(JWTAuthMiddleware)
+
+    # 2b. CORS middleware (outer).
+    #
+    # Permissive defaults are used here to match the previous mainframe
+    # model where the CICS region accepted any authenticated 3270 client.
+    # Production deployments should override ``allow_origins`` via an
+    # environment-driven config list once the target ALB domain is known.
+    new_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["X-Request-ID"],
+    )
+
+    # ------------------------------------------------------------------
+    # 3. Global exception handlers.
+    #
+    # ``register_exception_handlers`` attaches handlers for:
+    #
+    #   * ``fastapi.HTTPException`` / ``starlette.HTTPException`` -> 4xx
+    #     with ABEND-DATA envelope (uses ``NFND``, ``INVR``, ``FRBD``
+    #     4-char codes per ``app/cpy/CSMSG01Y.cpy``).
+    #   * ``fastapi.exceptions.RequestValidationError`` -> 422 with
+    #     ``VALD`` code (Pydantic validation failure).
+    #   * ``sqlalchemy.exc.SQLAlchemyError`` -> 500 with ``DBIO`` code,
+    #     internal SQL text and bind parameters sanitized away.
+    #   * Unhandled ``Exception`` -> 500 with ``ABND`` code (generic
+    #     COBOL ABEND), stack trace stripped from client body.
+    #
+    # This replaces the CICS ``HANDLE ABEND`` blocks that wrapped every
+    # COBOL transaction's PROCEDURE DIVISION.
+    # ------------------------------------------------------------------
+    register_exception_handlers(new_app)
+
+    # ------------------------------------------------------------------
+    # 4. REST router mounting. Replaces CICS XCTL-based menu navigation.
+    #
+    # Each symbol imported from :mod:`src.api.routers` above is an
+    # ``APIRouter`` instance re-exported by ``src/api/routers/__init__.py``.
+    # The prefix/tag pairing mirrors the legacy COBOL feature areas.
+    # ------------------------------------------------------------------
+
+    # F-001 Sign-on / authentication (COBOL: COSGN00C, CICS txn CC00).
+    new_app.include_router(
+        auth_router,
+        prefix="/auth",
+        tags=["Authentication"],
+    )
+
+    # F-004 Account view (COACTVWC), F-005 Account update (COACTUPC).
+    new_app.include_router(
+        account_router,
+        prefix="/accounts",
+        tags=["Accounts"],
+    )
+
+    # F-006 Card list (COCRDLIC), F-007 Card detail (COCRDSLC),
+    # F-008 Card update (COCRDUPC).
+    new_app.include_router(
+        card_router,
+        prefix="/cards",
+        tags=["Cards"],
+    )
+
+    # F-009 Transaction list (COTRN00C), F-010 Transaction detail
+    # (COTRN01C), F-011 Transaction add (COTRN02C).
+    new_app.include_router(
+        transaction_router,
+        prefix="/transactions",
+        tags=["Transactions"],
+    )
+
+    # F-012 Bill payment (COBIL00C).
+    new_app.include_router(
+        bill_router,
+        prefix="/bills",
+        tags=["Bills"],
+    )
+
+    # F-022 Report submission (CORPT00C, TDQ -> SQS bridge).
+    new_app.include_router(
+        report_router,
+        prefix="/reports",
+        tags=["Reports"],
+    )
+
+    # F-018 User list (COUSR00C), F-019 User add (COUSR01C),
+    # F-020 User update (COUSR02C), F-021 User delete (COUSR03C).
+    new_app.include_router(
+        user_router,
+        prefix="/users",
+        tags=["Users"],
+    )
+
+    # F-003 Admin menu (COADM01C). Admin-only endpoints that bridge the
+    # remaining CICS admin sub-transactions.
+    new_app.include_router(
+        admin_router,
+        prefix="/admin",
+        tags=["Admin"],
+    )
+
+    # ------------------------------------------------------------------
+    # 5. GraphQL endpoint mounting.
+    #
+    # The GraphQL schema is a single Strawberry schema
+    # (:data:`src.api.graphql.schema.schema`) that stitches together the
+    # Query resolvers (account, card, cards, transaction, transactions,
+    # user, users) and the Mutation resolvers (updateAccount, updateCard,
+    # addTransaction, payBill).
+    #
+    # The ``context_getter`` is an async FastAPI dependency callable that
+    # injects an :class:`AsyncSession` into every resolver's
+    # ``info.context["db"]`` so that resolvers can share the request-scoped
+    # transactional session with the REST routers.
+    #
+    # The ``context_getter`` argument carries a narrower type in the
+    # Strawberry stubs (``Callable[..., Awaitable[None] | None] | None``)
+    # than the runtime actually accepts — Strawberry documents and
+    # supports context_getters that return a mapping which is then
+    # exposed to every resolver via ``info.context``. The mismatch is a
+    # known typing gap in ``strawberry-graphql``; see
+    # https://strawberry.rocks/docs/integrations/fastapi#context_getter
+    # for the officially supported usage. The targeted ignore is
+    # narrower than a blanket mypy disable.
+    #
+    # We intentionally do NOT include ``/graphql`` in the PUBLIC_PATHS
+    # of :class:`JWTAuthMiddleware`. This means every GraphQL request
+    # is authenticated before the schema sees it — the legacy CICS
+    # model where every transaction checked the signed-on user ID is
+    # preserved.
+    # ------------------------------------------------------------------
+    graphql_app: GraphQLRouter = GraphQLRouter(
+        graphql_schema,
+        context_getter=get_graphql_context,  # type: ignore[arg-type]
+    )
+    new_app.include_router(
+        graphql_app,
+        prefix="/graphql",
+        tags=["GraphQL"],
+    )
+
+    # ------------------------------------------------------------------
+    # 6. System routes: /health and /.
+    #
+    # Registered via ``add_api_route`` rather than ``@new_app.get(...)``
+    # decorators because the handler coroutines (``health``, ``root``)
+    # are defined at module scope (for export and testability) rather
+    # than inside the factory body.
+    # ------------------------------------------------------------------
+    new_app.add_api_route(
+        "/health",
+        health,
+        methods=["GET"],
+        tags=["Health"],
+        summary="Liveness/readiness probe",
+        description=(
+            "Returns a 200 response as long as the ASGI process is "
+            "serving requests. Consumed by the Dockerfile HEALTHCHECK, "
+            "ECS target-group health check, and CloudWatch synthetic "
+            "canary probes. No authentication required."
+        ),
+        responses={
+            200: {
+                "description": "Service is alive and serving traffic.",
+                "content": {
+                    "application/json": {
+                        "example": {
+                            "status": "ok",
+                            "service": "carddemo",
+                            "version": "1.0.0",
+                            "timestamp": "2025-01-01T00:00:00+00:00",
+                        }
+                    }
+                },
+            },
+        },
+    )
+
+    new_app.add_api_route(
+        "/",
+        root,
+        methods=["GET"],
+        tags=["Meta"],
+        summary="API root",
+        description=(
+            "Human-friendly landing response. Returns basic service "
+            "identification and pointers to the OpenAPI documentation."
+        ),
+        include_in_schema=False,
+    )
+
+    return new_app
+
+
+# ----------------------------------------------------------------------------
+# Module-level ASGI application instance.
+#
+# The canonical import path for ASGI servers (Uvicorn, Gunicorn) is
+# ``src.api.main:app``. This line ensures that path continues to resolve
+# to a fully configured FastAPI app — the same instance that
+# :func:`create_app` would return.
+#
+# In-process tests that need isolation can call ``create_app()`` directly
+# to build a fresh instance per test; the module-level ``app`` is reserved
+# for deployment (ECS ``CMD`` directive and Uvicorn reload workflows).
+# ----------------------------------------------------------------------------
+app: FastAPI = create_app()
+
+
+# ----------------------------------------------------------------------------
 # Explicit public API of this module.
 #
-# ``app`` is the only symbol that ASGI servers (uvicorn, Gunicorn) and
-# the FastAPI TestClient need to import. ``lifespan``,
-# ``get_graphql_context``, ``health``, and ``root`` are exported for
-# testability but are not expected to be imported by normal callers.
+# ``app`` is the canonical ASGI import that Uvicorn, Gunicorn, and the
+# FastAPI TestClient need. ``create_app`` is the factory that test
+# suites can call for isolation. ``lifespan``, ``get_graphql_context``,
+# ``health``, and ``root`` are exported for testability but are not
+# expected to be imported by normal callers.
 # ----------------------------------------------------------------------------
 __all__ = [
+    "DEFAULT_APP_VERSION",
+    "JsonLogFormatter",
     "app",
+    "create_app",
     "get_graphql_context",
     "health",
     "lifespan",
     "root",
 ]
+
+
+# ----------------------------------------------------------------------------
+# Direct execution entry point (``python -m src.api.main``).
+#
+# In production (AWS ECS Fargate), the container ``CMD`` directive runs
+# Uvicorn with the canonical ASGI import path::
+#
+#     uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+#
+# The block below is exercised only during local development, where a
+# single ``python src/api/main.py`` command is convenient. It reads the
+# bind address and port from :class:`Settings` defaults
+# (host = ``0.0.0.0``, port = ``8000``) and disables auto-reload
+# (``reload=False``) because reload requires the ``watchfiles`` dev
+# dependency and is not something we want in production.
+#
+# Structured JSON logging is configured eagerly here so that developer
+# log output during ``python -m src.api.main`` mirrors the format
+# emitted in the ECS container (easier debugging parity).
+# ----------------------------------------------------------------------------
+if __name__ == "__main__":
+    # Configure JSON logging before Uvicorn installs its own handlers.
+    _configure_json_logging()
+    logger.info(
+        "carddemo-api launching via direct execution (__main__)",
+        extra={"event": "api_main_direct_launch"},
+    )
+    uvicorn.run(
+        "src.api.main:app",
+        host="0.0.0.0",  # noqa: S104 — intentional; listen on all interfaces for dev.
+        port=8000,
+        reload=False,
+        log_level="info",
+    )
