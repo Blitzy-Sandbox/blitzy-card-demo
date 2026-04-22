@@ -188,7 +188,7 @@ async def list_cards(
         "Full 150-byte card record with cardholder name, expiry, CVV, and active status (CVACT02Y layout)."
     ),
 )
-async def view_card(
+async def get_card(
     card_num: str = Path(
         ...,
         pattern=_CARD_NUM_REGEX,
