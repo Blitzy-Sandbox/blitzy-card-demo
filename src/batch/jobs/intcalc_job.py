@@ -1813,8 +1813,15 @@ def main() -> None:  # noqa: PLR0912, PLR0915 - mirrors CBACT04C complexity
        :func:`_update_account_balance` to the LAST account
        processed (matching COBOL line 220-221: the ELSE branch of
        the end-of-file test).
-    7. **Bulk writes** — interest transactions → S3 SYSTRAN path;
-       updated accounts → PostgreSQL accounts table (overwrite).
+    7. **Bulk writes** — interest transactions → S3 SYSTRAN path
+       (fixed-width legacy artifact);  interest transactions →
+       PostgreSQL ``transactions`` table (append — required so
+       downstream stages COMBTRAN/CREASTMT/TRANREPT see the
+       interest rows via JDBC, matching COBOL
+       ``WRITE FD-TRANFILE-REC``);  updated accounts → PostgreSQL
+       ``accounts`` table (overwrite with ``truncate="true"`` to
+       preserve schema including the ``version_id`` optimistic-
+       concurrency column).
     8. **Counters + commit** — emit the COBOL-equivalent end-of-run
        message and call :func:`commit_job`.
 
@@ -2101,6 +2108,60 @@ def main() -> None:  # noqa: PLR0912, PLR0915 - mirrors CBACT04C complexity
         #     (LRECL=350 text object — 350-byte fixed-width records
         #     per CVTRA05Y layout.)
         _write_interest_trans_to_s3(interest_trans)
+
+        # 5a.5. Interest transactions → PostgreSQL transactions table (append).
+        #
+        # This step matches the COBOL source CBACT04C which WRITEs
+        # every interest record to the FD-TRANFILE (the TRANSACT
+        # VSAM KSDS cluster) at line 514 (WRITE FD-TRANFILE-REC FROM
+        # TRAN-RECORD in paragraph 1300-B-WRITE-TX).  In the COBOL
+        # pipeline the TRANSACT cluster is the canonical storehouse
+        # of ALL transactions — posted, interest, and bill-payment —
+        # and the downstream COMBTRAN (Stage 3), CREASTMT (Stage 4a)
+        # and TRANREPT (Stage 4b) jobs read from it to merge, build
+        # statements, and generate reports.
+        #
+        # Step 5a above writes the SYSTRAN(+1) generation as a
+        # fixed-width S3 object for legacy/audit parity, but the
+        # AWS Glue 5.1 pipeline uses Aurora PostgreSQL (not the S3
+        # SYSTRAN file) as the shared persistence layer between
+        # stages.  Without this append, downstream stages would
+        # receive zero interest rows via JDBC, violating AAP §0.7.1
+        # "Every one of the 22 features must be functionally
+        # equivalent... No feature may be dropped, combined, or
+        # altered in behavior".
+        #
+        # ``mode="append"`` is REQUIRED here (NOT "overwrite") —
+        # interest transactions are NEW rows to be added to the
+        # existing posted-transaction set produced by Stage 1
+        # (posttran_job).  Using overwrite would truncate the
+        # transactions table and destroy the posted transactions,
+        # breaking the entire pipeline.  The schema declared by
+        # :func:`_build_interest_tran_schema` matches the
+        # PostgreSQL ``transactions`` table columns exactly (13
+        # fields per CVTRA05Y / V1__schema.sql).
+        if interest_trans:
+            interest_trans_df: DataFrame = spark.createDataFrame(
+                interest_trans,
+                schema=_build_interest_tran_schema(),
+            )
+            write_table(interest_trans_df, "transactions", mode="append")
+            logger.info(
+                "Wrote %d interest transaction record(s) to the "
+                "transactions table (append mode — INSERT for "
+                "downstream COMBTRAN/CREASTMT/TRANREPT pipeline flow).",
+                len(interest_trans),
+            )
+        else:
+            # Empty list — no interest transactions generated this
+            # run.  Skip the JDBC write entirely to avoid an empty
+            # DataFrame INSERT (which would succeed as a no-op but
+            # emit confusing audit logs).  Matches the short-circuit
+            # behaviour in :func:`_write_interest_trans_to_s3`.
+            logger.info(
+                "No interest transactions generated this run — "
+                "transactions-table append skipped."
+            )
 
         # 5b. Updated accounts → accounts table (overwrite).
         #     Equivalent to COBOL REWRITE FD-ACCTFILE-REC for every

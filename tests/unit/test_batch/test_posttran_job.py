@@ -1963,3 +1963,94 @@ def test_posttran_main_with_spark(
     assert posted_row["tran_amt"] == Decimal("25.00")
     assert posted_row["tran_card_num"] == "4111111111111111"
 
+    # ---------- write_table mode assertions (CRITICAL #1 guard) ----------
+    #
+    # Affirmative assertions that the three distinct write_table
+    # invocations use the correct ``mode=`` arguments.  Without these
+    # assertions the test would not catch a regression where someone
+    # changes the posted-transactions write to ``mode="overwrite"``
+    # (which would TRUNCATE the transactions table via the
+    # ``truncate="true"`` JDBC option in db_connector.write_table and
+    # destroy all previously posted transactions in the same cluster)
+    # or changes the accounts / TCATBAL writes to ``mode="append"``
+    # (which would produce duplicate PRIMARY KEY violations because
+    # the overwrite mode + truncate="true" is what allows the full
+    # "REWRITE every row" COBOL semantic to be replayed safely).
+    #
+    # Production contract (derived from posttran_job.py):
+    #   * transactions                  → mode="append"     (Stage 4a — INSERT new posted rows)
+    #   * accounts                      → mode="overwrite"  (Stage 4b — REWRITE every row)
+    #   * transaction_category_balances → mode="overwrite"  (Stage 4c — REWRITE + WRITE)
+    #
+    # SCHEMA-PRESERVATION NOTE (CRITICAL #1):
+    #   ``mode="overwrite"`` in Spark JDBC DEFAULTS to DROP TABLE +
+    #   CREATE TABLE + INSERT (destroys PRIMARY KEY, FKs, B-tree
+    #   indexes, ``version_id`` column, NOT NULL constraints, etc.).
+    #   ``src.batch.common.db_connector.write_table`` explicitly sets
+    #   ``truncate="true"`` in the JDBC writer options which flips
+    #   the semantic to TRUNCATE TABLE + INSERT, preserving the
+    #   schema defined in ``db/migrations/V1__schema.sql``.  So
+    #   asserting ``mode="overwrite"`` here is correct — the schema
+    #   preservation happens at the db_connector layer, not at the
+    #   mode= argument level.
+    transactions_call = None
+    accounts_call = None
+    tcatbal_call = None
+    for call in mock_write_table.call_args_list:
+        if len(call.args) < 2:
+            continue
+        table_name = call.args[1]
+        if table_name == "transactions":
+            transactions_call = call
+        elif table_name == "accounts":
+            accounts_call = call
+        elif table_name == "transaction_category_balances":
+            tcatbal_call = call
+
+    assert transactions_call is not None, (
+        "write_table was never invoked with table_name='transactions' "
+        "— the 1 valid posted transaction must be persisted to the "
+        "transactions table (CRITICAL #1 — posted transactions are "
+        "the primary output of Stage 1 POSTTRAN)"
+    )
+    assert transactions_call.kwargs.get("mode") == "append", (
+        f"transactions write_table must use mode='append' (INSERT new "
+        f"posted rows — NOT 'overwrite' which would TRUNCATE any "
+        f"existing rows via db_connector's truncate='true' option "
+        f"and destroy them) — got kwargs={transactions_call.kwargs!r}"
+    )
+
+    assert accounts_call is not None, (
+        "write_table was never invoked with table_name='accounts' "
+        "— when any valid transaction is posted the account balance "
+        "must be written back via Stage 4b (REWRITE every row)"
+    )
+    assert accounts_call.kwargs.get("mode") == "overwrite", (
+        f"accounts write_table must use mode='overwrite' (REWRITE "
+        f"every row — the db_connector's truncate='true' option "
+        f"converts this to TRUNCATE + INSERT so PRIMARY KEY, indexes, "
+        f"and the version_id column are preserved) — got "
+        f"kwargs={accounts_call.kwargs!r}"
+    )
+
+    # The transaction_category_balances write is conditional on
+    # tcatbal_lookup being non-empty.  In this test scenario the
+    # valid DB transaction (type='DB', cat='0001', amt=25.00) causes
+    # update_tcatbal to CREATE a new TCATBAL row (since the input
+    # DataFrame was empty), so tcatbal_lookup will contain exactly
+    # one entry and the write_table call MUST have been emitted.
+    assert tcatbal_call is not None, (
+        "write_table was never invoked with "
+        "table_name='transaction_category_balances' — the valid "
+        "posted transaction should have caused update_tcatbal to "
+        "create a new TCATBAL record, which must then be persisted"
+    )
+    assert tcatbal_call.kwargs.get("mode") == "overwrite", (
+        f"transaction_category_balances write_table must use "
+        f"mode='overwrite' (REWRITE + WRITE semantic — the "
+        f"db_connector's truncate='true' option converts this to "
+        f"TRUNCATE + INSERT so the composite PRIMARY KEY "
+        f"(acct_id, type_code, cat_code) is preserved) — got "
+        f"kwargs={tcatbal_call.kwargs!r}"
+    )
+

@@ -634,9 +634,19 @@ def write_table(
       the record in-place. PySpark equivalent: either
       ``mode="append"`` (for idempotent INSERTs) or ``mode="overwrite"``
       (for non-idempotent REWRITE-all-records patterns). Note that
-      ``overwrite`` truncates the target table before writing — use it
-      only when the DataFrame represents the complete new state of the
-      table.
+      ``overwrite`` with ``truncate="true"`` issues a SQL
+      ``TRUNCATE TABLE`` on the target before writing — preserving the
+      table's schema (columns, primary keys, NOT NULL constraints,
+      DEFAULTs such as ``version_id INTEGER NOT NULL DEFAULT 0``, and
+      B-tree indexes) across the write. Without ``truncate="true"``
+      the default Spark JDBC behaviour is DROP TABLE + CREATE TABLE,
+      which would strip the Aurora PostgreSQL schema defined in
+      ``db/migrations/V1__schema.sql`` and break downstream ORM
+      operations (F-005 Account Update optimistic-concurrency checks
+      on ``accounts.version_id``, F-008 Card Update optimistic-
+      concurrency checks on ``cards.version_id``, and every other
+      schema contract). This module therefore sets
+      ``truncate="true"`` unconditionally for overwrite writes.
     * ``DISP=(NEW,CATLG,DELETE)`` on an output DD (e.g., ``DALYREJS``
       in ``POSTTRAN.jcl``) allocates a brand-new dataset and catalogs
       it on success; on failure the dataset is deleted. PySpark
@@ -660,6 +670,38 @@ def write_table(
     ``NUMERIC(15, 2)`` without any floating-point conversion — per AAP
     §0.7.2 Financial Precision requirements.
 
+    Schema preservation (``truncate="true"``)
+    -----------------------------------------
+    For ``mode="overwrite"`` this function sets the PySpark JDBC option
+    ``truncate="true"`` so the PostgreSQL driver issues a
+    ``TRUNCATE TABLE <t>`` statement before inserting new rows, rather
+    than performing the default DROP TABLE + CREATE TABLE sequence.
+    The default DROP+CREATE behaviour would destroy:
+
+    * PRIMARY KEY constraints (``acct_id``, ``card_num``,
+      ``xref_card_num``, ``tran_id``, composite PKs on
+      ``transaction_category_balances`` and ``disclosure_groups``,
+      etc.) defined in ``db/migrations/V1__schema.sql``.
+    * NOT NULL and DEFAULT column specifications — critically the
+      ``version_id INTEGER NOT NULL DEFAULT 0`` column on the
+      ``accounts`` and ``cards`` tables that implements the
+      SQLAlchemy ``@version`` optimistic-concurrency pattern per AAP
+      §0.4.4. Without this column, the online API's
+      ``/accounts/{id}`` PUT and ``/cards/{id}`` PUT endpoints would
+      fail with 500 errors immediately after any batch job completes
+      a write with ``mode="overwrite"``.
+    * B-tree indexes (VSAM AIX equivalents) defined in
+      ``db/migrations/V2__indexes.sql`` for
+      ``card.acct_id``, ``card_cross_reference.acct_id``, and
+      ``transaction.proc_ts``.
+
+    ``truncate="true"`` is therefore required by AAP §0.1.2
+    ("Maintain VSAM keyed access patterns"), §0.4.4 ("SQLAlchemy
+    @version column on Card and Account models"), and §0.7.1
+    ("Preserve all existing functionality exactly as-is"). The option
+    is ignored by the PostgreSQL JDBC driver for any mode other than
+    overwrite, so it is safe to set unconditionally.
+
     Parameters
     ----------
     dataframe : Any
@@ -676,9 +718,10 @@ def write_table(
         * ``"append"`` (the default) — inserts all rows from the
           DataFrame; existing rows in the target table are preserved.
           Replaces COBOL ``WRITE`` patterns.
-        * ``"overwrite"`` — truncates the target table before writing.
-          Replaces ``DISP=(NEW,CATLG,DELETE)`` semantics or
-          ``REWRITE``-all-records patterns.
+        * ``"overwrite"`` — truncates the target table (preserving
+          schema via ``truncate="true"``) before writing. Replaces
+          ``DISP=(NEW,CATLG,DELETE)`` semantics or ``REWRITE``-all-
+          records patterns.
         * ``"error"`` / ``"ignore"`` — less-common Spark modes for
           refusing writes when data already exists. Available but not
           used by any of the current batch jobs.
@@ -704,4 +747,21 @@ def write_table(
     # explicitness and to match the documented write pattern; PySpark
     # treats the later .option() call as an override of the earlier
     # one, so the value is identical either way.
-    (dataframe.write.format("jdbc").options(**options).option("dbtable", table_name).mode(mode).save())
+    #
+    # The .option("truncate", "true") call preserves the Aurora
+    # PostgreSQL schema on ``mode="overwrite"`` writes by issuing a
+    # ``TRUNCATE TABLE`` rather than the default DROP + CREATE. See
+    # the "Schema preservation" section above for the full rationale
+    # (AAP §0.4.4 optimistic concurrency, §0.1.2 VSAM keyed access
+    # patterns, §0.7.1 preserve functionality). The PostgreSQL JDBC
+    # driver ignores this option for any mode other than overwrite,
+    # so it is safe to set unconditionally — keeping the call site
+    # uniform across every write_table invocation in the batch layer.
+    (
+        dataframe.write.format("jdbc")
+        .options(**options)
+        .option("dbtable", table_name)
+        .option("truncate", "true")
+        .mode(mode)
+        .save()
+    )

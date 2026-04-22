@@ -154,7 +154,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.fastapi import GraphQLRouter
@@ -491,12 +491,13 @@ app.include_router(
 # where every transaction checked the signed-on user ID is preserved.
 # ----------------------------------------------------------------------------
 async def get_graphql_context(
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Build the per-request GraphQL context dictionary.
 
     Strawberry resolvers access request-scoped resources via
-    ``info.context["db"]`` (see :func:`src.api.graphql.queries._get_session`
+    ``info.context[...]`` (see :func:`src.api.graphql.queries._get_session`
     and :func:`src.api.graphql.mutations._get_session`). By wrapping
     :func:`src.api.dependencies.get_db` we guarantee that:
 
@@ -506,8 +507,36 @@ async def get_graphql_context(
       inherited from ``get_db`` -- matching the CICS ``SYNCPOINT`` /
       ``SYNCPOINT ROLLBACK`` semantics of the legacy online programs.
 
+    Authenticated user identity is also propagated from the
+    :class:`~src.api.middleware.auth.JWTAuthMiddleware` through
+    :class:`starlette.requests.Request.state` (the middleware runs
+    before the GraphQL router and, on a valid JWT, populates
+    ``request.state.user_id``, ``request.state.user_type``, and
+    ``request.state.is_admin``). Exposing these claims on the
+    GraphQL context enables resolvers to enforce field-level
+    authorization equivalent to the REST middleware's path-prefix
+    admin gating (see
+    :data:`src.api.middleware.auth.ADMIN_ONLY_PREFIXES`).
+
+    This preserves parity with the legacy CICS COSGN00 /
+    COMEN01 / COADM01 flow, where admin-only transactions
+    (COUSR00 / COUSR01 / COUSR02 / COUSR03) checked
+    ``CDEMO-USER-TYPE = 'A'`` (88 ``CDEMO-USRTYP-ADMIN``) before
+    rendering or dispatching.
+
     Parameters
     ----------
+    request
+        The underlying Starlette :class:`~starlette.requests.Request`
+        produced by the FastAPI / GraphQLRouter integration.
+        Its ``state`` attribute is populated by
+        :class:`src.api.middleware.auth.JWTAuthMiddleware` on
+        successful JWT validation; by the time a GraphQL resolver
+        runs, ``request.state.user_id``, ``request.state.user_type``
+        and ``request.state.is_admin`` are guaranteed to be present
+        because ``/graphql`` is NOT listed in the middleware's public
+        paths (any request that reaches this context-getter has
+        already passed JWT authentication).
     db
         A transactional :class:`AsyncSession` injected by FastAPI's
         :func:`~fastapi.Depends` machinery.
@@ -515,10 +544,42 @@ async def get_graphql_context(
     Returns
     -------
     dict
-        ``{"db": db}`` -- a dict that will be passed to every resolver
-        as ``info.context``.
+        A mapping containing:
+
+        * ``"db"`` -- the transactional :class:`AsyncSession`.
+        * ``"user_id"`` -- str, the authenticated user id
+          (``CDEMO-USER-ID`` PIC X(08)).
+        * ``"user_type"`` -- str, the authenticated user type
+          (``CDEMO-USER-TYPE`` PIC X(01); ``'A'`` = admin,
+          ``'U'`` = regular user).
+        * ``"is_admin"`` -- bool, True iff ``user_type == 'A'``
+          (88 ``CDEMO-USRTYP-ADMIN``). Resolvers use this flag
+          to enforce admin-only access to USRSEC data equivalent
+          to the REST :data:`~src.api.middleware.auth.ADMIN_ONLY_PREFIXES`
+          gating.
+
+        ``getattr`` with safe defaults is used when reading
+        ``request.state`` attributes so the context getter stays
+        robust in theoretical edge cases (for example, if the
+        middleware set ``/graphql`` public in a future
+        configuration change, unauthenticated GraphQL calls
+        would receive empty claims and the resolver-level guards
+        would deny admin-only queries rather than raising a
+        confusing ``AttributeError``).
     """
-    return {"db": db}
+    # Extract JWT claims from request.state (populated by
+    # JWTAuthMiddleware on successful authentication). ``getattr``
+    # with safe defaults preserves robustness if middleware ordering
+    # ever changes.
+    user_id: str = getattr(request.state, "user_id", "")
+    user_type: str = getattr(request.state, "user_type", "")
+    is_admin: bool = getattr(request.state, "is_admin", False)
+    return {
+        "db": db,
+        "user_id": user_id,
+        "user_type": user_type,
+        "is_admin": is_admin,
+    }
 
 
 # The ``context_getter`` argument carries a narrower type in the

@@ -172,9 +172,15 @@ from __future__ import annotations
 #                  uses sys.argv via awsglue.utils.getResolvedOptions, and
 #                  the ``if __name__`` guard below records sys.argv at
 #                  DEBUG for CloudWatch-side operator troubleshooting.
+# ``typing.Any`` — loose type annotation for ``dict[str, Any]`` used by
+#                  :func:`_redact_customer_pii` to accept arbitrary
+#                  row-dict values produced by ``pyspark.sql.Row.asDict()``
+#                  (which can yield str / int / None depending on the
+#                  underlying column type).
 # ----------------------------------------------------------------------------
 import logging
 import sys
+from typing import Any
 
 # ----------------------------------------------------------------------------
 # First-party imports — batch common infrastructure.
@@ -271,6 +277,77 @@ _JOB_NAME: str = "carddemo-read-customer"
 # of this script.
 # ----------------------------------------------------------------------------
 _TABLE_NAME: str = "customers"
+
+
+# ----------------------------------------------------------------------------
+# Sensitive PII columns to redact from log output.
+# ----------------------------------------------------------------------------
+# The ``customers`` table stores a number of sensitive Personally
+# Identifiable Information (PII) elements that must never be written
+# to CloudWatch Logs (or any log sink that persists beyond the
+# original Aurora PostgreSQL row).  The following columns are treated
+# as sensitive and are omitted entirely from the log payload:
+#
+#   * ``cust_ssn``              — 9-digit Social Security Number
+#                                 (CUST-SSN PIC 9(09) in CVCUS01Y).
+#                                 U.S. national identifier subject to
+#                                 PII protection regulations (GLBA,
+#                                 state privacy laws).
+#   * ``cust_govt_issued_id``   — Government-issued identifier number
+#                                 (CUST-GOVT-ISSUED-ID PIC X(20)).
+#                                 Covers driver's license / passport /
+#                                 other national IDs.
+#   * ``cust_dob_yyyy_mm_dd``   — Date of birth (CUST-DOB-YYYY-MM-DD
+#                                 PIC X(10)).  Combined with name is a
+#                                 strong identity-theft vector.
+#   * ``cust_phone_num_1``,
+#     ``cust_phone_num_2``      — Phone numbers (CUST-PHONE-NUM-*
+#                                 PIC X(15)).  PII used for identity
+#                                 verification and multi-factor auth.
+#   * ``cust_eft_account_id``   — EFT bank account identifier
+#                                 (CUST-EFT-ACCOUNT-ID PIC X(10)).
+#                                 Financial PII enabling ACH routing.
+#
+# Non-sensitive columns (``cust_id``, name, address lines, state,
+# country, zip, primary card-holder indicator, FICO score) pass
+# through unchanged — they are not regulated PII on their own and
+# are necessary for operator-side record identification in logs.
+# ----------------------------------------------------------------------------
+_SENSITIVE_CUSTOMER_PII_KEYS: frozenset[str] = frozenset(
+    {
+        "cust_ssn",
+        "cust_govt_issued_id",
+        "cust_dob_yyyy_mm_dd",
+        "cust_phone_num_1",
+        "cust_phone_num_2",
+        "cust_eft_account_id",
+    }
+)
+
+
+def _redact_customer_pii(row_dict: dict[str, Any]) -> dict[str, Any]:
+    """Return a PII-redacted copy of a customer row dict for logging.
+
+    Drops every key listed in :data:`_SENSITIVE_CUSTOMER_PII_KEYS`
+    from the input mapping.  Preserves all other keys unchanged.
+    The input ``row_dict`` is not mutated — a new dict is returned.
+
+    Parameters
+    ----------
+    row_dict : dict[str, Any]
+        Dict produced by :meth:`pyspark.sql.Row.asDict` on a row of
+        the ``customers`` table.  May contain any / all of the
+        column names declared by the CVCUS01Y copybook — the
+        function drops the sensitive subset regardless of which
+        keys are present.
+
+    Returns
+    -------
+    dict[str, Any]
+        A new dict with the sensitive PII keys removed.  All other
+        key / value pairs are passed through identically.
+    """
+    return {k: v for k, v in row_dict.items() if k not in _SENSITIVE_CUSTOMER_PII_KEYS}
 
 
 def main() -> None:
@@ -438,21 +515,49 @@ def main() -> None:
         # any DISPLAY CUSTOMER-RECORD ever executing).
         # --------------------------------------------------------------
         if record_count > 0:
-            # Row.asDict() emits the full customer record (cust_id,
-            # names, addresses, phone numbers, SSN, govt ID, DOB,
-            # EFT account, cardholder indicator, FICO score) as a
-            # structured JSON payload inside each log line — preserving
-            # the COBOL DISPLAY CUSTOMER-RECORD semantic of emitting
-            # the full 500-byte record to SYSOUT, but in a form that
-            # CloudWatch Logs Insights can query structurally.
+            # Row.asDict() emits a structured dict of the customer
+            # record (cust_id, names, addresses, cardholder indicator,
+            # FICO score, and so on) as a JSON payload inside each
+            # log line — preserving the COBOL DISPLAY CUSTOMER-RECORD
+            # semantic of emitting one record per SYSOUT line, but in
+            # a form that CloudWatch Logs Insights can query
+            # structurally.
             #
-            # NOTE: The ``customers`` table schema intentionally stores
-            # PII (SSN, government-issued ID) per the project's data
-            # protection policy; operators inspecting CloudWatch logs
-            # for this diagnostic job should be authorized under the
-            # same IAM policies that gate the JDBC read.
+            # PII REDACTION (security control):
+            # Although the COBOL DISPLAY CUSTOMER-RECORD statement
+            # wrote the *entire* 500-byte record to SYSOUT — including
+            # SSN, government-issued ID, DOB, phone numbers, and EFT
+            # account ID — direct replication of that behavior in
+            # CloudWatch Logs would violate the project's data
+            # protection policy (AAP §0.7.2) and industry privacy
+            # regulations (U.S. GLBA/FCRA/state privacy laws; the EU
+            # GDPR under Art. 5(1)(c) data-minimization principle;
+            # U.S. state data-breach notification laws).
+            #
+            # We therefore apply :func:`_redact_customer_pii` to each
+            # row dict BEFORE it is passed to the logger.  The helper
+            # drops the sensitive keys listed in
+            # :data:`_SENSITIVE_CUSTOMER_PII_KEYS`
+            # (``cust_ssn``, ``cust_govt_issued_id``,
+            # ``cust_dob_yyyy_mm_dd``, ``cust_phone_num_1``,
+            # ``cust_phone_num_2``, ``cust_eft_account_id``) and
+            # leaves benign operator-useful keys (``cust_id``, name,
+            # address, state/country/zip, cardholder flag, FICO)
+            # untouched — those are necessary for operators to
+            # identify and correlate records in logs without
+            # exposing identity-theft vectors or financial routing
+            # information.
+            #
+            # This redaction is applied at the log-emission site, not
+            # at the JDBC read site — the underlying DataFrame still
+            # contains the full, authoritative row for downstream
+            # processing and is protected by IAM-gated access to the
+            # Aurora PostgreSQL cluster itself.
             for row in customers_df.collect():
-                logger.info("CUSTOMER-RECORD: %s", row.asDict())
+                logger.info(
+                    "CUSTOMER-RECORD: %s",
+                    _redact_customer_pii(row.asDict()),
+                )
         else:
             # COBOL path when the loop exits immediately via
             # APPL-EOF on the first read. In mainframe SYSOUT this

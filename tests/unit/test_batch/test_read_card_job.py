@@ -800,35 +800,66 @@ def test_logs_record_count(
 
 
 # ----------------------------------------------------------------------------
-# Test 5: every record is iterated (DISPLAY CARD-RECORD equivalent).
+# Test 5: every record is iterated (DISPLAY CARD-RECORD equivalent),
+#         with PCI-DSS-compliant masking of PAN and CVV values.
 # ----------------------------------------------------------------------------
-# The target module's per-row iteration at line ~460::
+# The target module's per-row iteration at line ~463::
 #
 #     for row in cards_df.collect():
-#         logger.info("CARD-RECORD: %s", row.asDict())
+#         logger.info("CARD-RECORD: %s", _mask_card_record(row.asDict()))
 #
 # is the direct Python translation of the COBOL inner-loop DISPLAY
 # at line 78 (inside the PERFORM UNTIL END-OF-FILE = 'Y' loop)::
 #
 #     DISPLAY CARD-RECORD.
 #
+# However, unlike the COBOL source which emitted the full CARD-RECORD
+# (including the full PAN and CVV) to SYSOUT, the Python translation
+# applies PCI-DSS v4.0 Requirement 3.3.1 masking to the PAN
+# (``card_num``: first-6 + "******" + last-4) and PCI-DSS
+# Requirement 3.2.1 removal of the CVV (``cvv_cd``: omitted entirely)
+# before emitting the log line.  CloudWatch log persistence qualifies
+# as "storage" under PCI-DSS scope, so the original COBOL
+# full-record emission would be a compliance violation in the cloud-
+# hosted context.
+#
 # This test uses 3 distinct rows with sentinel card-number values
 # ("1111111111111111", "2222222222222222", "3333333333333333") that
-# are trivially distinguishable in the captured log output. The
-# test asserts:
+# are trivially distinguishable in the captured log output.  Their
+# PCI-DSS-masked equivalents are "111111******1111",
+# "222222******2222", and "333333******3333" respectively (16-char
+# length preserved: 6 + 6 + 4 = 16).
+#
+# The test asserts:
 #   1. ``collect()`` was called exactly once (not per-row, which
 #      would be catastrophic for the Aurora JDBC connection).
 #   2. Each row's ``asDict()`` was called exactly once (each row
 #      is materialised into a log line exactly once).
 #   3. Exactly N log lines start with "CARD-RECORD:" — matching the
 #      target module's format string "CARD-RECORD: %s".
-#   4. Each sentinel card number appears somewhere in the captured
-#      log output — proving no row was silently dropped.
+#   4. Each sentinel's PCI-DSS-masked card number appears somewhere
+#      in the captured log output — proving no row was silently
+#      dropped AND proving the masking function was applied.
+#   5. (NEGATIVE — PCI-DSS Req 3.3.1 regression guard) No full PAN
+#      (the raw sentinel card numbers) appears anywhere in the
+#      captured log output.  Catches a regression where someone
+#      accidentally removes the ``_mask_card_record`` call and
+#      restores the un-masked COBOL behaviour.
+#   6. (NEGATIVE — PCI-DSS Req 3.2.1 regression guard) No CVV
+#      value (``cvv_cd``) appears anywhere in the captured log
+#      output.  SAD (Sensitive Authentication Data) must never be
+#      stored after authorization, and CloudWatch log archives
+#      qualify as storage.
+#   7. ``embossed_name`` (a NON-PCI-restricted field) still appears
+#      in the log output — proving the masking function is
+#      selective (only masks PAN, removes CVV) and does not
+#      over-redact legitimate diagnostic fields.
 #
 # The sentinel values double as documentation: "1111...", "2222...",
 # "3333..." make it obvious at a glance which rows a test run saw.
 # All three are PCI-safe synthetic values — none corresponds to a
-# real issued card number.
+# real issued card number.  The distinct CVV values (see fixture
+# below) are used to verify Contract 6 catches any CVV regression.
 # ----------------------------------------------------------------------------
 @pytest.mark.unit
 @patch(_PATCH_COMMIT_JOB)
@@ -854,23 +885,45 @@ def test_iterates_all_records(
     # Three distinct synthetic card numbers — the repeating-digit
     # pattern ensures they are trivially distinguishable in the log
     # output and are clearly NOT real PANs. Each row carries a
-    # distinct acct_id and embossed_name so asDict() produces
-    # unique dicts for each row.
+    # distinct acct_id, embossed_name, AND cvv_cd so asDict()
+    # produces unique dicts for each row.  The distinct CVV values
+    # (555, 666, 777) are used in Contract 6 below to verify the
+    # PCI-DSS Req 3.2.1 removal is applied to EVERY row — a
+    # regression that only omitted one row's CVV would fail only
+    # one assertion, but we want every row checked.
+    #
+    # CVV VALUE SELECTION RATIONALE (non-collision guarantee):
+    # The CVV values are deliberately chosen to use ONLY digits from
+    # the set {5, 6, 7} — digits that appear NOWHERE in the other
+    # fixture values that ARE expected to appear in the log output:
+    #   * Masked PANs:     "111111******1111", "222222******2222",
+    #                      "333333******3333"   (digits 1/2/3 + '*')
+    #   * acct_ids:        10000000001/002/003  (digits 0 and 1/2/3)
+    #   * expiration_date: "2030-12-31"         (digits 0/1/2/3 + '-')
+    #   * active_status:   "Y" or "N"           (letters only)
+    #   * embossed_name:   "ALPHA TESTER" etc.  (letters only)
+    # Therefore a substring match on "555", "666", or "777" in the
+    # captured log output reliably proves that a CVV leaked — no
+    # false positives from coincidental substring collisions with
+    # the PCI-DSS-compliant fields that SHOULD remain visible.
     sentinel_row_1 = _make_mock_row(
         card_num="1111111111111111",
         acct_id=10000000001,
+        cvv_cd=555,
         embossed_name="ALPHA TESTER",
         active_status="Y",
     )
     sentinel_row_2 = _make_mock_row(
         card_num="2222222222222222",
         acct_id=10000000002,
+        cvv_cd=666,
         embossed_name="BETA TESTER",
         active_status="Y",
     )
     sentinel_row_3 = _make_mock_row(
         card_num="3333333333333333",
         acct_id=10000000003,
+        cvv_cd=777,
         embossed_name="GAMMA TESTER",
         active_status="N",
     )
@@ -918,18 +971,112 @@ def test_iterates_all_records(
         f"{card_record_messages}"
     )
 
-    # Contract 4: every sentinel card_num appears in the joined log
-    # output. The joined-then-searched approach is robust to whether
-    # the target module uses %s formatting, f-strings, or explicit
-    # ``str(dict)`` rendering — the sentinel value will appear
-    # verbatim in any of these forms.
+    # Contract 4: every sentinel's PCI-DSS-MASKED card_num appears
+    # in the joined log output. The joined-then-searched approach is
+    # robust to whether the target module uses %s formatting,
+    # f-strings, or explicit ``str(dict)`` rendering — the masked
+    # value will appear verbatim in any of these forms.
+    #
+    # PCI-DSS Req 3.3.1 masking format: first-6 + "******" + last-4.
+    # For 16-digit PANs, the masked form preserves the overall
+    # length (6 + 6 + 4 = 16 chars):
+    #   "1111111111111111" → "111111******1111"
+    #   "2222222222222222" → "222222******2222"
+    #   "3333333333333333" → "333333******3333"
     all_card_record_output = "\n".join(card_record_messages)
     for row in row_fixtures:
-        expected_card_num = row.asDict.return_value["card_num"]
-        assert expected_card_num in all_card_record_output, (
-            f"Expected sentinel card_num {expected_card_num!r} to "
-            f"appear in the 'CARD-RECORD:' log output (no row may "
-            f"be silently dropped during iteration); full output:\n"
+        full_pan = row.asDict.return_value["card_num"]
+        # Build the expected PCI-DSS-masked form:
+        # first-6 + "******" + last-4.
+        masked_pan = f"{full_pan[:6]}******{full_pan[-4:]}"
+        assert masked_pan in all_card_record_output, (
+            f"Expected PCI-DSS-masked card_num {masked_pan!r} "
+            f"(derived from sentinel {full_pan!r}) to appear in "
+            f"the 'CARD-RECORD:' log output — proves both that no "
+            f"row was silently dropped during iteration AND that "
+            f"the ``_mask_card_record`` helper was applied (PCI-DSS "
+            f"Req 3.3.1 — first-6 + last-4 masking); full output:"
+            f"\n{all_card_record_output}"
+        )
+
+    # Contract 5 (NEGATIVE — PCI-DSS Req 3.3.1 regression guard):
+    # No FULL PAN (the raw sentinel 16-digit card number) may
+    # appear anywhere in the captured log output.  This catches a
+    # regression where someone accidentally removes the
+    # ``_mask_card_record`` call around ``row.asDict()`` in
+    # ``src/batch/jobs/read_card_job.py`` and restores the
+    # un-masked COBOL "DISPLAY CARD-RECORD" behaviour (which would
+    # leak full PANs to CloudWatch log archives — PCI-DSS Req
+    # 3.3.1 says only the first 6 and last 4 digits may be
+    # displayed when the PAN is rendered; everything else must
+    # be masked).
+    for row in row_fixtures:
+        full_pan = row.asDict.return_value["card_num"]
+        assert full_pan not in all_card_record_output, (
+            f"PCI-DSS Req 3.3.1 VIOLATION: full PAN {full_pan!r} "
+            f"(unmasked 16-digit card number) appeared in the "
+            f"'CARD-RECORD:' log output.  The ``_mask_card_record`` "
+            f"helper must be applied before logging to mask all "
+            f"but the first-6 and last-4 digits.  Full captured "
+            f"output:\n{all_card_record_output}"
+        )
+
+    # Contract 6 (NEGATIVE — PCI-DSS Req 3.2.1 regression guard):
+    # No CVV value (``cvv_cd``) may appear anywhere in the
+    # captured log output.  Sensitive Authentication Data (SAD —
+    # CVV / CAV2 / CID / CVV2) must NEVER be stored after
+    # authorization under PCI-DSS Req 3.2.1, and CloudWatch log
+    # archives qualify as storage.  The ``_mask_card_record``
+    # helper achieves this by OMITTING the ``cvv_cd`` key entirely
+    # (not just masking it).
+    #
+    # Defence-in-depth: we also assert the string "cvv" (the
+    # field name itself) is absent — this catches a regression
+    # where someone masks the value but leaves the key/value pair
+    # in the dict (which would still expose the CVV value in the
+    # dict representation's keys).  Note that "cvv" is lowercased
+    # to avoid matching accidental mentions of e.g. "CVV-CD" in
+    # an unrelated error-handling path.
+    for row in row_fixtures:
+        cvv_value = row.asDict.return_value["cvv_cd"]
+        cvv_str = str(cvv_value)
+        assert cvv_str not in all_card_record_output, (
+            f"PCI-DSS Req 3.2.1 VIOLATION: CVV value "
+            f"{cvv_str!r} appeared in the 'CARD-RECORD:' log "
+            f"output.  Sensitive Authentication Data (SAD — "
+            f"CVV / CAV2 / CID / CVV2) must NEVER be written to "
+            f"CloudWatch log archives.  The ``_mask_card_record`` "
+            f"helper must OMIT the ``cvv_cd`` key entirely "
+            f"(not just mask its value).  Full captured "
+            f"output:\n{all_card_record_output}"
+        )
+    assert "cvv_cd" not in all_card_record_output, (
+        f"PCI-DSS Req 3.2.1 DEFENCE-IN-DEPTH VIOLATION: the "
+        f"string 'cvv_cd' (the field name) appeared in the "
+        f"'CARD-RECORD:' log output.  The ``_mask_card_record`` "
+        f"helper must OMIT the ``cvv_cd`` key entirely from the "
+        f"logged dict — leaving just the key (even with a masked "
+        f"value) still signals the field exists.  Full captured "
+        f"output:\n{all_card_record_output}"
+    )
+
+    # Contract 7 (POSITIVE — selective-redaction guard): The
+    # ``embossed_name`` field (a NON-PCI-restricted diagnostic
+    # field — it is not SAD, not a PAN, and appears on the
+    # physical card in plain text) must STILL appear in the log
+    # output.  This proves the ``_mask_card_record`` helper is
+    # SELECTIVE in what it redacts (PAN + CVV only) and does not
+    # over-redact legitimate diagnostic fields.  Without this
+    # assertion, a lazy "redact everything" regression would
+    # silently pass Contracts 4-6.
+    for row in row_fixtures:
+        embossed_name = row.asDict.return_value["embossed_name"]
+        assert embossed_name in all_card_record_output, (
+            f"Expected non-PCI-restricted embossed_name "
+            f"{embossed_name!r} to appear in the 'CARD-RECORD:' "
+            f"log output — proves the ``_mask_card_record`` "
+            f"helper is selective (masks PAN + removes CVV only, "
+            f"preserves other diagnostic fields).  Full output:\n"
             f"{all_card_record_output}"
         )
 

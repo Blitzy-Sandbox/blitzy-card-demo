@@ -106,6 +106,46 @@ Design Notes
   the COBOL UX of displaying an error message on the BMS screen
   while leaving the business entity unchanged.
 
+* **Authorization** — Authentication is enforced *transport-wide*
+  by :class:`src.api.middleware.auth.JWTAuthMiddleware`: every
+  request that reaches the ``/graphql`` endpoint has already been
+  validated against the JWT bearer-token contract, and missing /
+  expired / tampered tokens result in an HTTP 401 before any
+  mutation resolver runs. The authenticated identity
+  (``user_id``, ``user_type``, ``is_admin``) is propagated into
+  the Strawberry context via
+  :func:`src.api.main.get_graphql_context`, where resolvers can
+  consult it via ``info.context``.
+
+  **Field-level authorization is intentionally NOT applied to any
+  mutation on this module.** The four mutations below
+  (``update_account``, ``update_card``, ``add_transaction``,
+  ``pay_bill``) each correspond to a COBOL online transaction
+  (``COACTUPC``, ``COCRDUPC``, ``COTRN02C``, ``COBIL00C``) that
+  the legacy CICS region exposes to every authenticated user —
+  ordinary (``user_type == 'U'``) and administrator
+  (``user_type == 'A'``) alike. The CICS transaction table makes
+  no role-level distinction for these four transactions, and
+  COMMAREA-passed COBOL programs perform no per-screen admin
+  check before invoking the corresponding service. Replicating
+  that same access model on the GraphQL surface preserves
+  behavioral parity with the mainframe (AAP §0.7.1) and keeps the
+  REST and GraphQL surfaces consistent — the equivalent REST
+  endpoints (``/accounts/{id}`` PUT, ``/cards/{id}`` PUT,
+  ``/transactions`` POST, ``/bills/pay`` POST) are routed
+  OUTSIDE the ``ADMIN_ONLY_PREFIXES`` set declared in
+  :data:`src.api.middleware.auth.ADMIN_ONLY_PREFIXES`.
+
+  The *read-side* GraphQL query surface
+  (:mod:`src.api.graphql.queries`) DOES apply field-level admin
+  gating to the ``user`` / ``users`` resolvers because their
+  legacy COBOL counterparts (``COUSR00C``, ``COUSR01C``,
+  ``COUSR02C``, ``COUSR03C``) were housed in the administrator-
+  only transaction group and the REST ``/users`` prefix is
+  admin-gated via middleware. This module (mutations) does NOT
+  expose any user-administration mutations, so no parallel
+  admin-gate helper is required here.
+
 Source: ``app/cbl/COACTUPC.cbl``, ``app/cbl/COCRDUPC.cbl``,
 ``app/cbl/COTRN02C.cbl``, ``app/cbl/COBIL00C.cbl``, and their
 associated data copybooks (``app/cpy/CVACT01Y.cpy``,

@@ -118,16 +118,39 @@ Design Notes
   GraphQL boundary. This matches the COBOL behavior in COUSR00C.cbl
   where the user-list BMS screen never displays the password.
 
-* **Authorization** — JWT authentication is enforced by the
+* **Authentication** — JWT authentication is enforced by the
   :class:`~src.api.middleware.auth.JWTAuthMiddleware` *before* any
   resolver on this module runs. The ``/graphql`` path is not on the
   PUBLIC_PATHS allow-list, so the middleware rejects missing or
   invalid tokens with HTTP 401 before Strawberry is invoked. As a
-  result, the resolvers here may assume the caller is authenticated
-  and focus on business logic only. Field-level authorization (e.g.,
-  hiding sensitive fields for non-admins) is not required by the
-  COBOL programs being converted and is therefore not implemented
-  here either.
+  result, the resolvers here may assume the caller is authenticated.
+
+* **Authorization — admin gating on USRSEC queries** — The REST
+  :class:`~src.api.middleware.auth.JWTAuthMiddleware` gates the
+  ``/users`` and ``/admin`` path prefixes behind an ``is_admin``
+  (``user_type == 'A'``, 88 ``CDEMO-USRTYP-ADMIN``) check; see
+  :data:`src.api.middleware.auth.ADMIN_ONLY_PREFIXES`. GraphQL
+  requests all share the single ``/graphql`` endpoint, so
+  path-prefix gating alone does not cover the ``user`` and ``users``
+  resolvers (which query the USRSEC table).  To preserve parity
+  with the REST admin gating — and with the legacy COBOL COUSR00
+  / COUSR01 / COUSR02 / COUSR03 transactions which required
+  ``CDEMO-USER-TYPE = 'A'`` — the ``user`` and ``users`` resolvers
+  on this module explicitly verify that ``info.context["is_admin"]``
+  is ``True`` before issuing any service call; non-admin callers
+  receive a :class:`PermissionError` raised by
+  :func:`_require_admin`.  The ``is_admin`` flag is injected into
+  the GraphQL context by :func:`src.api.main.get_graphql_context`
+  from ``request.state.is_admin``, which in turn was populated by
+  :class:`~src.api.middleware.auth.JWTAuthMiddleware` from the
+  JWT's ``user_type`` claim on successful authentication.
+
+  Queries that map to COBOL transactions that did NOT require
+  admin privilege (account view, card list/detail, transaction
+  list/detail) remain accessible to any authenticated user — this
+  matches the original CICS access model where those transactions
+  were dispatchable from COMEN01 (the regular main menu) rather
+  than COADM01 (the admin menu).
 
 Source: ``app/cbl/COACTVWC.cbl``, ``app/cbl/COCRDLIC.cbl``,
 ``app/cbl/COTRN00C.cbl``, ``app/cbl/COUSR00C.cbl``, and their
@@ -146,6 +169,8 @@ from decimal import Decimal
 from typing import Any, Optional
 
 import strawberry
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.types import Info
 
 from src.api.database import get_async_session  # noqa: F401  — contract import
@@ -166,6 +191,7 @@ from src.api.services.user_service import (  # type: ignore[attr-defined]  # Use
     UserListRequest,
     UserService,
 )
+from src.shared.models.account import Account
 
 # ----------------------------------------------------------------------------
 # Import commentary (deferred from the import block so that ruff's
@@ -260,7 +286,7 @@ _ACCT_ID_WIDTH: int = 11
 # ============================================================================
 
 
-def _get_db_session(info: Info) -> Any:
+def _get_session(info: Info) -> Any:
     """Extract the async SQLAlchemy session from Strawberry's Info context.
 
     Every resolver receives a :class:`~strawberry.types.Info` object
@@ -274,6 +300,11 @@ def _get_db_session(info: Info) -> Any:
     be rolled back on exception, matching the CICS SYNCPOINT
     semantics from the original COBOL programs.
 
+    The helper name intentionally matches
+    :func:`src.api.graphql.mutations._get_session` for naming
+    consistency across the GraphQL layer (both queries and
+    mutations use the same session-extraction idiom).
+
     Parameters
     ----------
     info : Info
@@ -285,9 +316,10 @@ def _get_db_session(info: Info) -> Any:
     Any
         The request-scoped async SQLAlchemy session. Returned as
         ``Any`` to avoid coupling this module to SQLAlchemy's import
-        path (which is not in ``depends_on_files`` for the queries
-        module). Service constructors duck-type on the session and
-        accept any object that quacks like an ``AsyncSession``.
+        path at the call sites of read-only queries (which do not
+        need to perform isinstance() narrowing on the session).
+        Service constructors duck-type on the session and accept any
+        object that quacks like an ``AsyncSession``.
 
     Raises
     ------
@@ -313,6 +345,68 @@ def _get_db_session(info: Info) -> Any:
             "context_getter callback."
         )
     return session
+
+
+def _require_admin(info: Info) -> None:
+    """Enforce admin-only access for USRSEC GraphQL resolvers.
+
+    Inspects the ``is_admin`` flag on ``info.context`` (populated by
+    :func:`src.api.main.get_graphql_context` from
+    ``request.state.is_admin``, which in turn comes from
+    :class:`src.api.middleware.auth.JWTAuthMiddleware` enforcing
+    ``user_type == 'A'`` on the JWT). Raises
+    :class:`PermissionError` when the caller is NOT an admin — this
+    propagates as a GraphQL error with a stable message that callers
+    can detect and handle at the application layer.
+
+    This preserves parity with the REST admin gating performed by
+    :data:`src.api.middleware.auth.ADMIN_ONLY_PREFIXES` on the
+    ``/users`` and ``/admin`` path prefixes, and with the legacy
+    CICS access model where COUSR00 / COUSR01 / COUSR02 / COUSR03
+    transactions required ``CDEMO-USER-TYPE = 'A'``
+    (88 ``CDEMO-USRTYP-ADMIN``).
+
+    Parameters
+    ----------
+    info : Info
+        The Strawberry resolver context object passed as the first
+        argument to every resolver.
+
+    Raises
+    ------
+    PermissionError
+        When the authenticated caller is not an admin.  Strawberry
+        surfaces this as a GraphQL ``errors`` entry on the response,
+        with a stable ``message`` that client applications can
+        recognize without parsing a stack trace.
+    RuntimeError
+        If ``info.context`` is not a mapping or does not carry the
+        expected ``is_admin`` key.  This indicates a mis-configured
+        FastAPI + Strawberry integration and should never occur in
+        production; surfacing a clear error here is preferable to
+        silently allowing unauthenticated access.
+    """
+    context = info.context
+    if isinstance(context, dict):
+        is_admin = context.get("is_admin", False)
+    else:
+        is_admin = getattr(context, "is_admin", False)
+
+    # Defensive: explicit bool check rejects truthy-non-bool values
+    # such as non-empty strings (so a mis-wired context that placed
+    # the user_type string under the ``is_admin`` key cannot
+    # accidentally grant admin access).
+    if is_admin is not True:
+        # The error message matches the pattern used by the REST
+        # :class:`~src.api.middleware.auth.JWTAuthMiddleware` on 403
+        # responses so that log-correlation between the two surfaces
+        # uses the same literal string.
+        raise PermissionError(
+            "Administrator access required. This GraphQL field "
+            "exposes data from the USRSEC table and is restricted "
+            "to users whose JWT 'user_type' claim is 'A' "
+            "(88 CDEMO-USRTYP-ADMIN)."
+        )
 
 
 def _clamp_page(page: int) -> int:
@@ -639,7 +733,7 @@ def _user_list_item_to_type(item: Any) -> UserType:
 #   Strawberry convention for resolvers that need access to the
 #   FastAPI request context.
 # * Pulls the :class:`AsyncSession` from ``info`` via
-#   :func:`_get_db_session`, then constructs the appropriate service
+#   :func:`_get_session`, then constructs the appropriate service
 #   object (``AccountService``, ``CardService``, ``TransactionService``,
 #   ``UserService``) bound to that session.
 # * Calls the service method listed in the file-level schema's
@@ -733,7 +827,7 @@ class Query:
             The resolved GraphQL account type, or ``None`` if no
             account matches the supplied ID.
         """
-        session = _get_db_session(info)
+        session = _get_session(info)
         service: AccountService = AccountService(session)
         normalized_id: str = _normalize(acct_id)
 
@@ -793,15 +887,12 @@ class Query:
     @strawberry.field(  # type: ignore[untyped-decorator]  # strawberry.field returns Any
         description=(
             "List accounts with pagination. Derived from "
-            "COACTVWC.cbl (Feature F-004). Because the underlying "
-            "service layer exposes only the single-record "
-            "get_account_view() API (the COBOL screen never offered "
-            "a true browse-mode list), this resolver iterates the "
-            "zero-padded 11-digit account-ID space sequentially and "
-            "skips any ID that does not resolve to an active "
-            "account. Clients that require large result sets should "
-            "prefer the REST endpoint, which supports deeper "
-            "pagination."
+            "COACTVWC.cbl (Feature F-004). Issues a single "
+            "OFFSET/LIMIT SQL query against the accounts table "
+            "ordered by acct_id (PRIMARY KEY / COBOL PIC 9(11) "
+            "ascending) and returns the resulting rows. Default page "
+            "size is 10; pagination is clamped to [1, _MAX_PAGE_SIZE]. "
+            "Monetary fields are Decimal — no float coercion."
         ),
     )
     async def accounts(
@@ -812,19 +903,40 @@ class Query:
     ) -> list[AccountType]:
         """Resolve the ``accounts(page, page_size)`` query field.
 
-        Iterates the 11-digit account ID space in ``page_size`` chunks
-        starting at ``(page - 1) * page_size + 1`` and returns the
-        subset of IDs that resolve to an active account via
-        :meth:`AccountService.get_account_view`. Account IDs that do
-        not resolve (response carries a non-null ``error_message``)
-        are silently skipped — matching the COBOL behavior where a
-        VSAM NOTFND on a GTEQ browse simply advances to the next
-        key.
+        Issues a single SQL ``SELECT ... OFFSET :offset LIMIT
+        :page_size`` against the ``accounts`` table ordered by
+        ``acct_id`` (the PRIMARY KEY — zero-padded 11-character
+        strings sort lexicographically in the same order as their
+        numeric equivalents, matching the COBOL ``PIC 9(11)`` browse
+        order). Each resulting :class:`Account` ORM row is converted
+        to an :class:`AccountType` via :meth:`AccountType.from_model`,
+        which deliberately excludes the server-side-only
+        ``version_id`` optimistic-concurrency token (see
+        AAP §0.4.4).
+
+        This is a performance refactor — the previous implementation
+        iterated the ``page_size`` candidate account-ID space
+        sequentially and issued one 3-entity service call
+        (:meth:`AccountService.get_account_view`) per candidate, which
+        was O(page_size) sequential round-trips and performed two
+        extra joins (Customer, CardCrossReference) per row that the
+        GraphQL :class:`AccountType` does not expose. The bulk
+        ``select()`` + ``offset()`` + ``limit()`` approach issues
+        exactly one round-trip per page and reads only the columns
+        that flow through to the GraphQL response.
+
+        The primary-key order is preserved because ``acct_id`` is
+        stored as a zero-padded 11-character string
+        (``String(11) NOT NULL``) — lexicographic sort over
+        zero-padded fixed-width digit strings is equivalent to
+        numeric ascending order, matching the COBOL VSAM GTEQ browse
+        behavior documented in ``COACTVWC.cbl``.
 
         Parameters
         ----------
         info : Info
-            Strawberry resolver context.
+            Strawberry resolver context; carries the async SQLAlchemy
+            session under ``context["db"]``.
         page : int, default 1
             1-indexed page number. Values less than 1 are clamped
             to 1.
@@ -836,11 +948,11 @@ class Query:
         -------
         list[AccountType]
             The (possibly empty) list of accounts in the requested
-            page, each constructed from a successful
-            :class:`AccountViewResponse`.
+            page, each constructed from the ORM row via
+            :meth:`AccountType.from_model` (Decimal monetary fields,
+            no ``version_id``).
         """
-        session = _get_db_session(info)
-        service: AccountService = AccountService(session)
+        session: AsyncSession = _get_session(info)
 
         page_clamped: int = _clamp_page(page)
         page_size_clamped: int = _clamp_page_size(page_size, _USER_PAGE_SIZE_DEFAULT)
@@ -856,33 +968,47 @@ class Query:
             },
         )
 
-        results: list[AccountType] = []
-        # Iterate page_size candidate account IDs starting at the
-        # page-aligned offset. The numeric cursor is zero-padded to
-        # 11 chars to match the COBOL PIC 9(11) storage format.
-        for i in range(page_size_clamped):
-            candidate: int = offset + i + 1
-            candidate_id: str = str(candidate).zfill(_ACCT_ID_WIDTH)
+        # Bulk SQL pagination: ORDER BY acct_id (PRIMARY KEY) gives
+        # stable, deterministic ordering. Because acct_id is stored
+        # as a zero-padded 11-character string, the lexicographic
+        # comparison used by PostgreSQL string ordering is identical
+        # to numeric ascending — matching the COBOL PIC 9(11) browse
+        # order from COACTVWC.cbl. Using the PRIMARY KEY also means
+        # the OFFSET/LIMIT scan can use the btree index directly.
+        stmt = (
+            select(Account)
+            .order_by(Account.acct_id)
+            .offset(offset)
+            .limit(page_size_clamped)
+        )
 
-            try:
-                response = await service.get_account_view(candidate_id)
-            except Exception:
-                # Individual lookup failures are logged and skipped
-                # rather than aborting the whole page — keeps the
-                # resolver robust against transient DB blips.
-                logger.exception(
-                    "accounts query: lookup failed",
-                    extra={
-                        "operation": "graphql_query_accounts",
-                        "acct_id": candidate_id,
-                    },
-                )
-                continue
+        try:
+            result = await session.execute(stmt)
+            rows: list[Account] = list(result.scalars().all())
+        except Exception:
+            # Database-level failures (connectivity, SQL errors) are
+            # logged for observability and surfaced as an empty page
+            # to keep the read-side API uniformly shaped. This
+            # matches the COBOL behavior where VSAM I/O errors during
+            # a browse fall through to an empty screen rather than
+            # aborting the transaction.
+            logger.exception(
+                "accounts query: database error",
+                extra={
+                    "operation": "graphql_query_accounts",
+                    "page": page_clamped,
+                    "page_size": page_size_clamped,
+                    "offset": offset,
+                },
+            )
+            return []
 
-            if response.error_message is None:
-                results.append(_account_view_to_type(response))
-
-        return results
+        # AccountType.from_model is the single allowed ORM→GraphQL
+        # conversion point — it copies the 12 GraphQL fields
+        # explicitly and deliberately does NOT read version_id, so
+        # the optimistic-concurrency token cannot cross the GraphQL
+        # boundary. See src/api/graphql/types/account_type.py.
+        return [AccountType.from_model(account) for account in rows]
 
     # ------------------------------------------------------------------
     # card — COCRDSLC.cbl → single card lookup (Feature F-007)
@@ -922,7 +1048,7 @@ class Query:
             The resolved GraphQL card type (CVV scrubbed per
             PCI-DSS), or ``None`` if no card matches.
         """
-        session = _get_db_session(info)
+        session = _get_session(info)
         service: CardService = CardService(session)
         normalized_num: str = _normalize(card_num)
 
@@ -1019,7 +1145,7 @@ class Query:
             embossed name, and expiration date elided per the
             COBOL list-view behavior.
         """
-        session = _get_db_session(info)
+        session = _get_session(info)
         service: CardService = CardService(session)
 
         page_clamped: int = _clamp_page(page)
@@ -1107,7 +1233,7 @@ class Query:
             The resolved GraphQL transaction type, or ``None`` if
             no transaction matches.
         """
-        session = _get_db_session(info)
+        session = _get_session(info)
         service: TransactionService = TransactionService(session)
         normalized_id: str = _normalize(tran_id)
 
@@ -1197,7 +1323,7 @@ class Query:
             9 non-list fields defaulted to empty strings per the
             COBOL list-view screen geometry.
         """
-        session = _get_db_session(info)
+        session = _get_session(info)
         service: TransactionService = TransactionService(session)
 
         page_clamped: int = _clamp_page(page)
@@ -1253,6 +1379,14 @@ class Query:
     ) -> Optional[UserType]:  # noqa: UP045  # schema requires typing.Optional
         """Resolve the ``user(usr_id: String!)`` query field.
 
+        **Authorization**: This resolver reads from the USRSEC table
+        and is therefore restricted to administrator callers
+        (``user_type == 'A'``, 88 ``CDEMO-USRTYP-ADMIN``) — matching
+        the REST middleware admin gating on ``/users`` paths and the
+        legacy CICS COUSR00 transaction access model. Non-admin
+        callers receive a :class:`PermissionError` raised by
+        :func:`_require_admin` before any service call is issued.
+
         The :class:`UserService` does not expose a dedicated
         ``get_user`` single-record API; the COBOL COUSR00C program
         uses the same browse-mode flow for both single-row lookup
@@ -1276,8 +1410,22 @@ class Query:
         Optional[UserType]
             The resolved GraphQL user type (password excluded), or
             ``None`` if no user matches.
+
+        Raises
+        ------
+        PermissionError
+            If the authenticated caller is not an administrator
+            (``user_type != 'A'``). Raised by :func:`_require_admin`
+            BEFORE any service call is issued so no USRSEC read
+            occurs for non-admin callers.
         """
-        session = _get_db_session(info)
+        # Admin-only gate — matches REST /users path-prefix gating
+        # in src.api.middleware.auth.ADMIN_ONLY_PREFIXES and
+        # preserves parity with the legacy CICS COUSR00 transaction
+        # access model (CDEMO-USER-TYPE = 'A').
+        _require_admin(info)
+
+        session = _get_session(info)
         service: UserService = UserService(session)
         normalized_id: str = _normalize(usr_id)
 
@@ -1356,6 +1504,16 @@ class Query:
     ) -> list[UserType]:
         """Resolve the ``users(page, page_size)`` query field.
 
+        **Authorization**: This resolver reads from the USRSEC table
+        and is therefore restricted to administrator callers
+        (``user_type == 'A'``, 88 ``CDEMO-USRTYP-ADMIN``) — matching
+        the REST middleware admin gating on ``/users`` paths and the
+        legacy CICS COUSR00 transaction access model. Non-admin
+        callers receive a :class:`PermissionError` raised by
+        :func:`_require_admin` before any service call is issued so
+        non-admin callers cannot enumerate user IDs through the
+        GraphQL surface.
+
         Delegates to :meth:`UserService.list_users` which maps to
         the COBOL browse-mode user list in ``COUSR00C.cbl``. The
         service returns a :class:`UserListResponse` whose ``users``
@@ -1378,8 +1536,25 @@ class Query:
             DELIBERATELY ABSENT (defence in depth — the GraphQL
             type omits the field AND the service DTO omits the
             field, so the hash cannot cross this boundary).
+
+        Raises
+        ------
+        PermissionError
+            If the authenticated caller is not an administrator
+            (``user_type != 'A'``). Raised by :func:`_require_admin`
+            BEFORE any service call is issued so no USRSEC read
+            occurs for non-admin callers.
         """
-        session = _get_db_session(info)
+        # Admin-only gate — matches REST /users path-prefix gating
+        # in src.api.middleware.auth.ADMIN_ONLY_PREFIXES and
+        # preserves parity with the legacy CICS COUSR00 transaction
+        # access model (CDEMO-USER-TYPE = 'A'). Without this gate,
+        # any authenticated user could enumerate the USRSEC table
+        # via GraphQL — an information-disclosure inconsistency
+        # with the REST surface.
+        _require_admin(info)
+
+        session = _get_session(info)
         service: UserService = UserService(session)
 
         page_clamped: int = _clamp_page(page)
@@ -1420,7 +1595,7 @@ class Query:
 # Public exports
 # ----------------------------------------------------------------------------
 # Only the :class:`Query` class is part of the public API. The private
-# helpers (``_get_db_session``, ``_clamp_page``, ``_clamp_page_size``,
+# helpers (``_get_session``, ``_clamp_page``, ``_clamp_page_size``,
 # ``_normalize``, ``_safe_decimal``, and the ``_*_to_type`` builders)
 # and module constants are intentionally not re-exported to keep the
 # public surface minimal and discourage cross-module coupling.

@@ -172,9 +172,14 @@ from __future__ import annotations
 #                  uses sys.argv via awsglue.utils.getResolvedOptions, and
 #                  the ``if __name__`` guard below records sys.argv at
 #                  DEBUG for CloudWatch-side operator troubleshooting.
+# ``typing.Any`` — loose type annotation for ``dict[str, Any]`` used by
+#                  :func:`_mask_card_record` to accept arbitrary row-dict
+#                  values produced by ``pyspark.sql.Row.asDict()`` (which
+#                  can yield str / int / None depending on the column).
 # ----------------------------------------------------------------------------
 import logging
 import sys
+from typing import Any
 
 # ----------------------------------------------------------------------------
 # First-party imports — batch common infrastructure.
@@ -276,6 +281,91 @@ _JOB_NAME: str = "carddemo-read-card"
 # specification: ``read_table(spark, "cards")``.
 # ----------------------------------------------------------------------------
 _TABLE_NAME: str = "cards"
+
+
+# ----------------------------------------------------------------------------
+# _mask_card_record — PCI-DSS v4.0 Requirement 3.3 and Requirement 3.2
+# compliance helper for logging card rows.
+# ----------------------------------------------------------------------------
+# PCI-DSS v4.0 Requirement 3.3.1 mandates that the PAN (Primary Account
+# Number, i.e. ``card_num``) be masked when displayed — the maximum number
+# of digits that may be rendered in clear text is the first six and the
+# last four digits (BIN + last-4 pattern).  CloudWatch Logs persistence
+# is a "display" under PCI-DSS (the log entries are human-readable by
+# operators with the appropriate IAM policy), so the unmasked PAN must
+# never be emitted to any log record.
+#
+# PCI-DSS v4.0 Requirement 3.2.1 (Sensitive Authentication Data — SAD)
+# mandates that SAD elements, which include the full card verification
+# value (CVV / CVV2 / CID / CAV2 — ``cvv_cd`` in our schema), MUST NOT
+# be stored after the authorization flow completes.  CloudWatch log
+# persistence meets the PCI-DSS definition of "stored", so CVV values
+# must be excluded entirely from any log payload.
+#
+# This helper builds a PCI-safe copy of a row dict by:
+#   * masking ``card_num`` as ``<first-6>******<last-4>`` — six asterisks
+#     in the middle so the emitted token length is stable at 16 characters
+#     matching VARCHAR(16) / CVACT02Y ``CARD-NUM PIC X(16)``;
+#   * removing ``cvv_cd`` entirely from the output dict (the key does
+#     not appear);
+#   * passing all other keys through unchanged (``acct_id``,
+#     ``embossed_name``, ``expiration_date``, ``active_status`` are not
+#     PCI-DSS account data or SAD).
+#
+# The function does not mutate its input: it returns a new dict.  Null
+# (``None``) card numbers are passed through unchanged since there is
+# nothing to mask.  Short / non-standard card numbers (length ≤ 10)
+# are masked in their entirety because the first-6 + last-4 pattern
+# would overlap and leak the middle digits.
+# ----------------------------------------------------------------------------
+def _mask_card_record(row_dict: dict[str, Any]) -> dict[str, Any]:
+    """Return a PCI-DSS-safe copy of a card row dict suitable for logging.
+
+    Parameters
+    ----------
+    row_dict : dict[str, Any]
+        Dict produced by :meth:`pyspark.sql.Row.asDict` on a row of
+        the ``cards`` table.  Expected keys: ``card_num``,
+        ``acct_id``, ``cvv_cd``, ``embossed_name``,
+        ``expiration_date``, ``active_status``.  Missing keys are
+        tolerated — the function operates on whatever keys are
+        present.
+
+    Returns
+    -------
+    dict[str, Any]
+        A new dict whose ``card_num`` entry is masked per PCI-DSS
+        Requirement 3.3.1 (first-6 + last-4 format) and whose
+        ``cvv_cd`` entry is entirely omitted per PCI-DSS
+        Requirement 3.2.1.  All other keys pass through unchanged.
+        The input ``row_dict`` is not mutated.
+    """
+    masked: dict[str, Any] = {}
+    for key, value in row_dict.items():
+        if key == "cvv_cd":
+            # PCI-DSS Req 3.2.1 — SAD (CVV/CAV2/CID) must never be
+            # stored after authorization; CloudWatch log persistence
+            # qualifies as storage.  Omit the key entirely.
+            continue
+        if key == "card_num":
+            if value is None:
+                masked[key] = None
+                continue
+            card_str = str(value)
+            if len(card_str) > 10:
+                # PCI-DSS Req 3.3.1 — keep first-6 BIN + last-4, mask
+                # the middle with exactly six asterisks.  For a
+                # 16-character PAN the resulting token length is
+                # preserved (6 + 6 + 4 = 16 characters) so downstream
+                # parsers relying on fixed field widths still work.
+                masked[key] = f"{card_str[:6]}******{card_str[-4:]}"
+            else:
+                # Short / malformed PAN — cannot apply the
+                # first-6+last-4 split without overlap.  Mask in full.
+                masked[key] = "*" * len(card_str)
+            continue
+        masked[key] = value
+    return masked
 
 
 def main() -> None:
@@ -443,24 +533,31 @@ def main() -> None:
         # any DISPLAY CARD-RECORD ever executing).
         # --------------------------------------------------------------
         if record_count > 0:
-            # Row.asDict() emits the full card record (card_num,
-            # acct_id, cvv_cd, embossed_name, expiration_date,
-            # active_status) as a structured JSON payload inside
-            # each log line — preserving the COBOL DISPLAY
-            # CARD-RECORD semantic of emitting the full 150-byte
-            # record to SYSOUT, but in a form that CloudWatch Logs
-            # Insights can query structurally.
+            # Row.asDict() emits one dict per card row; each dict is
+            # passed through :func:`_mask_card_record` which applies
+            # PCI-DSS v4.0 Requirement 3.3.1 (first-6 + last-4 PAN
+            # masking) and Requirement 3.2.1 (CVV/SAD removal) before
+            # the record is handed to the logger.  This preserves the
+            # COBOL DISPLAY CARD-RECORD semantic of emitting one line
+            # per row to the diagnostic log, but ensures that neither
+            # the full PAN nor any sensitive authentication data ever
+            # lands in CloudWatch Logs.
             #
-            # NOTE: The ``cards`` table contains sensitive payment
-            # card data (card_num PAN, CVV) that is stored per the
-            # project's data-at-rest encryption policy; operators
-            # inspecting CloudWatch logs for this diagnostic job
-            # should be authorized under the same IAM policies that
-            # gate the JDBC read, and PCI-DSS compliance audits
-            # should treat these log entries as card data exposure
-            # equivalent to the mainframe SYSOUT output.
+            # PCI-DSS compliance notes:
+            #   * Req 3.3.1 — Only the first 6 (BIN) and last 4
+            #     digits of ``card_num`` are emitted in clear text.
+            #   * Req 3.2.1 — ``cvv_cd`` is never emitted to logs
+            #     (key omitted from the masked dict entirely).
+            #   * The remaining columns (``acct_id``,
+            #     ``embossed_name``, ``expiration_date``,
+            #     ``active_status``) are not PCI-DSS account data or
+            #     SAD and are therefore safe to log.
+            # The unmasked row data itself remains accessible only
+            # through the Aurora PostgreSQL ``cards`` table under
+            # the IAM policies that gate the JDBC read; it is never
+            # written to CloudWatch.
             for row in cards_df.collect():
-                logger.info("CARD-RECORD: %s", row.asDict())
+                logger.info("CARD-RECORD: %s", _mask_card_record(row.asDict()))
         else:
             # COBOL path when the loop exits immediately via
             # APPL-EOF on the first read. In mainframe SYSOUT this

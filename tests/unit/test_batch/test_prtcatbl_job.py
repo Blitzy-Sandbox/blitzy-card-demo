@@ -100,13 +100,20 @@ Target Module Under Test
 
 Test Organization
 -----------------
-Nine test cases across five logical phases mapping to the AAP
-agent-prompt specification for this file:
+Eight test cases across four logical phases mapping to the AAP
+agent-prompt specification for this file.  (The phase numbers below
+are retained from the original JCL-step-aligned numbering scheme —
+Phase 1 (PRESORT setup / fixture construction) is shared with other
+batch test modules and is implemented in :mod:`tests.conftest` rather
+than this file; hence the phase numbering starts at Phase 2.)
 
 * Phase 2 — Sort order (SORT FIELDS replacement) — 1 test.
 * Phase 3 — EDIT-mask formatting (``EDIT=(TTTTTTTTT.TT)``) — 4 tests.
 * Phase 4 — Report generation + S3 write (OUTREC / SORTOUT DD) — 2 tests.
 * Phase 5 — End-to-end ``main()`` integration — 1 test.
+
+Phase-count summary: 1 + 4 + 2 + 1 = **8 tests** across **4 phases**
+(Phases 2, 3, 4, 5).
 
 The sort test and the end-to-end integration test exercise real
 :class:`pyspark.sql.DataFrame` operations against the session-scoped

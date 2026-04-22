@@ -71,7 +71,10 @@ Target Module Under Test
 
 Test Organization
 -----------------
-Nine test cases across five logical phases:
+Nine test cases across four logical phases (numbering mirrors the
+underlying JCL/batch stage numbering; there is no "Phase 1" in this
+module — Phase 1 is owned by ``test_posttran_job.py`` for the
+POSTTRAN stage):
 
 * Phase 2 — Union (DD concatenation replacement) — 3 tests.
 * Phase 3 — Sort (``SORT FIELDS=(TRAN-ID,A)`` replacement) — 3 tests.
@@ -550,8 +553,14 @@ def test_union_preserves_all_columns(spark_session: SparkSession) -> None:
 # documented deduplication behaviour for duplicate keys (the production
 # module calls ``dropDuplicates(["tran_id"])`` BEFORE the sort to guard
 # against ``IDC3302I DUPLICATE RECORD`` aborts on the downstream
-# unique-keyed KSDS, which the PostgreSQL overwrite write otherwise
-# would not reject).
+# unique-keyed KSDS. Because the PostgreSQL ``transactions`` table
+# declares ``tran_id`` as its PRIMARY KEY (and ``write_table`` uses
+# ``truncate="true"`` to preserve the PRIMARY KEY on overwrite), the
+# downstream JDBC INSERT would ALSO fail on duplicate ``tran_id``
+# values via a unique-constraint violation — but dropping duplicates
+# at the PySpark layer keeps the error surface at a single, well-
+# understood location and avoids partial-load rollbacks on the
+# PostgreSQL side).
 # ============================================================================
 @pytest.mark.unit
 def test_sort_ascending_by_tran_id(spark_session: SparkSession) -> None:
@@ -776,9 +785,20 @@ def test_sort_handles_duplicate_tran_ids(spark_session: SparkSession) -> None:
 #   1. ``sorted_df.write.mode("overwrite").parquet(combined_output_uri)``
 #      — Parquet archive to S3 at the GDG-equivalent timestamp path.
 #   2. ``write_table(sorted_df, _TABLE_NAME, mode="overwrite")`` —
-#      PostgreSQL overwrite on the ``transactions`` table (the JDBC
-#      writer interprets ``mode="overwrite"`` as ``TRUNCATE`` + ``INSERT``,
-#      matching the mainframe REPRO's "replace all content" semantic).
+#      PostgreSQL overwrite on the ``transactions`` table. NOTE on
+#      JDBC semantics: Spark's JDBC writer's default behavior for
+#      ``mode="overwrite"`` is ``DROP TABLE`` + ``CREATE TABLE`` +
+#      ``INSERT`` — which would destroy PRIMARY KEY constraints,
+#      indexes, foreign keys, and the ``version_id`` optimistic-
+#      concurrency column defined in ``db/migrations/V1__schema.sql``.
+#      To preserve the schema, ``src.batch.common.db_connector.
+#      write_table`` explicitly sets the JDBC option
+#      ``truncate="true"`` which changes Spark's overwrite
+#      implementation to ``TRUNCATE TABLE`` + ``INSERT`` (preserving
+#      all DDL). The ``TRUNCATE`` + ``INSERT`` behavior is what
+#      matches the mainframe REPRO's "replace all content" semantic
+#      on a KSDS — and what Step Functions / downstream stages
+#      (POSTTRAN, INTCALC, CREASTMT, TRANREPT, API layer) rely on.
 #
 # The two Phase-4 tests verify both writes are correctly invoked by
 # ``main()``. They use ``_make_mock_df`` to replace the real Spark
@@ -954,9 +974,17 @@ def test_write_to_postgres_overwrite_mode(
            REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM)
 
     where ``REPRO`` on a unique-keyed KSDS replaces the cluster's
-    contents wholesale — the PySpark JDBC connector implements
-    ``mode="overwrite"`` on PostgreSQL as ``TRUNCATE`` followed by
-    ``INSERT``, matching the mainframe semantic exactly.
+    contents wholesale. The Spark JDBC connector's default
+    ``mode="overwrite"`` behavior would execute ``DROP TABLE`` +
+    ``CREATE TABLE`` + ``INSERT`` — which would destroy the
+    PRIMARY KEY, indexes, and ``version_id`` optimistic-concurrency
+    column declared in ``db/migrations/V1__schema.sql``. To preserve
+    the schema, :func:`src.batch.common.db_connector.write_table`
+    sets the JDBC option ``truncate="true"``, which changes Spark's
+    overwrite implementation to ``TRUNCATE`` + ``INSERT`` — matching
+    the mainframe REPRO semantic exactly AND leaving all DDL
+    (constraints, indexes, version_id default) intact so that
+    downstream stages and the API layer continue to function.
     """
     # --- Arrange ---------------------------------------------------------
     # Same mock topology as the S3-archive test — the two phases
@@ -1030,7 +1058,13 @@ def test_write_to_postgres_overwrite_mode(
     # (c) The mode MUST be ``"overwrite"`` — this is the REPRO
     # semantic (replace-all). An ``"append"`` regression would
     # silently duplicate records on every rerun of the job,
-    # violating the mainframe's replacement invariant.
+    # violating the mainframe's replacement invariant. Note that
+    # ``src.batch.common.db_connector.write_table`` sets the JDBC
+    # option ``truncate="true"`` whenever ``mode="overwrite"`` so
+    # the actual SQL behavior is ``TRUNCATE`` + ``INSERT`` (NOT
+    # ``DROP`` + ``CREATE``) — this preserves the PRIMARY KEY,
+    # indexes, and ``version_id`` optimistic-concurrency column
+    # on the ``transactions`` table.
     mode = kwargs.get("mode")
     assert mode == "overwrite", (
         f"write_table called with mode={mode!r}, expected 'overwrite' "

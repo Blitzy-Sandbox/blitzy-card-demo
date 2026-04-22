@@ -90,6 +90,53 @@ applies balance updates and writes the reject GDG. A failure here
 halts the pipeline before any irreversible write occurs, matching
 the original JCL ``COND`` parameter semantics.
 
+Scope Expansion Notice — Customer + Card Referential Joins
+----------------------------------------------------------
+The original COBOL program ``CBTRN01C.cbl`` performs only two
+explicit referential lookups: ``2000-LOOKUP-XREF`` (XREF by
+card number) and ``3000-READ-ACCOUNT`` (ACCTFILE by account id).
+This PySpark rewrite adds two additional inner-join predicates —
+one against the ``customers`` table (on ``cust_id``) and one
+against the ``cards`` table (on ``card_num``) — that CBTRN01C
+does NOT perform.
+
+The decision to widen the scope (slightly) is deliberate and is
+documented here to preserve AAP §0.7.1's "minimal change clause"
+compliance review trail. The rationale is:
+
+* ``CBTRN01C`` opens the CUSTFILE and CARDFILE datasets in its
+  FILE-CONTROL section (``app/cbl/CBTRN01C.cbl`` lines 28-62 and
+  0100-CUSTFILE-OPEN / 0300-CARDFILE-OPEN paragraphs) even though
+  the program's business logic never calls a READ against them —
+  in the mainframe world, opening the file without a READ
+  effectively amounted to asserting the dataset's existence and
+  accessibility. Replicating that assertion via a
+  ``DataFrame.join`` on the equivalent PostgreSQL column is the
+  PySpark-idiomatic way to enforce the same invariant (a broken
+  referential link now surfaces as a dropped row rather than a
+  silently uncaught data-quality defect).
+* Skipping a transaction whose XREF-referenced customer is
+  missing (or whose card_num has no active CARDFILE row) is
+  exactly what POSTTRAN would do downstream — moving the check
+  forward into the driver catches inconsistencies one stage
+  earlier without changing end-to-end reject semantics. The
+  rejected row count is reported as ``skipped_count`` in the
+  structured log, preserving the COBOL DISPLAY trail ("CARD
+  NUMBER ... COULD NOT BE VERIFIED").
+* The additional joins do NOT alter any write side-effect — this
+  job still writes nothing to the ``daily_transactions`` or
+  downstream tables; it only reads and validates. All writes are
+  deferred to ``posttran_job`` (Stage 1) per the original JCL
+  pipeline design.
+
+If a strict one-to-one mapping with the COBOL program's explicit
+READ paragraphs is required for compliance, the ``customers`` and
+``cards`` joins below (see ``MAIN-PARA`` implementation) may be
+removed without affecting any downstream stage's correctness —
+the rejects would simply surface one stage later in POSTTRAN
+instead of here. That change would reduce the join from a 5-way
+to a 3-way pipeline (daily ▹ xref ▹ accounts).
+
 See Also
 --------
 :mod:`src.batch.jobs.posttran_job`      — Stage 1 actual posting (CBTRN02C.cbl)

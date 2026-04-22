@@ -467,15 +467,49 @@ async def get_current_user(
         before invoking this function if the header is missing.
     db : AsyncSession
         Async database session, injected per the AAP §0.5.1 task
-        specification for :func:`get_current_user`. Reserved for
-        future USRSEC revalidation (i.e., a dynamic check that the
-        user row in ``user_security`` still exists and is not disabled).
-        The current implementation does NOT query the database because
-        the stateless JWT model mirrors the original COBOL behavior,
-        where ``COSGN00C.cbl`` reads USRSEC exactly once at sign-on
-        and never re-reads it for subsequent transactions. Preserving
-        the signature now lets future enhancements add the revalidation
-        check without breaking the existing dependency chain.
+        specification for :func:`get_current_user`. This parameter
+        is intentionally kept in the signature as the committed
+        extension point for USRSEC revalidation, even though the
+        current implementation does NOT consume it (``del db``
+        below, line 511). The current body uses only the stateless
+        JWT claims because that faithfully mirrors ``COSGN00C.cbl``'s
+        COBOL behavior — the original program reads the USRSEC VSAM
+        cluster exactly once at sign-on (``EXEC CICS READ FILE
+        ('USRSEC')`` at COSGN00C lines 192-204) and never re-reads
+        it for subsequent transactions; CICS propagates the
+        authenticated identity via COMMAREA, which the JWT now
+        replaces.
+
+        The parameter is retained (rather than removed) so that the
+        following concrete, documented enhancements can be added
+        WITHOUT any breaking change to the FastAPI dependency chain
+        or the router signatures that depend on this function:
+
+        1. **USRSEC revalidation on token refresh** — when the JWT
+           refresh endpoint is added (a COSGN00C-equivalent
+           re-sign-on flow), this dependency will issue
+           ``SELECT usr_id FROM user_security WHERE usr_id = :sub``
+           to confirm the user row still exists and ``sec_usr_status``
+           is active, raising HTTP 401 if the account has been
+           disabled since the JWT was issued.
+        2. **Admin elevation check** — for the
+           :func:`get_current_admin_user` chain, a future hardening
+           pass will cross-check the JWT ``user_type`` claim against
+           the live ``user_security.sec_usr_type`` column to defeat
+           stale-token attacks where an admin's role was revoked
+           but the JWT is still within its expiry window.
+        3. **Audit-log write** — a future compliance requirement may
+           need every authenticated request to append an audit row;
+           having the session pre-injected here avoids a second
+           ``Depends(get_db)`` at every router level.
+
+        Removing this parameter now would require touching every
+        router that calls :func:`get_current_user` once the
+        revalidation feature is scheduled. Keeping it here is a
+        one-line DI-overhead cost (a session checkout from the pool
+        that is immediately returned via ``del db``; no query is
+        issued and no transaction is opened) that protects the
+        forward-compatibility of every router module.
 
     Returns
     -------

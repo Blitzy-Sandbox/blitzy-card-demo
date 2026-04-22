@@ -1067,9 +1067,21 @@ def main() -> None:
         #
         # ``mode="overwrite"`` maps to IDCAMS REPRO's "replace the
         # entire VSAM KSDS contents" semantic on a unique-keyed
-        # cluster. On PostgreSQL the PySpark JDBC connector implements
-        # "overwrite" as TRUNCATE followed by INSERT, matching the
-        # mainframe's replace-all behavior.
+        # cluster. On PostgreSQL the PySpark JDBC connector's default
+        # behaviour for "overwrite" is DROP TABLE + CREATE TABLE —
+        # which would destroy the column constraints, primary keys,
+        # NOT NULL/DEFAULT specifications (including the
+        # ``version_id INTEGER NOT NULL DEFAULT 0`` optimistic-
+        # concurrency column on ``accounts`` and ``cards`` per AAP
+        # §0.4.4), and B-tree indexes defined in
+        # ``db/migrations/V1__schema.sql`` and V2__indexes.sql. The
+        # helper :func:`src.batch.common.db_connector.write_table`
+        # therefore sets ``truncate="true"`` on every overwrite
+        # write, so the PostgreSQL JDBC driver issues a
+        # ``TRUNCATE TABLE`` (preserving the schema) followed by
+        # INSERT — matching the mainframe's replace-all behaviour
+        # while keeping the Aurora PostgreSQL schema intact for
+        # downstream ORM operations.
         #
         # The DataFrame source is the in-memory sorted_df (not the
         # S3 Parquet just written) — this saves a re-read from S3

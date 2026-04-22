@@ -1609,10 +1609,20 @@ def test_compute_fees_stub_preserved() -> None:
 # Expected outputs:
 #   * 2 interest transactions generated and written to S3 via a
 #     single :func:`write_to_s3` call.
+#   * 2 interest transactions ALSO written to the PostgreSQL
+#     ``transactions`` table via :func:`write_table` with
+#     ``mode="append"`` — required so the downstream COMBTRAN,
+#     CREASTMT, and TRANREPT stages can read the interest rows
+#     from Aurora PostgreSQL (the shared persistence layer
+#     between stages in the AWS Glue pipeline).  This matches
+#     the COBOL CBACT04C behaviour (WRITE FD-TRANFILE-REC at
+#     line 514 in paragraph 1300-B-WRITE-TX) which writes every
+#     interest record to the TRANSACT VSAM cluster.
 #   * Account balance updated: 500.00 + (15.00 + 30.00) = 545.00.
 #   * Cycle credit/debit reset to 0.00 per 1050-UPDATE-ACCOUNT.
 #   * accounts table written via :func:`write_table` with the
-#     13-column schema from :func:`_build_account_schema`.
+#     13-column schema from :func:`_build_account_schema`
+#     (``mode="overwrite"`` — REWRITE equivalent).
 #   * :func:`commit_job` invoked exactly once (MAXCC=0 signal).
 # ============================================================================
 @pytest.mark.unit
@@ -1652,7 +1662,17 @@ def test_intcalc_main_with_spark(
       * ``write_to_s3`` is invoked exactly once (2 interest
         transactions serialised into a single SYSTRAN object).
       * ``write_table`` is invoked with the ``accounts`` table name
-        and a DataFrame containing the updated balance row.
+        (``mode="overwrite"``) and a DataFrame containing the
+        updated balance row.
+      * ``write_table`` is ALSO invoked with the ``transactions``
+        table name and ``mode="append"`` carrying the interest
+        transactions DataFrame — this is the pipeline-integration
+        append required so Stage 3 (COMBTRAN), Stage 4a
+        (CREASTMT), and Stage 4b (TRANREPT) downstream jobs can
+        read the interest rows from Aurora PostgreSQL via JDBC.
+        Mirrors the COBOL WRITE FD-TRANFILE-REC at CBACT04C
+        line 514 (paragraph 1300-B-WRITE-TX) which writes every
+        interest transaction to the TRANSACT VSAM cluster.
       * The accounts-writeback DataFrame has the expected 13-column
         schema from :func:`_build_account_schema`.
       * The account balance row shows 545.00 (starting 500 + 15 +
@@ -1901,6 +1921,27 @@ def test_intcalc_main_with_spark(
     # 9) Verify write_table was called with mode="overwrite" for
     #    the accounts table (REWRITE semantics — all rows written
     #    back so untouched accounts survive the JDBC load).
+    #
+    #    NOTE (schema-preservation rationale — CRITICAL #1 fix):
+    #    ``mode="overwrite"`` is still the correct mode for the
+    #    accounts table because the mainframe COBOL semantic is
+    #    REWRITE every row (touched + untouched) so the VSAM
+    #    cluster contents are fully refreshed.  Spark JDBC's
+    #    DEFAULT behaviour for ``mode="overwrite"`` is DROP TABLE
+    #    + CREATE TABLE + INSERT (destructive to PRIMARY KEY,
+    #    FKs, indexes, and the ``version_id`` optimistic-
+    #    concurrency column declared in ``V1__schema.sql``).
+    #    However, :func:`src.batch.common.db_connector.write_table`
+    #    explicitly sets ``truncate="true"`` in the JDBC writer
+    #    options, which flips the semantic to TRUNCATE TABLE +
+    #    INSERT instead — preserving the PostgreSQL schema
+    #    (PRIMARY KEY on ``acct_id``, B-tree indexes, NOT NULL
+    #    constraints, the ``version_id`` column for SQLAlchemy
+    #    optimistic concurrency, etc.).  Therefore asserting
+    #    ``mode == "overwrite"`` here is the correct production
+    #    expectation — the schema-preserving behaviour is handled
+    #    inside ``db_connector.write_table`` as a JDBC option,
+    #    not as a different ``mode=`` argument.
     accounts_call = None
     for call in mock_write_table.call_args_list:
         # call.args: (dataframe, table_name)
@@ -1914,6 +1955,78 @@ def test_intcalc_main_with_spark(
     assert accounts_call.kwargs.get("mode") == "overwrite", (
         f"accounts write_table must use mode='overwrite' "
         f"(REWRITE equivalent) — got {accounts_call.kwargs!r}"
+    )
+
+    # 9b) Verify write_table was called with mode="append" for the
+    #     transactions table — this is the pipeline-integration
+    #     append (CRITICAL #2 fix) REQUIRED so the downstream
+    #     COMBTRAN (Stage 3), CREASTMT (Stage 4a), and TRANREPT
+    #     (Stage 4b) jobs can read the interest rows from Aurora
+    #     PostgreSQL via JDBC.  Mirrors the COBOL WRITE
+    #     FD-TRANFILE-REC at CBACT04C line 514 (paragraph
+    #     1300-B-WRITE-TX) which writes every interest transaction
+    #     to the TRANSACT VSAM cluster.
+    #
+    #     NOTE (mode="append" — NOT "overwrite" — rationale):
+    #     Interest transactions are NEW rows to be added to the
+    #     existing posted-transaction set produced by Stage 1
+    #     (posttran_job).  Using ``mode="overwrite"`` here would
+    #     TRUNCATE the transactions table (via the
+    #     ``truncate="true"`` option in db_connector.write_table)
+    #     and destroy the posted transactions from Stage 1,
+    #     breaking the entire pipeline.  ``mode="append"`` performs
+    #     a pure INSERT matching the COBOL WRITE (no key check —
+    #     the DataFrame is built from newly allocated tran_ids so
+    #     no primary-key collision is possible).
+    #
+    #     Guard: the production code short-circuits the write when
+    #     the interest_trans list is empty, but this test scenario
+    #     generates 2 interest transactions so the append call
+    #     MUST have been emitted.
+    transactions_call = None
+    for call in mock_write_table.call_args_list:
+        # call.args: (dataframe, table_name)
+        # call.kwargs: {"mode": "append", ...}
+        if len(call.args) >= 2 and call.args[1] == "transactions":
+            transactions_call = call
+            break
+    assert transactions_call is not None, (
+        "write_table was never invoked with table_name='transactions' "
+        "— CRITICAL #2 pipeline-integration append missing.  Interest "
+        "transactions must be written to the PostgreSQL transactions "
+        "table so downstream COMBTRAN/CREASTMT/TRANREPT stages can "
+        "read them.  Without this append, the pipeline output is "
+        "broken: combtran_job receives zero interest rows, "
+        "creastmt_job statements omit interest charges, and "
+        "tranrept_job totals exclude interest transactions — "
+        "violating AAP §0.7.1 'No feature may be dropped'."
+    )
+    assert transactions_call.kwargs.get("mode") == "append", (
+        f"transactions write_table must use mode='append' (INSERT "
+        f"equivalent) — NOT 'overwrite' (which would TRUNCATE the "
+        f"posted transactions from Stage 1 posttran_job).  Got "
+        f"kwargs={transactions_call.kwargs!r}"
+    )
+
+    # 9c) Verify the DataFrame argument of the transactions write
+    #     contains exactly 2 interest-transaction rows (matching
+    #     the 2 TCATBAL rows processed: type=01/cat=0005 and
+    #     type=01/cat=0006).  This guards against a regression
+    #     where the write_table call would be emitted with an
+    #     unrelated DataFrame (e.g. the accounts DF) or with an
+    #     empty DataFrame (short-circuit bypass).
+    transactions_out_df = written_dataframes.get("transactions")
+    assert transactions_out_df is not None, (
+        "transactions DataFrame was not captured by the "
+        "_write_side_effect — write_table must be invoked with "
+        "'transactions' as the table name"
+    )
+    transactions_row_count = transactions_out_df.count()
+    assert transactions_row_count == 2, (
+        f"transactions-write DataFrame must contain exactly 2 "
+        f"interest-transaction rows (one per TCATBAL row processed: "
+        f"type=01/cat=0005 and type=01/cat=0006) — got "
+        f"{transactions_row_count} rows"
     )
 
     # 10) Verify the SYSTRAN S3 write captured 2 interest-transaction

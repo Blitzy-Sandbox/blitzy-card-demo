@@ -203,7 +203,10 @@ from __future__ import annotations
 import logging
 import sys
 from decimal import Decimal
+from typing import Any  # Used by ``_redact_account_financial`` below
 
+# for the dict[str, Any] type annotation of the row payload
+# produced by ``pyspark.sql.Row.asDict()``.
 # ----------------------------------------------------------------------------
 # First-party imports — batch common infrastructure.
 # ----------------------------------------------------------------------------
@@ -322,6 +325,92 @@ _JOB_NAME: str = "carddemo-read-account"
 # specification: ``read_table(spark, "accounts")``.
 # ----------------------------------------------------------------------------
 _TABLE_NAME: str = "accounts"
+
+
+# ----------------------------------------------------------------------------
+# Sensitive financial columns to redact from log output.
+# ----------------------------------------------------------------------------
+# The ``accounts`` table stores monetary and credit-limit values
+# that are SENSITIVE FINANCIAL DATA and must never be written to
+# CloudWatch Logs (or any log sink that persists beyond the
+# original Aurora PostgreSQL row).  Exposure of account-level
+# balances and credit limits in log output would create an
+# information-disclosure vector analogous to PAN exposure for the
+# cards table (violating the spirit of AAP §0.7.2 "Use AWS Secrets
+# Manager for all database credentials and sensitive
+# configuration" and the project's data protection policy).
+#
+# The following columns are treated as sensitive and are omitted
+# entirely from the log payload:
+#
+#   * ``acct_curr_bal``          — current account balance
+#                                  (ACCT-CURR-BAL PIC S9(10)V99).
+#                                  The authoritative money figure
+#                                  for the account at run time.
+#   * ``acct_credit_limit``      — aggregate credit line
+#                                  (ACCT-CREDIT-LIMIT PIC S9(10)V99).
+#                                  Regulated customer financial
+#                                  information under FCRA / GLBA.
+#   * ``acct_cash_credit_limit`` — cash-advance credit line
+#                                  (ACCT-CASH-CREDIT-LIMIT
+#                                  PIC S9(10)V99).  Sub-limit of
+#                                  the aggregate credit line; also
+#                                  regulated financial data.
+#   * ``acct_curr_cyc_credit``   — current-cycle aggregate credits
+#                                  (ACCT-CURR-CYC-CREDIT
+#                                  PIC S9(10)V99).  Accounts
+#                                  running-cycle inflow total.
+#   * ``acct_curr_cyc_debit``    — current-cycle aggregate debits
+#                                  (ACCT-CURR-CYC-DEBIT
+#                                  PIC S9(10)V99).  Accounts
+#                                  running-cycle outflow total.
+#
+# Non-sensitive columns (``acct_id``, ``acct_active_status``,
+# ``acct_open_date``, ``acct_expiraton_date``, ``acct_reissue_date``,
+# ``acct_group_id``, ``acct_addr_zip``, ``version_id``) pass
+# through unchanged — they are operator-useful record identifiers
+# and metadata required to correlate records in logs without
+# exposing financial balances or credit-line information.
+# ----------------------------------------------------------------------------
+_SENSITIVE_ACCOUNT_FINANCIAL_KEYS: frozenset[str] = frozenset(
+    {
+        "acct_curr_bal",
+        "acct_credit_limit",
+        "acct_cash_credit_limit",
+        "acct_curr_cyc_credit",
+        "acct_curr_cyc_debit",
+    }
+)
+
+
+def _redact_account_financial(row_dict: dict[str, Any]) -> dict[str, Any]:
+    """Return a financial-redacted copy of an account row dict for logging.
+
+    Drops every key listed in
+    :data:`_SENSITIVE_ACCOUNT_FINANCIAL_KEYS` from the input
+    mapping.  Preserves all other keys unchanged.  The input
+    ``row_dict`` is not mutated — a new dict is returned.
+
+    Parameters
+    ----------
+    row_dict : dict[str, Any]
+        Dict produced by :meth:`pyspark.sql.Row.asDict` on a row of
+        the ``accounts`` table.  May contain any / all of the
+        column names declared by the CVACT01Y copybook — the
+        function drops the sensitive subset regardless of which
+        keys are present.
+
+    Returns
+    -------
+    dict[str, Any]
+        A new dict with the sensitive financial keys removed.  All
+        other key / value pairs are passed through identically.
+    """
+    return {
+        k: v
+        for k, v in row_dict.items()
+        if k not in _SENSITIVE_ACCOUNT_FINANCIAL_KEYS
+    }
 
 
 def _log_monetary_precision_contract() -> None:
@@ -545,36 +634,52 @@ def main() -> None:
         # hyphenated "ACCOUNT-RECORD" COBOL variable name).
         # --------------------------------------------------------------
         if record_count > 0:
-            # Row.asDict() emits the full account record (acct_id,
-            # active_status, curr_bal, credit_limit, cash_credit_limit,
-            # open_date, expiration_date, reissue_date, curr_cyc_credit,
-            # curr_cyc_debit, addr_zip, group_id) as a structured JSON
-            # payload inside each log line — preserving the COBOL
-            # DISPLAY ACCOUNT-RECORD semantic of emitting the full
-            # 300-byte record to SYSOUT, but in a form that CloudWatch
-            # Logs Insights can query structurally.
+            # Row.asDict() emits a structured dict of the account
+            # record (acct_id, active_status, open_date,
+            # expiration_date, reissue_date, addr_zip, group_id,
+            # version_id) as a JSON payload inside each log line —
+            # preserving the COBOL DISPLAY ACCOUNT-RECORD semantic
+            # of emitting one record per SYSOUT line, but in a form
+            # that CloudWatch Logs Insights can query structurally.
             #
-            # The five monetary fields (curr_bal, credit_limit,
-            # cash_credit_limit, curr_cyc_credit, curr_cyc_debit) are
-            # Python :class:`decimal.Decimal` instances at this point
-            # because the JDBC driver decoded the PostgreSQL
-            # NUMERIC(15,2) storage into Spark DecimalType, which
-            # deserializes to Python Decimal on the driver side at
-            # .collect() time. The JsonFormatter attached by
-            # init_glue() serializes Decimal via its str(value)
-            # representation, preserving exact digit sequences for
-            # CloudWatch log output (no float rounding artifacts).
+            # FINANCIAL DATA REDACTION (security control):
+            # Although the COBOL DISPLAY ACCOUNT-RECORD statement
+            # wrote the *entire* 300-byte record to SYSOUT —
+            # including current balance, credit limits, and cycle
+            # credit / debit totals — direct replication of that
+            # behavior in CloudWatch Logs would expose regulated
+            # financial data (FCRA / GLBA sensitive customer
+            # financial information) and violate the project's
+            # data-at-rest / data-in-transit protection policy
+            # (AAP §0.7.2).
             #
-            # NOTE: The ``accounts`` table contains financial data
-            # (balance, credit limits, cycle credit/debit) that is
-            # subject to the project's data-at-rest encryption policy;
-            # operators inspecting CloudWatch logs for this diagnostic
-            # job should be authorized under the same IAM policies
-            # that gate the JDBC read, and compliance audits should
-            # treat these log entries as account data exposure
-            # equivalent to the mainframe SYSOUT output.
+            # We therefore apply :func:`_redact_account_financial`
+            # to each row dict BEFORE it is passed to the logger.
+            # The helper drops the sensitive financial keys listed
+            # in :data:`_SENSITIVE_ACCOUNT_FINANCIAL_KEYS`
+            # (``acct_curr_bal``, ``acct_credit_limit``,
+            # ``acct_cash_credit_limit``, ``acct_curr_cyc_credit``,
+            # ``acct_curr_cyc_debit``) and leaves benign
+            # operator-useful keys (``acct_id``,
+            # ``acct_active_status``, open / expiration / reissue
+            # dates, zip, group id, version id) untouched — those
+            # are necessary for operators to identify and correlate
+            # records in logs without disclosing balances or
+            # credit-line information.
+            #
+            # This redaction is applied at the log-emission site,
+            # not at the JDBC read site — the underlying DataFrame
+            # still contains the full, authoritative monetary row
+            # (with Python :class:`decimal.Decimal` precision
+            # decoded from NUMERIC(15,2) storage) for downstream
+            # processing, and that data is protected at the access
+            # layer by IAM-gated access to the Aurora PostgreSQL
+            # cluster.
             for row in accounts_df.collect():
-                logger.info("Account Record: %s", row.asDict())
+                logger.info(
+                    "Account Record: %s",
+                    _redact_account_financial(row.asDict()),
+                )
         else:
             # COBOL path when the loop exits immediately via
             # APPL-EOF on the first read. In mainframe SYSOUT this
