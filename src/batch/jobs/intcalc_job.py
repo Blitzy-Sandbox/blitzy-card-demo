@@ -1515,7 +1515,16 @@ def _format_amt_for_systran(amount: Decimal) -> str:
     Returns
     -------
     str
-        A 12-character signed text field.
+        A 13-character signed text field of the form
+        ``[sign][9 digits].[2 digits]`` — exactly 13 chars.  The
+        layout expands the COBOL ``PIC S9(09)V99`` (zoned decimal,
+        11 bytes with implied V and overpunched sign) by +2 bytes:
+        one byte for the explicit ASCII sign separator and one
+        byte for the explicit ``.`` decimal separator.  The total
+        SYSTRAN record width is preserved at 350 bytes by
+        correspondingly trimming the trailing FILLER from 20 bytes
+        (COBOL) to 18 bytes (Python ASCII) in
+        :func:`_build_systran_record_line`.
     """
     quantised = _money(amount)
     sign_char = "-" if quantised < 0 else " "
@@ -1540,7 +1549,7 @@ def _build_systran_record_line(record: dict[str, Any]) -> str:
             05  TRAN-CAT-CD         PIC 9(04).
             05  TRAN-SOURCE         PIC X(10).
             05  TRAN-DESC           PIC X(100).
-            05  TRAN-AMT            PIC S9(09)V99.  -> 12 chars signed
+            05  TRAN-AMT            PIC S9(09)V99.  -> 13 chars signed ASCII
             05  TRAN-MERCHANT-ID    PIC 9(09).
             05  TRAN-MERCHANT-NAME  PIC X(50).
             05  TRAN-MERCHANT-CITY  PIC X(50).
@@ -1550,15 +1559,23 @@ def _build_systran_record_line(record: dict[str, Any]) -> str:
             05  TRAN-PROC-TS        PIC X(26).
             05  FILLER              PIC X(20).
 
-    Field widths sum to 16+2+4+10+100+12+9+50+50+10+16+26+26+20 =
-    351, BUT the TRAN-AMT field is a 12-char signed field that
-    displaces one byte of the conceptual 11-byte PIC S9(09)V99 —
-    this Python serialisation preserves the wider ASCII layout
-    because the amount carries an explicit sign separator byte that
-    the COBOL mainframe stored via overpunched sign in a single
-    byte.  Downstream consumers (COMBTRAN, CBTRN03C) are updated
-    to parse the 12-char amount form; see the adjacent
-    ``posttran_job._format_amt_for_reject`` for the same
+    COBOL field widths sum to 16+2+4+10+100+11+9+50+50+10+16+26+26+20
+    = 350 where TRAN-AMT occupies 11 bytes (PIC S9(09)V99 zoned
+    decimal with implied ``V`` and overpunched sign — no explicit
+    ASCII bytes for sign or decimal point).  The Python
+    serialisation produced by :func:`_format_amt_for_systran`
+    expands this 11-byte field to 13 ASCII chars by adding:
+
+    * +1 byte for the **explicit sign separator** (space or ``-``
+      — COBOL stored the sign via overpunch in the last digit byte),
+    * +1 byte for the **explicit decimal point** ``.`` — COBOL's
+      ``V`` is an implied decimal with no physical byte.
+
+    The 350-byte invariant is preserved by correspondingly trimming
+    the trailing FILLER from 20 (COBOL PIC X(20)) to **18** bytes in
+    this Python serialisation.  Downstream consumers (COMBTRAN,
+    CBTRN03C) parse the 13-char amount form; the adjacent
+    ``posttran_job._format_amt_for_reject`` uses the same
     convention.
 
     Parameters
@@ -1573,9 +1590,9 @@ def _build_systran_record_line(record: dict[str, Any]) -> str:
     str
         A 350-character fixed-width string ready for concatenation
         with a trailing newline by :func:`_write_interest_trans_to_s3`.
-        Width = 16+2+4+10+100+12+9+50+50+10+16+26+26+19 = 350
-        (final FILLER is 19 chars, not 20, to absorb the +1 amount
-        sign byte — preserving total record length at 350 bytes).
+        Width = 16+2+4+10+100+13+9+50+50+10+16+26+26+18 = 350
+        (TRAN-AMT widens by +2 bytes, FILLER narrows by 2 bytes —
+        preserving total record length at 350 bytes).
     """
     parts: list[str] = [
         _pad_right(record.get("tran_id", ""), 16),
@@ -1591,11 +1608,13 @@ def _build_systran_record_line(record: dict[str, Any]) -> str:
         _pad_right(record.get("tran_card_num", ""), 16),
         _pad_right(record.get("tran_orig_ts", ""), 26),
         _pad_right(record.get("tran_proc_ts", ""), 26),
-        # FILLER reduced from 20 to 19 to keep total width = 350
-        # (TRAN-AMT serialisation expands from 11 bytes (COBOL) to
-        # 12 bytes (ASCII with explicit sign char) — the extra byte
-        # is absorbed from the filler).
-        _pad_right("", 19),
+        # FILLER reduced from 20 (COBOL PIC X(20)) to 18 to keep
+        # total width = 350.  TRAN-AMT serialisation expands from
+        # 11 bytes (COBOL PIC S9(09)V99 zoned with implied V and
+        # overpunched sign) to 13 bytes (ASCII with explicit sign
+        # char AND explicit decimal point) — the extra 2 bytes are
+        # absorbed from the filler.
+        _pad_right("", 18),
     ]
     line = "".join(parts)
     # Defensive assertion — serialisation bugs should surface
