@@ -62,13 +62,26 @@ services:
   # --------------------------------------------------------------------------
   # PostgreSQL 16 — Aurora PostgreSQL-compatible
   # Replaces the 10 VSAM KSDS datasets + 3 AIX paths
+  #
+  # NOTE on host port: we publish the container's 5432 on host port 5433
+  # (not the conventional 5432) to avoid a collision with a host-level
+  # PostgreSQL installation that many developer workstations run on the
+  # default port. QA Checkpoint 2 Issue 9 documented this collision
+  # preventing `docker compose up -d postgres` from starting on hosts
+  # where port 5432 was already bound. INTERNAL traffic between
+  # containers still uses port 5432 (see `DATABASE_URL`/`DATABASE_URL_SYNC`
+  # on the `api` service above, and the `POSTGRES_HOST:-postgres` +
+  # `POSTGRES_PORT:-5432` pattern elsewhere) because the port remapping
+  # only applies to host↔container traffic, not to the bridge network
+  # between containers. To connect from the host with `psql`, use
+  # `psql -h localhost -p 5433 -U carddemo -d carddemo`.
   # --------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
     container_name: carddemo-postgres
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       POSTGRES_DB: carddemo
       POSTGRES_USER: carddemo

@@ -125,10 +125,20 @@ import logging
 import traceback
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
+
+# Note: we import the Starlette base class rather than
+# ``fastapi.HTTPException`` because (a) the latter subclasses the
+# former, so registering on the Starlette base catches both, and
+# (b) the default 404 raised by Starlette for unmatched routes is
+# a bare ``starlette.exceptions.HTTPException`` not a
+# ``fastapi.HTTPException``, so registering only on the FastAPI
+# subclass missed the unmatched-route 404 case (QA Checkpoint 2,
+# Issue 5 — ABEND-DATA format inconsistency).
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.shared.constants.messages import (
     ABEND_CODE_MAX_LEN,
@@ -463,6 +473,85 @@ def _build_error_response(
     }
 
 
+def build_abend_response(
+    status_code: int,
+    error_code: str,
+    culprit: str,
+    reason: str,
+    message: str,
+    request_path: str = "",
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
+    """Construct a :class:`JSONResponse` carrying the ABEND-DATA envelope.
+
+    Thin public wrapper over :func:`_build_error_response` that returns
+    a ready-to-emit :class:`fastapi.responses.JSONResponse` with the
+    canonical ``{"error": {...}}`` envelope. Intended for use by
+    *middleware* classes (e.g., :class:`src.api.middleware.auth.JWTAuthMiddleware`)
+    that must return an error response themselves rather than raise
+    an exception -- because middleware dispatches run *before* the
+    FastAPI exception-handler layer, so raising an
+    :class:`HTTPException` inside middleware would bypass the
+    ABEND-DATA envelope that the registered handlers attach.
+
+    Parameters
+    ----------
+    status_code:
+        HTTP status code to return.
+    error_code:
+        4-character mnemonic, e.g., ``"AUTH"``, ``"FRBD"``, ``"NFND"``.
+        Truncated to :data:`ABEND_CODE_MAX_LEN` characters.
+    culprit:
+        Identifier of the middleware or module that raised the error.
+        Truncated to :data:`ABEND_CULPRIT_MAX_LEN` characters.
+    reason:
+        Short human-readable reason phrase. Truncated to
+        :data:`ABEND_REASON_MAX_LEN` characters.
+    message:
+        Full user-facing message. Truncated to
+        :data:`ABEND_MSG_MAX_LEN` characters.
+    request_path:
+        URL path of the offending request.
+    headers:
+        Optional response headers to attach (e.g.,
+        ``{"WWW-Authenticate": "Bearer"}`` on a 401 response).
+
+    Returns
+    -------
+    JSONResponse
+        A fully-formed 4xx/5xx response ready to return from a
+        middleware ``dispatch()`` implementation.
+
+    Examples
+    --------
+    Inside a :class:`BaseHTTPMiddleware.dispatch` implementation::
+
+        if token is None:
+            return build_abend_response(
+                status_code=401,
+                error_code="AUTH",
+                culprit="JWTAUTH",
+                reason="Authentication required",
+                message="Please enter User ID ...",
+                request_path=request.url.path,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    """
+    body = _build_error_response(
+        status_code=status_code,
+        error_code=error_code,
+        culprit=culprit,
+        reason=reason,
+        message=message,
+        request_path=request_path,
+    )
+    return JSONResponse(
+        status_code=status_code,
+        content=body,
+        headers=headers,
+    )
+
+
 # ============================================================================
 # Phase 4 — Exception Handler Registration
 # ============================================================================
@@ -521,7 +610,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     """
 
     # ------------------------------------------------------------------
-    # Handler 1 — fastapi.HTTPException
+    # Handler 1 — starlette.HTTPException (superclass of fastapi.HTTPException)
     #
     # HTTPException is the primary way route handlers signal an error
     # to the framework. It is analogous to the COBOL pattern:
@@ -535,9 +624,31 @@ def register_exception_handlers(app: FastAPI) -> None:
     # The `exc.status_code` replaces the CICS RESP code, `exc.detail`
     # replaces the ABEND-MSG text, and the JSONResponse replaces the
     # BMS SEND MAP of the error screen.
+    #
+    # IMPORTANT: we register on ``starlette.exceptions.HTTPException``
+    # rather than ``fastapi.HTTPException`` because:
+    #
+    #   * ``fastapi.HTTPException`` is a SUBCLASS of
+    #     ``starlette.exceptions.HTTPException``, so registering on
+    #     the Starlette superclass catches BOTH.
+    #
+    #   * The default 404 that Starlette raises for unmatched routes
+    #     is a bare ``starlette.exceptions.HTTPException`` (not
+    #     ``fastapi.HTTPException``). Registering only on the FastAPI
+    #     subclass left unmatched-route 404s flowing through the
+    #     default FastAPI handler, which produced the plain
+    #     ``{"detail": "Not Found"}`` shape instead of the
+    #     ABEND-DATA envelope that QA Checkpoint 2 (Issue 5) flagged
+    #     as a format inconsistency.
+    #
+    # The type hint on ``exc`` is the Starlette superclass so that
+    # mypy accepts both subclass and superclass instances; the
+    # runtime behavior is identical because ``fastapi.HTTPException``
+    # adds only a couple of validation-friendly attributes that are
+    # not referenced by this handler.
     # ------------------------------------------------------------------
-    @app.exception_handler(HTTPException)
-    async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         status_code = exc.status_code
         path = request.url.path
         method = request.method
@@ -800,5 +911,6 @@ def register_exception_handlers(app: FastAPI) -> None:
 # ----------------------------------------------------------------------------
 __all__ = [
     "CICS_RESP_TO_HTTP",
+    "build_abend_response",
     "register_exception_handlers",
 ]

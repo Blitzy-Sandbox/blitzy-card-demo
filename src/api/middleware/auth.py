@@ -113,8 +113,9 @@ from typing import Any
 from fastapi import HTTPException, Request, status
 from jose import JWTError, jwt  # type: ignore[import-untyped]
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse, Response
+from starlette.responses import Response
 
+from src.api.middleware.error_handler import build_abend_response
 from src.shared.config.settings import Settings
 
 # ----------------------------------------------------------------------------
@@ -601,9 +602,11 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         starlette.responses.Response
             Either the downstream handler's response (on successful
             authentication, on a public path, or on an admin-authorized
-            request), or a :class:`JSONResponse` carrying HTTP 401
+            request), or an ABEND-DATA-shaped :class:`JSONResponse`
+            (built via :func:`build_abend_response`) carrying HTTP 401
             Unauthorized / HTTP 403 Forbidden when authentication or
-            authorization fails.
+            authorization fails. See QA Checkpoint 2 Issue 6 for the
+            rationale behind the unified error-response envelope.
         """
         path: str = request.url.path
         method: str = request.method
@@ -640,12 +643,18 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                     "reason": "missing_bearer_token",
                 },
             )
-            return JSONResponse(
+            # Shape the 401 response with the ABEND-DATA envelope used
+            # by the global exception handler, so every 4xx/5xx
+            # response across the API shares a single, consistent JSON
+            # structure. See QA Checkpoint 2 Issue 6 for the original
+            # format-inconsistency finding.
+            return build_abend_response(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                content={
-                    "detail": "Please enter User ID ...",
-                    "error_code": "AUTH",
-                },
+                error_code="AUTH",
+                culprit="JWTAUTH",
+                reason="Authentication required",
+                message="Please enter User ID ...",
+                request_path=path,
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
@@ -653,11 +662,12 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         # Step 3 — JWT signature + expiration + claim verification.
         #
         # `decode_jwt_token` raises HTTPException(401) on any failure.
-        # We catch it explicitly to turn the HTTPException into a
-        # JSONResponse *at middleware layer* — FastAPI's built-in
-        # HTTPException handler only runs AFTER the middleware chain,
-        # so raising here would bypass the consistent error envelope
-        # we want across all 401 responses.
+        # We catch it explicitly to turn the HTTPException into an
+        # ABEND-DATA-shaped JSONResponse (via `build_abend_response`)
+        # *at middleware layer* — FastAPI's built-in HTTPException
+        # handler only runs AFTER the middleware chain, so raising
+        # here would bypass the consistent error envelope we want
+        # across all 401 responses.
         #
         # Equivalent to READ-USER-SEC-FILE at COSGN00C.cbl lines 209-257.
         # --------------------------------------------------------------
@@ -683,12 +693,20 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             headers: dict[str, str] = {"WWW-Authenticate": "Bearer"}
             if exc.headers:
                 headers.update(exc.headers)
-            return JSONResponse(
+            # Shape the 401 response with the ABEND-DATA envelope used
+            # by the global exception handler. See QA Checkpoint 2
+            # Issue 6. The preserved `exc.detail` from
+            # decode_jwt_token becomes the user-facing `message`
+            # field; `reason` captures the generic category for log
+            # correlation and consistency with other 401 responses.
+            detail_text: str = str(exc.detail) if exc.detail else "Invalid or expired token"
+            return build_abend_response(
                 status_code=exc.status_code,
-                content={
-                    "detail": exc.detail,
-                    "error_code": "AUTH",
-                },
+                error_code="AUTH",
+                culprit="JWTAUTH",
+                reason="Invalid or expired token",
+                message=detail_text,
+                request_path=path,
                 headers=headers,
             )
 
@@ -715,12 +733,22 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                     "reason": "not_admin",
                 },
             )
-            return JSONResponse(
+            # Shape the 403 response with the ABEND-DATA envelope
+            # used by the global exception handler. See QA Checkpoint
+            # 2 Issue 6. The error_code is "FRBD" (Forbidden) rather
+            # than "AUTH" (Authentication) because the caller *is*
+            # authenticated — they simply lack the admin privilege
+            # required for the requested path. This semantic
+            # distinction mirrors HTTP's 401 vs 403 split and aligns
+            # with the abend-code taxonomy in
+            # src/shared/constants/messages.py.
+            return build_abend_response(
                 status_code=status.HTTP_403_FORBIDDEN,
-                content={
-                    "detail": "Admin privileges required",
-                    "error_code": "AUTH",
-                },
+                error_code="FRBD",
+                culprit="JWTAUTH",
+                reason="Admin privileges required",
+                message="Admin privileges required",
+                request_path=path,
             )
 
         # --------------------------------------------------------------
