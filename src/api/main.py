@@ -409,63 +409,68 @@ register_exception_handlers(app)
 # ----------------------------------------------------------------------------
 # REST router mounting.
 #
-# Each router exposes a module-level ``router`` attribute (see
-# :mod:`src.api.routers`) that is mounted at the appropriate URL prefix.
+# Each symbol imported from :mod:`src.api.routers` above is an
+# ``APIRouter`` instance re-exported by ``src/api/routers/__init__.py``
+# (see that module's ``__all__`` and docstring). The re-export is done as
+# ``from src.api.routers.<mod> import router as <mod>``, which means the
+# names bound here are the routers themselves, not the Python modules —
+# so we pass them directly to ``app.include_router(...)``.
+#
 # The prefix/tag pairing mirrors the legacy COBOL feature areas.
 # ----------------------------------------------------------------------------
 
 # F-001 Sign-on / authentication
 app.include_router(
-    auth_router.router,
+    auth_router,
     prefix="/auth",
     tags=["Authentication"],
 )
 
 # F-004 Account view, F-005 Account update
 app.include_router(
-    account_router.router,
+    account_router,
     prefix="/accounts",
     tags=["Accounts"],
 )
 
 # F-006 Card list, F-007 Card detail, F-008 Card update
 app.include_router(
-    card_router.router,
+    card_router,
     prefix="/cards",
     tags=["Cards"],
 )
 
 # F-009 Transaction list, F-010 Transaction detail, F-011 Transaction add
 app.include_router(
-    transaction_router.router,
+    transaction_router,
     prefix="/transactions",
     tags=["Transactions"],
 )
 
 # F-012 Bill payment
 app.include_router(
-    bill_router.router,
+    bill_router,
     prefix="/bills",
     tags=["Bills"],
 )
 
 # F-022 Report submission
 app.include_router(
-    report_router.router,
+    report_router,
     prefix="/reports",
     tags=["Reports"],
 )
 
 # F-018 User list, F-019 User add, F-020 User update, F-021 User delete
 app.include_router(
-    user_router.router,
+    user_router,
     prefix="/users",
     tags=["Users"],
 )
 
 # F-003 Admin menu
 app.include_router(
-    admin_router.router,
+    admin_router,
     prefix="/admin",
     tags=["Admin"],
 )
