@@ -355,9 +355,7 @@ _PATCH_COMMIT_JOB = "src.batch.jobs.read_customer_job.commit_job"
 # * ``collect() → rows``         — drives the per-record log iteration.
 # * ``unpersist() → None``       — cleanup path calls this before end.
 # ----------------------------------------------------------------------------
-def _make_mock_df(
-    count_value: int = 0, rows: list[MagicMock] | None = None
-) -> MagicMock:
+def _make_mock_df(count_value: int = 0, rows: list[MagicMock] | None = None) -> MagicMock:
     """Build a chainable mock DataFrame for use with patched ``read_table``.
 
     Parameters
@@ -575,9 +573,7 @@ def test_reads_customers_table(
     # contract as "the total invocation history equals exactly this
     # list," which catches subtle bugs that the call-count assertion
     # might miss (e.g., duplicate recording due to mock reconfiguration).
-    assert mock_read_table.call_args_list == [
-        call(mock_spark, _EXPECTED_TABLE_NAME)
-    ], (
+    assert mock_read_table.call_args_list == [call(mock_spark, _EXPECTED_TABLE_NAME)], (
         f"read_table invocation history must be exactly "
         f"[call(spark, {_EXPECTED_TABLE_NAME!r})]; "
         f"got {mock_read_table.call_args_list}"
@@ -595,8 +591,6 @@ def test_reads_customers_table(
     # by ``test_commit_job_called`` below; here we just sanity-check
     # the happy-path reaches it.
     mock_commit_job.assert_called_once_with(mock_job)
-
-
 
 
 # ----------------------------------------------------------------------------
@@ -659,15 +653,12 @@ def test_logs_start_message(
     # Debugging-friendly assertion: print the full captured buffer in
     # the failure message so a failure reveals what WAS logged vs
     # what was expected.
-    assert any(
-        _COBOL_START_MSG_EXPECTED in msg for msg in captured_messages
-    ), (
+    assert any(_COBOL_START_MSG_EXPECTED in msg for msg in captured_messages), (
         f"Expected a log message containing "
         f"{_COBOL_START_MSG_EXPECTED!r} (COBOL DISPLAY parity with "
         f"CBCUS01C.cbl line 71), but no captured log record contained "
         f"that substring.\n"
-        f"Captured messages ({len(captured_messages)}):\n  "
-        + "\n  ".join(repr(m) for m in captured_messages)
+        f"Captured messages ({len(captured_messages)}):\n  " + "\n  ".join(repr(m) for m in captured_messages)
     )
 
     # Level assertion — the START banner must be INFO (not DEBUG /
@@ -675,8 +666,7 @@ def test_logs_start_message(
     start_records_at_info = [
         record
         for record in caplog.records
-        if _COBOL_START_MSG_EXPECTED in record.getMessage()
-        and record.levelno == logging.INFO
+        if _COBOL_START_MSG_EXPECTED in record.getMessage() and record.levelno == logging.INFO
     ]
     assert len(start_records_at_info) >= 1, (
         f"Expected at least one INFO-level log record containing "
@@ -729,9 +719,7 @@ def test_logs_end_message(
     # Use a single-row DataFrame so the read/iterate/close flow runs
     # through all stages of the state machine; this exposes ordering
     # bugs where the end banner might fire too early.
-    mock_read_table.return_value = _make_mock_df(
-        count_value=1, rows=[_make_mock_row(cust_id=1)]
-    )
+    mock_read_table.return_value = _make_mock_df(count_value=1, rows=[_make_mock_row(cust_id=1)])
 
     # --- Act --------------------------------------------------------
     with caplog.at_level(logging.INFO):
@@ -741,15 +729,12 @@ def test_logs_end_message(
     captured_messages = [record.getMessage() for record in caplog.records]
 
     # Invariant (A): END banner is present.
-    assert any(
-        _COBOL_END_MSG_EXPECTED in msg for msg in captured_messages
-    ), (
+    assert any(_COBOL_END_MSG_EXPECTED in msg for msg in captured_messages), (
         f"Expected a log message containing "
         f"{_COBOL_END_MSG_EXPECTED!r} (COBOL DISPLAY parity with "
         f"CBCUS01C.cbl line 85), but no captured log record contained "
         f"that substring.\n"
-        f"Captured messages ({len(captured_messages)}):\n  "
-        + "\n  ".join(repr(m) for m in captured_messages)
+        f"Captured messages ({len(captured_messages)}):\n  " + "\n  ".join(repr(m) for m in captured_messages)
     )
 
     # Level assertion — the END banner must be INFO, matching the
@@ -757,8 +742,7 @@ def test_logs_end_message(
     end_records_at_info = [
         record
         for record in caplog.records
-        if _COBOL_END_MSG_EXPECTED in record.getMessage()
-        and record.levelno == logging.INFO
+        if _COBOL_END_MSG_EXPECTED in record.getMessage() and record.levelno == logging.INFO
     ]
     assert len(end_records_at_info) >= 1, (
         f"Expected at least one INFO-level log record containing "
@@ -770,16 +754,8 @@ def test_logs_end_message(
     # stream. We compute the ordered indices of records that contain
     # either banner and assert the last START index precedes the
     # first END index.
-    start_indices = [
-        i
-        for i, msg in enumerate(captured_messages)
-        if _COBOL_START_MSG_EXPECTED in msg
-    ]
-    end_indices = [
-        i
-        for i, msg in enumerate(captured_messages)
-        if _COBOL_END_MSG_EXPECTED in msg
-    ]
+    start_indices = [i for i, msg in enumerate(captured_messages) if _COBOL_START_MSG_EXPECTED in msg]
+    end_indices = [i for i, msg in enumerate(captured_messages) if _COBOL_END_MSG_EXPECTED in msg]
 
     # Both lists must be non-empty for the ordering comparison to be
     # meaningful (otherwise the assertion is vacuously true and
@@ -792,10 +768,7 @@ def test_logs_end_message(
         "but re-checked here to ensure test_logs_end_message is a "
         "well-defined ordering test.)"
     )
-    assert len(end_indices) >= 1, (
-        "Expected at least one END log line to establish ordering "
-        "reference; got zero."
-    )
+    assert len(end_indices) >= 1, "Expected at least one END log line to establish ordering reference; got zero."
 
     # Strict-precedence check: the LAST START occurrence must come
     # before the FIRST END occurrence. Using last-start / first-end
@@ -811,8 +784,6 @@ def test_logs_end_message(
         f"'START OF EXECUTION' is DISPLAYed before the READ loop "
         f"and 'END OF EXECUTION' is DISPLAYed after the loop exits."
     )
-
-
 
 
 # ----------------------------------------------------------------------------
@@ -899,17 +870,12 @@ def test_logs_record_count(
     # and the exact numeric value (50). Using both conditions
     # guards against false positives (e.g., "cust_id = 50" would
     # match the number alone but is not a count log line).
-    count_log_lines = [
-        msg
-        for msg in captured_messages
-        if "record count" in msg.lower() and str(expected_count) in msg
-    ]
+    count_log_lines = [msg for msg in captured_messages if "record count" in msg.lower() and str(expected_count) in msg]
     assert len(count_log_lines) >= 1, (
         f"Expected at least 1 log line referencing both "
         f"'record count' (case-insensitive) and the value "
         f"{expected_count}; got {len(count_log_lines)}.\n"
-        f"Captured messages ({len(captured_messages)}):\n  "
-        + "\n  ".join(repr(m) for m in captured_messages)
+        f"Captured messages ({len(captured_messages)}):\n  " + "\n  ".join(repr(m) for m in captured_messages)
     )
 
 
@@ -1027,14 +993,11 @@ def test_iterates_all_records(
     # for N rows. We search for the "CUSTOMER-RECORD" marker which
     # is the literal prefix used by the target module's per-row
     # logger.info call.
-    per_record_log_lines = [
-        msg for msg in captured_messages if "CUSTOMER-RECORD" in msg
-    ]
+    per_record_log_lines = [msg for msg in captured_messages if "CUSTOMER-RECORD" in msg]
     assert len(per_record_log_lines) == len(rows), (
         f"Expected exactly {len(rows)} 'CUSTOMER-RECORD' log lines "
         f"(one per row); got {len(per_record_log_lines)}.\n"
-        f"Matching log lines:\n  "
-        + "\n  ".join(repr(m) for m in per_record_log_lines)
+        f"Matching log lines:\n  " + "\n  ".join(repr(m) for m in per_record_log_lines)
     )
 
     # Row-to-log mapping: each row's distinguishing cust_id must
@@ -1134,7 +1097,5 @@ def test_commit_job_called(
     # recording (e.g., commit_job invoked both from happy-path and
     # error-handler branches, which would corrupt the Glue bookmark).
     assert mock_commit_job.call_args_list == [call(mock_job)], (
-        f"commit_job invocation history must be exactly "
-        f"[call(mock_job)]; got {mock_commit_job.call_args_list}"
+        f"commit_job invocation history must be exactly [call(mock_job)]; got {mock_commit_job.call_args_list}"
     )
-

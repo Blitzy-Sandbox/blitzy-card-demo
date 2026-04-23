@@ -1034,15 +1034,9 @@ async def test_list_cards_db_error_returns_cocrdlic_file_error_message(
     response: CardListResponse = await card_service.list_cards(request)
 
     # Assert 1: envelope (cards empty, pages 0, info None).
-    assert response.cards == [], (
-        f"DB-error response must have cards=[]; got {response.cards!r}"
-    )
-    assert response.page_number == 1, (
-        f"DB-error response should echo the requested page; got {response.page_number}"
-    )
-    assert response.total_pages == 0, (
-        f"DB-error response must have total_pages=0; got {response.total_pages}"
-    )
+    assert response.cards == [], f"DB-error response must have cards=[]; got {response.cards!r}"
+    assert response.page_number == 1, f"DB-error response should echo the requested page; got {response.page_number}"
+    assert response.total_pages == 0, f"DB-error response must have total_pages=0; got {response.total_pages}"
     assert response.info_message is None, (
         "DB-error response must have info_message=None so the error "
         f"message takes precedence in the CICS SEND MAP; got {response.info_message!r}"
@@ -1051,8 +1045,7 @@ async def test_list_cards_db_error_returns_cocrdlic_file_error_message(
     # Assert 2: error_message is non-empty and populated by
     # _list_lookup_error_message.
     assert response.error_message is not None, (
-        "DB-error response must set error_message to a COCRDLIC "
-        "File Error template string; got None."
+        "DB-error response must set error_message to a COCRDLIC File Error template string; got None."
     )
     error_msg: str = response.error_message
 

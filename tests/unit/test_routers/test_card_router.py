@@ -380,7 +380,6 @@ _TEST_EXPIRY_YEAR: str = "2028"
 _TEST_EXPIRY_DAY: str = "31"
 
 
-
 # ---------------------------------------------------------------------------
 # Response-builder helpers
 # ---------------------------------------------------------------------------
@@ -463,10 +462,7 @@ def _make_list_response(
         # card_num output, which requires an exactly-12-char prefix
         # plus a 4-digit suffix. Any drift here would produce
         # Pydantic-validation failures on the CardListItem itself.
-        raise ValueError(
-            f"card_number_prefix must be exactly 12 chars; "
-            f"got {len(card_number_prefix)}"
-        )
+        raise ValueError(f"card_number_prefix must be exactly 12 chars; got {len(card_number_prefix)}")
     items: list[CardListItem] = [
         CardListItem(
             # 1-char selection flag — blank on read-only list
@@ -685,7 +681,6 @@ def _make_update_request_body(
     }
 
 
-
 # ============================================================================
 # TestCardList
 # ----------------------------------------------------------------------------
@@ -759,25 +754,20 @@ class TestCardList:
 
         # HTTP 200 — the list endpoint's default success status.
         assert response.status_code == status.HTTP_200_OK, (
-            f"Successful list MUST return HTTP 200 OK; "
-            f"got {response.status_code}: {response.text}"
+            f"Successful list MUST return HTTP 200 OK; got {response.status_code}: {response.text}"
         )
 
         body: dict[str, Any] = response.json()
 
         # Required envelope fields per :class:`CardListResponse`.
         for required_field in ("cards", "page_number", "total_pages"):
-            assert required_field in body, (
-                f"Response MUST include ``{required_field}``; got {sorted(body.keys())}"
-            )
+            assert required_field in body, f"Response MUST include ``{required_field}``; got {sorted(body.keys())}"
 
         # ``cards`` MUST be a list with ≤ 7 items (COBOL browse-cap
         # of 7 rows per COCRDLI screen — this is the critical F-006
         # invariant that distinguishes the card list from the
         # transaction list's 10-row pagination).
-        assert isinstance(body["cards"], list), (
-            f"``cards`` MUST be a list; got {type(body['cards']).__name__}"
-        )
+        assert isinstance(body["cards"], list), f"``cards`` MUST be a list; got {type(body['cards']).__name__}"
         assert len(body["cards"]) <= _CARDS_PER_PAGE, (
             f"``cards`` MUST contain at most {_CARDS_PER_PAGE} items per page "
             f"(COCRDLI BMS browse-cap); got {len(body['cards'])} items"
@@ -788,40 +778,31 @@ class TestCardList:
         for idx, item in enumerate(body["cards"]):
             for required_field in ("selected", "account_id", "card_number", "card_status"):
                 assert required_field in item, (
-                    f"cards[{idx}] MUST include ``{required_field}``; "
-                    f"got {sorted(item.keys())}"
+                    f"cards[{idx}] MUST include ``{required_field}``; got {sorted(item.keys())}"
                 )
             # COCRDLI CRDSELnI PIC X(01) — exactly 1 char.
             assert len(item["selected"]) <= 1, (
-                f"cards[{idx}].selected MUST be ≤ 1 char (PIC X(01)); "
-                f"got length {len(item['selected'])}"
+                f"cards[{idx}].selected MUST be ≤ 1 char (PIC X(01)); got length {len(item['selected'])}"
             )
             # COCRDLI ACCTNOnI PIC X(11) — exactly 11 chars.
             assert len(item["account_id"]) <= 11, (
-                f"cards[{idx}].account_id MUST be ≤ 11 chars (PIC X(11)); "
-                f"got length {len(item['account_id'])}"
+                f"cards[{idx}].account_id MUST be ≤ 11 chars (PIC X(11)); got length {len(item['account_id'])}"
             )
             # COCRDLI CRDNUMnI PIC X(16) — exactly 16 chars.
             assert len(item["card_number"]) <= 16, (
-                f"cards[{idx}].card_number MUST be ≤ 16 chars (PIC X(16)); "
-                f"got length {len(item['card_number'])}"
+                f"cards[{idx}].card_number MUST be ≤ 16 chars (PIC X(16)); got length {len(item['card_number'])}"
             )
             # COCRDLI CRDSTSnI PIC X(01) — exactly 1 char.
             assert len(item["card_status"]) <= 1, (
-                f"cards[{idx}].card_status MUST be ≤ 1 char (PIC X(01)); "
-                f"got length {len(item['card_status'])}"
+                f"cards[{idx}].card_status MUST be ≤ 1 char (PIC X(01)); got length {len(item['card_status'])}"
             )
 
         # ``page_number`` echoes the default page (1).
-        assert body["page_number"] == 1, (
-            f"``page_number`` MUST echo the default page (1); "
-            f"got {body['page_number']}"
-        )
+        assert body["page_number"] == 1, f"``page_number`` MUST echo the default page (1); got {body['page_number']}"
 
         # ``error_message`` is None on success.
         assert body.get("error_message") is None, (
-            f"Success list MUST have error_message=None; "
-            f"got {body.get('error_message')!r}"
+            f"Success list MUST have error_message=None; got {body.get('error_message')!r}"
         )
 
         # Verify the service was instantiated and invoked correctly.
@@ -831,16 +812,13 @@ class TestCardList:
         # The request arg is a CardListRequest with default (None)
         # filters and page_number=1.
         assert call_request.account_id is None, (
-            f"CardListRequest.account_id MUST be None when no filter "
-            f"supplied; got {call_request.account_id!r}"
+            f"CardListRequest.account_id MUST be None when no filter supplied; got {call_request.account_id!r}"
         )
         assert call_request.card_number is None, (
-            f"CardListRequest.card_number MUST be None when no filter "
-            f"supplied; got {call_request.card_number!r}"
+            f"CardListRequest.card_number MUST be None when no filter supplied; got {call_request.card_number!r}"
         )
         assert call_request.page_number == 1, (
-            f"CardListRequest.page_number MUST default to 1; "
-            f"got {call_request.page_number}"
+            f"CardListRequest.page_number MUST default to 1; got {call_request.page_number}"
         )
 
     # ------------------------------------------------------------------
@@ -883,8 +861,7 @@ class TestCardList:
             )
 
         assert response.status_code == status.HTTP_200_OK, (
-            f"Filtered list MUST return HTTP 200 OK; "
-            f"got {response.status_code}: {response.text}"
+            f"Filtered list MUST return HTTP 200 OK; got {response.status_code}: {response.text}"
         )
 
         body: dict[str, Any] = response.json()
@@ -896,8 +873,7 @@ class TestCardList:
         # not.)
         for idx, item in enumerate(body["cards"]):
             assert item["account_id"] == _TEST_ACCT_ID, (
-                f"cards[{idx}].account_id MUST match filter "
-                f"({_TEST_ACCT_ID!r}); got {item['account_id']!r}"
+                f"cards[{idx}].account_id MUST match filter ({_TEST_ACCT_ID!r}); got {item['account_id']!r}"
             )
 
         # Verify the service was called with the expected filter —
@@ -909,8 +885,7 @@ class TestCardList:
         mock_instance.list_cards.assert_awaited_once()
         call_request = mock_instance.list_cards.call_args.args[0]
         assert call_request.account_id == _TEST_ACCT_ID, (
-            f"CardListRequest.account_id MUST be {_TEST_ACCT_ID!r}; "
-            f"got {call_request.account_id!r}"
+            f"CardListRequest.account_id MUST be {_TEST_ACCT_ID!r}; got {call_request.account_id!r}"
         )
         assert call_request.card_number is None, (
             f"CardListRequest.card_number MUST be None (only account_id "
@@ -952,8 +927,7 @@ class TestCardList:
             )
 
         assert response.status_code == status.HTTP_200_OK, (
-            f"Filtered list MUST return HTTP 200 OK; "
-            f"got {response.status_code}: {response.text}"
+            f"Filtered list MUST return HTTP 200 OK; got {response.status_code}: {response.text}"
         )
 
         # Verify the service was called with the expected card_number
@@ -963,8 +937,7 @@ class TestCardList:
         mock_instance.list_cards.assert_awaited_once()
         call_request = mock_instance.list_cards.call_args.args[0]
         assert call_request.card_number == _TEST_CARD_NUM, (
-            f"CardListRequest.card_number MUST be {_TEST_CARD_NUM!r}; "
-            f"got {call_request.card_number!r}"
+            f"CardListRequest.card_number MUST be {_TEST_CARD_NUM!r}; got {call_request.card_number!r}"
         )
         assert call_request.account_id is None, (
             f"CardListRequest.account_id MUST be None (only card_number "
@@ -1010,33 +983,24 @@ class TestCardList:
             )
 
         assert response.status_code == status.HTTP_200_OK, (
-            f"Paginated list MUST return HTTP 200 OK; "
-            f"got {response.status_code}: {response.text}"
+            f"Paginated list MUST return HTTP 200 OK; got {response.status_code}: {response.text}"
         )
 
         body: dict[str, Any] = response.json()
-        assert body["page_number"] == 2, (
-            f"``page_number`` MUST echo the requested page (2); "
-            f"got {body['page_number']}"
-        )
+        assert body["page_number"] == 2, f"``page_number`` MUST echo the requested page (2); got {body['page_number']}"
         assert body["total_pages"] > 1, (
-            f"``total_pages`` MUST be > 1 on a multi-page response; "
-            f"got {body['total_pages']}"
+            f"``total_pages`` MUST be > 1 on a multi-page response; got {body['total_pages']}"
         )
         # Full page 2 contains the per-page cap.
         assert len(body["cards"]) == _CARDS_PER_PAGE, (
-            f"Full page 2 MUST contain exactly {_CARDS_PER_PAGE} rows "
-            f"(per-page cap); got {len(body['cards'])}"
+            f"Full page 2 MUST contain exactly {_CARDS_PER_PAGE} rows (per-page cap); got {len(body['cards'])}"
         )
 
         # Verify the service was invoked with the correct page.
         mock_service_class.assert_called_once()
         mock_instance.list_cards.assert_awaited_once()
         call_request = mock_instance.list_cards.call_args.args[0]
-        assert call_request.page_number == 2, (
-            f"CardListRequest.page_number MUST be 2; "
-            f"got {call_request.page_number}"
-        )
+        assert call_request.page_number == 2, f"CardListRequest.page_number MUST be 2; got {call_request.page_number}"
 
     # ------------------------------------------------------------------
     # 5. Empty results — mock returns empty list; service populates
@@ -1169,16 +1133,11 @@ class TestCardList:
         assert response.status_code in (
             status.HTTP_401_UNAUTHORIZED,
             status.HTTP_403_FORBIDDEN,
-        ), (
-            f"Unauthenticated request MUST return 401 or 403; "
-            f"got {response.status_code}: {response.text}"
-        )
+        ), f"Unauthenticated request MUST return 401 or 403; got {response.status_code}: {response.text}"
         if response.status_code == status.HTTP_401_UNAUTHORIZED:
             assert "www-authenticate" in {key.lower() for key in response.headers}, (
-                f"401 response MUST carry WWW-Authenticate header "
-                f"(RFC 7235); got headers {dict(response.headers)!r}"
+                f"401 response MUST carry WWW-Authenticate header (RFC 7235); got headers {dict(response.headers)!r}"
             )
-
 
 
 # ============================================================================
@@ -1248,8 +1207,7 @@ class TestCardDetail:
             response = await client.get(f"/cards/{_TEST_CARD_NUM}")
 
         assert response.status_code == status.HTTP_200_OK, (
-            f"Successful detail lookup MUST return HTTP 200 OK; "
-            f"got {response.status_code}: {response.text}"
+            f"Successful detail lookup MUST return HTTP 200 OK; got {response.status_code}: {response.text}"
         )
 
         body: dict[str, Any] = response.json()
@@ -1266,53 +1224,45 @@ class TestCardDetail:
         )
         for required_field in required_fields:
             assert required_field in body, (
-                f"Detail response MUST include ``{required_field}``; "
-                f"got {sorted(body.keys())}"
+                f"Detail response MUST include ``{required_field}``; got {sorted(body.keys())}"
             )
 
         # ``card_number`` equals the path parameter — the echo-back
         # guarantee that the service received the correct key.
         assert body["card_number"] == _TEST_CARD_NUM, (
-            f"``card_number`` MUST echo the path parameter "
-            f"({_TEST_CARD_NUM!r}); got {body.get('card_number')!r}"
+            f"``card_number`` MUST echo the path parameter ({_TEST_CARD_NUM!r}); got {body.get('card_number')!r}"
         )
 
         # ``account_id`` is 11 chars (CVACT02Y CARD-ACCT-ID PIC 9(11)).
         assert len(body["account_id"]) <= 11, (
-            f"``account_id`` MUST be at most 11 chars (PIC 9(11)); "
-            f"got length {len(body['account_id'])}"
+            f"``account_id`` MUST be at most 11 chars (PIC 9(11)); got length {len(body['account_id'])}"
         )
 
         # ``embossed_name`` is at most 50 chars (CVACT02Y
         # CARD-EMBOSSED-NAME PIC X(50)).
         assert len(body["embossed_name"]) <= 50, (
-            f"``embossed_name`` MUST be at most 50 chars (PIC X(50)); "
-            f"got length {len(body['embossed_name'])}"
+            f"``embossed_name`` MUST be at most 50 chars (PIC X(50)); got length {len(body['embossed_name'])}"
         )
 
         # ``status_code`` is exactly 1 char (CVACT02Y
         # CARD-ACTIVE-STATUS PIC X(01)).
         assert len(body["status_code"]) <= 1, (
-            f"``status_code`` MUST be at most 1 char (PIC X(01)); "
-            f"got length {len(body['status_code'])}"
+            f"``status_code`` MUST be at most 1 char (PIC X(01)); got length {len(body['status_code'])}"
         )
 
         # ``expiry_month`` is exactly 2 chars (COCRDSL EXPMONI PIC
         # X(02)) and ``expiry_year`` is exactly 4 chars (COCRDSL
         # EXPYEARI PIC X(04)).
         assert len(body["expiry_month"]) <= 2, (
-            f"``expiry_month`` MUST be at most 2 chars (PIC X(02)); "
-            f"got length {len(body['expiry_month'])}"
+            f"``expiry_month`` MUST be at most 2 chars (PIC X(02)); got length {len(body['expiry_month'])}"
         )
         assert len(body["expiry_year"]) <= 4, (
-            f"``expiry_year`` MUST be at most 4 chars (PIC X(04)); "
-            f"got length {len(body['expiry_year'])}"
+            f"``expiry_year`` MUST be at most 4 chars (PIC X(04)); got length {len(body['expiry_year'])}"
         )
 
         # ``error_message`` is None on success.
         assert body.get("error_message") is None, (
-            f"Success detail MUST have error_message=None; "
-            f"got {body.get('error_message')!r}"
+            f"Success detail MUST have error_message=None; got {body.get('error_message')!r}"
         )
 
         # Reconstruct through the schema to verify round-trip fidelity.
@@ -1448,9 +1398,9 @@ class TestCardDetail:
         # Three independently-malformed inputs that each violate a
         # different aspect of the regex.
         malformed_inputs = [
-            "1234",                      # too short (4 < 16)
-            "12345678901234567",         # too long (17 > 16)
-            "41111111111111AB",          # 16 chars but non-numeric
+            "1234",  # too short (4 < 16)
+            "12345678901234567",  # too long (17 > 16)
+            "41111111111111AB",  # 16 chars but non-numeric
         ]
 
         for malformed in malformed_inputs:
@@ -1505,16 +1455,11 @@ class TestCardDetail:
         assert response.status_code in (
             status.HTTP_401_UNAUTHORIZED,
             status.HTTP_403_FORBIDDEN,
-        ), (
-            f"Unauthenticated request MUST return 401 or 403; "
-            f"got {response.status_code}: {response.text}"
-        )
+        ), f"Unauthenticated request MUST return 401 or 403; got {response.status_code}: {response.text}"
         if response.status_code == status.HTTP_401_UNAUTHORIZED:
             assert "www-authenticate" in {key.lower() for key in response.headers}, (
-                f"401 response MUST carry WWW-Authenticate header "
-                f"(RFC 7235); got headers {dict(response.headers)!r}"
+                f"401 response MUST carry WWW-Authenticate header (RFC 7235); got headers {dict(response.headers)!r}"
             )
-
 
 
 # ============================================================================
@@ -1603,8 +1548,7 @@ class TestCardUpdate:
             )
 
         assert response.status_code == status.HTTP_200_OK, (
-            f"Successful update MUST return HTTP 200 OK; "
-            f"got {response.status_code}: {response.text}"
+            f"Successful update MUST return HTTP 200 OK; got {response.status_code}: {response.text}"
         )
 
         body: dict[str, Any] = response.json()
@@ -1622,8 +1566,7 @@ class TestCardUpdate:
         )
         for required_field in required_fields:
             assert required_field in body, (
-                f"Update response MUST include ``{required_field}``; "
-                f"got {sorted(body.keys())}"
+                f"Update response MUST include ``{required_field}``; got {sorted(body.keys())}"
             )
 
         # Success banner is the COBOL-exact "Changes committed to
@@ -1635,8 +1578,7 @@ class TestCardUpdate:
 
         # ``error_message`` is None on success.
         assert body.get("error_message") is None, (
-            f"Success update MUST have error_message=None; "
-            f"got {body.get('error_message')!r}"
+            f"Success update MUST have error_message=None; got {body.get('error_message')!r}"
         )
 
         # Schema round-trip.
@@ -1735,9 +1677,7 @@ class TestCardUpdate:
     # ------------------------------------------------------------------
     # 3. Optimistic-concurrency conflict — HTTP 409 (RFC 7231 §6.5.8)
     # ------------------------------------------------------------------
-    async def test_update_card_concurrent_modification(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_update_card_concurrent_modification(self, client: AsyncClient) -> None:
         """Concurrency conflict returns HTTP 409 with the COBOL-exact message.
 
         This is the signature behavior of Feature F-008 — the
@@ -1832,9 +1772,7 @@ class TestCardUpdate:
     # ------------------------------------------------------------------
     # 4. Pydantic validation failures — HTTP 422 before service runs
     # ------------------------------------------------------------------
-    async def test_update_card_validation_errors(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_update_card_validation_errors(self, client: AsyncClient) -> None:
         """Invalid request body triggers FastAPI's HTTP 422.
 
         The :class:`CardUpdateRequest` Pydantic model carries three
@@ -1948,13 +1886,8 @@ class TestCardUpdate:
         assert response.status_code in (
             status.HTTP_401_UNAUTHORIZED,
             status.HTTP_403_FORBIDDEN,
-        ), (
-            f"Unauthenticated PUT MUST return 401 or 403; "
-            f"got {response.status_code}: {response.text}"
-        )
+        ), f"Unauthenticated PUT MUST return 401 or 403; got {response.status_code}: {response.text}"
         if response.status_code == status.HTTP_401_UNAUTHORIZED:
             assert "www-authenticate" in {key.lower() for key in response.headers}, (
-                f"401 response MUST carry WWW-Authenticate header "
-                f"(RFC 7235); got headers {dict(response.headers)!r}"
+                f"401 response MUST carry WWW-Authenticate header (RFC 7235); got headers {dict(response.headers)!r}"
             )
-

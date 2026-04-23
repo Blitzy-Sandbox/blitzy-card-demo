@@ -266,25 +266,20 @@ class CardListRequest(BaseModel):
         default=None,
         max_length=_ACCT_ID_LEN,
         description=(
-            "Optional account ID filter — exactly 11 digits when "
-            "provided. Maps to COCRDLI ACCTSIDI PIC X(11)."
+            "Optional account ID filter — exactly 11 digits when provided. Maps to COCRDLI ACCTSIDI PIC X(11)."
         ),
     )
     card_number: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_CARD_NUM_LEN,
         description=(
-            "Optional card number filter — exactly 16 characters "
-            "when provided. Maps to COCRDLI CARDSIDI PIC X(16)."
+            "Optional card number filter — exactly 16 characters when provided. Maps to COCRDLI CARDSIDI PIC X(16)."
         ),
     )
     page_number: int = Field(
         default=1,
         ge=1,
-        description=(
-            "1-based page number (defaults to 1; must be >= 1). Maps "
-            "to COCRDLI PAGENOI PIC X(03)."
-        ),
+        description=("1-based page number (defaults to 1; must be >= 1). Maps to COCRDLI PAGENOI PIC X(03)."),
     )
 
     # ---------------------------------------------------------------
@@ -293,7 +288,8 @@ class CardListRequest(BaseModel):
     @field_validator("account_id")
     @classmethod
     def _validate_account_id(
-        cls, value: Optional[str]  # noqa: UP045  # schema requires typing.Optional
+        cls,
+        value: Optional[str],  # noqa: UP045  # schema requires typing.Optional
     ) -> Optional[str]:  # noqa: UP045  # schema requires typing.Optional
         """Enforce exact 11-digit account-ID format when supplied.
 
@@ -324,31 +320,23 @@ class CardListRequest(BaseModel):
         if value is None:
             return None
         if not isinstance(value, str):
-            raise ValueError(
-                f"account_id must be a string or None; got "
-                f"{type(value).__name__}"
-            )
+            raise ValueError(f"account_id must be a string or None; got {type(value).__name__}")
         # Normalize blank / whitespace-only input to None (matches the
         # COBOL screen's behavior where a blank ACCTSIDI was ignored).
         stripped = value.strip()
         if not stripped:
             return None
         if len(stripped) != _ACCT_ID_LEN:
-            raise ValueError(
-                f"account_id must be exactly {_ACCT_ID_LEN} digits; "
-                f"got {len(stripped)} characters"
-            )
+            raise ValueError(f"account_id must be exactly {_ACCT_ID_LEN} digits; got {len(stripped)} characters")
         if not stripped.isdigit():
-            raise ValueError(
-                "account_id must contain only digits (0-9); "
-                "got a non-numeric character"
-            )
+            raise ValueError("account_id must contain only digits (0-9); got a non-numeric character")
         return stripped
 
     @field_validator("card_number")
     @classmethod
     def _validate_card_number_filter(
-        cls, value: Optional[str]  # noqa: UP045  # schema requires typing.Optional
+        cls,
+        value: Optional[str],  # noqa: UP045  # schema requires typing.Optional
     ) -> Optional[str]:  # noqa: UP045  # schema requires typing.Optional
         """Enforce exact 16-character card-number format when supplied.
 
@@ -379,20 +367,14 @@ class CardListRequest(BaseModel):
         if value is None:
             return None
         if not isinstance(value, str):
-            raise ValueError(
-                f"card_number must be a string or None; got "
-                f"{type(value).__name__}"
-            )
+            raise ValueError(f"card_number must be a string or None; got {type(value).__name__}")
         # Normalize blank / whitespace-only input to None (matches the
         # COBOL screen's behavior where a blank CARDSIDI was ignored).
         stripped = value.strip()
         if not stripped:
             return None
         if len(stripped) != _CARD_NUM_LEN:
-            raise ValueError(
-                f"card_number must be exactly {_CARD_NUM_LEN} "
-                f"characters; got {len(stripped)} characters"
-            )
+            raise ValueError(f"card_number must be exactly {_CARD_NUM_LEN} characters; got {len(stripped)} characters")
         return stripped
 
 
@@ -462,32 +444,24 @@ class CardListItem(BaseModel):
         ...,
         max_length=_STATUS_LEN,
         description=(
-            "1-char selection flag — typically blank on read-only "
-            "list responses. Maps to COCRDLI CRDSELnI PIC X(01)."
+            "1-char selection flag — typically blank on read-only list responses. Maps to COCRDLI CRDSELnI PIC X(01)."
         ),
     )
     account_id: str = Field(
         ...,
         max_length=_ACCT_ID_LEN,
-        description=(
-            "11-char owning account ID. Maps to COCRDLI ACCTNOnI "
-            "PIC X(11) and card.acct_id."
-        ),
+        description=("11-char owning account ID. Maps to COCRDLI ACCTNOnI PIC X(11) and card.acct_id."),
     )
     card_number: str = Field(
         ...,
         max_length=_CARD_NUM_LEN,
-        description=(
-            "16-char card number (PAN — primary key). Maps to COCRDLI "
-            "CRDNUMnI PIC X(16) and card.card_num."
-        ),
+        description=("16-char card number (PAN — primary key). Maps to COCRDLI CRDNUMnI PIC X(16) and card.card_num."),
     )
     card_status: str = Field(
         ...,
         max_length=_STATUS_LEN,
         description=(
-            "1-char active/inactive status ('Y'/'N'). Maps to COCRDLI "
-            "CRDSTSnI PIC X(01) and card.active_status."
+            "1-char active/inactive status ('Y'/'N'). Maps to COCRDLI CRDSTSnI PIC X(01) and card.active_status."
         ),
     )
 
@@ -553,42 +527,27 @@ class CardListResponse(BaseModel):
 
     cards: List[CardListItem] = Field(  # noqa: UP006  # schema requires typing.List
         ...,
-        description=(
-            "Paginated card rows (max 7 per page, matching the 7 "
-            "repeated row groups on COCRDLI.CPY)."
-        ),
+        description=("Paginated card rows (max 7 per page, matching the 7 repeated row groups on COCRDLI.CPY)."),
     )
     page_number: int = Field(
         ...,
         ge=1,
-        description=(
-            "1-based current page number, echoed from the request. "
-            "Maps to COCRDLI PAGENOI PIC X(03)."
-        ),
+        description=("1-based current page number, echoed from the request. Maps to COCRDLI PAGENOI PIC X(03)."),
     )
     total_pages: int = Field(
         ...,
         ge=0,
-        description=(
-            "Total number of pages available for the current filter "
-            "(computed as ceil(total_count / 7))."
-        ),
+        description=("Total number of pages available for the current filter (computed as ceil(total_count / 7))."),
     )
     info_message: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_INFO_MSG_LIST_MAX_LEN,
-        description=(
-            "Optional info message, max 45 chars. Maps to COCRDLI "
-            "INFOMSGI PIC X(45)."
-        ),
+        description=("Optional info message, max 45 chars. Maps to COCRDLI INFOMSGI PIC X(45)."),
     )
     error_message: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_ERR_MSG_LIST_MAX_LEN,
-        description=(
-            "Optional error message, max 78 chars. Maps to COCRDLI "
-            "ERRMSGI PIC X(78)."
-        ),
+        description=("Optional error message, max 78 chars. Maps to COCRDLI ERRMSGI PIC X(78)."),
     )
 
 
@@ -659,18 +618,12 @@ class CardDetailResponse(BaseModel):
     account_id: str = Field(
         ...,
         max_length=_ACCT_ID_LEN,
-        description=(
-            "11-char owning account ID. Maps to COCRDSL ACCTSIDI "
-            "PIC X(11) and card.acct_id."
-        ),
+        description=("11-char owning account ID. Maps to COCRDSL ACCTSIDI PIC X(11) and card.acct_id."),
     )
     card_number: str = Field(
         ...,
         max_length=_CARD_NUM_LEN,
-        description=(
-            "16-char card number (PAN — primary key). Maps to COCRDSL "
-            "CARDSIDI PIC X(16) and card.card_num."
-        ),
+        description=("16-char card number (PAN — primary key). Maps to COCRDSL CARDSIDI PIC X(16) and card.card_num."),
     )
     embossed_name: str = Field(
         ...,
@@ -692,34 +645,22 @@ class CardDetailResponse(BaseModel):
     expiry_month: str = Field(
         ...,
         max_length=_EXPIRY_MM_DD_LEN,
-        description=(
-            "2-char expiry month ('01'..'12'). Maps to COCRDSL "
-            "EXPMONI PIC X(02)."
-        ),
+        description=("2-char expiry month ('01'..'12'). Maps to COCRDSL EXPMONI PIC X(02)."),
     )
     expiry_year: str = Field(
         ...,
         max_length=_EXPIRY_YEAR_LEN,
-        description=(
-            "4-char expiry year (CCYY, e.g. '2026'). Maps to COCRDSL "
-            "EXPYEARI PIC X(04)."
-        ),
+        description=("4-char expiry year (CCYY, e.g. '2026'). Maps to COCRDSL EXPYEARI PIC X(04)."),
     )
     info_message: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_INFO_MSG_DETAIL_MAX_LEN,
-        description=(
-            "Optional info message, max 40 chars. Maps to COCRDSL "
-            "INFOMSGI PIC X(40)."
-        ),
+        description=("Optional info message, max 40 chars. Maps to COCRDSL INFOMSGI PIC X(40)."),
     )
     error_message: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_ERR_MSG_DETAIL_MAX_LEN,
-        description=(
-            "Optional error message, max 80 chars. Maps to COCRDSL "
-            "ERRMSGI PIC X(80)."
-        ),
+        description=("Optional error message, max 80 chars. Maps to COCRDSL ERRMSGI PIC X(80)."),
     )
 
 
@@ -809,41 +750,28 @@ class CardUpdateRequest(BaseModel):
     embossed_name: str = Field(
         ...,
         max_length=_EMBOSSED_NAME_MAX_LEN,
-        description=(
-            "Name to emboss on the card, max 50 chars. Maps to "
-            "COCRDUP CRDNAMEI PIC X(50)."
-        ),
+        description=("Name to emboss on the card, max 50 chars. Maps to COCRDUP CRDNAMEI PIC X(50)."),
     )
     status_code: str = Field(
         ...,
         max_length=_STATUS_LEN,
-        description=(
-            "1-char card status ('Y' = active, 'N' = inactive). Maps "
-            "to COCRDUP CRDSTCDI PIC X(01)."
-        ),
+        description=("1-char card status ('Y' = active, 'N' = inactive). Maps to COCRDUP CRDSTCDI PIC X(01)."),
     )
     expiry_month: str = Field(
         ...,
         max_length=_EXPIRY_MM_DD_LEN,
-        description=(
-            "2-char expiry month ('01'..'12'). Maps to COCRDUP "
-            "EXPMONI PIC X(02)."
-        ),
+        description=("2-char expiry month ('01'..'12'). Maps to COCRDUP EXPMONI PIC X(02)."),
     )
     expiry_year: str = Field(
         ...,
         max_length=_EXPIRY_YEAR_LEN,
-        description=(
-            "4-char expiry year (CCYY, e.g. '2026'). Maps to COCRDUP "
-            "EXPYEARI PIC X(04)."
-        ),
+        description=("4-char expiry year (CCYY, e.g. '2026'). Maps to COCRDUP EXPYEARI PIC X(04)."),
     )
     expiry_day: str = Field(
         ...,
         max_length=_EXPIRY_MM_DD_LEN,
         description=(
-            "2-char expiry day ('01'..'31'). Maps to COCRDUP EXPDAYI "
-            "PIC X(02) — present on the Update screen only."
+            "2-char expiry day ('01'..'31'). Maps to COCRDUP EXPDAYI PIC X(02) — present on the Update screen only."
         ),
     )
 
@@ -877,15 +805,9 @@ class CardUpdateRequest(BaseModel):
             When ``value`` is not exactly 16 characters long.
         """
         if not isinstance(value, str):
-            raise ValueError(
-                f"card_number must be a string; got "
-                f"{type(value).__name__}"
-            )
+            raise ValueError(f"card_number must be a string; got {type(value).__name__}")
         if len(value) != _CARD_NUM_LEN:
-            raise ValueError(
-                f"card_number must be exactly {_CARD_NUM_LEN} "
-                f"characters; got {len(value)} characters"
-            )
+            raise ValueError(f"card_number must be exactly {_CARD_NUM_LEN} characters; got {len(value)} characters")
         return value
 
     @field_validator("status_code")
@@ -915,15 +837,9 @@ class CardUpdateRequest(BaseModel):
             When ``value`` is not exactly 1 character long.
         """
         if not isinstance(value, str):
-            raise ValueError(
-                f"status_code must be a string; got "
-                f"{type(value).__name__}"
-            )
+            raise ValueError(f"status_code must be a string; got {type(value).__name__}")
         if len(value) != _STATUS_LEN:
-            raise ValueError(
-                f"status_code must be exactly {_STATUS_LEN} "
-                f"character; got {len(value)} characters"
-            )
+            raise ValueError(f"status_code must be exactly {_STATUS_LEN} character; got {len(value)} characters")
         return value
 
     @field_validator("expiry_month")
@@ -958,26 +874,16 @@ class CardUpdateRequest(BaseModel):
               (inclusive).
         """
         if not isinstance(value, str):
-            raise ValueError(
-                f"expiry_month must be a string; got "
-                f"{type(value).__name__}"
-            )
+            raise ValueError(f"expiry_month must be a string; got {type(value).__name__}")
         if len(value) != _EXPIRY_MM_DD_LEN:
             raise ValueError(
-                f"expiry_month must be exactly {_EXPIRY_MM_DD_LEN} "
-                f"characters; got {len(value)} characters"
+                f"expiry_month must be exactly {_EXPIRY_MM_DD_LEN} characters; got {len(value)} characters"
             )
         if not value.isdigit():
-            raise ValueError(
-                "expiry_month must contain only digits (0-9); "
-                "got a non-numeric character"
-            )
+            raise ValueError("expiry_month must contain only digits (0-9); got a non-numeric character")
         month_int = int(value)
         if month_int < 1 or month_int > 12:
-            raise ValueError(
-                "expiry_month must be in the range '01'..'12'; "
-                f"got '{value}'"
-            )
+            raise ValueError(f"expiry_month must be in the range '01'..'12'; got '{value}'")
         return value
 
 

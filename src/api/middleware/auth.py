@@ -478,11 +478,7 @@ def decode_jwt_token(token: str, secret_key: str, algorithm: str) -> dict[str, A
     # could forge a non-expiring admin token and bypass the 30-minute
     # session window defined by Settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES.
     # Addresses QA Checkpoint 6 Finding #3 (MAJOR).
-    if (
-        "user_id" not in payload
-        or "user_type" not in payload
-        or "exp" not in payload
-    ):
+    if "user_id" not in payload or "user_type" not in payload or "exp" not in payload:
         logger.warning(
             "JWT missing required claims",
             extra={

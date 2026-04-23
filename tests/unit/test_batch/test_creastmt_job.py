@@ -410,15 +410,9 @@ def test_module_public_api_importable() -> None:
     """
     # Each of the four public entry points must be a callable function.
     assert callable(main), "main must be callable"
-    assert callable(sort_and_restructure_transactions), (
-        "sort_and_restructure_transactions must be callable"
-    )
-    assert callable(generate_text_statement), (
-        "generate_text_statement must be callable"
-    )
-    assert callable(generate_html_statement), (
-        "generate_html_statement must be callable"
-    )
+    assert callable(sort_and_restructure_transactions), "sort_and_restructure_transactions must be callable"
+    assert callable(generate_text_statement), "generate_text_statement must be callable"
+    assert callable(generate_html_statement), "generate_html_statement must be callable"
 
 
 # ============================================================================
@@ -485,12 +479,8 @@ def test_four_entity_join(spark_session: SparkSession) -> None:
     )
     accounts_df = spark_session.createDataFrame(
         [
-            _make_account_row(
-                "00000000001", acct_curr_bal=Decimal("1500.00")
-            ),
-            _make_account_row(
-                "00000000002", acct_curr_bal=Decimal("2500.00")
-            ),
+            _make_account_row("00000000001", acct_curr_bal=Decimal("1500.00")),
+            _make_account_row("00000000002", acct_curr_bal=Decimal("2500.00")),
         ]
     )
     transactions_df = spark_session.createDataFrame(
@@ -570,24 +560,15 @@ def test_four_entity_join(spark_session: SparkSession) -> None:
     # "Alice Q Johnson" (via ``_cobol_concat_name`` which takes the
     # first word of each of the three name parts and joins them with
     # single spaces, filtering out empty tokens).
-    assert "Alice Q Johnson" in text_content, (
-        "Card 1's customer name must appear in text output"
-    )
-    assert "00000000001" in text_content, (
-        "Card 1's account ID must appear in text output"
-    )
-    assert "COFFEE SHOP PURCHASE" in text_content, (
-        "Card 1's transaction description must appear in text output"
-    )
+    assert "Alice Q Johnson" in text_content, "Card 1's customer name must appear in text output"
+    assert "00000000001" in text_content, "Card 1's account ID must appear in text output"
+    assert "COFFEE SHOP PURCHASE" in text_content, "Card 1's transaction description must appear in text output"
 
     # Card 2: Bob Q Williams with zero transactions — statement still generated.
     assert "Bob Q Williams" in text_content, (
-        "Card 2's customer name must appear in text output "
-        "(LEFT OUTER join preserves cards with no transactions)"
+        "Card 2's customer name must appear in text output (LEFT OUTER join preserves cards with no transactions)"
     )
-    assert "00000000002" in text_content, (
-        "Card 2's account ID must appear in text output"
-    )
+    assert "00000000002" in text_content, "Card 2's account ID must appear in text output"
 
     # HTML output must also contain both customers.
     assert "Alice Q Johnson" in html_content
@@ -758,15 +739,12 @@ def test_sort_by_card_num_then_tran_id(spark_session: SparkSession) -> None:
 
     # ----- Assert: collect and verify -----
     sorted_rows = sorted_df.collect()
-    assert len(sorted_rows) == 5, (
-        f"Sort must preserve all 5 input rows, got {len(sorted_rows)}"
-    )
+    assert len(sorted_rows) == 5, f"Sort must preserve all 5 input rows, got {len(sorted_rows)}"
 
     # The restructuring reorders columns so tran_card_num leads.
     # We extract the (card_num, tran_id, tran_seq) tuple per row.
     actual_order: list[tuple[str, str, int]] = [
-        (row["tran_card_num"], row["tran_id"], row["tran_seq"])
-        for row in sorted_rows
+        (row["tran_card_num"], row["tran_id"], row["tran_seq"]) for row in sorted_rows
     ]
 
     expected_order: list[tuple[str, str, int]] = [
@@ -777,25 +755,17 @@ def test_sort_by_card_num_then_tran_id(spark_session: SparkSession) -> None:
         ("4333333333333333", "T0000000000002", 1),
     ]
 
-    assert actual_order == expected_order, (
-        f"Sort order wrong — expected {expected_order}, got {actual_order}"
-    )
+    assert actual_order == expected_order, f"Sort order wrong — expected {expected_order}, got {actual_order}"
 
     # Verify column reordering: tran_card_num is now the first column.
     output_columns = sorted_df.columns
     assert output_columns[0] == "tran_card_num", (
-        f"OUTREC restructure must place tran_card_num first, "
-        f"got columns={output_columns}"
+        f"OUTREC restructure must place tran_card_num first, got columns={output_columns}"
     )
-    assert output_columns[1] == "tran_id", (
-        f"OUTREC restructure must place tran_id second, "
-        f"got columns={output_columns}"
-    )
+    assert output_columns[1] == "tran_id", f"OUTREC restructure must place tran_id second, got columns={output_columns}"
 
     # Verify tran_seq column was appended.
-    assert "tran_seq" in output_columns, (
-        f"Window function must append tran_seq column, got columns={output_columns}"
-    )
+    assert "tran_seq" in output_columns, f"Window function must append tran_seq column, got columns={output_columns}"
 
 
 # ============================================================================
@@ -846,9 +816,7 @@ def test_generate_text_statement_structure() -> None:
     ]
 
     # ----- Act -----
-    result = generate_text_statement(
-        "4111111111111111", customer, account, transactions
-    )
+    result = generate_text_statement("4111111111111111", customer, account, transactions)
 
     # ----- Assert: overall structure -----
     # Trailing newline is appended by the generator (matching COBOL
@@ -857,10 +825,7 @@ def test_generate_text_statement_structure() -> None:
 
     # Every line must be exactly 80 chars wide (LRECL=80 contract).
     for idx, line in enumerate(lines):
-        assert len(line) == 80, (
-            f"Line {idx} has wrong width: expected 80, got {len(line)}; "
-            f"content={line!r}"
-        )
+        assert len(line) == 80, f"Line {idx} has wrong width: expected 80, got {len(line)}; content={line!r}"
 
     # Line 0: start-of-statement banner (31 stars + "START OF STATEMENT" + 31 stars).
     assert lines[0] == "*" * 31 + "START OF STATEMENT" + "*" * 31, (
@@ -874,9 +839,7 @@ def test_generate_text_statement_structure() -> None:
     )
 
     # Customer name must appear (first line after ST-LINE0).
-    assert "John Q Smith" in lines[1], (
-        f"Customer name must appear on line 1, got {lines[1]!r}"
-    )
+    assert "John Q Smith" in lines[1], f"Customer name must appear on line 1, got {lines[1]!r}"
 
     # Address line 1 must appear.
     assert any("123 Main Street" in line for line in lines), (
@@ -884,31 +847,19 @@ def test_generate_text_statement_structure() -> None:
     )
 
     # Account ID must appear on ST-LINE7 (one of the Basic Details lines).
-    assert any("00000000001" in line for line in lines), (
-        "Account ID must appear in the statement"
-    )
+    assert any("00000000001" in line for line in lines), "Account ID must appear in the statement"
 
     # The "Basic Details" and "TRANSACTION SUMMARY" section headers must
     # appear — these are the COBOL ST-LINE6 and ST-LINE11 constants.
-    assert any("Basic Details" in line for line in lines), (
-        "Basic Details section header must appear"
-    )
-    assert any("TRANSACTION SUMMARY" in line for line in lines), (
-        "TRANSACTION SUMMARY section header must appear"
-    )
+    assert any("Basic Details" in line for line in lines), "Basic Details section header must appear"
+    assert any("TRANSACTION SUMMARY" in line for line in lines), "TRANSACTION SUMMARY section header must appear"
 
     # Transaction descriptions must appear.
-    assert any("GROCERY PURCHASE" in line for line in lines), (
-        "First transaction description must appear"
-    )
-    assert any("GAS STATION" in line for line in lines), (
-        "Second transaction description must appear"
-    )
+    assert any("GROCERY PURCHASE" in line for line in lines), "First transaction description must appear"
+    assert any("GAS STATION" in line for line in lines), "Second transaction description must appear"
 
     # The total row must appear (ST-LINE14A = "Total EXP:" + spaces + "$" + amt).
-    assert any("Total EXP:" in line and "$" in line for line in lines), (
-        "Total EXP: row with dollar sign must appear"
-    )
+    assert any("Total EXP:" in line and "$" in line for line in lines), "Total EXP: row with dollar sign must appear"
 
 
 @pytest.mark.unit
@@ -953,17 +904,11 @@ def test_generate_text_statement_total_decimal() -> None:
     # with banker's rounding — matches the module's accumulator logic.
     expected_total: Decimal = Decimal("0.00")
     for txn in transactions:
-        expected_total = (expected_total + txn["tran_amt"]).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_EVEN
-        )
-    assert expected_total == Decimal("159.24"), (
-        "Test sanity: expected total should be Decimal('159.24')"
-    )
+        expected_total = (expected_total + txn["tran_amt"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+    assert expected_total == Decimal("159.24"), "Test sanity: expected total should be Decimal('159.24')"
 
     # ----- Act -----
-    result = generate_text_statement(
-        "4111111111111111", customer, account, transactions
-    )
+    result = generate_text_statement("4111111111111111", customer, account, transactions)
 
     # ----- Assert: total appears in the output as PIC Z(9).99- -----
     # The _format_amount_edited helper produces a 13-char edited string
@@ -975,25 +920,17 @@ def test_generate_text_statement_total_decimal() -> None:
 
     # Find the Total EXP line.
     total_lines = [line for line in lines if "Total EXP:" in line]
-    assert len(total_lines) == 1, (
-        f"Expected exactly one Total EXP line, got {len(total_lines)}"
-    )
+    assert len(total_lines) == 1, f"Expected exactly one Total EXP line, got {len(total_lines)}"
     total_line = total_lines[0]
 
     # Total line must be 80 chars (LRECL contract).
-    assert len(total_line) == 80, (
-        f"Total line width must be 80, got {len(total_line)}"
-    )
+    assert len(total_line) == 80, f"Total line width must be 80, got {len(total_line)}"
 
     # The formatted total "159.24" must appear in the total line.
-    assert "159.24" in total_line, (
-        f"Formatted total 159.24 must appear in total line, got {total_line!r}"
-    )
+    assert "159.24" in total_line, f"Formatted total 159.24 must appear in total line, got {total_line!r}"
 
     # The dollar sign prefix must precede the amount.
-    assert "$" in total_line, (
-        f"Dollar sign prefix must appear before total, got {total_line!r}"
-    )
+    assert "$" in total_line, f"Dollar sign prefix must appear before total, got {total_line!r}"
 
 
 @pytest.mark.unit
@@ -1018,9 +955,7 @@ def test_generate_text_statement_empty_transactions() -> None:
     transactions: list[dict[str, Any]] = []
 
     # ----- Act -----
-    result = generate_text_statement(
-        "4111111111111111", customer, account, transactions
-    )
+    result = generate_text_statement("4111111111111111", customer, account, transactions)
 
     # ----- Assert: statement still fully formed -----
     lines = result.rstrip("\n").split("\n")
@@ -1028,9 +963,7 @@ def test_generate_text_statement_empty_transactions() -> None:
     # Every line must still be 80 chars (LRECL contract holds for
     # empty-transaction statements too).
     for idx, line in enumerate(lines):
-        assert len(line) == 80, (
-            f"Line {idx} has wrong width: expected 80, got {len(line)}"
-        )
+        assert len(line) == 80, f"Line {idx} has wrong width: expected 80, got {len(line)}"
 
     # Start-of-statement banner present.
     assert lines[0] == "*" * 31 + "START OF STATEMENT" + "*" * 31
@@ -1047,14 +980,9 @@ def test_generate_text_statement_empty_transactions() -> None:
     # trailing sign space — we verify ".00" appears (and there is no
     # non-zero total string).
     total_lines = [line for line in lines if "Total EXP:" in line]
-    assert len(total_lines) == 1, (
-        f"Expected exactly one Total EXP line for empty transactions, "
-        f"got {len(total_lines)}"
-    )
+    assert len(total_lines) == 1, f"Expected exactly one Total EXP line for empty transactions, got {len(total_lines)}"
     total_line = total_lines[0]
-    assert ".00" in total_line, (
-        f"Zero-total line must contain '.00', got {total_line!r}"
-    )
+    assert ".00" in total_line, f"Zero-total line must contain '.00', got {total_line!r}"
 
     # No transaction-detail lines should appear.  The COBOL code emits
     # unconditionally:
@@ -1080,10 +1008,7 @@ def test_generate_text_statement_empty_transactions() -> None:
     #   18: ST-LINE15 (END OF STATEMENT banner)
     # Total: 19 lines for empty-transaction statement.
     # With N transactions: 19 + N lines.
-    assert len(lines) == 19, (
-        f"Empty-transaction statement should have 19 lines, "
-        f"got {len(lines)}: {lines!r}"
-    )
+    assert len(lines) == 19, f"Empty-transaction statement should have 19 lines, got {len(lines)}: {lines!r}"
 
 
 # ============================================================================
@@ -1130,21 +1055,14 @@ def test_generate_html_statement_structure() -> None:
     ]
 
     # ----- Act -----
-    result = generate_html_statement(
-        "4111111111111111", customer, account, transactions
-    )
+    result = generate_html_statement("4111111111111111", customer, account, transactions)
 
     # ----- Assert: HTML5 document structure -----
     # The document must start with the HTML5 DOCTYPE.
-    assert result.startswith("<!DOCTYPE html>"), (
-        f"HTML must start with <!DOCTYPE html>, got prefix "
-        f"{result[:40]!r}"
-    )
+    assert result.startswith("<!DOCTYPE html>"), f"HTML must start with <!DOCTYPE html>, got prefix {result[:40]!r}"
 
     # The document must contain the opening <html lang="en"> tag.
-    assert '<html lang="en">' in result, (
-        "HTML must contain <html lang=\"en\"> opening tag"
-    )
+    assert '<html lang="en">' in result, 'HTML must contain <html lang="en"> opening tag'
 
     # The document must contain at least one <table ...> element.
     assert "<table" in result, "HTML must contain a <table> element"
@@ -1153,44 +1071,26 @@ def test_generate_html_statement_structure() -> None:
     assert "</html>" in result, "HTML must contain </html> closing tag"
 
     # Bank literals — from CBSTM03A HTML-L16/L17/L18.
-    assert "Bank of XYZ" in result, (
-        "HTML must contain 'Bank of XYZ' bank name literal"
-    )
-    assert "410 Terry Ave N" in result, (
-        "HTML must contain '410 Terry Ave N' bank address literal"
-    )
-    assert "Seattle WA 99999" in result, (
-        "HTML must contain 'Seattle WA 99999' bank city/state/zip literal"
-    )
+    assert "Bank of XYZ" in result, "HTML must contain 'Bank of XYZ' bank name literal"
+    assert "410 Terry Ave N" in result, "HTML must contain '410 Terry Ave N' bank address literal"
+    assert "Seattle WA 99999" in result, "HTML must contain 'Seattle WA 99999' bank city/state/zip literal"
 
     # Section headers — from CBSTM03A HTML-L31 and HTML-L43.
-    assert "Basic Details" in result, (
-        "HTML must contain 'Basic Details' section header"
-    )
-    assert "Transaction Summary" in result, (
-        "HTML must contain 'Transaction Summary' section header"
-    )
+    assert "Basic Details" in result, "HTML must contain 'Basic Details' section header"
+    assert "Transaction Summary" in result, "HTML must contain 'Transaction Summary' section header"
 
     # Column headers — from CBSTM03A HTML-L48/L51/L54.
     assert "Tran ID" in result, "HTML must contain 'Tran ID' column header"
-    assert "Tran Details" in result, (
-        "HTML must contain 'Tran Details' column header"
-    )
+    assert "Tran Details" in result, "HTML must contain 'Tran Details' column header"
     assert "Amount" in result, "HTML must contain 'Amount' column header"
 
     # Closing element — from CBSTM03A HTML-L75.
-    assert "End of Statement" in result, (
-        "HTML must contain 'End of Statement' closing element"
-    )
+    assert "End of Statement" in result, "HTML must contain 'End of Statement' closing element"
 
     # Structural well-formedness: balanced table tags.
     # Each statement produces exactly one <table>...</table> pair.
-    assert result.count("<table") == 1, (
-        f"Expected exactly 1 <table opening, got {result.count('<table')}"
-    )
-    assert result.count("</table>") == 1, (
-        f"Expected exactly 1 </table> closing, got {result.count('</table>')}"
-    )
+    assert result.count("<table") == 1, f"Expected exactly 1 <table opening, got {result.count('<table')}"
+    assert result.count("</table>") == 1, f"Expected exactly 1 </table> closing, got {result.count('</table>')}"
 
 
 @pytest.mark.unit
@@ -1239,27 +1139,20 @@ def test_generate_html_statement_contains_customer_data() -> None:
     ]
 
     # ----- Act -----
-    result = generate_html_statement(
-        "4444444444444444", customer, account, transactions
-    )
+    result = generate_html_statement("4444444444444444", customer, account, transactions)
 
     # ----- Assert: customer name present (concatenated via _cobol_concat_name) -----
     # Note: _cobol_concat_name strips each name at its first space, then
     # joins with single spaces — so "Alice    ", "B        ", "Johnson  "
     # becomes "Alice B Johnson".
     assert "Alice B Johnson" in result, (
-        f"HTML must contain concatenated customer name 'Alice B Johnson', "
-        f"got a 2000-char excerpt: {result[:2000]!r}"
+        f"HTML must contain concatenated customer name 'Alice B Johnson', got a 2000-char excerpt: {result[:2000]!r}"
     )
 
     # ----- Assert: address lines present -----
-    assert "456 Oak Avenue" in result, (
-        "HTML must contain address line 1 '456 Oak Avenue'"
-    )
+    assert "456 Oak Avenue" in result, "HTML must contain address line 1 '456 Oak Avenue'"
     assert "Suite 200" in result, "HTML must contain address line 2 'Suite 200'"
-    assert "Portland" in result, (
-        "HTML must contain address line 3 (city) 'Portland'"
-    )
+    assert "Portland" in result, "HTML must contain address line 3 (city) 'Portland'"
     assert "OR" in result, "HTML must contain state code 'OR'"
     assert "97201" in result, "HTML must contain ZIP code '97201'"
 
@@ -1268,22 +1161,16 @@ def test_generate_html_statement_contains_customer_data() -> None:
 
     # Current Balance is formatted via _format_balance_edited (PIC 9(9).99-).
     # For Decimal("5678.90") → zero-filled 9-digit integer + ".90" + trailing space.
-    assert "5678.90" in result, (
-        "HTML must contain formatted current balance '5678.90'"
-    )
+    assert "5678.90" in result, "HTML must contain formatted current balance '5678.90'"
 
     # ----- Assert: FICO score present (820 + trailing spaces padded) -----
     assert "820" in result, "HTML must contain FICO score '820'"
 
     # ----- Assert: transaction description present -----
-    assert "ONLINE SUBSCRIPTION" in result, (
-        "HTML must contain transaction description 'ONLINE SUBSCRIPTION'"
-    )
+    assert "ONLINE SUBSCRIPTION" in result, "HTML must contain transaction description 'ONLINE SUBSCRIPTION'"
 
     # ----- Assert: transaction amount present -----
-    assert "9.99" in result, (
-        "HTML must contain transaction amount '9.99'"
-    )
+    assert "9.99" in result, "HTML must contain transaction amount '9.99'"
 
 
 # ============================================================================
@@ -1327,12 +1214,8 @@ def test_text_statements_written_to_s3(spark_session: SparkSession) -> None:
             ),
         ]
     )
-    customers_df = spark_session.createDataFrame(
-        [_make_customer_row(cust_id="000000001")]
-    )
-    accounts_df = spark_session.createDataFrame(
-        [_make_account_row("00000000001")]
-    )
+    customers_df = spark_session.createDataFrame([_make_customer_row(cust_id="000000001")])
+    accounts_df = spark_session.createDataFrame([_make_account_row("00000000001")])
     transactions_df = spark_session.createDataFrame(
         [
             _make_txn_row(
@@ -1407,49 +1290,36 @@ def test_text_statements_written_to_s3(spark_session: SparkSession) -> None:
     # ----- Assert: text statement written with content_type="text/plain" -----
     text_writes = [c for c in write_calls if c["content_type"] == "text/plain"]
     assert len(text_writes) == 1, (
-        f"Expected exactly 1 text/plain write, got {len(text_writes)}: "
-        f"all writes={write_calls!r}"
+        f"Expected exactly 1 text/plain write, got {len(text_writes)}: all writes={write_calls!r}"
     )
     text_call = text_writes[0]
 
     # Content-type must be exactly "text/plain".
     assert text_call["content_type"] == "text/plain", (
-        f"Text write content_type must be 'text/plain', "
-        f"got {text_call['content_type']!r}"
+        f"Text write content_type must be 'text/plain', got {text_call['content_type']!r}"
     )
 
     # The S3 key must be composed from STATEMNT.PS's versioned prefix.
     # _compose_s3_key splits the prefix URI on the first '/' after "s3://"
     # and appends the filename — so the key should contain "statements/text/..."
     # and end in "STATEMNT.txt".
-    assert "STATEMNT.txt" in text_call["key"], (
-        f"Text write key must end in 'STATEMNT.txt', got {text_call['key']!r}"
-    )
+    assert "STATEMNT.txt" in text_call["key"], f"Text write key must end in 'STATEMNT.txt', got {text_call['key']!r}"
     assert "statements/text" in text_call["key"], (
-        f"Text write key must be under statements/text prefix, "
-        f"got {text_call['key']!r}"
+        f"Text write key must be under statements/text prefix, got {text_call['key']!r}"
     )
 
     # The bucket should be extracted from the S3 URI.
     assert text_call["bucket"] == "carddemo-bucket", (
-        f"Text write bucket must be 'carddemo-bucket', "
-        f"got {text_call['bucket']!r}"
+        f"Text write bucket must be 'carddemo-bucket', got {text_call['bucket']!r}"
     )
 
     # The GDG name "STATEMNT.PS" must have been passed to get_versioned_s3_path.
-    assert "STATEMNT.PS" in gdg_calls, (
-        f"get_versioned_s3_path must be called with 'STATEMNT.PS', "
-        f"got {gdg_calls!r}"
-    )
+    assert "STATEMNT.PS" in gdg_calls, f"get_versioned_s3_path must be called with 'STATEMNT.PS', got {gdg_calls!r}"
 
     # The text content should contain recognizable statement markers.
     text_content: str = text_call["content"]
-    assert "START OF STATEMENT" in text_content, (
-        "Text content must contain 'START OF STATEMENT' banner"
-    )
-    assert "END OF STATEMENT" in text_content, (
-        "Text content must contain 'END OF STATEMENT' banner"
-    )
+    assert "START OF STATEMENT" in text_content, "Text content must contain 'START OF STATEMENT' banner"
+    assert "END OF STATEMENT" in text_content, "Text content must contain 'END OF STATEMENT' banner"
 
 
 @pytest.mark.unit
@@ -1476,12 +1346,8 @@ def test_html_statements_written_to_s3(spark_session: SparkSession) -> None:
             ),
         ]
     )
-    customers_df = spark_session.createDataFrame(
-        [_make_customer_row(cust_id="000000001")]
-    )
-    accounts_df = spark_session.createDataFrame(
-        [_make_account_row("00000000001")]
-    )
+    customers_df = spark_session.createDataFrame([_make_customer_row(cust_id="000000001")])
+    accounts_df = spark_session.createDataFrame([_make_account_row("00000000001")])
     transactions_df = spark_session.createDataFrame(
         [
             _make_txn_row(
@@ -1549,49 +1415,34 @@ def test_html_statements_written_to_s3(spark_session: SparkSession) -> None:
     # ----- Assert: HTML statement written with content_type="text/html" -----
     html_writes = [c for c in write_calls if c["content_type"] == "text/html"]
     assert len(html_writes) == 1, (
-        f"Expected exactly 1 text/html write, got {len(html_writes)}: "
-        f"all writes={write_calls!r}"
+        f"Expected exactly 1 text/html write, got {len(html_writes)}: all writes={write_calls!r}"
     )
     html_call = html_writes[0]
 
     # Content-type must be exactly "text/html".
     assert html_call["content_type"] == "text/html", (
-        f"HTML write content_type must be 'text/html', "
-        f"got {html_call['content_type']!r}"
+        f"HTML write content_type must be 'text/html', got {html_call['content_type']!r}"
     )
 
     # The S3 key must be composed from STATEMNT.HTML's versioned prefix.
-    assert "STATEMNT.html" in html_call["key"], (
-        f"HTML write key must end in 'STATEMNT.html', got {html_call['key']!r}"
-    )
+    assert "STATEMNT.html" in html_call["key"], f"HTML write key must end in 'STATEMNT.html', got {html_call['key']!r}"
     assert "statements/html" in html_call["key"], (
-        f"HTML write key must be under statements/html prefix, "
-        f"got {html_call['key']!r}"
+        f"HTML write key must be under statements/html prefix, got {html_call['key']!r}"
     )
 
     # Bucket extraction.
     assert html_call["bucket"] == "carddemo-bucket", (
-        f"HTML write bucket must be 'carddemo-bucket', "
-        f"got {html_call['bucket']!r}"
+        f"HTML write bucket must be 'carddemo-bucket', got {html_call['bucket']!r}"
     )
 
     # STATEMNT.HTML GDG name was passed to get_versioned_s3_path.
-    assert "STATEMNT.HTML" in gdg_calls, (
-        f"get_versioned_s3_path must be called with 'STATEMNT.HTML', "
-        f"got {gdg_calls!r}"
-    )
+    assert "STATEMNT.HTML" in gdg_calls, f"get_versioned_s3_path must be called with 'STATEMNT.HTML', got {gdg_calls!r}"
 
     # The HTML content should contain recognizable HTML5 markers.
     html_content: str = html_call["content"]
-    assert "<!DOCTYPE html>" in html_content, (
-        "HTML content must contain <!DOCTYPE html>"
-    )
-    assert "</html>" in html_content, (
-        "HTML content must contain </html> closing tag"
-    )
-    assert "Bank of XYZ" in html_content, (
-        "HTML content must contain bank name literal"
-    )
+    assert "<!DOCTYPE html>" in html_content, "HTML content must contain <!DOCTYPE html>"
+    assert "</html>" in html_content, "HTML content must contain </html> closing tag"
+    assert "Bank of XYZ" in html_content, "HTML content must contain bank name literal"
 
 
 # ============================================================================
@@ -1676,15 +1527,9 @@ def test_creastmt_main_with_spark(spark_session: SparkSession) -> None:
     )
     accounts_df = spark_session.createDataFrame(
         [
-            _make_account_row(
-                "00000000001", acct_curr_bal=Decimal("5000.00")
-            ),
-            _make_account_row(
-                "00000000002", acct_curr_bal=Decimal("2500.00")
-            ),
-            _make_account_row(
-                "00000000003", acct_curr_bal=Decimal("1000.00")
-            ),
+            _make_account_row("00000000001", acct_curr_bal=Decimal("5000.00")),
+            _make_account_row("00000000002", acct_curr_bal=Decimal("2500.00")),
+            _make_account_row("00000000003", acct_curr_bal=Decimal("1000.00")),
         ]
     )
     transactions_df = spark_session.createDataFrame(
@@ -1771,8 +1616,7 @@ def test_creastmt_main_with_spark(spark_session: SparkSession) -> None:
         mock_init_glue.assert_called_once()
         init_call_kwargs = mock_init_glue.call_args.kwargs
         assert init_call_kwargs.get("job_name") == "carddemo-creastmt", (
-            f"init_glue must be called with job_name='carddemo-creastmt', "
-            f"got kwargs={init_call_kwargs!r}"
+            f"init_glue must be called with job_name='carddemo-creastmt', got kwargs={init_call_kwargs!r}"
         )
 
         # read_table called exactly 4 times (once per source table).
@@ -1787,8 +1631,7 @@ def test_creastmt_main_with_spark(spark_session: SparkSession) -> None:
     # ----- Assert: S3 write summary -----
     # Exactly 2 writes total: one text, one HTML.
     assert len(write_calls) == 2, (
-        f"Expected exactly 2 S3 writes (1 text + 1 HTML), "
-        f"got {len(write_calls)}: {write_calls!r}"
+        f"Expected exactly 2 S3 writes (1 text + 1 HTML), got {len(write_calls)}: {write_calls!r}"
     )
 
     # Split by content-type.
@@ -1809,15 +1652,10 @@ def test_creastmt_main_with_spark(spark_session: SparkSession) -> None:
     # Note: the default ``cust_middle_name="Q        "`` in
     # ``_make_customer_row`` produces the three-token concatenation
     # "<First> Q <Last>" via ``_cobol_concat_name``.
-    assert "Alice Q Johnson" in text_content, (
-        "Alice's statement must appear in text output"
-    )
-    assert "Bob Q Williams" in text_content, (
-        "Bob's statement must appear in text output"
-    )
+    assert "Alice Q Johnson" in text_content, "Alice's statement must appear in text output"
+    assert "Bob Q Williams" in text_content, "Bob's statement must appear in text output"
     assert "Charlie Q Davis" in text_content, (
-        "Charlie's statement must appear in text output "
-        "(LEFT OUTER join preserves cards with no transactions)"
+        "Charlie's statement must appear in text output (LEFT OUTER join preserves cards with no transactions)"
     )
 
     # Account IDs must all appear.
@@ -1834,13 +1672,9 @@ def test_creastmt_main_with_spark(spark_session: SparkSession) -> None:
     # The total formatted via PIC Z(9).99- renders as "        69.12 "
     # (10 leading spaces + 69.12 + trailing space for positive).
     # We verify that 69.12 appears in the text somewhere.
-    assert "69.12" in text_content, (
-        "Card 1 total (12.34 + 56.78) must render as 69.12 in text output"
-    )
+    assert "69.12" in text_content, "Card 1 total (12.34 + 56.78) must render as 69.12 in text output"
     # Card 2 total = 100.00.
-    assert "100.00" in text_content, (
-        "Card 2 total must render as 100.00 in text output"
-    )
+    assert "100.00" in text_content, "Card 2 total must render as 100.00 in text output"
 
     # Verify the sort order of Card 1's transactions (BOOK STORE first,
     # COFFEE second — tran_id T0000000000001 < T0000000000002).
@@ -1860,10 +1694,7 @@ def test_creastmt_main_with_spark(spark_session: SparkSession) -> None:
     if text_lines and text_lines[-1] == "":
         text_lines = text_lines[:-1]
     for idx, line in enumerate(text_lines):
-        assert len(line) == 80, (
-            f"Text line {idx} has wrong width: expected 80, "
-            f"got {len(line)}; content={line!r}"
-        )
+        assert len(line) == 80, f"Text line {idx} has wrong width: expected 80, got {len(line)}; content={line!r}"
 
     # ----- Assert: HTML output content -----
     html_content: str = html_writes[0]["content"]
@@ -1891,6 +1722,5 @@ def test_creastmt_main_with_spark(spark_session: SparkSession) -> None:
     # Cards are separated by the _HTML_INTER_STATEMENT_SEPARATOR
     # comment.  We should see exactly 3 DOCTYPE occurrences (one per card).
     assert html_content.count("<!DOCTYPE html>") == 3, (
-        f"Expected 3 DOCTYPE declarations (one per card), "
-        f"got {html_content.count('<!DOCTYPE html>')}"
+        f"Expected 3 DOCTYPE declarations (one per card), got {html_content.count('<!DOCTYPE html>')}"
     )

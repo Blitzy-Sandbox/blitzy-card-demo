@@ -314,15 +314,9 @@ class ReportSubmissionRequest(BaseModel):
               calendar date (e.g. ``"2024-02-30"``).
         """
         if not isinstance(value, str):
-            raise ValueError(
-                f"{field_name} must be a YYYY-MM-DD string; got "
-                f"{type(value).__name__}"
-            )
+            raise ValueError(f"{field_name} must be a YYYY-MM-DD string; got {type(value).__name__}")
         if not _YMD_FORMAT_RE.match(value):
-            raise ValueError(
-                f"{field_name} must be in strict YYYY-MM-DD format "
-                f"(e.g. '2024-01-31'); got {value!r}"
-            )
+            raise ValueError(f"{field_name} must be in strict YYYY-MM-DD format (e.g. '2024-01-31'); got {value!r}")
         try:
             _date_cls.fromisoformat(value)
         except ValueError as exc:
@@ -330,9 +324,7 @@ class ReportSubmissionRequest(BaseModel):
             # offending field; the underlying exception text identifies
             # the specific invalidity (month out of range, day out of
             # range, etc.).
-            raise ValueError(
-                f"{field_name} is not a valid calendar date: {exc}"
-            ) from exc
+            raise ValueError(f"{field_name} is not a valid calendar date: {exc}") from exc
         return value
 
     # -----------------------------------------------------------------
@@ -380,10 +372,7 @@ class ReportSubmissionRequest(BaseModel):
             if self.end_date is None:
                 missing.append("end_date")
             if missing:
-                raise ValueError(
-                    "report_type=custom requires "
-                    f"{' and '.join(missing)} to be provided"
-                )
+                raise ValueError(f"report_type=custom requires {' and '.join(missing)} to be provided")
         # Invariant #2: when both dates are supplied, end must not
         # precede start.  We deliberately compare the ISO-8601 strings
         # rather than parsing them to ``date`` objects: the format
@@ -449,32 +438,22 @@ class ReportSubmissionResponse(BaseModel):
     report_id: str = Field(
         ...,
         description=(
-            "Server-generated report submission identifier (e.g., "
-            "UUID or SQS FIFO MessageId). Opaque to the client."
+            "Server-generated report submission identifier (e.g., UUID or SQS FIFO MessageId). Opaque to the client."
         ),
     )
     report_type: ReportType = Field(
         ...,
-        description=(
-            "Echo of the report type submitted in the request — one of "
-            "monthly / yearly / custom."
-        ),
+        description=("Echo of the report type submitted in the request — one of monthly / yearly / custom."),
     )
     confirm: str = Field(
         ...,
         max_length=1,
-        description=(
-            "Confirmation indicator — 'Y' (submitted) or 'N' (rejected). "
-            "Maps to CORPT00 CONFIRMI PIC X(1)."
-        ),
+        description=("Confirmation indicator — 'Y' (submitted) or 'N' (rejected). Maps to CORPT00 CONFIRMI PIC X(1)."),
     )
     message: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_ERRMSG_MAX_LEN,
-        description=(
-            "Optional info/error message, max 78 chars. Maps to CORPT00 "
-            "ERRMSGI PIC X(78)."
-        ),
+        description=("Optional info/error message, max 78 chars. Maps to CORPT00 ERRMSGI PIC X(78)."),
     )
 
     @field_validator("confirm")
@@ -491,13 +470,10 @@ class ReportSubmissionResponse(BaseModel):
         if value is None:
             raise ValueError("confirm must not be null")
         if not isinstance(value, str):
-            raise ValueError(
-                f"confirm must be a string; got {type(value).__name__}"
-            )
+            raise ValueError(f"confirm must be a string; got {type(value).__name__}")
         if value not in _VALID_CONFIRM_VALUES:
             raise ValueError(
-                f"confirm must be one of {sorted(_VALID_CONFIRM_VALUES)} "
-                f"(CORPT00 CONFIRMI PIC X(1)); got {value!r}"
+                f"confirm must be one of {sorted(_VALID_CONFIRM_VALUES)} (CORPT00 CONFIRMI PIC X(1)); got {value!r}"
             )
         return value
 

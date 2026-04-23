@@ -393,9 +393,7 @@ def test_composite_key_matches_cobol_group() -> None:
     # the Python-key set.  ``Column.key`` is typed ``str | None`` in
     # SQLAlchemy 2.x but every mapped column in this ORM model has an
     # explicit ``key=`` so the value is guaranteed to be a string.
-    actual_pk_fields: frozenset[str] = frozenset(
-        str(c.key) for c in primary_key_columns
-    )
+    actual_pk_fields: frozenset[str] = frozenset(str(c.key) for c in primary_key_columns)
 
     # Inclusion — every COBOL key-group element must be in the PK.
     missing_from_pk = expected_pk_fields - actual_pk_fields

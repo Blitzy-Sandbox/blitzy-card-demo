@@ -153,9 +153,7 @@ class SignOnRequest(BaseModel):
         if not value or not value.strip():
             raise ValueError("user_id must not be empty")
         if len(value) > 8:
-            raise ValueError(
-                "user_id exceeds max length 8 (COBOL PIC X(08))"
-            )
+            raise ValueError("user_id exceeds max length 8 (COBOL PIC X(08))")
         return value
 
     @field_validator("password")
@@ -171,9 +169,7 @@ class SignOnRequest(BaseModel):
         if not value or not value.strip():
             raise ValueError("password must not be empty")
         if len(value) > 8:
-            raise ValueError(
-                "password exceeds max length 8 (COBOL PIC X(08))"
-            )
+            raise ValueError("password exceeds max length 8 (COBOL PIC X(08))")
         return value
 
 
@@ -224,17 +220,12 @@ class SignOnResponse(BaseModel):
     user_type: str = Field(
         ...,
         max_length=1,
-        description=(
-            "User role — from CDEMO-USER-TYPE PIC X(01). "
-            "'A' = admin, 'U' = user."
-        ),
+        description=("User role — from CDEMO-USER-TYPE PIC X(01). 'A' = admin, 'U' = user."),
     )
     message: Optional[str] = Field(  # noqa: UP045  # schema requires `typing.Optional`
         default=None,
         max_length=78,
-        description=(
-            "Optional status message — maps to COSGN00 ERRMSGI PIC X(78)."
-        ),
+        description=("Optional status message — maps to COSGN00 ERRMSGI PIC X(78)."),
     )
 
     @field_validator("user_type")
@@ -290,17 +281,11 @@ class TokenPayload(BaseModel):
     user_type: str = Field(
         ...,
         max_length=1,
-        description=(
-            "User role — 'A' (admin) or 'U' (user); from "
-            "CDEMO-USER-TYPE PIC X(01)."
-        ),
+        description=("User role — 'A' (admin) or 'U' (user); from CDEMO-USER-TYPE PIC X(01)."),
     )
     exp: Optional[int] = Field(  # noqa: UP045  # schema requires `typing.Optional`
         default=None,
-        description=(
-            "Token expiration (epoch seconds) — JWT standard 'exp' claim "
-            "per RFC 7519 §4.1.4."
-        ),
+        description=("Token expiration (epoch seconds) — JWT standard 'exp' claim per RFC 7519 §4.1.4."),
     )
 
     @field_validator("sub")
@@ -310,9 +295,7 @@ class TokenPayload(BaseModel):
         if value is None or not value.strip():
             raise ValueError("sub (user_id) must not be empty")
         if len(value) > 8:
-            raise ValueError(
-                "sub exceeds max length 8 (COBOL CDEMO-USER-ID PIC X(08))"
-            )
+            raise ValueError("sub exceeds max length 8 (COBOL CDEMO-USER-ID PIC X(08))")
         return value
 
     @field_validator("user_type")

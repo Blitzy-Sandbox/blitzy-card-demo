@@ -378,7 +378,7 @@ class Settings(BaseSettings):
         description=(
             "Explicit list of web origins permitted by the FastAPI "
             "``CORSMiddleware`` ``allow_origins`` parameter. Replaces "
-            "the previous wildcard (``[\"*\"]``) default that was "
+            'the previous wildcard (``["*"]``) default that was '
             "incompatible with ``allow_credentials=True`` per the W3C "
             "CORS specification — browsers reject credentialed "
             "requests when origins is wildcard, rendering the JWT "

@@ -1375,9 +1375,7 @@ def main() -> None:
         # :class:`ValueError` on schema drift — the assertion is a
         # fail-fast safeguard equivalent to the mainframe's
         # record-length enforcement at VSAM WRITE time.
-        combined_lines: list[str] = [
-            _format_combined_line(row) for row in sorted_rows
-        ]
+        combined_lines: list[str] = [_format_combined_line(row) for row in sorted_rows]
 
         # Derive the full S3 object key by appending the archive
         # filename to the versioned prefix URI returned by
@@ -1386,16 +1384,12 @@ def main() -> None:
         # ``maxsplit=3`` extracts the components into ``["s3:", "",
         # "{bucket}", "{key_prefix}/"]`` — identical to the
         # :func:`prtcatbl_job` / :func:`intcalc_job` patterns.
-        _scheme, _empty, _bucket, key_prefix_with_slash = (
-            combined_output_uri.split("/", 3)
-        )
+        _scheme, _empty, _bucket, key_prefix_with_slash = combined_output_uri.split("/", 3)
         combined_key: str = key_prefix_with_slash + _COMBINED_FILENAME
 
         # Join with LF terminators — matches the SYSTRAN.txt line
         # separator convention used by :func:`intcalc_job._write_interest_trans_to_s3`.
-        combined_content: str = "\n".join(combined_lines) + (
-            "\n" if combined_lines else ""
-        )
+        combined_content: str = "\n".join(combined_lines) + ("\n" if combined_lines else "")
 
         # Publish via boto3. ``write_to_s3`` handles bucket/endpoint
         # resolution from the environment (``AWS_ENDPOINT_URL`` /

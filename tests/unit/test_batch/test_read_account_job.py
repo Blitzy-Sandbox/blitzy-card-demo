@@ -407,9 +407,7 @@ _PATCH_COMMIT_JOB = "src.batch.jobs.read_account_job.commit_job"
 # * ``collect() → rows``         — drives the per-record log iteration.
 # * ``unpersist() → None``       — cleanup path calls this before end.
 # ----------------------------------------------------------------------------
-def _make_mock_df(
-    count_value: int = 0, rows: list[MagicMock] | None = None
-) -> MagicMock:
+def _make_mock_df(count_value: int = 0, rows: list[MagicMock] | None = None) -> MagicMock:
     """Build a chainable mock DataFrame for use with patched ``read_table``.
 
     Parameters
@@ -677,9 +675,7 @@ def test_reads_accounts_table(
     # contract as "the total invocation history equals exactly this
     # list," which catches subtle bugs that the call-count assertion
     # might miss (e.g., duplicate recording due to mock reconfiguration).
-    assert mock_read_table.call_args_list == [
-        call(mock_spark, _EXPECTED_TABLE_NAME)
-    ], (
+    assert mock_read_table.call_args_list == [call(mock_spark, _EXPECTED_TABLE_NAME)], (
         f"read_table invocation history must be exactly "
         f"[call(spark, {_EXPECTED_TABLE_NAME!r})]; "
         f"got {mock_read_table.call_args_list}"
@@ -755,11 +751,7 @@ def test_logs_start_message(
     # simple ``logger.info(_COBOL_START_MSG)`` call, so the banner
     # text will appear unchanged in the log record's message body
     # — even if the structured handler prefixes or decorates it.
-    matching_records = [
-        record
-        for record in caplog.records
-        if _COBOL_START_MSG_EXPECTED in record.getMessage()
-    ]
+    matching_records = [record for record in caplog.records if _COBOL_START_MSG_EXPECTED in record.getMessage()]
 
     assert matching_records, (
         f"Expected at least one INFO-level log record containing "
@@ -832,11 +824,7 @@ def test_logs_end_message(
 
     # --- Assert -----------------------------------------------------
     # Step 1: the end banner is present.
-    end_matching_records = [
-        record
-        for record in caplog.records
-        if _COBOL_END_MSG_EXPECTED in record.getMessage()
-    ]
+    end_matching_records = [record for record in caplog.records if _COBOL_END_MSG_EXPECTED in record.getMessage()]
     assert end_matching_records, (
         f"Expected at least one INFO-level log record containing "
         f"{_COBOL_END_MSG_EXPECTED!r} (CBACT01C.cbl line 85); "
@@ -845,20 +833,14 @@ def test_logs_end_message(
     )
     for record in end_matching_records:
         assert record.levelno == logging.INFO, (
-            f"End banner must be emitted at INFO level; got "
-            f"{logging.getLevelName(record.levelno)}"
+            f"End banner must be emitted at INFO level; got {logging.getLevelName(record.levelno)}"
         )
 
     # Step 2: the start banner is ALSO present (sanity check —
     # otherwise the ordering check below is vacuous).
-    start_matching_records = [
-        record
-        for record in caplog.records
-        if _COBOL_START_MSG_EXPECTED in record.getMessage()
-    ]
+    start_matching_records = [record for record in caplog.records if _COBOL_START_MSG_EXPECTED in record.getMessage()]
     assert start_matching_records, (
-        "Start banner must be present in log output for ordering check to "
-        "be meaningful; was not found."
+        "Start banner must be present in log output for ordering check to be meaningful; was not found."
     )
 
     # Step 3: temporal ordering — the LAST start-banner occurrence
@@ -866,24 +848,14 @@ def test_logs_end_message(
     # robust to repeat emissions (e.g., if a future logging filter
     # double-emits a banner) and still catches the contract-
     # violating case where the end banner precedes the start banner.
-    start_indices = [
-        i
-        for i, record in enumerate(caplog.records)
-        if _COBOL_START_MSG_EXPECTED in record.getMessage()
-    ]
-    end_indices = [
-        i
-        for i, record in enumerate(caplog.records)
-        if _COBOL_END_MSG_EXPECTED in record.getMessage()
-    ]
+    start_indices = [i for i, record in enumerate(caplog.records) if _COBOL_START_MSG_EXPECTED in record.getMessage()]
+    end_indices = [i for i, record in enumerate(caplog.records) if _COBOL_END_MSG_EXPECTED in record.getMessage()]
     assert start_indices[-1] < end_indices[0], (
         f"End banner at record index {end_indices[0]} must appear "
         f"AFTER start banner at record index {start_indices[-1]} "
         f"(CBACT01C.cbl line 85 > line 71); "
         f"start_indices={start_indices}, end_indices={end_indices}"
     )
-
-
 
 
 # ----------------------------------------------------------------------------
@@ -939,9 +911,7 @@ def test_logs_record_count(
     # db/migrations/V3__seed_data.sql — giving the test fixture
     # realistic scale while remaining a fast, in-memory mock.
     expected_count = 50
-    row_fixtures = [
-        _make_mock_row(acct_id=10000000000 + i) for i in range(expected_count)
-    ]
+    row_fixtures = [_make_mock_row(acct_id=10000000000 + i) for i in range(expected_count)]
     mock_df = _make_mock_df(count_value=expected_count, rows=row_fixtures)
     mock_read_table.return_value = mock_df
 
@@ -980,12 +950,10 @@ def test_logs_record_count(
     # satisfy the operator-visibility contract).
     all_messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "record" in all_messages.lower() and "count" in all_messages.lower(), (
-        f"Expected a log line containing 'record' and 'count' (case-"
-        f"insensitive); captured messages:\n{all_messages}"
+        f"Expected a log line containing 'record' and 'count' (case-insensitive); captured messages:\n{all_messages}"
     )
     assert str(expected_count) in all_messages, (
-        f"Expected the count value {expected_count} to appear in "
-        f"a log line; captured messages:\n{all_messages}"
+        f"Expected the count value {expected_count} to appear in a log line; captured messages:\n{all_messages}"
     )
 
 
@@ -1111,9 +1079,7 @@ def test_iterates_all_records(
     # "Account Record" is part of the module's agent-prompt-mandated
     # output format and should not drift.
     account_record_messages = [
-        record.getMessage()
-        for record in caplog.records
-        if "Account Record" in record.getMessage()
+        record.getMessage() for record in caplog.records if "Account Record" in record.getMessage()
     ]
     assert len(account_record_messages) == len(row_fixtures), (
         f"Expected exactly {len(row_fixtures)} 'Account Record:' log "
@@ -1138,8 +1104,6 @@ def test_iterates_all_records(
             f"be silently dropped during iteration); full output:\n"
             f"{all_account_record_output}"
         )
-
-
 
 
 # ----------------------------------------------------------------------------
@@ -1204,8 +1168,7 @@ def test_commit_job_called(
     # duplicated call would mask a latent logic bug (e.g., commit
     # inside a loop).
     assert mock_commit_job.call_count == 1, (
-        f"Expected exactly 1 commit_job() call (Step Functions "
-        f"stage success signal); got {mock_commit_job.call_count}"
+        f"Expected exactly 1 commit_job() call (Step Functions stage success signal); got {mock_commit_job.call_count}"
     )
 
     # Contract 2: commit_job received the exact Job object created
@@ -1224,8 +1187,7 @@ def test_commit_job_called(
     # differ (e.g., a future refactor that passes ``None`` or an
     # empty dict as a "fallback" job handle).
     assert mock_commit_job.call_args_list == [call(mock_job)], (
-        f"commit_job invocation history must be exactly "
-        f"[call(job)]; got {mock_commit_job.call_args_list}"
+        f"commit_job invocation history must be exactly [call(job)]; got {mock_commit_job.call_args_list}"
     )
 
 
@@ -1489,4 +1451,3 @@ def test_monetary_fields_as_decimal(
         f"log output (links monetary contract to CVACT01Y.cpy "
         f"declarations); got:\n{all_messages}"
     )
-

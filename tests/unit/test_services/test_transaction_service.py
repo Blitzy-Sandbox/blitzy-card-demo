@@ -548,7 +548,6 @@ def sample_transactions() -> list[Transaction]:
     ]
 
 
-
 _DETAIL_MERCHANT_CITY_WIDTH: int = 25
 
 #: Width of ``TransactionDetailResponse.orig_date`` / ``proc_date`` --
@@ -583,6 +582,7 @@ _MSG_TRAN_NOT_FOUND: str = "Transaction ID NOT found..."
 #: COBOL WHEN OTHER failure message on detail endpoint -- from
 #: ``COTRN01C.cbl`` DFHRESP(OTHER) branch.
 _MSG_UNABLE_TO_LOOKUP_DETAIL: str = "Unable to lookup Transaction..."
+
 
 @pytest.fixture
 def sample_xref() -> CardCrossReference:
@@ -879,7 +879,6 @@ def _extract_added_transaction(mock_session: AsyncMock) -> Transaction:
     return staged
 
 
-
 # ============================================================================
 # Phase 3: Transaction List Tests (Feature F-009 -- COTRN00C.cbl)
 # ============================================================================
@@ -1067,9 +1066,7 @@ async def test_list_transactions_filter_by_tran_id_prefix(
 
     # Assert: The filter was accepted (no error message) and rows
     # came through.
-    assert response.message is None, (
-        f"Filter should be accepted cleanly; got error message {response.message!r}"
-    )
+    assert response.message is None, f"Filter should be accepted cleanly; got error message {response.message!r}"
     assert len(response.transactions) == _DEFAULT_PAGE_SIZE
     assert response.total_count == 15
 
@@ -1119,7 +1116,8 @@ async def test_list_transactions_filter_escapes_like_metachars(
     # unexpected matches or raise an error.
     request = TransactionListRequest(tran_id="12%_\\3", page=1, page_size=_DEFAULT_PAGE_SIZE)
     mock_db_session.execute.side_effect = _make_list_execute_side_effect(
-        transactions=[], total_count=0,
+        transactions=[],
+        total_count=0,
     )
 
     # Act (must not raise)
@@ -1154,7 +1152,8 @@ async def test_list_transactions_empty_result(
     # Arrange: No rows match.
     request = TransactionListRequest()
     mock_db_session.execute.side_effect = _make_list_execute_side_effect(
-        transactions=[], total_count=0,
+        transactions=[],
+        total_count=0,
     )
 
     # Act
@@ -1162,7 +1161,9 @@ async def test_list_transactions_empty_result(
 
     # Assert: Empty but well-formed response.
     assert isinstance(response, TransactionListResponse)
-    assert response.transactions == [], f"Empty-result response should have transactions=[]; got {response.transactions!r}"
+    assert response.transactions == [], (
+        f"Empty-result response should have transactions=[]; got {response.transactions!r}"
+    )
     assert response.total_count == 0, f"Empty-result response should have total_count=0; got {response.total_count}"
     assert response.page == 1
     # No error message on empty result (just a clean empty grid).
@@ -1204,21 +1205,14 @@ async def test_list_transactions_db_error_returns_empty_message(
 
     # Assert: Error response is well-formed.
     assert isinstance(response, TransactionListResponse)
-    assert response.transactions == [], (
-        f"DB-error response should have transactions=[]; got {response.transactions!r}"
-    )
-    assert response.total_count == 0, (
-        f"DB-error response should have total_count=0; got {response.total_count}"
-    )
-    assert response.page == 1, (
-        f"DB-error response should echo the requested page; got {response.page}"
-    )
+    assert response.transactions == [], f"DB-error response should have transactions=[]; got {response.transactions!r}"
+    assert response.total_count == 0, f"DB-error response should have total_count=0; got {response.total_count}"
+    assert response.page == 1, f"DB-error response should echo the requested page; got {response.page}"
     assert response.message == _MSG_UNABLE_TO_LOOKUP_LIST, (
         f"Expected COBOL-exact error message {_MSG_UNABLE_TO_LOOKUP_LIST!r} "
         f"(from COTRN00C.cbl); got {response.message!r}. This literal "
         f"must be preserved byte-for-byte per AAP Section 0.7.1."
     )
-
 
 
 @pytest.mark.unit
@@ -1256,29 +1250,22 @@ async def test_list_transactions_maps_rows_correctly(
     response = await transaction_service.list_transactions(request)
 
     # Assert: One row in the response with all fields correctly mapped.
-    assert len(response.transactions) == 1, (
-        f"Expected 1 row in the response; got {len(response.transactions)}"
-    )
+    assert len(response.transactions) == 1, f"Expected 1 row in the response; got {len(response.transactions)}"
     item = response.transactions[0]
-    assert isinstance(item, TransactionListItem), (
-        f"Each row must be a TransactionListItem; got {type(item).__name__}"
-    )
+    assert isinstance(item, TransactionListItem), f"Each row must be a TransactionListItem; got {type(item).__name__}"
 
     # tran_id verbatim.
     assert item.tran_id == sample_transaction.tran_id, (
-        f"tran_id should be verbatim from ORM; expected "
-        f"{sample_transaction.tran_id!r}, got {item.tran_id!r}"
+        f"tran_id should be verbatim from ORM; expected {sample_transaction.tran_id!r}, got {item.tran_id!r}"
     )
     assert len(item.tran_id) == _EXPECTED_TRAN_ID_WIDTH, (
-        f"tran_id must be exactly {_EXPECTED_TRAN_ID_WIDTH} chars "
-        f"(COBOL PIC X(16)); got length {len(item.tran_id)}"
+        f"tran_id must be exactly {_EXPECTED_TRAN_ID_WIDTH} chars (COBOL PIC X(16)); got length {len(item.tran_id)}"
     )
 
     # tran_date: first 10 chars of orig_ts, dashes stripped, truncated
     # to 8 chars. orig_ts="2025-01-15 10:30:00.000000" -> "20250115".
     assert item.tran_date == "20250115", (
-        f"tran_date should be YYYYMMDD (8 chars) derived from "
-        f"orig_ts; expected '20250115', got {item.tran_date!r}"
+        f"tran_date should be YYYYMMDD (8 chars) derived from orig_ts; expected '20250115', got {item.tran_date!r}"
     )
     assert len(item.tran_date) <= _LIST_DATE_WIDTH
 
@@ -1288,18 +1275,15 @@ async def test_list_transactions_maps_rows_correctly(
         f"(BMS TDESCO width); got length {len(item.description)}"
     )
     assert item.description == "Test purchase", (
-        f"description should come from Transaction.description; "
-        f"got {item.description!r}"
+        f"description should come from Transaction.description; got {item.description!r}"
     )
 
     # amount is Decimal (the critical monetary-precision check).
     assert isinstance(item.amount, Decimal), (
-        f"amount MUST be Decimal (never float) per AAP Section "
-        f"0.7.2; got {type(item.amount).__name__}"
+        f"amount MUST be Decimal (never float) per AAP Section 0.7.2; got {type(item.amount).__name__}"
     )
     assert item.amount == Decimal("50.00"), (
-        f"amount should match sample_transaction.amount; "
-        f"expected Decimal('50.00'), got {item.amount!r}"
+        f"amount should match sample_transaction.amount; expected Decimal('50.00'), got {item.amount!r}"
     )
 
 
@@ -1351,8 +1335,7 @@ async def test_list_transactions_amount_is_decimal(
         # sNaN / Infinity, which are never legal monetary values.
         amount_exponent = item.amount.as_tuple().exponent
         assert isinstance(amount_exponent, int), (
-            f"Row #{idx} amount must be a finite Decimal (not NaN / "
-            f"Infinity); got exponent {amount_exponent!r}"
+            f"Row #{idx} amount must be a finite Decimal (not NaN / Infinity); got exponent {amount_exponent!r}"
         )
         assert amount_exponent <= 0, (
             f"Row #{idx} amount should preserve 2-decimal-place "
@@ -1467,9 +1450,7 @@ async def test_get_transaction_detail_success(
     assert response.merchant_zip == sample_transaction.merchant_zip
 
     # Assert 9: Success path has no error message.
-    assert response.message is None, (
-        f"Success path must have message=None; got {response.message!r}"
-    )
+    assert response.message is None, f"Success path must have message=None; got {response.message!r}"
 
     # Assert 10: Exactly one DB query was issued (the keyed READ).
     assert mock_db_session.execute.await_count == 1, (
@@ -1504,8 +1485,7 @@ async def test_get_transaction_detail_not_found(
     # Assert: empty detail response with the COBOL-exact message.
     assert isinstance(response, TransactionDetailResponse)
     assert response.tran_id_input == "9999999999999999", (
-        f"tran_id_input should echo the input that was NOT FOUND; "
-        f"got {response.tran_id_input!r}"
+        f"tran_id_input should echo the input that was NOT FOUND; got {response.tran_id_input!r}"
     )
     # All "not found" response fields are empty strings (except
     # amount which is Decimal('0.00')).
@@ -1535,7 +1515,6 @@ async def test_get_transaction_detail_not_found(
         f"{response.message!r}. Must be preserved byte-for-byte per "
         f"AAP Section 0.7.1."
     )
-
 
 
 @pytest.mark.unit
@@ -1629,9 +1608,7 @@ async def test_get_transaction_detail_db_error(
 
     # Assert: Error response is well-formed.
     assert isinstance(response, TransactionDetailResponse)
-    assert response.tran_id_input == "0000000000000001", (
-        "tran_id_input should echo the input that triggered the error"
-    )
+    assert response.tran_id_input == "0000000000000001", "tran_id_input should echo the input that triggered the error"
     assert response.message == _MSG_UNABLE_TO_LOOKUP_DETAIL, (
         f"Expected COBOL-exact message {_MSG_UNABLE_TO_LOOKUP_DETAIL!r} "
         f"(from COTRN01C.cbl WHEN OTHER branch); got {response.message!r}. "
@@ -1665,12 +1642,10 @@ async def test_get_transaction_detail_amount_is_decimal(
 
     # Assert: amount is Decimal with the right value.
     assert isinstance(response.amount, Decimal), (
-        f"Detail response amount MUST be Decimal (never float); "
-        f"got {type(response.amount).__name__}"
+        f"Detail response amount MUST be Decimal (never float); got {type(response.amount).__name__}"
     )
     assert response.amount == Decimal("50.00"), (
-        f"amount should match sample_transaction.amount; expected "
-        f"Decimal('50.00'), got {response.amount!r}"
+        f"amount should match sample_transaction.amount; expected Decimal('50.00'), got {response.amount!r}"
     )
     # Scale-preservation guard: 2 decimal places per COBOL
     # PIC S9(09)V99. For finite Decimal values, exponent is always
@@ -1678,8 +1653,7 @@ async def test_get_transaction_detail_amount_is_decimal(
     # (never legal monetary values).
     detail_amount_exponent = response.amount.as_tuple().exponent
     assert isinstance(detail_amount_exponent, int), (
-        f"amount must be a finite Decimal (not NaN / Infinity); got "
-        f"exponent {detail_amount_exponent!r}"
+        f"amount must be a finite Decimal (not NaN / Infinity); got exponent {detail_amount_exponent!r}"
     )
     assert detail_amount_exponent == -2, (
         f"amount should preserve COBOL PIC S9(09)V99 2-decimal-place "
@@ -1748,8 +1722,7 @@ async def test_get_transaction_detail_truncates_to_bms_widths(
         f"(BMS TRNDESC width); got length {len(response.description)}"
     )
     assert response.description == "X" * _DETAIL_DESC_WIDTH, (
-        f"description should be truncated by taking the first "
-        f"{_DETAIL_DESC_WIDTH} chars; got {response.description!r}"
+        f"description should be truncated by taking the first {_DETAIL_DESC_WIDTH} chars; got {response.description!r}"
     )
 
     assert len(response.merchant_name) == _DETAIL_MERCHANT_NAME_WIDTH, (
@@ -1832,8 +1805,7 @@ async def test_get_transaction_detail_strips_whitespace_input(
     # Assert: Success response -- the whitespace was stripped prior
     # to lookup so the DB matched.
     assert response.message is None, (
-        f"Whitespace must be stripped before DB lookup; got error "
-        f"message {response.message!r}"
+        f"Whitespace must be stripped before DB lookup; got error message {response.message!r}"
     )
     assert response.tran_id == short_transaction.tran_id, (
         f"Service should look up the stripped tran_id and return "
@@ -1848,7 +1820,6 @@ async def test_get_transaction_detail_strips_whitespace_input(
         f"for UI display; expected {padded_input!r}, got "
         f"{response.tran_id_input!r}"
     )
-
 
 
 # ============================================================================
@@ -1933,8 +1904,7 @@ async def test_add_transaction_success_stages_and_commits(
     # Assert 2: Auto-ID is max + 1, zero-padded to 16 chars.
     expected_tran_id = "0000000000000051"
     assert response.tran_id == expected_tran_id, (
-        f"Expected auto-generated tran_id {expected_tran_id!r} "
-        f"(max '0000000000000050' + 1); got {response.tran_id!r}"
+        f"Expected auto-generated tran_id {expected_tran_id!r} (max '0000000000000050' + 1); got {response.tran_id!r}"
     )
     assert len(response.tran_id) == _EXPECTED_TRAN_ID_WIDTH
 
@@ -1949,16 +1919,12 @@ async def test_add_transaction_success_stages_and_commits(
     assert response.amount == Decimal("50.00")
 
     # Assert 5: confirm='Y' indicates success.
-    assert response.confirm == "Y", (
-        f"Expected confirm='Y' for successful add; got {response.confirm!r}"
-    )
+    assert response.confirm == "Y", f"Expected confirm='Y' for successful add; got {response.confirm!r}"
 
     # Assert 6: Success message is formatted with the generated
     # tran_id using _MSG_ADD_SUCCESS_FMT.
     expected_msg = _MSG_ADD_SUCCESS_FMT.format(tran_id=expected_tran_id)
-    assert response.message == expected_msg, (
-        f"Expected success message {expected_msg!r}; got {response.message!r}"
-    )
+    assert response.message == expected_msg, f"Expected success message {expected_msg!r}; got {response.message!r}"
 
     # Assert 7: Transaction was staged via session.add.
     staged_txn = _extract_added_transaction(mock_db_session)
@@ -2033,9 +1999,7 @@ async def test_add_transaction_stages_transaction_with_request_fields(
 
     # Optional merchant fields -- None in request -> empty string on
     # model (never None, never "None", never missing).
-    assert staged_txn.merchant_id == "", (
-        f"None merchant_id should map to empty string; got {staged_txn.merchant_id!r}"
-    )
+    assert staged_txn.merchant_id == "", f"None merchant_id should map to empty string; got {staged_txn.merchant_id!r}"
     assert staged_txn.merchant_name == ""
     assert staged_txn.merchant_city == ""
     assert staged_txn.merchant_zip == ""
@@ -2086,13 +2050,10 @@ async def test_add_transaction_auto_id_generation(
 
     # Defensive length check.
     assert len(response.tran_id) == _EXPECTED_TRAN_ID_WIDTH, (
-        f"tran_id must be exactly {_EXPECTED_TRAN_ID_WIDTH} chars "
-        f"(COBOL PIC X(16)); got length {len(response.tran_id)}"
+        f"tran_id must be exactly {_EXPECTED_TRAN_ID_WIDTH} chars (COBOL PIC X(16)); got length {len(response.tran_id)}"
     )
     # All-digit composition (numeric-convertible).
-    assert response.tran_id.isdigit(), (
-        f"tran_id must be all-digits (zero-padded numeric); got {response.tran_id!r}"
-    )
+    assert response.tran_id.isdigit(), f"tran_id must be all-digits (zero-padded numeric); got {response.tran_id!r}"
 
     # Staged transaction carries the same tran_id.
     staged_txn = _extract_added_transaction(mock_db_session)
@@ -2135,8 +2096,7 @@ async def test_add_transaction_auto_id_empty_table(
 
     # Assert
     assert response.tran_id == _EXPECTED_INITIAL_TRAN_ID, (
-        f"Expected tran_id={_EXPECTED_INITIAL_TRAN_ID!r} (empty "
-        f"transaction table fallback); got {response.tran_id!r}"
+        f"Expected tran_id={_EXPECTED_INITIAL_TRAN_ID!r} (empty transaction table fallback); got {response.tran_id!r}"
     )
     assert len(response.tran_id) == _EXPECTED_TRAN_ID_WIDTH
     assert response.confirm == "Y"
@@ -2179,9 +2139,7 @@ async def test_add_transaction_bad_existing_tran_id_returns_error(
     response = await transaction_service.add_transaction(sample_add_request)
 
     # Assert: Error response -- no write was staged.
-    assert response.confirm == "N", (
-        f"Expected confirm='N' on auto-ID parse failure; got {response.confirm!r}"
-    )
+    assert response.confirm == "N", f"Expected confirm='N' on auto-ID parse failure; got {response.confirm!r}"
     assert response.message == _MSG_UNABLE_TO_ADD, (
         f"Expected COBOL-exact message {_MSG_UNABLE_TO_ADD!r} "
         f"(from COTRN02C.cbl WHEN OTHER branch on numeric edit "
@@ -2189,8 +2147,7 @@ async def test_add_transaction_bad_existing_tran_id_returns_error(
         f"byte-for-byte per AAP Section 0.7.1."
     )
     assert response.tran_id == "", (
-        f"No tran_id generated on parse failure; expected empty "
-        f"string, got {response.tran_id!r}"
+        f"No tran_id generated on parse failure; expected empty string, got {response.tran_id!r}"
     )
 
     # Assert: No Transaction was staged; rollback was called;
@@ -2199,7 +2156,6 @@ async def test_add_transaction_bad_existing_tran_id_returns_error(
     mock_db_session.rollback.assert_awaited_once()
     mock_db_session.flush.assert_not_awaited()
     mock_db_session.commit.assert_not_awaited()
-
 
 
 @pytest.mark.unit
@@ -2247,18 +2203,14 @@ async def test_add_transaction_xref_not_found(
 
     # Assert 1: Response is a failure response.
     assert isinstance(response, TransactionAddResponse)
-    assert response.confirm == "N", (
-        f"Expected confirm='N' on XREF NOTFND; got {response.confirm!r}"
-    )
+    assert response.confirm == "N", f"Expected confirm='N' on XREF NOTFND; got {response.confirm!r}"
     assert response.message == _MSG_CARD_NOT_IN_XREF, (
         f"Expected COBOL-exact message {_MSG_CARD_NOT_IN_XREF!r}; "
         f"got {response.message!r}. Must be preserved byte-for-byte "
         f"(including trailing ellipsis) per AAP Section 0.7.1."
     )
     # No tran_id generated (short-circuit before auto-ID).
-    assert response.tran_id == "", (
-        f"No tran_id should be generated when xref is missing; got {response.tran_id!r}"
-    )
+    assert response.tran_id == "", f"No tran_id should be generated when xref is missing; got {response.tran_id!r}"
     # Response echoes input acct_id / card_num for UI display.
     assert response.acct_id == sample_add_request.acct_id
     assert response.card_num == sample_add_request.card_num
@@ -2323,8 +2275,7 @@ async def test_add_transaction_xref_account_mismatch(
     # Assert 1: Response carries the mismatch error message.
     assert response.confirm == "N"
     assert response.message == _MSG_ACCT_CARD_MISMATCH, (
-        f"Expected COBOL-exact message {_MSG_ACCT_CARD_MISMATCH!r}; "
-        f"got {response.message!r}"
+        f"Expected COBOL-exact message {_MSG_ACCT_CARD_MISMATCH!r}; got {response.message!r}"
     )
     # No tran_id generated (short-circuit before auto-ID).
     assert response.tran_id == ""
@@ -2389,9 +2340,7 @@ async def test_add_transaction_xref_resolution_card_to_account(
     response = await transaction_service.add_transaction(sample_add_request)
 
     # Assert: Success path (XREF authorized).
-    assert response.confirm == "Y", (
-        f"Expected confirm='Y' after XREF success; got {response.confirm!r}"
-    )
+    assert response.confirm == "Y", f"Expected confirm='Y' after XREF success; got {response.confirm!r}"
 
     # Assert: Staged Transaction carries the request's card_num
     # (which, by xref agreement, is the authorized card).
@@ -2467,19 +2416,15 @@ async def test_add_transaction_amount_is_decimal(
         f"Response amount MUST be Decimal; got {type(response.amount).__name__}. "
         f"float is FORBIDDEN per AAP Section 0.7.1."
     )
-    assert not isinstance(response.amount, float), (
-        "Response amount MUST NOT be float"
-    )
+    assert not isinstance(response.amount, float), "Response amount MUST NOT be float"
     assert response.amount == critical_amount, (
-        f"Response amount should equal request amount exactly; "
-        f"expected {critical_amount}, got {response.amount}"
+        f"Response amount should equal request amount exactly; expected {critical_amount}, got {response.amount}"
     )
 
     # Assert: Staged Transaction amount is Decimal.
     staged_txn = _extract_added_transaction(mock_db_session)
     assert isinstance(staged_txn.amount, Decimal), (
-        f"Staged Transaction.amount MUST be Decimal; got "
-        f"{type(staged_txn.amount).__name__}"
+        f"Staged Transaction.amount MUST be Decimal; got {type(staged_txn.amount).__name__}"
     )
     assert not isinstance(staged_txn.amount, float)
     assert staged_txn.amount == critical_amount
@@ -2526,8 +2471,7 @@ async def test_add_transaction_timestamp_format_26_char(
     staged_txn = _extract_added_transaction(mock_db_session)
 
     assert isinstance(staged_txn.orig_ts, str), (
-        f"orig_ts must be str (COBOL PIC X(26)); got "
-        f"{type(staged_txn.orig_ts).__name__}"
+        f"orig_ts must be str (COBOL PIC X(26)); got {type(staged_txn.orig_ts).__name__}"
     )
     assert len(staged_txn.orig_ts) == _EXPECTED_TIMESTAMP_WIDTH, (
         f"orig_ts must be exactly {_EXPECTED_TIMESTAMP_WIDTH} chars "
@@ -2536,8 +2480,7 @@ async def test_add_transaction_timestamp_format_26_char(
     )
 
     assert isinstance(staged_txn.proc_ts, str), (
-        f"proc_ts must be str (COBOL PIC X(26)); got "
-        f"{type(staged_txn.proc_ts).__name__}"
+        f"proc_ts must be str (COBOL PIC X(26)); got {type(staged_txn.proc_ts).__name__}"
     )
     assert len(staged_txn.proc_ts) == _EXPECTED_TIMESTAMP_WIDTH, (
         f"proc_ts must be exactly {_EXPECTED_TIMESTAMP_WIDTH} chars "
@@ -2593,8 +2536,7 @@ async def test_add_transaction_db_error_propagates_and_rolls_back(
 
     # The re-raised exception is the same instance we injected.
     assert exc_info.value is simulated_error, (
-        f"Service must re-raise the original exception, not wrap "
-        f"it. Expected the same instance; got {exc_info.value!r}"
+        f"Service must re-raise the original exception, not wrap it. Expected the same instance; got {exc_info.value!r}"
     )
 
     # Assert: session.add WAS called (the Transaction was staged
@@ -2655,8 +2597,7 @@ async def test_add_transaction_execute_call_sequence(
 
     # Assert: Three execute calls (xref, max_agg, max_sort).
     assert mock_db_session.execute.await_count == 3, (
-        f"Expected 3 execute calls (xref + max_agg + max_sort); "
-        f"got {mock_db_session.execute.await_count}"
+        f"Expected 3 execute calls (xref + max_agg + max_sort); got {mock_db_session.execute.await_count}"
     )
 
     # Assert: add + flush + commit all called exactly once.
@@ -2710,8 +2651,7 @@ async def test_add_transaction_timestamp_uses_orig_date_when_provided(
     # Assert: Staged Transaction's orig_ts starts with the orig_date.
     staged_txn = _extract_added_transaction(mock_db_session)
     assert staged_txn.orig_ts.startswith(orig_date), (
-        f"orig_ts should start with request.orig_date={orig_date!r}; "
-        f"got {staged_txn.orig_ts!r}"
+        f"orig_ts should start with request.orig_date={orig_date!r}; got {staged_txn.orig_ts!r}"
     )
     # Still exactly 26 chars.
     assert len(staged_txn.orig_ts) == _EXPECTED_TIMESTAMP_WIDTH
@@ -2767,10 +2707,7 @@ async def test_add_transaction_empty_description_preserved_as_empty_string(
         f"Empty-string description in request should be preserved "
         f"verbatim on staged Transaction.description; got {staged_txn.description!r}"
     )
-    assert staged_txn.description is not None, (
-        "description must not be None (violates CHAR(100) NOT NULL)"
-    )
+    assert staged_txn.description is not None, "description must not be None (violates CHAR(100) NOT NULL)"
     assert isinstance(staged_txn.description, str), (
         f"description must be str; got {type(staged_txn.description).__name__}"
     )
-

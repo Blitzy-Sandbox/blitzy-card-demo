@@ -247,9 +247,7 @@ async def submit_report(
     # We use :func:`getattr` defensively so that a hypothetical
     # future Pydantic version returning a bare string doesn't raise.
     # -------------------------------------------------------------------
-    report_type_value: str = getattr(
-        request.report_type, "value", str(request.report_type)
-    )
+    report_type_value: str = getattr(request.report_type, "value", str(request.report_type))
     logger.info(
         "POST /reports/submit initiated",
         extra={

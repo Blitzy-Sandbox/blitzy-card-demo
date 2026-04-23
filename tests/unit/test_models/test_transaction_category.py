@@ -316,9 +316,7 @@ def test_composite_key_matches_cobol_group() -> None:
     # ``Column.key`` is typed ``str | None`` in SQLAlchemy 2.x but every
     # mapped column in this ORM model has an explicit ``key=`` so the
     # value is guaranteed to be a string.
-    primary_key_names: frozenset[str] = frozenset(
-        str(pk.key) for pk in inspect(TransactionCategory).primary_key
-    )
+    primary_key_names: frozenset[str] = frozenset(str(pk.key) for pk in inspect(TransactionCategory).primary_key)
 
     # Inclusion: every COBOL key field must appear in the PK.
     missing_key_parts = cobol_key_columns - primary_key_names

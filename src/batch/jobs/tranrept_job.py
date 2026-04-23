@@ -198,27 +198,19 @@ _JCL_JOB_START_MSG: str = "START OF EXECUTION OF JOB TRANREPT"
 _JCL_JOB_END_MSG: str = "END OF EXECUTION OF JOB TRANREPT - MAXCC=0"
 _JCL_ABEND_MSG: str = "ABENDING JOB TRANREPT"
 _JCL_STEP05R_REPROC_START_MSG: str = (
-    "START OF STEP05R REPROC (TRANREPT.jcl lines 23-33) - "
-    "IDCAMS REPRO TRANSACT VSAM into TRANSACT.BKUP(+1)"
+    "START OF STEP05R REPROC (TRANREPT.jcl lines 23-33) - IDCAMS REPRO TRANSACT VSAM into TRANSACT.BKUP(+1)"
 )
-_JCL_STEP05R_REPROC_END_MSG: str = (
-    "END OF STEP05R REPROC - transactions materialized from Aurora via JDBC"
-)
+_JCL_STEP05R_REPROC_END_MSG: str = "END OF STEP05R REPROC - transactions materialized from Aurora via JDBC"
 _JCL_STEP05R_SORT_START_MSG: str = (
     "START OF STEP05R SORT (TRANREPT.jcl lines 37-55) - "
     "DFSORT INCLUDE COND TRAN-PROC-DT IN [START_DATE, END_DATE] "
     "AND SORT FIELDS=(TRAN-CARD-NUM,A)"
 )
-_JCL_STEP05R_SORT_END_MSG: str = (
-    "END OF STEP05R SORT - filtered + sorted transactions staged for STEP10R"
-)
+_JCL_STEP05R_SORT_END_MSG: str = "END OF STEP05R SORT - filtered + sorted transactions staged for STEP10R"
 _JCL_STEP10R_START_MSG: str = (
-    "START OF STEP10R EXEC PGM=CBTRN03C (TRANREPT.jcl lines 59-80) - "
-    "transaction detail report generation"
+    "START OF STEP10R EXEC PGM=CBTRN03C (TRANREPT.jcl lines 59-80) - transaction detail report generation"
 )
-_JCL_STEP10R_END_MSG: str = (
-    "END OF STEP10R - report written to S3 (TRANREPT GDG generation)"
-)
+_JCL_STEP10R_END_MSG: str = "END OF STEP10R - report written to S3 (TRANREPT GDG generation)"
 
 # ============================================================================
 # Module-level configuration constants
@@ -303,6 +295,7 @@ _DECIMAL_QUANTUM: Decimal = Decimal("0.01")
 # Section 0.7.2's monitoring requirement of "structured JSON logging
 # from both API and batch components".
 logger: logging.Logger = logging.getLogger(__name__)
+
 
 # ============================================================================
 # Private helpers: COBOL numeric-edit formatting
@@ -432,8 +425,7 @@ def _format_amount_edited(amount: Decimal) -> str:
     # regression in the formatting algorithm and must fail loudly.
     if len(edited) != _AMOUNT_EDIT_WIDTH:
         raise RuntimeError(
-            f"_format_amount_edited produced {len(edited)} chars, "
-            f"expected {_AMOUNT_EDIT_WIDTH}: {edited!r}"
+            f"_format_amount_edited produced {len(edited)} chars, expected {_AMOUNT_EDIT_WIDTH}: {edited!r}"
         )
     return edited
 
@@ -600,14 +592,10 @@ def _compose_s3_key(prefix_uri: str, filename: str) -> tuple[str, str]:
     """
     scheme_stripped: str = prefix_uri.removeprefix("s3://")
     if "/" not in scheme_stripped:
-        raise ValueError(
-            f"Invalid S3 URI returned by get_versioned_s3_path: {prefix_uri!r}"
-        )
+        raise ValueError(f"Invalid S3 URI returned by get_versioned_s3_path: {prefix_uri!r}")
     bucket_name, key_prefix = scheme_stripped.split("/", 1)
     full_key: str = f"{key_prefix}{filename}"
     return bucket_name, full_key
-
-
 
 
 # ============================================================================
@@ -789,16 +777,13 @@ def filter_by_date_range(
     # caught by the system programmer reviewing the JES2 log.
     if start_date > end_date:
         logger.warning(
-            "filter_by_date_range received start_date > end_date; "
-            "result will be empty.",
+            "filter_by_date_range received start_date > end_date; result will be empty.",
             extra={"start_date": start_date, "end_date": end_date},
         )
 
     date_prefix = F.substring(F.col("tran_proc_ts"), 1, _DATE_PREFIX_LEN)
 
-    filtered: DataFrame = transactions_df.filter(
-        (date_prefix >= F.lit(start_date)) & (date_prefix <= F.lit(end_date))
-    )
+    filtered: DataFrame = transactions_df.filter((date_prefix >= F.lit(start_date)) & (date_prefix <= F.lit(end_date)))
     return filtered
 
 
@@ -1009,7 +994,6 @@ def format_subtotal_line(label: str, amount: Decimal) -> str:
     amount_field: str = _format_subtotal_amount_edited(amount)
     raw_line: str = label_text + ("." * dots_width) + amount_field
     return _pad_line_to_width(raw_line)
-
 
 
 # ============================================================================
@@ -1242,9 +1226,7 @@ def _generate_report_lines(
         nonlocal ws_page_total, ws_grand_total, ws_line_counter
         lines.append(format_subtotal_line("Page Total", ws_page_total))
         ws_line_counter += 1
-        ws_grand_total = (ws_grand_total + ws_page_total).quantize(
-            _DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN
-        )
+        ws_grand_total = (ws_grand_total + ws_page_total).quantize(_DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN)
         ws_page_total = _DECIMAL_ZERO
         _write_headers()
 
@@ -1269,13 +1251,9 @@ def _generate_report_lines(
         if raw_amount is None:
             tran_amount = _DECIMAL_ZERO
         elif isinstance(raw_amount, Decimal):
-            tran_amount = raw_amount.quantize(
-                _DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN
-            )
+            tran_amount = raw_amount.quantize(_DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN)
         else:
-            tran_amount = Decimal(str(raw_amount)).quantize(
-                _DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN
-            )
+            tran_amount = Decimal(str(raw_amount)).quantize(_DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN)
 
         # ------------------------------------------------------------
         # Step 2a: Card break check.  CBTRN03C.cbl:
@@ -1286,9 +1264,7 @@ def _generate_report_lines(
         #     END-IF
         # ------------------------------------------------------------
         if card_num != ws_curr_card_num and not ws_first_time:
-            lines.append(
-                format_subtotal_line("Account Total", ws_account_total)
-            )
+            lines.append(format_subtotal_line("Account Total", ws_account_total))
             ws_line_counter += 1
             ws_account_total = _DECIMAL_ZERO
 
@@ -1318,21 +1294,13 @@ def _generate_report_lines(
         # ------------------------------------------------------------
         lines.append(format_report_line(row, ws_line_counter + 1))
         ws_line_counter += 1
-        ws_page_total = (ws_page_total + tran_amount).quantize(
-            _DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN
-        )
-        ws_account_total = (ws_account_total + tran_amount).quantize(
-            _DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN
-        )
+        ws_page_total = (ws_page_total + tran_amount).quantize(_DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN)
+        ws_account_total = (ws_account_total + tran_amount).quantize(_DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN)
         ws_curr_card_num = card_num
 
         # Debug logging every 100 rows for long-running report
         # operators; non-essential for functional correctness.
-        if (
-            row_index > 0
-            and row_index % 100 == 0
-            and logger.isEnabledFor(logging.DEBUG)
-        ):
+        if row_index > 0 and row_index % 100 == 0 and logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "Report progress",
                 extra={
@@ -1365,9 +1333,7 @@ def _generate_report_lines(
         # total.  CBTRN03C executes ``1110-WRITE-PAGE-TOTALS`` once
         # on the EOF branch.
         lines.append(format_subtotal_line("Page Total", ws_page_total))
-        ws_grand_total = (ws_grand_total + ws_page_total).quantize(
-            _DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN
-        )
+        ws_grand_total = (ws_grand_total + ws_page_total).quantize(_DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN)
         ws_page_total = _DECIMAL_ZERO
 
         # Final grand total emission.  NOTE: CBTRN03C.cbl does NOT
@@ -1392,7 +1358,6 @@ def _generate_report_lines(
         },
     )
     return lines
-
 
 
 # ============================================================================
@@ -1484,13 +1449,7 @@ def main() -> None:
     # unblocks the entire Stage 4b pipeline branch.
     logger.info(
         "Resolved Glue arguments",
-        extra={
-            "resolved_args": {
-                k: v
-                for k, v in resolved_args.items()
-                if not k.startswith("--")
-            }
-        },
+        extra={"resolved_args": {k: v for k, v in resolved_args.items() if not k.startswith("--")}},
     )
 
     try:
@@ -1524,9 +1483,7 @@ def main() -> None:
         # (Replaces TRANREPT.jcl STEP05R SORT INCLUDE COND.)
         # --------------------------------------------------------------
         logger.info(_JCL_STEP05R_SORT_START_MSG)
-        filtered_df: DataFrame = filter_by_date_range(
-            transactions_df, start_date, end_date
-        )
+        filtered_df: DataFrame = filter_by_date_range(transactions_df, start_date, end_date)
 
         # --------------------------------------------------------------
         # Step 4: Enrich transactions with lookup joins.
@@ -1534,9 +1491,7 @@ def main() -> None:
         #  1500-A-LOOKUP-XREF / 1500-B-LOOKUP-TRANTYPE /
         #  1500-C-LOOKUP-TRANCATG.)
         # --------------------------------------------------------------
-        enriched_df: DataFrame = _enrich_transactions(
-            filtered_df, xref_df, trantype_df, trancatg_df
-        )
+        enriched_df: DataFrame = _enrich_transactions(filtered_df, xref_df, trantype_df, trancatg_df)
 
         # --------------------------------------------------------------
         # Step 5: Sort by card number ascending.
@@ -1570,9 +1525,7 @@ def main() -> None:
             extra={"row_count": len(row_dicts)},
         )
 
-        report_lines: list[str] = _generate_report_lines(
-            row_dicts, start_date, end_date
-        )
+        report_lines: list[str] = _generate_report_lines(row_dicts, start_date, end_date)
 
         # --------------------------------------------------------------
         # Step 7: Serialize the report lines and upload to S3.
@@ -1585,9 +1538,7 @@ def main() -> None:
         # --------------------------------------------------------------
         report_content: str = "\n".join(report_lines) + "\n"
         report_prefix_uri: str = get_versioned_s3_path(_GDG_TRANREPT)
-        bucket_name, full_key = _compose_s3_key(
-            report_prefix_uri, _OUTPUT_FILENAME
-        )
+        bucket_name, full_key = _compose_s3_key(report_prefix_uri, _OUTPUT_FILENAME)
         report_uri: str = write_to_s3(
             report_content,
             full_key,
@@ -1643,4 +1594,3 @@ __all__ = [
     "format_subtotal_line",
     "main",
 ]
-

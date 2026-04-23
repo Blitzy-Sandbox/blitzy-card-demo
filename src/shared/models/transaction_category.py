@@ -295,9 +295,5 @@ class TransactionCategory(Base):
             description='Regular Sales Draft')``.
         """
         return (
-            f"TransactionCategory("
-            f"type_cd={self.type_cd!r}, "
-            f"cat_cd={self.cat_cd!r}, "
-            f"description={self.description!r}"
-            f")"
+            f"TransactionCategory(type_cd={self.type_cd!r}, cat_cd={self.cat_cd!r}, description={self.description!r})"
         )

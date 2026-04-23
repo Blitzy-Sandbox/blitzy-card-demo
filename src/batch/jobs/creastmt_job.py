@@ -382,21 +382,13 @@ _JCL_JOB_START_MSG: str = "START OF EXECUTION OF JOB CREASTMT"
 _JCL_JOB_END_MSG: str = "END OF EXECUTION OF JOB CREASTMT — MAXCC=0"
 _JCL_ABEND_MSG: str = "ABENDING JOB CREASTMT"
 
-_JCL_STEP010_START_MSG: str = (
-    "START OF STEP010 SORT (CREASTMT.jcl lines 44-55) — "
-    "SORT FIELDS=(263,16,CH,A,1,16,CH,A)"
-)
-_JCL_STEP010_END_MSG: str = (
-    "END OF STEP010 SORT — sorted and restructured transactions produced"
-)
+_JCL_STEP010_START_MSG: str = "START OF STEP010 SORT (CREASTMT.jcl lines 44-55) — SORT FIELDS=(263,16,CH,A,1,16,CH,A)"
+_JCL_STEP010_END_MSG: str = "END OF STEP010 SORT — sorted and restructured transactions produced"
 
 _JCL_STEP040_START_MSG: str = (
-    "START OF STEP040 EXEC PGM=CBSTM03A (CREASTMT.jcl lines 79-96) — "
-    "statement generation driver"
+    "START OF STEP040 EXEC PGM=CBSTM03A (CREASTMT.jcl lines 79-96) — statement generation driver"
 )
-_JCL_STEP040_END_MSG: str = (
-    "END OF STEP040 — all statements written to S3 (STATEMNT.PS + STATEMNT.HTML)"
-)
+_JCL_STEP040_END_MSG: str = "END OF STEP040 — all statements written to S3 (STATEMNT.PS + STATEMNT.HTML)"
 
 # ============================================================================
 # Glue job name (registered with Step Functions and CloudWatch metrics).
@@ -432,7 +424,7 @@ _TABLE_CUSTOMERS: str = "customers"
 # always unique per run (the prefix contains HHMMSS), so STEP030 has no
 # equivalent and there is no scratch-and-reallocate race.
 # ============================================================================
-_GDG_STATEMNT_PS: str = "STATEMNT.PS"      # text/plain statements, LRECL=80
+_GDG_STATEMNT_PS: str = "STATEMNT.PS"  # text/plain statements, LRECL=80
 _GDG_STATEMNT_HTML: str = "STATEMNT.HTML"  # text/html statements, LRECL=100
 
 # ============================================================================
@@ -518,11 +510,7 @@ _NUMERIC_EDIT_WIDTH: int = 13
 # length matches the PIC clause exactly, it behaves identically to a
 # plain ``VALUE 'START OF STATEMENT'``.  The emitted value is the literal
 # string, NOT a repeating pattern.
-_ST_LINE0: str = (
-    "*" * 31
-    + "START OF STATEMENT"
-    + "*" * 31
-)
+_ST_LINE0: str = "*" * 31 + "START OF STATEMENT" + "*" * 31
 
 # ST-LINE5 / ST-LINE10 / ST-LINE12 — 80 hyphens (dashes).
 # These appear at lines 101-102 (ST-LINE5), 120-121 (ST-LINE10),
@@ -539,11 +527,7 @@ _ST_LINE_DASHES: str = "-" * 80
 # Note the PIC X(14) is 1 char longer than "Basic Details" (13 chars),
 # so the COBOL compiler zero-pads on the right — hence the effective
 # literal is "Basic Details " (trailing space).
-_ST_LINE6: str = (
-    " " * 33
-    + "Basic Details "
-    + " " * 33
-)
+_ST_LINE6: str = " " * 33 + "Basic Details " + " " * 33
 
 # ST-LINE11 — "TRANSACTION SUMMARY" section heading (lines 122-125):
 #   10 FILLER VALUE SPACES                 PIC X(30).
@@ -551,11 +535,7 @@ _ST_LINE6: str = (
 #   10 FILLER VALUE SPACES                 PIC X(30).
 # The literal is exactly 20 chars ("TRANSACTION SUMMARY " with trailing
 # space), so the PIC X(20) clause is an exact fit.
-_ST_LINE11: str = (
-    " " * 30
-    + "TRANSACTION SUMMARY "
-    + " " * 30
-)
+_ST_LINE11: str = " " * 30 + "TRANSACTION SUMMARY " + " " * 30
 
 # ST-LINE13 — transaction table column headers (lines 128-131):
 #   10 FILLER VALUE 'Tran ID         '     PIC X(16).
@@ -565,10 +545,10 @@ _ST_LINE11: str = (
 # so the COBOL compiler zero-pads on the right with spaces — effective
 # 16-char literal + 35 spaces = 51 chars.
 _ST_LINE13: str = (
-    "Tran ID         "        # 16 chars
-    + "Tran Details    "      # 16 chars literal ...
-    + " " * 35                # ... padded to 51 chars
-    + "  Tran Amount"         # 13 chars
+    "Tran ID         "  # 16 chars
+    + "Tran Details    "  # 16 chars literal ...
+    + " " * 35  # ... padded to 51 chars
+    + "  Tran Amount"  # 13 chars
 )
 
 # ST-LINE15 — end-of-statement banner (lines 143-146):
@@ -579,11 +559,7 @@ _ST_LINE13: str = (
 # which uses 31/18/31 (also total 80).  This asymmetry is NOT an error in
 # the source — it faithfully reflects the fact that "END OF STATEMENT"
 # is 16 chars vs "START OF STATEMENT" at 18 chars.
-_ST_LINE15: str = (
-    "*" * 32
-    + "END OF STATEMENT"
-    + "*" * 32
-)
+_ST_LINE15: str = "*" * 32 + "END OF STATEMENT" + "*" * 32
 
 # ST-LINE14A — per-card total row (lines 138-142):
 #   10 FILLER VALUE 'Total EXP:'           PIC X(10).
@@ -592,9 +568,9 @@ _ST_LINE15: str = (
 #   10 ST-TOTAL-TRAMT                      PIC Z(9).99-.  (13 chars)
 # The "Total EXP:" prefix + 56 spaces + "$" + 13-char amount = 80 chars.
 _ST_LINE14A_PREFIX: str = (
-    "Total EXP:"      # 10 chars
-    + " " * 56        # 56 spaces
-    + "$"             # 1 char dollar sign
+    "Total EXP:"  # 10 chars
+    + " " * 56  # 56 spaces
+    + "$"  # 1 char dollar sign
 )  # width 67; caller appends the 13-char edited total
 
 # ST-LINE7 label — "Account ID         :" (20 chars, lines 107-110).
@@ -623,50 +599,30 @@ _HTML_L04_META: str = '<meta charset="utf-8">'
 _HTML_L05_TITLE: str = "<title>HTML Table Layout</title>"
 _HTML_L06_HEAD_CLOSE: str = "</head>"
 _HTML_L07_BODY_OPEN: str = '<body style="margin:0px;">'
-_HTML_L08_TABLE_OPEN: str = (
-    '<table  align="center" frame="box" style="width:70%; font:12px Segoe UI,sans-serif;">'
-)
+_HTML_L08_TABLE_OPEN: str = '<table  align="center" frame="box" style="width:70%; font:12px Segoe UI,sans-serif;">'
 _HTML_LTRS: str = "<tr>"
 _HTML_LTRE: str = "</tr>"
 _HTML_LTDE: str = "</td>"
-_HTML_L10_TITLE_ROW_TD: str = (
-    '<td colspan="3" style="padding:0px 5px;background-color:#1d1d96b3;">'
-)
-_HTML_L15_BANK_ROW_TD: str = (
-    '<td colspan="3" style="padding:0px 5px;background-color:#FFAF33;">'
-)
+_HTML_L10_TITLE_ROW_TD: str = '<td colspan="3" style="padding:0px 5px;background-color:#1d1d96b3;">'
+_HTML_L15_BANK_ROW_TD: str = '<td colspan="3" style="padding:0px 5px;background-color:#FFAF33;">'
 _HTML_L16_BANK_NAME: str = '<p style="font-size:16px">Bank of XYZ</p>'
 _HTML_L17_BANK_ADDR: str = "<p>410 Terry Ave N</p>"
 _HTML_L18_BANK_CITY: str = "<p>Seattle WA 99999</p>"
-_HTML_L22_35_DATA_ROW_TD: str = (
-    '<td colspan="3" style="padding:0px 5px;background-color:#f2f2f2;">'
-)
+_HTML_L22_35_DATA_ROW_TD: str = '<td colspan="3" style="padding:0px 5px;background-color:#f2f2f2;">'
 _HTML_L30_42_SECTION_ROW_TD: str = (
     '<td colspan="3" style="padding:0px 5px;background-color:#33FFD1; text-align:center;">'
 )
 _HTML_L31_BASIC_DETAILS: str = '<p style="font-size:16px">Basic Details</p>'
 _HTML_L43_TRAN_SUMMARY: str = '<p style="font-size:16px">Transaction Summary</p>'
-_HTML_L47_HDR_COL1_TD: str = (
-    '<td style="width:25%; padding:0px 5px; background-color:#33FF5E; text-align:left;">'
-)
+_HTML_L47_HDR_COL1_TD: str = '<td style="width:25%; padding:0px 5px; background-color:#33FF5E; text-align:left;">'
 _HTML_L48_HDR_TRAN_ID: str = '<p style="font-size:16px">Tran ID</p>'
-_HTML_L50_HDR_COL2_TD: str = (
-    '<td style="width:55%; padding:0px 5px; background-color:#33FF5E; text-align:left;">'
-)
+_HTML_L50_HDR_COL2_TD: str = '<td style="width:55%; padding:0px 5px; background-color:#33FF5E; text-align:left;">'
 _HTML_L51_HDR_TRAN_DETAILS: str = '<p style="font-size:16px">Tran Details</p>'
-_HTML_L53_HDR_COL3_TD: str = (
-    '<td style="width:20%; padding:0px 5px; background-color:#33FF5E; text-align:right;">'
-)
+_HTML_L53_HDR_COL3_TD: str = '<td style="width:20%; padding:0px 5px; background-color:#33FF5E; text-align:right;">'
 _HTML_L54_HDR_AMOUNT: str = '<p style="font-size:16px">Amount</p>'
-_HTML_L58_DATA_COL1_TD: str = (
-    '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">'
-)
-_HTML_L61_DATA_COL2_TD: str = (
-    '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">'
-)
-_HTML_L64_DATA_COL3_TD: str = (
-    '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">'
-)
+_HTML_L58_DATA_COL1_TD: str = '<td style="width:25%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">'
+_HTML_L61_DATA_COL2_TD: str = '<td style="width:55%; padding:0px 5px; background-color:#f2f2f2; text-align:left;">'
+_HTML_L64_DATA_COL3_TD: str = '<td style="width:20%; padding:0px 5px; background-color:#f2f2f2; text-align:right;">'
 _HTML_L75_END_OF_STMT: str = "<h3>End of Statement</h3>"
 _HTML_L78_TABLE_CLOSE: str = "</table>"
 _HTML_L79_BODY_CLOSE: str = "</body>"
@@ -698,33 +654,17 @@ _HTML_INTER_STATEMENT_SEPARATOR: str = "<!-- ======== NEXT STATEMENT ======== --
 # drifts from 80 chars, the module fails to load (rather than silently
 # emitting malformed statements).
 # ============================================================================
-assert len(_ST_LINE0) == _TEXT_LINE_WIDTH, (
-    f"_ST_LINE0 length mismatch: {len(_ST_LINE0)} != {_TEXT_LINE_WIDTH}"
-)
+assert len(_ST_LINE0) == _TEXT_LINE_WIDTH, f"_ST_LINE0 length mismatch: {len(_ST_LINE0)} != {_TEXT_LINE_WIDTH}"
 assert len(_ST_LINE_DASHES) == _TEXT_LINE_WIDTH, (
     f"_ST_LINE_DASHES length mismatch: {len(_ST_LINE_DASHES)} != {_TEXT_LINE_WIDTH}"
 )
-assert len(_ST_LINE6) == _TEXT_LINE_WIDTH, (
-    f"_ST_LINE6 length mismatch: {len(_ST_LINE6)} != {_TEXT_LINE_WIDTH}"
-)
-assert len(_ST_LINE11) == _TEXT_LINE_WIDTH, (
-    f"_ST_LINE11 length mismatch: {len(_ST_LINE11)} != {_TEXT_LINE_WIDTH}"
-)
-assert len(_ST_LINE13) == _TEXT_LINE_WIDTH, (
-    f"_ST_LINE13 length mismatch: {len(_ST_LINE13)} != {_TEXT_LINE_WIDTH}"
-)
-assert len(_ST_LINE15) == _TEXT_LINE_WIDTH, (
-    f"_ST_LINE15 length mismatch: {len(_ST_LINE15)} != {_TEXT_LINE_WIDTH}"
-)
-assert len(_ST_LINE7_LABEL) == 20, (
-    f"_ST_LINE7_LABEL length mismatch: {len(_ST_LINE7_LABEL)} != 20"
-)
-assert len(_ST_LINE8_LABEL) == 20, (
-    f"_ST_LINE8_LABEL length mismatch: {len(_ST_LINE8_LABEL)} != 20"
-)
-assert len(_ST_LINE9_LABEL) == 20, (
-    f"_ST_LINE9_LABEL length mismatch: {len(_ST_LINE9_LABEL)} != 20"
-)
+assert len(_ST_LINE6) == _TEXT_LINE_WIDTH, f"_ST_LINE6 length mismatch: {len(_ST_LINE6)} != {_TEXT_LINE_WIDTH}"
+assert len(_ST_LINE11) == _TEXT_LINE_WIDTH, f"_ST_LINE11 length mismatch: {len(_ST_LINE11)} != {_TEXT_LINE_WIDTH}"
+assert len(_ST_LINE13) == _TEXT_LINE_WIDTH, f"_ST_LINE13 length mismatch: {len(_ST_LINE13)} != {_TEXT_LINE_WIDTH}"
+assert len(_ST_LINE15) == _TEXT_LINE_WIDTH, f"_ST_LINE15 length mismatch: {len(_ST_LINE15)} != {_TEXT_LINE_WIDTH}"
+assert len(_ST_LINE7_LABEL) == 20, f"_ST_LINE7_LABEL length mismatch: {len(_ST_LINE7_LABEL)} != 20"
+assert len(_ST_LINE8_LABEL) == 20, f"_ST_LINE8_LABEL length mismatch: {len(_ST_LINE8_LABEL)} != 20"
+assert len(_ST_LINE9_LABEL) == 20, f"_ST_LINE9_LABEL length mismatch: {len(_ST_LINE9_LABEL)} != 20"
 
 # ----------------------------------------------------------------------------
 # Module-level logger.
@@ -851,9 +791,7 @@ def _format_amount_edited(value: Decimal) -> str:
 
     # Width must be exactly 13 — defensive assertion guards against
     # future bugs in the zero-suppression logic.
-    assert len(edited) == _NUMERIC_EDIT_WIDTH, (
-        f"_format_amount_edited produced width {len(edited)} for {value!r}"
-    )
+    assert len(edited) == _NUMERIC_EDIT_WIDTH, f"_format_amount_edited produced width {len(edited)} for {value!r}"
     return edited
 
 
@@ -920,9 +858,7 @@ def _format_balance_edited(value: Decimal) -> str:
     sign_char: str = "-" if is_negative else " "
     edited: str = padded_numeric + sign_char
 
-    assert len(edited) == _NUMERIC_EDIT_WIDTH, (
-        f"_format_balance_edited produced width {len(edited)} for {value!r}"
-    )
+    assert len(edited) == _NUMERIC_EDIT_WIDTH, f"_format_balance_edited produced width {len(edited)} for {value!r}"
     return edited
 
 
@@ -1321,7 +1257,6 @@ def _html_escape(value: str | None) -> str:
     )
 
 
-
 # ============================================================================
 # Public function — sort_and_restructure_transactions
 # ============================================================================
@@ -1415,9 +1350,7 @@ def sort_and_restructure_transactions(transactions_df: DataFrame) -> DataFrame:
     # Construct the leading-column list: card_num, tran_id, then every
     # other column in its original order.
     leading_cols: list[str] = ["tran_card_num", "tran_id"]
-    remaining_cols: list[str] = [
-        col for col in original_columns if col not in leading_cols
-    ]
+    remaining_cols: list[str] = [col for col in original_columns if col not in leading_cols]
     reordered_cols: list[str] = leading_cols + remaining_cols
 
     # Apply the ORDER BY — this is the PySpark equivalent of the JCL SORT
@@ -1665,13 +1598,9 @@ def generate_text_statement(
     # programming requires handling), we default to Decimal('0.00').
     # -------------------------------------------------------------------
     raw_balance: Any = account.get("acct_curr_bal")
-    balance: Decimal = (
-        raw_balance if isinstance(raw_balance, Decimal) else Decimal(str(raw_balance or 0))
-    )
+    balance: Decimal = raw_balance if isinstance(raw_balance, Decimal) else Decimal(str(raw_balance or 0))
     balance_edited: str = _format_balance_edited(balance)
-    lines.append(
-        _pad_text_line(_ST_LINE8_LABEL + balance_edited + " " * 7 + " " * 40)
-    )
+    lines.append(_pad_text_line(_ST_LINE8_LABEL + balance_edited + " " * 7 + " " * 40))
 
     # -------------------------------------------------------------------
     # Line 11 — ST-LINE9: ``FICO Score         : <fico>`` + padding.
@@ -1728,16 +1657,12 @@ def generate_text_statement(
         tran_id_raw: str = str(txn.get("tran_id") or "")
         tran_desc_raw: str = str(txn.get("tran_desc") or "")
         raw_amt: Any = txn.get("tran_amt")
-        tran_amt: Decimal = (
-            raw_amt if isinstance(raw_amt, Decimal) else Decimal(str(raw_amt or 0))
-        )
+        tran_amt: Decimal = raw_amt if isinstance(raw_amt, Decimal) else Decimal(str(raw_amt or 0))
 
         # Accumulate the total (COBOL: ADD TRNX-AMT TO WS-TOTAL-AMT).
         # Quantize at each step to preserve COBOL COMP-3 semantics
         # (which holds exactly 2 decimal places throughout arithmetic).
-        ws_total_amt = (ws_total_amt + tran_amt).quantize(
-            _DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN
-        )
+        ws_total_amt = (ws_total_amt + tran_amt).quantize(_DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN)
 
         # Format the ST-LINE14 fields with their exact COBOL widths.
         st_tranid_field: str = (tran_id_raw + " " * 16)[:16]
@@ -1746,13 +1671,7 @@ def generate_text_statement(
 
         # Concatenate: ST-TRANID (16) + ' ' (1) + ST-TRANDT (49) + '$' (1)
         # + ST-TRANAMT (13) = 80.
-        line14: str = (
-            st_tranid_field
-            + " "
-            + st_trandt_field
-            + "$"
-            + st_tranamt_edited
-        )
+        line14: str = st_tranid_field + " " + st_trandt_field + "$" + st_tranamt_edited
         lines.append(_pad_text_line(line14))
 
     # -------------------------------------------------------------------
@@ -1910,40 +1829,38 @@ def generate_html_statement(
     # title-row <td> with "Statement for Account Number: X", and the
     # bank-address row "Bank of XYZ / 410 Terry Ave N / Seattle WA 99999".
     # -------------------------------------------------------------------
-    html_lines.append(_HTML_L01_DOCTYPE)      # <!DOCTYPE html>
-    html_lines.append(_HTML_L02_HTML_OPEN)    # <html lang="en">
-    html_lines.append(_HTML_L03_HEAD_OPEN)    # <head>
-    html_lines.append(_HTML_L04_META)         # <meta charset="utf-8">
-    html_lines.append(_HTML_L05_TITLE)        # <title>HTML Table Layout</title>
-    html_lines.append(_HTML_L06_HEAD_CLOSE)   # </head>
-    html_lines.append(_HTML_L07_BODY_OPEN)    # <body style="margin:0px;">
-    html_lines.append(_HTML_L08_TABLE_OPEN)   # <table align="center" frame="box" ...>
+    html_lines.append(_HTML_L01_DOCTYPE)  # <!DOCTYPE html>
+    html_lines.append(_HTML_L02_HTML_OPEN)  # <html lang="en">
+    html_lines.append(_HTML_L03_HEAD_OPEN)  # <head>
+    html_lines.append(_HTML_L04_META)  # <meta charset="utf-8">
+    html_lines.append(_HTML_L05_TITLE)  # <title>HTML Table Layout</title>
+    html_lines.append(_HTML_L06_HEAD_CLOSE)  # </head>
+    html_lines.append(_HTML_L07_BODY_OPEN)  # <body style="margin:0px;">
+    html_lines.append(_HTML_L08_TABLE_OPEN)  # <table align="center" frame="box" ...>
 
     # Title row — "Statement for Account Number: <acct_id>".
     # CBSTM03A.CBL line 533-541: STRING '<h3>Statement for Account Number:' +
     #                             L11-ACCT + '</h3>' INTO FD-HTMLFILE-REC.
     # Where L11-ACCT PIC X(20) holds the ACCT-ID padded right.
     acct_id_raw: str = str(account.get("acct_id") or "")
-    html_lines.append(_HTML_LTRS)             # <tr>
+    html_lines.append(_HTML_LTRS)  # <tr>
     html_lines.append(_HTML_L10_TITLE_ROW_TD)  # <td colspan="3" style="...#1d1d96b3;">
     # The COBOL STRING uses DELIMITED BY ' ' on L11-ACCT, which for a
     # 20-char zero-padded numeric field has no space in the middle — the
     # trim simply strips trailing padding.  We use rstrip() for clarity.
-    html_lines.append(
-        f"<h3>Statement for Account Number: {_html_escape(_cobol_rstrip(acct_id_raw))}</h3>"
-    )
-    html_lines.append(_HTML_LTDE)             # </td>
-    html_lines.append(_HTML_LTRE)             # </tr>
+    html_lines.append(f"<h3>Statement for Account Number: {_html_escape(_cobol_rstrip(acct_id_raw))}</h3>")
+    html_lines.append(_HTML_LTDE)  # </td>
+    html_lines.append(_HTML_LTRE)  # </tr>
 
     # Bank-info row — "Bank of XYZ / 410 Terry Ave N / Seattle WA 99999".
     # CBSTM03A.CBL lines 548-556: bank address is a literal constant.
-    html_lines.append(_HTML_LTRS)             # <tr>
+    html_lines.append(_HTML_LTRS)  # <tr>
     html_lines.append(_HTML_L15_BANK_ROW_TD)  # <td colspan="3" ...#FFAF33;">
-    html_lines.append(_HTML_L16_BANK_NAME)    # <p style="font-size:16px">Bank of XYZ</p>
-    html_lines.append(_HTML_L17_BANK_ADDR)    # <p>410 Terry Ave N</p>
-    html_lines.append(_HTML_L18_BANK_CITY)    # <p>Seattle WA 99999</p>
-    html_lines.append(_HTML_LTDE)             # </td>
-    html_lines.append(_HTML_LTRE)             # </tr>
+    html_lines.append(_HTML_L16_BANK_NAME)  # <p style="font-size:16px">Bank of XYZ</p>
+    html_lines.append(_HTML_L17_BANK_ADDR)  # <p>410 Terry Ave N</p>
+    html_lines.append(_HTML_L18_BANK_CITY)  # <p>Seattle WA 99999</p>
+    html_lines.append(_HTML_LTDE)  # </td>
+    html_lines.append(_HTML_LTRE)  # </tr>
 
     # -------------------------------------------------------------------
     # Paragraph 5200-WRITE-HTML-NMADBS (CBSTM03A.CBL lines 572-632).
@@ -1955,7 +1872,7 @@ def generate_html_statement(
     # Customer name + address row (light gray background #f2f2f2).
     # STRING uses DELIMITED BY '  ' (two spaces), i.e., rstrip() of each
     # fixed-width field before injection.
-    html_lines.append(_HTML_LTRS)             # <tr>
+    html_lines.append(_HTML_LTRS)  # <tr>
     html_lines.append(_HTML_L22_35_DATA_ROW_TD)  # <td colspan="3" ...#f2f2f2;">
 
     # Customer full name — the COBOL source first STRINGs the first +
@@ -1996,67 +1913,59 @@ def generate_html_statement(
     )
     html_lines.append(f"<p>{_html_escape(addr3_composite)}</p>")
 
-    html_lines.append(_HTML_LTDE)             # </td>
-    html_lines.append(_HTML_LTRE)             # </tr>
+    html_lines.append(_HTML_LTDE)  # </td>
+    html_lines.append(_HTML_LTRE)  # </tr>
 
     # Basic Details section-header row (#33FFD1 teal, centered).
-    html_lines.append(_HTML_LTRS)             # <tr>
+    html_lines.append(_HTML_LTRS)  # <tr>
     html_lines.append(_HTML_L30_42_SECTION_ROW_TD)  # <td colspan="3" ...#33FFD1;...>
-    html_lines.append(_HTML_L31_BASIC_DETAILS)    # <p style="font-size:16px">Basic Details</p>
-    html_lines.append(_HTML_LTDE)             # </td>
-    html_lines.append(_HTML_LTRE)             # </tr>
+    html_lines.append(_HTML_L31_BASIC_DETAILS)  # <p style="font-size:16px">Basic Details</p>
+    html_lines.append(_HTML_LTDE)  # </td>
+    html_lines.append(_HTML_LTRE)  # </tr>
 
     # Basic Details data row (#f2f2f2 light gray).
     raw_balance: Any = account.get("acct_curr_bal")
-    balance: Decimal = (
-        raw_balance if isinstance(raw_balance, Decimal) else Decimal(str(raw_balance or 0))
-    )
+    balance: Decimal = raw_balance if isinstance(raw_balance, Decimal) else Decimal(str(raw_balance or 0))
     balance_edited: str = _format_balance_edited(balance)
     fico_score_edited: str = _format_fico_score(customer.get("cust_fico_credit_score"))
 
-    html_lines.append(_HTML_LTRS)             # <tr>
+    html_lines.append(_HTML_LTRS)  # <tr>
     html_lines.append(_HTML_L22_35_DATA_ROW_TD)  # <td colspan="3" ...#f2f2f2;">
     # Account ID.
-    html_lines.append(
-        f"<p>Account ID         : {_html_escape(_cobol_rstrip(acct_id_raw))}</p>"
-    )
+    html_lines.append(f"<p>Account ID         : {_html_escape(_cobol_rstrip(acct_id_raw))}</p>")
     # Current Balance — same PIC 9(9).99- format as the text statement
     # for consistency.  HTML-escape is a no-op for numeric content but
     # applied defensively.
-    html_lines.append(
-        f"<p>Current Balance    : {_html_escape(balance_edited)}</p>"
-    )
+    html_lines.append(f"<p>Current Balance    : {_html_escape(balance_edited)}</p>")
     # FICO Score — rstrip the 20-char padded format to produce a
     # visually-clean HTML rendering (the text-statement format keeps
     # the padding for column alignment; HTML doesn't need it).
-    html_lines.append(
-        f"<p>FICO Score         : {_html_escape(fico_score_edited.rstrip())}</p>"
-    )
-    html_lines.append(_HTML_LTDE)             # </td>
-    html_lines.append(_HTML_LTRE)             # </tr>
+    html_lines.append(f"<p>FICO Score         : {_html_escape(fico_score_edited.rstrip())}</p>")
+    html_lines.append(_HTML_LTDE)  # </td>
+    html_lines.append(_HTML_LTRE)  # </tr>
 
     # Transaction Summary section-header row (#33FFD1 teal, centered).
-    html_lines.append(_HTML_LTRS)             # <tr>
+    html_lines.append(_HTML_LTRS)  # <tr>
     html_lines.append(_HTML_L30_42_SECTION_ROW_TD)  # <td colspan="3" ...#33FFD1;...>
-    html_lines.append(_HTML_L43_TRAN_SUMMARY)      # <p style="font-size:16px">Transaction Summary</p>
-    html_lines.append(_HTML_LTDE)             # </td>
-    html_lines.append(_HTML_LTRE)             # </tr>
+    html_lines.append(_HTML_L43_TRAN_SUMMARY)  # <p style="font-size:16px">Transaction Summary</p>
+    html_lines.append(_HTML_LTDE)  # </td>
+    html_lines.append(_HTML_LTRE)  # </tr>
 
     # Transaction Summary column-header row (#33FF5E green).
-    html_lines.append(_HTML_LTRS)             # <tr>
+    html_lines.append(_HTML_LTRS)  # <tr>
     # Column 1 — Tran ID (left-aligned, 25% width).
     html_lines.append(_HTML_L47_HDR_COL1_TD)  # <td style="width:25%;...#33FF5E; text-align:left;">
     html_lines.append(_HTML_L48_HDR_TRAN_ID)  # <p style="font-size:16px">Tran ID</p>
-    html_lines.append(_HTML_LTDE)             # </td>
+    html_lines.append(_HTML_LTDE)  # </td>
     # Column 2 — Tran Details (left-aligned, 55% width).
     html_lines.append(_HTML_L50_HDR_COL2_TD)  # <td style="width:55%;...#33FF5E; text-align:left;">
     html_lines.append(_HTML_L51_HDR_TRAN_DETAILS)  # <p style="font-size:16px">Tran Details</p>
-    html_lines.append(_HTML_LTDE)             # </td>
+    html_lines.append(_HTML_LTDE)  # </td>
     # Column 3 — Amount (right-aligned, 20% width).
     html_lines.append(_HTML_L53_HDR_COL3_TD)  # <td style="width:20%;...#33FF5E; text-align:right;">
-    html_lines.append(_HTML_L54_HDR_AMOUNT)   # <p style="font-size:16px">Amount</p>
-    html_lines.append(_HTML_LTDE)             # </td>
-    html_lines.append(_HTML_LTRE)             # </tr>
+    html_lines.append(_HTML_L54_HDR_AMOUNT)  # <p style="font-size:16px">Amount</p>
+    html_lines.append(_HTML_LTDE)  # </td>
+    html_lines.append(_HTML_LTRE)  # </tr>
 
     # -------------------------------------------------------------------
     # Paragraph 6000-WRITE-TRANS (CBSTM03A.CBL lines 634-669 — HTML portion).
@@ -2074,27 +1983,23 @@ def generate_html_statement(
         tran_id_raw: str = str(txn.get("tran_id") or "")
         tran_desc_raw: str = str(txn.get("tran_desc") or "")
         raw_amt: Any = txn.get("tran_amt")
-        tran_amt: Decimal = (
-            raw_amt if isinstance(raw_amt, Decimal) else Decimal(str(raw_amt or 0))
-        )
+        tran_amt: Decimal = raw_amt if isinstance(raw_amt, Decimal) else Decimal(str(raw_amt or 0))
 
         # Accumulate with COBOL COMP-3 semantics (banker's rounding,
         # 2 decimal places maintained throughout).
-        ws_total_amt = (ws_total_amt + tran_amt).quantize(
-            _DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN
-        )
+        ws_total_amt = (ws_total_amt + tran_amt).quantize(_DECIMAL_QUANTUM, rounding=ROUND_HALF_EVEN)
 
         # Per-transaction row — three <td> cells in #f2f2f2 light gray.
         # Each field is rstripped (DELIMITED BY '  ') and HTML-escaped.
-        html_lines.append(_HTML_LTRS)         # <tr>
+        html_lines.append(_HTML_LTRS)  # <tr>
         # Column 1 — Tran ID.
         html_lines.append(_HTML_L58_DATA_COL1_TD)  # <td style="width:25%;...#f2f2f2; text-align:left;">
         html_lines.append(f"<p>{_html_escape(_cobol_rstrip(tran_id_raw))}</p>")
-        html_lines.append(_HTML_LTDE)         # </td>
+        html_lines.append(_HTML_LTDE)  # </td>
         # Column 2 — Tran Details (description).
         html_lines.append(_HTML_L61_DATA_COL2_TD)  # <td style="width:55%;...#f2f2f2; text-align:left;">
         html_lines.append(f"<p>{_html_escape(_cobol_rstrip(tran_desc_raw))}</p>")
-        html_lines.append(_HTML_LTDE)         # </td>
+        html_lines.append(_HTML_LTDE)  # </td>
         # Column 3 — Amount (formatted as PIC Z(9).99-).  The HTML
         # version of the amount is produced by the SAME formatter as
         # the text version, ensuring byte-for-byte consistency between
@@ -2102,8 +2007,8 @@ def generate_html_statement(
         tran_amt_edited: str = _format_amount_edited(tran_amt)
         html_lines.append(_HTML_L64_DATA_COL3_TD)  # <td style="width:20%;...#f2f2f2; text-align:right;">
         html_lines.append(f"<p>{_html_escape(tran_amt_edited)}</p>")
-        html_lines.append(_HTML_LTDE)         # </td>
-        html_lines.append(_HTML_LTRE)         # </tr>
+        html_lines.append(_HTML_LTDE)  # </td>
+        html_lines.append(_HTML_LTRE)  # </tr>
 
     # -------------------------------------------------------------------
     # End-of-statement block — CBSTM03A.CBL paragraph 4000-TRNXFILE-GET
@@ -2117,14 +2022,14 @@ def generate_html_statement(
     #   SET HTML-L79  TO TRUE. WRITE HTML.  (</body>)
     #   SET HTML-L80  TO TRUE. WRITE HTML.  (</html>)
     # -------------------------------------------------------------------
-    html_lines.append(_HTML_LTRS)             # <tr>
+    html_lines.append(_HTML_LTRS)  # <tr>
     html_lines.append(_HTML_L10_TITLE_ROW_TD)  # <td colspan="3" ...#1d1d96b3;">
     html_lines.append(_HTML_L75_END_OF_STMT)  # <h3>End of Statement</h3>
-    html_lines.append(_HTML_LTDE)             # </td>
-    html_lines.append(_HTML_LTRE)             # </tr>
+    html_lines.append(_HTML_LTDE)  # </td>
+    html_lines.append(_HTML_LTRE)  # </tr>
     html_lines.append(_HTML_L78_TABLE_CLOSE)  # </table>
-    html_lines.append(_HTML_L79_BODY_CLOSE)   # </body>
-    html_lines.append(_HTML_L80_HTML_CLOSE)   # </html>
+    html_lines.append(_HTML_L79_BODY_CLOSE)  # </body>
+    html_lines.append(_HTML_L80_HTML_CLOSE)  # </html>
 
     # Log per-card summary for operator traceability.
     logger.info(
@@ -2137,7 +2042,6 @@ def generate_html_statement(
     # Join lines with newline and append a trailing newline (matching
     # the COBOL RECFM=FB record termination convention).
     return "\n".join(html_lines) + "\n"
-
 
 
 # ============================================================================
@@ -2311,9 +2215,7 @@ def _build_per_card_aggregates(
         # tran_id order within each card" contract.
         raw_txns: list[dict[str, Any]] | None = row_dict.get("transactions")
         sorted_txns: list[dict[str, Any]] = (
-            sorted(raw_txns, key=lambda t: str(t.get("tran_id") or ""))
-            if raw_txns
-            else []
+            sorted(raw_txns, key=lambda t: str(t.get("tran_id") or "")) if raw_txns else []
         )
 
         per_card_records.append(
@@ -2397,9 +2299,7 @@ def _compose_s3_key(prefix_uri: str, filename: str) -> tuple[str, str]:
     if "/" not in scheme_stripped:
         # Defensive: get_versioned_s3_path guarantees the URI contains
         # a path, but guard against accidental misconfiguration.
-        raise ValueError(
-            f"Invalid S3 URI returned by get_versioned_s3_path: {prefix_uri!r}"
-        )
+        raise ValueError(f"Invalid S3 URI returned by get_versioned_s3_path: {prefix_uri!r}")
 
     # Split on the FIRST '/' to isolate the bucket from the key prefix.
     bucket_name, key_prefix = scheme_stripped.split("/", 1)
@@ -2514,9 +2414,7 @@ def main() -> None:
         # Step 2 — Sort and restructure transactions (replaces JCL
         # STEP010 SORT + STEP020 REPRO).
         # ---------------------------------------------------------------
-        sorted_transactions_df: DataFrame = sort_and_restructure_transactions(
-            transactions_df
-        )
+        sorted_transactions_df: DataFrame = sort_and_restructure_transactions(transactions_df)
 
         # ---------------------------------------------------------------
         # Step 3 — Build per-card aggregates via 4-entity join.
@@ -2543,13 +2441,9 @@ def main() -> None:
             transactions: list[dict[str, Any]] = record["transactions"]
 
             # Text statement.
-            text_chunks.append(
-                generate_text_statement(card_num, customer, account, transactions)
-            )
+            text_chunks.append(generate_text_statement(card_num, customer, account, transactions))
             # HTML statement.
-            html_chunks.append(
-                generate_html_statement(card_num, customer, account, transactions)
-            )
+            html_chunks.append(generate_html_statement(card_num, customer, account, transactions))
             card_count += 1
 
         # Join the chunks.  For text, no separator is needed (COBOL
@@ -2557,9 +2451,7 @@ def main() -> None:
         # delimiter).  For HTML, a comment separator is interposed
         # between documents for operator traceability.
         text_content: str = "".join(text_chunks)
-        html_content: str = (
-            _HTML_INTER_STATEMENT_SEPARATOR + "\n"
-        ).join(html_chunks) if html_chunks else ""
+        html_content: str = (_HTML_INTER_STATEMENT_SEPARATOR + "\n").join(html_chunks) if html_chunks else ""
 
         logger.info(
             "Generated %d card statements (text len=%d, html len=%d)",
@@ -2573,9 +2465,7 @@ def main() -> None:
         # ---------------------------------------------------------------
         # 5a. Text statement → STATEMNT.PS (LRECL=80, text/plain).
         text_prefix_uri: str = get_versioned_s3_path(_GDG_STATEMNT_PS)
-        text_bucket, text_key = _compose_s3_key(
-            text_prefix_uri, _OUTPUT_FILENAME_TEXT
-        )
+        text_bucket, text_key = _compose_s3_key(text_prefix_uri, _OUTPUT_FILENAME_TEXT)
         logger.info(
             "Writing text statements to S3: bucket=%s key=%s bytes=%d",
             text_bucket,
@@ -2592,9 +2482,7 @@ def main() -> None:
 
         # 5b. HTML statement → STATEMNT.HTML (LRECL=100, text/html).
         html_prefix_uri: str = get_versioned_s3_path(_GDG_STATEMNT_HTML)
-        html_bucket, html_key = _compose_s3_key(
-            html_prefix_uri, _OUTPUT_FILENAME_HTML
-        )
+        html_bucket, html_key = _compose_s3_key(html_prefix_uri, _OUTPUT_FILENAME_HTML)
         logger.info(
             "Writing HTML statements to S3: bucket=%s key=%s bytes=%d",
             html_bucket,
@@ -2642,4 +2530,3 @@ def main() -> None:
 if __name__ == "__main__":
     logger.debug("sys.argv at entry: %s", sys.argv)
     main()
-

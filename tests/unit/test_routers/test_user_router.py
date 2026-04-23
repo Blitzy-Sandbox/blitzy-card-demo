@@ -1,4 +1,3 @@
-
 # ============================================================================
 # CardDemo — Unit tests for user_router (Mainframe-to-Cloud migration)
 # ============================================================================
@@ -269,12 +268,12 @@ _EXPECTED_REGULAR_USER_ID: str = "TESTUSER"
 # are meant to fail if someone silently relaxes a length constraint
 # that no longer matches the COBOL PIC X(n) source of truth.
 # ============================================================================
-_USER_ID_MAX_LEN: int = 8       # SEC-USR-ID     PIC X(08)
-_FIRST_NAME_MAX_LEN: int = 20   # SEC-USR-FNAME  PIC X(20)
-_LAST_NAME_MAX_LEN: int = 20    # SEC-USR-LNAME  PIC X(20)
-_PASSWORD_MAX_LEN: int = 8      # SEC-USR-PWD    PIC X(08)
-_USER_TYPE_ADMIN: str = "A"     # CDEMO-USRTYP-ADMIN VALUE 'A'
-_USER_TYPE_REGULAR: str = "U"   # CDEMO-USRTYP-USER  VALUE 'U'
+_USER_ID_MAX_LEN: int = 8  # SEC-USR-ID     PIC X(08)
+_FIRST_NAME_MAX_LEN: int = 20  # SEC-USR-FNAME  PIC X(20)
+_LAST_NAME_MAX_LEN: int = 20  # SEC-USR-LNAME  PIC X(20)
+_PASSWORD_MAX_LEN: int = 8  # SEC-USR-PWD    PIC X(08)
+_USER_TYPE_ADMIN: str = "A"  # CDEMO-USRTYP-ADMIN VALUE 'A'
+_USER_TYPE_REGULAR: str = "U"  # CDEMO-USRTYP-USER  VALUE 'U'
 
 # ============================================================================
 # BMS layout constants — default page size from COUSR00.CPY screen layout
@@ -373,8 +372,7 @@ class TestUserList:
             response = await admin_client.get("/users")
 
         assert response.status_code == status.HTTP_200_OK, (
-            f"Admin GET /users MUST return HTTP 200; got "
-            f"{response.status_code}: {response.text}"
+            f"Admin GET /users MUST return HTTP 200; got {response.status_code}: {response.text}"
         )
         body: dict[str, Any] = response.json()
         # UserListResponse has the three top-level keys from the schema.
@@ -384,9 +382,7 @@ class TestUserList:
         assert isinstance(body["users"], list), (
             f"``users`` must be a list (BMS OCCURS 10 equivalent); got {type(body['users']).__name__}"
         )
-        assert len(body["users"]) == 2, (
-            f"Expected 2 users (mock setup); got {len(body['users'])}"
-        )
+        assert len(body["users"]) == 2, f"Expected 2 users (mock setup); got {len(body['users'])}"
         # Page / total_count echoes
         assert body["page"] == 1
         assert body["total_count"] == 2
@@ -399,8 +395,7 @@ class TestUserList:
             # CRITICAL: passwords MUST NEVER appear in list responses.
             # COUSR00.CPY BMS map has no PASSWD column — preserved.
             assert "password" not in row, (
-                f"Password MUST NEVER be exposed in list responses "
-                f"(COUSR00.CPY has no PWD column); got row={row}"
+                f"Password MUST NEVER be exposed in list responses (COUSR00.CPY has no PWD column); got row={row}"
             )
         # Verify the service layer was invoked once (isolation check).
         mock_instance.list_users.assert_called_once()
@@ -440,8 +435,7 @@ class TestUserList:
             response = await admin_client.get("/users", params={"user_id": "TEST"})
 
         assert response.status_code == status.HTTP_200_OK, (
-            f"Filtered GET /users MUST return HTTP 200; got "
-            f"{response.status_code}: {response.text}"
+            f"Filtered GET /users MUST return HTTP 200; got {response.status_code}: {response.text}"
         )
         body: dict[str, Any] = response.json()
         assert len(body["users"]) == 1
@@ -491,8 +485,7 @@ class TestUserList:
             )
 
         assert response.status_code == status.HTTP_200_OK, (
-            f"Paginated GET /users MUST return HTTP 200; got "
-            f"{response.status_code}: {response.text}"
+            f"Paginated GET /users MUST return HTTP 200; got {response.status_code}: {response.text}"
         )
         body: dict[str, Any] = response.json()
         assert body["page"] == 2
@@ -531,8 +524,7 @@ class TestUserList:
             response = await admin_client.get("/users")
 
         assert response.status_code == status.HTTP_200_OK, (
-            f"Empty USRSEC result MUST return HTTP 200 (not 404); "
-            f"got {response.status_code}: {response.text}"
+            f"Empty USRSEC result MUST return HTTP 200 (not 404); got {response.status_code}: {response.text}"
         )
         body: dict[str, Any] = response.json()
         assert body["users"] == []
@@ -595,14 +587,12 @@ class TestUserList:
             response = await unauth_client.get("/users")
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED, (
-            f"Unauthenticated GET /users MUST return HTTP 401; got "
-            f"{response.status_code}: {response.text}"
+            f"Unauthenticated GET /users MUST return HTTP 401; got {response.status_code}: {response.text}"
         )
         # RFC 7235 §4.1 — challenge MUST include WWW-Authenticate
         # header identifying the scheme. Middleware emits "Bearer".
         assert "www-authenticate" in {key.lower() for key in response.headers}, (
-            f"401 response MUST include WWW-Authenticate header per "
-            f"RFC 7235 §4.1; headers={dict(response.headers)}"
+            f"401 response MUST include WWW-Authenticate header per RFC 7235 §4.1; headers={dict(response.headers)}"
         )
 
 
@@ -660,8 +650,7 @@ class TestUserAdd:
             response = await admin_client.post("/users", json=request_body)
 
         assert response.status_code == status.HTTP_201_CREATED, (
-            f"POST /users MUST return HTTP 201 Created; got "
-            f"{response.status_code}: {response.text}"
+            f"POST /users MUST return HTTP 201 Created; got {response.status_code}: {response.text}"
         )
         body: dict[str, Any] = response.json()
         # Response-shape assertions mirroring UserCreateResponse.
@@ -670,9 +659,7 @@ class TestUserAdd:
         assert body["last_name"] == "User"
         assert body["user_type"] == _USER_TYPE_REGULAR
         # CRITICAL: passwords MUST NEVER appear in create responses.
-        assert "password" not in body, (
-            f"Password MUST NEVER be echoed in create response; got body={body}"
-        )
+        assert "password" not in body, f"Password MUST NEVER be echoed in create response; got body={body}"
         # Verify the service received the request exactly once.
         mock_instance.create_user.assert_called_once()
 
@@ -727,8 +714,7 @@ class TestUserAdd:
         assert "error" in body, f"Response body must contain ``error`` envelope: {body}"
         error_envelope: dict[str, Any] = body["error"]
         assert "reason" in error_envelope, (
-            f"ABEND envelope must carry ``reason`` (ABEND-REASON PIC X(50)); "
-            f"got {error_envelope}"
+            f"ABEND envelope must carry ``reason`` (ABEND-REASON PIC X(50)); got {error_envelope}"
         )
         # CRITICAL: "exist" NOT "exists" — COBOL source verbatim.
         assert MSG_USER_ID_ALREADY_EXISTS in error_envelope["reason"], (
@@ -795,9 +781,7 @@ class TestUserAdd:
         """
         # Exactly one character over the COBOL PIC X(08) limit.
         too_long_password = "A" * (_PASSWORD_MAX_LEN + 1)
-        assert len(too_long_password) == 9, (
-            "Test precondition: password must exceed COBOL PIC X(08) limit"
-        )
+        assert len(too_long_password) == 9, "Test precondition: password must exceed COBOL PIC X(08) limit"
         request_body = {
             "user_id": "NEWUSER1",
             "first_name": "New",
@@ -878,16 +862,14 @@ class TestUserAdd:
             response = await admin_client.post("/users", json=request_body)
 
         assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR, (
-            f"Bare UserServiceError MUST translate to HTTP 500; got "
-            f"{response.status_code}: {response.text}"
+            f"Bare UserServiceError MUST translate to HTTP 500; got {response.status_code}: {response.text}"
         )
         body: dict[str, Any] = response.json()
         # ABEND envelope (see docstring on test_create_user_duplicate).
         assert "error" in body, f"Response body must contain ``error`` envelope: {body}"
         error_envelope: dict[str, Any] = body["error"]
         assert MSG_UNABLE_TO_ADD_USER in error_envelope["reason"], (
-            f"500 reason must contain ``{MSG_UNABLE_TO_ADD_USER}``; "
-            f"got {error_envelope['reason']!r}"
+            f"500 reason must contain ``{MSG_UNABLE_TO_ADD_USER}``; got {error_envelope['reason']!r}"
         )
         # Sanity: 500 carries the IOER (I/O error) ABEND-CODE — the
         # analogue of COBOL WS-ERR-FLG = 'Y' + DFHRESP paths that
@@ -953,22 +935,17 @@ class TestUserUpdate:
             )
 
         assert response.status_code == status.HTTP_200_OK, (
-            f"PUT /users/{{user_id}} MUST return HTTP 200; got "
-            f"{response.status_code}: {response.text}"
+            f"PUT /users/{{user_id}} MUST return HTTP 200; got {response.status_code}: {response.text}"
         )
         body: dict[str, Any] = response.json()
         assert body["user_id"] == "TESTUSER"
         assert body["first_name"] == "UpdatedName"
         # Password MUST NEVER appear in update responses.
-        assert "password" not in body, (
-            f"Password MUST NEVER be echoed in update response; got body={body}"
-        )
+        assert "password" not in body, f"Password MUST NEVER be echoed in update response; got body={body}"
         mock_instance.update_user.assert_called_once()
         # The path user_id is the first positional arg.
         call_args = mock_instance.update_user.call_args.args
-        assert call_args[0] == "TESTUSER", (
-            f"Service must receive path user_id as first arg; got {call_args}"
-        )
+        assert call_args[0] == "TESTUSER", f"Service must receive path user_id as first arg; got {call_args}"
 
     async def test_update_user_not_found(self, admin_client: AsyncClient) -> None:
         """PUT /users/{user_id} for non-existent user returns HTTP 404.
@@ -1003,8 +980,7 @@ class TestUserUpdate:
         assert "error" in body, f"Response body must contain ``error`` envelope: {body}"
         error_envelope: dict[str, Any] = body["error"]
         assert MSG_USER_ID_NOT_FOUND in error_envelope["reason"], (
-            f"404 reason must contain ``{MSG_USER_ID_NOT_FOUND}``; "
-            f"got {error_envelope['reason']!r}"
+            f"404 reason must contain ``{MSG_USER_ID_NOT_FOUND}``; got {error_envelope['reason']!r}"
         )
         # Sanity: 404 Not Found carries error_code='NFND' (not-found
         # ABEND-CODE), matching COBOL DFHRESP(NOTFND).
@@ -1050,13 +1026,11 @@ class TestUserUpdate:
             )
 
         assert response.status_code == status.HTTP_200_OK, (
-            f"Password-change PUT MUST return HTTP 200; got "
-            f"{response.status_code}: {response.text}"
+            f"Password-change PUT MUST return HTTP 200; got {response.status_code}: {response.text}"
         )
         body: dict[str, Any] = response.json()
         assert "password" not in body, (
-            f"Password MUST NEVER be echoed in update response "
-            f"(even after a password change); got body={body}"
+            f"Password MUST NEVER be echoed in update response (even after a password change); got body={body}"
         )
         # Service receives the new cleartext password (hashing happens
         # inside the service layer — not verified here, only at
@@ -1064,8 +1038,7 @@ class TestUserUpdate:
         call_args = mock_instance.update_user.call_args.args
         request_model = call_args[1]
         assert getattr(request_model, "password", None) == new_password, (
-            f"Service must receive the new password in the request "
-            f"body; got {request_model}"
+            f"Service must receive the new password in the request body; got {request_model}"
         )
 
     async def test_update_user_invalid_type(
@@ -1093,8 +1066,7 @@ class TestUserUpdate:
             )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY, (
-            f"Invalid user_type on PUT MUST return HTTP 422; got "
-            f"{response.status_code}: {response.text}"
+            f"Invalid user_type on PUT MUST return HTTP 422; got {response.status_code}: {response.text}"
         )
         mock_service_class.assert_not_called()
 
@@ -1216,16 +1188,14 @@ class TestUserUpdate:
             )
 
         assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR, (
-            f"Bare UserServiceError on PUT MUST translate to HTTP 500; "
-            f"got {response.status_code}: {response.text}"
+            f"Bare UserServiceError on PUT MUST translate to HTTP 500; got {response.status_code}: {response.text}"
         )
         body: dict[str, Any] = response.json()
         # ABEND envelope (see docstring on test_create_user_duplicate).
         assert "error" in body, f"Response body must contain ``error`` envelope: {body}"
         error_envelope: dict[str, Any] = body["error"]
         assert MSG_UNABLE_TO_UPDATE_USER in error_envelope["reason"], (
-            f"500 reason must contain ``{MSG_UNABLE_TO_UPDATE_USER}``; "
-            f"got {error_envelope['reason']!r}"
+            f"500 reason must contain ``{MSG_UNABLE_TO_UPDATE_USER}``; got {error_envelope['reason']!r}"
         )
         # Sanity: 500 Internal Server Error carries error_code='IOER'
         # (I/O-error ABEND-CODE), matching COBOL WS-ERR-FLG='Y'.
@@ -1281,8 +1251,7 @@ class TestUserDelete:
             response = await admin_client.delete("/users/GONEUSER")
 
         assert response.status_code == status.HTTP_200_OK, (
-            f"DELETE /users/{{user_id}} MUST return HTTP 200; got "
-            f"{response.status_code}: {response.text}"
+            f"DELETE /users/{{user_id}} MUST return HTTP 200; got {response.status_code}: {response.text}"
         )
         body: dict[str, Any] = response.json()
         assert body["user_id"] == "GONEUSER"
@@ -1292,8 +1261,7 @@ class TestUserDelete:
         # CRITICAL: COUSR03.CPY lacks PASSWDI/PASSWDO — the
         # cloud-native response must likewise omit the password.
         assert "password" not in body, (
-            f"Password MUST NEVER appear in delete response "
-            f"(COUSR03.CPY omits PASSWDI/PASSWDO); got body={body}"
+            f"Password MUST NEVER appear in delete response (COUSR03.CPY omits PASSWDI/PASSWDO); got body={body}"
         )
         mock_instance.delete_user.assert_called_once_with("GONEUSER")
 
@@ -1328,8 +1296,7 @@ class TestUserDelete:
         assert "error" in body, f"Response body must contain ``error`` envelope: {body}"
         error_envelope: dict[str, Any] = body["error"]
         assert MSG_USER_ID_NOT_FOUND in error_envelope["reason"], (
-            f"404 reason must contain ``{MSG_USER_ID_NOT_FOUND}``; "
-            f"got {error_envelope['reason']!r}"
+            f"404 reason must contain ``{MSG_USER_ID_NOT_FOUND}``; got {error_envelope['reason']!r}"
         )
         # Sanity: 404 Not Found carries error_code='NFND' (not-found
         # ABEND-CODE), matching COBOL DFHRESP(NOTFND).
@@ -1395,16 +1362,14 @@ class TestUserDelete:
             response = await admin_client.delete("/users/TESTUSER")
 
         assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR, (
-            f"Bare UserServiceError on DELETE MUST translate to HTTP 500; "
-            f"got {response.status_code}: {response.text}"
+            f"Bare UserServiceError on DELETE MUST translate to HTTP 500; got {response.status_code}: {response.text}"
         )
         body: dict[str, Any] = response.json()
         # ABEND envelope (see docstring on test_create_user_duplicate).
         assert "error" in body, f"Response body must contain ``error`` envelope: {body}"
         error_envelope: dict[str, Any] = body["error"]
         assert MSG_UNABLE_TO_LOOKUP in error_envelope["reason"], (
-            f"500 reason must contain ``{MSG_UNABLE_TO_LOOKUP}``; "
-            f"got {error_envelope['reason']!r}"
+            f"500 reason must contain ``{MSG_UNABLE_TO_LOOKUP}``; got {error_envelope['reason']!r}"
         )
         # Sanity: 500 Internal Server Error carries error_code='IOER'
         # (I/O-error ABEND-CODE), matching COBOL WS-ERR-FLG='Y'.

@@ -231,12 +231,12 @@ _COBOL_END_MSG_EXPECTED: str = "END OF EXECUTION OF PROGRAM CBTRN01C"
 # the test body and can be referenced by multiple tests.
 # ----------------------------------------------------------------------------
 _EXPECTED_TABLE_READ_ORDER: tuple[str, ...] = (
-    "daily_transactions",       # replaces DALYTRAN-FILE (CVTRA06Y, sequential)
-    "customers",                # replaces CUSTOMER-FILE (CVCUS01Y, indexed)
-    "card_cross_references",    # replaces XREF-FILE     (CVACT03Y, indexed)
-    "cards",                    # replaces CARD-FILE     (CVACT02Y, indexed)
-    "accounts",                 # replaces ACCOUNT-FILE  (CVACT01Y, indexed)
-    "transactions",             # replaces TRANSACT-FILE (CVTRA05Y, indexed)
+    "daily_transactions",  # replaces DALYTRAN-FILE (CVTRA06Y, sequential)
+    "customers",  # replaces CUSTOMER-FILE (CVCUS01Y, indexed)
+    "card_cross_references",  # replaces XREF-FILE     (CVACT03Y, indexed)
+    "cards",  # replaces CARD-FILE     (CVACT02Y, indexed)
+    "accounts",  # replaces ACCOUNT-FILE  (CVACT01Y, indexed)
+    "transactions",  # replaces TRANSACT-FILE (CVTRA05Y, indexed)
 )
 
 # ----------------------------------------------------------------------------
@@ -420,9 +420,7 @@ def test_reads_all_six_tables(
     # PostgreSQL table name (the first is the SparkSession). Extract
     # them in invocation order and verify byte-exact match against
     # the canonical CBTRN01C file-control sequence.
-    actual_table_order = tuple(
-        call_record.args[1] for call_record in mock_read_table.call_args_list
-    )
+    actual_table_order = tuple(call_record.args[1] for call_record in mock_read_table.call_args_list)
     assert actual_table_order == _EXPECTED_TABLE_READ_ORDER, (
         f"Table read order deviates from CBTRN01C.cbl FILE-CONTROL "
         f"(lines 28-62): expected {_EXPECTED_TABLE_READ_ORDER}, "
@@ -434,8 +432,7 @@ def test_reads_all_six_tables(
     # Spark context correctly through each JDBC read.
     for call_record in mock_read_table.call_args_list:
         assert call_record.args[0] is mock_spark, (
-            "Every read_table(spark, <table>) call must pass the "
-            "SparkSession returned by init_glue"
+            "Every read_table(spark, <table>) call must pass the SparkSession returned by init_glue"
         )
 
     # init_glue was called exactly once with the module's canonical
@@ -510,11 +507,11 @@ def test_validation_lookup_joins(
     # call sequence, which in turn mirrors CBTRN01C file-control.
     # We set count_value=1 so main() bypasses the early-exit
     # branch and exercises the validation-join chain.
-    daily_trans_df = _make_mock_df(count_value=1)   # "daily_transactions"
-    customers_df = _make_mock_df(count_value=1)     # "customers"
-    xref_df = _make_mock_df(count_value=1)          # "card_cross_references"
-    cards_df = _make_mock_df(count_value=1)         # "cards"
-    accounts_df = _make_mock_df(count_value=1)      # "accounts"
+    daily_trans_df = _make_mock_df(count_value=1)  # "daily_transactions"
+    customers_df = _make_mock_df(count_value=1)  # "customers"
+    xref_df = _make_mock_df(count_value=1)  # "card_cross_references"
+    cards_df = _make_mock_df(count_value=1)  # "cards"
+    accounts_df = _make_mock_df(count_value=1)  # "accounts"
     transactions_df = _make_mock_df(count_value=1)  # "transactions" — not joined
 
     # side_effect yields these six mocks in order on successive
@@ -539,11 +536,11 @@ def test_validation_lookup_joins(
     # These alias strings are the contract between the alias()
     # calls and the F.col() column references — any drift in one
     # will produce Spark AnalysisException at runtime.
-    daily_trans_df.alias.assert_any_call("d")     # 2000-LOOKUP-XREF left side
-    xref_df.alias.assert_any_call("x")            # 2000-LOOKUP-XREF right side
-    customers_df.alias.assert_any_call("cust")    # customer profile sanity join
-    accounts_df.alias.assert_any_call("a")        # 3000-READ-ACCOUNT right side
-    cards_df.alias.assert_any_call("card")        # active-card referential check
+    daily_trans_df.alias.assert_any_call("d")  # 2000-LOOKUP-XREF left side
+    xref_df.alias.assert_any_call("x")  # 2000-LOOKUP-XREF right side
+    customers_df.alias.assert_any_call("cust")  # customer profile sanity join
+    accounts_df.alias.assert_any_call("a")  # 3000-READ-ACCOUNT right side
+    cards_df.alias.assert_any_call("card")  # active-card referential check
 
     # (b) The transactions master table is READ (for counts and
     # auditing) but is NOT joined — this explicitly preserves
@@ -575,8 +572,7 @@ def test_validation_lookup_joins(
     for join_call in daily_trans_df.join.call_args_list:
         how_value = join_call.kwargs.get("how")
         assert how_value == "inner", (
-            f"Validation joins must use inner-join semantics to match "
-            f"COBOL INVALID KEY → skip; got how={how_value!r}"
+            f"Validation joins must use inner-join semantics to match COBOL INVALID KEY → skip; got how={how_value!r}"
         )
 
     # (e) The column references used in the first join pair must
@@ -589,37 +585,21 @@ def test_validation_lookup_joins(
     # 2000-LOOKUP-XREF join condition (line 233 of CBTRN01C.cbl:
     # ``READ XREF-FILE INTO CARD-XREF-RECORD KEY IS FD-XREF-CARD-NUM``).
     assert "d.dalytran_card_num" in col_arg_log, (
-        "Join 1 (CBTRN01C 2000-LOOKUP-XREF) must reference "
-        "d.dalytran_card_num on the LEFT side"
+        "Join 1 (CBTRN01C 2000-LOOKUP-XREF) must reference d.dalytran_card_num on the LEFT side"
     )
-    assert "x.card_num" in col_arg_log, (
-        "Join 1 (CBTRN01C 2000-LOOKUP-XREF) must reference "
-        "x.card_num on the RIGHT side"
-    )
+    assert "x.card_num" in col_arg_log, "Join 1 (CBTRN01C 2000-LOOKUP-XREF) must reference x.card_num on the RIGHT side"
 
     # Customer referential join — x.cust_id = cust.cust_id.
-    assert "x.cust_id" in col_arg_log, (
-        "Customer referential join must reference x.cust_id"
-    )
-    assert "cust.cust_id" in col_arg_log, (
-        "Customer referential join must reference cust.cust_id"
-    )
+    assert "x.cust_id" in col_arg_log, "Customer referential join must reference x.cust_id"
+    assert "cust.cust_id" in col_arg_log, "Customer referential join must reference cust.cust_id"
 
     # 3000-READ-ACCOUNT (line 245: ``READ ACCOUNT-FILE INTO
     # ACCOUNT-RECORD KEY IS FD-ACCT-ID``).
-    assert "x.acct_id" in col_arg_log, (
-        "Join 3 (CBTRN01C 3000-READ-ACCOUNT) must reference "
-        "x.acct_id on the LEFT side"
-    )
-    assert "a.acct_id" in col_arg_log, (
-        "Join 3 (CBTRN01C 3000-READ-ACCOUNT) must reference "
-        "a.acct_id on the RIGHT side"
-    )
+    assert "x.acct_id" in col_arg_log, "Join 3 (CBTRN01C 3000-READ-ACCOUNT) must reference x.acct_id on the LEFT side"
+    assert "a.acct_id" in col_arg_log, "Join 3 (CBTRN01C 3000-READ-ACCOUNT) must reference a.acct_id on the RIGHT side"
 
     # Active-card referential check — d.dalytran_card_num = card.card_num.
-    assert "card.card_num" in col_arg_log, (
-        "Active-card referential join must reference card.card_num"
-    )
+    assert "card.card_num" in col_arg_log, "Active-card referential join must reference card.card_num"
 
     # (f) commit_job is invoked AFTER the full validation flow
     # completes — preserving the COBOL terminal GOBACK (line 197)
@@ -692,16 +672,12 @@ def test_log_messages_match_cobol(
     # drift from the COBOL source — operator tooling, CloudWatch
     # Logs Insights queries, and runbooks all rely on matching
     # this literal text.
-    assert any(
-        _COBOL_START_MSG_EXPECTED in msg for msg in captured_messages
-    ), (
+    assert any(_COBOL_START_MSG_EXPECTED in msg for msg in captured_messages), (
         f"CBTRN01C.cbl line 160 DISPLAY 'START OF EXECUTION OF "
         f"PROGRAM CBTRN01C' not found in captured logs: "
         f"{captured_messages!r}"
     )
-    assert any(
-        _COBOL_END_MSG_EXPECTED in msg for msg in captured_messages
-    ), (
+    assert any(_COBOL_END_MSG_EXPECTED in msg for msg in captured_messages), (
         f"CBTRN01C.cbl line 195 DISPLAY 'END OF EXECUTION OF "
         f"PROGRAM CBTRN01C' not found in captured logs: "
         f"{captured_messages!r}"
@@ -712,19 +688,9 @@ def test_log_messages_match_cobol(
     # and compare indices. Multiple matches are handled by
     # taking the FIRST START and the LAST END, preserving the
     # COBOL MAIN-PARA semantic ("execution begins, then ends").
-    start_indices = [
-        i
-        for i, record in enumerate(caplog.records)
-        if _COBOL_START_MSG_EXPECTED in record.getMessage()
-    ]
-    end_indices = [
-        i
-        for i, record in enumerate(caplog.records)
-        if _COBOL_END_MSG_EXPECTED in record.getMessage()
-    ]
-    assert start_indices and end_indices, (
-        "Both COBOL bookend messages must appear at least once"
-    )
+    start_indices = [i for i, record in enumerate(caplog.records) if _COBOL_START_MSG_EXPECTED in record.getMessage()]
+    end_indices = [i for i, record in enumerate(caplog.records) if _COBOL_END_MSG_EXPECTED in record.getMessage()]
+    assert start_indices and end_indices, "Both COBOL bookend messages must appear at least once"
     assert start_indices[0] < end_indices[-1], (
         f"CBTRN01C bookend ordering violated — START index "
         f"{start_indices[0]} must come before END index "
@@ -754,8 +720,7 @@ def test_log_messages_match_cobol(
     )
     expected_scale_token: int = raw_scale_token  # == -2
     assert expected_scale_token == -2, (
-        "Decimal('0.00') must have scale -2 (two decimal places) to "
-        "match COBOL PIC S9(n)V99 semantics"
+        "Decimal('0.00') must have scale -2 (two decimal places) to match COBOL PIC S9(n)V99 semantics"
     )
     assert _MONETARY_ZERO == Decimal("0.00"), (
         "Target module's _MONETARY_ZERO sentinel must equal "
@@ -764,8 +729,7 @@ def test_log_messages_match_cobol(
     )
     precision_marker = f"Decimal scale={expected_scale_token}"
     assert any(precision_marker in msg for msg in captured_messages), (
-        f"Monetary precision contract log line must include "
-        f"{precision_marker!r}; captured: {captured_messages!r}"
+        f"Monetary precision contract log line must include {precision_marker!r}; captured: {captured_messages!r}"
     )
 
 
@@ -830,6 +794,5 @@ def test_commit_job_called(
     # branch) the patch would miss it and this assertion
     # would catch that drift.
     assert mock_commit_job.call_count == 1, (
-        f"commit_job must be invoked exactly once per main() run; "
-        f"got {mock_commit_job.call_count}"
+        f"commit_job must be invoked exactly once per main() run; got {mock_commit_job.call_count}"
     )

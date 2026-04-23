@@ -532,9 +532,7 @@ def test_reads_card_cross_references_table(
     # contract as "the total invocation history equals exactly this
     # list," which catches subtle bugs that the call-count assertion
     # might miss (e.g., duplicate recording due to mock reconfiguration).
-    assert mock_read_table.call_args_list == [
-        call(mock_spark, _EXPECTED_TABLE_NAME)
-    ], (
+    assert mock_read_table.call_args_list == [call(mock_spark, _EXPECTED_TABLE_NAME)], (
         f"read_table invocation history must be exactly "
         f"[call(spark, {_EXPECTED_TABLE_NAME!r})]; "
         f"got {mock_read_table.call_args_list}"
@@ -621,9 +619,7 @@ def test_logs_start_message(
     # literal text. If the target module's ``_COBOL_START_MSG``
     # constant is ever mutated, this assertion fails immediately
     # with a diff showing the captured vs expected text.
-    assert any(
-        _COBOL_START_MSG_EXPECTED in msg for msg in captured_messages
-    ), (
+    assert any(_COBOL_START_MSG_EXPECTED in msg for msg in captured_messages), (
         f"CBACT03C.cbl line 71 DISPLAY 'START OF EXECUTION OF "
         f"PROGRAM CBACT03C' not found in captured logs: "
         f"{captured_messages!r}"
@@ -634,14 +630,9 @@ def test_logs_start_message(
     # config — and not WARNING/ERROR — which would trigger spurious
     # alerting). We walk caplog.records to locate the START message
     # and verify its levelno matches the expected logging.INFO.
-    start_records = [
-        record
-        for record in caplog.records
-        if _COBOL_START_MSG_EXPECTED in record.getMessage()
-    ]
+    start_records = [record for record in caplog.records if _COBOL_START_MSG_EXPECTED in record.getMessage()]
     assert start_records, (
-        f"No LogRecord containing {_COBOL_START_MSG_EXPECTED!r} was "
-        f"captured; cannot verify emission level"
+        f"No LogRecord containing {_COBOL_START_MSG_EXPECTED!r} was captured; cannot verify emission level"
     )
     for record in start_records:
         assert record.levelno == logging.INFO, (
@@ -701,28 +692,20 @@ def test_logs_end_message(
     captured_messages = list(caplog.messages)
 
     # Byte-exact CBACT03C END bookend string.
-    assert any(
-        _COBOL_END_MSG_EXPECTED in msg for msg in captured_messages
-    ), (
+    assert any(_COBOL_END_MSG_EXPECTED in msg for msg in captured_messages), (
         f"CBACT03C.cbl line 85 DISPLAY 'END OF EXECUTION OF "
         f"PROGRAM CBACT03C' not found in captured logs: "
         f"{captured_messages!r}"
     )
 
     # Defensive: END message must be emitted at INFO level.
-    end_records = [
-        record
-        for record in caplog.records
-        if _COBOL_END_MSG_EXPECTED in record.getMessage()
-    ]
+    end_records = [record for record in caplog.records if _COBOL_END_MSG_EXPECTED in record.getMessage()]
     assert end_records, (
-        f"No LogRecord containing {_COBOL_END_MSG_EXPECTED!r} was "
-        f"captured; cannot verify emission level"
+        f"No LogRecord containing {_COBOL_END_MSG_EXPECTED!r} was captured; cannot verify emission level"
     )
     for record in end_records:
         assert record.levelno == logging.INFO, (
-            f"CBACT03C END message must be emitted at INFO level; got "
-            f"{logging.getLevelName(record.levelno)}"
+            f"CBACT03C END message must be emitted at INFO level; got {logging.getLevelName(record.levelno)}"
         )
 
     # Ordering — the START message must precede the END message.
@@ -730,19 +713,10 @@ def test_logs_end_message(
     # indices. Multiple matches are handled by taking the FIRST
     # START and the LAST END, preserving the COBOL PROCEDURE DIVISION
     # semantic ("execution begins, then ends").
-    start_indices = [
-        i
-        for i, record in enumerate(caplog.records)
-        if _COBOL_START_MSG_EXPECTED in record.getMessage()
-    ]
-    end_indices = [
-        i
-        for i, record in enumerate(caplog.records)
-        if _COBOL_END_MSG_EXPECTED in record.getMessage()
-    ]
+    start_indices = [i for i, record in enumerate(caplog.records) if _COBOL_START_MSG_EXPECTED in record.getMessage()]
+    end_indices = [i for i, record in enumerate(caplog.records) if _COBOL_END_MSG_EXPECTED in record.getMessage()]
     assert start_indices and end_indices, (
-        "Both CBACT03C bookend messages (START and END) must appear "
-        "at least once in the captured log stream"
+        "Both CBACT03C bookend messages (START and END) must appear at least once in the captured log stream"
     )
     assert start_indices[0] < end_indices[-1], (
         f"CBACT03C bookend ordering violated — START record index "
@@ -807,9 +781,7 @@ def test_logs_record_count(
         )
         for i in range(expected_count)
     ]
-    mock_read_table.return_value = _make_mock_df(
-        count_value=expected_count, rows=rows
-    )
+    mock_read_table.return_value = _make_mock_df(count_value=expected_count, rows=rows)
 
     # --- Act --------------------------------------------------------
     with caplog.at_level(logging.INFO):
@@ -824,11 +796,7 @@ def test_logs_record_count(
     # the integer 50 rendered as its decimal string in any log
     # message that also mentions "record count" so we are not
     # confused by unrelated numeric content (e.g., a timestamp).
-    count_messages = [
-        msg
-        for msg in captured_messages
-        if "record count" in msg.lower() and str(expected_count) in msg
-    ]
+    count_messages = [msg for msg in captured_messages if "record count" in msg.lower() and str(expected_count) in msg]
     assert count_messages, (
         f"Expected at least one log message containing 'record count' "
         f"and the integer {expected_count!r}; captured messages: "
@@ -903,20 +871,12 @@ def test_iterates_all_records(
     # drift in the iteration (e.g., skipping the last row, emitting
     # duplicates, re-ordering) produces a different log stream and
     # the assertions below will FAIL with a clear diff.
-    row1 = _make_mock_row(
-        card_num="4111111111111111", cust_id=100000001, acct_id=10000000001
-    )
-    row2 = _make_mock_row(
-        card_num="4111111111111112", cust_id=100000002, acct_id=10000000002
-    )
-    row3 = _make_mock_row(
-        card_num="4111111111111113", cust_id=100000003, acct_id=10000000003
-    )
+    row1 = _make_mock_row(card_num="4111111111111111", cust_id=100000001, acct_id=10000000001)
+    row2 = _make_mock_row(card_num="4111111111111112", cust_id=100000002, acct_id=10000000002)
+    row3 = _make_mock_row(card_num="4111111111111113", cust_id=100000003, acct_id=10000000003)
     rows = [row1, row2, row3]
 
-    mock_read_table.return_value = _make_mock_df(
-        count_value=len(rows), rows=rows
-    )
+    mock_read_table.return_value = _make_mock_df(count_value=len(rows), rows=rows)
 
     # --- Act --------------------------------------------------------
     with caplog.at_level(logging.INFO):
@@ -933,9 +893,7 @@ def test_iterates_all_records(
     # (e.g., the target module could reasonably use
     # "CARD-XREF-RECORD: %s" or "CARD-XREF-RECORD: {dict}" without
     # changing the contract).
-    per_record_log_lines = [
-        msg for msg in captured_messages if "CARD-XREF-RECORD" in msg
-    ]
+    per_record_log_lines = [msg for msg in captured_messages if "CARD-XREF-RECORD" in msg]
     assert len(per_record_log_lines) == len(rows), (
         f"Expected exactly {len(rows)} 'CARD-XREF-RECORD:' log lines "
         f"(one per row returned by collect()); got "
@@ -975,8 +933,7 @@ def test_iterates_all_records(
     # duplicate JDBC traffic for no benefit.
     mock_df = mock_read_table.return_value
     assert mock_df.collect.call_count == 1, (
-        f"DataFrame.collect() must be called exactly once; "
-        f"got {mock_df.collect.call_count}"
+        f"DataFrame.collect() must be called exactly once; got {mock_df.collect.call_count}"
     )
 
 

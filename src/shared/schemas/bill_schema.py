@@ -254,9 +254,7 @@ class BillPaymentRequest(BaseModel):
         if value is None:
             raise ValueError("acct_id must not be null")
         if not isinstance(value, str):
-            raise ValueError(
-                f"acct_id must be a string; got {type(value).__name__}"
-            )
+            raise ValueError(f"acct_id must be a string; got {type(value).__name__}")
         if not value or not value.strip():
             raise ValueError("acct_id must not be empty")
         if len(value) > _ACCT_ID_MAX_LEN:
@@ -310,14 +308,10 @@ class BillPaymentRequest(BaseModel):
             # field_validator runs; this guard is purely defensive
             # and ensures a clear error if a custom caller bypasses
             # Pydantic's type machinery.
-            raise ValueError(
-                f"amount must be a decimal.Decimal; got "
-                f"{type(value).__name__}"
-            )
+            raise ValueError(f"amount must be a decimal.Decimal; got {type(value).__name__}")
         if value <= Decimal("0"):
             raise ValueError(
-                f"amount must be strictly greater than zero "
-                f"(bill payment is a debit-only operation); got {value}"
+                f"amount must be strictly greater than zero (bill payment is a debit-only operation); got {value}"
             )
         return value
 
@@ -404,10 +398,7 @@ class BillPaymentResponse(BaseModel):
     acct_id: str = Field(
         ...,
         max_length=_ACCT_ID_MAX_LEN,
-        description=(
-            "Echoed account ID — 11-char fixed-width. Maps to COBIL00 "
-            "ACTIDINO PIC X(11)."
-        ),
+        description=("Echoed account ID — 11-char fixed-width. Maps to COBIL00 ACTIDINO PIC X(11)."),
     )
     amount: Decimal = Field(
         ...,
@@ -437,10 +428,7 @@ class BillPaymentResponse(BaseModel):
     message: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_ERRMSG_MAX_LEN,
-        description=(
-            "Optional info/error message, max 78 chars. Maps to "
-            "COBIL00 ERRMSGO PIC X(78)."
-        ),
+        description=("Optional info/error message, max 78 chars. Maps to COBIL00 ERRMSGO PIC X(78)."),
     )
 
     # ---------------------------------------------------------------
@@ -477,13 +465,10 @@ class BillPaymentResponse(BaseModel):
         if value is None:
             raise ValueError("confirm must not be null")
         if not isinstance(value, str):
-            raise ValueError(
-                f"confirm must be a string; got {type(value).__name__}"
-            )
+            raise ValueError(f"confirm must be a string; got {type(value).__name__}")
         if value not in _VALID_CONFIRM_VALUES:
             raise ValueError(
-                f"confirm must be one of {sorted(_VALID_CONFIRM_VALUES)} "
-                f"(COBIL00 CONFIRMO PIC X(1)); got {value!r}"
+                f"confirm must be one of {sorted(_VALID_CONFIRM_VALUES)} (COBIL00 CONFIRMO PIC X(1)); got {value!r}"
             )
         return value
 

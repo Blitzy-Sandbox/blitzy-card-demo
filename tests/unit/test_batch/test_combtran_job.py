@@ -994,9 +994,7 @@ def test_write_to_s3_combined_archive(
     # logger.info in main() can format it without error. The concrete
     # URI value is only used for log emission — the assertions below
     # focus on the call args / kwargs.
-    mock_write_to_s3.return_value = (
-        "s3://test-bucket/combined/transactions/2024/01/01/000000/TRANSACT.COMBINED.txt"
-    )
+    mock_write_to_s3.return_value = "s3://test-bucket/combined/transactions/2024/01/01/000000/TRANSACT.COMBINED.txt"
 
     # --- Act -------------------------------------------------------------
     # Invoke the production entry point. The entire pipeline runs
@@ -1153,9 +1151,7 @@ def test_write_to_postgres_overwrite_mode(
     # hit real AWS credentials. The concrete URI return value is
     # only used for log emission; this test focuses exclusively on
     # the ``write_table`` JDBC write assertions.
-    mock_write_to_s3.return_value = (
-        "s3://test-bucket/combined/transactions/2024/01/01/000000/TRANSACT.COMBINED.txt"
-    )
+    mock_write_to_s3.return_value = "s3://test-bucket/combined/transactions/2024/01/01/000000/TRANSACT.COMBINED.txt"
 
     # --- Act -------------------------------------------------------------
     main()
@@ -1364,9 +1360,7 @@ def test_combtran_main_with_spark(
     # No local filesystem is involved — the archive goes through
     # ``write_to_s3`` which is patched below to capture content.
     combined_output_uri = "s3://test-bucket/combined/transactions/2024/01/01/000000/"
-    expected_archive_key = (
-        "combined/transactions/2024/01/01/000000/TRANSACT.COMBINED.txt"
-    )
+    expected_archive_key = "combined/transactions/2024/01/01/000000/TRANSACT.COMBINED.txt"
 
     def _get_s3_path_side_effect(gdg_name: str, generation: str = "+1", **_kwargs: Any) -> str:
         if gdg_name == "TRANSACT.COMBINED" and generation == "+1":
@@ -1552,16 +1546,14 @@ def test_combtran_main_with_spark(
     # (k.1) ``content_type`` MUST be ``"text/plain"`` — the archive
     # is a fixed-width CVTRA05Y text file, NOT binary Parquet.
     assert archive_write["content_type"] == "text/plain", (
-        f"Archive write content_type={archive_write['content_type']!r}, "
-        f"expected 'text/plain'"
+        f"Archive write content_type={archive_write['content_type']!r}, expected 'text/plain'"
     )
 
     # (k.2) The ``key`` MUST match the GDG-equivalent archive path
     # — derived from ``get_versioned_s3_path("TRANSACT.COMBINED",
     # "+1")`` URI prefix + ``_COMBINED_FILENAME``.
     assert archive_write["key"] == expected_archive_key, (
-        f"Archive write key={archive_write['key']!r}, "
-        f"expected {expected_archive_key!r}"
+        f"Archive write key={archive_write['key']!r}, expected {expected_archive_key!r}"
     )
 
     # (l) Parse the fixed-width archive body and verify its contents
@@ -1570,9 +1562,7 @@ def test_combtran_main_with_spark(
     # lines (with a trailing newline from main()'s
     # ``"\n".join(lines) + "\n"`` construction).
     archive_content = archive_write["content"]
-    assert isinstance(archive_content, str), (
-        f"Archive content should be str; got {type(archive_content).__name__}"
-    )
+    assert isinstance(archive_content, str), f"Archive content should be str; got {type(archive_content).__name__}"
 
     # Strip the trailing newline (added by main() after join) before
     # splitting — otherwise splitlines would yield an extra empty
@@ -1600,8 +1590,7 @@ def test_combtran_main_with_spark(
     # the DataFrame sort.
     archive_tran_ids = [line[:16].rstrip() for line in archive_lines]
     assert archive_tran_ids == expected_sorted_ids, (
-        f"Archive tran_id order drift; "
-        f"expected {expected_sorted_ids}, got {archive_tran_ids}"
+        f"Archive tran_id order drift; expected {expected_sorted_ids}, got {archive_tran_ids}"
     )
 
     # (l.3) Cross-check: the tran_id order in the S3 archive

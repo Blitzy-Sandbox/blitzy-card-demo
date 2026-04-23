@@ -1,4 +1,3 @@
-
 # ============================================================================
 # CardDemo — End-to-End Batch Pipeline Tests (Mainframe-to-Cloud migration)
 # ============================================================================
@@ -140,11 +139,11 @@ _STEP_FUNCTIONS_DEFINITION_PATH: str = os.path.join(
 # widths in CREASTMT / TRANREPT / POSTTRAN output tests. These values
 # are mainframe-era byte-size contracts that MUST be preserved for
 # downstream consumers that still expect fixed-width output files.
-_LRECL_STATEMENT_TEXT: int = 80    # CREASTMT.JCL STMTFILE DD
-_LRECL_STATEMENT_HTML: int = 100   # CREASTMT.JCL HTMLFILE DD
-_LRECL_REPORT: int = 133           # TRANREPT.jcl TRANREPT DD
-_LRECL_REJECT: int = 430           # POSTTRAN.jcl DALYREJS DD
-_LRECL_TRANSACT: int = 350         # INTCALC.jcl TRANSACT DD (SYSTRAN)
+_LRECL_STATEMENT_TEXT: int = 80  # CREASTMT.JCL STMTFILE DD
+_LRECL_STATEMENT_HTML: int = 100  # CREASTMT.JCL HTMLFILE DD
+_LRECL_REPORT: int = 133  # TRANREPT.jcl TRANREPT DD
+_LRECL_REJECT: int = 430  # POSTTRAN.jcl DALYREJS DD
+_LRECL_TRANSACT: int = 350  # INTCALC.jcl TRANSACT DD (SYSTRAN)
 
 # COBOL reject codes from CBTRN02C.cbl (WS-VALIDATION-FAIL-REASON values).
 _REJECT_INVALID_CARD: int = 100
@@ -623,9 +622,7 @@ class TestStage1PostTran:
         account_lookup = _build_account_lookup(pipeline_test_accounts)
         valid_tran = pipeline_daily_transactions[0]
 
-        is_valid, reject_code, reject_desc = validate_transaction(
-            valid_tran, xref_lookup, account_lookup
-        )
+        is_valid, reject_code, reject_desc = validate_transaction(valid_tran, xref_lookup, account_lookup)
 
         assert is_valid is True
         assert reject_code == 0
@@ -648,9 +645,7 @@ class TestStage1PostTran:
         account_lookup = _build_account_lookup(pipeline_test_accounts)
         invalid_card_tran = pipeline_daily_transactions[1]
 
-        is_valid, reject_code, reject_desc = validate_transaction(
-            invalid_card_tran, xref_lookup, account_lookup
-        )
+        is_valid, reject_code, reject_desc = validate_transaction(invalid_card_tran, xref_lookup, account_lookup)
 
         assert is_valid is False
         assert reject_code == _REJECT_INVALID_CARD
@@ -681,9 +676,7 @@ class TestStage1PostTran:
         account_lookup = _build_account_lookup(pipeline_test_accounts)
         orphan_tran = pipeline_daily_transactions[2]
 
-        is_valid, reject_code, reject_desc = validate_transaction(
-            orphan_tran, xref_lookup, account_lookup
-        )
+        is_valid, reject_code, reject_desc = validate_transaction(orphan_tran, xref_lookup, account_lookup)
 
         assert is_valid is False
         assert reject_code == _REJECT_ACCT_NOT_FOUND
@@ -709,9 +702,7 @@ class TestStage1PostTran:
         account_lookup = _build_account_lookup(pipeline_test_accounts)
         overlimit_tran = pipeline_daily_transactions[3]
 
-        is_valid, reject_code, reject_desc = validate_transaction(
-            overlimit_tran, xref_lookup, account_lookup
-        )
+        is_valid, reject_code, reject_desc = validate_transaction(overlimit_tran, xref_lookup, account_lookup)
 
         assert is_valid is False
         assert reject_code == _REJECT_OVERLIMIT
@@ -736,9 +727,7 @@ class TestStage1PostTran:
         account_lookup = _build_account_lookup(pipeline_test_accounts)
         expired_tran = pipeline_daily_transactions[4]
 
-        is_valid, reject_code, reject_desc = validate_transaction(
-            expired_tran, xref_lookup, account_lookup
-        )
+        is_valid, reject_code, reject_desc = validate_transaction(expired_tran, xref_lookup, account_lookup)
 
         assert is_valid is False
         assert reject_code == _REJECT_EXPIRED
@@ -764,9 +753,7 @@ class TestStage1PostTran:
         account_lookup: dict[str, dict[str, Any]] = {}
         invalid_card_tran = pipeline_daily_transactions[1]
 
-        is_valid, reject_code, reject_desc = validate_transaction(
-            invalid_card_tran, xref_lookup, account_lookup
-        )
+        is_valid, reject_code, reject_desc = validate_transaction(invalid_card_tran, xref_lookup, account_lookup)
 
         assert is_valid is False
         # Cascade stops at stage 1; stage 2 is NOT reached.
@@ -848,15 +835,13 @@ class TestStage1PostTran:
         """
         existing: dict[tuple[str, str, str], dict[str, Any]] = {}
 
-        result = update_tcatbal(
-            "00000000001", "01", "1001", Decimal("50.00"), existing
-        )
+        result = update_tcatbal("00000000001", "01", "1001", Decimal("50.00"), existing)
 
         # CREATE semantics: new row inserted into existing, balance equals
         # the amount (no pre-existing balance to add to).
         assert ("00000000001", "01", "1001") in existing
         assert result["acct_id"] == "00000000001"
-        assert result["type_code"] == "01"   # hybrid return key
+        assert result["type_code"] == "01"  # hybrid return key
         assert result["cat_code"] == "1001"  # hybrid return key
         assert result["tran_cat_bal"] == Decimal("50.00")
         assert isinstance(result["tran_cat_bal"], Decimal)
@@ -876,16 +861,12 @@ class TestStage1PostTran:
             },
         }
 
-        result = update_tcatbal(
-            "00000000001", "01", "1001", Decimal("50.00"), existing
-        )
+        result = update_tcatbal("00000000001", "01", "1001", Decimal("50.00"), existing)
 
         # UPDATE semantics: 500.00 + 50.00 = 550.00.
         assert result["tran_cat_bal"] == Decimal("550.00")
         # Mutation propagates back to the existing dict (same object).
-        assert existing[("00000000001", "01", "1001")]["tran_cat_bal"] == (
-            Decimal("550.00")
-        )
+        assert existing[("00000000001", "01", "1001")]["tran_cat_bal"] == (Decimal("550.00"))
 
     def test_posttran_return_code_4_on_rejects(self) -> None:
         """POSTTRAN sets return code 4 when any transactions reject.
@@ -938,8 +919,11 @@ class TestStage1PostTran:
         posted = build_posted_transaction(valid_tran)
         updated_acct = update_account_balance(account, valid_tran["dalytran_amt"])
         updated_tcat = update_tcatbal(
-            "00000000001", "01", "1001",
-            valid_tran["dalytran_amt"], existing,
+            "00000000001",
+            "01",
+            "1001",
+            valid_tran["dalytran_amt"],
+            existing,
         )
 
         # Posted transaction amount: Decimal, not float.
@@ -956,7 +940,6 @@ class TestStage1PostTran:
         # TCATBAL balance: Decimal.
         assert isinstance(updated_tcat["tran_cat_bal"], Decimal)
         assert not isinstance(updated_tcat["tran_cat_bal"], float)
-
 
 
 # ============================================================================
@@ -996,9 +979,7 @@ class TestStage2IntCalc:
         equivalent, the intermediate Decimal values and rounding
         semantics can differ.
         """
-        result = compute_monthly_interest(
-            Decimal("10000.00"), Decimal("15.00")
-        )
+        result = compute_monthly_interest(Decimal("10000.00"), Decimal("15.00"))
 
         # (10000.00 * 15.00) / 1200 = 125.00 exactly.
         assert result == Decimal("125.00")
@@ -1013,9 +994,7 @@ class TestStage2IntCalc:
         quantize-to-0.01 with ROUND_HALF_EVEN, this becomes 79.12
         (Banker's rounding rounds 79.125 down to the nearest even).
         """
-        result = compute_monthly_interest(
-            Decimal("5000.00"), Decimal("18.99")
-        )
+        result = compute_monthly_interest(Decimal("5000.00"), Decimal("18.99"))
 
         # 79.125 rounded to 79.12 via ROUND_HALF_EVEN (Banker's rounding:
         # 5 rounds to the nearest EVEN -> 2 is even, so .125 -> .12).
@@ -1037,9 +1016,7 @@ class TestStage2IntCalc:
         compute function returns exactly zero for a zero rate
         (the skip-write logic is enforced in the main driver).
         """
-        result = compute_monthly_interest(
-            Decimal("10000.00"), Decimal("0.00")
-        )
+        result = compute_monthly_interest(Decimal("10000.00"), Decimal("0.00"))
 
         assert result == Decimal("0.00")
         assert isinstance(result, Decimal)
@@ -1190,9 +1167,7 @@ class TestStage2IntCalc:
         DESC='Int. for a/c <acct_id>', MERCHANT-ID='000000000'.
         All monetary fields are :class:`Decimal`.
         """
-        monthly = compute_monthly_interest(
-            Decimal("10000.00"), Decimal("15.00")
-        )
+        monthly = compute_monthly_interest(Decimal("10000.00"), Decimal("15.00"))
         itx = build_interest_transaction(
             _DEFAULT_PARM_DATE,
             1,
@@ -1454,16 +1429,13 @@ class TestStage4aCreAStmt:
         account = self._build_account()
         transactions = self._build_transactions()
 
-        text = generate_text_statement(
-            "4111111111111111", customer, account, transactions
-        )
+        text = generate_text_statement("4111111111111111", customer, account, transactions)
 
         assert text, "Text statement must not be empty."
         # Every line must be exactly 80 characters (LRECL=80).
         for line in text.splitlines():
             assert len(line) == _LRECL_STATEMENT_TEXT, (
-                f"Text statement line violates LRECL=80: "
-                f"len={len(line)}, line={line!r}"
+                f"Text statement line violates LRECL=80: len={len(line)}, line={line!r}"
             )
         # START OF STATEMENT banner present.
         assert "START OF STATEMENT" in text
@@ -1484,9 +1456,7 @@ class TestStage4aCreAStmt:
         account = self._build_account()
         transactions = self._build_transactions()
 
-        html = generate_html_statement(
-            "4111111111111111", customer, account, transactions
-        )
+        html = generate_html_statement("4111111111111111", customer, account, transactions)
 
         assert html, "HTML statement must not be empty."
         # Valid HTML5 doctype and tags.
@@ -1527,9 +1497,7 @@ class TestStage4aCreAStmt:
         # card_num is the XREFFILE key that drives the join -- it is
         # supplied here to prove the 4-entity integration works.
         card_num = "4111111111111111"
-        text = generate_text_statement(
-            card_num, customer, account, transactions
-        )
+        text = generate_text_statement(card_num, customer, account, transactions)
 
         # Customer data (from CUSTFILE).
         assert "John" in text
@@ -1561,9 +1529,7 @@ class TestStage4aCreAStmt:
             {"card_num": "4222222222222222", "tran_id": "2022071800000002"},
         ]
 
-        sorted_rows = sorted(
-            unsorted, key=lambda r: (r["card_num"], r["tran_id"])
-        )
+        sorted_rows = sorted(unsorted, key=lambda r: (r["card_num"], r["tran_id"]))
 
         # Card 4111 first (ASC), then card 4222. Within each card,
         # tran_id ASC.
@@ -1637,9 +1603,7 @@ class TestStage4bTranRept:
         ]
         df = spark_session.createDataFrame(data, ["tran_id", "tran_proc_ts"])
 
-        filtered = filter_by_date_range(
-            df, _DEFAULT_REPORT_START, _DEFAULT_REPORT_END
-        )
+        filtered = filter_by_date_range(df, _DEFAULT_REPORT_START, _DEFAULT_REPORT_END)
         rows = filtered.collect()
 
         assert len(rows) == 1
@@ -1679,23 +1643,14 @@ class TestStage4bTranRept:
         for row in rows:
             card = row["card_num"]
             amt = row["tran_amt"]
-            account_totals[card] = (
-                account_totals.get(card, Decimal("0.00")) + amt
-            )
+            account_totals[card] = account_totals.get(card, Decimal("0.00")) + amt
             page_total += amt
             grand_total += amt
 
         # Quantize all accumulators to 2 decimal places.
-        account_totals = {
-            k: v.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
-            for k, v in account_totals.items()
-        }
-        page_total = page_total.quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_EVEN
-        )
-        grand_total = grand_total.quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_EVEN
-        )
+        account_totals = {k: v.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN) for k, v in account_totals.items()}
+        page_total = page_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+        grand_total = grand_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
 
         # Level 1 (account subtotal).
         assert account_totals["4111111111111111"] == Decimal("30.49")
@@ -1731,9 +1686,7 @@ class TestStage4bTranRept:
 
         line = format_report_line(row, 1)
 
-        assert len(line) == _LRECL_REPORT, (
-            f"Report line violates LRECL=133: len={len(line)}"
-        )
+        assert len(line) == _LRECL_REPORT, f"Report line violates LRECL=133: len={len(line)}"
         # Verify key fields are present in the line.
         assert "2022071800000001" in line
         assert "00000000001" in line
@@ -1801,7 +1754,6 @@ class TestStage4bTranRept:
         assert "30.00" in account_total_lines[0]
         # Second break (EOF): card 4222 total = 5.00.
         assert "5.00" in account_total_lines[1]
-
 
 
 # ============================================================================
@@ -1923,18 +1875,9 @@ class TestPipelineOrchestration:
         definition = self._load_definition()
         states = definition["States"]
 
-        assert (
-            states["Stage1_PostTran"]["Parameters"]["JobName"]
-            == "carddemo-posttran"
-        )
-        assert (
-            states["Stage2_IntCalc"]["Parameters"]["JobName"]
-            == "carddemo-intcalc"
-        )
-        assert (
-            states["Stage3_CombTran"]["Parameters"]["JobName"]
-            == "carddemo-combtran"
-        )
+        assert states["Stage1_PostTran"]["Parameters"]["JobName"] == "carddemo-posttran"
+        assert states["Stage2_IntCalc"]["Parameters"]["JobName"] == "carddemo-intcalc"
+        assert states["Stage3_CombTran"]["Parameters"]["JobName"] == "carddemo-combtran"
 
         # Parallel branches reference creastmt and tranrept.
         branches = states["Stage4_Parallel"]["Branches"]
@@ -1969,13 +1912,8 @@ class TestPipelineOrchestration:
             assert catches, f"State {state_name} missing Catch clause"
             # At least one Catch handles ALL errors and routes to
             # PipelineFailed.
-            catchall = [
-                c for c in catches
-                if "States.ALL" in c.get("ErrorEquals", [])
-            ]
-            assert catchall, (
-                f"State {state_name} must Catch States.ALL -> PipelineFailed"
-            )
+            catchall = [c for c in catches if "States.ALL" in c.get("ErrorEquals", [])]
+            assert catchall, f"State {state_name} must Catch States.ALL -> PipelineFailed"
             assert catchall[0]["Next"] == "PipelineFailed"
 
     def test_step_functions_retry_policy(self) -> None:
@@ -1997,13 +1935,8 @@ class TestPipelineOrchestration:
             retries = states[state_name].get("Retry", [])
             assert retries, f"State {state_name} missing Retry policy"
             # At least one Retry entry exists with TaskFailed handling.
-            task_failed = [
-                r for r in retries
-                if "States.TaskFailed" in r.get("ErrorEquals", [])
-            ]
-            assert task_failed, (
-                f"State {state_name} must Retry on States.TaskFailed"
-            )
+            task_failed = [r for r in retries if "States.TaskFailed" in r.get("ErrorEquals", [])]
+            assert task_failed, f"State {state_name} must Retry on States.TaskFailed"
             # Retries the task with finite attempts.
             assert task_failed[0].get("MaxAttempts", 0) >= 1
 
@@ -2012,9 +1945,7 @@ class TestPipelineOrchestration:
         for branch in branches:
             for state in branch["States"].values():
                 if state.get("Type") == "Task":
-                    assert state.get("Retry"), (
-                        f"Stage 4 branch task missing Retry: {state}"
-                    )
+                    assert state.get("Retry"), f"Stage 4 branch task missing Retry: {state}"
 
     def test_step_functions_failure_halts_downstream(self) -> None:
         """Stage N failure routes to PipelineFailed (downstream halted).
@@ -2029,12 +1960,8 @@ class TestPipelineOrchestration:
 
         # Stage 1 Catch -> PipelineFailed (not Stage 2).
         catches = stage1.get("Catch", [])
-        pipeline_failed_catches = [
-            c for c in catches if c.get("Next") == "PipelineFailed"
-        ]
-        assert pipeline_failed_catches, (
-            "Stage 1 must route errors to PipelineFailed, not Stage 2"
-        )
+        pipeline_failed_catches = [c for c in catches if c.get("Next") == "PipelineFailed"]
+        assert pipeline_failed_catches, "Stage 1 must route errors to PipelineFailed, not Stage 2"
         # PipelineFailed is a terminal Fail state.
         pipeline_failed = definition["States"]["PipelineFailed"]
         assert pipeline_failed["Type"] == "Fail"
@@ -2075,9 +2002,7 @@ class TestPipelineOrchestration:
             if "Stage4b_TranRept" in branch["States"]:
                 tranrept_state = branch["States"]["Stage4b_TranRept"]
                 break
-        assert tranrept_state is not None, (
-            "Stage4b_TranRept not found in Stage 4 Parallel branches"
-        )
+        assert tranrept_state is not None, "Stage4b_TranRept not found in Stage 4 Parallel branches"
 
         args = tranrept_state["Parameters"].get("Arguments", {})
         assert "--start_date" in args
@@ -2138,9 +2063,7 @@ class TestInterStageDependencies:
             UserSecurity: "user_security",
         }
         for model, tablename in expected_tables.items():
-            assert hasattr(model, "__tablename__"), (
-                f"ORM model {model.__name__} missing __tablename__"
-            )
+            assert hasattr(model, "__tablename__"), f"ORM model {model.__name__} missing __tablename__"
             assert model.__tablename__ == tablename, (
                 f"ORM model {model.__name__} __tablename__ mismatch: "
                 f"got {model.__tablename__!r}, expected {tablename!r}"
@@ -2159,23 +2082,25 @@ class TestInterStageDependencies:
         # will read.
         posttran_output: dict[tuple[str, str, str], dict[str, Any]] = {}
         update_tcatbal(
-            "00000000001", "01", "1001",
-            Decimal("100.00"), posttran_output,
+            "00000000001",
+            "01",
+            "1001",
+            Decimal("100.00"),
+            posttran_output,
         )
         update_tcatbal(
-            "00000000001", "02", "1001",
-            Decimal("50.00"), posttran_output,
+            "00000000001",
+            "02",
+            "1001",
+            Decimal("50.00"),
+            posttran_output,
         )
         # Now Stage 2 inputs. The balance key format must be the
         # same shape that INTCALC's _build_tcatbal_list expects
         # (dict keyed by composite PK).
         assert len(posttran_output) == 2
-        assert posttran_output[("00000000001", "01", "1001")]["tran_cat_bal"] == (
-            Decimal("100.00")
-        )
-        assert posttran_output[("00000000001", "02", "1001")]["tran_cat_bal"] == (
-            Decimal("50.00")
-        )
+        assert posttran_output[("00000000001", "01", "1001")]["tran_cat_bal"] == (Decimal("100.00"))
+        assert posttran_output[("00000000001", "02", "1001")]["tran_cat_bal"] == (Decimal("50.00"))
         # All values remain Decimal across the hand-off.
         for row in posttran_output.values():
             assert isinstance(row["tran_cat_bal"], Decimal)
@@ -2190,12 +2115,13 @@ class TestInterStageDependencies:
         then reads.
         """
         # Stage 2 produces interest transactions.
-        monthly = compute_monthly_interest(
-            Decimal("10000.00"), Decimal("15.00")
-        )
+        monthly = compute_monthly_interest(Decimal("10000.00"), Decimal("15.00"))
         interest_tx = build_interest_transaction(
-            _DEFAULT_PARM_DATE, 1, "00000000001",
-            "4111111111111111", monthly,
+            _DEFAULT_PARM_DATE,
+            1,
+            "00000000001",
+            "4111111111111111",
+            monthly,
         )
 
         # Stage 3 concatenates system + backup.
@@ -2290,15 +2216,16 @@ class TestInterStageDependencies:
         assert posted["tran_amt"] == daily_amt
 
         # Stage 2: interest computation.
-        monthly = compute_monthly_interest(
-            Decimal("10000.00"), Decimal("15.00")
-        )
+        monthly = compute_monthly_interest(Decimal("10000.00"), Decimal("15.00"))
         assert isinstance(monthly, Decimal)
 
         # Stage 2: interest transaction.
         interest_tx = build_interest_transaction(
-            _DEFAULT_PARM_DATE, 1, "00000000001",
-            "4111111111111111", monthly,
+            _DEFAULT_PARM_DATE,
+            1,
+            "00000000001",
+            "4111111111111111",
+            monthly,
         )
         assert isinstance(interest_tx["tran_amt"], Decimal)
         assert interest_tx["tran_amt"] == monthly
@@ -2317,13 +2244,10 @@ class TestInterStageDependencies:
         grand = Decimal("0.00")
         for row in combined:
             grand += row["tran_amt"]
-        grand = grand.quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_EVEN
-        )
+        grand = grand.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
         assert isinstance(grand, Decimal)
         # No float appears anywhere in the pipeline path.
         assert not isinstance(grand, float)
-
 
 
 # ============================================================================
@@ -2397,27 +2321,27 @@ class TestAWSIntegration:
         xref_lookup = _build_xref_lookup(pipeline_test_xrefs)
         account_lookup = _build_account_lookup(pipeline_test_accounts)
         is_valid, reject_code, reject_desc = validate_transaction(
-            daily_tran, xref_lookup, account_lookup,
+            daily_tran,
+            xref_lookup,
+            account_lookup,
         )
         assert is_valid is False
         assert reject_code == _REJECT_INVALID_CARD
 
         # Build and write the reject record to S3.
         reject_record = build_reject_record(
-            daily_tran, reject_code, reject_desc,
+            daily_tran,
+            reject_code,
+            reject_desc,
         )
         # The batch job writes the 430-char record_line field.
         line = reject_record["record_line"]
         assert isinstance(line, str)
-        assert len(line) == _LRECL_REJECT, (
-            f"Reject record must be {_LRECL_REJECT} chars, got {len(line)}"
-        )
+        assert len(line) == _LRECL_REJECT, f"Reject record must be {_LRECL_REJECT} chars, got {len(line)}"
 
         # Simulate the PySpark job writing the line to S3.
         key = "dalyrejs/gen-000001/part-00000"
-        s3.put_object(
-            Bucket=self._S3_BUCKET, Key=key, Body=line.encode("utf-8")
-        )
+        s3.put_object(Bucket=self._S3_BUCKET, Key=key, Body=line.encode("utf-8"))
 
         # Verify we can read it back (the consumer would do the same).
         response = s3.get_object(Bucket=self._S3_BUCKET, Key=key)
@@ -2450,12 +2374,13 @@ class TestAWSIntegration:
 
         # Build a real interest transaction -- the Stage 2 Glue job
         # uses this exact helper.
-        monthly = compute_monthly_interest(
-            Decimal("10000.00"), Decimal("15.00")
-        )
+        monthly = compute_monthly_interest(Decimal("10000.00"), Decimal("15.00"))
         tx = build_interest_transaction(
-            _DEFAULT_PARM_DATE, 1, "00000000001",
-            "4111111111111111", monthly,
+            _DEFAULT_PARM_DATE,
+            1,
+            "00000000001",
+            "4111111111111111",
+            monthly,
         )
         # Verify the interest transaction is well-formed before
         # we care about the wire serialization.
@@ -2485,15 +2410,11 @@ class TestAWSIntegration:
         )
         # Pad or truncate to exactly 350 chars.
         line = (line + " " * _LRECL_TRANSACT)[:_LRECL_TRANSACT]
-        assert len(line) == _LRECL_TRANSACT, (
-            f"SYSTRAN line must be {_LRECL_TRANSACT} chars, got {len(line)}"
-        )
+        assert len(line) == _LRECL_TRANSACT, f"SYSTRAN line must be {_LRECL_TRANSACT} chars, got {len(line)}"
 
         # Simulate the PySpark job writing to the SYSTRAN S3 prefix.
         key = "systran/gen-000001/part-00000"
-        s3.put_object(
-            Bucket=self._S3_BUCKET, Key=key, Body=line.encode("utf-8")
-        )
+        s3.put_object(Bucket=self._S3_BUCKET, Key=key, Body=line.encode("utf-8"))
 
         # Verify round-trip.
         response = s3.get_object(Bucket=self._S3_BUCKET, Key=key)
@@ -2562,13 +2483,15 @@ class TestAWSIntegration:
 
         # Generate and persist the text statement.
         text_body = generate_text_statement(
-            "4111111111111111", customer_rec, account_rec, transactions,
+            "4111111111111111",
+            customer_rec,
+            account_rec,
+            transactions,
         )
         # Every line MUST be exactly 80 chars (LRECL=80).
         for ln in text_body.splitlines():
             assert len(ln) == _LRECL_STATEMENT_TEXT, (
-                f"Text statement line violates LRECL=80: "
-                f"len={len(ln)!r} line={ln!r}"
+                f"Text statement line violates LRECL=80: len={len(ln)!r} line={ln!r}"
             )
         text_key = "statements/gen-000001/4111111111111111.txt"
         s3.put_object(
@@ -2579,13 +2502,15 @@ class TestAWSIntegration:
 
         # Generate and persist the HTML statement.
         html_body = generate_html_statement(
-            "4111111111111111", customer_rec, account_rec, transactions,
+            "4111111111111111",
+            customer_rec,
+            account_rec,
+            transactions,
         )
         # HTML lines may be <= 100 chars (LRECL=100 is the ceiling).
         for ln in html_body.splitlines():
             assert len(ln) <= _LRECL_STATEMENT_HTML, (
-                f"HTML statement line exceeds LRECL=100: "
-                f"len={len(ln)!r} line={ln!r}"
+                f"HTML statement line exceeds LRECL=100: len={len(ln)!r} line={ln!r}"
             )
         html_key = "statements/gen-000001/4111111111111111.html"
         s3.put_object(
@@ -2648,17 +2573,16 @@ class TestAWSIntegration:
         lines: list[str] = []
         for idx, row in enumerate(rows, start=1):
             line = format_report_line(row, idx)
-            assert len(line) == _LRECL_REPORT, (
-                f"Report line {idx} must be {_LRECL_REPORT} chars, "
-                f"got {len(line)}"
-            )
+            assert len(line) == _LRECL_REPORT, f"Report line {idx} must be {_LRECL_REPORT} chars, got {len(line)}"
             lines.append(line)
         body = "\n".join(lines)
 
         # Persist to S3 under the REPTFILE prefix.
         key = "reports/gen-000001/part-00000"
         s3.put_object(
-            Bucket=self._S3_BUCKET, Key=key, Body=body.encode("utf-8"),
+            Bucket=self._S3_BUCKET,
+            Key=key,
+            Body=body.encode("utf-8"),
         )
 
         # Verify round-trip.
@@ -2671,4 +2595,3 @@ class TestAWSIntegration:
         # Transaction IDs are preserved in the output.
         assert "2022071800000001" in payload
         assert "2022071800000002" in payload
-

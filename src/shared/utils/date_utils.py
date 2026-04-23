@@ -153,6 +153,7 @@ See Also
 * ``src/shared/utils/__init__.py`` — exposes this module as part of the
   ``src.shared.utils`` package.
 """
+
 from __future__ import annotations
 
 import datetime as _datetime
@@ -390,19 +391,19 @@ def format_validation_message(
     # Build the 80-byte WS-MESSAGE record column-for-column.
     # Field widths annotated inline; sum equals 80 exactly.
     raw = (
-        f"{severity_field}"   #  4 — WS-SEVERITY PIC X(04)
-        f"Mesg Code: "        # 11 — FILLER PIC X(11) VALUE 'Mesg Code:' (10+space)
-        f"{msg_no_field}"     #  4 — WS-MSG-NO PIC X(04)
-        f" "                  #  1 — FILLER PIC X(01) VALUE SPACE
-        f"{result_field}"     # 15 — WS-RESULT PIC X(15)
-        f" "                  #  1 — FILLER PIC X(01) VALUE SPACE
-        f"TstDate: "          #  9 — FILLER PIC X(09) VALUE 'TstDate:' (8+space)
-        f"{date_field}"       # 10 — WS-DATE PIC X(10)
-        f" "                  #  1 — FILLER PIC X(01) VALUE SPACE
-        f"Mask used:"         # 10 — FILLER PIC X(10) VALUE 'Mask used:' (exact fit)
-        f"{mask_field}"       # 10 — WS-DATE-FMT PIC X(10)
-        f" "                  #  1 — FILLER PIC X(01) VALUE SPACE
-        f"   "                #  3 — FILLER PIC X(03) VALUE SPACES
+        f"{severity_field}"  #  4 — WS-SEVERITY PIC X(04)
+        f"Mesg Code: "  # 11 — FILLER PIC X(11) VALUE 'Mesg Code:' (10+space)
+        f"{msg_no_field}"  #  4 — WS-MSG-NO PIC X(04)
+        f" "  #  1 — FILLER PIC X(01) VALUE SPACE
+        f"{result_field}"  # 15 — WS-RESULT PIC X(15)
+        f" "  #  1 — FILLER PIC X(01) VALUE SPACE
+        f"TstDate: "  #  9 — FILLER PIC X(09) VALUE 'TstDate:' (8+space)
+        f"{date_field}"  # 10 — WS-DATE PIC X(10)
+        f" "  #  1 — FILLER PIC X(01) VALUE SPACE
+        f"Mask used:"  # 10 — FILLER PIC X(10) VALUE 'Mask used:' (exact fit)
+        f"{mask_field}"  # 10 — WS-DATE-FMT PIC X(10)
+        f" "  #  1 — FILLER PIC X(01) VALUE SPACE
+        f"   "  #  3 — FILLER PIC X(03) VALUE SPACES
     )
     # Pad or truncate to exactly 80 characters, matching the LS-RESULT
     # PIC X(80) parameter in the CSUTLDTC linkage section.  With correct
@@ -570,9 +571,7 @@ def validate_month(
     # The COBOL 88-level condition on the redefined PIC 9(02) field will
     # fail both for out-of-range values and for non-numeric input, so we
     # check both conditions together.
-    error_message = (
-        f"{field_name}: Month must be a number between 1 and 12."
-    )
+    error_message = f"{field_name}: Month must be a number between 1 and 12."
     if not _is_all_digits(stripped):
         return False, error_message, "0"
 
@@ -634,9 +633,7 @@ def validate_day(
     stripped = day_str.strip() if day_str else ""
 
     # Step 2 — numeric check via TEST-NUMVAL → FLG-DAY-NOT-OK ('0')
-    error_message = (
-        f"{field_name}:day must be a number between 1 and 31."
-    )
+    error_message = f"{field_name}:day must be a number between 1 and 31."
     if not _is_all_digits(stripped):
         return False, error_message, "0"
 
@@ -755,11 +752,7 @@ def validate_day_month_year(
         all flags are ``''``.
     """
     # Step 1 — 31-day rule
-    if (
-        month not in _THIRTY_ONE_DAY_MONTHS
-        and month != _FEBRUARY
-        and day == 31
-    ):
+    if month not in _THIRTY_ONE_DAY_MONTHS and month != _FEBRUARY and day == 31:
         return (
             False,
             f"{field_name}:Cannot have 31 days in this month.",
@@ -807,7 +800,7 @@ _DEFAULT_MASK: str = "YYYYMMDD"
 #: space-padded widths.  The key is the feedback-code level-88 condition
 #: name from lines 41-49 of ``CSUTLDTC.cbl``.
 _CEEDAYS_RESULT_TEXT: dict[str, str] = {
-    "FC-INVALID-DATE": "Date is valid",      # severity 0 (misleading name)
+    "FC-INVALID-DATE": "Date is valid",  # severity 0 (misleading name)
     "FC-INSUFFICIENT-DATA": "Insufficient",
     "FC-BAD-DATE-VALUE": "Datevalue error",
     "FC-INVALID-ERA": "Invalid Era",
@@ -937,9 +930,7 @@ def validate_date_ccyymmdd(
     year_int = int(year_str)
     month_int = int(month_str)
     day_int = int(day_str)
-    cross_ok, cross_err, yf, mf, df = validate_day_month_year(
-        year_int, month_int, day_int, field_name
-    )
+    cross_ok, cross_err, yf, mf, df = validate_day_month_year(year_int, month_int, day_int, field_name)
     if not cross_ok:
         return DateValidationResult(
             is_valid=False,
@@ -967,10 +958,7 @@ def validate_date_ccyymmdd(
             result_text=_CEEDAYS_RESULT_TEXT["OTHER"],
             test_date=raw[:10],
             mask_used=_DEFAULT_MASK,
-            error_message=(
-                f"{field_name} validation error "
-                f"Sev code: 12 Message code: 0 ({exc})"
-            ),
+            error_message=(f"{field_name} validation error Sev code: 12 Message code: 0 ({exc})"),
             year_flag="0",
             month_flag="0",
             day_flag="0",
@@ -1220,10 +1208,7 @@ def format_timestamp(dt: _datetime.datetime) -> str:
     '2024-01-15 09:30:05.123456'
     """
     return (
-        f"{dt.year:04d}-{dt.month:02d}-{dt.day:02d}"
-        f" "
-        f"{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}"
-        f".{dt.microsecond:06d}"
+        f"{dt.year:04d}-{dt.month:02d}-{dt.day:02d} {dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}.{dt.microsecond:06d}"
     )
 
 
@@ -1264,6 +1249,3 @@ def get_current_date_formatted() -> dict[str, str]:
         "hh_mm_ss": format_time_hh_mm_ss(now.hour, now.minute, now.second),
         "timestamp": format_timestamp(now),
     }
-
-
-

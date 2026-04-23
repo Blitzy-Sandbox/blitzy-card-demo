@@ -365,20 +365,20 @@ _REJECT_DESCRIPTIONS: dict[int, str] = {
 # value corresponds to the PIC X(n) / PIC 9(n) length from the COBOL
 # copybook referenced on the right.
 # ----------------------------------------------------------------------------
-_DALYTRAN_ID_LEN: int = 16         # DALYTRAN-ID          PIC X(16)  (CVTRA06Y)
-_DALYTRAN_TYPE_LEN: int = 2        # DALYTRAN-TYPE-CD     PIC X(02)  (CVTRA06Y)
-_DALYTRAN_CAT_LEN: int = 4         # DALYTRAN-CAT-CD      PIC 9(04)  (CVTRA06Y)
-_DALYTRAN_SOURCE_LEN: int = 10     # DALYTRAN-SOURCE      PIC X(10)  (CVTRA06Y)
-_DALYTRAN_DESC_LEN: int = 100      # DALYTRAN-DESC        PIC X(100) (CVTRA06Y)
-_DALYTRAN_AMT_LEN: int = 12        # DALYTRAN-AMT         PIC S9(09)V99 → 12 chars "-nnnnnnnnn.nn"
-_DALYTRAN_MERCH_ID_LEN: int = 9    # DALYTRAN-MERCHANT-ID PIC 9(09)  (CVTRA06Y)
+_DALYTRAN_ID_LEN: int = 16  # DALYTRAN-ID          PIC X(16)  (CVTRA06Y)
+_DALYTRAN_TYPE_LEN: int = 2  # DALYTRAN-TYPE-CD     PIC X(02)  (CVTRA06Y)
+_DALYTRAN_CAT_LEN: int = 4  # DALYTRAN-CAT-CD      PIC 9(04)  (CVTRA06Y)
+_DALYTRAN_SOURCE_LEN: int = 10  # DALYTRAN-SOURCE      PIC X(10)  (CVTRA06Y)
+_DALYTRAN_DESC_LEN: int = 100  # DALYTRAN-DESC        PIC X(100) (CVTRA06Y)
+_DALYTRAN_AMT_LEN: int = 12  # DALYTRAN-AMT         PIC S9(09)V99 → 12 chars "-nnnnnnnnn.nn"
+_DALYTRAN_MERCH_ID_LEN: int = 9  # DALYTRAN-MERCHANT-ID PIC 9(09)  (CVTRA06Y)
 _DALYTRAN_MERCH_NAME_LEN: int = 50
 _DALYTRAN_MERCH_CITY_LEN: int = 50
 _DALYTRAN_MERCH_ZIP_LEN: int = 10
-_DALYTRAN_CARD_NUM_LEN: int = 16   # DALYTRAN-CARD-NUM    PIC X(16)  (CVTRA06Y)
-_DALYTRAN_ORIG_TS_LEN: int = 26    # DALYTRAN-ORIG-TS     PIC X(26)  (CVTRA06Y)
-_DALYTRAN_PROC_TS_LEN: int = 26    # DALYTRAN-PROC-TS     PIC X(26)  (CVTRA06Y)
-_DALYTRAN_FILLER_LEN: int = 20     # FILLER               PIC X(20)  (CVTRA06Y)
+_DALYTRAN_CARD_NUM_LEN: int = 16  # DALYTRAN-CARD-NUM    PIC X(16)  (CVTRA06Y)
+_DALYTRAN_ORIG_TS_LEN: int = 26  # DALYTRAN-ORIG-TS     PIC X(26)  (CVTRA06Y)
+_DALYTRAN_PROC_TS_LEN: int = 26  # DALYTRAN-PROC-TS     PIC X(26)  (CVTRA06Y)
+_DALYTRAN_FILLER_LEN: int = 20  # FILLER               PIC X(20)  (CVTRA06Y)
 #: Total byte size of the DALYTRAN-RECORD = 16 + 2 + 4 + 10 + 100 + 12
 #: + 9 + 50 + 50 + 10 + 16 + 26 + 26 + 20 = 351 bytes.  Because the
 #: source copybook FILLER is PIC X(20) and the amount field is
@@ -915,27 +915,13 @@ def build_reject_record(
     parts.append(_pad_right(daily_tran.get("dalytran_source"), _DALYTRAN_SOURCE_LEN))
     parts.append(_pad_right(daily_tran.get("dalytran_desc"), _DALYTRAN_DESC_LEN))
     parts.append(_format_amt_for_reject(_money(daily_tran.get("dalytran_amt"))))
-    parts.append(
-        _zero_pad_left(daily_tran.get("dalytran_merchant_id"), _DALYTRAN_MERCH_ID_LEN)
-    )
-    parts.append(
-        _pad_right(daily_tran.get("dalytran_merchant_name"), _DALYTRAN_MERCH_NAME_LEN)
-    )
-    parts.append(
-        _pad_right(daily_tran.get("dalytran_merchant_city"), _DALYTRAN_MERCH_CITY_LEN)
-    )
-    parts.append(
-        _pad_right(daily_tran.get("dalytran_merchant_zip"), _DALYTRAN_MERCH_ZIP_LEN)
-    )
-    parts.append(
-        _pad_right(daily_tran.get("dalytran_card_num"), _DALYTRAN_CARD_NUM_LEN)
-    )
-    parts.append(
-        _pad_right(daily_tran.get("dalytran_orig_ts"), _DALYTRAN_ORIG_TS_LEN)
-    )
-    parts.append(
-        _pad_right(daily_tran.get("dalytran_proc_ts"), _DALYTRAN_PROC_TS_LEN)
-    )
+    parts.append(_zero_pad_left(daily_tran.get("dalytran_merchant_id"), _DALYTRAN_MERCH_ID_LEN))
+    parts.append(_pad_right(daily_tran.get("dalytran_merchant_name"), _DALYTRAN_MERCH_NAME_LEN))
+    parts.append(_pad_right(daily_tran.get("dalytran_merchant_city"), _DALYTRAN_MERCH_CITY_LEN))
+    parts.append(_pad_right(daily_tran.get("dalytran_merchant_zip"), _DALYTRAN_MERCH_ZIP_LEN))
+    parts.append(_pad_right(daily_tran.get("dalytran_card_num"), _DALYTRAN_CARD_NUM_LEN))
+    parts.append(_pad_right(daily_tran.get("dalytran_orig_ts"), _DALYTRAN_ORIG_TS_LEN))
+    parts.append(_pad_right(daily_tran.get("dalytran_proc_ts"), _DALYTRAN_PROC_TS_LEN))
 
     # Interim sum before FILLER: 16+2+4+10+100+12+9+50+50+10+16+26+26 = 331.
     # Pad the remainder out to exactly 350 bytes with spaces (the
@@ -1543,10 +1529,7 @@ def _write_rejects_to_s3(reject_records: list[dict[str, Any]]) -> str | None:
     if "/" not in scheme_stripped:
         # Defensive: get_versioned_s3_path guarantees the URI contains
         # a path, but guard against accidental misconfiguration.
-        raise ValueError(
-            f"Invalid DALYREJS S3 URI returned by get_versioned_s3_path: "
-            f"{prefix_uri!r}"
-        )
+        raise ValueError(f"Invalid DALYREJS S3 URI returned by get_versioned_s3_path: {prefix_uri!r}")
     bucket_name, key_prefix = scheme_stripped.split("/", 1)
 
     # Compose the final object key — matches the COBOL convention of
@@ -1770,9 +1753,7 @@ def main() -> None:
             transaction_count += 1
 
             # Run the 4-stage validation cascade.
-            is_valid, reject_code, reject_desc = validate_transaction(
-                tran_row, xref_lookup, account_lookup
-            )
+            is_valid, reject_code, reject_desc = validate_transaction(tran_row, xref_lookup, account_lookup)
 
             if is_valid:
                 # ----------------------------------------------------
@@ -1819,9 +1800,7 @@ def main() -> None:
                 # paragraph 2500-WRITE-REJECT-REC (lines 446-465).
                 # ----------------------------------------------------
                 reject_count += 1
-                reject_record = build_reject_record(
-                    tran_row, reject_code, reject_desc
-                )
+                reject_record = build_reject_record(tran_row, reject_code, reject_desc)
                 reject_records.append(reject_record)
                 # Log the reject at WARNING level so operators see
                 # the reject stream without having to stream-read
@@ -1914,8 +1893,7 @@ def main() -> None:
             )
             if rows_inserted == len(posted_transactions):
                 logger.info(
-                    "Wrote %d posted transaction(s) to the transactions "
-                    "table (clean run — no pre-existing keys).",
+                    "Wrote %d posted transaction(s) to the transactions table (clean run — no pre-existing keys).",
                     rows_inserted,
                 )
             elif rows_inserted > 0:
@@ -1964,14 +1942,11 @@ def main() -> None:
             )
             write_table(accounts_out_df, "accounts", mode="overwrite")
             logger.info(
-                "Wrote %d account record(s) to the accounts table "
-                "(overwrite mode — REWRITE equivalent).",
+                "Wrote %d account record(s) to the accounts table (overwrite mode — REWRITE equivalent).",
                 len(account_lookup),
             )
         else:
-            logger.warning(
-                "account_lookup is empty — accounts table write skipped."
-            )
+            logger.warning("account_lookup is empty — accounts table write skipped.")
 
         # 4c. Updated TCATBAL → transaction_category_balances table
         #     (overwrite).  The create-or-update semantic of
@@ -1990,15 +1965,11 @@ def main() -> None:
                 mode="overwrite",
             )
             logger.info(
-                "Wrote %d transaction-category-balance record(s) "
-                "(overwrite mode — REWRITE + WRITE equivalent).",
+                "Wrote %d transaction-category-balance record(s) (overwrite mode — REWRITE + WRITE equivalent).",
                 len(tcatbal_lookup),
             )
         else:
-            logger.warning(
-                "tcatbal_lookup is empty — "
-                "transaction_category_balances table write skipped."
-            )
+            logger.warning("tcatbal_lookup is empty — transaction_category_balances table write skipped.")
 
         # 4d. Rejects → S3 DALYREJS path (LRECL=430 text object).
         if reject_records:
@@ -2066,8 +2037,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     if reject_count > 0:  # noqa: F821 — reject_count is defined inside try block
         logger.info(
-            "Exiting with non-zero return code 4 to signal "
-            "%d daily-transaction reject(s).",
+            "Exiting with non-zero return code 4 to signal %d daily-transaction reject(s).",
             reject_count,
         )
         sys.exit(4)
@@ -2098,5 +2068,3 @@ if __name__ == "__main__":
     # correct behaviour (no double-logging, no orphan plaintext lines).
     logger.debug("Invoked with sys.argv: %s", sys.argv)
     main()
-
-

@@ -299,10 +299,7 @@ def get_versioned_s3_path(
     preserves correctness under either format.
     """
     if gdg_name not in GDG_PATH_MAP:
-        raise ValueError(
-            f"Unknown GDG name: {gdg_name!r}. "
-            f"Valid GDG names: {sorted(GDG_PATH_MAP.keys())}"
-        )
+        raise ValueError(f"Unknown GDG name: {gdg_name!r}. Valid GDG names: {sorted(GDG_PATH_MAP.keys())}")
 
     if bucket is None:
         # Lazy import of Settings to avoid circular dependency between
@@ -680,10 +677,7 @@ def list_generations(
     boundary.
     """
     if gdg_name not in GDG_PATH_MAP:
-        raise ValueError(
-            f"Unknown GDG name: {gdg_name!r}. "
-            f"Valid GDG names: {sorted(GDG_PATH_MAP.keys())}"
-        )
+        raise ValueError(f"Unknown GDG name: {gdg_name!r}. Valid GDG names: {sorted(GDG_PATH_MAP.keys())}")
 
     if bucket is None:
         # Lazy import of Settings — see note in get_versioned_s3_path.
@@ -735,9 +729,7 @@ def list_generations(
             parts = relative.split("/", 4)
             if len(parts) >= 5:
                 # parts = [YYYY, MM, DD, HHMMSS, rest_of_key]
-                generation_prefixes.add(
-                    f"{prefix}/{parts[0]}/{parts[1]}/{parts[2]}/{parts[3]}/"
-                )
+                generation_prefixes.add(f"{prefix}/{parts[0]}/{parts[1]}/{parts[2]}/{parts[3]}/")
 
     # Sort descending (newest first). Lexicographic descending sort is
     # equivalent to chronological descending sort because the path
@@ -850,10 +842,7 @@ def cleanup_old_generations(gdg_name: str, bucket: str | None = None) -> int:
     deletion step is skipped.
     """
     if gdg_name not in GDG_PATH_MAP:
-        raise ValueError(
-            f"Unknown GDG name: {gdg_name!r}. "
-            f"Valid GDG names: {sorted(GDG_PATH_MAP.keys())}"
-        )
+        raise ValueError(f"Unknown GDG name: {gdg_name!r}. Valid GDG names: {sorted(GDG_PATH_MAP.keys())}")
 
     # Short-circuit for non-GDG names (STATEMNT.PS, STATEMNT.HTML from
     # CREASTMT.JCL). These are plain PS datasets on the mainframe and
@@ -997,4 +986,3 @@ __all__ = [
     "read_from_s3",
     "write_to_s3",
 ]
-

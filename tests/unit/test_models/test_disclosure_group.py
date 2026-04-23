@@ -387,9 +387,7 @@ def test_composite_key_matches_cobol_group() -> None:
     # ``Column.key`` is typed ``str | None`` in SQLAlchemy 2.x but
     # every mapped column in this ORM model has an explicit ``key=``
     # so the value is guaranteed to be a string.
-    primary_key_names: set[str] = {
-        str(c.key) for c in inspect(DisclosureGroup).primary_key
-    }
+    primary_key_names: set[str] = {str(c.key) for c in inspect(DisclosureGroup).primary_key}
 
     # Inclusion — every COBOL key elementary field is a PK column.
     missing_key_columns = cobol_key_columns - primary_key_names

@@ -358,9 +358,7 @@ def test_compute_monthly_interest_not_simplified() -> None:
     dis_int_rate = Decimal("7.77")
     # Manually compute the reference value in the SAME order the
     # production code uses: (bal * rate) / 1200 — then quantise.
-    expected = ((tran_cat_bal * dis_int_rate) / Decimal("1200")).quantize(
-        Decimal("0.01"), rounding=ROUND_HALF_EVEN
-    )
+    expected = ((tran_cat_bal * dis_int_rate) / Decimal("1200")).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
 
     result = compute_monthly_interest(
         tran_cat_bal=tran_cat_bal,
@@ -545,16 +543,13 @@ def test_get_interest_rate_default_fallback(
     warning_messages = [
         record.getMessage()
         for record in caplog.records
-        if record.levelno == logging.WARNING
-        and record.name == _MODULE_LOGGER_NAME
+        if record.levelno == logging.WARNING and record.name == _MODULE_LOGGER_NAME
     ]
     assert _COBOL_MISSING_MSG_EXPECTED in warning_messages, (
-        f"Missing COBOL DISPLAY 'DISCLOSURE GROUP RECORD MISSING' — "
-        f"got: {warning_messages!r}"
+        f"Missing COBOL DISPLAY 'DISCLOSURE GROUP RECORD MISSING' — got: {warning_messages!r}"
     )
     assert _COBOL_TRY_DEFAULT_MSG_EXPECTED in warning_messages, (
-        f"Missing COBOL DISPLAY 'TRY WITH DEFAULT GROUP CODE' — "
-        f"got: {warning_messages!r}"
+        f"Missing COBOL DISPLAY 'TRY WITH DEFAULT GROUP CODE' — got: {warning_messages!r}"
     )
 
     # Ordering check — the COBOL source emits the two messages
@@ -606,24 +601,12 @@ def test_get_interest_rate_default_not_found_raises() -> None:
     # The error message should contain the DEFAULT group id and
     # the specific type/cat codes for operator troubleshooting.
     error_msg = str(exc_info.value)
-    assert "DEFAULT" in error_msg, (
-        f"KeyError message must mention the DEFAULT group id — "
-        f"got: {error_msg!r}"
-    )
-    assert "01" in error_msg, (
-        f"KeyError message must mention the type_cd — "
-        f"got: {error_msg!r}"
-    )
-    assert "0005" in error_msg, (
-        f"KeyError message must mention the cat_cd — "
-        f"got: {error_msg!r}"
-    )
+    assert "DEFAULT" in error_msg, f"KeyError message must mention the DEFAULT group id — got: {error_msg!r}"
+    assert "01" in error_msg, f"KeyError message must mention the type_cd — got: {error_msg!r}"
+    assert "0005" in error_msg, f"KeyError message must mention the cat_cd — got: {error_msg!r}"
     # The message should also reference the account's actual
     # group-id so operators can correlate with the missing row.
-    assert "PLATINUM" in error_msg, (
-        f"KeyError message must mention the account group_id — "
-        f"got: {error_msg!r}"
-    )
+    assert "PLATINUM" in error_msg, f"KeyError message must mention the account group_id — got: {error_msg!r}"
 
 
 @pytest.mark.unit
@@ -653,7 +636,6 @@ def test_get_interest_rate_zeroapr_group() -> None:
     # Returns 0.00 — caller should skip interest computation.
     assert result == Decimal("0.00")
     assert isinstance(result, Decimal)
-
 
 
 # ============================================================================
@@ -805,18 +787,15 @@ def test_account_update_on_break() -> None:
 
     # Mutation 1: ADD WS-TOTAL-INT TO ACCT-CURR-BAL
     assert account_record["acct_curr_bal"] == Decimal("525.00"), (
-        f"acct_curr_bal must equal 500.00 + 25.00 = 525.00, "
-        f"got {account_record['acct_curr_bal']!r}"
+        f"acct_curr_bal must equal 500.00 + 25.00 = 525.00, got {account_record['acct_curr_bal']!r}"
     )
     # Mutation 2: MOVE 0 TO ACCT-CURR-CYC-CREDIT (CBACT04C line 353)
     assert account_record["acct_curr_cyc_credit"] == Decimal("0.00"), (
-        f"acct_curr_cyc_credit must be zeroed (MOVE 0), "
-        f"got {account_record['acct_curr_cyc_credit']!r}"
+        f"acct_curr_cyc_credit must be zeroed (MOVE 0), got {account_record['acct_curr_cyc_credit']!r}"
     )
     # Mutation 3: MOVE 0 TO ACCT-CURR-CYC-DEBIT (CBACT04C line 354)
     assert account_record["acct_curr_cyc_debit"] == Decimal("0.00"), (
-        f"acct_curr_cyc_debit must be zeroed (MOVE 0), "
-        f"got {account_record['acct_curr_cyc_debit']!r}"
+        f"acct_curr_cyc_debit must be zeroed (MOVE 0), got {account_record['acct_curr_cyc_debit']!r}"
     )
     # Type safety: all three monetary fields remain Decimal
     # (COBOL PIC S9(n)V99 parity — never float).
@@ -896,9 +875,7 @@ def test_account_break_detection_single_account(
         _tcatbal("00000000001", "01", "0007", Decimal("3000.00")),
     ]
     tcatbal_df = _make_mock_df(tcatbal_rows)
-    xref_df = _make_mock_df(
-        [{"card_num": "4111111111111111", "cust_id": "000000001", "acct_id": "00000000001"}]
-    )
+    xref_df = _make_mock_df([{"card_num": "4111111111111111", "cust_id": "000000001", "acct_id": "00000000001"}])
     accounts_df = _make_mock_df(
         [
             {
@@ -984,9 +961,7 @@ def test_account_break_detection_single_account(
     mock_write_to_s3.assert_called_once()
 
     # Accounts table was written back (bulk overwrite).
-    assert "accounts" in written_tables, (
-        f"Expected accounts table to be written, got: {list(written_tables)!r}"
-    )
+    assert "accounts" in written_tables, f"Expected accounts table to be written, got: {list(written_tables)!r}"
 
     # The accounts dict was mutated in place by _update_account_balance.
     # Inspect the original row dict to confirm the accumulated total_int.
@@ -1167,34 +1142,26 @@ def test_account_break_detection_multiple_accounts(
     # Extract the 3 mutated account dicts from the input mock
     # (mutated in-place by _update_account_balance).
     updated_accts = {
-        rm.asDict.return_value["acct_id"]: rm.asDict.return_value
-        for rm in accounts_df.collect.return_value
+        rm.asDict.return_value["acct_id"]: rm.asDict.return_value for rm in accounts_df.collect.return_value
     }
 
     # Account 1: base 500.00 + interest 15.00 = 515.00
     assert updated_accts["00000000001"]["acct_curr_bal"] == Decimal("515.00"), (
-        "account 1 total_int incorrect — each account's total_int "
-        "must reset on account break"
+        "account 1 total_int incorrect — each account's total_int must reset on account break"
     )
     # Account 2: base 500.00 + interest 30.00 = 530.00
     assert updated_accts["00000000002"]["acct_curr_bal"] == Decimal("530.00"), (
-        "account 2 total_int incorrect — WS-TOTAL-INT must reset "
-        "at the account break"
+        "account 2 total_int incorrect — WS-TOTAL-INT must reset at the account break"
     )
     # Account 3: base 500.00 + interest 45.00 = 545.00
     assert updated_accts["00000000003"]["acct_curr_bal"] == Decimal("545.00"), (
-        "account 3 total_int incorrect (last account must still "
-        "be updated after TCATBAL EOF — see COBOL line 220)"
+        "account 3 total_int incorrect (last account must still be updated after TCATBAL EOF — see COBOL line 220)"
     )
 
     # All three accounts had their cycle values zeroed.
     for acct_id, acct in updated_accts.items():
-        assert acct["acct_curr_cyc_credit"] == Decimal("0.00"), (
-            f"account {acct_id} cycle credit not zeroed"
-        )
-        assert acct["acct_curr_cyc_debit"] == Decimal("0.00"), (
-            f"account {acct_id} cycle debit not zeroed"
-        )
+        assert acct["acct_curr_cyc_credit"] == Decimal("0.00"), f"account {acct_id} cycle credit not zeroed"
+        assert acct["acct_curr_cyc_debit"] == Decimal("0.00"), f"account {acct_id} cycle debit not zeroed"
 
 
 @pytest.mark.unit
@@ -1257,9 +1224,7 @@ def test_last_account_updated_after_eof(
     ]
     tcatbal_df = _make_mock_df(tcatbal_rows)
 
-    xref_df = _make_mock_df(
-        [{"card_num": "4111111111111142", "cust_id": "000000042", "acct_id": "00000000042"}]
-    )
+    xref_df = _make_mock_df([{"card_num": "4111111111111142", "cust_id": "000000042", "acct_id": "00000000042"}])
 
     account_rows = [
         {
@@ -1344,7 +1309,6 @@ def test_last_account_updated_after_eof(
     assert account_row_dict["acct_curr_cyc_debit"] == Decimal("0.00")
 
 
-
 # ============================================================================
 # Phase 5 — Transaction-ID generation & record assembly tests.
 # ============================================================================
@@ -1386,8 +1350,7 @@ def test_generate_tran_id_format() -> None:
     """
     result = generate_tran_id("2022071800", 1)
     assert result == "2022071800000001", (
-        f"Expected '2022071800000001' (10-char date + 6-digit zero-"
-        f"padded '000001'), got {result!r}"
+        f"Expected '2022071800000001' (10-char date + 6-digit zero-padded '000001'), got {result!r}"
     )
     # Length is exactly 16 (TRAN-ID PIC X(16)).
     assert len(result) == 16, f"Expected len 16, got {len(result)}"
@@ -1465,63 +1428,48 @@ def test_build_interest_transaction_fields() -> None:
     )
 
     # Field 1: tran_id — 16-char PARM-DATE + 6-digit suffix.
-    assert result["tran_id"] == "2022071800000007", (
-        f"tran_id wrong — got {result['tran_id']!r}"
-    )
+    assert result["tran_id"] == "2022071800000007", f"tran_id wrong — got {result['tran_id']!r}"
     # Field 2: TRAN-TYPE-CD = '01' (interest).
-    assert result["tran_type_cd"] == "01", (
-        f"tran_type_cd must be '01' (interest) — got {result['tran_type_cd']!r}"
-    )
+    assert result["tran_type_cd"] == "01", f"tran_type_cd must be '01' (interest) — got {result['tran_type_cd']!r}"
     # Field 3: TRAN-CAT-CD = '0005' (zero-padded PIC 9(04)).
     assert result["tran_cat_cd"] == "0005", (
-        f"tran_cat_cd must be '0005' (zero-padded PIC 9(04) "
-        f"interest category) — got {result['tran_cat_cd']!r}"
+        f"tran_cat_cd must be '0005' (zero-padded PIC 9(04) interest category) — got {result['tran_cat_cd']!r}"
     )
     # Field 4: TRAN-SOURCE = 'System' padded to 10 chars.
     assert result["tran_source"].startswith("System"), (
         f"tran_source must start with 'System' — got {result['tran_source']!r}"
     )
     assert len(result["tran_source"]) == 10, (
-        f"tran_source must be 10 chars (PIC X(10)) — "
-        f"got len {len(result['tran_source'])}"
+        f"tran_source must be 10 chars (PIC X(10)) — got len {len(result['tran_source'])}"
     )
     # Field 5: TRAN-DESC = 'Int. for a/c ' + ACCT-ID, padded to 100.
     expected_desc_prefix = "Int. for a/c 00000000001"
     assert result["tran_desc"].startswith(expected_desc_prefix), (
-        f"tran_desc must start with {expected_desc_prefix!r} — "
-        f"got {result['tran_desc']!r}"
+        f"tran_desc must start with {expected_desc_prefix!r} — got {result['tran_desc']!r}"
     )
     assert len(result["tran_desc"]) == 100, (
-        f"tran_desc must be 100 chars (PIC X(100)) — "
-        f"got len {len(result['tran_desc'])}"
+        f"tran_desc must be 100 chars (PIC X(100)) — got len {len(result['tran_desc'])}"
     )
     # Field 6: TRAN-AMT = WS-MONTHLY-INT (Decimal, 2-decimal scale).
-    assert result["tran_amt"] == Decimal("150.00"), (
-        f"tran_amt must equal monthly_int — got {result['tran_amt']!r}"
-    )
+    assert result["tran_amt"] == Decimal("150.00"), f"tran_amt must equal monthly_int — got {result['tran_amt']!r}"
     assert isinstance(result["tran_amt"], Decimal)
     # Field 7: TRAN-MERCHANT-ID = 0 → stored as "000000000" (9 zeros).
     assert result["tran_merchant_id"] == "000000000", (
-        f"tran_merchant_id must be '000000000' (MOVE 0 TO TRAN-"
-        f"MERCHANT-ID) — got {result['tran_merchant_id']!r}"
+        f"tran_merchant_id must be '000000000' (MOVE 0 TO TRAN-MERCHANT-ID) — got {result['tran_merchant_id']!r}"
     )
     # Fields 8, 9, 10: MERCHANT-NAME/CITY/ZIP = SPACES (blank-filled).
     assert result["tran_merchant_name"] == " " * 50, (
-        f"tran_merchant_name must be 50 spaces (MOVE SPACES) — "
-        f"got {result['tran_merchant_name']!r}"
+        f"tran_merchant_name must be 50 spaces (MOVE SPACES) — got {result['tran_merchant_name']!r}"
     )
     assert result["tran_merchant_city"] == " " * 50, (
-        f"tran_merchant_city must be 50 spaces (MOVE SPACES) — "
-        f"got {result['tran_merchant_city']!r}"
+        f"tran_merchant_city must be 50 spaces (MOVE SPACES) — got {result['tran_merchant_city']!r}"
     )
     assert result["tran_merchant_zip"] == " " * 10, (
-        f"tran_merchant_zip must be 10 spaces (MOVE SPACES) — "
-        f"got {result['tran_merchant_zip']!r}"
+        f"tran_merchant_zip must be 10 spaces (MOVE SPACES) — got {result['tran_merchant_zip']!r}"
     )
     # Field 11: TRAN-CARD-NUM = XREF-CARD-NUM padded to 16.
     assert result["tran_card_num"] == "4111111111111111", (
-        f"tran_card_num must equal XREF-CARD-NUM padded to 16 — "
-        f"got {result['tran_card_num']!r}"
+        f"tran_card_num must equal XREF-CARD-NUM padded to 16 — got {result['tran_card_num']!r}"
     )
     assert len(result["tran_card_num"]) == 16
     # Fields 12 & 13: ORIG/PROC timestamps must match (populated
@@ -1578,9 +1526,6 @@ def test_compute_fees_stub_preserved() -> None:
     # evidence that the COBOL EXIT. semantics are preserved.
     _compute_fees_stub()  # first invocation — no-op
     _compute_fees_stub()  # second invocation — idempotent no-op
-
-
-
 
 
 # ============================================================================
@@ -1787,9 +1732,7 @@ def test_intcalc_main_with_spark(
     )
 
     # ----- Wire read_table → DataFrame dispatch by table name -----
-    def _read_side_effect(
-        _spark: Any, table_name: str, **_kwargs: Any
-    ) -> Any:
+    def _read_side_effect(_spark: Any, table_name: str, **_kwargs: Any) -> Any:
         return {
             "transaction_category_balances": tcatbal_df,
             "card_cross_references": xref_df,
@@ -1802,20 +1745,13 @@ def test_intcalc_main_with_spark(
     # get_versioned_s3_path returns a plausible versioned URI with
     # scheme + bucket + key_prefix (must contain at least one "/"
     # after scheme per _write_interest_trans_to_s3 validation).
-    mock_get_s3_path.return_value = (
-        "s3://test-bucket/generated/system-transactions/2024/06/15/120000/"
-    )
-    mock_write_to_s3.return_value = (
-        "s3://test-bucket/generated/system-transactions/"
-        "2024/06/15/120000/SYSTRAN.txt"
-    )
+    mock_get_s3_path.return_value = "s3://test-bucket/generated/system-transactions/2024/06/15/120000/"
+    mock_write_to_s3.return_value = "s3://test-bucket/generated/system-transactions/2024/06/15/120000/SYSTRAN.txt"
 
     # ----- Capture write_table calls so we can inspect the DF -----
     written_dataframes: dict[str, Any] = {}
 
-    def _write_side_effect(
-        df_arg: Any, table_name: str, **_kwargs: Any
-    ) -> None:
+    def _write_side_effect(df_arg: Any, table_name: str, **_kwargs: Any) -> None:
         written_dataframes[table_name] = df_arg
 
     mock_write_table.side_effect = _write_side_effect
@@ -1839,8 +1775,7 @@ def test_intcalc_main_with_spark(
 
     # 4) write_table invoked for the accounts table.
     assert "accounts" in written_dataframes, (
-        f"Expected 'accounts' table to be written — got: "
-        f"{list(written_dataframes.keys())}"
+        f"Expected 'accounts' table to be written — got: {list(written_dataframes.keys())}"
     )
 
     # 5) Verify the accounts-writeback DataFrame has the 13-column
@@ -1878,12 +1813,9 @@ def test_intcalc_main_with_spark(
         "acct_curr_cyc_credit",
         "acct_curr_cyc_debit",
     ):
-        field = next(
-            f for f in accounts_out_schema.fields if f.name == money_col
-        )
+        field = next(f for f in accounts_out_schema.fields if f.name == money_col)
         assert "decimal" in field.dataType.simpleString().lower(), (
-            f"{money_col} must be DecimalType — got "
-            f"{field.dataType.simpleString()}"
+            f"{money_col} must be DecimalType — got {field.dataType.simpleString()}"
         )
 
     # 7) Verify the accounts DataFrame has exactly 1 row (the
@@ -1949,12 +1881,9 @@ def test_intcalc_main_with_spark(
         if len(call.args) >= 2 and call.args[1] == "accounts":
             accounts_call = call
             break
-    assert accounts_call is not None, (
-        "write_table was never invoked with table_name='accounts'"
-    )
+    assert accounts_call is not None, "write_table was never invoked with table_name='accounts'"
     assert accounts_call.kwargs.get("mode") == "overwrite", (
-        f"accounts write_table must use mode='overwrite' "
-        f"(REWRITE equivalent) — got {accounts_call.kwargs!r}"
+        f"accounts write_table must use mode='overwrite' (REWRITE equivalent) — got {accounts_call.kwargs!r}"
     )
 
     # 9b) Verify write_table was called with mode="append" for the
@@ -2050,11 +1979,9 @@ def test_intcalc_main_with_spark(
     #     type (text/plain for the fixed-width LRECL=350 SYSTRAN
     #     dataset).
     assert write_to_s3_call.kwargs.get("content_type") == "text/plain", (
-        f"SYSTRAN S3 write must use content_type='text/plain' — "
-        f"got {write_to_s3_call.kwargs!r}"
+        f"SYSTRAN S3 write must use content_type='text/plain' — got {write_to_s3_call.kwargs!r}"
     )
 
     # 12) Verify init_glue was invoked with the expected JOB_NAME
     #     (Glue job identifier matching the AWS Glue catalog entry).
     mock_init_glue.assert_called_once_with(job_name="carddemo-intcalc")
-

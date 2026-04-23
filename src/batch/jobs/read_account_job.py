@@ -406,11 +406,7 @@ def _redact_account_financial(row_dict: dict[str, Any]) -> dict[str, Any]:
         A new dict with the sensitive financial keys removed.  All
         other key / value pairs are passed through identically.
     """
-    return {
-        k: v
-        for k, v in row_dict.items()
-        if k not in _SENSITIVE_ACCOUNT_FINANCIAL_KEYS
-    }
+    return {k: v for k, v in row_dict.items() if k not in _SENSITIVE_ACCOUNT_FINANCIAL_KEYS}
 
 
 def _log_monetary_precision_contract() -> None:

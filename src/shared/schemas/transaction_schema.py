@@ -344,26 +344,19 @@ class TransactionListRequest(BaseModel):
     tran_id: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_TRAN_ID_MAX_LEN,
-        description=(
-            "Optional transaction ID filter — max 16 chars. "
-            "Maps to COTRN00 TRNIDINI PIC X(16)."
-        ),
+        description=("Optional transaction ID filter — max 16 chars. Maps to COTRN00 TRNIDINI PIC X(16)."),
     )
     page: int = Field(
         default=1,
         ge=1,
-        description=(
-            "1-based page number (defaults to 1). Maps to COTRN00 "
-            "PAGENUMI PIC X(08)."
-        ),
+        description=("1-based page number (defaults to 1). Maps to COTRN00 PAGENUMI PIC X(08)."),
     )
     page_size: int = Field(
         default=_DEFAULT_PAGE_SIZE,
         ge=1,
         le=_MAX_PAGE_SIZE,
         description=(
-            "Rows per page (defaults to 10 — matches the 10 repeated "
-            "row groups on COTRN00.CPY). Bounded to [1, 100]."
+            "Rows per page (defaults to 10 — matches the 10 repeated row groups on COTRN00.CPY). Bounded to [1, 100]."
         ),
     )
 
@@ -373,7 +366,8 @@ class TransactionListRequest(BaseModel):
     @field_validator("tran_id")
     @classmethod
     def _validate_tran_id_filter(
-        cls, value: Optional[str]  # noqa: UP045  # schema requires `typing.Optional`
+        cls,
+        value: Optional[str],  # noqa: UP045  # schema requires `typing.Optional`
     ) -> Optional[str]:  # noqa: UP045  # schema requires `typing.Optional`
         """Normalize blank ``tran_id`` filters to ``None``.
 
@@ -404,10 +398,7 @@ class TransactionListRequest(BaseModel):
         if value is None:
             return None
         if not isinstance(value, str):
-            raise ValueError(
-                f"tran_id must be a string or None; got "
-                f"{type(value).__name__}"
-            )
+            raise ValueError(f"tran_id must be a string or None; got {type(value).__name__}")
         # Normalize blank / whitespace-only input to None (matches the
         # COBOL screen's behavior where a blank TRNIDINI was ignored).
         if not value.strip():
@@ -478,10 +469,7 @@ class TransactionListItem(BaseModel):
     tran_id: str = Field(
         ...,
         max_length=_TRAN_ID_MAX_LEN,
-        description=(
-            "16-char transaction ID (primary key). Maps to COTRN00 "
-            "TRNIDnnI PIC X(16)."
-        ),
+        description=("16-char transaction ID (primary key). Maps to COTRN00 TRNIDnnI PIC X(16)."),
     )
     tran_date: str = Field(
         ...,
@@ -496,8 +484,7 @@ class TransactionListItem(BaseModel):
         ...,
         max_length=_LIST_DESC_MAX_LEN,
         description=(
-            "Short transaction description (truncated to 26 chars "
-            "for list view). Maps to COTRN00 TDESCnnI PIC X(26)."
+            "Short transaction description (truncated to 26 chars for list view). Maps to COTRN00 TDESCnnI PIC X(26)."
         ),
     )
     amount: Decimal = Field(
@@ -582,10 +569,7 @@ class TransactionListResponse(BaseModel):
     page: int = Field(
         ...,
         ge=1,
-        description=(
-            "1-based current page number. Echoes the request page. "
-            "Maps to COTRN00 PAGENUMO PIC X(08)."
-        ),
+        description=("1-based current page number. Echoes the request page. Maps to COTRN00 PAGENUMO PIC X(08)."),
     )
     total_count: int = Field(
         ...,
@@ -599,10 +583,7 @@ class TransactionListResponse(BaseModel):
     message: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_ERRMSG_MAX_LEN,
-        description=(
-            "Optional info/error message, max 78 chars. Maps to "
-            "COTRN00 ERRMSGO PIC X(78)."
-        ),
+        description=("Optional info/error message, max 78 chars. Maps to COTRN00 ERRMSGO PIC X(78)."),
     )
 
 
@@ -717,10 +698,7 @@ class TransactionDetailResponse(BaseModel):
     tran_id_input: str = Field(
         ...,
         max_length=_TRAN_ID_MAX_LEN,
-        description=(
-            "Echoed search-input transaction ID — 16 chars. Maps to "
-            "COTRN01 TRNIDINI PIC X(16)."
-        ),
+        description=("Echoed search-input transaction ID — 16 chars. Maps to COTRN01 TRNIDINI PIC X(16)."),
     )
     tran_id: str = Field(
         ...,
@@ -733,42 +711,29 @@ class TransactionDetailResponse(BaseModel):
     card_num: str = Field(
         ...,
         max_length=_CARD_NUM_MAX_LEN,
-        description=(
-            "16-digit card PAN. Maps to COTRN01 CARDNUMI PIC X(16) "
-            "and transaction.card_num."
-        ),
+        description=("16-digit card PAN. Maps to COTRN01 CARDNUMI PIC X(16) and transaction.card_num."),
     )
     tran_type_cd: str = Field(
         ...,
         max_length=_TRAN_TYPE_CD_LEN,
-        description=(
-            "2-char transaction type code (see CVTRA03Y.cpy). Maps "
-            "to COTRN01 TTYPCDI PIC X(02)."
-        ),
+        description=("2-char transaction type code (see CVTRA03Y.cpy). Maps to COTRN01 TTYPCDI PIC X(02)."),
     )
     tran_cat_cd: str = Field(
         ...,
         max_length=_TRAN_CAT_CD_MAX_LEN,
         description=(
-            "Transaction category code (up to 4 chars — see "
-            "CVTRA04Y.cpy). Maps to COTRN01 TCATCDI PIC X(04)."
+            "Transaction category code (up to 4 chars — see CVTRA04Y.cpy). Maps to COTRN01 TCATCDI PIC X(04)."
         ),
     )
     tran_source: str = Field(
         ...,
         max_length=_TRAN_SOURCE_MAX_LEN,
-        description=(
-            "Transaction source descriptor (up to 10 chars). Maps "
-            "to COTRN01 TRNSRCI PIC X(10)."
-        ),
+        description=("Transaction source descriptor (up to 10 chars). Maps to COTRN01 TRNSRCI PIC X(10)."),
     )
     description: str = Field(
         ...,
         max_length=_DESC_MAX_LEN,
-        description=(
-            "Full transaction description (up to 60 chars). Maps to "
-            "COTRN01 TDESCI PIC X(60)."
-        ),
+        description=("Full transaction description (up to 60 chars). Maps to COTRN01 TDESCI PIC X(60)."),
     )
     amount: Decimal = Field(
         ...,
@@ -780,57 +745,37 @@ class TransactionDetailResponse(BaseModel):
     orig_date: str = Field(
         ...,
         max_length=_DATE_MAX_LEN,
-        description=(
-            "Origination date (YYYY-MM-DD or CCYYMMDD, up to 10 "
-            "chars). Maps to COTRN01 TORIGDTI PIC X(10)."
-        ),
+        description=("Origination date (YYYY-MM-DD or CCYYMMDD, up to 10 chars). Maps to COTRN01 TORIGDTI PIC X(10)."),
     )
     proc_date: str = Field(
         ...,
         max_length=_DATE_MAX_LEN,
-        description=(
-            "Processing date (YYYY-MM-DD or CCYYMMDD, up to 10 "
-            "chars). Maps to COTRN01 TPROCDTI PIC X(10)."
-        ),
+        description=("Processing date (YYYY-MM-DD or CCYYMMDD, up to 10 chars). Maps to COTRN01 TPROCDTI PIC X(10)."),
     )
     merchant_id: str = Field(
         ...,
         max_length=_MERCHANT_ID_MAX_LEN,
-        description=(
-            "9-digit merchant ID. Maps to COTRN01 MIDI PIC X(09)."
-        ),
+        description=("9-digit merchant ID. Maps to COTRN01 MIDI PIC X(09)."),
     )
     merchant_name: str = Field(
         ...,
         max_length=_MERCHANT_NAME_MAX_LEN,
-        description=(
-            "Merchant name (up to 30 chars). Maps to COTRN01 MNAMEI "
-            "PIC X(30)."
-        ),
+        description=("Merchant name (up to 30 chars). Maps to COTRN01 MNAMEI PIC X(30)."),
     )
     merchant_city: str = Field(
         ...,
         max_length=_MERCHANT_CITY_MAX_LEN,
-        description=(
-            "Merchant city (up to 25 chars). Maps to COTRN01 MCITYI "
-            "PIC X(25)."
-        ),
+        description=("Merchant city (up to 25 chars). Maps to COTRN01 MCITYI PIC X(25)."),
     )
     merchant_zip: str = Field(
         ...,
         max_length=_MERCHANT_ZIP_MAX_LEN,
-        description=(
-            "Merchant ZIP (up to 10 chars). Maps to COTRN01 MZIPI "
-            "PIC X(10)."
-        ),
+        description=("Merchant ZIP (up to 10 chars). Maps to COTRN01 MZIPI PIC X(10)."),
     )
     message: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_ERRMSG_MAX_LEN,
-        description=(
-            "Optional info/error message, max 78 chars. Maps to "
-            "COTRN01 ERRMSGI PIC X(78)."
-        ),
+        description=("Optional info/error message, max 78 chars. Maps to COTRN01 ERRMSGI PIC X(78)."),
     )
 
 
@@ -931,64 +876,41 @@ class TransactionAddRequest(BaseModel):
     acct_id: str = Field(
         ...,
         max_length=_ACCT_ID_MAX_LEN,
-        description=(
-            "Account ID (up to 11 digits — numeric). Maps to COTRN02 "
-            "ACTIDINI PIC X(11)."
-        ),
+        description=("Account ID (up to 11 digits — numeric). Maps to COTRN02 ACTIDINI PIC X(11)."),
     )
     card_num: str = Field(
         ...,
         max_length=_CARD_NUM_MAX_LEN,
-        description=(
-            "16-digit card PAN. Maps to COTRN02 CARDNINI PIC X(16)."
-        ),
+        description=("16-digit card PAN. Maps to COTRN02 CARDNINI PIC X(16)."),
     )
     tran_type_cd: str = Field(
         ...,
         max_length=_TRAN_TYPE_CD_LEN,
-        description=(
-            "2-char transaction type code. Maps to COTRN02 TTYPCDI "
-            "PIC X(02)."
-        ),
+        description=("2-char transaction type code. Maps to COTRN02 TTYPCDI PIC X(02)."),
     )
     tran_cat_cd: str = Field(
         ...,
         max_length=_TRAN_CAT_CD_MAX_LEN,
-        description=(
-            "Transaction category code (up to 4 chars). Maps to "
-            "COTRN02 TCATCDI PIC X(04)."
-        ),
+        description=("Transaction category code (up to 4 chars). Maps to COTRN02 TCATCDI PIC X(04)."),
     )
     tran_source: str = Field(
         ...,
         max_length=_TRAN_SOURCE_MAX_LEN,
-        description=(
-            "Transaction source descriptor (up to 10 chars). Maps to "
-            "COTRN02 TRNSRCI PIC X(10)."
-        ),
+        description=("Transaction source descriptor (up to 10 chars). Maps to COTRN02 TRNSRCI PIC X(10)."),
     )
     description: str = Field(
         ...,
         max_length=_DESC_MAX_LEN,
-        description=(
-            "Full transaction description (up to 60 chars). Maps to "
-            "COTRN02 TDESCI PIC X(60)."
-        ),
+        description=("Full transaction description (up to 60 chars). Maps to COTRN02 TDESCI PIC X(60)."),
     )
     amount: Decimal = Field(
         ...,
-        description=(
-            "Transaction amount — Decimal (never float), strictly > 0. "
-            "Maps to COTRN02 TRNAMTI PIC X(12)."
-        ),
+        description=("Transaction amount — Decimal (never float), strictly > 0. Maps to COTRN02 TRNAMTI PIC X(12)."),
     )
     orig_date: str = Field(
         ...,
         max_length=_DATE_MAX_LEN,
-        description=(
-            "Origination date (YYYY-MM-DD or CCYYMMDD, up to 10 chars). "
-            "Maps to COTRN02 TORIGDTI PIC X(10)."
-        ),
+        description=("Origination date (YYYY-MM-DD or CCYYMMDD, up to 10 chars). Maps to COTRN02 TORIGDTI PIC X(10)."),
     )
     proc_date: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
@@ -1002,34 +924,22 @@ class TransactionAddRequest(BaseModel):
     merchant_id: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_MERCHANT_ID_MAX_LEN,
-        description=(
-            "Optional 9-digit merchant ID. Maps to COTRN02 MIDI "
-            "PIC X(09)."
-        ),
+        description=("Optional 9-digit merchant ID. Maps to COTRN02 MIDI PIC X(09)."),
     )
     merchant_name: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_MERCHANT_NAME_MAX_LEN,
-        description=(
-            "Optional merchant name (up to 30 chars). Maps to COTRN02 "
-            "MNAMEI PIC X(30)."
-        ),
+        description=("Optional merchant name (up to 30 chars). Maps to COTRN02 MNAMEI PIC X(30)."),
     )
     merchant_city: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_MERCHANT_CITY_MAX_LEN,
-        description=(
-            "Optional merchant city (up to 25 chars). Maps to COTRN02 "
-            "MCITYI PIC X(25)."
-        ),
+        description=("Optional merchant city (up to 25 chars). Maps to COTRN02 MCITYI PIC X(25)."),
     )
     merchant_zip: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_MERCHANT_ZIP_MAX_LEN,
-        description=(
-            "Optional merchant ZIP (up to 10 chars). Maps to COTRN02 "
-            "MZIPI PIC X(10)."
-        ),
+        description=("Optional merchant ZIP (up to 10 chars). Maps to COTRN02 MZIPI PIC X(10)."),
     )
 
     @field_validator("acct_id")
@@ -1062,27 +972,17 @@ class TransactionAddRequest(BaseModel):
             character.
         """
         if value is None:
-            raise ValueError(
-                "acct_id is required (COTRN02 ACTIDINI PIC X(11))."
-            )
+            raise ValueError("acct_id is required (COTRN02 ACTIDINI PIC X(11)).")
         if not isinstance(value, str):
-            raise ValueError(
-                "acct_id must be a string (COTRN02 ACTIDINI PIC X(11))."
-            )
+            raise ValueError("acct_id must be a string (COTRN02 ACTIDINI PIC X(11)).")
         if not value.strip():
-            raise ValueError(
-                "acct_id must not be blank (COTRN02 ACTIDINI PIC X(11))."
-            )
+            raise ValueError("acct_id must not be blank (COTRN02 ACTIDINI PIC X(11)).")
         if len(value) > _ACCT_ID_MAX_LEN:
             raise ValueError(
-                f"acct_id must be at most {_ACCT_ID_MAX_LEN} characters "
-                f"(COBOL ACCT-ID PIC 9(11)); got {len(value)}."
+                f"acct_id must be at most {_ACCT_ID_MAX_LEN} characters (COBOL ACCT-ID PIC 9(11)); got {len(value)}."
             )
         if not value.isdigit():
-            raise ValueError(
-                "acct_id must contain only digits 0-9 (COBOL ACCT-ID "
-                "PIC 9(11))."
-            )
+            raise ValueError("acct_id must contain only digits 0-9 (COBOL ACCT-ID PIC 9(11)).")
         return value
 
     @field_validator("card_num")
@@ -1114,23 +1014,15 @@ class TransactionAddRequest(BaseModel):
             characters long, or contains any non-digit character.
         """
         if value is None:
-            raise ValueError(
-                "card_num is required (COTRN02 CARDNINI PIC X(16))."
-            )
+            raise ValueError("card_num is required (COTRN02 CARDNINI PIC X(16)).")
         if not isinstance(value, str):
-            raise ValueError(
-                "card_num must be a string (COTRN02 CARDNINI PIC X(16))."
-            )
+            raise ValueError("card_num must be a string (COTRN02 CARDNINI PIC X(16)).")
         if len(value) != _CARD_NUM_MAX_LEN:
             raise ValueError(
-                f"card_num must be exactly {_CARD_NUM_MAX_LEN} characters "
-                f"(COBOL CARD-NUM PIC X(16)); got {len(value)}."
+                f"card_num must be exactly {_CARD_NUM_MAX_LEN} characters (COBOL CARD-NUM PIC X(16)); got {len(value)}."
             )
         if not value.isdigit():
-            raise ValueError(
-                "card_num must contain only digits 0-9 (COBOL CARD-NUM "
-                "PIC X(16) — 16-digit PAN)."
-            )
+            raise ValueError("card_num must contain only digits 0-9 (COBOL CARD-NUM PIC X(16) — 16-digit PAN).")
         return value
 
     @field_validator("tran_type_cd")
@@ -1164,13 +1056,9 @@ class TransactionAddRequest(BaseModel):
             characters long.
         """
         if value is None:
-            raise ValueError(
-                "tran_type_cd is required (COTRN02 TTYPCDI PIC X(02))."
-            )
+            raise ValueError("tran_type_cd is required (COTRN02 TTYPCDI PIC X(02)).")
         if not isinstance(value, str):
-            raise ValueError(
-                "tran_type_cd must be a string (COTRN02 TTYPCDI PIC X(02))."
-            )
+            raise ValueError("tran_type_cd must be a string (COTRN02 TTYPCDI PIC X(02)).")
         if len(value) != _TRAN_TYPE_CD_LEN:
             raise ValueError(
                 f"tran_type_cd must be exactly {_TRAN_TYPE_CD_LEN} "
@@ -1212,17 +1100,12 @@ class TransactionAddRequest(BaseModel):
             If ``value`` is ``None`` or not strictly greater than 0.
         """
         if value is None:
-            raise ValueError(
-                "amount is required (COTRN02 TRNAMTI PIC X(12))."
-            )
+            raise ValueError("amount is required (COTRN02 TRNAMTI PIC X(12)).")
         # Decimal supports direct comparison with integers via the
         # standard arithmetic protocol; Decimal('0.01') > 0 evaluates
         # exactly, without any float round-trip.
         if value <= Decimal("0"):
-            raise ValueError(
-                "amount must be greater than 0 (COBOL guard "
-                "IF WS-TRAN-AMT > 0 in COTRN02C)."
-            )
+            raise ValueError("amount must be greater than 0 (COBOL guard IF WS-TRAN-AMT > 0 in COTRN02C).")
         return value
 
 
@@ -1289,48 +1172,32 @@ class TransactionAddResponse(BaseModel):
         ...,
         max_length=_TRAN_ID_MAX_LEN,
         description=(
-            "Server-generated transaction ID (16 chars). Maps to "
-            "transaction.tran_id (CVTRA05Y TRAN-ID PIC X(16))."
+            "Server-generated transaction ID (16 chars). Maps to transaction.tran_id (CVTRA05Y TRAN-ID PIC X(16))."
         ),
     )
     acct_id: str = Field(
         ...,
         max_length=_ACCT_ID_MAX_LEN,
-        description=(
-            "Echoed account ID (up to 11 digits). Maps to COTRN02 "
-            "ACTIDINO PIC X(11)."
-        ),
+        description=("Echoed account ID (up to 11 digits). Maps to COTRN02 ACTIDINO PIC X(11)."),
     )
     card_num: str = Field(
         ...,
         max_length=_CARD_NUM_MAX_LEN,
-        description=(
-            "Echoed 16-digit card PAN. Maps to COTRN02 CARDNINO "
-            "PIC X(16)."
-        ),
+        description=("Echoed 16-digit card PAN. Maps to COTRN02 CARDNINO PIC X(16)."),
     )
     amount: Decimal = Field(
         ...,
-        description=(
-            "Echoed transaction amount — Decimal (never float). Maps "
-            "to COTRN02 TRNAMTO PIC X(12)."
-        ),
+        description=("Echoed transaction amount — Decimal (never float). Maps to COTRN02 TRNAMTO PIC X(12)."),
     )
     confirm: str = Field(
         ...,
         max_length=_CONFIRM_MAX_LEN,
-        description=(
-            "Single-character confirmation indicator ('Y'/'N'). Maps "
-            "to COTRN02 CONFIRMO PIC X(01)."
-        ),
+        description=("Single-character confirmation indicator ('Y'/'N'). Maps to COTRN02 CONFIRMO PIC X(01)."),
     )
     message: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_ERRMSG_MAX_LEN,
-        description=(
-            "Optional info/error message, max 78 chars. Maps to "
-            "COTRN02 ERRMSGO PIC X(78)."
-        ),
+        description=("Optional info/error message, max 78 chars. Maps to COTRN02 ERRMSGO PIC X(78)."),
     )
 
 

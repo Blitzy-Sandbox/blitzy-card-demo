@@ -90,6 +90,7 @@ Structured error reporting (from ``CSMSG02Y.cpy``):
     Maximum byte-widths of the four ``ABEND-DATA`` fields, preserved for
     validation and compatibility with the original fixed-width layout.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

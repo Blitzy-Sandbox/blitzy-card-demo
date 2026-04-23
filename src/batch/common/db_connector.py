@@ -943,10 +943,7 @@ def write_table_idempotent(
         # already exists", writing nothing regardless of input —
         # masking bugs in the caller. Fail loud at the earliest
         # possible point.
-        raise ValueError(
-            "write_table_idempotent requires at least one key column; "
-            "received an empty sequence."
-        )
+        raise ValueError("write_table_idempotent requires at least one key column; received an empty sequence.")
 
     # Materialise key_columns into a list so we can pass it to both
     # DataFrame.select(*key_columns) and DataFrame.join(on=key_columns).
@@ -963,9 +960,7 @@ def write_table_idempotent(
     # network payload and to keep the JDBC query cheap on the
     # PostgreSQL side: the driver uses the B-tree primary-key index
     # to satisfy the projection without a sequential scan.
-    existing_keys_df = read_table(spark_session, table_name).select(
-        *key_column_list
-    )
+    existing_keys_df = read_table(spark_session, table_name).select(*key_column_list)
 
     # Step 2 — Left-anti join filters the input DataFrame down to
     # rows whose key does NOT appear in the target table. The
@@ -995,8 +990,7 @@ def write_table_idempotent(
         # attempt, so the function is a no-op.
         if rows_to_write == 0:
             logger.info(
-                "No new rows for '%s' (every key already present) — "
-                "idempotent append is a no-op.",
+                "No new rows for '%s' (every key already present) — idempotent append is a no-op.",
                 table_name,
             )
             return 0
@@ -1008,8 +1002,7 @@ def write_table_idempotent(
         # write_table apply unchanged.
         write_table(filtered_df, table_name, mode="append")
         logger.info(
-            "Idempotent append to '%s' wrote %d new row(s); existing "
-            "keys were skipped.",
+            "Idempotent append to '%s' wrote %d new row(s); existing keys were skipped.",
             table_name,
             rows_to_write,
         )
@@ -1026,7 +1019,6 @@ def write_table_idempotent(
             # the write's success or failure. Log at DEBUG so the
             # noise doesn't appear in CloudWatch for healthy runs.
             logger.debug(
-                "filtered_df.unpersist() raised during cleanup "
-                "(non-fatal): %s",
+                "filtered_df.unpersist() raised during cleanup (non-fatal): %s",
                 unpersist_err,
             )

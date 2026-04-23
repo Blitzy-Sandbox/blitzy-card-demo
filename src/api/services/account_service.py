@@ -393,9 +393,7 @@ _MSG_UPDATE_FAILED: str = "Changes unsuccessful. Please try again"
 # than inviting a retry — a retry on the same input would reproduce the
 # parser/validator disagreement.  Not a COBOL-sourced literal (the condition
 # is Python-specific); documented explicitly as AAP-consistent reporting.
-_MSG_PARSE_FAILED: str = (
-    "Unable to process update request due to internal validation mismatch"
-)
+_MSG_PARSE_FAILED: str = "Unable to process update request due to internal validation mismatch"
 """Defensive-in-depth internal-integrity message (CP3 MINOR #11)."""
 
 _MSG_UPDATE_STALE: str = "Record changed by some one else. Please review"
@@ -417,14 +415,10 @@ _MSG_UPDATE_STALE: str = "Record changed by some one else. Please review"
 _MSG_NO_CHANGES: str = "No change detected with respect to values fetched."
 """No-op update — request equals stored values (COACTUPC.cbl line 492, NO-CHANGES-DETECTED)."""
 
-_MSG_VIEW_XREF_NOT_FOUND: str = (
-    "Did not find this account in account card xref file"
-)
+_MSG_VIEW_XREF_NOT_FOUND: str = "Did not find this account in account card xref file"
 """Xref miss on the acct_id alternate index (COACTVWC.cbl DID-NOT-FIND-ACCT-IN-CARDXREF)."""
 
-_MSG_VIEW_ACCT_NOT_FOUND: str = (
-    "Did not find this account in account master file"
-)
+_MSG_VIEW_ACCT_NOT_FOUND: str = "Did not find this account in account master file"
 """Account miss on ACCTDAT primary key (COACTVWC.cbl DID-NOT-FIND-ACCT-IN-ACCTDAT)."""
 
 _MSG_VIEW_CUST_NOT_FOUND: str = "Did not find associated customer in master file"
@@ -447,9 +441,7 @@ _MSG_ACCT_MISSING: str = "Account number not provided"
 # STANDALONE literal as a STRING of two fragments: ``'Account Number if
 # supplied must be a 11 digit'`` + ``' Non-Zero Number'``. There is NO TRIM
 # prefix and NO trailing period.
-_MSG_ACCT_INVALID: str = (
-    "Account Number if supplied must be a 11 digit Non-Zero Number"
-)
+_MSG_ACCT_INVALID: str = "Account Number if supplied must be a 11 digit Non-Zero Number"
 """Bad account_id format (COACTUPC.cbl 1210-EDIT-ACCOUNT lines 1787-1817)."""
 
 # Dedicated message for the REST-specific path/body account_id mismatch
@@ -465,9 +457,7 @@ _MSG_ACCT_INVALID: str = (
 # non-zero numbers — they simply disagree with each other.  This dedicated
 # literal accurately reports the actual condition, addressing CP3 review
 # finding MINOR #10 ("path/body msg mismatch").  NOT a COBOL-sourced message.
-_MSG_ACCT_PATH_BODY_MISMATCH: str = (
-    "Account number in URL path does not match request body"
-)
+_MSG_ACCT_PATH_BODY_MISMATCH: str = "Account number in URL path does not match request body"
 """Path/body account_id disagreement (REST-specific; no COBOL equivalent)."""
 
 # COACTUPC.cbl ``1280-EDIT-US-STATE-ZIP-CD`` paragraph emits this STANDALONE
@@ -637,9 +627,7 @@ _SFX_AREA_CANNOT_BE_ZERO: str = ": Area code cannot be zero"
 """COACTUPC.cbl EDIT-AREA-CODE zero suffix (NO PERIOD)."""
 
 # NOTE: NO trailing period — preserved verbatim from COACTUPC.cbl line 2306.
-_SFX_AREA_NOT_VALID_NANPA: str = (
-    ": Not valid North America general purpose area code"
-)
+_SFX_AREA_NOT_VALID_NANPA: str = ": Not valid North America general purpose area code"
 """COACTUPC.cbl EDIT-AREA-CODE NANPA-lookup-fail suffix (NO PERIOD)."""
 
 # 1260 phone prefix sub-paragraph.
@@ -666,9 +654,7 @@ _SFX_LINE_CANNOT_BE_ZERO: str = ": Line number code cannot be zero"
 
 # 1265-EDIT-US-SSN INVALID-SSN-PART1 check (invalid SSA area). NOTE: NO
 # trailing period — preserved verbatim from COACTUPC.cbl line ~2464.
-_SFX_SSN_PART1_INVALID: str = (
-    ": should not be 000, 666, or between 900 and 999"
-)
+_SFX_SSN_PART1_INVALID: str = ": should not be 000, 666, or between 900 and 999"
 """COACTUPC.cbl 1265-EDIT-US-SSN INVALID-SSN-PART1 suffix (NO PERIOD)."""
 
 # 1270-EDIT-US-STATE-CD invalid state. NOTE: NO trailing period — preserved
@@ -751,9 +737,7 @@ _RE_SSN_9: re.Pattern[str] = re.compile(r"^\d{9}$")
 # Per SSA policy: SSN area numbers of 000, 666, and 900-999 are never
 # issued. COACTUPC.cbl encodes this at lines 118-135 as the
 # ``88 INVALID-SSN-PART1 VALUES 0, 666, 900 THRU 999`` level-88.
-_INVALID_SSN_AREAS: frozenset[str] = frozenset(
-    {"000", "666"} | {str(n).zfill(3) for n in range(900, 1000)}
-)
+_INVALID_SSN_AREAS: frozenset[str] = frozenset({"000", "666"} | {str(n).zfill(3) for n in range(900, 1000)})
 """Invalid SSN area codes per SSA (COACTUPC.cbl INVALID-SSN-PART1)."""
 
 
@@ -905,9 +889,7 @@ class AccountService:
                 "Account view rejected: account_id missing",
                 extra=log_context,
             )
-            return _build_view_error_response(
-                normalized_id, _MSG_ACCT_MISSING
-            )
+            return _build_view_error_response(normalized_id, _MSG_ACCT_MISSING)
 
         # --- Guard 2: account_id must be 11 numeric digits --------------
         # Maps to COACTVWC.cbl SEARCHED-ACCT-NOT-NUMERIC check and the
@@ -919,9 +901,7 @@ class AccountService:
                 "Account view rejected: account_id invalid format",
                 extra=log_context,
             )
-            return _build_view_error_response(
-                normalized_id, _MSG_ACCT_INVALID
-            )
+            return _build_view_error_response(normalized_id, _MSG_ACCT_INVALID)
 
         # --- Step 1: CardCrossReference lookup by acct_id ---------------
         # COBOL: EXEC CICS READ FILE('CXACAIX') INTO(CARD-XREF-RECORD)
@@ -934,13 +914,9 @@ class AccountService:
         # ``.first()`` rather than ``.one()`` to remain tolerant of
         # the 1:many shape.
         try:
-            xref_stmt = select(CardCrossReference).where(
-                CardCrossReference.acct_id == normalized_id
-            )
+            xref_stmt = select(CardCrossReference).where(CardCrossReference.acct_id == normalized_id)
             xref_result = await self.db.execute(xref_stmt)
-            xref: CardCrossReference | None = (
-                xref_result.scalars().first()
-            )
+            xref: CardCrossReference | None = xref_result.scalars().first()
         except Exception as exc:  # noqa: BLE001 — blanket catch per COBOL WHEN OTHER
             logger.error(
                 "Account view xref query failed",
@@ -950,9 +926,7 @@ class AccountService:
                 },
                 exc_info=True,
             )
-            return _build_view_error_response(
-                normalized_id, _MSG_VIEW_XREF_NOT_FOUND
-            )
+            return _build_view_error_response(normalized_id, _MSG_VIEW_XREF_NOT_FOUND)
 
         if xref is None:
             # COBOL: WHEN DFHRESP(NOTFND) ->
@@ -961,9 +935,7 @@ class AccountService:
                 "Account view: xref not found",
                 extra=log_context,
             )
-            return _build_view_error_response(
-                normalized_id, _MSG_VIEW_XREF_NOT_FOUND
-            )
+            return _build_view_error_response(normalized_id, _MSG_VIEW_XREF_NOT_FOUND)
 
         log_context["cust_id"] = xref.cust_id
 
@@ -982,27 +954,21 @@ class AccountService:
                 },
                 exc_info=True,
             )
-            return _build_view_error_response(
-                normalized_id, _MSG_VIEW_ACCT_NOT_FOUND
-            )
+            return _build_view_error_response(normalized_id, _MSG_VIEW_ACCT_NOT_FOUND)
 
         if account is None:
             logger.warning(
                 "Account view: account not found",
                 extra=log_context,
             )
-            return _build_view_error_response(
-                normalized_id, _MSG_VIEW_ACCT_NOT_FOUND
-            )
+            return _build_view_error_response(normalized_id, _MSG_VIEW_ACCT_NOT_FOUND)
 
         # --- Step 3: Customer lookup by cust_id -------------------------
         # COBOL: EXEC CICS READ FILE('CUSTDAT') INTO(CUSTOMER-RECORD)
         #                 RIDFLD(CUST-ID)
         # SQL  : SELECT * FROM customers WHERE cust_id = ?
         try:
-            customer: Customer | None = await self.db.get(
-                Customer, xref.cust_id
-            )
+            customer: Customer | None = await self.db.get(Customer, xref.cust_id)
         except Exception as exc:  # noqa: BLE001 — blanket catch per COBOL WHEN OTHER
             logger.error(
                 "Account view customer query failed",
@@ -1012,18 +978,14 @@ class AccountService:
                 },
                 exc_info=True,
             )
-            return _build_view_error_response(
-                normalized_id, _MSG_VIEW_CUST_NOT_FOUND
-            )
+            return _build_view_error_response(normalized_id, _MSG_VIEW_CUST_NOT_FOUND)
 
         if customer is None:
             logger.warning(
                 "Account view: customer not found",
                 extra=log_context,
             )
-            return _build_view_error_response(
-                normalized_id, _MSG_VIEW_CUST_NOT_FOUND
-            )
+            return _build_view_error_response(normalized_id, _MSG_VIEW_CUST_NOT_FOUND)
 
         # --- Step 4: Assemble the view response -------------------------
         # COBOL: 1100-PROCESS-INPUTS paragraph — MOVE each record field
@@ -1043,9 +1005,7 @@ class AccountService:
     # F-005 — Account Update
     # ------------------------------------------------------------------
 
-    async def update_account(
-        self, acct_id: str, request: AccountUpdateRequest
-    ) -> AccountUpdateResponse:
+    async def update_account(self, acct_id: str, request: AccountUpdateRequest) -> AccountUpdateResponse:
         """Dual-write update of an Account plus its associated Customer.
 
         Implements the full COACTUPC.cbl (4,236 lines) transaction
@@ -1103,9 +1063,7 @@ class AccountService:
                 "Account update rejected: acct_id missing",
                 extra=log_context,
             )
-            return _build_update_error_response(
-                normalized_id, request, _MSG_ACCT_MISSING
-            )
+            return _build_update_error_response(normalized_id, request, _MSG_ACCT_MISSING)
 
         # --- Guard 2: acct_id must be 11 numeric non-zero digits -------
         if not _validate_account_id(normalized_id):
@@ -1113,9 +1071,7 @@ class AccountService:
                 "Account update rejected: acct_id invalid format",
                 extra=log_context,
             )
-            return _build_update_error_response(
-                normalized_id, request, _MSG_ACCT_INVALID
-            )
+            return _build_update_error_response(normalized_id, request, _MSG_ACCT_INVALID)
 
         # --- Guard 3: URL-path acct_id must match request body ----------
         # When the body account_id is supplied AND differs from the
@@ -1130,10 +1086,7 @@ class AccountService:
         # a format error.  This is a REST-specific concern; COACTUPC.cbl
         # has no parallel because BMS screens carry a single
         # ``ACCTSIDI`` input field.
-        if (
-            request.account_id
-            and request.account_id.strip() != normalized_id
-        ):
+        if request.account_id and request.account_id.strip() != normalized_id:
             logger.warning(
                 "Account update rejected: path/body acct_id mismatch",
                 extra={
@@ -1141,9 +1094,7 @@ class AccountService:
                     "body_acct_id": request.account_id.strip(),
                 },
             )
-            return _build_update_error_response(
-                normalized_id, request, _MSG_ACCT_PATH_BODY_MISMATCH
-            )
+            return _build_update_error_response(normalized_id, request, _MSG_ACCT_PATH_BODY_MISMATCH)
 
         # --- Step 1: Read existing state (xref + account + customer) ---
         # Same 3-entity chain as :meth:`get_account_view`, but we
@@ -1151,13 +1102,9 @@ class AccountService:
         # attribute-level mutations and to compare old vs. new for
         # change detection.
         try:
-            xref_stmt = select(CardCrossReference).where(
-                CardCrossReference.acct_id == normalized_id
-            )
+            xref_stmt = select(CardCrossReference).where(CardCrossReference.acct_id == normalized_id)
             xref_result = await self.db.execute(xref_stmt)
-            xref: CardCrossReference | None = (
-                xref_result.scalars().first()
-            )
+            xref: CardCrossReference | None = xref_result.scalars().first()
         except Exception as exc:  # noqa: BLE001 — blanket catch per COBOL WHEN OTHER
             logger.error(
                 "Account update xref query failed",
@@ -1168,18 +1115,14 @@ class AccountService:
                 exc_info=True,
             )
             await _safe_rollback(self.db, log_context)
-            return _build_update_error_response(
-                normalized_id, request, _MSG_VIEW_XREF_NOT_FOUND
-            )
+            return _build_update_error_response(normalized_id, request, _MSG_VIEW_XREF_NOT_FOUND)
 
         if xref is None:
             logger.warning(
                 "Account update: xref not found",
                 extra=log_context,
             )
-            return _build_update_error_response(
-                normalized_id, request, _MSG_VIEW_XREF_NOT_FOUND
-            )
+            return _build_update_error_response(normalized_id, request, _MSG_VIEW_XREF_NOT_FOUND)
 
         log_context["cust_id"] = xref.cust_id
 
@@ -1195,23 +1138,17 @@ class AccountService:
                 exc_info=True,
             )
             await _safe_rollback(self.db, log_context)
-            return _build_update_error_response(
-                normalized_id, request, _MSG_VIEW_ACCT_NOT_FOUND
-            )
+            return _build_update_error_response(normalized_id, request, _MSG_VIEW_ACCT_NOT_FOUND)
 
         if account is None:
             logger.warning(
                 "Account update: account not found",
                 extra=log_context,
             )
-            return _build_update_error_response(
-                normalized_id, request, _MSG_VIEW_ACCT_NOT_FOUND
-            )
+            return _build_update_error_response(normalized_id, request, _MSG_VIEW_ACCT_NOT_FOUND)
 
         try:
-            customer: Customer | None = await self.db.get(
-                Customer, xref.cust_id
-            )
+            customer: Customer | None = await self.db.get(Customer, xref.cust_id)
         except Exception as exc:  # noqa: BLE001 — blanket catch per COBOL WHEN OTHER
             logger.error(
                 "Account update customer read failed",
@@ -1222,18 +1159,14 @@ class AccountService:
                 exc_info=True,
             )
             await _safe_rollback(self.db, log_context)
-            return _build_update_error_response(
-                normalized_id, request, _MSG_VIEW_CUST_NOT_FOUND
-            )
+            return _build_update_error_response(normalized_id, request, _MSG_VIEW_CUST_NOT_FOUND)
 
         if customer is None:
             logger.warning(
                 "Account update: customer not found",
                 extra=log_context,
             )
-            return _build_update_error_response(
-                normalized_id, request, _MSG_VIEW_CUST_NOT_FOUND
-            )
+            return _build_update_error_response(normalized_id, request, _MSG_VIEW_CUST_NOT_FOUND)
 
         # --- Step 1b: Fill missing fields from existing records --------
         # QA Checkpoint 5, Finding #5 — support partial updates by
@@ -1265,9 +1198,7 @@ class AccountService:
                     "error_message": validation_error,
                 },
             )
-            return _build_update_error_response(
-                normalized_id, request, validation_error
-            )
+            return _build_update_error_response(normalized_id, request, validation_error)
 
         # --- Step 3: Parse request -> canonical storage representation ---
         # COBOL: various field-assembly paragraphs. The request carries
@@ -1300,9 +1231,7 @@ class AccountService:
                 },
                 exc_info=True,
             )
-            return _build_update_error_response(
-                normalized_id, request, _MSG_PARSE_FAILED
-            )
+            return _build_update_error_response(normalized_id, request, _MSG_PARSE_FAILED)
 
         # --- Step 4: Change detection (1205-COMPARE-OLD-NEW) ----------
         # COBOL: MOVE old field to WS-OLD; MOVE new field to WS-NEW;
@@ -1314,9 +1243,7 @@ class AccountService:
             )
             # Return current state with the informational message;
             # error_message is cleared because this is a benign no-op.
-            return _assemble_update_response(
-                account, customer, info_message=_MSG_NO_CHANGES
-            )
+            return _assemble_update_response(account, customer, info_message=_MSG_NO_CHANGES)
 
         # --- Step 5: Apply mutations to the ORM instances --------------
         # COBOL: MOVE new values into ACCT-UPDATE-RECORD /
@@ -1360,9 +1287,7 @@ class AccountService:
                 },
             )
             await _safe_rollback(self.db, log_context)
-            return _build_update_error_response(
-                normalized_id, request, _MSG_UPDATE_STALE
-            )
+            return _build_update_error_response(normalized_id, request, _MSG_UPDATE_STALE)
         except IntegrityError as exc:
             # Constraint violation on either table — e.g. NOT NULL
             # violation, check constraint failure. Treated as a
@@ -1376,9 +1301,7 @@ class AccountService:
                 },
             )
             await _safe_rollback(self.db, log_context)
-            return _build_update_error_response(
-                normalized_id, request, _MSG_UPDATE_FAILED
-            )
+            return _build_update_error_response(normalized_id, request, _MSG_UPDATE_FAILED)
         except Exception as exc:  # noqa: BLE001 — blanket catch per COBOL WHEN OTHER
             # Catch-all for unexpected failures (connectivity loss,
             # driver errors, etc.). The SYNCPOINT ROLLBACK on
@@ -1394,9 +1317,7 @@ class AccountService:
                 exc_info=True,
             )
             await _safe_rollback(self.db, log_context)
-            return _build_update_error_response(
-                normalized_id, request, _MSG_UPDATE_FAILED
-            )
+            return _build_update_error_response(normalized_id, request, _MSG_UPDATE_FAILED)
 
         # --- Step 7: Happy path — refresh and return ------------------
         # SQLAlchemy has incremented account.version_id in-place
@@ -1413,10 +1334,7 @@ class AccountService:
         # the caller (and the BMS-equivalent JSON response) sees the
         # newly-persisted state, matching COACTUPC.cbl's 2000-SEND-MAP
         # behaviour after CONFIRM-UPDATE-SUCCESS.
-        return _assemble_update_response(
-            account, customer, info_message=_MSG_UPDATE_SUCCESS
-        )
-
+        return _assemble_update_response(account, customer, info_message=_MSG_UPDATE_SUCCESS)
 
 
 # ============================================================================
@@ -1656,9 +1574,7 @@ def _validate_us_ssn(part1: str, part2: str, part3: str) -> str | None:
     return None
 
 
-def _validate_us_phone(
-    phone_label: str, area: str, prefix: str, line: str
-) -> str | None:
+def _validate_us_phone(phone_label: str, area: str, prefix: str, line: str) -> str | None:
     """Validate the 3-3-4 phone number segmentation per COACTUPC.cbl 1260.
 
     Maps to the COBOL ``1260-EDIT-US-PHONE-NUM`` paragraph and its
@@ -2020,39 +1936,27 @@ def _validate_request(request: AccountUpdateRequest) -> str | None:
         request.open_date_month,
         request.open_date_day,
     )
-    open_date_result = validate_date_ccyymmdd(
-        open_date_ccyymmdd, field_name=_FLD_OPEN_DATE
-    )
+    open_date_result = validate_date_ccyymmdd(open_date_ccyymmdd, field_name=_FLD_OPEN_DATE)
     if not open_date_result.is_valid:
-        return open_date_result.error_message or _field_msg(
-            _FLD_OPEN_DATE, _SFX_IS_NOT_VALID
-        )
+        return open_date_result.error_message or _field_msg(_FLD_OPEN_DATE, _SFX_IS_NOT_VALID)
 
     expiry_date_ccyymmdd: str = _join_date(
         request.expiration_date_year,
         request.expiration_date_month,
         request.expiration_date_day,
     )
-    expiry_date_result = validate_date_ccyymmdd(
-        expiry_date_ccyymmdd, field_name=_FLD_EXPIRY_DATE
-    )
+    expiry_date_result = validate_date_ccyymmdd(expiry_date_ccyymmdd, field_name=_FLD_EXPIRY_DATE)
     if not expiry_date_result.is_valid:
-        return expiry_date_result.error_message or _field_msg(
-            _FLD_EXPIRY_DATE, _SFX_IS_NOT_VALID
-        )
+        return expiry_date_result.error_message or _field_msg(_FLD_EXPIRY_DATE, _SFX_IS_NOT_VALID)
 
     reissue_date_ccyymmdd: str = _join_date(
         request.reissue_date_year,
         request.reissue_date_month,
         request.reissue_date_day,
     )
-    reissue_date_result = validate_date_ccyymmdd(
-        reissue_date_ccyymmdd, field_name=_FLD_REISSUE_DATE
-    )
+    reissue_date_result = validate_date_ccyymmdd(reissue_date_ccyymmdd, field_name=_FLD_REISSUE_DATE)
     if not reissue_date_result.is_valid:
-        return reissue_date_result.error_message or _field_msg(
-            _FLD_REISSUE_DATE, _SFX_IS_NOT_VALID
-        )
+        return reissue_date_result.error_message or _field_msg(_FLD_REISSUE_DATE, _SFX_IS_NOT_VALID)
 
     # --- Date of birth (EDIT-DATE-OF-BIRTH) ------------------------
     # COACTUPC.cbl L1533 sets WS-EDIT-VARIABLE-NAME = 'Date of Birth'
@@ -2068,13 +1972,9 @@ def _validate_request(request: AccountUpdateRequest) -> str | None:
         request.customer_dob_month,
         request.customer_dob_day,
     )
-    dob_result = validate_date_of_birth(
-        dob_ccyymmdd, field_name=_FLD_DOB
-    )
+    dob_result = validate_date_of_birth(dob_ccyymmdd, field_name=_FLD_DOB)
     if not dob_result.is_valid:
-        return dob_result.error_message or _field_msg(
-            _FLD_DOB, _SFX_IS_NOT_VALID
-        )
+        return dob_result.error_message or _field_msg(_FLD_DOB, _SFX_IS_NOT_VALID)
 
     # --- Customer name (1215-EDIT-MANDATORY / 1225-EDIT-ALPHA-REQD) ---
     # COACTUPC.cbl L1560, L1576 set WS-EDIT-VARIABLE-NAME =
@@ -2517,12 +2417,8 @@ def _fill_missing_from_existing(
     # Account fields — direct scalars and date decompositions
     # ------------------------------------------------------------------
     open_year, open_month, open_day = _parse_date(account.open_date)
-    expiry_year, expiry_month, expiry_day = _parse_date(
-        account.expiration_date
-    )
-    reissue_year, reissue_month, reissue_day = _parse_date(
-        account.reissue_date
-    )
+    expiry_year, expiry_month, expiry_day = _parse_date(account.expiration_date)
+    reissue_year, reissue_month, reissue_day = _parse_date(account.reissue_date)
 
     # ------------------------------------------------------------------
     # Customer fields — SSN decomposition, date decomposition,
@@ -2546,21 +2442,15 @@ def _fill_missing_from_existing(
         stored_ssn_part2 = ""
         stored_ssn_part3 = ""
 
-    phone1_area, phone1_prefix, phone1_line = _parse_phone_display(
-        customer.phone_num_1 or ""
-    )
-    phone2_area, phone2_prefix, phone2_line = _parse_phone_display(
-        customer.phone_num_2 or ""
-    )
+    phone1_area, phone1_prefix, phone1_line = _parse_phone_display(customer.phone_num_1 or "")
+    phone2_area, phone2_prefix, phone2_line = _parse_phone_display(customer.phone_num_2 or "")
 
     stored_fico: str = _format_fico(customer.fico_credit_score)
 
     # ``customer.addr_zip`` is declared as VARCHAR(10) (preserves
     # possible 5+4 encoding) but the BMS / response field is
     # always the 5-char base ZIP, so truncate defensively.
-    stored_zip: str = (
-        customer.addr_zip[:_ZIP_LEN] if customer.addr_zip else ""
-    )
+    stored_zip: str = customer.addr_zip[:_ZIP_LEN] if customer.addr_zip else ""
 
     # ``customer.addr_line_3`` carries the city per CVCUS01Y.cpy
     # REDEFINES (see _parse_request and _assemble_view_response).
@@ -2596,202 +2486,96 @@ def _fill_missing_from_existing(
     # ------------------------------------------------------------------
     updates: dict[str, object] = {
         # Account scalars
-        "active_status": (
-            request.active_status
-            if request.active_status is not None
-            else account.active_status
-        ),
-        "open_date_year": (
-            request.open_date_year
-            if request.open_date_year is not None
-            else open_year
-        ),
-        "open_date_month": (
-            request.open_date_month
-            if request.open_date_month is not None
-            else open_month
-        ),
-        "open_date_day": (
-            request.open_date_day
-            if request.open_date_day is not None
-            else open_day
-        ),
+        "active_status": (request.active_status if request.active_status is not None else account.active_status),
+        "open_date_year": (request.open_date_year if request.open_date_year is not None else open_year),
+        "open_date_month": (request.open_date_month if request.open_date_month is not None else open_month),
+        "open_date_day": (request.open_date_day if request.open_date_day is not None else open_day),
         "credit_limit": (
-            request.credit_limit
-            if request.credit_limit is not None
-            else safe_decimal(account.credit_limit)
+            request.credit_limit if request.credit_limit is not None else safe_decimal(account.credit_limit)
         ),
         "expiration_date_year": (
-            request.expiration_date_year
-            if request.expiration_date_year is not None
-            else expiry_year
+            request.expiration_date_year if request.expiration_date_year is not None else expiry_year
         ),
         "expiration_date_month": (
-            request.expiration_date_month
-            if request.expiration_date_month is not None
-            else expiry_month
+            request.expiration_date_month if request.expiration_date_month is not None else expiry_month
         ),
-        "expiration_date_day": (
-            request.expiration_date_day
-            if request.expiration_date_day is not None
-            else expiry_day
-        ),
+        "expiration_date_day": (request.expiration_date_day if request.expiration_date_day is not None else expiry_day),
         "cash_credit_limit": (
             request.cash_credit_limit
             if request.cash_credit_limit is not None
             else safe_decimal(account.cash_credit_limit)
         ),
-        "reissue_date_year": (
-            request.reissue_date_year
-            if request.reissue_date_year is not None
-            else reissue_year
-        ),
-        "reissue_date_month": (
-            request.reissue_date_month
-            if request.reissue_date_month is not None
-            else reissue_month
-        ),
-        "reissue_date_day": (
-            request.reissue_date_day
-            if request.reissue_date_day is not None
-            else reissue_day
-        ),
-        "group_id": (
-            request.group_id
-            if request.group_id is not None
-            else account.group_id
-        ),
+        "reissue_date_year": (request.reissue_date_year if request.reissue_date_year is not None else reissue_year),
+        "reissue_date_month": (request.reissue_date_month if request.reissue_date_month is not None else reissue_month),
+        "reissue_date_day": (request.reissue_date_day if request.reissue_date_day is not None else reissue_day),
+        "group_id": (request.group_id if request.group_id is not None else account.group_id),
         # Customer SSN segments
         "customer_ssn_part1": (
-            request.customer_ssn_part1
-            if request.customer_ssn_part1 is not None
-            else stored_ssn_part1
+            request.customer_ssn_part1 if request.customer_ssn_part1 is not None else stored_ssn_part1
         ),
         "customer_ssn_part2": (
-            request.customer_ssn_part2
-            if request.customer_ssn_part2 is not None
-            else stored_ssn_part2
+            request.customer_ssn_part2 if request.customer_ssn_part2 is not None else stored_ssn_part2
         ),
         "customer_ssn_part3": (
-            request.customer_ssn_part3
-            if request.customer_ssn_part3 is not None
-            else stored_ssn_part3
+            request.customer_ssn_part3 if request.customer_ssn_part3 is not None else stored_ssn_part3
         ),
         # Customer DOB segments
-        "customer_dob_year": (
-            request.customer_dob_year
-            if request.customer_dob_year is not None
-            else dob_year
-        ),
-        "customer_dob_month": (
-            request.customer_dob_month
-            if request.customer_dob_month is not None
-            else dob_month
-        ),
-        "customer_dob_day": (
-            request.customer_dob_day
-            if request.customer_dob_day is not None
-            else dob_day
-        ),
+        "customer_dob_year": (request.customer_dob_year if request.customer_dob_year is not None else dob_year),
+        "customer_dob_month": (request.customer_dob_month if request.customer_dob_month is not None else dob_month),
+        "customer_dob_day": (request.customer_dob_day if request.customer_dob_day is not None else dob_day),
         # Customer scalars
         "customer_fico_score": (
-            request.customer_fico_score
-            if request.customer_fico_score is not None
-            else stored_fico
+            request.customer_fico_score if request.customer_fico_score is not None else stored_fico
         ),
         "customer_first_name": (
-            request.customer_first_name
-            if request.customer_first_name is not None
-            else stored_first_name
+            request.customer_first_name if request.customer_first_name is not None else stored_first_name
         ),
         "customer_middle_name": (
-            request.customer_middle_name
-            if request.customer_middle_name is not None
-            else stored_middle_name
+            request.customer_middle_name if request.customer_middle_name is not None else stored_middle_name
         ),
         "customer_last_name": (
-            request.customer_last_name
-            if request.customer_last_name is not None
-            else stored_last_name
+            request.customer_last_name if request.customer_last_name is not None else stored_last_name
         ),
         "customer_addr_line_1": (
-            request.customer_addr_line_1
-            if request.customer_addr_line_1 is not None
-            else stored_addr_line_1
+            request.customer_addr_line_1 if request.customer_addr_line_1 is not None else stored_addr_line_1
         ),
-        "customer_state_cd": (
-            request.customer_state_cd
-            if request.customer_state_cd is not None
-            else stored_state_cd
-        ),
+        "customer_state_cd": (request.customer_state_cd if request.customer_state_cd is not None else stored_state_cd),
         "customer_addr_line_2": (
-            request.customer_addr_line_2
-            if request.customer_addr_line_2 is not None
-            else stored_addr_line_2
+            request.customer_addr_line_2 if request.customer_addr_line_2 is not None else stored_addr_line_2
         ),
-        "customer_zip": (
-            request.customer_zip
-            if request.customer_zip is not None
-            else stored_zip
-        ),
-        "customer_city": (
-            request.customer_city
-            if request.customer_city is not None
-            else stored_city
-        ),
+        "customer_zip": (request.customer_zip if request.customer_zip is not None else stored_zip),
+        "customer_city": (request.customer_city if request.customer_city is not None else stored_city),
         "customer_country_cd": (
-            request.customer_country_cd
-            if request.customer_country_cd is not None
-            else stored_country_cd
+            request.customer_country_cd if request.customer_country_cd is not None else stored_country_cd
         ),
         # Primary phone segments
         "customer_phone_1_area": (
-            request.customer_phone_1_area
-            if request.customer_phone_1_area is not None
-            else phone1_area
+            request.customer_phone_1_area if request.customer_phone_1_area is not None else phone1_area
         ),
         "customer_phone_1_prefix": (
-            request.customer_phone_1_prefix
-            if request.customer_phone_1_prefix is not None
-            else phone1_prefix
+            request.customer_phone_1_prefix if request.customer_phone_1_prefix is not None else phone1_prefix
         ),
         "customer_phone_1_line": (
-            request.customer_phone_1_line
-            if request.customer_phone_1_line is not None
-            else phone1_line
+            request.customer_phone_1_line if request.customer_phone_1_line is not None else phone1_line
         ),
         # Government ID
-        "customer_govt_id": (
-            request.customer_govt_id
-            if request.customer_govt_id is not None
-            else stored_govt_id
-        ),
+        "customer_govt_id": (request.customer_govt_id if request.customer_govt_id is not None else stored_govt_id),
         # Secondary phone segments
         "customer_phone_2_area": (
-            request.customer_phone_2_area
-            if request.customer_phone_2_area is not None
-            else phone2_area
+            request.customer_phone_2_area if request.customer_phone_2_area is not None else phone2_area
         ),
         "customer_phone_2_prefix": (
-            request.customer_phone_2_prefix
-            if request.customer_phone_2_prefix is not None
-            else phone2_prefix
+            request.customer_phone_2_prefix if request.customer_phone_2_prefix is not None else phone2_prefix
         ),
         "customer_phone_2_line": (
-            request.customer_phone_2_line
-            if request.customer_phone_2_line is not None
-            else phone2_line
+            request.customer_phone_2_line if request.customer_phone_2_line is not None else phone2_line
         ),
         # EFT account + primary cardholder flag
         "customer_eft_account_id": (
-            request.customer_eft_account_id
-            if request.customer_eft_account_id is not None
-            else stored_eft_acct
+            request.customer_eft_account_id if request.customer_eft_account_id is not None else stored_eft_acct
         ),
         "customer_pri_cardholder": (
-            request.customer_pri_cardholder
-            if request.customer_pri_cardholder is not None
-            else stored_pri_cardholder
+            request.customer_pri_cardholder if request.customer_pri_cardholder is not None else stored_pri_cardholder
         ),
     }
 
@@ -2878,9 +2662,7 @@ def _parse_request(request: AccountUpdateRequest) -> _ParsedRequest:
     assert request.reissue_date_day is not None, (
         "invariant violation: _fill_missing_from_existing must populate reissue_date_day"
     )
-    assert request.group_id is not None, (
-        "invariant violation: _fill_missing_from_existing must populate group_id"
-    )
+    assert request.group_id is not None, "invariant violation: _fill_missing_from_existing must populate group_id"
     assert request.customer_ssn_part1 is not None, (
         "invariant violation: _fill_missing_from_existing must populate customer_ssn_part1"
     )
@@ -3028,9 +2810,7 @@ def _parse_request(request: AccountUpdateRequest) -> _ParsedRequest:
 # ---------------------------------------------------------------------------
 
 
-def _detect_changes(
-    account: Account, customer: Customer, parsed: _ParsedRequest
-) -> bool:
+def _detect_changes(account: Account, customer: Customer, parsed: _ParsedRequest) -> bool:
     """Return ``True`` if any Account or Customer field differs from the request.
 
     Maps to the COBOL ``1205-COMPARE-OLD-NEW`` paragraph at
@@ -3264,9 +3044,7 @@ def _assemble_view_response(
         customer_addr_line_1=customer.addr_line_1,
         customer_state_cd=customer.state_cd,
         customer_addr_line_2=customer.addr_line_2,
-        customer_zip=(
-            customer.addr_zip[:_ZIP_LEN] if customer.addr_zip else ""
-        ),
+        customer_zip=(customer.addr_zip[:_ZIP_LEN] if customer.addr_zip else ""),
         # ``addr_line_3`` carries the city per the BMS map layout.
         customer_city=customer.addr_line_3,
         customer_country_cd=customer.country_cd,
@@ -3334,9 +3112,7 @@ def _assemble_update_response(
         customer_addr_line_1=customer.addr_line_1,
         customer_state_cd=customer.state_cd,
         customer_addr_line_2=customer.addr_line_2,
-        customer_zip=(
-            customer.addr_zip[:_ZIP_LEN] if customer.addr_zip else ""
-        ),
+        customer_zip=(customer.addr_zip[:_ZIP_LEN] if customer.addr_zip else ""),
         customer_city=customer.addr_line_3,
         customer_country_cd=customer.country_cd,
         customer_phone_1=_format_phone_display(customer.phone_num_1),
@@ -3354,9 +3130,7 @@ def _assemble_update_response(
 # ---------------------------------------------------------------------------
 
 
-def _build_view_error_response(
-    account_id: str, error_message: str
-) -> AccountViewResponse:
+def _build_view_error_response(account_id: str, error_message: str) -> AccountViewResponse:
     """Build an AccountViewResponse carrying an error message but no data.
 
     Used when the Account View flow cannot retrieve a full entity
@@ -3384,9 +3158,7 @@ def _build_view_error_response(
     # Pydantic validators. account_id has a length validator that
     # requires 11 digits, so we pad with zeros if the supplied
     # value doesn't fit. The monetary fields are all Decimal("0.00").
-    safe_acct_id: str = (
-        account_id if _validate_account_id(account_id) else "0" * _ACCT_ID_LEN
-    )
+    safe_acct_id: str = account_id if _validate_account_id(account_id) else "0" * _ACCT_ID_LEN
     zero: Decimal = safe_decimal(Decimal("0"))
     return AccountViewResponse(
         account_id=safe_acct_id,
@@ -3463,9 +3235,7 @@ def _build_update_error_response(
     safe_acct_id: str
     if _validate_account_id(account_id):
         safe_acct_id = account_id
-    elif request.account_id and _validate_account_id(
-        request.account_id.strip()
-    ):
+    elif request.account_id and _validate_account_id(request.account_id.strip()):
         safe_acct_id = request.account_id.strip()
     else:
         safe_acct_id = "0" * _ACCT_ID_LEN
@@ -3502,13 +3272,9 @@ def _build_update_error_response(
     #     raising ``ValueError``. Callers that refetch via GET will
     #     replace the empty display with the stored value.
     echo_active_status: str = request.active_status or ""
-    echo_credit_limit: Decimal = (
-        request.credit_limit if request.credit_limit is not None else Decimal("0")
-    )
+    echo_credit_limit: Decimal = request.credit_limit if request.credit_limit is not None else Decimal("0")
     echo_cash_credit_limit: Decimal = (
-        request.cash_credit_limit
-        if request.cash_credit_limit is not None
-        else Decimal("0")
+        request.cash_credit_limit if request.cash_credit_limit is not None else Decimal("0")
     )
     echo_group_id: str = request.group_id or ""
     echo_open_year: str = request.open_date_year or ""
@@ -3623,9 +3389,7 @@ def _build_update_error_response(
 # ---------------------------------------------------------------------------
 
 
-async def _safe_rollback(
-    db: AsyncSession, log_context: dict[str, object]
-) -> None:
+async def _safe_rollback(db: AsyncSession, log_context: dict[str, object]) -> None:
     """Roll back the active transaction, swallowing any secondary exception.
 
     Used after an error path to discard pending mutations before
@@ -3668,4 +3432,3 @@ Only :class:`AccountService` is part of the public contract. All
 ``_``-prefixed names are implementation details subject to change
 without notice.
 """
-

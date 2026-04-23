@@ -401,9 +401,9 @@ _DEFAULT_GROUP_ID: str = "DEFAULT"
 #: Fixed interest-transaction field values from CBACT04C paragraph
 #: 1300-B-WRITE-TX lines 482-484 (preserved byte-for-byte per AAP
 #: §0.7.1).
-_INTEREST_TRAN_TYPE_CD: str = "01"    # ``MOVE '01'     TO TRAN-TYPE-CD``
-_INTEREST_TRAN_CAT_CD: str = "0005"   # ``MOVE '05'     TO TRAN-CAT-CD`` (PIC 9(04), zero-padded)
-_INTEREST_TRAN_SOURCE: str = "System" # ``MOVE 'System' TO TRAN-SOURCE``
+_INTEREST_TRAN_TYPE_CD: str = "01"  # ``MOVE '01'     TO TRAN-TYPE-CD``
+_INTEREST_TRAN_CAT_CD: str = "0005"  # ``MOVE '05'     TO TRAN-CAT-CD`` (PIC 9(04), zero-padded)
+_INTEREST_TRAN_SOURCE: str = "System"  # ``MOVE 'System' TO TRAN-SOURCE``
 
 #: Prefix text inserted into TRAN-DESC (line 485):
 #: ``STRING 'Int. for a/c ' , ACCT-ID``.  The trailing space is part
@@ -444,7 +444,7 @@ _MERCHANT_ID_VALUE: str = "000000000"
 #: (``MOVE SPACES TO TRAN-MERCHANT-NAME/CITY/ZIP`` at lines 492-494).
 _MERCHANT_NAME_LEN: int = 50  # TRAN-MERCHANT-NAME PIC X(50)
 _MERCHANT_CITY_LEN: int = 50  # TRAN-MERCHANT-CITY PIC X(50)
-_MERCHANT_ZIP_LEN: int = 10   # TRAN-MERCHANT-ZIP  PIC X(10)
+_MERCHANT_ZIP_LEN: int = 10  # TRAN-MERCHANT-ZIP  PIC X(10)
 
 #: The critical interest-formula divisor.  Declared as ``Decimal("1200")``
 #: (an EXACT integer Decimal) so the division produces the correct
@@ -465,8 +465,6 @@ _MONEY_SCALE: Decimal = Decimal("0.01")
 #: ``disclosure_groups.dis_int_rate NUMERIC(6,2)`` column declared in
 #: ``db/migrations/V1__schema.sql``.
 _RATE_SCALE: Decimal = Decimal("0.01")
-
-
 
 
 # ============================================================================
@@ -766,7 +764,6 @@ def get_interest_rate(
     raise KeyError(error_msg)
 
 
-
 # ============================================================================
 # compute_monthly_interest — replaces 1300-COMPUTE-INTEREST (lines 462-470).
 # ============================================================================
@@ -909,13 +906,10 @@ def generate_tran_id(parm_date: str, suffix: int) -> str:
         than silently wrap, so operators can detect over-volume runs).
     """
     if suffix < 0:
-        raise ValueError(
-            f"Transaction-ID suffix must be non-negative, got {suffix}."
-        )
+        raise ValueError(f"Transaction-ID suffix must be non-negative, got {suffix}.")
     if suffix >= 10**_TRAN_ID_SUFFIX_WIDTH:
         raise ValueError(
-            "Transaction-ID suffix overflowed 6-digit COBOL field "
-            f"(WS-TRANID-SUFFIX PIC 9(06)): got {suffix}."
+            f"Transaction-ID suffix overflowed 6-digit COBOL field (WS-TRANID-SUFFIX PIC 9(06)): got {suffix}."
         )
 
     # Pad/truncate the PARM date to exactly 10 chars (COBOL PIC X(10)
@@ -1095,7 +1089,6 @@ def _compute_fees_stub() -> None:
     return None
 
 
-
 # ============================================================================
 # _log_monetary_precision_contract — audit helper (mirrors posttran_job.py).
 # ============================================================================
@@ -1220,8 +1213,7 @@ def _build_xref_lookup_by_acct_id(xref_df: DataFrame) -> dict[str, dict[str, Any
         card_num: str = _normalise_key(record.get("card_num"))
         if not acct_id:
             logger.warning(
-                "XREF record with empty acct_id encountered "
-                "(card_num='%s') — skipping.",
+                "XREF record with empty acct_id encountered (card_num='%s') — skipping.",
                 card_num,
             )
             continue
@@ -1279,9 +1271,7 @@ def _build_account_lookup(accounts_df: DataFrame) -> dict[str, dict[str, Any]]:
         record: dict[str, Any] = row.asDict()
         acct_id: str = _normalise_key(record.get("acct_id"))
         if not acct_id:
-            logger.warning(
-                "ACCOUNT record with empty acct_id encountered — skipping."
-            )
+            logger.warning("ACCOUNT record with empty acct_id encountered — skipping.")
             continue
         record["acct_id"] = acct_id
         # Normalise group-id so it aligns with disclosure-group lookup keys.
@@ -1485,7 +1475,6 @@ def _build_account_schema() -> StructType:
     )
 
 
-
 # ============================================================================
 # Fixed-width serialization helpers for SYSTRAN output (LRECL=350).
 # ============================================================================
@@ -1668,10 +1657,7 @@ def _write_interest_trans_to_s3(interest_trans: list[dict[str, Any]]) -> str | N
     if not interest_trans:
         # No interest accumulated — nothing to write.  Log for audit
         # clarity then short-circuit (no S3 object is allocated).
-        logger.info(
-            "No interest transactions generated this run — "
-            "skipping SYSTRAN S3 upload."
-        )
+        logger.info("No interest transactions generated this run — skipping SYSTRAN S3 upload.")
         return None
 
     # Resolve the versioned S3 path for the SYSTRAN logical dataset.
@@ -1682,10 +1668,7 @@ def _write_interest_trans_to_s3(interest_trans: list[dict[str, Any]]) -> str | N
     # a bucket=... kwarg for explicit routing.
     scheme_stripped = prefix_uri.removeprefix("s3://")
     if "/" not in scheme_stripped:
-        raise ValueError(
-            "Invalid SYSTRAN S3 URI returned by get_versioned_s3_path: "
-            f"{prefix_uri!r}"
-        )
+        raise ValueError(f"Invalid SYSTRAN S3 URI returned by get_versioned_s3_path: {prefix_uri!r}")
     bucket_name, key_prefix = scheme_stripped.split("/", 1)
 
     # Object key — matches the convention of writing a single
@@ -1694,15 +1677,11 @@ def _write_interest_trans_to_s3(interest_trans: list[dict[str, Any]]) -> str | N
 
     # Serialise each record to a 350-byte line; join with LF and
     # terminate with a final LF (POSIX text-file convention).
-    body_lines: list[str] = [
-        _build_systran_record_line(record) for record in interest_trans
-    ]
+    body_lines: list[str] = [_build_systran_record_line(record) for record in interest_trans]
     content: str = "\n".join(body_lines) + "\n"
 
     # Delegate the S3 PutObject to the shared helper.
-    s3_uri: str = write_to_s3(
-        content, key, bucket=bucket_name, content_type="text/plain"
-    )
+    s3_uri: str = write_to_s3(content, key, bucket=bucket_name, content_type="text/plain")
     logger.info(
         "Wrote %d interest transaction record(s) to %s (%d bytes)",
         len(interest_trans),
@@ -1757,16 +1736,13 @@ def _update_account_balance(
         builds it via repeated ``+= monthly_int``).
     """
     current_bal: Decimal = _money(account_record.get("acct_curr_bal"))
-    new_bal: Decimal = (current_bal + total_int).quantize(
-        _MONEY_SCALE, rounding=ROUND_HALF_EVEN
-    )
+    new_bal: Decimal = (current_bal + total_int).quantize(_MONEY_SCALE, rounding=ROUND_HALF_EVEN)
     account_record["acct_curr_bal"] = new_bal
     # MOVE 0 TO ACCT-CURR-CYC-CREDIT / ACCT-CURR-CYC-DEBIT — the
     # cycle-to-date running totals are zeroed at the end of each
     # interest run so they can accumulate for the next cycle.
     account_record["acct_curr_cyc_credit"] = Decimal("0.00")
     account_record["acct_curr_cyc_debit"] = Decimal("0.00")
-
 
 
 # ============================================================================
@@ -1908,9 +1884,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915 - mirrors CBACT04C complexity
         accounts_count = accounts_df.count()
         discgrp_count = discgrp_df.count()
 
-        logger.info(
-            "transaction_category_balances record count: %d", tcatbal_count
-        )
+        logger.info("transaction_category_balances record count: %d", tcatbal_count)
         logger.info("card_cross_references record count: %d", xref_count)
         logger.info("accounts record count: %d", accounts_count)
         logger.info("disclosure_groups record count: %d", discgrp_count)
@@ -2032,27 +2006,19 @@ def main() -> None:  # noqa: PLR0912, PLR0915 - mirrors CBACT04C complexity
             #   ACCT-GROUP-ID (from ACCOUNT-RECORD)
             #   TRANCAT-CD     (from TCATBAL-RECORD)
             #   TRANCAT-TYPE-CD (from TCATBAL-RECORD)
-            acct_group_id: str = _normalise_key(
-                current_account.get("acct_group_id")
-            )
+            acct_group_id: str = _normalise_key(current_account.get("acct_group_id"))
 
             # COBOL line 214: PERFORM 1200-GET-INTEREST-RATE.
             #   Includes DEFAULT fallback logic.  Returns rate or
             #   raises KeyError (matching CEE3ABD ABEND behaviour).
-            dis_int_rate: Decimal = get_interest_rate(
-                disclosure_lookup, acct_group_id, type_cd, cat_cd
-            )
+            dis_int_rate: Decimal = get_interest_rate(disclosure_lookup, acct_group_id, type_cd, cat_cd)
 
             # COBOL line 215: IF DIS-INT-RATE NOT = 0 ...
             if dis_int_rate != Decimal("0.00"):
                 # COBOL line 216: PERFORM 1300-COMPUTE-INTEREST.
-                monthly_int: Decimal = compute_monthly_interest(
-                    tran_cat_bal, dis_int_rate
-                )
+                monthly_int: Decimal = compute_monthly_interest(tran_cat_bal, dis_int_rate)
                 # COBOL line 466: ADD WS-MONTHLY-INT TO WS-TOTAL-INT.
-                total_int = (total_int + monthly_int).quantize(
-                    _MONEY_SCALE, rounding=ROUND_HALF_EVEN
-                )
+                total_int = (total_int + monthly_int).quantize(_MONEY_SCALE, rounding=ROUND_HALF_EVEN)
 
                 # COBOL line 467: PERFORM 1300-B-WRITE-TX.
                 tranid_suffix += 1
@@ -2092,10 +2058,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915 - mirrors CBACT04C complexity
             if last_account is None:
                 # This should never happen (the loop already fetched
                 # this account without raising), but guard defensively.
-                error_msg = (
-                    f"Post-loop update: last account not found in lookup "
-                    f"(acct_id='{last_acct_num}')."
-                )
+                error_msg = f"Post-loop update: last account not found in lookup (acct_id='{last_acct_num}')."
                 logger.error(error_msg)
                 raise KeyError(error_msg)
             _update_account_balance(last_account, total_int)
@@ -2158,10 +2121,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915 - mirrors CBACT04C complexity
             # DataFrame INSERT (which would succeed as a no-op but
             # emit confusing audit logs).  Matches the short-circuit
             # behaviour in :func:`_write_interest_trans_to_s3`.
-            logger.info(
-                "No interest transactions generated this run — "
-                "transactions-table append skipped."
-            )
+            logger.info("No interest transactions generated this run — transactions-table append skipped.")
 
         # 5b. Updated accounts → accounts table (overwrite).
         #     Equivalent to COBOL REWRITE FD-ACCTFILE-REC for every
@@ -2171,24 +2131,19 @@ def main() -> None:  # noqa: PLR0912, PLR0915 - mirrors CBACT04C complexity
         #     are written back unchanged (matching VSAM's "all rows
         #     stay in the cluster" semantics).
         if account_lookup:
-            account_rows: list[Row] = [
-                Row(**record) for record in account_lookup.values()
-            ]
+            account_rows: list[Row] = [Row(**record) for record in account_lookup.values()]
             accounts_out_df: DataFrame = spark.createDataFrame(
                 account_rows,
                 schema=_build_account_schema(),
             )
             write_table(accounts_out_df, "accounts", mode="overwrite")
             logger.info(
-                "Wrote %d account record(s) to the accounts table "
-                "(overwrite mode — REWRITE equivalent; %d touched).",
+                "Wrote %d account record(s) to the accounts table (overwrite mode — REWRITE equivalent; %d touched).",
                 len(account_lookup),
                 len(touched_accounts),
             )
         else:
-            logger.warning(
-                "account_lookup is empty — accounts table write skipped."
-            )
+            logger.warning("account_lookup is empty — accounts table write skipped.")
 
         # --------------------------------------------------------------
         # Step 6: Summary counters (COBOL DISPLAY-equivalent).
@@ -2209,8 +2164,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915 - mirrors CBACT04C complexity
                 df.unpersist()
             except Exception as unpersist_err:  # noqa: BLE001 — defensive
                 logger.debug(
-                    "DataFrame.unpersist() raised during cleanup "
-                    "(non-fatal): %s",
+                    "DataFrame.unpersist() raised during cleanup (non-fatal): %s",
                     unpersist_err,
                 )
 
@@ -2260,4 +2214,3 @@ if __name__ == "__main__":
     # lines).
     logger.debug("Invoked with sys.argv: %s", sys.argv)
     main()
-

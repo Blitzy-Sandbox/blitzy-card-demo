@@ -821,15 +821,9 @@ class AccountViewResponse(BaseModel):
         if not isinstance(value, str):
             raise ValueError("account_id must be a string")
         if len(value) != _ACCT_ID_LEN:
-            raise ValueError(
-                f"account_id must be exactly {_ACCT_ID_LEN} "
-                f"characters (got {len(value)})"
-            )
+            raise ValueError(f"account_id must be exactly {_ACCT_ID_LEN} characters (got {len(value)})")
         if not value.isdigit():
-            raise ValueError(
-                "account_id must contain only ASCII digits 0-9 "
-                "(matches COBOL ACCTSIDI PIC 9(11))"
-            )
+            raise ValueError("account_id must contain only ASCII digits 0-9 (matches COBOL ACCTSIDI PIC 9(11))")
         return value
 
     @field_validator(
@@ -876,15 +870,10 @@ class AccountViewResponse(BaseModel):
         # unlikely ``True`` / ``False`` input case.
         if not isinstance(value, Decimal):
             raise ValueError(
-                "monetary fields must be Decimal instances "
-                "(float is not permitted per AAP §0.7.2 "
-                "Financial Precision)"
+                "monetary fields must be Decimal instances (float is not permitted per AAP §0.7.2 Financial Precision)"
             )
         if value < Decimal("0"):
-            raise ValueError(
-                "monetary fields on AccountViewResponse must be "
-                "non-negative"
-            )
+            raise ValueError("monetary fields on AccountViewResponse must be non-negative")
         return value
 
 
@@ -1368,21 +1357,16 @@ class AccountUpdateRequest(BaseModel):
         if not isinstance(value, str):
             raise ValueError("account_id must be a string")
         if len(value) != _ACCT_ID_LEN:
-            raise ValueError(
-                f"account_id must be exactly {_ACCT_ID_LEN} "
-                f"characters (got {len(value)})"
-            )
+            raise ValueError(f"account_id must be exactly {_ACCT_ID_LEN} characters (got {len(value)})")
         if not value.isdigit():
-            raise ValueError(
-                "account_id must contain only ASCII digits 0-9 "
-                "(matches COBOL ACCTSIDI PIC 9(11))"
-            )
+            raise ValueError("account_id must contain only ASCII digits 0-9 (matches COBOL ACCTSIDI PIC 9(11))")
         return value
 
     @field_validator("credit_limit", "cash_credit_limit")
     @classmethod
     def _validate_monetary_non_negative(
-        cls, value: Optional[Decimal]  # noqa: UP045  # schema requires typing.Optional
+        cls,
+        value: Optional[Decimal],  # noqa: UP045  # schema requires typing.Optional
     ) -> Optional[Decimal]:  # noqa: UP045  # schema requires typing.Optional
         """Enforce non-negative monetary values on the update request.
 
@@ -1423,15 +1407,10 @@ class AccountUpdateRequest(BaseModel):
             return None
         if not isinstance(value, Decimal):
             raise ValueError(
-                "monetary fields must be Decimal instances "
-                "(float is not permitted per AAP §0.7.2 "
-                "Financial Precision)"
+                "monetary fields must be Decimal instances (float is not permitted per AAP §0.7.2 Financial Precision)"
             )
         if value < Decimal("0"):
-            raise ValueError(
-                "monetary fields on AccountUpdateRequest must be "
-                "non-negative"
-            )
+            raise ValueError("monetary fields on AccountUpdateRequest must be non-negative")
         return value
 
 

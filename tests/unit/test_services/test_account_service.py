@@ -283,9 +283,7 @@ _MSG_ACCT_INVALID: str = "Account Number if supplied must be a 11 digit Non-Zero
 # latter describes a format error whereas Guard 3 triggers AFTER both IDs
 # are already known to be format-valid — they simply disagree.
 # -----------------------------------------------------------------------------
-_MSG_ACCT_PATH_BODY_MISMATCH: str = (
-    "Account number in URL path does not match request body"
-)
+_MSG_ACCT_PATH_BODY_MISMATCH: str = "Account number in URL path does not match request body"
 """Path/body acct_id disagreement (REST-specific; no COBOL equivalent)."""
 
 # -----------------------------------------------------------------------------
@@ -297,9 +295,7 @@ _MSG_ACCT_PATH_BODY_MISMATCH: str = (
 # ``_MSG_UPDATE_FAILED`` (retryable DB failure) and from the per-field
 # validation messages (retryable with corrected input).
 # -----------------------------------------------------------------------------
-_MSG_PARSE_FAILED: str = (
-    "Unable to process update request due to internal validation mismatch"
-)
+_MSG_PARSE_FAILED: str = "Unable to process update request due to internal validation mismatch"
 """Internal validator/parser contract violation (CP3 MINOR #11)."""
 
 # -----------------------------------------------------------------------------
@@ -350,9 +346,7 @@ _MSG_SSN_PART2_ZERO: str = "SSN 4th & 5th chars must not be zero."
 _MSG_SSN_PART3_ZERO: str = "SSN Last 4 chars must not be zero."
 """COACTUPC.cbl 1245-EDIT-NUM-REQD (L2162) with WS-EDIT-VARIABLE-NAME='SSN Last 4 chars' — SSN part-3 value '0000'."""
 
-_MSG_SSN_PART1_INVALID: str = (
-    "SSN: First 3 chars: should not be 000, 666, or between 900 and 999"
-)
+_MSG_SSN_PART1_INVALID: str = "SSN: First 3 chars: should not be 000, 666, or between 900 and 999"
 """COACTUPC.cbl 1265-EDIT-US-SSN INVALID-SSN-PART1 (L2464, NO PERIOD)."""
 
 _MSG_OPEN_DATE_INVALID: str = "Open Date: Month must be a number between 1 and 12."
@@ -2290,9 +2284,7 @@ async def test_update_account_path_body_acct_id_mismatch(
     )
 
     # Act
-    response: AccountUpdateResponse = await account_service.update_account(
-        _TEST_ACCT_ID, request
-    )
+    response: AccountUpdateResponse = await account_service.update_account(_TEST_ACCT_ID, request)
 
     # Assert: REST-specific mismatch literal (byte-for-byte).
     assert response.error_message == _MSG_ACCT_PATH_BODY_MISMATCH
@@ -2434,9 +2426,7 @@ async def test_update_account_parse_failure(
     )
 
     # Act
-    response: AccountUpdateResponse = await account_service.update_account(
-        _TEST_ACCT_ID, request
-    )
+    response: AccountUpdateResponse = await account_service.update_account(_TEST_ACCT_ID, request)
 
     # Assert: dedicated internal-contract error literal (byte-for-byte).
     assert response.error_message == _MSG_PARSE_FAILED

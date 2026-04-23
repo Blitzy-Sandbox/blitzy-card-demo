@@ -418,9 +418,7 @@ class Transaction(Base):
     #     within the same microsecond. Identity uniqueness is already
     #     enforced by the primary key on ``tran_id``.
     # ------------------------------------------------------------------
-    __table_args__ = (
-        Index("ix_transaction_proc_ts", "proc_ts"),
-    )
+    __table_args__ = (Index("ix_transaction_proc_ts", "proc_ts"),)
 
     # ------------------------------------------------------------------
     # Primary key: 16-character transaction ID

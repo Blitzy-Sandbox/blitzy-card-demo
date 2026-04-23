@@ -414,20 +414,20 @@ PROGRAM_TO_API_ROUTE: dict[str, str] = {
     "COACTVWC": "/accounts",  # Account View     -> GET  /accounts/{id}
     "COACTUPC": "/accounts",  # Account Update   -> PUT  /accounts/{id}
     # --- Card operations (main menu entries 3-5) ---
-    "COCRDLIC": "/cards",     # Card List        -> GET  /cards
-    "COCRDSLC": "/cards",     # Card Detail      -> GET  /cards/{id}
-    "COCRDUPC": "/cards",     # Card Update      -> PUT  /cards/{id}
+    "COCRDLIC": "/cards",  # Card List        -> GET  /cards
+    "COCRDSLC": "/cards",  # Card Detail      -> GET  /cards/{id}
+    "COCRDUPC": "/cards",  # Card Update      -> PUT  /cards/{id}
     # --- Transaction operations (main menu entries 6-8) ---
     "COTRN00C": "/transactions",  # Transaction List    -> GET  /transactions
     "COTRN01C": "/transactions",  # Transaction Detail  -> GET  /transactions/{id}
     "COTRN02C": "/transactions",  # Transaction Add     -> POST /transactions
     # --- Reports (main menu entry 9) ---
-    "CORPT00C": "/reports",   # Transaction Reports -> POST /reports/submit
+    "CORPT00C": "/reports",  # Transaction Reports -> POST /reports/submit
     # --- Bill payment (main menu entry 10) ---
-    "COBIL00C": "/bills",     # Bill Payment        -> POST /bills/pay
+    "COBIL00C": "/bills",  # Bill Payment        -> POST /bills/pay
     # --- User administration (admin menu entries 1-4) ---
-    "COUSR00C": "/users",     # User List    -> GET    /users
-    "COUSR01C": "/users",     # User Add     -> POST   /users
-    "COUSR02C": "/users",     # User Update  -> PUT    /users/{id}
-    "COUSR03C": "/users",     # User Delete  -> DELETE /users/{id}
+    "COUSR00C": "/users",  # User List    -> GET    /users
+    "COUSR01C": "/users",  # User Add     -> POST   /users
+    "COUSR02C": "/users",  # User Update  -> PUT    /users/{id}
+    "COUSR03C": "/users",  # User Delete  -> DELETE /users/{id}
 }

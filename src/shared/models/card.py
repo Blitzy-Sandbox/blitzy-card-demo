@@ -282,9 +282,7 @@ class Card(Base):
     # lost/stolen reissue, etc.) — mirroring the NONUNIQUEKEY property
     # of the original VSAM AIX (see app/catlg/LISTCAT.txt).
     # ------------------------------------------------------------------
-    __table_args__ = (
-        Index("ix_card_acct_id", "acct_id"),
-    )
+    __table_args__ = (Index("ix_card_acct_id", "acct_id"),)
 
     # ------------------------------------------------------------------
     # Primary key: 16-character card number
@@ -451,8 +449,4 @@ class Card(Base):
             ``Card(card_num='4111111111111111', acct_id='00000000001',
             active_status='Y')``.
         """
-        return (
-            f"Card(card_num={self.card_num!r}, "
-            f"acct_id={self.acct_id!r}, "
-            f"active_status={self.active_status!r})"
-        )
+        return f"Card(card_num={self.card_num!r}, acct_id={self.acct_id!r}, active_status={self.active_status!r})"

@@ -469,28 +469,17 @@ def test_filter_by_date_range_inclusive(spark_session: SparkSession) -> None:
 
     # Boundary dates (2022-01-01 and 2022-07-06) MUST be retained.
     assert "T002" in retained_ids, (
-        "Transaction T002 (proc_ts=2022-01-01) must be included; "
-        "filter_by_date_range start_date bound is inclusive."
+        "Transaction T002 (proc_ts=2022-01-01) must be included; filter_by_date_range start_date bound is inclusive."
     )
     assert "T004" in retained_ids, (
-        "Transaction T004 (proc_ts=2022-07-06) must be included; "
-        "filter_by_date_range end_date bound is inclusive."
+        "Transaction T004 (proc_ts=2022-07-06) must be included; filter_by_date_range end_date bound is inclusive."
     )
     # Interior transaction T003 is obviously included.
-    assert "T003" in retained_ids, (
-        "Transaction T003 (proc_ts=2022-03-15) within range must be "
-        "included."
-    )
+    assert "T003" in retained_ids, "Transaction T003 (proc_ts=2022-03-15) within range must be included."
 
     # Out-of-range transactions MUST be excluded.
-    assert "T001" not in retained_ids, (
-        "Transaction T001 (proc_ts=2021-12-31) before start_date "
-        "must be excluded."
-    )
-    assert "T005" not in retained_ids, (
-        "Transaction T005 (proc_ts=2022-08-01) after end_date "
-        "must be excluded."
-    )
+    assert "T001" not in retained_ids, "Transaction T001 (proc_ts=2021-12-31) before start_date must be excluded."
+    assert "T005" not in retained_ids, "Transaction T005 (proc_ts=2022-08-01) after end_date must be excluded."
 
     # Exact retention count: 3 inclusive rows out of 5 total.
     assert len(retained_ids) == 3, (
@@ -607,18 +596,10 @@ def test_filter_default_dates(spark_session: SparkSession) -> None:
         tran_proc_ts="2023-01-15T12:34:56.789012",
         tran_amt=Decimal("999.99"),
     )
-    transactions_df = spark_session.createDataFrame(
-        [in_range_row, out_of_range_row]
-    )
-    xref_df = spark_session.createDataFrame(
-        [_make_xref_row("4111111111111111", "00000000001")]
-    )
-    trantype_df = spark_session.createDataFrame(
-        [_make_trantype_row("01", "Purchase")]
-    )
-    trancatg_df = spark_session.createDataFrame(
-        [_make_trancatg_row("01", "0001", "Groceries")]
-    )
+    transactions_df = spark_session.createDataFrame([in_range_row, out_of_range_row])
+    xref_df = spark_session.createDataFrame([_make_xref_row("4111111111111111", "00000000001")])
+    trantype_df = spark_session.createDataFrame([_make_trantype_row("01", "Purchase")])
+    trancatg_df = spark_session.createDataFrame([_make_trancatg_row("01", "0001", "Groceries")])
 
     captured_content: dict[str, str] = {}
 
@@ -769,9 +750,7 @@ def _run_main_and_capture(
         captured["content_type"] = content_type
         return f"s3://{bucket}/{key}"
 
-    def _get_s3_path_side_effect(
-        gdg_name: str, *_args: Any, **_kwargs: Any
-    ) -> str:
+    def _get_s3_path_side_effect(gdg_name: str, *_args: Any, **_kwargs: Any) -> str:
         captured["gdg_calls"].append(gdg_name)
         return "s3://carddemo-bucket/reports/2026/04/22/120000/"
 
@@ -846,12 +825,8 @@ def test_xref_enrichment(spark_session: SparkSession) -> None:
             ),
         ]
     )
-    trantype_df = spark_session.createDataFrame(
-        [_make_trantype_row("01", "Purchase")]
-    )
-    trancatg_df = spark_session.createDataFrame(
-        [_make_trancatg_row("01", "0001", "Groceries")]
-    )
+    trantype_df = spark_session.createDataFrame([_make_trantype_row("01", "Purchase")])
+    trancatg_df = spark_session.createDataFrame([_make_trancatg_row("01", "0001", "Groceries")])
 
     captured = _run_main_and_capture(
         spark_session,
@@ -875,9 +850,7 @@ def test_xref_enrichment(spark_session: SparkSession) -> None:
 
     # Double-check: the ``tran_id`` also appears (confirms the report
     # body was emitted at all and not just the headers).
-    assert "T_XREF_TEST_001" in report_content, (
-        "Transaction T_XREF_TEST_001 must appear in the detail section."
-    )
+    assert "T_XREF_TEST_001" in report_content, "Transaction T_XREF_TEST_001 must appear in the detail section."
 
 
 @pytest.mark.unit
@@ -912,9 +885,7 @@ def test_trantype_enrichment(spark_session: SparkSession) -> None:
             ),
         ]
     )
-    xref_df = spark_session.createDataFrame(
-        [_make_xref_row("4111111111111111", "00000000001")]
-    )
+    xref_df = spark_session.createDataFrame([_make_xref_row("4111111111111111", "00000000001")])
     trantype_df = spark_session.createDataFrame(
         [
             _make_trantype_row("09", "TESTTYPEDESC"),
@@ -996,19 +967,15 @@ def test_trancatg_enrichment(spark_session: SparkSession) -> None:
             ),
         ]
     )
-    xref_df = spark_session.createDataFrame(
-        [_make_xref_row("4111111111111111", "00000000001")]
-    )
-    trantype_df = spark_session.createDataFrame(
-        [_make_trantype_row("05", "Refund")]
-    )
+    xref_df = spark_session.createDataFrame([_make_xref_row("4111111111111111", "00000000001")])
+    trantype_df = spark_session.createDataFrame([_make_trantype_row("05", "Refund")])
     # Two TRANCATG rows with identical cat_code but different type_code.
     # The CORRECT composite join picks ``type_code="05"`` because the
     # transaction's tran_type_cd is "05".
     trancatg_df = spark_session.createDataFrame(
         [
             _make_trancatg_row("01", "0001", "GROCERIES_WRONG"),  # NOT matched
-            _make_trancatg_row("05", "0001", "REFUNDCORRECT"),   # matched
+            _make_trancatg_row("05", "0001", "REFUNDCORRECT"),  # matched
         ]
     )
 
@@ -1034,7 +1001,6 @@ def test_trancatg_enrichment(spark_session: SparkSession) -> None:
         "same cat_code but a different type_code.  If this assertion "
         "fails, the join is using cat_code alone and is incorrect."
     )
-
 
 
 # ============================================================================
@@ -1098,8 +1064,7 @@ def _parse_subtotal_amount(report_line: str) -> Decimal:
     # "Grand Total" (11) + dots (86) + amount (16) = 113
     amount_slice: str = report_line[97:113]  # 113 - 16 = 97
     assert len(amount_slice) == 16, (
-        f"Expected 16-char amount slice; got {len(amount_slice)}: "
-        f"{amount_slice!r} (from line {report_line!r})"
+        f"Expected 16-char amount slice; got {len(amount_slice)}: {amount_slice!r} (from line {report_line!r})"
     )
     # First char is the sign (+/-), remaining 15 chars are the
     # zero-suppressed magnitude.
@@ -1209,12 +1174,8 @@ def test_account_subtotal(spark_session: SparkSession) -> None:
             _make_xref_row("5000000000000002", "00000000102"),
         ]
     )
-    trantype_df = spark_session.createDataFrame(
-        [_make_trantype_row("01", "Purchase")]
-    )
-    trancatg_df = spark_session.createDataFrame(
-        [_make_trancatg_row("01", "0001", "Groceries")]
-    )
+    trantype_df = spark_session.createDataFrame([_make_trantype_row("01", "Purchase")])
+    trancatg_df = spark_session.createDataFrame([_make_trancatg_row("01", "0001", "Groceries")])
 
     captured = _run_main_and_capture(
         spark_session,
@@ -1225,9 +1186,7 @@ def test_account_subtotal(spark_session: SparkSession) -> None:
     )
     report_content: str = captured["content"]
 
-    account_lines: list[str] = _extract_subtotal_lines(
-        report_content, "Account Total"
-    )
+    account_lines: list[str] = _extract_subtotal_lines(report_content, "Account Total")
 
     # Exactly ONE account-total line (for card 1); card 2's account
     # total is NOT emitted per the EOF quirk preserved from CBTRN03C.
@@ -1245,15 +1204,13 @@ def test_account_subtotal(spark_session: SparkSession) -> None:
     parsed_amount: Decimal = _parse_subtotal_amount(account_lines[0])
     expected: Decimal = Decimal("60.00")
     assert parsed_amount == expected, (
-        f"First card account subtotal must be {expected}; got "
-        f"{parsed_amount} (line: {account_lines[0]!r})"
+        f"First card account subtotal must be {expected}; got {parsed_amount} (line: {account_lines[0]!r})"
     )
     # And its type must be Decimal (not float) — enforced by the
     # parser returning a Decimal.  We verify the sum maintains
     # two-decimal-place scale.
     assert parsed_amount == parsed_amount.quantize(Decimal("0.01")), (
-        f"Account subtotal must be quantized to two decimal places; "
-        f"got {parsed_amount}"
+        f"Account subtotal must be quantized to two decimal places; got {parsed_amount}"
     )
 
 
@@ -1295,23 +1252,15 @@ def test_page_subtotal(spark_session: SparkSession) -> None:
         _make_txn_row(
             f"T{idx:04d}",
             "4000000000000003",
-            tran_proc_ts=(
-                f"2022-03-{(idx % 28) + 1:02d}T12:00:00.000000"
-            ),
+            tran_proc_ts=(f"2022-03-{(idx % 28) + 1:02d}T12:00:00.000000"),
             tran_amt=Decimal(f"0.{idx:02d}") if idx < 100 else Decimal("1.00"),
         )
         for idx in range(1, 31)
     ]
     transactions_df = spark_session.createDataFrame(rows)
-    xref_df = spark_session.createDataFrame(
-        [_make_xref_row("4000000000000003", "00000000103")]
-    )
-    trantype_df = spark_session.createDataFrame(
-        [_make_trantype_row("01", "Purchase")]
-    )
-    trancatg_df = spark_session.createDataFrame(
-        [_make_trancatg_row("01", "0001", "Groceries")]
-    )
+    xref_df = spark_session.createDataFrame([_make_xref_row("4000000000000003", "00000000103")])
+    trantype_df = spark_session.createDataFrame([_make_trantype_row("01", "Purchase")])
+    trancatg_df = spark_session.createDataFrame([_make_trancatg_row("01", "0001", "Groceries")])
 
     captured = _run_main_and_capture(
         spark_session,
@@ -1359,8 +1308,7 @@ def test_page_subtotal(spark_session: SparkSession) -> None:
     for line in page_lines:
         parsed: Decimal = _parse_subtotal_amount(line)
         assert isinstance(parsed, Decimal), (
-            f"Page subtotal must parse as Decimal (not float); got "
-            f"{type(parsed).__name__} for line {line!r}"
+            f"Page subtotal must parse as Decimal (not float); got {type(parsed).__name__} for line {line!r}"
         )
 
 
@@ -1450,12 +1398,8 @@ def test_grand_total(spark_session: SparkSession) -> None:
             _make_xref_row("5000000000002002", "00000002002"),
         ]
     )
-    trantype_df = spark_session.createDataFrame(
-        [_make_trantype_row("01", "Purchase")]
-    )
-    trancatg_df = spark_session.createDataFrame(
-        [_make_trancatg_row("01", "0001", "Groceries")]
-    )
+    trantype_df = spark_session.createDataFrame([_make_trantype_row("01", "Purchase")])
+    trancatg_df = spark_session.createDataFrame([_make_trancatg_row("01", "0001", "Groceries")])
 
     captured = _run_main_and_capture(
         spark_session,
@@ -1466,9 +1410,7 @@ def test_grand_total(spark_session: SparkSession) -> None:
     )
     report_content: str = captured["content"]
 
-    grand_lines: list[str] = _extract_subtotal_lines(
-        report_content, "Grand Total"
-    )
+    grand_lines: list[str] = _extract_subtotal_lines(report_content, "Grand Total")
 
     # Exactly ONE grand-total line must be emitted at EOF.
     assert len(grand_lines) == 1, (
@@ -1484,12 +1426,8 @@ def test_grand_total(spark_session: SparkSession) -> None:
     # BEFORE adding, so we replicate that exactly here.
     expected_grand: Decimal = Decimal("0.00")
     for row in rows:
-        addend: Decimal = row.tran_amt.quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_EVEN
-        )
-        expected_grand = (expected_grand + addend).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_EVEN
-        )
+        addend: Decimal = row.tran_amt.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+        expected_grand = (expected_grand + addend).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
 
     assert parsed_grand == expected_grand, (
         f"Grand total must equal banker's-rounded sum of all amounts "
@@ -1500,9 +1438,7 @@ def test_grand_total(spark_session: SparkSession) -> None:
     )
 
     # Result type must be Decimal.
-    assert isinstance(parsed_grand, Decimal), (
-        f"Grand total must be Decimal; got {type(parsed_grand).__name__}"
-    )
+    assert isinstance(parsed_grand, Decimal), f"Grand total must be Decimal; got {type(parsed_grand).__name__}"
 
 
 @pytest.mark.unit
@@ -1606,12 +1542,8 @@ def test_three_level_totals_consistency(spark_session: SparkSession) -> None:
             _make_xref_row("7000000000003004", "00000003004"),
         ]
     )
-    trantype_df = spark_session.createDataFrame(
-        [_make_trantype_row("01", "Purchase")]
-    )
-    trancatg_df = spark_session.createDataFrame(
-        [_make_trancatg_row("01", "0001", "Groceries")]
-    )
+    trantype_df = spark_session.createDataFrame([_make_trantype_row("01", "Purchase")])
+    trancatg_df = spark_session.createDataFrame([_make_trancatg_row("01", "0001", "Groceries")])
 
     captured = _run_main_and_capture(
         spark_session,
@@ -1624,19 +1556,13 @@ def test_three_level_totals_consistency(spark_session: SparkSession) -> None:
 
     # Extract all three levels.
     page_lines: list[str] = _extract_subtotal_lines(report_content, "Page Total")
-    account_lines: list[str] = _extract_subtotal_lines(
-        report_content, "Account Total"
-    )
+    account_lines: list[str] = _extract_subtotal_lines(report_content, "Account Total")
     grand_lines: list[str] = _extract_subtotal_lines(report_content, "Grand Total")
 
     # Sanity: exactly one grand total, at least one page total, and
     # 3 account totals (cards 1/2/3 break but card 4 is last = no flush).
-    assert len(grand_lines) == 1, (
-        f"Expected 1 grand total; got {len(grand_lines)}"
-    )
-    assert len(page_lines) >= 1, (
-        f"Expected >= 1 page total; got {len(page_lines)}"
-    )
+    assert len(grand_lines) == 1, f"Expected 1 grand total; got {len(grand_lines)}"
+    assert len(page_lines) >= 1, f"Expected >= 1 page total; got {len(page_lines)}"
     assert len(account_lines) == 3, (
         f"Expected 3 account totals (one per card break, excluding EOF "
         f"quirk for the final card); got {len(account_lines)}.  "
@@ -1644,18 +1570,12 @@ def test_three_level_totals_consistency(spark_session: SparkSession) -> None:
     )
 
     # Parse every subtotal amount.
-    page_amounts: list[Decimal] = [
-        _parse_subtotal_amount(line) for line in page_lines
-    ]
-    account_amounts: list[Decimal] = [
-        _parse_subtotal_amount(line) for line in account_lines
-    ]
+    page_amounts: list[Decimal] = [_parse_subtotal_amount(line) for line in page_lines]
+    account_amounts: list[Decimal] = [_parse_subtotal_amount(line) for line in account_lines]
     grand_amount: Decimal = _parse_subtotal_amount(grand_lines[0])
 
     # Invariant 1: sum(page_totals) == grand_total.
-    sum_of_pages: Decimal = sum(
-        page_amounts, start=Decimal("0.00")
-    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+    sum_of_pages: Decimal = sum(page_amounts, start=Decimal("0.00")).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
     assert sum_of_pages == grand_amount, (
         f"Sum of page subtotals ({sum_of_pages}) must equal grand "
         f"total ({grand_amount}).  Every transaction amount must "
@@ -1671,9 +1591,9 @@ def test_three_level_totals_consistency(spark_session: SparkSession) -> None:
         start=Decimal("0.00"),
     ).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
 
-    sum_of_accounts: Decimal = sum(
-        account_amounts, start=Decimal("0.00")
-    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+    sum_of_accounts: Decimal = sum(account_amounts, start=Decimal("0.00")).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_EVEN
+    )
     reconstructed_grand: Decimal = (sum_of_accounts + last_card_total).quantize(
         Decimal("0.01"), rounding=ROUND_HALF_EVEN
     )
@@ -1686,10 +1606,8 @@ def test_three_level_totals_consistency(spark_session: SparkSession) -> None:
     # Ensure every parsed amount is a Decimal (not float).
     for amount in (*page_amounts, *account_amounts, grand_amount):
         assert isinstance(amount, Decimal), (
-            f"All subtotal amounts must be Decimal (not float); got "
-            f"{type(amount).__name__}"
+            f"All subtotal amounts must be Decimal (not float); got {type(amount).__name__}"
         )
-
 
 
 # ============================================================================
@@ -1767,9 +1685,7 @@ def test_format_report_line_length() -> None:
     )
     line_zero: str = format_report_line(row_zero, 2)
     assert len(line_zero) == _EXPECTED_REPORT_LINE_WIDTH, (
-        f"Zero-amount row must produce exactly "
-        f"{_EXPECTED_REPORT_LINE_WIDTH}-character line; "
-        f"got {len(line_zero)}"
+        f"Zero-amount row must produce exactly {_EXPECTED_REPORT_LINE_WIDTH}-character line; got {len(line_zero)}"
     )
 
     # Large-amount row (tests edit-mask full-width grouping commas).
@@ -1785,9 +1701,7 @@ def test_format_report_line_length() -> None:
     )
     line_large: str = format_report_line(row_large, 3)
     assert len(line_large) == _EXPECTED_REPORT_LINE_WIDTH, (
-        f"Large-amount row must produce exactly "
-        f"{_EXPECTED_REPORT_LINE_WIDTH}-character line; "
-        f"got {len(line_large)}"
+        f"Large-amount row must produce exactly {_EXPECTED_REPORT_LINE_WIDTH}-character line; got {len(line_large)}"
     )
 
     # Row with None acct_id (missing xref) — tests the 11-space
@@ -1875,84 +1789,53 @@ def test_format_report_line_contains_fields() -> None:
     assert len(line) == _EXPECTED_REPORT_LINE_WIDTH
 
     # Field 1: tran_id at offsets 0-16 (16 chars).
-    assert line[0:16] == "TRANID0000000001", (
-        f"tran_id mismatch at offset [0:16]: {line[0:16]!r} "
-        f"(full line: {line!r})"
-    )
+    assert line[0:16] == "TRANID0000000001", f"tran_id mismatch at offset [0:16]: {line[0:16]!r} (full line: {line!r})"
 
     # Separator at offset 16.
-    assert line[16] == " ", (
-        f"Expected separator space at offset 16; got {line[16]!r}"
-    )
+    assert line[16] == " ", f"Expected separator space at offset 16; got {line[16]!r}"
 
     # Field 2: acct_id at offsets 17-28 (11 chars).
-    assert line[17:28] == "00012345678", (
-        f"acct_id mismatch at offset [17:28]: {line[17:28]!r}"
-    )
+    assert line[17:28] == "00012345678", f"acct_id mismatch at offset [17:28]: {line[17:28]!r}"
 
     # Separator at offset 28.
-    assert line[28] == " ", (
-        f"Expected separator space at offset 28; got {line[28]!r}"
-    )
+    assert line[28] == " ", f"Expected separator space at offset 28; got {line[28]!r}"
 
     # Field 3: tran_type_cd at offsets 29-31 (2 chars).
-    assert line[29:31] == "07", (
-        f"tran_type_cd mismatch at offset [29:31]: {line[29:31]!r}"
-    )
+    assert line[29:31] == "07", f"tran_type_cd mismatch at offset [29:31]: {line[29:31]!r}"
 
     # Hyphen separator at offset 31.
-    assert line[31] == "-", (
-        f"Expected hyphen at offset 31; got {line[31]!r}"
-    )
+    assert line[31] == "-", f"Expected hyphen at offset 31; got {line[31]!r}"
 
     # Field 4: tran_type_desc at offsets 32-47 (15 chars, space-padded).
     # "MyTestType" is 10 chars → padded to 15 with 5 trailing spaces.
-    assert line[32:47] == "MyTestType     ", (
-        f"tran_type_desc mismatch at offset [32:47]: {line[32:47]!r}"
-    )
+    assert line[32:47] == "MyTestType     ", f"tran_type_desc mismatch at offset [32:47]: {line[32:47]!r}"
 
     # Separator at offset 47.
-    assert line[47] == " ", (
-        f"Expected separator space at offset 47; got {line[47]!r}"
-    )
+    assert line[47] == " ", f"Expected separator space at offset 47; got {line[47]!r}"
 
     # Field 5: tran_cat_cd at offsets 48-52 (4 chars, zero-padded).
-    assert line[48:52] == "0042", (
-        f"tran_cat_cd mismatch at offset [48:52]: {line[48:52]!r}"
-    )
+    assert line[48:52] == "0042", f"tran_cat_cd mismatch at offset [48:52]: {line[48:52]!r}"
 
     # Hyphen separator at offset 52.
-    assert line[52] == "-", (
-        f"Expected hyphen at offset 52; got {line[52]!r}"
-    )
+    assert line[52] == "-", f"Expected hyphen at offset 52; got {line[52]!r}"
 
     # Field 6: tran_cat_type_desc at offsets 53-82 (29 chars, space-padded).
     # "MyTestCategory" is 14 chars → padded to 29 with 15 trailing spaces.
     cat_desc_slice: str = line[53:82]
     assert cat_desc_slice.startswith("MyTestCategory"), (
-        f"tran_cat_type_desc must start with 'MyTestCategory' at "
-        f"offset [53:82]; got {cat_desc_slice!r}"
+        f"tran_cat_type_desc must start with 'MyTestCategory' at offset [53:82]; got {cat_desc_slice!r}"
     )
-    assert len(cat_desc_slice) == 29, (
-        f"tran_cat_type_desc slice must be 29 chars; got "
-        f"{len(cat_desc_slice)}"
-    )
+    assert len(cat_desc_slice) == 29, f"tran_cat_type_desc slice must be 29 chars; got {len(cat_desc_slice)}"
 
     # Separator at offset 82.
-    assert line[82] == " ", (
-        f"Expected separator space at offset 82; got {line[82]!r}"
-    )
+    assert line[82] == " ", f"Expected separator space at offset 82; got {line[82]!r}"
 
     # Field 7: tran_source at offsets 83-93 (10 chars, space-padded).
     # "MYSRC" is 5 chars → padded to 10 with 5 trailing spaces.
-    assert line[83:93] == "MYSRC     ", (
-        f"tran_source mismatch at offset [83:93]: {line[83:93]!r}"
-    )
+    assert line[83:93] == "MYSRC     ", f"tran_source mismatch at offset [83:93]: {line[83:93]!r}"
 
     # 4-char FILLER at offsets 93-97.
-    assert line[93:97] == "    ", (
-        f"Expected 4-space filler at offset [93:97]; got {line[93:97]!r}"
-    )
+    assert line[93:97] == "    ", f"Expected 4-space filler at offset [93:97]; got {line[93:97]!r}"
 
     # Field 8: tran_amt (edited, 16 chars) at offsets 97-113.
     # Decimal('1234.56') with PIC -ZZZ,ZZZ,ZZZ.ZZ renders as:
@@ -1960,32 +1843,18 @@ def test_format_report_line_contains_fields() -> None:
     # Exact layout: "       1,234.56 " (16 chars) — see
     # _format_amount_edited doctests.
     amount_slice: str = line[97:113]
-    assert len(amount_slice) == 16, (
-        f"Amount slice must be 16 chars; got {len(amount_slice)}: "
-        f"{amount_slice!r}"
-    )
+    assert len(amount_slice) == 16, f"Amount slice must be 16 chars; got {len(amount_slice)}: {amount_slice!r}"
     # Must contain the expected significant characters.
-    assert "1,234.56" in amount_slice, (
-        f"Amount slice must contain '1,234.56'; got {amount_slice!r}"
-    )
+    assert "1,234.56" in amount_slice, f"Amount slice must contain '1,234.56'; got {amount_slice!r}"
     # Sign position: SPACE for non-negative.
-    assert amount_slice[0] == " ", (
-        f"Expected SPACE sign for non-negative amount; got "
-        f"{amount_slice[0]!r}"
-    )
+    assert amount_slice[0] == " ", f"Expected SPACE sign for non-negative amount; got {amount_slice[0]!r}"
 
     # 2-char FILLER at offsets 113-115, then 18 chars of padding
     # to reach 133 total.
-    assert line[113:115] == "  ", (
-        f"Expected 2-space filler at offset [113:115]; got "
-        f"{line[113:115]!r}"
-    )
+    assert line[113:115] == "  ", f"Expected 2-space filler at offset [113:115]; got {line[113:115]!r}"
 
     # Trailing padding to width 133.
-    assert line[115:133] == " " * 18, (
-        f"Expected 18-space trailing pad at offset [115:133]; got "
-        f"{line[115:133]!r}"
-    )
+    assert line[115:133] == " " * 18, f"Expected 18-space trailing pad at offset [115:133]; got {line[115:133]!r}"
 
 
 @pytest.mark.unit
@@ -2029,78 +1898,53 @@ def test_format_subtotal_line() -> None:
 
     page_line: str = format_subtotal_line("Page Total", test_amount)
     assert len(page_line) == _EXPECTED_REPORT_LINE_WIDTH, (
-        f"Page Total line must be {_EXPECTED_REPORT_LINE_WIDTH} chars; "
-        f"got {len(page_line)}"
+        f"Page Total line must be {_EXPECTED_REPORT_LINE_WIDTH} chars; got {len(page_line)}"
     )
 
     account_line: str = format_subtotal_line("Account Total", test_amount)
     assert len(account_line) == _EXPECTED_REPORT_LINE_WIDTH, (
-        f"Account Total line must be {_EXPECTED_REPORT_LINE_WIDTH} chars; "
-        f"got {len(account_line)}"
+        f"Account Total line must be {_EXPECTED_REPORT_LINE_WIDTH} chars; got {len(account_line)}"
     )
 
     grand_line: str = format_subtotal_line("Grand Total", test_amount)
     assert len(grand_line) == _EXPECTED_REPORT_LINE_WIDTH, (
-        f"Grand Total line must be {_EXPECTED_REPORT_LINE_WIDTH} chars; "
-        f"got {len(grand_line)}"
+        f"Grand Total line must be {_EXPECTED_REPORT_LINE_WIDTH} chars; got {len(grand_line)}"
     )
 
     # 3. Label appears at offset 0.
     # "Page Total " is PIC X(11) with trailing space.
-    assert page_line.startswith("Page Total "), (
-        f"Page Total line must start with 'Page Total '; got "
-        f"{page_line[:15]!r}"
-    )
+    assert page_line.startswith("Page Total "), f"Page Total line must start with 'Page Total '; got {page_line[:15]!r}"
     # "Account Total" is PIC X(13), no trailing space.  Next char
     # is the first of the 84-char dot run.
     assert account_line.startswith("Account Total"), (
-        f"Account Total line must start with 'Account Total'; got "
-        f"{account_line[:15]!r}"
+        f"Account Total line must start with 'Account Total'; got {account_line[:15]!r}"
     )
-    assert account_line[13] == ".", (
-        f"Account Total must be followed immediately by dots; got "
-        f"{account_line[13]!r}"
-    )
+    assert account_line[13] == ".", f"Account Total must be followed immediately by dots; got {account_line[13]!r}"
     # "Grand Total" is PIC X(11), no trailing space.
     assert grand_line.startswith("Grand Total"), (
-        f"Grand Total line must start with 'Grand Total'; got "
-        f"{grand_line[:15]!r}"
+        f"Grand Total line must start with 'Grand Total'; got {grand_line[:15]!r}"
     )
-    assert grand_line[11] == ".", (
-        f"Grand Total must be followed immediately by dots; got "
-        f"{grand_line[11]!r}"
-    )
+    assert grand_line[11] == ".", f"Grand Total must be followed immediately by dots; got {grand_line[11]!r}"
 
     # 4. Amount edited at offset [97:113] with "+" sign for non-negative.
     for line in (page_line, account_line, grand_line):
         amount_slice: str = line[97:113]
-        assert len(amount_slice) == 16, (
-            f"Amount slice must be 16 chars; got {amount_slice!r}"
-        )
+        assert len(amount_slice) == 16, f"Amount slice must be 16 chars; got {amount_slice!r}"
         # "+" sign at position 0 of the 16-char slice.
         assert amount_slice[0] == "+", (
-            f"Non-negative amount must have '+' sign; got "
-            f"{amount_slice[0]!r} in slice {amount_slice!r}"
+            f"Non-negative amount must have '+' sign; got {amount_slice[0]!r} in slice {amount_slice!r}"
         )
         # Magnitude must contain '1,234.56'.
-        assert "1,234.56" in amount_slice, (
-            f"Amount slice must contain '1,234.56'; got {amount_slice!r}"
-        )
+        assert "1,234.56" in amount_slice, f"Amount slice must contain '1,234.56'; got {amount_slice!r}"
 
     # 5. Decimal precision preserved — negative amount shows '-' sign.
-    negative_line: str = format_subtotal_line(
-        "Grand Total", Decimal("-500.25")
-    )
+    negative_line: str = format_subtotal_line("Grand Total", Decimal("-500.25"))
     assert len(negative_line) == _EXPECTED_REPORT_LINE_WIDTH
     neg_amount_slice: str = negative_line[97:113]
     assert neg_amount_slice[0] == "-", (
-        f"Negative amount must have '-' sign; got "
-        f"{neg_amount_slice[0]!r} in slice {neg_amount_slice!r}"
+        f"Negative amount must have '-' sign; got {neg_amount_slice[0]!r} in slice {neg_amount_slice!r}"
     )
-    assert "500.25" in neg_amount_slice, (
-        f"Negative amount slice must contain '500.25'; got "
-        f"{neg_amount_slice!r}"
-    )
+    assert "500.25" in neg_amount_slice, f"Negative amount slice must contain '500.25'; got {neg_amount_slice!r}"
 
     # 6. Zero amount edge case — still has '+' sign per
     # _format_subtotal_amount_edited (subtotal variant always shows
@@ -2113,18 +1957,14 @@ def test_format_subtotal_line() -> None:
         f"sign semantics); got {zero_amount_slice[0]!r} in slice "
         f"{zero_amount_slice!r}"
     )
-    assert "0.00" in zero_amount_slice, (
-        f"Zero amount slice must contain '0.00'; got "
-        f"{zero_amount_slice!r}"
-    )
+    assert "0.00" in zero_amount_slice, f"Zero amount slice must contain '0.00'; got {zero_amount_slice!r}"
 
     # 7. Verify label-specific dot-run widths per CVTRA07Y.
     # Page Total: 11 chars + 86 dots + 16 amount = 113 then padded to 133.
     # Count dots after the label.
     page_dots_section: str = page_line[11:97]
     assert page_dots_section == "." * 86, (
-        f"Page Total must have 86 dots between label and amount; got "
-        f"{len(page_dots_section.replace(' ', ''))} dots"
+        f"Page Total must have 86 dots between label and amount; got {len(page_dots_section.replace(' ', ''))} dots"
     )
     # Account Total: 13 chars + 84 dots + 16 amount = 113 → 133.
     account_dots_section: str = account_line[13:97]
@@ -2135,8 +1975,7 @@ def test_format_subtotal_line() -> None:
     # Grand Total: 11 chars + 86 dots + 16 amount = 113 → 133.
     grand_dots_section: str = grand_line[11:97]
     assert grand_dots_section == "." * 86, (
-        f"Grand Total must have 86 dots between label and amount; got "
-        f"{len(grand_dots_section.replace(' ', ''))} dots"
+        f"Grand Total must have 86 dots between label and amount; got {len(grand_dots_section.replace(' ', ''))} dots"
     )
 
 
@@ -2218,12 +2057,8 @@ def test_sort_by_card_num_ascending(spark_session: SparkSession) -> None:
             _make_xref_row(card_mid, "00000005555"),
         ]
     )
-    trantype_df = spark_session.createDataFrame(
-        [_make_trantype_row("01", "Purchase")]
-    )
-    trancatg_df = spark_session.createDataFrame(
-        [_make_trancatg_row("01", "0001", "Groceries")]
-    )
+    trantype_df = spark_session.createDataFrame([_make_trantype_row("01", "Purchase")])
+    trancatg_df = spark_session.createDataFrame([_make_trancatg_row("01", "0001", "Groceries")])
 
     captured = _run_main_and_capture(
         spark_session,
@@ -2241,10 +2076,7 @@ def test_sort_by_card_num_ascending(spark_session: SparkSession) -> None:
     pos_mid: int = report_content.find("T_MID")
     pos_high: int = report_content.find("T_HIGH")
 
-    assert pos_low != -1, (
-        f"T_LOW (card={card_low}) must appear in report.  "
-        f"First 2000 chars:\n{report_content[:2000]}"
-    )
+    assert pos_low != -1, f"T_LOW (card={card_low}) must appear in report.  First 2000 chars:\n{report_content[:2000]}"
     assert pos_mid != -1, "T_MID must appear in report"
     assert pos_high != -1, "T_HIGH must appear in report"
 
@@ -2304,9 +2136,7 @@ def test_report_written_to_s3() -> None:
     mock_resolved_args: dict[str, Any] = {"JOB_NAME": "carddemo-tranrept"}
 
     # read_table always returns our mock empty DataFrame.
-    def _read_side_effect(
-        _spark: Any, table_name: str, **_kwargs: Any
-    ) -> MagicMock:
+    def _read_side_effect(_spark: Any, table_name: str, **_kwargs: Any) -> MagicMock:
         # Verify read_table is invoked with the expected table names.
         assert table_name in {
             "transactions",
@@ -2339,9 +2169,7 @@ def test_report_written_to_s3() -> None:
     # Capture get_versioned_s3_path arguments.
     gdg_calls: list[str] = []
 
-    def _get_s3_path_side_effect(
-        gdg_name: str, *_args: Any, **_kwargs: Any
-    ) -> str:
+    def _get_s3_path_side_effect(gdg_name: str, *_args: Any, **_kwargs: Any) -> str:
         gdg_calls.append(gdg_name)
         return f"s3://carddemo-batch-gdg/{gdg_name}/v1/"
 
@@ -2364,14 +2192,12 @@ def test_report_written_to_s3() -> None:
 
     # 1. get_versioned_s3_path called with "TRANREPT".
     assert gdg_calls == ["TRANREPT"], (
-        f"Expected exactly one call to get_versioned_s3_path with "
-        f"gdg_name='TRANREPT'; got {gdg_calls!r}"
+        f"Expected exactly one call to get_versioned_s3_path with gdg_name='TRANREPT'; got {gdg_calls!r}"
     )
 
     # 2. write_to_s3 called exactly once.
     assert len(write_calls) == 1, (
-        f"Expected exactly one write_to_s3 call; got "
-        f"{len(write_calls)} calls: {write_calls!r}"
+        f"Expected exactly one write_to_s3 call; got {len(write_calls)} calls: {write_calls!r}"
     )
 
     # 3. write_to_s3 content_type is 'text/plain'.
@@ -2383,25 +2209,21 @@ def test_report_written_to_s3() -> None:
 
     # 4. content is a str (not bytes) — CBTRN03C writes RECFM=FB.
     assert isinstance(write_call["content"], str), (
-        f"write_to_s3 content must be str (text report); got "
-        f"{type(write_call['content']).__name__}"
+        f"write_to_s3 content must be str (text report); got {type(write_call['content']).__name__}"
     )
 
     # 5. commit_job called exactly once.
     assert mock_commit_job.call_count == 1, (
-        f"Expected commit_job to be called once on success; got "
-        f"{mock_commit_job.call_count}"
+        f"Expected commit_job to be called once on success; got {mock_commit_job.call_count}"
     )
 
     # 6. The mocked init_glue was called once with job_name="carddemo-tranrept".
     assert mock_init_glue.call_count == 1, (
-        f"init_glue must be invoked exactly once; got "
-        f"{mock_init_glue.call_count} invocations"
+        f"init_glue must be invoked exactly once; got {mock_init_glue.call_count} invocations"
     )
     init_glue_kwargs = mock_init_glue.call_args.kwargs
     assert init_glue_kwargs.get("job_name") == "carddemo-tranrept", (
-        f"init_glue must be called with job_name='carddemo-tranrept'; "
-        f"got kwargs={init_glue_kwargs!r}"
+        f"init_glue must be called with job_name='carddemo-tranrept'; got kwargs={init_glue_kwargs!r}"
     )
 
 
@@ -2517,9 +2339,7 @@ def test_tranrept_main_with_spark(spark_session: SparkSession) -> None:
         [
             _make_xref_row("4000000000004001", "00000000041"),
             _make_xref_row("6000000000006001", "00000000061"),
-            _make_xref_row(
-                "9000000000009999", "00000000099"
-            ),  # Unused; must not appear.
+            _make_xref_row("9000000000009999", "00000000099"),  # Unused; must not appear.
         ]
     )
     trantype_df = spark_session.createDataFrame(
@@ -2555,8 +2375,7 @@ def test_tranrept_main_with_spark(spark_session: SparkSession) -> None:
         f"{report_content[:2000]}"
     )
     assert "T_OUT_LATE" not in report_content, (
-        "T_OUT_LATE (date 2022-08-20) must be excluded from the "
-        "report (date filter end=2022-07-06)."
+        "T_OUT_LATE (date 2022-08-20) must be excluded from the report (date filter end=2022-07-06)."
     )
 
     # ---------------------------------------------------------------
@@ -2564,8 +2383,7 @@ def test_tranrept_main_with_spark(spark_session: SparkSession) -> None:
     # ---------------------------------------------------------------
     for in_range_id in ("T_IN_A1", "T_IN_A2", "T_IN_B1", "T_IN_B2"):
         assert in_range_id in report_content, (
-            f"{in_range_id} must appear in report (in-range date).  "
-            f"Report excerpt:\n{report_content[:3000]}"
+            f"{in_range_id} must appear in report (in-range date).  Report excerpt:\n{report_content[:3000]}"
         )
 
     # ---------------------------------------------------------------
@@ -2573,37 +2391,28 @@ def test_tranrept_main_with_spark(spark_session: SparkSession) -> None:
     # appear for card 4xxx and 6xxx transactions.
     # ---------------------------------------------------------------
     assert "00000000041" in report_content, (
-        "Account 00000000041 (xref for card 4000000000004001) "
-        "must appear for transactions T_IN_A1 and T_IN_A2."
+        "Account 00000000041 (xref for card 4000000000004001) must appear for transactions T_IN_A1 and T_IN_A2."
     )
     assert "00000000061" in report_content, (
-        "Account 00000000061 (xref for card 6000000000006001) "
-        "must appear for transactions T_IN_B1 and T_IN_B2."
+        "Account 00000000061 (xref for card 6000000000006001) must appear for transactions T_IN_B1 and T_IN_B2."
     )
     # Unused xref must NOT appear.
     assert "00000000099" not in report_content, (
-        "Account 00000000099 has no in-range transaction and "
-        "must NOT appear in report."
+        "Account 00000000099 has no in-range transaction and must NOT appear in report."
     )
 
     # ---------------------------------------------------------------
     # Verification 4: TRANTYPE enrichment — type description must appear.
     # ---------------------------------------------------------------
-    assert "Purchase" in report_content, (
-        "Type description 'Purchase' (trantype 01) must appear."
-    )
+    assert "Purchase" in report_content, "Type description 'Purchase' (trantype 01) must appear."
     assert "Refund" in report_content, (
-        "Type description 'Refund' (trantype 02) must appear "
-        "(T_IN_A2 has tran_type_cd='02')."
+        "Type description 'Refund' (trantype 02) must appear (T_IN_A2 has tran_type_cd='02')."
     )
 
     # ---------------------------------------------------------------
     # Verification 5: TRANCATG enrichment — category description appears.
     # ---------------------------------------------------------------
-    assert "Groceries" in report_content, (
-        "Category description 'Groceries' (trancatg (01,0001)) "
-        "must appear."
-    )
+    assert "Groceries" in report_content, "Category description 'Groceries' (trancatg (01,0001)) must appear."
     assert "Returns" in report_content, (
         "Category description 'Returns' (trancatg (02,0001)) "
         "must appear (T_IN_A2 has tran_cat_cd='0001' with "
@@ -2632,9 +2441,7 @@ def test_tranrept_main_with_spark(spark_session: SparkSession) -> None:
     # ---------------------------------------------------------------
     # Verification 7: 3-level totals.
     # ---------------------------------------------------------------
-    account_lines: list[str] = _extract_subtotal_lines(
-        report_content, "Account Total"
-    )
+    account_lines: list[str] = _extract_subtotal_lines(report_content, "Account Total")
     # Exactly 1 account total (card 4xxx break); card 6xxx is last → no flush.
     assert len(account_lines) == 1, (
         f"Expected exactly 1 Account Total line (for card 4xxx break); "
@@ -2644,31 +2451,20 @@ def test_tranrept_main_with_spark(spark_session: SparkSession) -> None:
     account_total_amount: Decimal = _parse_subtotal_amount(account_lines[0])
     expected_account_total: Decimal = Decimal("300.00")  # 100 + 200
     assert account_total_amount == expected_account_total, (
-        f"Card 4xxx account total must be {expected_account_total} "
-        f"(100.00 + 200.00); got {account_total_amount}"
+        f"Card 4xxx account total must be {expected_account_total} (100.00 + 200.00); got {account_total_amount}"
     )
 
-    page_lines: list[str] = _extract_subtotal_lines(
-        report_content, "Page Total"
-    )
-    assert len(page_lines) >= 1, (
-        f"At least one Page Total line (EOF flush) must appear; got "
-        f"{len(page_lines)}"
-    )
+    page_lines: list[str] = _extract_subtotal_lines(report_content, "Page Total")
+    assert len(page_lines) >= 1, f"At least one Page Total line (EOF flush) must appear; got {len(page_lines)}"
 
-    grand_lines: list[str] = _extract_subtotal_lines(
-        report_content, "Grand Total"
-    )
-    assert len(grand_lines) == 1, (
-        f"Expected exactly 1 Grand Total line; got {len(grand_lines)}"
-    )
+    grand_lines: list[str] = _extract_subtotal_lines(report_content, "Grand Total")
+    assert len(grand_lines) == 1, f"Expected exactly 1 Grand Total line; got {len(grand_lines)}"
     grand_total_amount: Decimal = _parse_subtotal_amount(grand_lines[0])
     # Grand total = sum of all 4 included transactions:
     # 100 + 200 + 50 + 75 = 425.00
     expected_grand_total: Decimal = Decimal("425.00")
     assert grand_total_amount == expected_grand_total, (
-        f"Grand total must be {expected_grand_total} (100+200+50+75); "
-        f"got {grand_total_amount}"
+        f"Grand total must be {expected_grand_total} (100+200+50+75); got {grand_total_amount}"
     )
 
     # Consistency: sum(page_totals) == grand_total.
@@ -2677,20 +2473,17 @@ def test_tranrept_main_with_spark(spark_session: SparkSession) -> None:
         start=Decimal("0.00"),
     ).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
     assert sum_of_pages == grand_total_amount, (
-        f"Sum of page totals ({sum_of_pages}) must equal grand total "
-        f"({grand_total_amount})"
+        f"Sum of page totals ({sum_of_pages}) must equal grand total ({grand_total_amount})"
     )
 
     # ---------------------------------------------------------------
     # Verification 8: S3 output.
     # ---------------------------------------------------------------
     assert captured["gdg_calls"] == ["TRANREPT"], (
-        f"get_versioned_s3_path must be called with gdg_name='TRANREPT'; "
-        f"got {captured['gdg_calls']!r}"
+        f"get_versioned_s3_path must be called with gdg_name='TRANREPT'; got {captured['gdg_calls']!r}"
     )
     assert captured["content_type"] == "text/plain", (
-        f"write_to_s3 content_type must be 'text/plain'; got "
-        f"{captured['content_type']!r}"
+        f"write_to_s3 content_type must be 'text/plain'; got {captured['content_type']!r}"
     )
     assert captured["content"] is not None and len(captured["content"]) > 0, (
         "write_to_s3 must be called with non-empty content."
@@ -2705,8 +2498,7 @@ def test_tranrept_main_with_spark(spark_session: SparkSession) -> None:
     # Verification 9: Glue lifecycle — commit_job called once.
     # ---------------------------------------------------------------
     assert captured["commit_called"] == 1, (
-        f"commit_job must be called exactly once on successful run; "
-        f"got {captured['commit_called']}"
+        f"commit_job must be called exactly once on successful run; got {captured['commit_called']}"
     )
 
     # ---------------------------------------------------------------
@@ -2718,13 +2510,5 @@ def test_tranrept_main_with_spark(spark_session: SparkSession) -> None:
     # would have raised before write_to_s3 was invoked.  We
     # additionally assert the report contains detail lines (proving
     # all joins succeeded and produced a non-empty enriched DataFrame).
-    num_detail_ids = sum(
-        1
-        for tid in ("T_IN_A1", "T_IN_A2", "T_IN_B1", "T_IN_B2")
-        if tid in report_content
-    )
-    assert num_detail_ids == 4, (
-        f"All 4 in-range transactions must produce detail lines; got "
-        f"{num_detail_ids}"
-    )
-
+    num_detail_ids = sum(1 for tid in ("T_IN_A1", "T_IN_A2", "T_IN_B1", "T_IN_B2") if tid in report_content)
+    assert num_detail_ids == 4, f"All 4 in-range transactions must produce detail lines; got {num_detail_ids}"

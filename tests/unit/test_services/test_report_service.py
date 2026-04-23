@@ -488,9 +488,7 @@ def _receive_sent_message(sqs_client: Any, queue_url: str) -> dict[str, Any]:
         f"``send_message``."
     )
     assert len(response["Messages"]) == 1, (
-        f"Expected exactly one message on SQS queue, got "
-        f"{len(response['Messages'])} messages: "
-        f"{response['Messages']!r}"
+        f"Expected exactly one message on SQS queue, got {len(response['Messages'])} messages: {response['Messages']!r}"
     )
     message: dict[str, Any] = response["Messages"][0]
     return message
@@ -509,10 +507,7 @@ def _get_queue_message_count(sqs_client: Any, queue_url: str) -> int:
         QueueUrl=queue_url,
         AttributeNames=["ApproximateNumberOfMessages"],
     )
-    return int(
-        attrs.get("Attributes", {}).get("ApproximateNumberOfMessages", "0")
-    )
-
+    return int(attrs.get("Attributes", {}).get("ApproximateNumberOfMessages", "0"))
 
 
 # ============================================================================
@@ -575,8 +570,7 @@ async def test_submit_monthly_report(
 
     # --- Assert on the response ----------------------------------------
     assert response.confirm == _CONFIRM_YES, (
-        "Monthly submission must return confirm='Y' on successful "
-        "SQS publish (maps to CORPT00C clearing WS-ERR-FLG)."
+        "Monthly submission must return confirm='Y' on successful SQS publish (maps to CORPT00C clearing WS-ERR-FLG)."
     )
     assert response.report_type == ReportType.monthly
     # UUID-v4 format check: 36-char string with dashes at the
@@ -592,15 +586,11 @@ async def test_submit_monthly_report(
     assert response.message == expected_message
 
     # --- Assert on the SQS side ----------------------------------------
-    assert _get_queue_message_count(
-        mock_sqs_queue.client, mock_sqs_queue.url
-    ) == 1, (
+    assert _get_queue_message_count(mock_sqs_queue.client, mock_sqs_queue.url) == 1, (
         "Exactly one SQS message must be enqueued per submission "
         "(maps to CICS WRITEQ TD QUEUE('JOBS') at CORPT00C L517-523)."
     )
-    message = _receive_sent_message(
-        mock_sqs_queue.client, mock_sqs_queue.url
-    )
+    message = _receive_sent_message(mock_sqs_queue.client, mock_sqs_queue.url)
 
     # Body is valid JSON with the required fields.
     body: dict[str, Any] = json.loads(message["Body"])
@@ -616,9 +606,7 @@ async def test_submit_monthly_report(
         "CORPT00C L214 only moves 'Monthly' to WS-REPORT-NAME; the "
         "date-range derivation is performed at report-generation time."
     )
-    assert "end_date" not in body, (
-        "Monthly reports must omit end_date from the SQS body."
-    )
+    assert "end_date" not in body, "Monthly reports must omit end_date from the SQS body."
 
 
 @pytest.mark.unit
@@ -653,9 +641,7 @@ async def test_submit_yearly_report(
     assert response.message == expected_message
 
     # --- Assert on the SQS side ----------------------------------------
-    message = _receive_sent_message(
-        mock_sqs_queue.client, mock_sqs_queue.url
-    )
+    message = _receive_sent_message(mock_sqs_queue.client, mock_sqs_queue.url)
     body: dict[str, Any] = json.loads(message["Body"])
     assert body["report_type"] == "yearly"
     assert body["report_id"] == response.report_id
@@ -707,9 +693,7 @@ async def test_submit_custom_report_with_dates(
     assert response.message == expected_message
 
     # --- Assert on the SQS side ----------------------------------------
-    message = _receive_sent_message(
-        mock_sqs_queue.client, mock_sqs_queue.url
-    )
+    message = _receive_sent_message(mock_sqs_queue.client, mock_sqs_queue.url)
     body: dict[str, Any] = json.loads(message["Body"])
     assert body["report_type"] == "custom"
     assert body["report_id"] == response.report_id
@@ -718,12 +702,10 @@ async def test_submit_custom_report_with_dates(
     # requested date range (cannot derive it from the current
     # date, as it does for monthly/yearly).
     assert body["start_date"] == _TEST_START_DATE, (
-        "Custom report SQS body must carry the start_date verbatim — "
-        "maps to CORPT00C L403 building WS-START-DATE."
+        "Custom report SQS body must carry the start_date verbatim — maps to CORPT00C L403 building WS-START-DATE."
     )
     assert body["end_date"] == _TEST_END_DATE, (
-        "Custom report SQS body must carry the end_date verbatim — "
-        "maps to CORPT00C L415 building WS-END-DATE."
+        "Custom report SQS body must carry the end_date verbatim — maps to CORPT00C L415 building WS-END-DATE."
     )
 
 
@@ -780,7 +762,6 @@ def test_submit_custom_report_missing_dates_rejected() -> None:
         )
 
 
-
 # ============================================================================
 # Phase 4 — SQS Message Validation Tests
 # ============================================================================
@@ -835,25 +816,19 @@ async def test_sqs_message_body_structure(
     response = await report_service.submit_report(request)
 
     # --- Assert ---------------------------------------------------------
-    message = _receive_sent_message(
-        mock_sqs_queue.client, mock_sqs_queue.url
-    )
+    message = _receive_sent_message(mock_sqs_queue.client, mock_sqs_queue.url)
 
     # Body is valid JSON — if this json.loads raises, the service is
     # producing malformed payloads and the downstream worker will
     # crash on ingest.
     body: dict[str, Any] = json.loads(message["Body"])
     assert isinstance(body, dict), (
-        "SQS message body must deserialize to a JSON object (dict), "
-        f"got {type(body).__name__}"
+        f"SQS message body must deserialize to a JSON object (dict), got {type(body).__name__}"
     )
 
     # Required keys present.
     for required_key in ("report_id", "report_type", "submitted_at"):
-        assert required_key in body, (
-            f"SQS message body is missing required key {required_key!r}. "
-            f"Body: {body!r}"
-        )
+        assert required_key in body, f"SQS message body is missing required key {required_key!r}. Body: {body!r}"
 
     # report_id is a UUIDv4 string that matches the response.
     assert body["report_id"] == response.report_id
@@ -875,8 +850,7 @@ async def test_sqs_message_body_structure(
     # system time was implicitly local-to-the-region; the target
     # architecture standardizes on UTC for cross-region correctness.
     assert parsed_ts.tzinfo is not None, (
-        "SQS message submitted_at must be timezone-aware (UTC). "
-        f"Got naive timestamp: {body['submitted_at']!r}"
+        f"SQS message submitted_at must be timezone-aware (UTC). Got naive timestamp: {body['submitted_at']!r}"
     )
 
 
@@ -916,16 +890,11 @@ async def test_sqs_fifo_message_attributes(
     response = await report_service.submit_report(request)
 
     # --- Assert ---------------------------------------------------------
-    message = _receive_sent_message(
-        mock_sqs_queue.client, mock_sqs_queue.url
-    )
+    message = _receive_sent_message(mock_sqs_queue.client, mock_sqs_queue.url)
 
     # FIFO attributes are exposed under ``Attributes`` when the
     # receiver requests ``AttributeNames=['All']``.
-    assert "Attributes" in message, (
-        "Expected ``Attributes`` dict on received FIFO message. "
-        f"Got message: {message!r}"
-    )
+    assert "Attributes" in message, f"Expected ``Attributes`` dict on received FIFO message. Got message: {message!r}"
     attrs = message["Attributes"]
 
     # Every message in this test module shares the same group id
@@ -981,20 +950,14 @@ async def test_sqs_message_contains_report_id(
     parsed_uuid = uuid.UUID(response.report_id)
 
     # Version byte is 4 (UUID v4).
-    assert parsed_uuid.version == 4, (
-        f"Expected UUIDv4, got UUIDv{parsed_uuid.version}: "
-        f"{response.report_id!r}"
-    )
+    assert parsed_uuid.version == 4, f"Expected UUIDv4, got UUIDv{parsed_uuid.version}: {response.report_id!r}"
 
     # The same id MUST also appear in the SQS message body so
     # downstream consumers can correlate without reading the
     # ``MessageDeduplicationId`` attribute.
-    message = _receive_sent_message(
-        mock_sqs_queue.client, mock_sqs_queue.url
-    )
+    message = _receive_sent_message(mock_sqs_queue.client, mock_sqs_queue.url)
     body: dict[str, Any] = json.loads(message["Body"])
     assert body["report_id"] == response.report_id
-
 
 
 # ============================================================================
@@ -1061,9 +1024,7 @@ async def test_custom_report_valid_date_range(
     # --- Assert ---------------------------------------------------------
     assert response.confirm == _CONFIRM_YES
     assert response.report_type == ReportType.custom
-    message = _receive_sent_message(
-        mock_sqs_queue.client, mock_sqs_queue.url
-    )
+    message = _receive_sent_message(mock_sqs_queue.client, mock_sqs_queue.url)
     body: dict[str, Any] = json.loads(message["Body"])
     assert body["start_date"] == "2024-03-01"
     assert body["end_date"] == "2024-03-31"
@@ -1233,10 +1194,7 @@ async def test_sqs_publish_failure(mock_sqs_queue: Any) -> None:
         error_response={
             "Error": {
                 "Code": "QueueDoesNotExist",
-                "Message": (
-                    "The specified queue does not exist "
-                    "for this wsdl version."
-                ),
+                "Message": ("The specified queue does not exist for this wsdl version."),
             }
         },
         operation_name="SendMessage",
@@ -1350,13 +1308,10 @@ async def test_local_development_fallback(
         start_date=_TEST_START_DATE,
         end_date=_TEST_END_DATE,
     )
-    custom_response = await unconfigured_report_service.submit_report(
-        custom_request
-    )
+    custom_response = await unconfigured_report_service.submit_report(custom_request)
     assert custom_response.confirm == _CONFIRM_YES
     assert custom_response.message == _EXPECTED_FALLBACK_MSG
     assert custom_response.report_type == ReportType.custom
-
 
 
 # ============================================================================
@@ -1445,8 +1400,7 @@ async def test_submit_report_returns_confirmation(
         # --- Assert -----------------------------------------------------
         # Confirm flag — maps to COBOL WS-ERR-FLG cleared.
         assert response.confirm == _CONFIRM_YES, (
-            f"Confirm flag must be {_CONFIRM_YES!r} on success for "
-            f"{report_type.value!r}, got {response.confirm!r}"
+            f"Confirm flag must be {_CONFIRM_YES!r} on success for {report_type.value!r}, got {response.confirm!r}"
         )
 
         # Byte-exact COBOL success message from the STRING at
@@ -1515,9 +1469,7 @@ async def test_submit_report_deduplication_ids_are_unique(
     )
 
     # All three messages were published to the queue.
-    assert _get_queue_message_count(
-        mock_sqs_queue.client, mock_sqs_queue.url
-    ) == 3
+    assert _get_queue_message_count(mock_sqs_queue.client, mock_sqs_queue.url) == 3
 
 
 @pytest.mark.unit
@@ -1557,18 +1509,11 @@ async def test_submit_report_response_fits_errmsgi_bound() -> None:
         _SUCCESS_MSG_TEMPLATE.format(report_name="Custom"),
     ]
     for msg in messages_under_bound:
-        assert len(msg) <= _ERRMSG_MAX_LEN, (
-            f"Message exceeds BMS ERRMSGI PIC X(78) bound "
-            f"({len(msg)} chars): {msg!r}"
-        )
+        assert len(msg) <= _ERRMSG_MAX_LEN, f"Message exceeds BMS ERRMSGI PIC X(78) bound ({len(msg)} chars): {msg!r}"
         # Sanity check: no stray blank suffix. The COBOL literals
         # do not have trailing spaces; a whitespace diff against
         # the COBOL source should be zero.
-        assert msg == msg.rstrip() or msg.endswith(" ..."), (
-            f"Unexpected trailing whitespace in message: {msg!r}"
-        )
-
-
+        assert msg == msg.rstrip() or msg.endswith(" ..."), f"Unexpected trailing whitespace in message: {msg!r}"
 
 
 # ============================================================================
@@ -1692,4 +1637,3 @@ async def test_error_message_truncation_for_oversized_exception(
     # Truncation keeps the PREFIX (not the suffix) so operators
     # still see the most descriptive portion of the message.
     assert _truncate_message(long_msg) == long_msg[:_ERRMSG_MAX_LEN]
-

@@ -273,9 +273,7 @@ _PATCH_GET_S3_PATH: str = "src.batch.jobs.posttran_job.get_versioned_s3_path"
 #: authentication failed``).  The mock's ``side_effect`` must forward the
 #: DataFrame to ``mock_write_table`` so the existing ``_write_side_effect``
 #: capture logic continues to populate ``written_dataframes["transactions"]``.
-_PATCH_WRITE_TABLE_IDEMPOTENT: str = (
-    "src.batch.jobs.posttran_job.write_table_idempotent"
-)
+_PATCH_WRITE_TABLE_IDEMPOTENT: str = "src.batch.jobs.posttran_job.write_table_idempotent"
 
 #: Patch target for the :mod:`pyspark.sql.functions` alias ``F``.
 #: Required by Phase 6 tests that use pure ``MagicMock`` DataFrames
@@ -474,9 +472,7 @@ def test_validate_valid_transaction(
     empty description so downstream logic can rely on
     ``bool(reject_desc) is False`` as a short-hand for "pass".
     """
-    is_valid, reject_code, reject_desc = validate_transaction(
-        sample_tran, sample_xref_lookup, sample_account_lookup
-    )
+    is_valid, reject_code, reject_desc = validate_transaction(sample_tran, sample_xref_lookup, sample_account_lookup)
 
     assert is_valid is True
     assert reject_code == 0
@@ -507,9 +503,7 @@ def test_validate_reject_100_invalid_card(
     # Empty xref_lookup → any card_num lookup misses.
     empty_xref: dict[str, dict[str, Any]] = {}
 
-    is_valid, reject_code, reject_desc = validate_transaction(
-        sample_tran, empty_xref, sample_account_lookup
-    )
+    is_valid, reject_code, reject_desc = validate_transaction(sample_tran, empty_xref, sample_account_lookup)
 
     assert is_valid is False
     assert reject_code == REJECT_INVALID_CARD
@@ -537,9 +531,7 @@ def test_validate_reject_101_account_not_found(
     # Empty account_lookup → Stage 2 miss after Stage 1 hit.
     empty_account: dict[str, dict[str, Any]] = {}
 
-    is_valid, reject_code, reject_desc = validate_transaction(
-        sample_tran, sample_xref_lookup, empty_account
-    )
+    is_valid, reject_code, reject_desc = validate_transaction(sample_tran, sample_xref_lookup, empty_account)
 
     assert is_valid is False
     assert reject_code == REJECT_ACCT_NOT_FOUND
@@ -595,9 +587,7 @@ def test_validate_reject_102_overlimit(
     # by exactly $100 (5100 temp_bal vs 5000 limit).
     sample_tran["dalytran_amt"] = Decimal("200.00")
 
-    is_valid, reject_code, reject_desc = validate_transaction(
-        sample_tran, sample_xref_lookup, account_lookup
-    )
+    is_valid, reject_code, reject_desc = validate_transaction(sample_tran, sample_xref_lookup, account_lookup)
 
     assert is_valid is False
     assert reject_code == REJECT_OVERLIMIT
@@ -647,9 +637,7 @@ def test_validate_reject_102_exact_limit_passes(
     # Zero-amount transaction gives an integer-exact boundary.
     sample_tran["dalytran_amt"] = Decimal("0.00")
 
-    is_valid, reject_code, reject_desc = validate_transaction(
-        sample_tran, sample_xref_lookup, account_lookup
-    )
+    is_valid, reject_code, reject_desc = validate_transaction(sample_tran, sample_xref_lookup, account_lookup)
 
     # Equal → boundary passes → success tuple.
     assert is_valid is True
@@ -738,8 +726,7 @@ def test_build_posted_transaction_field_mapping() -> None:
         "tran_proc_ts",
     }
     assert set(posted.keys()) == expected_keys, (
-        f"posted-record keys drifted from CVTRA05Y.cpy — got "
-        f"{sorted(posted.keys())}, expected {sorted(expected_keys)}"
+        f"posted-record keys drifted from CVTRA05Y.cpy — got {sorted(posted.keys())}, expected {sorted(expected_keys)}"
     )
 
     # 2. Each DALYTRAN-* → TRAN-* mapping is a verbatim value copy
@@ -772,8 +759,7 @@ def test_build_posted_transaction_field_mapping() -> None:
     proc_ts = posted["tran_proc_ts"]
     assert isinstance(proc_ts, str)
     assert len(proc_ts) == 26, (
-        f"tran_proc_ts must be 26 chars (DB2 TIMESTAMP layout) — got "
-        f"{len(proc_ts)} chars: {proc_ts!r}"
+        f"tran_proc_ts must be 26 chars (DB2 TIMESTAMP layout) — got {len(proc_ts)} chars: {proc_ts!r}"
     )
     # Layout: YYYY-MM-DD-HH.MM.SS.UUUUUU — positions 5, 8 are '-',
     # position 10 is '-', positions 13, 16 are '.', position 19 is '.'.
@@ -842,9 +828,7 @@ def test_build_reject_record_format() -> None:
     # 3. Record-line overall length — exactly 430 bytes.
     record_line = reject["record_line"]
     assert isinstance(record_line, str)
-    assert len(record_line) == 430, (
-        f"reject record_line must be 430 bytes — got {len(record_line)}"
-    )
+    assert len(record_line) == 430, f"reject record_line must be 430 bytes — got {len(record_line)}"
 
     # 4. Validation trailer is the final 80 bytes of the record.
     trailer = record_line[350:]
@@ -853,10 +837,7 @@ def test_build_reject_record_format() -> None:
     # 5. The first 4 bytes of the trailer are the zero-padded reject
     #    code — '0102' for code 102.
     fail_reason = trailer[:4]
-    assert fail_reason == "0102", (
-        f"WS-VALIDATION-FAIL-REASON must be zero-padded 4 chars — "
-        f"got {fail_reason!r}"
-    )
+    assert fail_reason == "0102", f"WS-VALIDATION-FAIL-REASON must be zero-padded 4 chars — got {fail_reason!r}"
 
     # 6. The remaining 76 bytes are the description, space-padded on
     #    the right.  Stripping trailing spaces must yield the COBOL
@@ -1160,9 +1141,7 @@ def test_validate_reject_103_expired_account(
     sample_tran["dalytran_orig_ts"] = "2022-07-18-10.00.00.000000"
     sample_tran["dalytran_amt"] = Decimal("10.00")
 
-    is_valid, reject_code, reject_desc = validate_transaction(
-        sample_tran, sample_xref_lookup, account_lookup
-    )
+    is_valid, reject_code, reject_desc = validate_transaction(sample_tran, sample_xref_lookup, account_lookup)
 
     assert is_valid is False
     assert reject_code == REJECT_EXPIRED
@@ -1208,9 +1187,7 @@ def test_validate_cascade_stops_at_first_failure(
     }
     sample_tran["dalytran_orig_ts"] = "2024-06-15-10.00.00.000000"
 
-    is_valid, reject_code, reject_desc = validate_transaction(
-        sample_tran, empty_xref, expired_account_lookup
-    )
+    is_valid, reject_code, reject_desc = validate_transaction(sample_tran, empty_xref, expired_account_lookup)
 
     # First-failure code is 100, not 103.
     assert is_valid is False
@@ -1262,9 +1239,7 @@ def test_validate_overlimit_check_before_expiration(
     sample_tran["dalytran_amt"] = Decimal("200.00")
     sample_tran["dalytran_orig_ts"] = "2024-06-15-10.00.00.000000"
 
-    is_valid, reject_code, reject_desc = validate_transaction(
-        sample_tran, sample_xref_lookup, account_lookup
-    )
+    is_valid, reject_code, reject_desc = validate_transaction(sample_tran, sample_xref_lookup, account_lookup)
 
     # Stage 3 (overlimit) fires first — the 102 code wins.
     assert is_valid is False
@@ -1441,9 +1416,7 @@ def test_return_code_4_when_rejects_exist(
     # read_table signature is read_table(spark, table_name) — the
     # side_effect must accept BOTH positional args (spark + name)
     # and any keyword args the call might supply.
-    def _read_side_effect(
-        _spark: Any, table_name: str, **_kwargs: Any
-    ) -> MagicMock:
+    def _read_side_effect(_spark: Any, table_name: str, **_kwargs: Any) -> MagicMock:
         return {
             "daily_transactions": mock_daily_df,
             "card_cross_references": mock_xref_df,
@@ -1462,9 +1435,7 @@ def test_return_code_4_when_rejects_exist(
         main()
 
     # ----- Assert -----
-    assert exc_info.value.code == 4, (
-        f"main() should exit with code 4 when rejects exist — got {exc_info.value.code}"
-    )
+    assert exc_info.value.code == 4, f"main() should exit with code 4 when rejects exist — got {exc_info.value.code}"
 
     # commit_job and S3 write must have been invoked before the exit.
     mock_commit_job.assert_called_once_with(mock_job)
@@ -1583,9 +1554,7 @@ def test_return_code_0_when_no_rejects(
         }
     ]
 
-    def _read_side_effect(
-        _spark: Any, table_name: str, **_kwargs: Any
-    ) -> MagicMock:
+    def _read_side_effect(_spark: Any, table_name: str, **_kwargs: Any) -> MagicMock:
         return {
             "daily_transactions": _make_mock_df(daily_rows),
             "card_cross_references": _make_mock_df(xref_rows),
@@ -1682,9 +1651,7 @@ def test_processed_and_rejected_counts(
             "dalytran_merchant_name": "ACME",
             "dalytran_merchant_city": "SEA",
             "dalytran_merchant_zip": "98101",
-            "dalytran_card_num": (
-                "4111111111111111" if i < 2 else "9999999999999999"
-            ),
+            "dalytran_card_num": ("4111111111111111" if i < 2 else "9999999999999999"),
             "dalytran_orig_ts": "2024-06-15-12.00.00.000000",
         }
         for i in range(4)
@@ -1708,9 +1675,7 @@ def test_processed_and_rejected_counts(
         }
     ]
 
-    def _read_side_effect(
-        _spark: Any, table_name: str, **_kwargs: Any
-    ) -> MagicMock:
+    def _read_side_effect(_spark: Any, table_name: str, **_kwargs: Any) -> MagicMock:
         return {
             "daily_transactions": _make_mock_df(daily_rows),
             "card_cross_references": _make_mock_df(xref_rows),
@@ -1723,9 +1688,7 @@ def test_processed_and_rejected_counts(
 
     # ----- Act -----
     # Capture INFO-level log records from the module under test.
-    with caplog.at_level(
-        logging.INFO, logger="src.batch.jobs.posttran_job"
-    ):
+    with caplog.at_level(logging.INFO, logger="src.batch.jobs.posttran_job"):
         # reject_count > 0 so SystemExit(4) is expected.
         with pytest.raises(SystemExit) as exc_info:
             main()
@@ -1744,12 +1707,10 @@ def test_processed_and_rejected_counts(
 
     # COBOL %09d counters — 4 processed, 2 rejected.
     assert "TRANSACTIONS PROCESSED :000000004" in all_log_text, (
-        "Expected zero-padded 9-digit PROCESSED counter — got logs: "
-        f"{all_log_text}"
+        f"Expected zero-padded 9-digit PROCESSED counter — got logs: {all_log_text}"
     )
     assert "TRANSACTIONS REJECTED  :000000002" in all_log_text, (
-        "Expected zero-padded 9-digit REJECTED counter — got logs: "
-        f"{all_log_text}"
+        f"Expected zero-padded 9-digit REJECTED counter — got logs: {all_log_text}"
     )
 
 
@@ -1889,13 +1850,10 @@ def test_posttran_main_with_spark(
 
     tcatbal_df = spark_session.createDataFrame(
         [],
-        schema="acct_id string, type_code string, cat_code string, "
-        "tran_cat_bal decimal(11,2)",
+        schema="acct_id string, type_code string, cat_code string, tran_cat_bal decimal(11,2)",
     )
 
-    def _read_side_effect(
-        _spark: Any, table_name: str, **_kwargs: Any
-    ) -> Any:
+    def _read_side_effect(_spark: Any, table_name: str, **_kwargs: Any) -> Any:
         return {
             "daily_transactions": daily_df,
             "card_cross_references": xref_df,
@@ -1912,9 +1870,7 @@ def test_posttran_main_with_spark(
     # table name.
     written_dataframes: dict[str, Any] = {}
 
-    def _write_side_effect(
-        df_arg: Any, table_name: str, **_kwargs: Any
-    ) -> None:
+    def _write_side_effect(df_arg: Any, table_name: str, **_kwargs: Any) -> None:
         written_dataframes[table_name] = df_arg
 
     mock_write_table.side_effect = _write_side_effect
@@ -1958,9 +1914,7 @@ def test_posttran_main_with_spark(
         # return type matches the production signature.
         return int(df_arg.count())
 
-    mock_write_table_idempotent.side_effect = (
-        _write_table_idempotent_side_effect
-    )
+    mock_write_table_idempotent.side_effect = _write_table_idempotent_side_effect
 
     # ----- Act -----
     # One reject → SystemExit(4).
@@ -1982,8 +1936,7 @@ def test_posttran_main_with_spark(
     # bulk-write phase, but we assert the transactions table
     # unconditionally.
     assert "transactions" in written_dataframes, (
-        f"Expected 'transactions' table to be written — got: "
-        f"{list(written_dataframes.keys())}"
+        f"Expected 'transactions' table to be written — got: {list(written_dataframes.keys())}"
     )
 
     # Verify the posted-transactions schema.
@@ -2006,15 +1959,12 @@ def test_posttran_main_with_spark(
         "tran_proc_ts",
     }
     assert posted_field_names == expected_posted_fields, (
-        f"posted DataFrame schema drift — got {sorted(posted_field_names)}, "
-        f"expected {sorted(expected_posted_fields)}"
+        f"posted DataFrame schema drift — got {sorted(posted_field_names)}, expected {sorted(expected_posted_fields)}"
     )
 
     # Verify the tran_amt column has DecimalType(11,2) — COBOL
     # PIC S9(09)V99 parity.
-    tran_amt_field = next(
-        f for f in posted_schema.fields if f.name == "tran_amt"
-    )
+    tran_amt_field = next(f for f in posted_schema.fields if f.name == "tran_amt")
     # Spark DecimalType string representation is 'decimal(11,2)'.
     assert "decimal" in tran_amt_field.dataType.simpleString().lower()
 
@@ -2117,4 +2067,3 @@ def test_posttran_main_with_spark(
         f"(acct_id, type_code, cat_code) is preserved) — got "
         f"kwargs={tcatbal_call.kwargs!r}"
     )
-

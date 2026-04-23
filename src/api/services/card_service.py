@@ -300,9 +300,7 @@ _MSG_LIST_NO_MORE_RECORDS: str = "NO MORE RECORDS TO SHOW"
 # ERRMSGI capacity on the List screen (COCRDLI.CPY ERRMSGI PIC X(78)).
 
 
-def _format_file_error_message(
-    op_name: str, file_name: str, resp: str, resp2: str
-) -> str:
+def _format_file_error_message(op_name: str, file_name: str, resp: str, resp2: str) -> str:
     """Build a COCRDLIC-pattern ``File Error`` message.
 
     Faithfully reproduces the COCRDLIC.cbl L153-171 ``WS-FILE-ERROR-MESSAGE``
@@ -335,10 +333,7 @@ def _format_file_error_message(
         Fully concatenated error message. May be truncated to 78 chars
         by the caller before emission to the COCRDLI ERRMSGI field.
     """
-    return (
-        f"File Error:{op_name[:8]:<8} on {file_name[:9]:<9} "
-        f"returned RESP {resp[:10]:<10},RESP2 {resp2[:10]:<10}"
-    )
+    return f"File Error:{op_name[:8]:<8} on {file_name[:9]:<9} returned RESP {resp[:10]:<10},RESP2 {resp2[:10]:<10}"
 
 
 def _list_lookup_error_message(exc: Exception) -> str:
@@ -378,6 +373,7 @@ def _list_lookup_error_message(exc: Exception) -> str:
     # rejection. The COBOL source fixes the total at 80 chars but only
     # 78 are displayed on the List screen.
     return message[:78]
+
 
 _MSG_DETAIL_NOT_FOUND: str = "Did not find cards for this search condition"
 """COCRDSLC.cbl L153-154 ``DID-NOT-FIND-ACCTCARD-COMBO`` — card_num not in CARDDAT."""
@@ -565,10 +561,7 @@ class CardService:
         # semi-join via a sub-SELECT against CardCrossReference to
         # avoid cartesian joins when combined with card_number.
         if request.account_id:
-            xref_subquery = (
-                select(CardCrossReference.card_num)
-                .where(CardCrossReference.acct_id == request.account_id)
-            )
+            xref_subquery = select(CardCrossReference.card_num).where(CardCrossReference.acct_id == request.account_id)
             count_stmt = count_stmt.where(Card.card_num.in_(xref_subquery))
             data_stmt = data_stmt.where(Card.card_num.in_(xref_subquery))
 
@@ -674,8 +667,6 @@ class CardService:
         )
         return response
 
-
-
     # -----------------------------------------------------------------
     # Forward paging (cursor-based) — COCRDLIC.cbl 9000-READ-FORWARD
     # -----------------------------------------------------------------
@@ -758,19 +749,11 @@ class CardService:
         # ``>`` in SQL we encode the same "skip equal" semantics in a
         # single predicate.
         # -----------------------------------------------------------------
-        stmt = (
-            select(Card)
-            .where(Card.card_num > last_card_num)
-            .order_by(Card.card_num)
-            .limit(page_size)
-        )
+        stmt = select(Card).where(Card.card_num > last_card_num).order_by(Card.card_num).limit(page_size)
 
         # ---- Apply optional account-based filter ------------------------
         if account_id:
-            xref_subquery = (
-                select(CardCrossReference.card_num)
-                .where(CardCrossReference.acct_id == account_id)
-            )
+            xref_subquery = select(CardCrossReference.card_num).where(CardCrossReference.acct_id == account_id)
             stmt = stmt.where(Card.card_num.in_(xref_subquery))
 
         try:
@@ -864,19 +847,11 @@ class CardService:
         # reverse the list in Python to present the caller with
         # ascending order (matching BMS screen-array sequencing).
         # -----------------------------------------------------------------
-        stmt = (
-            select(Card)
-            .where(Card.card_num < first_card_num)
-            .order_by(Card.card_num.desc())
-            .limit(page_size)
-        )
+        stmt = select(Card).where(Card.card_num < first_card_num).order_by(Card.card_num.desc()).limit(page_size)
 
         # ---- Apply optional account-based filter ------------------------
         if account_id:
-            xref_subquery = (
-                select(CardCrossReference.card_num)
-                .where(CardCrossReference.acct_id == account_id)
-            )
+            xref_subquery = select(CardCrossReference.card_num).where(CardCrossReference.acct_id == account_id)
             stmt = stmt.where(Card.card_num.in_(xref_subquery))
 
         try:
@@ -900,8 +875,6 @@ class CardService:
             extra={**log_context, "returned_count": len(cards)},
         )
         return cards
-
-
 
     # -----------------------------------------------------------------
     # Card detail (F-007) — COCRDSLC.cbl 9000-READ-DATA
@@ -1051,8 +1024,6 @@ class CardService:
             },
         )
         return response
-
-
 
     # -----------------------------------------------------------------
     # Card update (F-008) — COCRDUPC.cbl 9200-WRITE-PROCESSING
@@ -1329,8 +1300,6 @@ class CardService:
         )
 
 
-
-
 # ---------------------------------------------------------------------------
 # Module-private helper functions
 # ---------------------------------------------------------------------------
@@ -1568,4 +1537,3 @@ async def _safe_rollback(
 
 
 __all__: list[str] = ["CardService"]
-

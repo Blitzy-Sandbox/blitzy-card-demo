@@ -1201,9 +1201,7 @@ async def test_authenticate_lowercase_credentials_succeed(
     # Sanity: our lowercase inputs differ from the canonical upper-case
     # forms. If this ever fails, the test is no longer exercising
     # what its name claims.
-    assert lowercase_user_id != _TEST_USER_ID, (
-        "Test precondition: lowercased user_id must differ from canonical."
-    )
+    assert lowercase_user_id != _TEST_USER_ID, "Test precondition: lowercased user_id must differ from canonical."
     assert lowercase_password != _TEST_PLAINTEXT_PASSWORD, (
         "Test precondition: lowercased password must differ from canonical."
     )
@@ -1253,9 +1251,7 @@ async def test_authenticate_lowercase_credentials_succeed(
     # with ``literal_binds=True`` so bound parameters appear inline as
     # quoted string literals in the compiled SQL text.
     executed_stmt = mock_db_session.execute.await_args[0][0]
-    compiled_sql: str = str(
-        executed_stmt.compile(compile_kwargs={"literal_binds": True})
-    )
+    compiled_sql: str = str(executed_stmt.compile(compile_kwargs={"literal_binds": True}))
     assert _TEST_USER_ID in compiled_sql, (
         f"Compiled WHERE clause must contain the upper-case user_id "
         f"literal {_TEST_USER_ID!r}. If the assertion fails, "
@@ -1320,8 +1316,7 @@ async def test_authenticate_mixed_case_credentials_succeed(
 
     # Assert: success path.
     assert isinstance(response, SignOnResponse), (
-        "authenticate() must accept mixed-case credentials and fold "
-        "them via UPPER-CASE (COBOL COSGN00C.cbl L132-135)."
+        "authenticate() must accept mixed-case credentials and fold them via UPPER-CASE (COBOL COSGN00C.cbl L132-135)."
     )
     assert response.user_id == _TEST_USER_ID, (
         f"Response user_id must be the upper-case canonical form {_TEST_USER_ID!r}; got {response.user_id!r}"
@@ -1331,9 +1326,7 @@ async def test_authenticate_mixed_case_credentials_succeed(
 
     # Assert: the compiled SQL contains the UPPER-CASE user_id literal.
     executed_stmt = mock_db_session.execute.await_args[0][0]
-    compiled_sql: str = str(
-        executed_stmt.compile(compile_kwargs={"literal_binds": True})
-    )
+    compiled_sql: str = str(executed_stmt.compile(compile_kwargs={"literal_binds": True}))
     assert _TEST_USER_ID in compiled_sql, (
         f"Compiled WHERE clause must contain the upper-case canonical "
         f"user_id literal {_TEST_USER_ID!r} even when the request "

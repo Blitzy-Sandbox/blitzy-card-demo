@@ -252,19 +252,13 @@ def _validate_cust_id_exact(value: str) -> str:
     if value is None:
         raise ValueError("cust_id must not be null")
     if not isinstance(value, str):
-        raise ValueError(
-            f"cust_id must be a string; got {type(value).__name__}"
-        )
+        raise ValueError(f"cust_id must be a string; got {type(value).__name__}")
     if len(value) != _CUST_ID_LEN:
         raise ValueError(
-            f"cust_id must be exactly {_CUST_ID_LEN} characters "
-            f"(COBOL PIC 9(09)); got length {len(value)}"
+            f"cust_id must be exactly {_CUST_ID_LEN} characters (COBOL PIC 9(09)); got length {len(value)}"
         )
     if not value.isdigit():
-        raise ValueError(
-            f"cust_id must contain only digits 0-9 "
-            f"(COBOL PIC 9(09)); got {value!r}"
-        )
+        raise ValueError(f"cust_id must contain only digits 0-9 (COBOL PIC 9(09)); got {value!r}")
     return value
 
 
@@ -318,9 +312,7 @@ def _validate_dob_format(value: Optional[str]) -> Optional[str]:  # noqa: UP045 
     if value is None or value == "":
         return value
     if not isinstance(value, str):
-        raise ValueError(
-            f"dob must be a string; got {type(value).__name__}"
-        )
+        raise ValueError(f"dob must be a string; got {type(value).__name__}")
     if len(value) != _DOB_LEN:
         raise ValueError(
             f"dob must be exactly {_DOB_LEN} characters in YYYY-MM-DD "
@@ -329,21 +321,12 @@ def _validate_dob_format(value: Optional[str]) -> Optional[str]:  # noqa: UP045 
         )
     # Structural positions of the two dashes in YYYY-MM-DD are fixed.
     # Indices: 0123-56-89 (dashes at indices 4 and 7).
-    if value[_DOB_YEAR_LEN] != "-" or (
-        value[_DOB_YEAR_LEN + 1 + _DOB_MONTH_LEN] != "-"
-    ):
-        raise ValueError(
-            f"dob must match YYYY-MM-DD format with dashes at positions "
-            f"4 and 7; got {value!r}"
-        )
+    if value[_DOB_YEAR_LEN] != "-" or (value[_DOB_YEAR_LEN + 1 + _DOB_MONTH_LEN] != "-"):
+        raise ValueError(f"dob must match YYYY-MM-DD format with dashes at positions 4 and 7; got {value!r}")
     year_str = value[:_DOB_YEAR_LEN]
-    month_str = value[
-        _DOB_YEAR_LEN + 1 : _DOB_YEAR_LEN + 1 + _DOB_MONTH_LEN
-    ]
+    month_str = value[_DOB_YEAR_LEN + 1 : _DOB_YEAR_LEN + 1 + _DOB_MONTH_LEN]
     day_str = value[_DOB_YEAR_LEN + 1 + _DOB_MONTH_LEN + 1 :]
-    if not (
-        year_str.isdigit() and month_str.isdigit() and day_str.isdigit()
-    ):
+    if not (year_str.isdigit() and month_str.isdigit() and day_str.isdigit()):
         raise ValueError(
             f"dob year, month, and day segments must all be numeric "
             f"digits (COBOL CUST-DOB-YYYY-MM-DD PIC X(10)); got "
@@ -352,15 +335,9 @@ def _validate_dob_format(value: Optional[str]) -> Optional[str]:  # noqa: UP045 
     month_val = int(month_str)
     day_val = int(day_str)
     if not (_MIN_MONTH <= month_val <= _MAX_MONTH):
-        raise ValueError(
-            f"dob month must be between {_MIN_MONTH:02d} and "
-            f"{_MAX_MONTH:02d}; got month={month_str}"
-        )
+        raise ValueError(f"dob month must be between {_MIN_MONTH:02d} and {_MAX_MONTH:02d}; got month={month_str}")
     if not (_MIN_DAY <= day_val <= _MAX_DAY):
-        raise ValueError(
-            f"dob day must be between {_MIN_DAY:02d} and {_MAX_DAY:02d}; "
-            f"got day={day_str}"
-        )
+        raise ValueError(f"dob day must be between {_MIN_DAY:02d} and {_MAX_DAY:02d}; got day={day_str}")
     return value
 
 
@@ -406,14 +383,9 @@ def _validate_fico_range(value: Optional[int]) -> Optional[int]:  # noqa: UP045 
     # ``bool`` is a subclass of ``int`` in Python — reject explicitly so
     # a stray ``True`` / ``False`` does not silently become 1 / 0.
     if isinstance(value, bool):
-        raise ValueError(
-            "fico_credit_score must be an integer, not a boolean"
-        )
+        raise ValueError("fico_credit_score must be an integer, not a boolean")
     if not isinstance(value, int):
-        raise ValueError(
-            f"fico_credit_score must be an integer; got "
-            f"{type(value).__name__}"
-        )
+        raise ValueError(f"fico_credit_score must be an integer; got {type(value).__name__}")
     if not (_FICO_MIN <= value <= _FICO_MAX):
         raise ValueError(
             f"fico_credit_score must be between {_FICO_MIN} and "
@@ -548,34 +520,22 @@ class CustomerResponse(BaseModel):
     cust_id: str = Field(
         ...,
         max_length=_CUST_ID_LEN,
-        description=(
-            "9-digit customer identifier (primary key). "
-            "Maps to COBOL CUST-ID PIC 9(09)."
-        ),
+        description=("9-digit customer identifier (primary key). Maps to COBOL CUST-ID PIC 9(09)."),
     )
     first_name: str = Field(
         ...,
         max_length=_FIRST_NAME_MAX_LEN,
-        description=(
-            "Customer first/given name. "
-            "Maps to COBOL CUST-FIRST-NAME PIC X(25)."
-        ),
+        description=("Customer first/given name. Maps to COBOL CUST-FIRST-NAME PIC X(25)."),
     )
     middle_name: str = Field(
         ...,
         max_length=_MIDDLE_NAME_MAX_LEN,
-        description=(
-            "Customer middle name. Empty string when not supplied. "
-            "Maps to COBOL CUST-MIDDLE-NAME PIC X(25)."
-        ),
+        description=("Customer middle name. Empty string when not supplied. Maps to COBOL CUST-MIDDLE-NAME PIC X(25)."),
     )
     last_name: str = Field(
         ...,
         max_length=_LAST_NAME_MAX_LEN,
-        description=(
-            "Customer last/family name. "
-            "Maps to COBOL CUST-LAST-NAME PIC X(25)."
-        ),
+        description=("Customer last/family name. Maps to COBOL CUST-LAST-NAME PIC X(25)."),
     )
 
     # ------------------------------------------------------------------
@@ -584,10 +544,7 @@ class CustomerResponse(BaseModel):
     addr_line_1: str = Field(
         ...,
         max_length=_ADDR_LINE_MAX_LEN,
-        description=(
-            "First line of the postal address. "
-            "Maps to COBOL CUST-ADDR-LINE-1 PIC X(50)."
-        ),
+        description=("First line of the postal address. Maps to COBOL CUST-ADDR-LINE-1 PIC X(50)."),
     )
     addr_line_2: str = Field(
         ...,
@@ -610,26 +567,17 @@ class CustomerResponse(BaseModel):
     state_cd: str = Field(
         ...,
         max_length=_STATE_CD_MAX_LEN,
-        description=(
-            "2-character state / province code. "
-            "Maps to COBOL CUST-ADDR-STATE-CD PIC X(02)."
-        ),
+        description=("2-character state / province code. Maps to COBOL CUST-ADDR-STATE-CD PIC X(02)."),
     )
     country_cd: str = Field(
         ...,
         max_length=_COUNTRY_CD_MAX_LEN,
-        description=(
-            "3-character ISO country code. "
-            "Maps to COBOL CUST-ADDR-COUNTRY-CD PIC X(03)."
-        ),
+        description=("3-character ISO country code. Maps to COBOL CUST-ADDR-COUNTRY-CD PIC X(03)."),
     )
     addr_zip: str = Field(
         ...,
         max_length=_ADDR_ZIP_MAX_LEN,
-        description=(
-            "Postal ZIP / postcode. "
-            "Maps to COBOL CUST-ADDR-ZIP PIC X(10)."
-        ),
+        description=("Postal ZIP / postcode. Maps to COBOL CUST-ADDR-ZIP PIC X(10)."),
     )
 
     # ------------------------------------------------------------------
@@ -638,17 +586,13 @@ class CustomerResponse(BaseModel):
     phone_num_1: str = Field(
         ...,
         max_length=_PHONE_NUM_MAX_LEN,
-        description=(
-            "Primary phone number. "
-            "Maps to COBOL CUST-PHONE-NUM-1 PIC X(15)."
-        ),
+        description=("Primary phone number. Maps to COBOL CUST-PHONE-NUM-1 PIC X(15)."),
     )
     phone_num_2: str = Field(
         ...,
         max_length=_PHONE_NUM_MAX_LEN,
         description=(
-            "Secondary phone number. Empty string when not supplied. "
-            "Maps to COBOL CUST-PHONE-NUM-2 PIC X(15)."
+            "Secondary phone number. Empty string when not supplied. Maps to COBOL CUST-PHONE-NUM-2 PIC X(15)."
         ),
     )
 
@@ -668,8 +612,7 @@ class CustomerResponse(BaseModel):
         ...,
         max_length=_GOVT_ID_MAX_LEN,
         description=(
-            "Government-issued identifier (e.g., driver's license). "
-            "Maps to COBOL CUST-GOVT-ISSUED-ID PIC X(20)."
+            "Government-issued identifier (e.g., driver's license). Maps to COBOL CUST-GOVT-ISSUED-ID PIC X(20)."
         ),
     )
     dob: str = Field(
@@ -689,16 +632,14 @@ class CustomerResponse(BaseModel):
         ...,
         max_length=_EFT_ACCT_ID_MAX_LEN,
         description=(
-            "Electronic Funds Transfer (EFT) account identifier. "
-            "Maps to COBOL CUST-EFT-ACCOUNT-ID PIC X(10)."
+            "Electronic Funds Transfer (EFT) account identifier. Maps to COBOL CUST-EFT-ACCOUNT-ID PIC X(10)."
         ),
     )
     pri_card_holder_ind: str = Field(
         ...,
         max_length=_PRI_CARD_HOLDER_IND_LEN,
         description=(
-            "Primary-cardholder flag (typically 'Y' or 'N'). "
-            "Maps to COBOL CUST-PRI-CARD-HOLDER-IND PIC X(01)."
+            "Primary-cardholder flag (typically 'Y' or 'N'). Maps to COBOL CUST-PRI-CARD-HOLDER-IND PIC X(01)."
         ),
     )
     fico_credit_score: int = Field(
@@ -706,8 +647,7 @@ class CustomerResponse(BaseModel):
         ge=_FICO_MIN,
         le=_FICO_MAX,
         description=(
-            "FICO credit score (0..999); 0 denotes 'not scored'. "
-            "Maps to COBOL CUST-FICO-CREDIT-SCORE PIC 9(03)."
+            "FICO credit score (0..999); 0 denotes 'not scored'. Maps to COBOL CUST-FICO-CREDIT-SCORE PIC 9(03)."
         ),
     )
 
@@ -773,9 +713,7 @@ class CustomerResponse(BaseModel):
         # contract precise without any runtime overhead in the happy
         # path.
         validated = _validate_dob_format(value)
-        assert validated is not None, (
-            "response dob must not be None after validation"
-        )
+        assert validated is not None, "response dob must not be None after validation"
         return validated
 
     @field_validator("fico_credit_score", mode="before")
@@ -813,9 +751,7 @@ class CustomerResponse(BaseModel):
             outside the inclusive range ``[0, 999]``.
         """
         validated = _validate_fico_range(value)
-        assert validated is not None, (
-            "response fico_credit_score must not be None after validation"
-        )
+        assert validated is not None, "response fico_credit_score must not be None after validation"
         return validated
 
 
@@ -944,26 +880,17 @@ class CustomerCreateRequest(BaseModel):
     cust_id: str = Field(
         ...,
         max_length=_CUST_ID_LEN,
-        description=(
-            "9-digit customer identifier (primary key). Required. "
-            "Maps to COBOL CUST-ID PIC 9(09)."
-        ),
+        description=("9-digit customer identifier (primary key). Required. Maps to COBOL CUST-ID PIC 9(09)."),
     )
     first_name: str = Field(
         ...,
         max_length=_FIRST_NAME_MAX_LEN,
-        description=(
-            "Customer first/given name. Required. "
-            "Maps to COBOL CUST-FIRST-NAME PIC X(25)."
-        ),
+        description=("Customer first/given name. Required. Maps to COBOL CUST-FIRST-NAME PIC X(25)."),
     )
     last_name: str = Field(
         ...,
         max_length=_LAST_NAME_MAX_LEN,
-        description=(
-            "Customer last/family name. Required. "
-            "Maps to COBOL CUST-LAST-NAME PIC X(25)."
-        ),
+        description=("Customer last/family name. Required. Maps to COBOL CUST-LAST-NAME PIC X(25)."),
     )
 
     # ------------------------------------------------------------------
@@ -972,10 +899,7 @@ class CustomerCreateRequest(BaseModel):
     middle_name: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_MIDDLE_NAME_MAX_LEN,
-        description=(
-            "Customer middle name. Optional. "
-            "Maps to COBOL CUST-MIDDLE-NAME PIC X(25)."
-        ),
+        description=("Customer middle name. Optional. Maps to COBOL CUST-MIDDLE-NAME PIC X(25)."),
     )
 
     # ------------------------------------------------------------------
@@ -984,50 +908,32 @@ class CustomerCreateRequest(BaseModel):
     addr_line_1: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_ADDR_LINE_MAX_LEN,
-        description=(
-            "First line of the postal address. Optional. "
-            "Maps to COBOL CUST-ADDR-LINE-1 PIC X(50)."
-        ),
+        description=("First line of the postal address. Optional. Maps to COBOL CUST-ADDR-LINE-1 PIC X(50)."),
     )
     addr_line_2: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_ADDR_LINE_MAX_LEN,
-        description=(
-            "Second line of the postal address. Optional. "
-            "Maps to COBOL CUST-ADDR-LINE-2 PIC X(50)."
-        ),
+        description=("Second line of the postal address. Optional. Maps to COBOL CUST-ADDR-LINE-2 PIC X(50)."),
     )
     addr_line_3: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_ADDR_LINE_MAX_LEN,
-        description=(
-            "Third line of the postal address. Optional. "
-            "Maps to COBOL CUST-ADDR-LINE-3 PIC X(50)."
-        ),
+        description=("Third line of the postal address. Optional. Maps to COBOL CUST-ADDR-LINE-3 PIC X(50)."),
     )
     state_cd: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_STATE_CD_MAX_LEN,
-        description=(
-            "2-character state / province code. Optional. "
-            "Maps to COBOL CUST-ADDR-STATE-CD PIC X(02)."
-        ),
+        description=("2-character state / province code. Optional. Maps to COBOL CUST-ADDR-STATE-CD PIC X(02)."),
     )
     country_cd: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_COUNTRY_CD_MAX_LEN,
-        description=(
-            "3-character ISO country code. Optional. "
-            "Maps to COBOL CUST-ADDR-COUNTRY-CD PIC X(03)."
-        ),
+        description=("3-character ISO country code. Optional. Maps to COBOL CUST-ADDR-COUNTRY-CD PIC X(03)."),
     )
     addr_zip: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_ADDR_ZIP_MAX_LEN,
-        description=(
-            "Postal ZIP / postcode. Optional. "
-            "Maps to COBOL CUST-ADDR-ZIP PIC X(10)."
-        ),
+        description=("Postal ZIP / postcode. Optional. Maps to COBOL CUST-ADDR-ZIP PIC X(10)."),
     )
 
     # ------------------------------------------------------------------
@@ -1036,18 +942,12 @@ class CustomerCreateRequest(BaseModel):
     phone_num_1: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_PHONE_NUM_MAX_LEN,
-        description=(
-            "Primary phone number. Optional. "
-            "Maps to COBOL CUST-PHONE-NUM-1 PIC X(15)."
-        ),
+        description=("Primary phone number. Optional. Maps to COBOL CUST-PHONE-NUM-1 PIC X(15)."),
     )
     phone_num_2: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_PHONE_NUM_MAX_LEN,
-        description=(
-            "Secondary phone number. Optional. "
-            "Maps to COBOL CUST-PHONE-NUM-2 PIC X(15)."
-        ),
+        description=("Secondary phone number. Optional. Maps to COBOL CUST-PHONE-NUM-2 PIC X(15)."),
     )
 
     # ------------------------------------------------------------------
@@ -1075,10 +975,7 @@ class CustomerCreateRequest(BaseModel):
     dob: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
         default=None,
         max_length=_DOB_LEN,
-        description=(
-            "Date of birth in YYYY-MM-DD format. Optional. "
-            "Maps to COBOL CUST-DOB-YYYY-MM-DD PIC X(10)."
-        ),
+        description=("Date of birth in YYYY-MM-DD format. Optional. Maps to COBOL CUST-DOB-YYYY-MM-DD PIC X(10)."),
     )
 
     # ------------------------------------------------------------------
@@ -1088,9 +985,7 @@ class CustomerCreateRequest(BaseModel):
         default=None,
         max_length=_EFT_ACCT_ID_MAX_LEN,
         description=(
-            "Electronic Funds Transfer (EFT) account identifier. "
-            "Optional. "
-            "Maps to COBOL CUST-EFT-ACCOUNT-ID PIC X(10)."
+            "Electronic Funds Transfer (EFT) account identifier. Optional. Maps to COBOL CUST-EFT-ACCOUNT-ID PIC X(10)."
         ),
     )
     pri_card_holder_ind: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
@@ -1178,7 +1073,8 @@ class CustomerCreateRequest(BaseModel):
     @field_validator("fico_credit_score", mode="before")
     @classmethod
     def _validate_fico_credit_score(
-        cls, value: Optional[int]  # noqa: UP045  # schema requires `typing.Optional`
+        cls,
+        value: Optional[int],  # noqa: UP045  # schema requires `typing.Optional`
     ) -> Optional[int]:  # noqa: UP045  # schema requires `typing.Optional`
         """Validate that ``fico_credit_score``, when provided, is in 0..999.
 
