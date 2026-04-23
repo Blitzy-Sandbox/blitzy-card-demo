@@ -155,8 +155,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from jose import jwt  # type: ignore[import-untyped]
-from passlib.context import CryptContext  # type: ignore[import-untyped]
+from jose import jwt
+from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.services.auth_service import (

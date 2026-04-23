@@ -144,10 +144,18 @@ Mainframe construct                             Cloud equivalent
                                                 S3 audit-marker probe for operator traceability.
 ``SYMNAMES TRAN-ID,1,16,CH``                    ``F.col("tran_id")`` — the symbolic sort-key reference.
 ``SORT FIELDS=(TRAN-ID,A)``                     ``orderBy(F.col("tran_id").asc())`` — sort ascending.
-``//SORTOUT DSN=TRANSACT.COMBINED(+1)``         ``sorted_df.write.mode("overwrite").parquet(combined_s3_path)`` —
-                                                Parquet archival to S3 versioned path resolved via
-                                                :func:`src.batch.common.s3_utils.get_versioned_s3_path` with
-                                                ``generation="+1"`` (replaces the mainframe GDG ``(+1)`` notation).
+``//SORTOUT DSN=TRANSACT.COMBINED(+1)``         ``write_to_s3(content, key, content_type="text/plain")`` —
+                                                Fixed-width 350-byte record archive (preserving the VSAM
+                                                ``LRECL=350 RECFM=FB`` contract from CVTRA05Y) to S3 versioned
+                                                path resolved via :func:`src.batch.common.s3_utils.get_versioned_s3_path`
+                                                with ``generation="+1"`` (replaces the mainframe GDG ``(+1)`` notation).
+                                                The driver collects the sorted DataFrame, serialises each
+                                                row through :func:`_format_combined_line`, and uploads a
+                                                single object via the boto3-backed ``write_to_s3`` helper —
+                                                resolving QA Checkpoint 5 Issue 23 where Spark's native
+                                                parquet writer failed on AWS Glue / LocalStack with
+                                                ``UnsupportedFileSystemException: No FileSystem for scheme "s3"``
+                                                because ``hadoop-aws`` was not on the classpath.
 ``//STEP10 EXEC PGM=IDCAMS``                    :func:`src.batch.common.db_connector.write_table` call.
 ``//TRANSACT DD DSN=TRANSACT.COMBINED(+1)``     The ``sorted_df`` DataFrame (in-memory equivalent of the freshly
                                                 written TRANSACT.COMBINED(+1)). No second read from S3 is
@@ -223,28 +231,51 @@ re-run story.
 
 S3 archival path (``TRANSACT.COMBINED(+1)``)
 ---------------------------------------------
-The sorted DataFrame is persisted to S3 as Parquet under a versioned
-path resolved via
-:func:`src.batch.common.s3_utils.get_versioned_s3_path` with
+The sorted DataFrame is persisted to S3 under a versioned path resolved
+via :func:`src.batch.common.s3_utils.get_versioned_s3_path` with
 ``gdg_name="TRANSACT.COMBINED"`` and ``generation="+1"``. This replaces
 the mainframe ``DSN=AWS.M2.CARDDEMO.TRANSACT.COMBINED(+1)`` GDG
 allocation. Each run produces a new date-stamped subdirectory:
-``s3://{bucket}/combined/transactions/YYYY/MM/DD/HHMMSS/``. The GDG
+``s3://{bucket}/combined/transactions/YYYY/MM/DD/HHMMSS/`` and writes
+a single object (``TRANSACT.COMBINED.txt``) beneath it. The GDG
 retention limit of 5 generations (per ``DEFGDGB.jcl``) is enforced by
 :func:`src.batch.common.s3_utils.cleanup_old_generations` invoked out
 of band (not by this job) — consistent with the JCL architecture
 where SCRATCH is an IDCAMS cleanup step scheduled separately.
 
-Parquet rather than a fixed-width 350-byte COBOL record file is chosen
-for the archive because:
+Output format — fixed-width 350-byte records
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The archive object is a line-oriented text file where each line is
+exactly 350 bytes wide (LF-terminated), matching the COBOL
+``CVTRA05Y.cpy`` ``TRAN-RECORD`` layout byte-for-byte. This choice:
 
-* Downstream S3 consumers are PySpark jobs and Athena queries that
-  prefer columnar formats.
-* The JCL used fixed-width sequential (``DCB=(*.SORTIN)`` inherited
-  from the KSDS LRECL=350) only because z/OS SORT/REPRO could not read
-  any other format — an infrastructure constraint, not a requirement.
-* Compressed Parquet is 5-10× smaller than the original fixed-width
-  records, reducing storage cost.
+* **Preserves the JCL contract** from COMBTRAN.jcl line 36
+  (``DCB=(*.SORTIN)``) which inherited ``LRECL=350 RECFM=FB`` from the
+  KSDS ``TRANSACT.VSAM.KSDS`` cluster (per AAP §0.7.1 minimal-change
+  and preserve-functionality discipline).
+* **Stays consistent with sibling jobs** (``intcalc_job`` SYSTRAN,
+  ``prtcatbl_job`` backup/report, ``creastmt_job`` statements) which
+  all use :func:`src.batch.common.s3_utils.write_to_s3` to emit
+  fixed-width text — giving operators a single archival format across
+  the entire batch layer for diagnostic tools (grep / awk / less).
+* **Resolves QA Checkpoint 5 Issue 23**: Spark's native
+  ``DataFrame.write.parquet(s3_uri)`` path failed under AWS Glue and
+  LocalStack with ``org.apache.hadoop.fs.UnsupportedFileSystemException:
+  No FileSystem for scheme "s3"`` because ``hadoop-aws`` was not on
+  the SparkSession classpath. Switching to the boto3-backed
+  :func:`write_to_s3` matches the pattern already proven by the other
+  Stage 4/utility jobs that work end-to-end.
+
+Record serialisation
+~~~~~~~~~~~~~~~~~~~~
+The per-row serialisation is performed by :func:`_format_combined_line`
+which mirrors :func:`intcalc_job._build_systran_record_line` field-by-
+field (identical 350-byte layout — both are CVTRA05Y records, differing
+only in ``tran_source`` value). The driver-side ``collect()`` pattern
+is bounded by the fact that POSTTRAN emits ~300 daily rows and INTCALC
+emits ~50 interest rows per run, so the combined row count fits
+comfortably in the G.1X worker's 16 GB driver memory envelope
+(~109 KB of serialised text at 350 bytes × 312 rows).
 
 Error Handling — CEE3ABD / ABCODE=999 equivalence
 --------------------------------------------------
@@ -313,9 +344,24 @@ from __future__ import annotations
 #   argv vector at DEBUG level so that operators troubleshooting
 #   Glue argument-passing issues in CloudWatch can correlate Step
 #   Functions inputs with the script's observed runtime arguments.
+# ``decimal.Decimal`` / ``decimal.ROUND_HALF_EVEN`` — required by
+#   :func:`_format_combined_line` / :func:`_format_amt_for_combined`
+#   for rendering the CVTRA05Y ``TRAN-AMT PIC S9(09)V99`` field as a
+#   13-character signed text mantissa. AAP §0.7.2 forbids any float
+#   arithmetic for monetary values — banker's rounding is used to
+#   match COBOL ``ROUNDED`` semantics. These helpers run driver-side
+#   only (after .collect()), never within a Spark UDF. Matches the
+#   pattern used by sibling jobs ``intcalc_job`` and ``posttran_job``.
+# ``typing.Any`` — type hint for PySpark ``Row`` objects surfaced by
+#   ``DataFrame.collect()``. ``Row`` is structurally a tuple-plus-
+#   dict hybrid; using ``Any`` for the row parameter keeps the helper
+#   testable from plain Python (a dict with matching keys is also
+#   accepted) without importing ``pyspark.sql.Row`` into this module.
 # ----------------------------------------------------------------------------
 import logging
 import sys
+from decimal import ROUND_HALF_EVEN, Decimal
+from typing import Any
 
 # ----------------------------------------------------------------------------
 # Third-party imports — PySpark 3.5.6 (shipped with AWS Glue 5.1 runtime).
@@ -409,10 +455,24 @@ from pyspark.sql import functions as F  # noqa: N812 - canonical PySpark alias
 #     as warnings (first-run scenarios, migration states) but do NOT
 #     abort the job because the authoritative data source is the
 #     PostgreSQL ``transactions`` table, not the S3 archives.
+#
+# ``write_to_s3(content, key, content_type="text/plain")``
+#     Writes a string payload to the given S3 key via ``boto3`` and
+#     returns the resulting ``s3://bucket/key`` URI.  This is the
+#     canonical helper used by sibling jobs (``intcalc_job`` for
+#     SYSTRAN.txt, ``prtcatbl_job`` for backup.dat/report.txt,
+#     ``creastmt_job`` for STATEMNT.PS/HTML) to publish fixed-width
+#     text archives to S3.  Added here to resolve QA Checkpoint 5
+#     Issue 23 (``No FileSystem for scheme "s3"`` raised by Spark's
+#     native ``DataFrame.write.parquet`` when the ``hadoop-aws`` JAR
+#     and ``s3a://`` configuration are absent from the SparkSession
+#     classpath).  Using this boto3-backed helper keeps the combtran
+#     job consistent with its siblings and removes the dependency on
+#     Spark's native S3 I/O.
 # ----------------------------------------------------------------------------
 from src.batch.common.db_connector import read_table, write_table
 from src.batch.common.glue_context import commit_job, init_glue
-from src.batch.common.s3_utils import get_versioned_s3_path, read_from_s3
+from src.batch.common.s3_utils import get_versioned_s3_path, read_from_s3, write_to_s3
 
 # ----------------------------------------------------------------------------
 # Module-level logger.
@@ -526,6 +586,62 @@ _GDG_SYSTRAN: str = "SYSTRAN"
 _GDG_COMBINED: str = "TRANSACT.COMBINED"
 
 # ----------------------------------------------------------------------------
+# S3 archive filename and record length for the combined transactions
+# output.
+#
+# Per QA Checkpoint 5 Issue 23, the original implementation invoked
+# PySpark's native ``DataFrame.write.parquet`` on a ``s3://`` URI, which
+# requires the ``hadoop-aws`` JAR and a configured S3A filesystem on the
+# Spark classpath. In local / LocalStack / AWS Glue 5.1 managed runtime,
+# this configuration is absent and the write raises
+# ``org.apache.hadoop.fs.UnsupportedFileSystemException: No FileSystem
+# for scheme "s3"``.
+#
+# Resolution: write the sorted combined transactions as a single
+# fixed-width text object using the sibling-consistent ``boto3``-backed
+# :func:`src.batch.common.s3_utils.write_to_s3` helper. The output format
+# mirrors the 350-byte ``CVTRA05Y`` layout used by ``intcalc_job``'s
+# SYSTRAN.txt archive (per :func:`intcalc_job._build_systran_record_line`)
+# and preserves the JCL contract ``LRECL=350 RECFM=FB`` for the
+# ``TRANSACT.COMBINED`` dataset. Downstream consumers (Stages 4a CREASTMT
+# and 4b TRANREPT) read authoritatively from the PostgreSQL
+# ``transactions`` table, not from this S3 archive — the archive exists
+# solely as the GDG(+1) audit artefact that the mainframe operators
+# expected.
+# ----------------------------------------------------------------------------
+
+#: Filename written under the versioned GDG(+1) prefix for the combined
+#: transactions archive. Matches the ``TRANSACT.COMBINED`` GDG base name
+#: by convention (intcalc writes ``SYSTRAN.txt`` under the ``SYSTRAN``
+#: GDG prefix; creastmt writes ``STATEMNT.PS.txt`` under ``STATEMNT.PS``;
+#: this job writes ``TRANSACT.COMBINED.txt`` under ``TRANSACT.COMBINED``).
+_COMBINED_FILENAME: str = "TRANSACT.COMBINED.txt"
+
+#: Fixed record length (bytes) for each line in the combined archive.
+#: Preserves the COBOL ``CVTRA05Y`` TRAN-RECORD LRECL of 350 bytes —
+#: see ``app/cpy/CVTRA05Y.cpy`` and the AWS.M2.CARDDEMO.TRANSACT.COMBINED
+#: DEFINE CLUSTER specification ``RECORDSIZE(350 350)`` in
+#: ``app/jcl/TRANFILE.jcl``. Each line produced by
+#: :func:`_format_combined_line` is asserted to equal this width before
+#: it is joined into the archive body.
+_COMBINED_LRECL: int = 350
+
+# ----------------------------------------------------------------------------
+# Decimal-arithmetic scale for monetary fields.
+#
+# Per AAP §0.7.2 (Financial Precision), all monetary fields must be
+# materialised as :class:`decimal.Decimal` with two-decimal precision
+# using banker's rounding (:data:`decimal.ROUND_HALF_EVEN`). No
+# floating-point arithmetic is permitted. This constant is the quantum
+# passed to :meth:`Decimal.quantize` inside :func:`_money` and is the
+# exact-same value used in ``posttran_job._MONEY_SCALE`` and the
+# equivalent helper inside ``intcalc_job`` — kept locally in this module
+# to avoid cross-importing from sibling job modules (forbidden per the
+# file-level schema declaration above).
+# ----------------------------------------------------------------------------
+_MONEY_SCALE: Decimal = Decimal("0.01")
+
+# ----------------------------------------------------------------------------
 # Data-source discriminator values on the ``tran_source`` column.
 #
 # The TRAN-SOURCE field (CVTRA05Y.cpy PIC X(10)) identifies the origin
@@ -581,6 +697,179 @@ _SORT_COLUMN: str = "tran_id"
 # its two JCL-era source subsets (TRANSACT.BKUP and SYSTRAN).
 # ----------------------------------------------------------------------------
 _SOURCE_COLUMN: str = "tran_source"
+
+
+# ============================================================================
+# Fixed-width record serialisation helpers.
+# ============================================================================
+#
+# These helpers replicate the ``intcalc_job`` helpers field-for-field so
+# that the ``TRANSACT.COMBINED.txt`` archive produced by this Stage 3
+# job is byte-compatible with the ``SYSTRAN.txt`` archive produced by
+# Stage 2 (both targets of CVTRA05Y / LRECL=350 RECFM=FB). The helpers
+# are kept local to this module because the file-level schema
+# declaration above forbids cross-imports between sibling job modules
+# in ``src.batch.jobs``.
+#
+# Why duplicate rather than share?
+#   Each batch job is a standalone PySpark Glue script whose only
+#   dependencies are the shared ``src.batch.common.*`` helpers and the
+#   shared ``src.shared.*`` models/schemas.  The record-serialisation
+#   logic is tightly coupled to the specific COBOL record layout being
+#   produced and therefore lives next to the job that produces it —
+#   identical in spirit to how ``prtcatbl_job`` has its own
+#   ``_format_backup_line`` for CVTRA01Y and ``intcalc_job`` has its
+#   own ``_build_systran_record_line`` for CVTRA05Y.
+# ----------------------------------------------------------------------------
+
+
+def _money(value: Decimal | int | float | str | None) -> Decimal:
+    """Coerce ``value`` into a 2-decimal :class:`Decimal` using banker's rounding.
+
+    Mirrors the :func:`intcalc_job._money` helper. Per AAP §0.7.2
+    (Financial Precision), the COBOL ``PIC S9(09)V99`` semantic is
+    realised in Python as :class:`decimal.Decimal` with an explicit
+    two-place quantum (``Decimal("0.01")``) and
+    :data:`decimal.ROUND_HALF_EVEN` rounding (the Python equivalent of
+    the COBOL ``ROUNDED`` clause). Floating-point arithmetic is NEVER
+    performed on monetary values — ``float`` inputs are routed through
+    :func:`str` to avoid binary-to-decimal precision loss.
+    """
+    if value is None:
+        return Decimal("0.00")
+    if isinstance(value, Decimal):
+        return value.quantize(_MONEY_SCALE, rounding=ROUND_HALF_EVEN)
+    if isinstance(value, float):
+        # Route float → str to avoid float binary precision artefacts.
+        return Decimal(str(value)).quantize(_MONEY_SCALE, rounding=ROUND_HALF_EVEN)
+    return Decimal(str(value)).quantize(_MONEY_SCALE, rounding=ROUND_HALF_EVEN)
+
+
+def _pad_right(value: object, width: int) -> str:
+    """Right-pad or truncate ``value`` to exactly ``width`` characters.
+
+    Mirrors :func:`intcalc_job._pad_right`. Replaces COBOL space-filling
+    (``PIC X(n)`` defaults to trailing spaces) and implements the
+    truncation-on-overflow behaviour of z/OS when a source field's
+    content exceeds the destination picture's length.
+    """
+    if value is None:
+        text = ""
+    else:
+        text = str(value)
+    if len(text) >= width:
+        return text[:width]
+    return text + " " * (width - len(text))
+
+
+def _format_amt_for_combined(amount: Decimal) -> str:
+    """Format a :class:`Decimal` amount as a 13-character signed text field.
+
+    Mirrors :func:`intcalc_job._format_amt_for_systran`. The CVTRA05Y
+    ``TRAN-AMT PIC S9(09)V99`` field occupies 11 bytes in the mainframe
+    zoned-decimal representation (9 integer + 2 fractional + implicit
+    sign overpunch on the low-order nibble of the last digit). In the
+    Python ASCII representation, the field is widened to 13 bytes to
+    provide:
+
+    * 1 byte for the sign character (``'-'`` for negative, ``' '`` for
+      zero or positive — mirroring ``intcalc_job`` for archive
+      compatibility with SYSTRAN.txt).
+    * 9 bytes for the integer portion, zero-filled on the left.
+    * 1 byte for the explicit decimal point (``'.'``).
+    * 2 bytes for the fractional portion, zero-filled on the right.
+
+    Example: ``Decimal("12.50")`` → ``" 0000012.50"`` (13 chars incl.
+    leading space). ``Decimal("-12.50")`` → ``"-0000012.50"``.
+
+    The 2-byte expansion (from COBOL's 11 to Python's 13) is absorbed
+    by trimming the CVTRA05Y FILLER from 20 bytes to 18 bytes — see
+    :func:`_format_combined_line` for the total-width assertion.
+    """
+    quantised = _money(amount)
+    sign_char = "-" if quantised < 0 else " "
+    abs_value = abs(quantised)
+    integer_part = int(abs_value)
+    cents = int((abs_value - Decimal(integer_part)) * Decimal(100))
+    mantissa = f"{integer_part:09d}.{cents:02d}"
+    return f"{sign_char}{mantissa}"
+
+
+def _format_combined_line(row: Any) -> str:
+    """Serialise one PySpark :class:`Row` to a 350-byte ``CVTRA05Y`` line.
+
+    Reproduces the COBOL ``CVTRA05Y`` TRAN-RECORD layout
+    (``app/cpy/CVTRA05Y.cpy``) byte-for-byte, matching
+    :func:`intcalc_job._build_systran_record_line` so the
+    ``TRANSACT.COMBINED.txt`` archive written by this Stage 3 job is
+    in the same format as the upstream ``SYSTRAN.txt`` archive
+    written by Stage 2 and the ``reject.txt`` archive written by
+    Stage 1::
+
+        01  TRAN-RECORD.
+            05  TRAN-ID             PIC X(16).
+            05  TRAN-TYPE-CD        PIC X(02).
+            05  TRAN-CAT-CD         PIC 9(04).
+            05  TRAN-SOURCE         PIC X(10).
+            05  TRAN-DESC           PIC X(100).
+            05  TRAN-AMT            PIC S9(09)V99.   -> 13 char ASCII
+            05  TRAN-MERCHANT-ID    PIC 9(09).
+            05  TRAN-MERCHANT-NAME  PIC X(50).
+            05  TRAN-MERCHANT-CITY  PIC X(50).
+            05  TRAN-MERCHANT-ZIP   PIC X(10).
+            05  TRAN-CARD-NUM       PIC X(16).
+            05  TRAN-ORIG-TS        PIC X(26).
+            05  TRAN-PROC-TS        PIC X(26).
+            05  FILLER              PIC X(20).        -> 18 bytes trimmed
+
+    Per-field derivations
+    ---------------------
+    * ``TRAN-ID`` through ``TRAN-DESC`` and ``TRAN-MERCHANT-ID``
+      through ``TRAN-PROC-TS`` are fixed-width text fields rendered
+      via :func:`_pad_right`. ``None`` values become all-spaces.
+    * ``TRAN-AMT`` is the only numeric field; it is rendered via
+      :func:`_format_amt_for_combined` which produces the 13-byte
+      signed ASCII layout.
+    * ``FILLER`` is trimmed from COBOL's 20 bytes to 18 bytes to
+      absorb the 2-byte expansion in ``TRAN-AMT`` and keep the total
+      record length at exactly ``_COMBINED_LRECL`` (350).
+
+    Raises
+    ------
+    ValueError
+        If the final line length does not equal ``_COMBINED_LRECL``.
+        This is a guard against accidental schema drift and matches
+        the same defence in :func:`intcalc_job._build_systran_record_line`.
+    """
+    # PySpark Row supports both attribute and mapping access; use
+    # ``row[column]`` so we do not depend on a specific Row subclass.
+    parts: list[str] = [
+        _pad_right(row["tran_id"], 16),
+        _pad_right(row["tran_type_cd"], 2),
+        _pad_right(row["tran_cat_cd"], 4),
+        _pad_right(row["tran_source"], 10),
+        _pad_right(row["tran_desc"], 100),
+        _format_amt_for_combined(_money(row["tran_amt"])),
+        _pad_right(row["tran_merchant_id"], 9),
+        _pad_right(row["tran_merchant_name"], 50),
+        _pad_right(row["tran_merchant_city"], 50),
+        _pad_right(row["tran_merchant_zip"], 10),
+        _pad_right(row["tran_card_num"], 16),
+        _pad_right(row["tran_orig_ts"], 26),
+        _pad_right(row["tran_proc_ts"], 26),
+        # FILLER reduced from COBOL's 20 bytes to 18 bytes to absorb
+        # the 2-byte expansion in TRAN-AMT (11 zoned → 13 ASCII). Total
+        # remains _COMBINED_LRECL == 350.
+        _pad_right("", 18),
+    ]
+    line = "".join(parts)
+    if len(line) != _COMBINED_LRECL:
+        raise ValueError(
+            f"TRANSACT.COMBINED record length mismatch: "
+            f"expected {_COMBINED_LRECL} bytes, got {len(line)} "
+            f"for tran_id={row['tran_id']!r}"
+        )
+    return line
 
 
 def _probe_upstream_marker(prefix_uri: str, gdg_name: str) -> bool:
@@ -1019,31 +1308,111 @@ def main() -> None:
         #   //         SPACE=(CYL,(1,1),RLSE),
         #   //         DSN=AWS.M2.CARDDEMO.TRANSACT.COMBINED(+1)
         #
-        # PySpark's DataFrame.write.parquet() is the canonical AWS Glue
-        # idiom for writing to S3. Parquet is chosen over the mainframe's
-        # fixed-width 350-byte sequential format because:
+        # Implementation — boto3-backed write of a fixed-width 350-byte
+        # text archive (QA Checkpoint 5 Issue 23 fix)
+        # ------------------------------------------------------------
+        # The original implementation invoked
+        # ``sorted_df.write.mode("overwrite").parquet(combined_output_uri)``
+        # which relies on Spark's native Hadoop-compatible S3A
+        # filesystem.  That path requires the ``hadoop-aws`` JAR and
+        # the ``spark.hadoop.fs.s3a.*`` configuration on the Spark
+        # classpath, neither of which are present in AWS Glue 5.1
+        # managed runtime or the local LocalStack developer setup.
+        # The resulting
+        # ``UnsupportedFileSystemException: No FileSystem for scheme
+        # "s3"`` aborted the job before it could write the PostgreSQL
+        # output (Step 9).
         #
-        #   * Downstream S3 consumers are PySpark jobs and Athena
-        #     queries that prefer columnar formats.
-        #   * The JCL's DCB=(*.SORTIN) inheritance (fixed-width) was an
-        #     infrastructure constraint (z/OS SORT + IDCAMS could not
-        #     read/write other formats), not a functional requirement.
-        #   * Compressed Parquet is 5-10× smaller than fixed-width.
+        # The resolution is to adopt the same ``boto3 put_object``
+        # pattern used by the sibling jobs:
         #
-        # ``mode="overwrite"`` is equivalent to
-        # ``DISP=(NEW,CATLG,DELETE)`` — any existing files at the
-        # target path (should be none because get_versioned_s3_path
-        # returns a fresh timestamp directory per call) are removed
-        # before the write.
+        #   * ``intcalc_job`` → SYSTRAN.txt (350-byte CVTRA05Y records)
+        #   * ``prtcatbl_job`` → backup.dat (50-byte CVTRA01Y) + report.txt
+        #   * ``creastmt_job`` → STATEMNT.PS.txt / STATEMNT.HTML (variable)
+        #
+        # The format of the archive is the CVTRA05Y 350-byte
+        # fixed-width layout — identical to SYSTRAN.txt — which
+        # preserves the JCL LRECL=350 RECFM=FB contract per AAP §0.7.1
+        # (preserve existing functionality) and the user-specified
+        # "minimal change" discipline. The authoritative data source
+        # for downstream Stages 4a and 4b remains the PostgreSQL
+        # ``transactions`` table (written in Step 9 below), so the S3
+        # archive is purely an operator-facing GDG(+1) audit artefact.
+        #
+        # Performance: at 350 bytes × ~312 rows (50 daily-posted + 50
+        # interest + existing backfill), the archive body is <110 KB —
+        # well within G.1X driver memory for ``sorted_df.collect()``
+        # and a single boto3 ``put_object`` call. No streaming /
+        # multipart upload is needed.
+        #
+        # ``mode="overwrite"`` semantics are preserved: because
+        # :func:`get_versioned_s3_path` returns a fresh timestamped
+        # subdirectory per "+1" invocation, the target key is unique
+        # and no pre-existing object can exist at that path — the
+        # single ``put_object`` call is therefore idempotent with
+        # respect to the GDG(+1) semantic.
         # --------------------------------------------------------------
         logger.info(
-            "Writing combined DataFrame to S3 archive at %s",
+            "STEP05R: writing combined DataFrame to S3 archive at %s",
             combined_output_uri,
         )
-        sorted_df.write.mode("overwrite").parquet(combined_output_uri)
+
+        # Materialise the sorted DataFrame on the driver. At ~312 rows
+        # × 350 bytes this is ~109 KB — trivially within the G.1X
+        # driver memory budget.  Spark will re-use the cached sorted
+        # snapshot (from the ``.cache() + .count()`` trigger above),
+        # so no additional read→filter→union→dedup→sort pipeline
+        # execution is required.
+        sorted_rows = sorted_df.collect()
         logger.info(
-            "S3 archive complete at %s (TRANSACT.COMBINED(+1) equivalent)",
-            combined_output_uri,
+            "STEP05R: collected %d sorted rows on driver; building CVTRA05Y 350-byte lines",
+            len(sorted_rows),
+        )
+
+        # Serialise each row into a 350-byte CVTRA05Y line. The
+        # :func:`_format_combined_line` helper asserts that every line
+        # is exactly ``_COMBINED_LRECL`` (350) bytes and raises
+        # :class:`ValueError` on schema drift — the assertion is a
+        # fail-fast safeguard equivalent to the mainframe's
+        # record-length enforcement at VSAM WRITE time.
+        combined_lines: list[str] = [
+            _format_combined_line(row) for row in sorted_rows
+        ]
+
+        # Derive the full S3 object key by appending the archive
+        # filename to the versioned prefix URI returned by
+        # :func:`get_versioned_s3_path`. The URI has the shape
+        # ``s3://{bucket}/{key_prefix}/`` (trailing slash); split with
+        # ``maxsplit=3`` extracts the components into ``["s3:", "",
+        # "{bucket}", "{key_prefix}/"]`` — identical to the
+        # :func:`prtcatbl_job` / :func:`intcalc_job` patterns.
+        _scheme, _empty, _bucket, key_prefix_with_slash = (
+            combined_output_uri.split("/", 3)
+        )
+        combined_key: str = key_prefix_with_slash + _COMBINED_FILENAME
+
+        # Join with LF terminators — matches the SYSTRAN.txt line
+        # separator convention used by :func:`intcalc_job._write_interest_trans_to_s3`.
+        combined_content: str = "\n".join(combined_lines) + (
+            "\n" if combined_lines else ""
+        )
+
+        # Publish via boto3. ``write_to_s3`` handles bucket/endpoint
+        # resolution from the environment (``AWS_ENDPOINT_URL`` /
+        # ``AWS_REGION``) and returns the concrete ``s3://bucket/key``
+        # URI for audit logging.
+        combined_uri: str = write_to_s3(
+            content=combined_content,
+            key=combined_key,
+            content_type="text/plain",
+        )
+
+        logger.info(
+            "STEP05R: S3 archive complete at %s records=%d lrecl=%d bytes=%d (TRANSACT.COMBINED(+1) equivalent)",
+            combined_uri,
+            len(combined_lines),
+            _COMBINED_LRECL,
+            len(combined_content),
         )
 
         logger.info(_JCL_STEP05R_END_MSG)

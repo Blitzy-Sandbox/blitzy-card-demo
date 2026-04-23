@@ -301,10 +301,18 @@ class Account(Base):
     #
     # 'Y' = active, 'N' = inactive. Checked by POSTTRAN (reject code
     # 100 = "Account Not Active") and by COACTVWC / COACTUPC online.
+    #
+    # DB column name: ``acct_active_status`` (preserves the COBOL
+    # ``ACCT-`` prefix used in the V1__schema.sql DDL). The Python
+    # attribute is ``active_status`` for ergonomic service-layer use;
+    # the ``name=`` parameter keeps the ORM query aligned with the
+    # physical column in Aurora PostgreSQL.
     # ------------------------------------------------------------------
     active_status: Mapped[str] = mapped_column(
+        "acct_active_status",
         String(1),
         nullable=False,
+        key="active_status",
     )
 
     # ------------------------------------------------------------------
@@ -314,11 +322,15 @@ class Account(Base):
     # semantics exactly. Default Decimal("0.00") guarantees that an
     # INSERT with no explicit value persists the canonical zero
     # balance with two decimal places (never 0 or 0.0).
+    #
+    # DB column name: ``acct_curr_bal``.
     # ------------------------------------------------------------------
     curr_bal: Mapped[Decimal] = mapped_column(
+        "acct_curr_bal",
         Numeric(15, 2),
         nullable=False,
         default=Decimal("0.00"),
+        key="curr_bal",
     )
 
     # ------------------------------------------------------------------
@@ -326,11 +338,15 @@ class Account(Base):
     #
     # NUMERIC(15, 2). Consulted by POSTTRAN during credit-limit
     # validation (reject code 102 = "Over Credit Limit").
+    #
+    # DB column name: ``acct_credit_limit``.
     # ------------------------------------------------------------------
     credit_limit: Mapped[Decimal] = mapped_column(
+        "acct_credit_limit",
         Numeric(15, 2),
         nullable=False,
         default=Decimal("0.00"),
+        key="credit_limit",
     )
 
     # ------------------------------------------------------------------
@@ -339,11 +355,15 @@ class Account(Base):
     #
     # NUMERIC(15, 2). Enforced by POSTTRAN for cash-advance
     # transactions.
+    #
+    # DB column name: ``acct_cash_credit_limit``.
     # ------------------------------------------------------------------
     cash_credit_limit: Mapped[Decimal] = mapped_column(
+        "acct_cash_credit_limit",
         Numeric(15, 2),
         nullable=False,
         default=Decimal("0.00"),
+        key="cash_credit_limit",
     )
 
     # ------------------------------------------------------------------
@@ -351,11 +371,18 @@ class Account(Base):
     #
     # 10-character YYYY-MM-DD string. Validation delegated to
     # src.shared.utils.date_utils (preserves CSUTLDTC rules).
+    #
+    # DB column name: ``acct_open_date``. Nullable at the DB layer
+    # (V1__schema.sql declares no NOT NULL for this column) — kept
+    # ``nullable=False`` with an empty-string default at the ORM to
+    # match the COBOL all-spaces-on-create behavior.
     # ------------------------------------------------------------------
     open_date: Mapped[str] = mapped_column(
+        "acct_open_date",
         String(10),
         nullable=False,
         default="",
+        key="open_date",
     )
 
     # ------------------------------------------------------------------
@@ -369,11 +396,16 @@ class Account(Base):
     # traceability (AAP §0.7.1 — do not modify original COBOL source).
     #
     # Consulted by POSTTRAN (reject code 101 = "Account Expired").
+    #
+    # DB column name: ``acct_expiration_date`` (typo normalized in the
+    # PostgreSQL DDL per V1__schema.sql).
     # ------------------------------------------------------------------
     expiration_date: Mapped[str] = mapped_column(
+        "acct_expiration_date",
         String(10),
         nullable=False,
         default="",
+        key="expiration_date",
     )
 
     # ------------------------------------------------------------------
@@ -381,11 +413,15 @@ class Account(Base):
     #
     # 10-character YYYY-MM-DD string tracking the most recent card
     # reissue event for this account.
+    #
+    # DB column name: ``acct_reissue_date``.
     # ------------------------------------------------------------------
     reissue_date: Mapped[str] = mapped_column(
+        "acct_reissue_date",
         String(10),
         nullable=False,
         default="",
+        key="reissue_date",
     )
 
     # ------------------------------------------------------------------
@@ -394,11 +430,15 @@ class Account(Base):
     #
     # NUMERIC(15, 2). Running total of credits (payments, refunds)
     # posted within the current billing cycle. Zeroed at cycle close.
+    #
+    # DB column name: ``acct_curr_cyc_credit``.
     # ------------------------------------------------------------------
     curr_cyc_credit: Mapped[Decimal] = mapped_column(
+        "acct_curr_cyc_credit",
         Numeric(15, 2),
         nullable=False,
         default=Decimal("0.00"),
+        key="curr_cyc_credit",
     )
 
     # ------------------------------------------------------------------
@@ -408,11 +448,15 @@ class Account(Base):
     # NUMERIC(15, 2). Running total of debits (purchases, cash
     # advances, fees) posted within the current billing cycle.
     # Zeroed at cycle close.
+    #
+    # DB column name: ``acct_curr_cyc_debit``.
     # ------------------------------------------------------------------
     curr_cyc_debit: Mapped[Decimal] = mapped_column(
+        "acct_curr_cyc_debit",
         Numeric(15, 2),
         nullable=False,
         default=Decimal("0.00"),
+        key="curr_cyc_debit",
     )
 
     # ------------------------------------------------------------------
@@ -420,11 +464,15 @@ class Account(Base):
     #
     # 10 chars accommodates US 5-digit ZIP, US ZIP+4 with or without
     # the '-' separator, and left/right-padded variants of the same.
+    #
+    # DB column name: ``acct_addr_zip``.
     # ------------------------------------------------------------------
     addr_zip: Mapped[str] = mapped_column(
+        "acct_addr_zip",
         String(10),
         nullable=False,
         default="",
+        key="addr_zip",
     )
 
     # ------------------------------------------------------------------
@@ -437,11 +485,15 @@ class Account(Base):
     # DisclosureGroup. Common values: 'DEFAULT' (standard APR),
     # 'ZEROAPR' (0% introductory rate). An empty or unknown group_id
     # causes INTCALC to fall back to 'DEFAULT' per AAP §0.7.1.
+    #
+    # DB column name: ``acct_group_id``.
     # ------------------------------------------------------------------
     group_id: Mapped[str] = mapped_column(
+        "acct_group_id",
         String(10),
         nullable=False,
         default="",
+        key="group_id",
     )
 
     # ------------------------------------------------------------------

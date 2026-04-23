@@ -384,7 +384,17 @@ def test_column_count() -> None:
     # As a second-level guard, verify the column *names* match
     # the expected set exactly. This catches renames (which would
     # not change the count) and spelling regressions.
-    actual_names = frozenset(c.name for c in columns)
+    #
+    # NOTE: We compare against ``Column.key`` (the Python attribute
+    # name used in ``__table__.columns[...]`` access and in ORM
+    # ``row._mapping[...]`` lookups) rather than ``Column.name``
+    # (the physical DB column name, e.g. ``acct_curr_bal``).
+    # ``_EXPECTED_COLUMNS`` is intentionally written in Python-style
+    # attribute form (e.g. ``curr_bal``) because that is the public
+    # ORM contract. The DB-side column name is explicitly decoupled
+    # via the ``mapped_column("acct_curr_bal", key="curr_bal", ...)``
+    # pattern in ``src/shared/models/account.py``.
+    actual_names = frozenset(c.key for c in columns)
     assert actual_names == _EXPECTED_COLUMNS, (
         f"Account column names must be exactly "
         f"{sorted(_EXPECTED_COLUMNS)!r}; found "
@@ -1848,25 +1858,31 @@ def test_no_filler_columns() -> None:
     guards against the FILLER anti-pattern.
     """
     columns = Account.__table__.columns
-    column_names = frozenset(c.name for c in columns)
+    # Level 1 compares against ``_EXPECTED_COLUMNS`` (Python attribute
+    # names), so use ``Column.key`` rather than ``Column.name``.
+    # Level 2 scans BOTH the Python key AND the DB column name for
+    # ``'filler'`` — a regression could appear in either form.
+    column_keys = frozenset(c.key for c in columns)
+    column_db_names = frozenset(c.name for c in columns)
 
-    # Level 1 — exact set match.
-    assert column_names == _EXPECTED_COLUMNS, (
+    # Level 1 — exact set match (against Python attribute names).
+    assert column_keys == _EXPECTED_COLUMNS, (
         f"Account column set must be exactly "
         f"{sorted(_EXPECTED_COLUMNS)!r} (13 columns: 12 COBOL "
         f"named fields + 1 Python version_id). COBOL FILLER "
         f"PIC X(178) at the end of ACCOUNT-RECORD must NOT be "
         f"mapped — it is purely structural padding to bring "
         f"the VSAM record to RECLN=300. Found "
-        f"{sorted(column_names)!r}; unexpected: "
-        f"{sorted(column_names - _EXPECTED_COLUMNS)!r}; "
-        f"missing: {sorted(_EXPECTED_COLUMNS - column_names)!r}"
+        f"{sorted(column_keys)!r}; unexpected: "
+        f"{sorted(column_keys - _EXPECTED_COLUMNS)!r}; "
+        f"missing: {sorted(_EXPECTED_COLUMNS - column_keys)!r}"
     )
 
     # Level 2 — keyword-search for FILLER-style names. Scan
-    # every column name for substrings that would suggest an
-    # accidentally-mapped padding field.
-    for column_name in column_names:
+    # every column name (both Python key AND DB column name) for
+    # substrings that would suggest an accidentally-mapped padding
+    # field.
+    for column_name in column_keys | column_db_names:
         assert "filler" not in column_name.lower(), (
             f"Account must not expose any FILLER-style column "
             f"(COBOL FILLER PIC X(178) is padding and carries "

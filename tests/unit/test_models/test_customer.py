@@ -946,17 +946,26 @@ def test_no_filler_columns() -> None:
        copybook-to-model translator accidentally emits a ``filler``,
        ``cust_filler``, ``record_filler``, etc. column).
     """
-    column_names: list[str] = [c.name for c in Customer.__table__.columns]
+    # ``Column.key`` is the Python attribute name (e.g. ``first_name``)
+    # used by ORM queries and ``__table__.columns[...]`` access,
+    # while ``Column.name`` is the physical DB column name (e.g.
+    # ``cust_first_name``). Since ``_EXPECTED_COLUMNS`` is declared
+    # in Python-style form we compare against the keys; the filler
+    # check scans BOTH to catch regressions in either form.
+    column_keys: list[str] = [c.key for c in Customer.__table__.columns]
+    column_db_names: list[str] = [c.name for c in Customer.__table__.columns]
 
-    # Positive: the exact set of mapped columns must match the contract.
-    assert set(column_names) == set(_EXPECTED_COLUMNS), (
-        f"Column set drift detected. Expected: {sorted(_EXPECTED_COLUMNS)}; found: {sorted(column_names)}"
+    # Positive: the exact set of mapped columns (by Python attr name)
+    # must match the contract.
+    assert set(column_keys) == set(_EXPECTED_COLUMNS), (
+        f"Column set drift detected. Expected: {sorted(_EXPECTED_COLUMNS)}; found: {sorted(column_keys)}"
     )
 
-    # Negative: no column name may contain the substring 'filler' in
-    # any casing. This guards against future regressions where a
-    # copybook-to-model translator accidentally emits a filler column.
-    for column_name in column_names:
+    # Negative: no column name (Python key OR DB name) may contain the
+    # substring 'filler' in any casing. This guards against future
+    # regressions where a copybook-to-model translator accidentally
+    # emits a filler column.
+    for column_name in column_keys + column_db_names:
         assert "filler" not in column_name.lower(), (
             f"Column {column_name!r} appears to map a COBOL FILLER "
             f"region. FILLER fields (like the trailing "

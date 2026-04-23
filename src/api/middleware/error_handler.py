@@ -661,18 +661,37 @@ def register_exception_handlers(app: FastAPI) -> None:
         # allows structured details), coerce to a stable string form
         # so the PIC X(50) ABEND-REASON field has a usable value.
         detail = exc.detail
-        if isinstance(detail, str):
-            reason = detail or _DEFAULT_HTTP_MESSAGES.get(status_code, CCDA_MSG_INVALID_KEY)
+        if isinstance(detail, str) and detail:
+            reason = detail
+            # When the route handler supplied an explicit detail string,
+            # propagate that specific text into BOTH ``reason`` and
+            # ``message`` so callers see the cause of the failure (e.g.,
+            # "Card not active" or "Account not found") rather than the
+            # generic CCDA_MSG_INVALID_KEY default. This resolves QA
+            # Checkpoint 5 Issue 20 (card router error envelope
+            # consistency) and applies uniformly to every router that
+            # uses the ``raise HTTPException(..., detail="...")``
+            # idiom — account, card, transaction, bill, report, user,
+            # and auth — yielding a ``reason`` / ``message`` pair that
+            # carries the specific cause string rather than a generic
+            # default. The structured ``error_code`` (4-char ABEND-CODE
+            # mnemonic) and ``culprit`` (path-derived component name)
+            # still convey the categorical dimensions.
+            message = detail
+        elif isinstance(detail, str):
+            # Explicit empty-string detail (unlikely but possible) —
+            # fall back to the categorical default for this status so
+            # the envelope is never blank.
+            reason = _DEFAULT_HTTP_MESSAGES.get(status_code, CCDA_MSG_INVALID_KEY)
+            message = reason
         else:
             # Non-string detail (dict/list) — fall back to the default
             # message for this status. The original structured detail
-            # is still available server-side via `exc.detail` in logs.
+            # is still available server-side via ``exc.detail`` in logs
+            # so operators can correlate the categorical response with
+            # the richer server-side payload.
             reason = _DEFAULT_HTTP_MESSAGES.get(status_code, CCDA_MSG_INVALID_KEY)
-
-        # The full message field uses the default for this status when
-        # available, otherwise the reason. This keeps a
-        # COBOL-accurate user-facing tone (CCDA_MSG_*).
-        message = _DEFAULT_HTTP_MESSAGES.get(status_code, reason)
+            message = reason
 
         culprit = _derive_culprit_from_path(path)
 

@@ -106,7 +106,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from src.api.dependencies import get_current_user
+from src.api.dependencies import get_current_admin_user
 from src.api.services.report_service import ReportService
 from src.shared.schemas.report_schema import (
     ReportSubmissionRequest,
@@ -150,7 +150,7 @@ router: APIRouter = APIRouter()
 )
 async def submit_report(
     request: ReportSubmissionRequest,
-    current_user: object = Depends(get_current_user),
+    current_user: object = Depends(get_current_admin_user),
 ) -> ReportSubmissionResponse:
     """Publish a report-generation request to the SQS FIFO queue.
 
@@ -159,6 +159,17 @@ async def submit_report(
     architectural decision in AAP §0.4.1, the CICS TDQ ``'JOBS'``
     mechanism is replaced by an AWS SQS FIFO queue, and the downstream
     job-scheduler + JES2 internal reader by AWS Step Functions + Glue.
+
+    Authorization (admin-only)
+    --------------------------
+    Report submission is restricted to administrators
+    (``user_type == 'A'``) via :func:`get_current_admin_user`. This
+    mirrors the CORPT00C.cbl original CICS behavior where report
+    submission is an administrative function (it consumes JES2
+    resources and can trigger expensive batch pipelines). Regular
+    users (``user_type == 'U'``) who attempt the endpoint receive
+    HTTP 403 Forbidden — matching the ``user_router.py`` /
+    ``admin_router.py`` convention for admin-only endpoints.
 
     Validation handled upstream by Pydantic
     ---------------------------------------
@@ -183,14 +194,16 @@ async def submit_report(
         ``SDTYYYYI+SDTMMI+SDTDDI`` and ``EDTYYYYI+EDTMMI+EDTDDI``
         segmented fields).
     current_user : object
-        The JWT-authenticated user, injected by
-        :func:`get_current_user`. Required — anonymous callers receive
-        HTTP 401 from the dependency before reaching this function.
-        Replaces the CICS ``COMMAREA``/``CDEMO-USER-ID`` session
-        propagation from ``COCOM01Y.cpy``. Typed as ``object`` to
-        avoid importing :class:`CurrentUser` beyond the dependency
-        whitelist — the router does not consume any fields on the
-        user object, only the presence of a valid identity.
+        The JWT-authenticated ADMIN user, injected by
+        :func:`get_current_admin_user`. Required — anonymous callers
+        receive HTTP 401 from the JWT dependency and non-admin
+        callers receive HTTP 403 from the admin-gate dependency
+        before reaching this function. Replaces the CICS
+        ``COMMAREA``/``CDEMO-USER-ID`` session propagation from
+        ``COCOM01Y.cpy``. Typed as ``object`` to avoid importing
+        :class:`CurrentUser` beyond the dependency whitelist — the
+        router does not consume any fields on the user object, only
+        the presence of a valid admin identity.
 
     Returns
     -------

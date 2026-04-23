@@ -258,6 +258,25 @@ _PATCH_GET_CONN_OPTS: str = "src.batch.jobs.posttran_job.get_connection_options"
 _PATCH_WRITE_TO_S3: str = "src.batch.jobs.posttran_job.write_to_s3"
 _PATCH_GET_S3_PATH: str = "src.batch.jobs.posttran_job.get_versioned_s3_path"
 
+#: Patch target for :func:`src.batch.common.db_connector.write_table_idempotent`
+#: at the posttran_job import boundary.  ``write_table_idempotent`` is the
+#: Issue 22 (QA Checkpoint 5) fix that makes Stage 4a POSTTRAN idempotent by
+#: reading the current ``transactions`` table, left-anti-joining to find new
+#: rows, then appending only those.  The inner ``read_table(...)`` call
+#: resolves against ``src.batch.common.db_connector.read_table`` (the sibling
+#: function in the same module), NOT the module-level re-import in
+#: posttran_job — so patching ``_PATCH_READ_TABLE`` alone does NOT intercept
+#: the JDBC query inside ``write_table_idempotent``.  Tests that invoke the
+#: real ``main()`` (e.g. Phase 7 ``test_posttran_main_with_spark``) must
+#: patch this symbol at the posttran_job boundary to prevent a real
+#: PostgreSQL connection attempt (which fails with ``FATAL: password
+#: authentication failed``).  The mock's ``side_effect`` must forward the
+#: DataFrame to ``mock_write_table`` so the existing ``_write_side_effect``
+#: capture logic continues to populate ``written_dataframes["transactions"]``.
+_PATCH_WRITE_TABLE_IDEMPOTENT: str = (
+    "src.batch.jobs.posttran_job.write_table_idempotent"
+)
+
 #: Patch target for the :mod:`pyspark.sql.functions` alias ``F``.
 #: Required by Phase 6 tests that use pure ``MagicMock`` DataFrames
 #: (no real :class:`pyspark.SparkContext`).  The production ``main()``
@@ -1745,6 +1764,7 @@ def test_processed_and_rejected_counts(
 # createDataFrame incompatibilities that the pure-mock tests miss.
 # ============================================================================
 @pytest.mark.unit
+@patch(_PATCH_WRITE_TABLE_IDEMPOTENT)
 @patch(_PATCH_WRITE_TO_S3)
 @patch(_PATCH_GET_S3_PATH)
 @patch(_PATCH_WRITE_TABLE)
@@ -1760,6 +1780,7 @@ def test_posttran_main_with_spark(
     mock_write_table: MagicMock,
     mock_get_s3_path: MagicMock,
     mock_write_to_s3: MagicMock,
+    mock_write_table_idempotent: MagicMock,
     spark_session: SparkSession,
 ) -> None:
     """End-to-end main() using a real SparkSession; verify DF outputs.
@@ -1897,6 +1918,49 @@ def test_posttran_main_with_spark(
         written_dataframes[table_name] = df_arg
 
     mock_write_table.side_effect = _write_side_effect
+
+    # Wire up the write_table_idempotent mock (Issue 22 fix — makes
+    # Stage 4a POSTTRAN idempotent by reading the existing transactions
+    # table and left-anti-joining to find new rows before appending).
+    # Without this patch the inner ``read_table(spark_session,
+    # "transactions")`` call inside ``write_table_idempotent`` resolves
+    # to the REAL ``src.batch.common.db_connector.read_table`` (the
+    # sibling function in the same module) and attempts a real JDBC
+    # connection, which fails with
+    # ``FATAL: password authentication failed for user "carddemo"``.
+    #
+    # The side_effect below:
+    #   1. Forwards the DataFrame to ``mock_write_table`` (which is
+    #      already wired with ``_write_side_effect`` above) so
+    #      ``written_dataframes["transactions"]`` is populated exactly
+    #      as it would be by the non-idempotent write path.
+    #   2. Returns ``df.count()`` so posttran_job's
+    #      ``rows_inserted == len(posted_transactions)`` branch
+    #      logs the clean-run message and takes the happy path.
+    def _write_table_idempotent_side_effect(
+        _spark_arg: Any,
+        df_arg: Any,
+        table_name: str,
+        *,
+        key_columns: list[str],
+    ) -> int:
+        # ``key_columns`` is captured implicitly by
+        # ``mock_write_table_idempotent.call_args`` — the parameter is
+        # named here only for signature parity with the production
+        # ``write_table_idempotent`` helper.
+        _ = key_columns
+        # Delegate to mock_write_table so the existing
+        # _write_side_effect capture logic populates written_dataframes.
+        mock_write_table(df_arg, table_name, mode="append")
+        # Return the row count so the "clean run" log branch executes.
+        # ``df_arg.count()`` returns Any (df_arg is typed Any to allow
+        # both mock and real PySpark DataFrames) — coerce to int so the
+        # return type matches the production signature.
+        return int(df_arg.count())
+
+    mock_write_table_idempotent.side_effect = (
+        _write_table_idempotent_side_effect
+    )
 
     # ----- Act -----
     # One reject → SystemExit(4).

@@ -119,11 +119,18 @@ SQS ``send_message`` fails (confirm='N')          ``500 Internal Server Error``
 Fixtures Used
 -------------
 From :mod:`tests.conftest`:
-    * ``client``           — AsyncClient with a regular-user JWT and
+    * ``admin_client``     — AsyncClient with an admin-user JWT and
                              ``get_current_user`` dependency override
-                             (sufficient for all happy-path and
-                             validation tests since ``/reports`` is
-                             not in :data:`ADMIN_ONLY_PREFIXES`).
+                             returning ``user_type='A'`` /
+                             ``is_admin=True``. Required for
+                             ``POST /reports/submit`` which is
+                             admin-gated via
+                             ``Depends(get_current_admin_user)``
+                             (see QA Issue 13 — admin-only enforcement
+                             parity with the original CORPT00C CICS
+                             transaction, which was reachable only from
+                             the admin menu in practice). Used for all
+                             happy-path and validation tests.
     * ``test_app``         — FastAPI app used to build a fresh
                              AsyncClient (without an ``Authorization``
                              header) for the HTTP 401 test.
@@ -156,19 +163,24 @@ from src.shared.schemas.report_schema import (
 # ============================================================================
 # Test constants — tightly coupled to conftest.py fixture values
 # ============================================================================
-# The ``client`` fixture in conftest.py overrides ``get_current_user`` to
-# return ``CurrentUser(user_id="TESTUSER", user_type="U", is_admin=False)``.
+# The ``admin_client`` fixture in conftest.py overrides
+# ``get_current_user`` to return
+# ``CurrentUser(user_id="ADMIN001", user_type="A", is_admin=True)``.
 # We mirror that identity here so response-body / log-field assertions
 # remain self-documenting (without importing conftest's private module
 # constants which are intentionally underscore-prefixed).
 #
-# CORPT00C.cbl itself does not gate on user_type — any signed-in user
-# (``CDEMO-USRTYP-USER`` or ``CDEMO-USRTYP-ADMIN``) could reach the
-# report-submission screen via the main menu (COMEN01C option 10),
-# and ``/reports`` is intentionally absent from
-# :data:`src.api.middleware.auth.ADMIN_ONLY_PREFIXES`.
+# ``POST /reports/submit`` is admin-gated via
+# ``Depends(get_current_admin_user)`` in
+# :mod:`src.api.routers.report_router` (see QA Issue 13). This matches
+# the original CORPT00C CICS transaction behaviour in practice: while
+# CORPT00C.cbl itself does not inspect ``CDEMO-USRTYP``, the transaction
+# was reachable only from the admin menu in the production CICS
+# configuration, so gating it to admins in the REST port preserves
+# functional parity per AAP §0.7.1 ("preserve all existing
+# functionality exactly as-is").
 # ============================================================================
-_EXPECTED_USER_ID: str = "TESTUSER"
+_EXPECTED_USER_ID: str = "ADMIN001"
 
 # ============================================================================
 # Mock-target path — MUST patch the ReportService reference bound on the
@@ -283,7 +295,7 @@ class TestReportSubmission:
     # ------------------------------------------------------------------
     # 1. Monthly report — happy path
     # ------------------------------------------------------------------
-    async def test_submit_monthly_report_success(self, client: AsyncClient) -> None:
+    async def test_submit_monthly_report_success(self, admin_client: AsyncClient) -> None:
         """Monthly report submission returns HTTP 200 with confirm='Y'.
 
         Mirrors ``CORPT00C.cbl`` ``EVALUATE TRUE`` where
@@ -314,7 +326,7 @@ class TestReportSubmission:
                 return_value=_make_success_response(ReportType.monthly, _SUCCESS_MSG_MONTHLY),
             )
 
-            response = await client.post("/reports/submit", json=request_body)
+            response = await admin_client.post("/reports/submit", json=request_body)
 
         # HTTP 200 — router forwarded the service's confirm='Y'
         # response unchanged (lines 308-328 of report_router.py).
@@ -360,7 +372,7 @@ class TestReportSubmission:
     # ------------------------------------------------------------------
     # 2. Yearly report — happy path
     # ------------------------------------------------------------------
-    async def test_submit_yearly_report_success(self, client: AsyncClient) -> None:
+    async def test_submit_yearly_report_success(self, admin_client: AsyncClient) -> None:
         """Yearly report submission returns HTTP 200 with confirm='Y'.
 
         Mirrors ``CORPT00C.cbl`` ``EVALUATE TRUE`` where
@@ -383,7 +395,7 @@ class TestReportSubmission:
                 return_value=_make_success_response(ReportType.yearly, _SUCCESS_MSG_YEARLY),
             )
 
-            response = await client.post("/reports/submit", json=request_body)
+            response = await admin_client.post("/reports/submit", json=request_body)
 
         assert response.status_code == status.HTTP_200_OK, (
             f"Yearly report submission MUST return HTTP 200 OK; got {response.status_code}: {response.text}"
@@ -404,7 +416,7 @@ class TestReportSubmission:
     # ------------------------------------------------------------------
     # 3. Custom report with valid date range — happy path
     # ------------------------------------------------------------------
-    async def test_submit_custom_report_success(self, client: AsyncClient) -> None:
+    async def test_submit_custom_report_success(self, admin_client: AsyncClient) -> None:
         """Custom report with valid date range returns HTTP 200.
 
         Mirrors ``CORPT00C.cbl`` ``EVALUATE TRUE`` where
@@ -438,7 +450,7 @@ class TestReportSubmission:
                 return_value=_make_success_response(ReportType.custom, _SUCCESS_MSG_CUSTOM),
             )
 
-            response = await client.post("/reports/submit", json=request_body)
+            response = await admin_client.post("/reports/submit", json=request_body)
 
         assert response.status_code == status.HTTP_200_OK, (
             f"Custom report with valid range MUST return HTTP 200 OK; got {response.status_code}: {response.text}"
@@ -470,7 +482,7 @@ class TestReportSubmission:
     # ------------------------------------------------------------------
     # 4. Custom report missing start_date — Pydantic rejection
     # ------------------------------------------------------------------
-    async def test_submit_custom_report_missing_start_date(self, client: AsyncClient) -> None:
+    async def test_submit_custom_report_missing_start_date(self, admin_client: AsyncClient) -> None:
         """Custom report without ``start_date`` returns HTTP 422.
 
         Mirrors the ``CORPT00C.cbl`` validation at line 320-323 where
@@ -495,7 +507,7 @@ class TestReportSubmission:
         }
 
         with patch(_REPORT_SERVICE_PATCH_TARGET) as mock_service_class:
-            response = await client.post("/reports/submit", json=request_body)
+            response = await admin_client.post("/reports/submit", json=request_body)
 
         # HTTP 422 — FastAPI's default error code for Pydantic
         # ValidationError when the request body fails schema validation.
@@ -518,7 +530,7 @@ class TestReportSubmission:
     # ------------------------------------------------------------------
     # 5. Custom report missing end_date — Pydantic rejection
     # ------------------------------------------------------------------
-    async def test_submit_custom_report_missing_end_date(self, client: AsyncClient) -> None:
+    async def test_submit_custom_report_missing_end_date(self, admin_client: AsyncClient) -> None:
         """Custom report without ``end_date`` returns HTTP 422.
 
         Mirrors the ``CORPT00C.cbl`` validation at line 325-328 where
@@ -538,7 +550,7 @@ class TestReportSubmission:
         }
 
         with patch(_REPORT_SERVICE_PATCH_TARGET) as mock_service_class:
-            response = await client.post("/reports/submit", json=request_body)
+            response = await admin_client.post("/reports/submit", json=request_body)
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY, (
             f"Missing end_date on custom report MUST return HTTP 422; got {response.status_code}: {response.text}"
@@ -550,7 +562,7 @@ class TestReportSubmission:
     # ------------------------------------------------------------------
     # 6. Custom report missing BOTH dates — Pydantic rejection
     # ------------------------------------------------------------------
-    async def test_submit_custom_report_missing_both_dates(self, client: AsyncClient) -> None:
+    async def test_submit_custom_report_missing_both_dates(self, admin_client: AsyncClient) -> None:
         """Custom report with neither date returns HTTP 422.
 
         Mirrors the combined ``IF WS-START-DATE = SPACES`` + ``IF
@@ -572,7 +584,7 @@ class TestReportSubmission:
         }
 
         with patch(_REPORT_SERVICE_PATCH_TARGET) as mock_service_class:
-            response = await client.post("/reports/submit", json=request_body)
+            response = await admin_client.post("/reports/submit", json=request_body)
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY, (
             f"Missing both dates on custom report MUST return HTTP 422; got {response.status_code}: {response.text}"
@@ -588,7 +600,7 @@ class TestReportSubmission:
     # ------------------------------------------------------------------
     # 7. Custom report with malformed date strings — Pydantic rejection
     # ------------------------------------------------------------------
-    async def test_submit_custom_report_invalid_date_format(self, client: AsyncClient) -> None:
+    async def test_submit_custom_report_invalid_date_format(self, admin_client: AsyncClient) -> None:
         """Custom report with a non-ISO-8601 date returns HTTP 422.
 
         Mirrors ``CORPT00C.cbl`` lines 331-347 / 349-365 where the
@@ -615,7 +627,7 @@ class TestReportSubmission:
         }
 
         with patch(_REPORT_SERVICE_PATCH_TARGET) as mock_service_class:
-            response = await client.post("/reports/submit", json=request_body)
+            response = await admin_client.post("/reports/submit", json=request_body)
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY, (
             f"Invalid date format MUST return HTTP 422; got {response.status_code}: {response.text}"
@@ -625,7 +637,7 @@ class TestReportSubmission:
     # ------------------------------------------------------------------
     # 8. Custom report with end_date < start_date — validator rejection
     # ------------------------------------------------------------------
-    async def test_submit_custom_report_end_before_start(self, client: AsyncClient) -> None:
+    async def test_submit_custom_report_end_before_start(self, admin_client: AsyncClient) -> None:
         """Custom report with ``end_date < start_date`` returns HTTP 422.
 
         Mirrors the ordering check in ``CORPT00C.cbl`` where
@@ -652,7 +664,7 @@ class TestReportSubmission:
         }
 
         with patch(_REPORT_SERVICE_PATCH_TARGET) as mock_service_class:
-            response = await client.post("/reports/submit", json=request_body)
+            response = await admin_client.post("/reports/submit", json=request_body)
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY, (
             f"end_date < start_date MUST return HTTP 422; got {response.status_code}: {response.text}"
@@ -671,7 +683,7 @@ class TestReportSubmission:
     # ------------------------------------------------------------------
     # 9. Invalid report_type value — enum rejection
     # ------------------------------------------------------------------
-    async def test_submit_invalid_report_type(self, client: AsyncClient) -> None:
+    async def test_submit_invalid_report_type(self, admin_client: AsyncClient) -> None:
         """Unknown ``report_type`` value returns HTTP 422.
 
         Mirrors the ``ELSE`` branch of ``CORPT00C.cbl``'s outer
@@ -690,7 +702,7 @@ class TestReportSubmission:
         request_body: dict[str, Any] = {"report_type": "invalid"}
 
         with patch(_REPORT_SERVICE_PATCH_TARGET) as mock_service_class:
-            response = await client.post("/reports/submit", json=request_body)
+            response = await admin_client.post("/reports/submit", json=request_body)
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY, (
             f"Unknown report_type MUST return HTTP 422; got {response.status_code}: {response.text}"
@@ -717,7 +729,7 @@ class TestReportSubmission:
     # ------------------------------------------------------------------
     # 10. SQS publish failure — service returns confirm='N' → HTTP 500
     # ------------------------------------------------------------------
-    async def test_submit_report_sqs_failure(self, client: AsyncClient) -> None:
+    async def test_submit_report_sqs_failure(self, admin_client: AsyncClient) -> None:
         """SQS publish failure surfaces as HTTP 500 Internal Server Error.
 
         Mirrors ``CORPT00C.cbl`` lines 517-535 where
@@ -750,7 +762,7 @@ class TestReportSubmission:
                 return_value=_make_failure_response(ReportType.monthly),
             )
 
-            response = await client.post("/reports/submit", json=request_body)
+            response = await admin_client.post("/reports/submit", json=request_body)
 
         assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR, (
             f"SQS publish failure MUST surface as HTTP 500; got {response.status_code}: {response.text}"
@@ -771,6 +783,50 @@ class TestReportSubmission:
         # Service must have been invoked exactly once — the router
         # does NOT retry on its own.
         mock_instance.submit_report.assert_awaited_once()
+
+    # ------------------------------------------------------------------
+    # 10b. Non-admin user — HTTP 403 (QA Issue 13 regression test)
+    # ------------------------------------------------------------------
+    async def test_submit_report_requires_admin(
+        self,
+        regular_client: AsyncClient,
+    ) -> None:
+        """Regular user (user_type='U') receives HTTP 403 on POST /reports/submit.
+
+        Regression test for QA Issue 13: prior to the fix, the
+        ``POST /reports/submit`` endpoint accepted requests from any
+        authenticated user, which diverged from the original
+        CORPT00C CICS transaction's production-time admin-menu
+        gating. The fix wired
+        :func:`src.api.dependencies.get_current_admin_user` into the
+        route (see ``src/api/routers/report_router.py``), which
+        raises HTTP 403 FRBD when ``CurrentUser.is_admin`` is False.
+
+        This mirrors the COADM01C / COMEN01C navigation distinction
+        where only the admin menu exposed the "Print Report"
+        (CORPT00C) selection — regular users had no in-band path to
+        the transaction.
+
+        Assertions:
+            * HTTP 403 Forbidden.
+            * The :class:`ReportService` mock was NEVER instantiated
+              (the admin gate fires before the route body runs, so
+              no SQS enqueue attempt is made).
+        """
+        request_body: dict[str, Any] = {"report_type": "monthly"}
+
+        with patch(_REPORT_SERVICE_PATCH_TARGET) as mock_service_class:
+            response = await regular_client.post("/reports/submit", json=request_body)
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN, (
+            f"Regular user POST /reports/submit MUST return HTTP 403 "
+            f"(CORPT00C admin-menu gate via get_current_admin_user); "
+            f"got {response.status_code}: {response.text}"
+        )
+        # Because the admin gate fires before the route body, no SQS
+        # enqueue attempt is made — ReportService must NOT be
+        # instantiated.
+        mock_service_class.assert_not_called()
 
     # ------------------------------------------------------------------
     # 11. Unauthenticated request — HTTP 401
@@ -827,7 +883,7 @@ class TestReportSubmission:
     # ------------------------------------------------------------------
     # 12. Confirmation flow — structural validation of success body
     # ------------------------------------------------------------------
-    async def test_submit_report_confirmation_flow(self, client: AsyncClient) -> None:
+    async def test_submit_report_confirmation_flow(self, admin_client: AsyncClient) -> None:
         """Successful submission response carries the full CONFIRMI flow.
 
         Mirrors the ``SEND MAP('CORPT0A') FROM(CORPT0AO)`` sequence at
@@ -866,7 +922,7 @@ class TestReportSubmission:
                 return_value=_make_success_response(ReportType.monthly, _SUCCESS_MSG_MONTHLY),
             )
 
-            response = await client.post("/reports/submit", json=request_body)
+            response = await admin_client.post("/reports/submit", json=request_body)
 
         assert response.status_code == status.HTTP_200_OK, (
             f"Confirmation-flow test expects HTTP 200 OK; got {response.status_code}: {response.text}"

@@ -233,11 +233,15 @@ def test_composite_primary_key() -> None:
     assert len(primary_keys) == 2, (
         f"TransactionCategory must have a 2-part composite primary key "
         f"(TRAN-TYPE-CD + TRAN-CAT-CD = 6 bytes); found "
-        f"{len(primary_keys)}: {[pk.name for pk in primary_keys]}"
+        f"{len(primary_keys)}: {[pk.key for pk in primary_keys]}"
     )
 
     # 2. Names and order match the COBOL TRAN-CAT-KEY byte layout.
-    pk_names = tuple(pk.name for pk in primary_keys)
+    # Use ``Column.key`` (Python attribute key) rather than
+    # ``Column.name`` (DB physical column name), because the columns
+    # are declared via ``mapped_column("tran_type_cd", ..., key="type_cd")``
+    # — ``_EXPECTED_COMPOSITE_PK_NAMES`` contains the Python keys.
+    pk_names = tuple(pk.key for pk in primary_keys)
     assert pk_names == _EXPECTED_COMPOSITE_PK_NAMES, (
         f"Composite PK columns must be ordered "
         f"{_EXPECTED_COMPOSITE_PK_NAMES!r} (matching COBOL "
@@ -305,7 +309,16 @@ def test_composite_key_matches_cobol_group() -> None:
     # Columns NOT part of the COBOL TRAN-CAT-KEY group item.
     cobol_non_key_columns: frozenset[str] = frozenset({"description"})
 
-    primary_key_names: frozenset[str] = frozenset(pk.name for pk in inspect(TransactionCategory).primary_key)
+    # Use ``Column.key`` (Python attribute key) rather than
+    # ``Column.name`` (DB physical column name) because the columns
+    # are declared via ``mapped_column("tran_type_cd", ..., key="type_cd")``
+    # — ``cobol_key_columns`` contains the Python keys.
+    # ``Column.key`` is typed ``str | None`` in SQLAlchemy 2.x but every
+    # mapped column in this ORM model has an explicit ``key=`` so the
+    # value is guaranteed to be a string.
+    primary_key_names: frozenset[str] = frozenset(
+        str(pk.key) for pk in inspect(TransactionCategory).primary_key
+    )
 
     # Inclusion: every COBOL key field must appear in the PK.
     missing_key_parts = cobol_key_columns - primary_key_names
@@ -568,17 +581,25 @@ def test_no_filler_columns() -> None:
     column set is present — catching accidental additions (extra
     columns) and removals (missing columns) in one check.
     """
-    column_names: list[str] = [c.name for c in TransactionCategory.__table__.columns]
+    # ``_EXPECTED_COLUMNS`` holds Python-attribute names (``type_cd``,
+    # ``cat_cd``, ``description``); the DB physical column names are
+    # prefixed (``tran_type_cd``, ``tran_cat_cd``,
+    # ``tran_cat_type_desc``). We therefore compare against
+    # ``Column.key`` for positive equivalence, and scan BOTH forms
+    # for 'filler' substrings (defense in depth).
+    column_keys: list[str] = [c.key for c in TransactionCategory.__table__.columns]
+    column_db_names: list[str] = [c.name for c in TransactionCategory.__table__.columns]
 
     # Positive: the exact set of mapped columns must match the contract.
-    assert set(column_names) == set(_EXPECTED_COLUMNS), (
-        f"Column set drift detected. Expected: {sorted(_EXPECTED_COLUMNS)}; found: {sorted(column_names)}"
+    assert set(column_keys) == set(_EXPECTED_COLUMNS), (
+        f"Column set drift detected. Expected: {sorted(_EXPECTED_COLUMNS)}; found: {sorted(column_keys)}"
     )
 
-    # Negative: no column name may contain the substring 'filler' in
-    # any casing. This guards against future regressions where a
-    # copybook-to-model translator accidentally emits a filler column.
-    for column_name in column_names:
+    # Negative: no column name (Python key OR DB column name) may
+    # contain the substring 'filler' in any casing. This guards
+    # against future regressions where a copybook-to-model
+    # translator accidentally emits a filler column in either form.
+    for column_name in set(column_keys) | set(column_db_names):
         assert "filler" not in column_name.lower(), (
             f"Column '{column_name}' appears to map a COBOL FILLER "
             f"region. FILLER fields (like the trailing PIC X(04) in "

@@ -103,7 +103,7 @@ from typing import (  # noqa: UP035  (schema-specified import sources: typing.As
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt  # type: ignore[import-untyped]
+from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.database import get_async_session

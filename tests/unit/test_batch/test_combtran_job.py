@@ -145,12 +145,26 @@ logger = logging.getLogger(__name__)
 # already-resolved reference inside ``combtran_job``. The constants below
 # point to the correct re-exported names to guarantee patch efficacy.
 #
-# Note: ``combtran_job`` does NOT import ``write_to_s3`` or
-# ``get_connection_options`` — the S3 archive is written via the native
-# ``DataFrame.write.mode("overwrite").parquet(uri)`` chain (not via the
-# helper), and JDBC connectivity is handled inside ``write_table``
-# itself. We therefore have no corresponding patch targets for those
-# two symbols; their absence is deliberate and structural.
+# Note on ``write_to_s3`` (QA Checkpoint 5 Issue 23 fix)
+# ------------------------------------------------------
+# The original implementation wrote the S3 archive via the native
+# ``DataFrame.write.mode("overwrite").parquet(uri)`` chain, which
+# required the ``hadoop-aws`` jar and S3A filesystem on the Spark
+# classpath. That path is unavailable in AWS Glue 5.1 managed runtime
+# and in the LocalStack developer setup, so the job was migrated to
+# use :func:`src.batch.common.s3_utils.write_to_s3` (boto3-backed
+# ``put_object``) — matching the pattern already proven by sibling
+# jobs (intcalc_job, prtcatbl_job, creastmt_job). The resulting
+# 350-byte CVTRA05Y fixed-width archive is written as a single
+# ``text/plain`` object at the GDG(+1)-equivalent timestamped key.
+# The ``_PATCH_WRITE_TO_S3`` patch target below intercepts this call
+# so tests can assert on the archive key / content / content-type
+# without real AWS traffic.
+#
+# ``combtran_job`` does NOT import ``get_connection_options`` — JDBC
+# connectivity is handled inside ``write_table`` itself. We therefore
+# have no corresponding patch target for that symbol; its absence is
+# deliberate and structural.
 # ============================================================================
 _PATCH_INIT_GLUE: str = "src.batch.jobs.combtran_job.init_glue"
 _PATCH_COMMIT_JOB: str = "src.batch.jobs.combtran_job.commit_job"
@@ -158,6 +172,7 @@ _PATCH_READ_TABLE: str = "src.batch.jobs.combtran_job.read_table"
 _PATCH_WRITE_TABLE: str = "src.batch.jobs.combtran_job.write_table"
 _PATCH_GET_S3_PATH: str = "src.batch.jobs.combtran_job.get_versioned_s3_path"
 _PATCH_READ_FROM_S3: str = "src.batch.jobs.combtran_job.read_from_s3"
+_PATCH_WRITE_TO_S3: str = "src.batch.jobs.combtran_job.write_to_s3"
 _PATCH_F: str = "src.batch.jobs.combtran_job.F"
 
 
@@ -190,6 +205,13 @@ def _make_txn_row(
     tran_cat_cd: str = "0001",
     tran_amt: Decimal = Decimal("10.00"),
     tran_card_num: str = "4111111111111111",
+    tran_desc: str = "",
+    tran_merchant_id: str = "",
+    tran_merchant_name: str = "",
+    tran_merchant_city: str = "",
+    tran_merchant_zip: str = "",
+    tran_orig_ts: str = "",
+    tran_proc_ts: str = "",
 ) -> Row:
     """Build a :class:`pyspark.sql.Row` matching the CVTRA05Y layout.
 
@@ -214,6 +236,23 @@ def _make_txn_row(
         without precision loss.
     tran_card_num
         16-character card number (``TRAN-CARD-NUM``).
+    tran_desc
+        100-character transaction description (``TRAN-DESC PIC X(100)``).
+        Defaults to empty string (space-padded by ``_format_combined_line``).
+    tran_merchant_id
+        9-character merchant ID (``TRAN-MERCHANT-ID PIC 9(09)``).
+    tran_merchant_name
+        50-character merchant name (``TRAN-MERCHANT-NAME PIC X(50)``).
+    tran_merchant_city
+        50-character merchant city (``TRAN-MERCHANT-CITY PIC X(50)``).
+    tran_merchant_zip
+        10-character merchant ZIP (``TRAN-MERCHANT-ZIP PIC X(10)``).
+    tran_orig_ts
+        26-character transaction origination timestamp
+        (``TRAN-ORIG-TS PIC X(26)``).
+    tran_proc_ts
+        26-character transaction processing timestamp
+        (``TRAN-PROC-TS PIC X(26)``).
 
     Returns
     -------
@@ -223,14 +262,31 @@ def _make_txn_row(
         positional (by column ordinal), not by column name. The
         helper guarantees that every DataFrame built from its output
         shares an identical schema.
+
+        ALL 13 CVTRA05Y columns are included so the resulting
+        DataFrame can be consumed by :func:`_format_combined_line`
+        (the byte-for-byte serialiser invoked by ``main()``'s
+        Step 8 to build the 350-byte TRANSACT.COMBINED archive
+        lines). Fields not supplied by the caller default to empty
+        strings which ``_pad_right`` space-pads to the correct
+        fixed width (AAP §0.7.2 minimal-change discipline —
+        preserves COBOL's trailing-space behaviour on unfilled
+        ``PIC X(n)`` picture clauses).
     """
     return Row(
         tran_id=tran_id,
-        tran_source=tran_source,
         tran_type_cd=tran_type_cd,
         tran_cat_cd=tran_cat_cd,
+        tran_source=tran_source,
+        tran_desc=tran_desc,
         tran_amt=tran_amt,
+        tran_merchant_id=tran_merchant_id,
+        tran_merchant_name=tran_merchant_name,
+        tran_merchant_city=tran_merchant_city,
+        tran_merchant_zip=tran_merchant_zip,
         tran_card_num=tran_card_num,
+        tran_orig_ts=tran_orig_ts,
+        tran_proc_ts=tran_proc_ts,
     )
 
 
@@ -253,14 +309,16 @@ def _make_txn_row(
 #     df.orderBy(...)        → self    (sorted_df)
 #     df.cache()             → self    (sorted_df.cache())
 #     df.count()             → int     (drives the log emission only)
+#     df.collect()           → list    (iterated by ``_format_combined_line``)
 #     df.unpersist()         → None    (cleanup, return ignored)
-#     df.write               → MagicMock (so .mode / .parquet chain
-#                                          through auto-spec'd children)
 #
-# The ``df.write`` attribute is left as MagicMock's default (an
-# auto-created child mock) because we want distinct call tracking for
-# ``.mode(...)`` versus ``.parquet(...)``. This is the standard idiom
-# for asserting PySpark writer chains.
+# ``collect()`` defaults to an empty list so the boto3 ``write_to_s3``
+# call in Step 8 of ``main()`` receives an empty ``content=""`` body —
+# this keeps the mock-based tests focused on WHICH helper is called
+# (``write_to_s3`` vs ``write_table``) and WITH WHAT key/content-type
+# rather than on the exact bytes of the archive body. Tests that
+# require realistic rows (Phase 5 integration test) override
+# ``collect.return_value`` with a concrete list of Row objects.
 # ============================================================================
 def _make_mock_df(count_value: int = 5) -> MagicMock:
     """Return a chainable mock DataFrame for combtran_job pipeline tests.
@@ -296,18 +354,14 @@ def _make_mock_df(count_value: int = 5) -> MagicMock:
 
     # Terminal action methods.
     df.count.return_value = count_value
+    # ``sorted_df.collect()`` is invoked by Step 8 of ``main()`` to
+    # materialise the sorted DataFrame on the driver for the boto3
+    # archive write. Default to an empty list so the mock-based
+    # tests exercise the write path with a trivially empty body —
+    # content / format assertions are covered by the Phase-5
+    # integration test which provides real rows.
+    df.collect.return_value = []
     df.unpersist.return_value = None
-
-    # The ``.write`` attribute is intentionally NOT overridden — we
-    # rely on MagicMock's default auto-child behaviour so that
-    # ``df.write.mode("overwrite")`` and its subsequent ``.parquet(uri)``
-    # call are each independently tracked on the MagicMock tree. This
-    # is the canonical pattern for asserting PySpark writer chains:
-    #
-    #     df.write.mode.assert_called_with("overwrite")
-    #     df.write.mode.return_value.parquet.assert_called_with(uri)
-    #
-    # which collapses cleanly to a single attribute-access chain.
 
     return df
 
@@ -509,17 +563,27 @@ def test_union_preserves_all_columns(spark_session: SparkSession) -> None:
         f"union() schema drift; input={backup_df.schema}, output={combined_df.schema}"
     )
 
-    # Column names MUST be preserved in order. The six columns below
-    # are the CVTRA05Y subset exercised by combtran_job (id, source,
-    # type_cd, cat_cd, amt, card_num). If any column is dropped or
-    # reordered the assertion fires with a clear delta.
+    # Column names MUST be preserved in order. All 13 CVTRA05Y.cpy
+    # fields are present in the ``_make_txn_row`` helper (QA
+    # Checkpoint 5 Issue 23 fix expanded the helper to produce
+    # rows that work with the fixed-width archive formatter); the
+    # union MUST preserve the positional order that createDataFrame
+    # derived from the Row constructor. If any column is dropped
+    # or reordered the assertion fires with a clear delta.
     expected_columns = [
         "tran_id",
-        "tran_source",
         "tran_type_cd",
         "tran_cat_cd",
+        "tran_source",
+        "tran_desc",
         "tran_amt",
+        "tran_merchant_id",
+        "tran_merchant_name",
+        "tran_merchant_city",
+        "tran_merchant_zip",
         "tran_card_num",
+        "tran_orig_ts",
+        "tran_proc_ts",
     ]
     assert combined_df.columns == expected_columns, (
         f"Column ordering changed after union; expected {expected_columns}, got {combined_df.columns}"
@@ -782,8 +846,15 @@ def test_sort_handles_duplicate_tran_ids(spark_session: SparkSession) -> None:
 #
 # In the target module these become:
 #
-#   1. ``sorted_df.write.mode("overwrite").parquet(combined_output_uri)``
-#      — Parquet archive to S3 at the GDG-equivalent timestamp path.
+#   1. ``write_to_s3(content=<350-byte CVTRA05Y lines>,
+#                    key=<prefix>/TRANSACT.COMBINED.txt,
+#                    content_type="text/plain")`` — the boto3
+#      ``put_object`` archive write to S3 at the GDG-equivalent
+#      timestamp path. Replaces the original
+#      ``sorted_df.write.mode("overwrite").parquet(uri)`` chain which
+#      required the ``hadoop-aws`` jar and S3A filesystem that are
+#      unavailable in AWS Glue 5.1 managed runtime and LocalStack
+#      developer setup (QA Checkpoint 5 Issue 23 fix).
 #   2. ``write_table(sorted_df, _TABLE_NAME, mode="overwrite")`` —
 #      PostgreSQL overwrite on the ``transactions`` table. NOTE on
 #      JDBC semantics: Spark's JDBC writer's default behavior for
@@ -802,11 +873,12 @@ def test_sort_handles_duplicate_tran_ids(spark_session: SparkSession) -> None:
 #
 # The two Phase-4 tests verify both writes are correctly invoked by
 # ``main()``. They use ``_make_mock_df`` to replace the real Spark
-# DataFrame with a chainable mock so the ``.write.mode(...).parquet(uri)``
-# and ``write_table(df, table, mode="overwrite")`` invocations can be
+# DataFrame with a chainable mock so the ``write_to_s3(...)`` and
+# ``write_table(df, table, mode="overwrite")`` invocations can be
 # asserted cleanly without AWS or PostgreSQL side effects.
 # ============================================================================
 @pytest.mark.unit
+@patch(_PATCH_WRITE_TO_S3)
 @patch(_PATCH_F)
 @patch(_PATCH_READ_FROM_S3)
 @patch(_PATCH_GET_S3_PATH)
@@ -822,22 +894,35 @@ def test_write_to_s3_combined_archive(
     mock_get_s3_path: MagicMock,
     mock_read_from_s3: MagicMock,
     mock_f: MagicMock,
+    mock_write_to_s3: MagicMock,
     spark_session: SparkSession,
 ) -> None:
-    """``main()`` archives the sorted combined DF to S3 via Parquet write.
+    """``main()`` archives the sorted combined DF to S3 via ``write_to_s3``.
 
-    Verifies the chain
-    ``sorted_df.write.mode("overwrite").parquet(combined_uri)``
-    is invoked inside ``main()`` with the URI resolved by
-    ``get_versioned_s3_path(_GDG_COMBINED, generation="+1")``.
-    This is the PySpark analogue of the mainframe SORTOUT DD block
-    in ``COMBTRAN.jcl`` lines 33-37:
+    Verifies that ``main()`` invokes
+    ``write_to_s3(content=..., key=<prefix>/TRANSACT.COMBINED.txt,
+    content_type="text/plain")`` where ``<prefix>`` is derived from
+    ``get_versioned_s3_path("TRANSACT.COMBINED", generation="+1")``.
+    This is the boto3-backed analogue of the mainframe SORTOUT DD
+    block in ``COMBTRAN.jcl`` lines 33-37:
 
         //SORTOUT  DD DISP=(NEW,CATLG,DELETE),
         //         UNIT=SYSDA,
         //         DCB=(*.SORTIN),
         //         SPACE=(CYL,(1,1),RLSE),
         //         DSN=AWS.M2.CARDDEMO.TRANSACT.COMBINED(+1)
+
+    Prior to the QA Checkpoint 5 Issue 23 fix, the archive was written
+    via the native ``sorted_df.write.mode("overwrite").parquet(uri)``
+    chain, which required the ``hadoop-aws`` jar + S3A filesystem
+    configuration on the Spark classpath. That path is unavailable in
+    AWS Glue 5.1 managed runtime and LocalStack developer setups,
+    producing ``UnsupportedFileSystemException: No FileSystem for
+    scheme "s3"``. The resolution migrated Step 8 to the
+    ``write_to_s3`` boto3 helper pattern proven by sibling jobs
+    (intcalc_job, prtcatbl_job, creastmt_job) — writing a single
+    350-byte CVTRA05Y fixed-width text object with ``content_type=
+    "text/plain"``.
 
     The ``spark_session`` parameter satisfies the AAP agent-prompt
     contract (all 9 tests receive ``spark_session``) but the test
@@ -863,15 +948,21 @@ def test_write_to_s3_combined_archive(
 
     # Mock ``read_table`` to return a chainable DataFrame so every
     # ``.filter()``, ``.union()``, ``.dropDuplicates()``, ``.orderBy()``,
-    # ``.cache()``, ``.count()``, ``.write.mode().parquet()``, and
-    # ``.unpersist()`` call in ``main()`` routes through one trackable
-    # mock. ``count_value=5`` mimics the Phase-2 "3 + 2 = 5" scenario.
+    # ``.cache()``, ``.count()``, ``.collect()``, and ``.unpersist()``
+    # call in ``main()`` routes through one trackable mock.
+    # ``count_value=5`` mimics the Phase-2 "3 + 2 = 5" scenario.
+    # The default ``collect() -> []`` behaviour keeps the archive
+    # body empty (trivial content) — content/format assertions are
+    # covered by the Phase-5 integration test which supplies real rows.
     mock_df = _make_mock_df(count_value=5)
     mock_read_table.return_value = mock_df
 
     # Resolve the three GDG paths. The first two (BKUP, SYSTRAN) are
     # consumed only by ``_probe_upstream_marker`` — the third
     # (COMBINED) is the archive target that we'll assert against.
+    # The COMBINED URI MUST end with a trailing slash so the
+    # ``split("/", 3)`` in ``main()`` Step 8 correctly decomposes it
+    # into ``["s3:", "", "{bucket}", "{key_prefix}/"]``.
     backup_prefix = "s3://test-bucket/backups/transactions/"
     systran_prefix = "s3://test-bucket/generated/system-transactions/"
     combined_output_uri = "s3://test-bucket/combined/transactions/2024/01/01/000000/"
@@ -899,6 +990,14 @@ def test_write_to_s3_combined_archive(
     # automatically; we just need the symbol replaced.
     _ = mock_f  # asserted indirectly below
 
+    # Mock ``write_to_s3`` to return a plausible s3:// URI so the
+    # logger.info in main() can format it without error. The concrete
+    # URI value is only used for log emission — the assertions below
+    # focus on the call args / kwargs.
+    mock_write_to_s3.return_value = (
+        "s3://test-bucket/combined/transactions/2024/01/01/000000/TRANSACT.COMBINED.txt"
+    )
+
     # --- Act -------------------------------------------------------------
     # Invoke the production entry point. The entire pipeline runs
     # against the mocked read_table + chainable DataFrame.
@@ -925,24 +1024,58 @@ def test_write_to_s3_combined_archive(
     generation = call.kwargs.get("generation") or (call.args[1] if len(call.args) > 1 else None)
     assert generation == "+1", f"COMBINED GDG resolved with generation={generation!r}, expected '+1'"
 
-    # (b) The sorted DataFrame's write chain was invoked with
-    # ``mode="overwrite"`` — matching ``DISP=(NEW,CATLG,DELETE)``
-    # semantics. The .mode() assertion is separated from the
-    # .parquet() assertion to produce clear failure diagnostics
-    # (a mode-only regression is a different fault class than a
-    # path-only regression).
-    mock_df.write.mode.assert_any_call("overwrite")
+    # (b) ``write_to_s3`` was invoked exactly once — the single boto3
+    # ``put_object`` archive write at the GDG(+1) timestamp prefix.
+    # Multiple invocations would indicate an accidental double-write
+    # or a refactor that split the archive into multiple objects.
+    mock_write_to_s3.assert_called_once()
 
-    # (c) ``.parquet(combined_output_uri)`` was invoked on the
-    # writer chain — the archive is written to the COMBINED URI
-    # resolved in step (a). The double-access
-    # ``mock_df.write.mode.return_value.parquet`` is the canonical
-    # idiom for asserting on PySpark writer-chain terminals without
-    # triggering a new ``.mode()`` call during the assertion.
-    mock_df.write.mode.return_value.parquet.assert_any_call(combined_output_uri)
+    # (c) Inspect the call kwargs to verify the key, content_type,
+    # and content arguments. ``main()`` uses keyword arguments
+    # exclusively for the ``write_to_s3`` invocation (per the
+    # ``write_to_s3(content=..., key=..., content_type=...)``
+    # signature visible in the source module).
+    write_call = mock_write_to_s3.call_args
+    kwargs = write_call.kwargs
+
+    # (c.1) The ``content_type`` MUST be ``"text/plain"`` — the
+    # archive is a CVTRA05Y fixed-width plain-text file, NOT a
+    # binary Parquet file (which was the pre-Issue-23 behaviour).
+    # A regression to ``"application/octet-stream"`` or
+    # ``"application/vnd.apache.parquet"`` would indicate the boto3
+    # migration was partially undone.
+    assert kwargs.get("content_type") == "text/plain", (
+        f"write_to_s3 called with content_type={kwargs.get('content_type')!r}, "
+        f"expected 'text/plain' (CVTRA05Y archive is plain-text)"
+    )
+
+    # (c.2) The ``key`` MUST end with the archive filename
+    # ``TRANSACT.COMBINED.txt`` and MUST start with the prefix
+    # derived from the COMBINED GDG URI. ``main()`` Step 8 splits
+    # the URI ``s3://{bucket}/{prefix}/`` with ``maxsplit=3`` to
+    # extract ``{prefix}/`` then appends ``_COMBINED_FILENAME``.
+    expected_key = "combined/transactions/2024/01/01/000000/TRANSACT.COMBINED.txt"
+    assert kwargs.get("key") == expected_key, (
+        f"write_to_s3 called with key={kwargs.get('key')!r}, "
+        f"expected {expected_key!r} — the key MUST be derived "
+        f"from the COMBINED GDG URI + _COMBINED_FILENAME"
+    )
+
+    # (c.3) The ``content`` MUST be a string (the ``write_to_s3``
+    # signature is ``content: str``) — not bytes and not a file
+    # handle. For this mock-based test the default empty-collect
+    # path produces an empty string body; Phase-5 covers the
+    # non-empty format assertions.
+    content = kwargs.get("content")
+    assert isinstance(content, str), (
+        f"write_to_s3 called with content of type {type(content).__name__}, "
+        f"expected str — the CVTRA05Y archive is built via "
+        f"'\\n'.join(lines) which produces a string"
+    )
 
 
 @pytest.mark.unit
+@patch(_PATCH_WRITE_TO_S3)
 @patch(_PATCH_F)
 @patch(_PATCH_READ_FROM_S3)
 @patch(_PATCH_GET_S3_PATH)
@@ -958,6 +1091,7 @@ def test_write_to_postgres_overwrite_mode(
     mock_get_s3_path: MagicMock,
     mock_read_from_s3: MagicMock,
     mock_f: MagicMock,
+    mock_write_to_s3: MagicMock,
     spark_session: SparkSession,
 ) -> None:
     """``main()`` writes the sorted combined DF to ``transactions`` with overwrite.
@@ -1014,6 +1148,14 @@ def test_write_to_postgres_overwrite_mode(
 
     mock_read_from_s3.return_value = b""
     _ = mock_f  # F.col / F.lit stubs — chain-through only
+
+    # ``write_to_s3`` is patched so the boto3 archive write doesn't
+    # hit real AWS credentials. The concrete URI return value is
+    # only used for log emission; this test focuses exclusively on
+    # the ``write_table`` JDBC write assertions.
+    mock_write_to_s3.return_value = (
+        "s3://test-bucket/combined/transactions/2024/01/01/000000/TRANSACT.COMBINED.txt"
+    )
 
     # --- Act -------------------------------------------------------------
     main()
@@ -1079,28 +1221,36 @@ def test_write_to_postgres_overwrite_mode(
 # Exercises the full ``combtran_job.main()`` pipeline against a REAL
 # SparkSession using real in-memory DataFrames. All external
 # collaborators (Glue bootstrap, JDBC read/write, S3 path resolution
-# and marker probe) are patched so the test runs without AWS or
-# PostgreSQL dependencies — but the Spark computation itself is the
-# real thing.
+# and marker probe, boto3 S3 write helper) are patched so the test
+# runs without AWS or PostgreSQL dependencies — but the Spark
+# computation itself is the real thing.
 #
 # What is verified end-to-end:
 #   * Two data subsets are read (the master table is filtered into
 #     ``backup_df`` + ``systran_df`` by the ``tran_source`` predicate).
 #   * Union merges the two subsets (N + M rows).
 #   * Sort applied ascending on ``tran_id`` (ASCII ascending order).
-#   * Parquet archive written to the mocked COMBINED URI.
+#   * CVTRA05Y 350-byte fixed-width archive written to S3 via the
+#     ``write_to_s3`` boto3 helper at the mocked COMBINED URI.
 #   * ``write_table(sorted_df, "transactions", mode="overwrite")``
 #     invoked for the PostgreSQL sink.
 #   * ``commit_job(job)`` invoked at the end of the happy path.
 #
-# Because the S3 write calls ``sorted_df.write.mode("overwrite").parquet(uri)``
-# and ``sorted_df`` is a real Spark DataFrame, we redirect the write
-# target to a pytest ``tmp_path`` using a ``file://`` URI. Spark
-# happily writes Parquet to the local filesystem; the test then
-# verifies the output directory contains Parquet files with the
-# expected record count and sort order.
+# Prior to the QA Checkpoint 5 Issue 23 fix, the S3 write called
+# ``sorted_df.write.mode("overwrite").parquet(uri)`` natively, which
+# required ``hadoop-aws`` + S3A filesystem on the Spark classpath —
+# unavailable in AWS Glue 5.1 managed runtime and LocalStack dev
+# setup (``UnsupportedFileSystemException: No FileSystem for scheme
+# "s3"``). The migration routes the archive through
+# :func:`src.batch.common.s3_utils.write_to_s3` (boto3-backed
+# ``put_object``), producing a single 350-byte fixed-width text
+# object at ``<prefix>/TRANSACT.COMBINED.txt``. This test captures
+# the boto3 call via ``side_effect`` and validates the archive
+# content matches CVTRA05Y.cpy layout — a stronger check than the
+# Parquet schema probe of the pre-Issue-23 version.
 # ============================================================================
 @pytest.mark.unit
+@patch(_PATCH_WRITE_TO_S3)
 @patch(_PATCH_READ_FROM_S3)
 @patch(_PATCH_GET_S3_PATH)
 @patch(_PATCH_WRITE_TABLE)
@@ -1114,8 +1264,8 @@ def test_combtran_main_with_spark(
     mock_write_table: MagicMock,
     mock_get_s3_path: MagicMock,
     mock_read_from_s3: MagicMock,
+    mock_write_to_s3: MagicMock,
     spark_session: SparkSession,
-    tmp_path: Any,
 ) -> None:
     """End-to-end ``main()`` execution with a real SparkSession.
 
@@ -1126,19 +1276,20 @@ def test_combtran_main_with_spark(
     collaborators patched, then asserts:
 
         * ``read_table`` was called for the ``transactions`` table.
-        * The S3 archive was written (Parquet files present at the
-          local-filesystem stand-in for the COMBINED URI).
+        * The S3 archive was written via ``write_to_s3`` with
+          ``content_type="text/plain"`` and a key ending in
+          ``TRANSACT.COMBINED.txt``.
+        * The archive content contains 5 fixed-width 350-byte
+          CVTRA05Y lines sorted ascending by ``tran_id``.
         * ``write_table`` was called with the sorted DataFrame,
           ``"transactions"``, and ``mode="overwrite"``.
         * The DataFrame written contains 5 rows (3 + 2 = 5).
         * The DataFrame written is sorted ascending by ``tran_id``.
+        * Decimal precision (CVTRA05Y.cpy monetary fields) preserved
+          through the pipeline.
         * ``commit_job`` was invoked.
-
-    ``tmp_path`` (pytest built-in fixture) provides a per-test
-    isolated directory so concurrent pytest workers do not collide
-    on the Parquet output path.
     """
-    # ----- Arrange: real Spark session from conftest.py + tmp_path -----
+    # ----- Arrange: real Spark session from conftest.py -----
     # init_glue returns the 4-tuple shape expected by main(): the
     # real spark_session is threaded through so the DataFrame
     # computations use the same session as the test fixtures below.
@@ -1155,33 +1306,44 @@ def test_combtran_main_with_spark(
     # have ``tran_source == "System"`` (SYSTRAN subset). The input
     # is deliberately unsorted so the sort step's effect is visible
     # in the output.
+    #
+    # The tran_id values are left as 15-character strings (one less
+    # than CVTRA05Y's 16-byte PIC X(16)) so that ``_pad_right`` in
+    # ``_format_combined_line`` pads them with a single trailing
+    # space — demonstrating the fixed-width behaviour while keeping
+    # IDs human-readable in test assertions.
     master_rows = [
         # Non-System rows (BKUP subset) — 3 rows.
         _make_txn_row(
             "TXNBKUP00000003",
             tran_source="POS",
             tran_amt=Decimal("300.00"),
+            tran_card_num="4111111111111113",
         ),
         _make_txn_row(
             "TXNBKUP00000001",
             tran_source="Online",
             tran_amt=Decimal("100.00"),
+            tran_card_num="4111111111111111",
         ),
         _make_txn_row(
             "TXNBKUP00000002",
             tran_source="API",
             tran_amt=Decimal("200.00"),
+            tran_card_num="4111111111111112",
         ),
         # System rows (SYSTRAN subset) — 2 rows.
         _make_txn_row(
             "TXNSYS0000000002",
             tran_source="System",
             tran_amt=Decimal("0.50"),
+            tran_card_num="4111111111111115",
         ),
         _make_txn_row(
             "TXNSYS0000000001",
             tran_source="System",
             tran_amt=Decimal("0.25"),
+            tran_card_num="4111111111111114",
         ),
     ]
     master_df = spark_session.createDataFrame(master_rows)
@@ -1196,19 +1358,15 @@ def test_combtran_main_with_spark(
 
     mock_read_table.side_effect = _read_side_effect
 
-    # The S3 archive URI points at a local ``file://`` path under
-    # tmp_path so Spark writes Parquet to disk. The BKUP and SYSTRAN
-    # prefix URIs are still formatted as ``s3://`` because the
-    # upstream-marker probe uses ``.split("/", 3)`` to recover the
-    # bucket+key — a ``file://`` URL would break that heuristic but
-    # the probe itself is wrapped in try/except and non-fatal, so
-    # either form would work in practice. We use ``s3://`` for
-    # realism.
-    combined_output_dir = tmp_path / "combined_archive"
-    # PySpark's ``.parquet()`` accepts ``file://`` URIs for local
-    # writes; plain filesystem paths also work, but the ``file://``
-    # scheme makes the intent explicit.
-    combined_output_uri = f"file://{combined_output_dir}"
+    # The COMBINED URI is a pure s3:// URI (with trailing slash so
+    # ``.split("/", 3)`` in main() Step 8 decomposes it as
+    # ``["s3:", "", "test-bucket", "combined/transactions/.../"]``).
+    # No local filesystem is involved — the archive goes through
+    # ``write_to_s3`` which is patched below to capture content.
+    combined_output_uri = "s3://test-bucket/combined/transactions/2024/01/01/000000/"
+    expected_archive_key = (
+        "combined/transactions/2024/01/01/000000/TRANSACT.COMBINED.txt"
+    )
 
     def _get_s3_path_side_effect(gdg_name: str, generation: str = "+1", **_kwargs: Any) -> str:
         if gdg_name == "TRANSACT.COMBINED" and generation == "+1":
@@ -1225,6 +1383,33 @@ def test_combtran_main_with_spark(
     # the marker is present. The probe return value is logged but
     # does not affect control flow.
     mock_read_from_s3.return_value = b""
+
+    # Capture the ``write_to_s3`` invocation so we can inspect the
+    # CVTRA05Y fixed-width content that main() builds. The side
+    # effect records the full kwargs dict so every argument
+    # (content, key, content_type, and any future extension) is
+    # available to assertions.
+    captured_writes: list[dict[str, Any]] = []
+
+    def _write_to_s3_side_effect(
+        *,
+        content: str,
+        key: str,
+        content_type: str = "text/plain",
+        **_extra: Any,
+    ) -> str:
+        captured_writes.append(
+            {
+                "content": content,
+                "key": key,
+                "content_type": content_type,
+            }
+        )
+        # Return a plausible s3:// URI so main()'s logger.info
+        # "wrote combined archive to %s" formats without error.
+        return f"s3://test-bucket/{key}"
+
+    mock_write_to_s3.side_effect = _write_to_s3_side_effect
 
     # Capture the DataFrame passed to write_table so we can inspect
     # its contents after main() completes. This is the canonical
@@ -1313,14 +1498,23 @@ def test_combtran_main_with_spark(
 
     # (h) The posted DataFrame's schema preserves all CVTRA05Y
     # columns (no projection happened during union/sort/dedup).
+    # All 13 CVTRA05Y fields must be present — the sort/union/
+    # dropDuplicates sequence MUST NOT project away any columns.
     posted_field_names = {f.name for f in posted["schema"].fields}
     expected_columns = {
         "tran_id",
         "tran_source",
         "tran_type_cd",
         "tran_cat_cd",
+        "tran_desc",
         "tran_amt",
+        "tran_merchant_id",
+        "tran_merchant_name",
+        "tran_merchant_city",
+        "tran_merchant_zip",
         "tran_card_num",
+        "tran_orig_ts",
+        "tran_proc_ts",
     }
     assert posted_field_names == expected_columns, (
         f"Posted DataFrame schema drift; expected {expected_columns}, got {posted_field_names}"
@@ -1343,33 +1537,80 @@ def test_combtran_main_with_spark(
     assert amt_by_id["TXNSYS0000000001"] == Decimal("0.25")
     assert amt_by_id["TXNSYS0000000002"] == Decimal("0.50")
 
-    # (k) The S3 archive was actually written to the local
-    # ``tmp_path`` — the Parquet output directory exists and
-    # contains Parquet data files. Spark writes Parquet as a
-    # directory containing ``_SUCCESS`` and ``part-*.parquet``.
-    assert combined_output_dir.exists(), f"Expected S3 archive directory to exist at {combined_output_dir}; it does not"
-
-    # Spark's Parquet writer emits files matching ``part-*`` along
-    # with a ``_SUCCESS`` marker. At least one part file MUST be
-    # present; zero part files would indicate the write was elided.
-    parquet_files = list(combined_output_dir.glob("part-*.parquet"))
-    assert len(parquet_files) >= 1, (
-        f"Expected at least one part-*.parquet file in {combined_output_dir}; found {len(parquet_files)}"
+    # (k) The S3 archive was written via ``write_to_s3`` exactly
+    # once — the single boto3 ``put_object`` replacing the original
+    # Parquet-to-S3A chain. Multiple invocations would indicate an
+    # accidental double-write or a split archive.
+    assert len(captured_writes) == 1, (
+        f"Expected exactly 1 write_to_s3() invocation; "
+        f"got {len(captured_writes)} — "
+        f"writes={[{'key': w['key'], 'content_bytes': len(w['content'])} for w in captured_writes]}"
     )
 
-    # The ``_SUCCESS`` marker confirms the write completed fully
-    # — this is the same marker that ``_probe_upstream_marker``
-    # would look for in subsequent pipeline stages.
-    success_marker = combined_output_dir / "_SUCCESS"
-    assert success_marker.exists(), f"Expected _SUCCESS marker at {success_marker}; it does not exist"
+    archive_write = captured_writes[0]
 
-    # (l) Re-read the S3 archive and verify its contents match
-    # what write_table received. This cross-checks that both
-    # sinks (S3 + PostgreSQL) received the same canonical sorted
-    # DataFrame, satisfying the JCL invariant that STEP10 loads
-    # from the archive produced by STEP05R.
-    archived_df = spark_session.read.parquet(str(combined_output_dir))
-    archived_ids = sorted(row["tran_id"] for row in archived_df.collect())
-    assert archived_ids == expected_sorted_ids, (
-        f"S3 archive contents drift; expected {expected_sorted_ids}, got {archived_ids}"
+    # (k.1) ``content_type`` MUST be ``"text/plain"`` — the archive
+    # is a fixed-width CVTRA05Y text file, NOT binary Parquet.
+    assert archive_write["content_type"] == "text/plain", (
+        f"Archive write content_type={archive_write['content_type']!r}, "
+        f"expected 'text/plain'"
+    )
+
+    # (k.2) The ``key`` MUST match the GDG-equivalent archive path
+    # — derived from ``get_versioned_s3_path("TRANSACT.COMBINED",
+    # "+1")`` URI prefix + ``_COMBINED_FILENAME``.
+    assert archive_write["key"] == expected_archive_key, (
+        f"Archive write key={archive_write['key']!r}, "
+        f"expected {expected_archive_key!r}"
+    )
+
+    # (l) Parse the fixed-width archive body and verify its contents
+    # match the sorted DataFrame that was posted to PostgreSQL.
+    # The body is a newline-joined sequence of 350-byte CVTRA05Y
+    # lines (with a trailing newline from main()'s
+    # ``"\n".join(lines) + "\n"`` construction).
+    archive_content = archive_write["content"]
+    assert isinstance(archive_content, str), (
+        f"Archive content should be str; got {type(archive_content).__name__}"
+    )
+
+    # Strip the trailing newline (added by main() after join) before
+    # splitting — otherwise splitlines would yield an extra empty
+    # trailing line.
+    archive_lines = archive_content.rstrip("\n").split("\n")
+    assert len(archive_lines) == 5, (
+        f"Expected 5 CVTRA05Y lines in archive; got {len(archive_lines)} — "
+        f"line lengths={[len(line) for line in archive_lines]}"
+    )
+
+    # (l.1) Each line MUST be exactly 350 bytes — the CVTRA05Y.cpy
+    # LRECL. The ``_format_combined_line`` function raises ValueError
+    # if the length is wrong, so this assertion is a belt-and-braces
+    # integrity check against future refactors.
+    for idx, line in enumerate(archive_lines):
+        assert len(line) == 350, (
+            f"Archive line {idx} has length {len(line)}, expected 350 "
+            f"(CVTRA05Y.cpy LRECL). Line content (first 60 bytes): "
+            f"{line[:60]!r}"
+        )
+
+    # (l.2) The lines are sorted ascending by tran_id (bytes 0-15
+    # of each line, with tran_id padded to 16 bytes). Extract the
+    # tran_id prefix from each line and verify the order matches
+    # the DataFrame sort.
+    archive_tran_ids = [line[:16].rstrip() for line in archive_lines]
+    assert archive_tran_ids == expected_sorted_ids, (
+        f"Archive tran_id order drift; "
+        f"expected {expected_sorted_ids}, got {archive_tran_ids}"
+    )
+
+    # (l.3) Cross-check: the tran_id order in the S3 archive
+    # matches the tran_id order in the PostgreSQL write. This
+    # satisfies the JCL invariant that STEP10 (REPRO into KSDS)
+    # loads from the archive produced by STEP05R — the two sinks
+    # must receive the same canonical sorted stream.
+    assert archive_tran_ids == posted_ids, (
+        f"S3 archive and PostgreSQL write received divergent "
+        f"canonical streams. Archive IDs={archive_tran_ids}, "
+        f"PostgreSQL IDs={posted_ids}"
     )

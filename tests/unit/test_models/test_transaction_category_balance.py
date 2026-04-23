@@ -301,11 +301,16 @@ def test_composite_primary_key() -> None:
         f"TransactionCategoryBalance must have a 3-part composite "
         f"primary key (acct_id + type_cd + cat_cd, per COBOL "
         f"TRAN-CAT-KEY); found {len(primary_key_columns)} PK "
-        f"columns: {[c.name for c in primary_key_columns]}"
+        f"columns: {[c.key for c in primary_key_columns]}"
     )
 
     # Invariant 2 — identity and order.
-    actual_pk_names = tuple(c.name for c in primary_key_columns)
+    # Use ``Column.key`` (Python attribute key) rather than
+    # ``Column.name`` (DB physical column name), because the columns
+    # are declared via ``mapped_column("type_code", ..., key="type_cd")``
+    # and ``mapped_column("cat_code", ..., key="cat_cd")`` —
+    # ``_EXPECTED_COMPOSITE_PK_NAMES`` contains the Python keys.
+    actual_pk_names = tuple(c.key for c in primary_key_columns)
     assert actual_pk_names == _EXPECTED_COMPOSITE_PK_NAMES, (
         f"Composite primary key columns must be declared in the order "
         f"{_EXPECTED_COMPOSITE_PK_NAMES!r} (matching the COBOL "
@@ -315,6 +320,7 @@ def test_composite_primary_key() -> None:
     )
 
     # Invariant 3 — types and lengths of each PK part.
+    # Keyed by Python attribute name (Column.key), not DB name.
     expected_types: dict[str, int] = {
         "acct_id": 11,  # TRANCAT-ACCT-ID PIC 9(11)
         "type_cd": 2,  # TRANCAT-TYPE-CD PIC X(02)
@@ -322,13 +328,18 @@ def test_composite_primary_key() -> None:
     }
     for pk_column in primary_key_columns:
         assert isinstance(pk_column.type, String), (
-            f"Primary key column {pk_column.name!r} must be declared "
+            f"Primary key column {pk_column.key!r} must be declared "
             f"as a String type (from COBOL PIC X/9 clauses); found "
             f"{type(pk_column.type).__name__}"
         )
-        expected_length = expected_types[pk_column.name]
+        # ``Column.key`` is typed ``str | None`` in SQLAlchemy 2.x but
+        # every mapped column in this ORM model declares an explicit
+        # ``key=`` so the value is guaranteed to be a string — assert
+        # for mypy and for defensive runtime safety.
+        assert pk_column.key is not None
+        expected_length = expected_types[pk_column.key]
         assert pk_column.type.length == expected_length, (
-            f"Primary key column {pk_column.name!r} must be "
+            f"Primary key column {pk_column.key!r} must be "
             f"String({expected_length}) per the COBOL copybook; "
             f"found String({pk_column.type.length})"
         )
@@ -375,7 +386,16 @@ def test_composite_key_matches_cobol_group() -> None:
     expected_non_pk_fields: frozenset[str] = frozenset({"balance"})
 
     primary_key_columns = list(inspect(TransactionCategoryBalance).primary_key)
-    actual_pk_fields: frozenset[str] = frozenset(c.name for c in primary_key_columns)
+    # Use ``Column.key`` (Python attribute key) rather than
+    # ``Column.name`` (DB physical column name), because the columns
+    # are declared with distinct names and keys via ``mapped_column(
+    # "type_code", ..., key="type_cd")`` — ``expected_pk_fields`` is
+    # the Python-key set.  ``Column.key`` is typed ``str | None`` in
+    # SQLAlchemy 2.x but every mapped column in this ORM model has an
+    # explicit ``key=`` so the value is guaranteed to be a string.
+    actual_pk_fields: frozenset[str] = frozenset(
+        str(c.key) for c in primary_key_columns
+    )
 
     # Inclusion — every COBOL key-group element must be in the PK.
     missing_from_pk = expected_pk_fields - actual_pk_fields
@@ -871,22 +891,29 @@ def test_no_filler_columns() -> None:
       ``"filler"`` (case-insensitive), catching any misspelling
       (``Filler``, ``FILLER``, ``filler1``, etc.).
     """
-    column_names = [c.name for c in TransactionCategoryBalance.__table__.columns]
+    # ``_EXPECTED_COLUMNS`` holds Python-attribute names
+    # (``acct_id``, ``type_cd``, ``cat_cd``, ``balance``); some DB
+    # physical names differ (``type_code``, ``cat_code``,
+    # ``tran_cat_bal``). Compare against ``Column.key`` for positive
+    # equivalence and scan BOTH forms for 'filler' (defense in depth).
+    column_keys = [c.key for c in TransactionCategoryBalance.__table__.columns]
+    column_db_names = [c.name for c in TransactionCategoryBalance.__table__.columns]
 
     # Positive invariant — exact-set equivalence against the
-    # FILLER-free expected set.
-    assert set(column_names) == set(_EXPECTED_COLUMNS), (
+    # FILLER-free expected set of Python attribute keys.
+    assert set(column_keys) == set(_EXPECTED_COLUMNS), (
         f"TransactionCategoryBalance columns must exactly match "
         f"{sorted(_EXPECTED_COLUMNS)!r} (COBOL FILLER PIC X(22) is "
-        f"NOT mapped); found {sorted(column_names)!r}. "
+        f"NOT mapped); found {sorted(column_keys)!r}. "
         f"Missing: "
-        f"{sorted(set(_EXPECTED_COLUMNS) - set(column_names))!r}. "
+        f"{sorted(set(_EXPECTED_COLUMNS) - set(column_keys))!r}. "
         f"Extra: "
-        f"{sorted(set(column_names) - set(_EXPECTED_COLUMNS))!r}."
+        f"{sorted(set(column_keys) - set(_EXPECTED_COLUMNS))!r}."
     )
 
-    # Negative invariant — no column name resembles FILLER.
-    for column_name in column_names:
+    # Negative invariant — no column name (Python key OR DB column
+    # name) resembles FILLER.
+    for column_name in set(column_keys) | set(column_db_names):
         assert "filler" not in column_name.lower(), (
             f"Column name {column_name!r} contains the substring "
             f"'filler' (case-insensitive), which indicates the COBOL "

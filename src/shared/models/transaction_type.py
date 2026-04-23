@@ -140,18 +140,29 @@ class TransactionType(Base):
     # ------------------------------------------------------------------
     # Primary key: 2-character transaction-type code
     # (COBOL ``TRAN-TYPE`` PIC X(02))
+    #
+    # DB column name: ``type_code`` (per V1__schema.sql — the
+    # ``transaction_types`` table uses ``type_code`` to match the
+    # composite-PK foreign key used by ``transaction_categories``
+    # and ``transaction_category_balances``).
     # ------------------------------------------------------------------
     tran_type: Mapped[str] = mapped_column(
+        "type_code",
         String(2),
         primary_key=True,
+        key="tran_type",
     )
 
     # ------------------------------------------------------------------
     # Type description (COBOL ``TRAN-TYPE-DESC`` PIC X(50))
+    #
+    # DB column name: ``tran_type_desc``.
     # ------------------------------------------------------------------
     description: Mapped[str] = mapped_column(
+        "tran_type_desc",
         String(50),
         nullable=False,
+        key="description",
     )
 
     # Note: COBOL ``FILLER PIC X(08)`` — the trailing 8 bytes of padding

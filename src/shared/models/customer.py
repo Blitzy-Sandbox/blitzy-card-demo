@@ -269,88 +269,124 @@ class Customer(Base):
 
     # ------------------------------------------------------------------
     # Name fields (COBOL CUST-FIRST/MIDDLE/LAST-NAME PIC X(25))
+    #
+    # DB column names: ``cust_first_name``, ``cust_middle_name``,
+    # ``cust_last_name`` (per V1__schema.sql — all columns in the
+    # ``customers`` table carry the ``cust_`` prefix).
     # ------------------------------------------------------------------
     first_name: Mapped[str] = mapped_column(
+        "cust_first_name",
         String(25),
         nullable=False,
+        key="first_name",
     )
 
     middle_name: Mapped[str] = mapped_column(
+        "cust_middle_name",
         String(25),
         nullable=False,
         default="",
+        key="middle_name",
     )
 
     last_name: Mapped[str] = mapped_column(
+        "cust_last_name",
         String(25),
         nullable=False,
+        key="last_name",
     )
 
     # ------------------------------------------------------------------
     # Address lines 1-3 (COBOL CUST-ADDR-LINE-1/2/3 PIC X(50))
+    #
+    # DB column names: ``cust_addr_line_1/2/3``.
     # ------------------------------------------------------------------
     addr_line_1: Mapped[str] = mapped_column(
+        "cust_addr_line_1",
         String(50),
         nullable=False,
         default="",
+        key="addr_line_1",
     )
 
     addr_line_2: Mapped[str] = mapped_column(
+        "cust_addr_line_2",
         String(50),
         nullable=False,
         default="",
+        key="addr_line_2",
     )
 
     addr_line_3: Mapped[str] = mapped_column(
+        "cust_addr_line_3",
         String(50),
         nullable=False,
         default="",
+        key="addr_line_3",
     )
 
     # ------------------------------------------------------------------
     # State code (COBOL CUST-ADDR-STATE-CD PIC X(02)) — e.g., 'NY', 'CA'
+    #
+    # DB column name: ``cust_addr_state_cd``.
     # ------------------------------------------------------------------
     state_cd: Mapped[str] = mapped_column(
+        "cust_addr_state_cd",
         String(2),
         nullable=False,
         default="",
+        key="state_cd",
     )
 
     # ------------------------------------------------------------------
     # Country code (COBOL CUST-ADDR-COUNTRY-CD PIC X(03)) — ISO 3166-1
     # alpha-3 (e.g., 'USA', 'CAN', 'GBR')
+    #
+    # DB column name: ``cust_addr_country_cd``.
     # ------------------------------------------------------------------
     country_cd: Mapped[str] = mapped_column(
+        "cust_addr_country_cd",
         String(3),
         nullable=False,
         default="",
+        key="country_cd",
     )
 
     # ------------------------------------------------------------------
     # ZIP / postal code (COBOL CUST-ADDR-ZIP PIC X(10))
     # Width of 10 accommodates 5-digit, 9-digit (ZIP+4), and
     # international postal codes.
+    #
+    # DB column name: ``cust_addr_zip``.
     # ------------------------------------------------------------------
     addr_zip: Mapped[str] = mapped_column(
+        "cust_addr_zip",
         String(10),
         nullable=False,
         default="",
+        key="addr_zip",
     )
 
     # ------------------------------------------------------------------
     # Phone numbers (COBOL CUST-PHONE-NUM-1 / CUST-PHONE-NUM-2 PIC X(15))
     # Free-format strings to preserve human formatting.
+    #
+    # DB column names: ``cust_phone_num_1`` / ``cust_phone_num_2``.
     # ------------------------------------------------------------------
     phone_num_1: Mapped[str] = mapped_column(
+        "cust_phone_num_1",
         String(15),
         nullable=False,
         default="",
+        key="phone_num_1",
     )
 
     phone_num_2: Mapped[str] = mapped_column(
+        "cust_phone_num_2",
         String(15),
         nullable=False,
         default="",
+        key="phone_num_2",
     )
 
     # ------------------------------------------------------------------
@@ -363,20 +399,28 @@ class Customer(Base):
     # ORM layer. The ``__repr__`` method deliberately excludes this
     # value to prevent accidental leakage into log streams or debugger
     # output.
+    #
+    # DB column name: ``cust_ssn``.
     # ------------------------------------------------------------------
     ssn: Mapped[str] = mapped_column(
+        "cust_ssn",
         String(9),
         nullable=False,
+        key="ssn",
     )
 
     # ------------------------------------------------------------------
     # Government-issued identifier (COBOL CUST-GOVT-ISSUED-ID PIC X(20))
     # — e.g., driver's license number, passport number.
+    #
+    # DB column name: ``cust_govt_issued_id``.
     # ------------------------------------------------------------------
     govt_issued_id: Mapped[str] = mapped_column(
+        "cust_govt_issued_id",
         String(20),
         nullable=False,
         default="",
+        key="govt_issued_id",
     )
 
     # ------------------------------------------------------------------
@@ -385,32 +429,44 @@ class Customer(Base):
     # Stored as a 10-character string in 'YYYY-MM-DD' format, matching
     # the COBOL source layout. Date validation is delegated to
     # ``src.shared.utils.date_utils`` (preserving the CSUTLDTC rules).
+    #
+    # DB column name: ``cust_dob_yyyy_mm_dd``.
     # ------------------------------------------------------------------
     dob: Mapped[str] = mapped_column(
+        "cust_dob_yyyy_mm_dd",
         String(10),
         nullable=False,
         default="",
+        key="dob",
     )
 
     # ------------------------------------------------------------------
     # EFT / direct-debit account identifier
     # (COBOL CUST-EFT-ACCOUNT-ID PIC X(10)) — used by F-012 Bill Payment.
+    #
+    # DB column name: ``cust_eft_account_id``.
     # ------------------------------------------------------------------
     eft_account_id: Mapped[str] = mapped_column(
+        "cust_eft_account_id",
         String(10),
         nullable=False,
         default="",
+        key="eft_account_id",
     )
 
     # ------------------------------------------------------------------
     # Primary-cardholder indicator
     # (COBOL CUST-PRI-CARD-HOLDER-IND PIC X(01))
     # 'Y' = primary cardholder, 'N' = authorized user / secondary.
+    #
+    # DB column name: ``cust_pri_card_holder_ind``.
     # ------------------------------------------------------------------
     pri_card_holder_ind: Mapped[str] = mapped_column(
+        "cust_pri_card_holder_ind",
         String(1),
         nullable=False,
         default="",
+        key="pri_card_holder_ind",
     )
 
     # ------------------------------------------------------------------
@@ -419,11 +475,15 @@ class Customer(Base):
     # Stored as INTEGER — unlike cust_id and ssn, FICO scores have no
     # meaningful leading-zero semantics (valid range: 300 – 850). A
     # value of 0 (the default) indicates a missing / unscored customer.
+    #
+    # DB column name: ``cust_fico_credit_score``.
     # ------------------------------------------------------------------
     fico_credit_score: Mapped[int] = mapped_column(
+        "cust_fico_credit_score",
         Integer,
         nullable=False,
         default=0,
+        key="fico_credit_score",
     )
 
     # Note: COBOL ``FILLER PIC X(168)`` — the trailing 168 bytes of

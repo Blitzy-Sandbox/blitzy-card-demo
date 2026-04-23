@@ -1235,6 +1235,21 @@ class AccountService:
                 normalized_id, request, _MSG_VIEW_CUST_NOT_FOUND
             )
 
+        # --- Step 1b: Fill missing fields from existing records --------
+        # QA Checkpoint 5, Finding #5 — support partial updates by
+        # merging caller-supplied overrides with the stored values
+        # before validation. For fields the caller did not supply
+        # (``None`` on the request), the stored Account/Customer
+        # values are decomposed back into BMS-style segments and
+        # substituted into the merged request. After this step
+        # every field is guaranteed to be populated with a non-
+        # ``None`` value, so the downstream COBOL-verbatim
+        # validator and parser contracts are unchanged. Callers
+        # who submit a full 39-field payload are unaffected
+        # (every ``None`` check short-circuits to the caller value),
+        # so this is a backward-compatible enhancement.
+        request = _fill_missing_from_existing(request, account, customer)
+
         # --- Step 2: Validate all request fields -----------------------
         # COBOL: 1200-EDIT-MAP-INPUTS paragraph cascade. Each helper
         # returns either None (valid) or a COBOL error-message string.
@@ -1851,6 +1866,118 @@ def _validate_request(request: AccountUpdateRequest) -> str | None:
         The COBOL-byte-exact error-message string of the first
         failure, or ``None`` if every field passes validation.
     """
+    # --- Non-None invariant (QA Checkpoint 5 Finding #5 fix) -------
+    # ``AccountUpdateRequest`` carries Optional fields so that the
+    # router accepts partial updates (PATCH-style semantics). By
+    # contract, however, this validator runs ONLY after
+    # :func:`_fill_missing_from_existing` has been invoked at
+    # :meth:`AccountService.update_account` (line 1251) — that helper
+    # guarantees every field on the returned request is populated
+    # with a non-``None`` value drawn either from the caller's
+    # payload or from the stored Account/Customer record. The
+    # assertions below reaffirm this invariant: they both (a) guard
+    # against a programmer error if a future caller forgets to merge
+    # the stored values in, and (b) narrow the Optional types down
+    # to their non-``None`` counterparts so mypy can statically
+    # verify the downstream ``.strip()`` / ``round_financial(...)`` /
+    # ``_join_date(...)`` / ``_validate_*(...)`` calls without a
+    # union-attr or arg-type error. Each assertion emits a
+    # deterministic message that maps back to the originating
+    # invariant source.
+    assert request.active_status is not None, (
+        "invariant violation: _fill_missing_from_existing must populate active_status"
+    )
+    assert request.credit_limit is not None, (
+        "invariant violation: _fill_missing_from_existing must populate credit_limit"
+    )
+    assert request.cash_credit_limit is not None, (
+        "invariant violation: _fill_missing_from_existing must populate cash_credit_limit"
+    )
+    assert request.open_date_year is not None, (
+        "invariant violation: _fill_missing_from_existing must populate open_date_year"
+    )
+    assert request.open_date_month is not None, (
+        "invariant violation: _fill_missing_from_existing must populate open_date_month"
+    )
+    assert request.open_date_day is not None, (
+        "invariant violation: _fill_missing_from_existing must populate open_date_day"
+    )
+    assert request.expiration_date_year is not None, (
+        "invariant violation: _fill_missing_from_existing must populate expiration_date_year"
+    )
+    assert request.expiration_date_month is not None, (
+        "invariant violation: _fill_missing_from_existing must populate expiration_date_month"
+    )
+    assert request.expiration_date_day is not None, (
+        "invariant violation: _fill_missing_from_existing must populate expiration_date_day"
+    )
+    assert request.reissue_date_year is not None, (
+        "invariant violation: _fill_missing_from_existing must populate reissue_date_year"
+    )
+    assert request.reissue_date_month is not None, (
+        "invariant violation: _fill_missing_from_existing must populate reissue_date_month"
+    )
+    assert request.reissue_date_day is not None, (
+        "invariant violation: _fill_missing_from_existing must populate reissue_date_day"
+    )
+    assert request.customer_dob_year is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_dob_year"
+    )
+    assert request.customer_dob_month is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_dob_month"
+    )
+    assert request.customer_dob_day is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_dob_day"
+    )
+    assert request.customer_first_name is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_first_name"
+    )
+    assert request.customer_last_name is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_last_name"
+    )
+    assert request.customer_fico_score is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_fico_score"
+    )
+    assert request.customer_ssn_part1 is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_ssn_part1"
+    )
+    assert request.customer_ssn_part2 is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_ssn_part2"
+    )
+    assert request.customer_ssn_part3 is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_ssn_part3"
+    )
+    assert request.customer_state_cd is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_state_cd"
+    )
+    assert request.customer_country_cd is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_country_cd"
+    )
+    assert request.customer_zip is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_zip"
+    )
+    assert request.customer_phone_1_area is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_phone_1_area"
+    )
+    assert request.customer_phone_1_prefix is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_phone_1_prefix"
+    )
+    assert request.customer_phone_1_line is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_phone_1_line"
+    )
+    assert request.customer_phone_2_area is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_phone_2_area"
+    )
+    assert request.customer_phone_2_prefix is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_phone_2_prefix"
+    )
+    assert request.customer_phone_2_line is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_phone_2_line"
+    )
+    assert request.customer_pri_cardholder is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_pri_cardholder"
+    )
+
     # --- Account flags (1220-EDIT-YESNO) ---------------------------
     # COACTUPC.cbl L1472 sets WS-EDIT-VARIABLE-NAME = 'Account Status'
     # then PERFORMs 1220-EDIT-YESNO, which builds a byte-for-byte
@@ -2284,6 +2411,398 @@ def _format_fico(score: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Partial-update fill helper (QA Checkpoint 5, Finding #5)
+# ---------------------------------------------------------------------------
+
+
+def _fill_missing_from_existing(
+    request: AccountUpdateRequest,
+    account: Account,
+    customer: Customer,
+) -> AccountUpdateRequest:
+    """Populate any ``None`` fields on the request from stored records.
+
+    The original COBOL contract (COACTUPC.cbl) required every BMS
+    field to be populated on the update screen — the map was
+    initially primed with the current DB values, the user edited
+    fields in place, and the submitted map therefore always carried
+    a full set of values. The REST modernisation preserves that
+    semantic for callers who send a full payload, but also supports
+    modern REST partial-update conventions: QA Checkpoint 5,
+    Finding #5, reported that forcing clients to submit all 38
+    non-id fields is impractical. To support partial updates without
+    weakening the downstream validator or parser contracts, this
+    helper decomposes the currently-stored :class:`Account` and
+    :class:`Customer` records back into the BMS-style segmented
+    request form and substitutes any ``None`` value on the incoming
+    request with the stored equivalent.
+
+    After this helper runs, the returned :class:`AccountUpdateRequest`
+    is guaranteed to have every field populated with a non-``None``
+    value — either the caller-supplied override or the stored
+    current value. Downstream code
+    (:func:`_validate_request`, :func:`_parse_request`,
+    :func:`_detect_changes`, :func:`_apply_account_mutations`,
+    :func:`_apply_customer_mutations`) is therefore unchanged and
+    sees the same shape it always did.
+
+    Decomposition matrix (stored form → BMS segments):
+
+    * ``account.open_date`` (``YYYY-MM-DD``) → 3 segments via
+      :func:`_parse_date`.
+    * ``account.expiration_date`` (``YYYY-MM-DD``) → 3 segments via
+      :func:`_parse_date`.
+    * ``account.reissue_date`` (``YYYY-MM-DD``) → 3 segments via
+      :func:`_parse_date`.
+    * ``customer.dob`` (``YYYY-MM-DD``) → 3 segments via
+      :func:`_parse_date`.
+    * ``customer.ssn`` (9 raw digits) → 3 segments via slicing
+      (``[0:3]``, ``[3:5]``, ``[5:9]``) — the inverse of
+      :func:`_join_ssn`.
+    * ``customer.phone_num_1`` / ``phone_num_2`` (``(AAA)BBB-CCCC``)
+      → 3 segments via :func:`_parse_phone_display`.
+    * ``customer.fico_credit_score`` (int) → 3-char zero-padded
+      string via :func:`_format_fico`.
+    * Every other scalar stored field is copied directly
+      (account.active_status, account.credit_limit,
+      account.cash_credit_limit, account.group_id,
+      customer.first_name, customer.middle_name, customer.last_name,
+      customer.addr_line_1, customer.addr_line_2, customer.addr_line_3
+      (city), customer.state_cd, customer.country_cd,
+      customer.addr_zip (truncated to 5 chars), customer.govt_issued_id,
+      customer.eft_account_id, customer.pri_card_holder_ind).
+
+    Parameters
+    ----------
+    request : AccountUpdateRequest
+        The original caller-supplied request, potentially with
+        any of the 38 non-id fields set to ``None``.
+    account : Account
+        The currently-stored Account ORM entity, already read by
+        the ``update_account`` flow before this helper is invoked.
+    customer : Customer
+        The currently-stored Customer ORM entity, already read by
+        the ``update_account`` flow before this helper is invoked.
+
+    Returns
+    -------
+    AccountUpdateRequest
+        A new request instance with every ``None`` field replaced
+        by the corresponding stored value. Caller-supplied non-
+        ``None`` fields are preserved unchanged. The returned
+        instance is constructed via Pydantic ``model_copy(update=...)``
+        which re-runs field validation but NOT the ``@field_validator``
+        methods — those run on the original construction. Downstream
+        :func:`_validate_request` still executes the full content
+        validation cascade on the merged request.
+
+    Notes
+    -----
+    This helper is called exactly once in :meth:`update_account`
+    between Step 1 (read existing state) and Step 2
+    (``_validate_request``). It is a no-op for callers who submit
+    a full payload: every ``None`` check short-circuits to the
+    caller-supplied value. For callers submitting a partial update
+    (e.g. ``{"account_id": "...", "credit_limit": "7500.00"}``) the
+    37 missing fields are filled from the stored records before
+    validation, so the COBOL field-by-field validation cascade
+    continues to run on a fully-populated view of the "new" state.
+    Unchanged fields will therefore pass validation (they were
+    valid when stored) and also fail change detection
+    (:func:`_detect_changes`), so a partial update with only
+    ``credit_limit`` supplied will correctly result in a single
+    field mutation while all other fields remain untouched.
+    """
+    # ------------------------------------------------------------------
+    # Account fields — direct scalars and date decompositions
+    # ------------------------------------------------------------------
+    open_year, open_month, open_day = _parse_date(account.open_date)
+    expiry_year, expiry_month, expiry_day = _parse_date(
+        account.expiration_date
+    )
+    reissue_year, reissue_month, reissue_day = _parse_date(
+        account.reissue_date
+    )
+
+    # ------------------------------------------------------------------
+    # Customer fields — SSN decomposition, date decomposition,
+    # phone decomposition, FICO formatting, and string trims
+    # ------------------------------------------------------------------
+    dob_year, dob_month, dob_day = _parse_date(customer.dob)
+
+    # SSN is stored as 9 raw digits (no hyphens); decompose into
+    # the 3-2-4 BMS segments.
+    stored_ssn: str = customer.ssn or ""
+    if len(stored_ssn) >= 9:
+        stored_ssn_part1 = stored_ssn[0:3]
+        stored_ssn_part2 = stored_ssn[3:5]
+        stored_ssn_part3 = stored_ssn[5:9]
+    else:
+        # Defensive: should never occur (the ORM column is
+        # nullable=False), but if the stored SSN is short we
+        # emit empty segments so validation picks it up as a
+        # specific error rather than crashing in slicing.
+        stored_ssn_part1 = ""
+        stored_ssn_part2 = ""
+        stored_ssn_part3 = ""
+
+    phone1_area, phone1_prefix, phone1_line = _parse_phone_display(
+        customer.phone_num_1 or ""
+    )
+    phone2_area, phone2_prefix, phone2_line = _parse_phone_display(
+        customer.phone_num_2 or ""
+    )
+
+    stored_fico: str = _format_fico(customer.fico_credit_score)
+
+    # ``customer.addr_zip`` is declared as VARCHAR(10) (preserves
+    # possible 5+4 encoding) but the BMS / response field is
+    # always the 5-char base ZIP, so truncate defensively.
+    stored_zip: str = (
+        customer.addr_zip[:_ZIP_LEN] if customer.addr_zip else ""
+    )
+
+    # ``customer.addr_line_3`` carries the city per CVCUS01Y.cpy
+    # REDEFINES (see _parse_request and _assemble_view_response).
+    stored_city: str = customer.addr_line_3 or ""
+
+    # Customer state/country are stored uppercase; the BMS layer
+    # also uppercases caller input, so no case transformation
+    # is needed here.
+    stored_state_cd: str = customer.state_cd or ""
+    stored_country_cd: str = customer.country_cd or ""
+
+    # Name, address, govt_id, eft_account_id fields on the
+    # Customer entity are declared as fixed-width CHAR columns
+    # (PostgreSQL CHAR preserves trailing-space padding). The
+    # downstream validator trims via ``.rstrip()`` / ``.strip()``,
+    # so we pass the stored values through unchanged and let
+    # the existing cascade handle trimming.
+    stored_first_name: str = customer.first_name or ""
+    stored_middle_name: str = customer.middle_name or ""
+    stored_last_name: str = customer.last_name or ""
+    stored_addr_line_1: str = customer.addr_line_1 or ""
+    stored_addr_line_2: str = customer.addr_line_2 or ""
+    stored_govt_id: str = customer.govt_issued_id or ""
+    stored_eft_acct: str = customer.eft_account_id or ""
+    stored_pri_cardholder: str = customer.pri_card_holder_ind or ""
+
+    # ------------------------------------------------------------------
+    # Build the merged request: caller value if supplied, else
+    # stored equivalent. Monetary fields are passed through
+    # ``safe_decimal`` to guarantee proper scale — this mirrors
+    # the handling in ``_assemble_view_response`` where stored
+    # values are re-scaled before emission.
+    # ------------------------------------------------------------------
+    updates: dict[str, object] = {
+        # Account scalars
+        "active_status": (
+            request.active_status
+            if request.active_status is not None
+            else account.active_status
+        ),
+        "open_date_year": (
+            request.open_date_year
+            if request.open_date_year is not None
+            else open_year
+        ),
+        "open_date_month": (
+            request.open_date_month
+            if request.open_date_month is not None
+            else open_month
+        ),
+        "open_date_day": (
+            request.open_date_day
+            if request.open_date_day is not None
+            else open_day
+        ),
+        "credit_limit": (
+            request.credit_limit
+            if request.credit_limit is not None
+            else safe_decimal(account.credit_limit)
+        ),
+        "expiration_date_year": (
+            request.expiration_date_year
+            if request.expiration_date_year is not None
+            else expiry_year
+        ),
+        "expiration_date_month": (
+            request.expiration_date_month
+            if request.expiration_date_month is not None
+            else expiry_month
+        ),
+        "expiration_date_day": (
+            request.expiration_date_day
+            if request.expiration_date_day is not None
+            else expiry_day
+        ),
+        "cash_credit_limit": (
+            request.cash_credit_limit
+            if request.cash_credit_limit is not None
+            else safe_decimal(account.cash_credit_limit)
+        ),
+        "reissue_date_year": (
+            request.reissue_date_year
+            if request.reissue_date_year is not None
+            else reissue_year
+        ),
+        "reissue_date_month": (
+            request.reissue_date_month
+            if request.reissue_date_month is not None
+            else reissue_month
+        ),
+        "reissue_date_day": (
+            request.reissue_date_day
+            if request.reissue_date_day is not None
+            else reissue_day
+        ),
+        "group_id": (
+            request.group_id
+            if request.group_id is not None
+            else account.group_id
+        ),
+        # Customer SSN segments
+        "customer_ssn_part1": (
+            request.customer_ssn_part1
+            if request.customer_ssn_part1 is not None
+            else stored_ssn_part1
+        ),
+        "customer_ssn_part2": (
+            request.customer_ssn_part2
+            if request.customer_ssn_part2 is not None
+            else stored_ssn_part2
+        ),
+        "customer_ssn_part3": (
+            request.customer_ssn_part3
+            if request.customer_ssn_part3 is not None
+            else stored_ssn_part3
+        ),
+        # Customer DOB segments
+        "customer_dob_year": (
+            request.customer_dob_year
+            if request.customer_dob_year is not None
+            else dob_year
+        ),
+        "customer_dob_month": (
+            request.customer_dob_month
+            if request.customer_dob_month is not None
+            else dob_month
+        ),
+        "customer_dob_day": (
+            request.customer_dob_day
+            if request.customer_dob_day is not None
+            else dob_day
+        ),
+        # Customer scalars
+        "customer_fico_score": (
+            request.customer_fico_score
+            if request.customer_fico_score is not None
+            else stored_fico
+        ),
+        "customer_first_name": (
+            request.customer_first_name
+            if request.customer_first_name is not None
+            else stored_first_name
+        ),
+        "customer_middle_name": (
+            request.customer_middle_name
+            if request.customer_middle_name is not None
+            else stored_middle_name
+        ),
+        "customer_last_name": (
+            request.customer_last_name
+            if request.customer_last_name is not None
+            else stored_last_name
+        ),
+        "customer_addr_line_1": (
+            request.customer_addr_line_1
+            if request.customer_addr_line_1 is not None
+            else stored_addr_line_1
+        ),
+        "customer_state_cd": (
+            request.customer_state_cd
+            if request.customer_state_cd is not None
+            else stored_state_cd
+        ),
+        "customer_addr_line_2": (
+            request.customer_addr_line_2
+            if request.customer_addr_line_2 is not None
+            else stored_addr_line_2
+        ),
+        "customer_zip": (
+            request.customer_zip
+            if request.customer_zip is not None
+            else stored_zip
+        ),
+        "customer_city": (
+            request.customer_city
+            if request.customer_city is not None
+            else stored_city
+        ),
+        "customer_country_cd": (
+            request.customer_country_cd
+            if request.customer_country_cd is not None
+            else stored_country_cd
+        ),
+        # Primary phone segments
+        "customer_phone_1_area": (
+            request.customer_phone_1_area
+            if request.customer_phone_1_area is not None
+            else phone1_area
+        ),
+        "customer_phone_1_prefix": (
+            request.customer_phone_1_prefix
+            if request.customer_phone_1_prefix is not None
+            else phone1_prefix
+        ),
+        "customer_phone_1_line": (
+            request.customer_phone_1_line
+            if request.customer_phone_1_line is not None
+            else phone1_line
+        ),
+        # Government ID
+        "customer_govt_id": (
+            request.customer_govt_id
+            if request.customer_govt_id is not None
+            else stored_govt_id
+        ),
+        # Secondary phone segments
+        "customer_phone_2_area": (
+            request.customer_phone_2_area
+            if request.customer_phone_2_area is not None
+            else phone2_area
+        ),
+        "customer_phone_2_prefix": (
+            request.customer_phone_2_prefix
+            if request.customer_phone_2_prefix is not None
+            else phone2_prefix
+        ),
+        "customer_phone_2_line": (
+            request.customer_phone_2_line
+            if request.customer_phone_2_line is not None
+            else phone2_line
+        ),
+        # EFT account + primary cardholder flag
+        "customer_eft_account_id": (
+            request.customer_eft_account_id
+            if request.customer_eft_account_id is not None
+            else stored_eft_acct
+        ),
+        "customer_pri_cardholder": (
+            request.customer_pri_cardholder
+            if request.customer_pri_cardholder is not None
+            else stored_pri_cardholder
+        ),
+    }
+
+    # model_copy(update=...) returns a new instance with the
+    # specified fields replaced. We pass ``deep=False`` (the
+    # default) because we only replace top-level scalar fields;
+    # no nested structures require deep-copy semantics.
+    return request.model_copy(update=updates)
+
+
+# ---------------------------------------------------------------------------
 # Request parsing
 # ---------------------------------------------------------------------------
 
@@ -2312,6 +2831,132 @@ def _parse_request(request: AccountUpdateRequest) -> _ParsedRequest:
         If the FICO score is not a valid integer after validation
         (defensive — should not occur after :func:`_validate_request`).
     """
+    # --- Non-None invariant (QA Checkpoint 5 Finding #5 fix) -------
+    # Same invariant as :func:`_validate_request`:
+    # :func:`_fill_missing_from_existing` has already run at
+    # :meth:`AccountService.update_account` (line 1251) and guarantees
+    # every Optional field is populated with a non-``None`` value. The
+    # assertions below serve as both runtime safety nets and mypy
+    # type-narrowing markers so the downstream ``.rstrip()`` /
+    # ``.strip()`` / ``.upper()`` / ``_format_date(...)`` /
+    # ``round_financial(...)`` / ``_join_ssn(...)`` /
+    # ``_format_phone_stored(...)`` calls do not trigger a union-attr
+    # or arg-type error.
+    assert request.active_status is not None, (
+        "invariant violation: _fill_missing_from_existing must populate active_status"
+    )
+    assert request.open_date_year is not None, (
+        "invariant violation: _fill_missing_from_existing must populate open_date_year"
+    )
+    assert request.open_date_month is not None, (
+        "invariant violation: _fill_missing_from_existing must populate open_date_month"
+    )
+    assert request.open_date_day is not None, (
+        "invariant violation: _fill_missing_from_existing must populate open_date_day"
+    )
+    assert request.credit_limit is not None, (
+        "invariant violation: _fill_missing_from_existing must populate credit_limit"
+    )
+    assert request.expiration_date_year is not None, (
+        "invariant violation: _fill_missing_from_existing must populate expiration_date_year"
+    )
+    assert request.expiration_date_month is not None, (
+        "invariant violation: _fill_missing_from_existing must populate expiration_date_month"
+    )
+    assert request.expiration_date_day is not None, (
+        "invariant violation: _fill_missing_from_existing must populate expiration_date_day"
+    )
+    assert request.cash_credit_limit is not None, (
+        "invariant violation: _fill_missing_from_existing must populate cash_credit_limit"
+    )
+    assert request.reissue_date_year is not None, (
+        "invariant violation: _fill_missing_from_existing must populate reissue_date_year"
+    )
+    assert request.reissue_date_month is not None, (
+        "invariant violation: _fill_missing_from_existing must populate reissue_date_month"
+    )
+    assert request.reissue_date_day is not None, (
+        "invariant violation: _fill_missing_from_existing must populate reissue_date_day"
+    )
+    assert request.group_id is not None, (
+        "invariant violation: _fill_missing_from_existing must populate group_id"
+    )
+    assert request.customer_ssn_part1 is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_ssn_part1"
+    )
+    assert request.customer_ssn_part2 is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_ssn_part2"
+    )
+    assert request.customer_ssn_part3 is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_ssn_part3"
+    )
+    assert request.customer_dob_year is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_dob_year"
+    )
+    assert request.customer_dob_month is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_dob_month"
+    )
+    assert request.customer_dob_day is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_dob_day"
+    )
+    assert request.customer_fico_score is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_fico_score"
+    )
+    assert request.customer_first_name is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_first_name"
+    )
+    assert request.customer_middle_name is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_middle_name"
+    )
+    assert request.customer_last_name is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_last_name"
+    )
+    assert request.customer_addr_line_1 is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_addr_line_1"
+    )
+    assert request.customer_addr_line_2 is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_addr_line_2"
+    )
+    assert request.customer_city is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_city"
+    )
+    assert request.customer_state_cd is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_state_cd"
+    )
+    assert request.customer_country_cd is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_country_cd"
+    )
+    assert request.customer_zip is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_zip"
+    )
+    assert request.customer_phone_1_area is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_phone_1_area"
+    )
+    assert request.customer_phone_1_prefix is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_phone_1_prefix"
+    )
+    assert request.customer_phone_1_line is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_phone_1_line"
+    )
+    assert request.customer_phone_2_area is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_phone_2_area"
+    )
+    assert request.customer_phone_2_prefix is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_phone_2_prefix"
+    )
+    assert request.customer_phone_2_line is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_phone_2_line"
+    )
+    assert request.customer_govt_id is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_govt_id"
+    )
+    assert request.customer_eft_account_id is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_eft_account_id"
+    )
+    assert request.customer_pri_cardholder is not None, (
+        "invariant violation: _fill_missing_from_existing must populate customer_pri_cardholder"
+    )
+
     parsed: _ParsedRequest = _ParsedRequest()
 
     # Account fields
@@ -2825,25 +3470,101 @@ def _build_update_error_response(
     else:
         safe_acct_id = "0" * _ACCT_ID_LEN
 
+    # --- Optional field defensive defaults (QA Checkpoint 5 #5) ----
+    # This error-response builder is invoked from TWO distinct call
+    # contexts in :meth:`AccountService.update_account`:
+    #
+    #   (a) Pre-fill paths (lines ~1106/1116/1144/1171/1180/1198/
+    #       1207/1225/1234) — invoked BEFORE
+    #       :func:`_fill_missing_from_existing`. Here the request
+    #       may still carry ``None`` on any Optional field because
+    #       the caller submitted a partial update and the stored
+    #       record was never read (e.g. acct_id missing/invalid, or
+    #       the 3-entity xref/Account/Customer read failed). In this
+    #       mode we must provide a safe, well-formed default for the
+    #       response so Pydantic does not reject the payload.
+    #
+    #   (b) Post-fill paths (lines ~1268/1303/1363/1379/1397) —
+    #       invoked AFTER :func:`_fill_missing_from_existing`. Here
+    #       every field is guaranteed non-``None`` by construction.
+    #
+    # Because (a) must not crash on ``None`` and (b) must not lose
+    # the caller-filled values, each Optional field is extracted into
+    # a local with a safe fallback that preserves the echo semantics:
+    #
+    #   • str fields  -> empty string ("") which matches how a
+    #     blank BMS input screen renders an un-submitted field.
+    #   • Decimal     -> ``Decimal("0")`` re-scaled via
+    #     :func:`safe_decimal` to preserve the 2-decimal-place
+    #     contract of the response schema.
+    #   • Date segments (year/month/day) -> ``""`` so
+    #     :func:`_format_date` returns an empty string rather than
+    #     raising ``ValueError``. Callers that refetch via GET will
+    #     replace the empty display with the stored value.
+    echo_active_status: str = request.active_status or ""
+    echo_credit_limit: Decimal = (
+        request.credit_limit if request.credit_limit is not None else Decimal("0")
+    )
+    echo_cash_credit_limit: Decimal = (
+        request.cash_credit_limit
+        if request.cash_credit_limit is not None
+        else Decimal("0")
+    )
+    echo_group_id: str = request.group_id or ""
+    echo_open_year: str = request.open_date_year or ""
+    echo_open_month: str = request.open_date_month or ""
+    echo_open_day: str = request.open_date_day or ""
+    echo_expiry_year: str = request.expiration_date_year or ""
+    echo_expiry_month: str = request.expiration_date_month or ""
+    echo_expiry_day: str = request.expiration_date_day or ""
+    echo_reissue_year: str = request.reissue_date_year or ""
+    echo_reissue_month: str = request.reissue_date_month or ""
+    echo_reissue_day: str = request.reissue_date_day or ""
+    echo_dob_year: str = request.customer_dob_year or ""
+    echo_dob_month: str = request.customer_dob_month or ""
+    echo_dob_day: str = request.customer_dob_day or ""
+    echo_ssn_part1: str = request.customer_ssn_part1 or ""
+    echo_ssn_part2: str = request.customer_ssn_part2 or ""
+    echo_ssn_part3: str = request.customer_ssn_part3 or ""
+    echo_fico: str = request.customer_fico_score or ""
+    echo_first_name: str = request.customer_first_name or ""
+    echo_middle_name: str = request.customer_middle_name or ""
+    echo_last_name: str = request.customer_last_name or ""
+    echo_addr_line_1: str = request.customer_addr_line_1 or ""
+    echo_addr_line_2: str = request.customer_addr_line_2 or ""
+    echo_city: str = request.customer_city or ""
+    echo_state_cd: str = request.customer_state_cd or ""
+    echo_country_cd: str = request.customer_country_cd or ""
+    echo_zip: str = request.customer_zip or ""
+    echo_phone_1_area: str = request.customer_phone_1_area or ""
+    echo_phone_1_prefix: str = request.customer_phone_1_prefix or ""
+    echo_phone_1_line: str = request.customer_phone_1_line or ""
+    echo_phone_2_area: str = request.customer_phone_2_area or ""
+    echo_phone_2_prefix: str = request.customer_phone_2_prefix or ""
+    echo_phone_2_line: str = request.customer_phone_2_line or ""
+    echo_govt_id: str = request.customer_govt_id or ""
+    echo_eft_account_id: str = request.customer_eft_account_id or ""
+    echo_pri_cardholder: str = request.customer_pri_cardholder or ""
+
     return AccountUpdateResponse(
         account_id=safe_acct_id,
-        active_status=request.active_status,
+        active_status=echo_active_status,
         open_date=_format_date(
-            request.open_date_year,
-            request.open_date_month,
-            request.open_date_day,
+            echo_open_year,
+            echo_open_month,
+            echo_open_day,
         ),
-        credit_limit=safe_decimal(request.credit_limit),
+        credit_limit=safe_decimal(echo_credit_limit),
         expiration_date=_format_date(
-            request.expiration_date_year,
-            request.expiration_date_month,
-            request.expiration_date_day,
+            echo_expiry_year,
+            echo_expiry_month,
+            echo_expiry_day,
         ),
-        cash_credit_limit=safe_decimal(request.cash_credit_limit),
+        cash_credit_limit=safe_decimal(echo_cash_credit_limit),
         reissue_date=_format_date(
-            request.reissue_date_year,
-            request.reissue_date_month,
-            request.reissue_date_day,
+            echo_reissue_year,
+            echo_reissue_month,
+            echo_reissue_day,
         ),
         # View-only monetary fields — not present on the update request.
         # We echo zero rather than a meaningless default so the response
@@ -2851,7 +3572,7 @@ def _build_update_error_response(
         # failed update to re-sync to the current persisted values.
         current_balance=safe_decimal(Decimal("0")),
         current_cycle_credit=safe_decimal(Decimal("0")),
-        group_id=request.group_id,
+        group_id=echo_group_id,
         current_cycle_debit=safe_decimal(Decimal("0")),
         # Customer: echo segmented values back into the display
         # forms so the JSON response is consistent with the view
@@ -2859,39 +3580,39 @@ def _build_update_error_response(
         customer_id="",
         customer_ssn=_format_ssn_display(
             _join_ssn(
-                request.customer_ssn_part1,
-                request.customer_ssn_part2,
-                request.customer_ssn_part3,
+                echo_ssn_part1,
+                echo_ssn_part2,
+                echo_ssn_part3,
             )
         ),
         customer_dob=_format_date(
-            request.customer_dob_year,
-            request.customer_dob_month,
-            request.customer_dob_day,
+            echo_dob_year,
+            echo_dob_month,
+            echo_dob_day,
         ),
-        customer_fico_score=request.customer_fico_score,
-        customer_first_name=request.customer_first_name,
-        customer_middle_name=request.customer_middle_name,
-        customer_last_name=request.customer_last_name,
-        customer_addr_line_1=request.customer_addr_line_1,
-        customer_state_cd=request.customer_state_cd,
-        customer_addr_line_2=request.customer_addr_line_2,
-        customer_zip=request.customer_zip,
-        customer_city=request.customer_city,
-        customer_country_cd=request.customer_country_cd,
+        customer_fico_score=echo_fico,
+        customer_first_name=echo_first_name,
+        customer_middle_name=echo_middle_name,
+        customer_last_name=echo_last_name,
+        customer_addr_line_1=echo_addr_line_1,
+        customer_state_cd=echo_state_cd,
+        customer_addr_line_2=echo_addr_line_2,
+        customer_zip=echo_zip,
+        customer_city=echo_city,
+        customer_country_cd=echo_country_cd,
         customer_phone_1=_format_phone_stored(
-            request.customer_phone_1_area,
-            request.customer_phone_1_prefix,
-            request.customer_phone_1_line,
+            echo_phone_1_area,
+            echo_phone_1_prefix,
+            echo_phone_1_line,
         ),
-        customer_govt_id=request.customer_govt_id,
+        customer_govt_id=echo_govt_id,
         customer_phone_2=_format_phone_stored(
-            request.customer_phone_2_area,
-            request.customer_phone_2_prefix,
-            request.customer_phone_2_line,
+            echo_phone_2_area,
+            echo_phone_2_prefix,
+            echo_phone_2_line,
         ),
-        customer_eft_account_id=request.customer_eft_account_id,
-        customer_pri_cardholder=request.customer_pri_cardholder,
+        customer_eft_account_id=echo_eft_account_id,
+        customer_pri_cardholder=echo_pri_cardholder,
         info_message=None,
         error_message=error_message,
     )

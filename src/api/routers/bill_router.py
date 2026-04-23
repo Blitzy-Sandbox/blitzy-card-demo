@@ -391,13 +391,22 @@ async def pay_bill(
     # is captured in CloudWatch for financial audit even when the
     # response body is not retained by intermediaries.
     # --------------------------------------------------------------
+    # Note: Python's ``logging`` module reserves the LogRecord attribute
+    # name ``message`` — passing ``message`` inside the ``extra`` dict
+    # would raise ``KeyError: "Attempt to overwrite 'message' in
+    # LogRecord"`` during ``Logger.makeRecord``. The response message
+    # is therefore exposed under the non-reserved key
+    # ``response_message``. This mirrors the ``args``->``resolved_args``
+    # rename applied in ``src/batch/jobs/tranrept_job.py`` for the same
+    # class of Python-stdlib reserved-attribute conflict (QA report
+    # Issue 24).
     logger.info(
         "Bill payment succeeded",
         extra={
             **log_context,
             "confirm": response.confirm,
             "current_balance": str(response.current_balance),
-            "message": response.message,
+            "response_message": response.message,
         },
     )
     return response

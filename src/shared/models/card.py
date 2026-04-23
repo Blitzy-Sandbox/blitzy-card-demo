@@ -310,10 +310,15 @@ class Card(Base):
     #
     # Indexed by ``ix_card_acct_id`` (see __table_args__ above) to
     # replicate the VSAM AIX CARDFILE.CARDAIX.PATH access path.
+    #
+    # DB column name: ``card_acct_id`` (per V1__schema.sql — all
+    # columns in the ``cards`` table carry the ``card_`` prefix).
     # ------------------------------------------------------------------
     acct_id: Mapped[str] = mapped_column(
+        "card_acct_id",
         String(11),
         nullable=False,
+        key="acct_id",
     )
 
     # ------------------------------------------------------------------
@@ -323,10 +328,14 @@ class Card(Base):
     # is a valid 3-digit CVV that would be silently collapsed to the
     # integer 7 if stored as a numeric column. Used for card-not-
     # present transaction verification.
+    #
+    # DB column name: ``card_cvv_cd``.
     # ------------------------------------------------------------------
     cvv_cd: Mapped[str] = mapped_column(
+        "card_cvv_cd",
         String(3),
         nullable=False,
+        key="cvv_cd",
     )
 
     # ------------------------------------------------------------------
@@ -335,10 +344,14 @@ class Card(Base):
     # 50-character name as printed on the physical card. May differ
     # from the owning Customer's full name for joint accounts,
     # authorised-user cards, and similar scenarios.
+    #
+    # DB column name: ``card_embossed_name``.
     # ------------------------------------------------------------------
     embossed_name: Mapped[str] = mapped_column(
+        "card_embossed_name",
         String(50),
         nullable=False,
+        key="embossed_name",
     )
 
     # ------------------------------------------------------------------
@@ -353,10 +366,15 @@ class Card(Base):
     #
     # 10-character YYYY-MM-DD string; validation delegated to
     # src.shared.utils.date_utils (which preserves the CSUTLDTC rules).
+    #
+    # DB column name: ``card_expiration_date`` (typo normalized in the
+    # PostgreSQL DDL per V1__schema.sql).
     # ------------------------------------------------------------------
     expiration_date: Mapped[str] = mapped_column(
+        "card_expiration_date",
         String(10),
         nullable=False,
+        key="expiration_date",
     )
 
     # ------------------------------------------------------------------
@@ -366,10 +384,14 @@ class Card(Base):
     # 'N' = card is inactive, all transactions must be rejected.
     # Consulted by the online card-management flows and by the
     # POSTTRAN batch reject-code cascade.
+    #
+    # DB column name: ``card_active_status``.
     # ------------------------------------------------------------------
     active_status: Mapped[str] = mapped_column(
+        "card_active_status",
         String(1),
         nullable=False,
+        key="active_status",
     )
 
     # ------------------------------------------------------------------

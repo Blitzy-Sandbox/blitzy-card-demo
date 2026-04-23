@@ -228,10 +228,17 @@ class TransactionCategory(Base):
     # Logical FK to ``transaction_type.tran_type``. Typical values:
     #   '01' Purchase · '02' Payment · '03' Credit · '04' Debit
     #   '05' Refund   · '06' Adjustment · '07' Fee
+    #
+    # DB column name: ``type_code`` (per V1__schema.sql — matches
+    # the PK of ``transaction_types`` for clean joins and the
+    # composite-PK convention used by
+    # ``transaction_category_balances``).
     # ------------------------------------------------------------------
     type_cd: Mapped[str] = mapped_column(
+        "type_code",
         String(2),
         primary_key=True,
+        key="type_cd",
     )
 
     # ------------------------------------------------------------------
@@ -242,10 +249,14 @@ class TransactionCategory(Base):
     # as an integer — preserves the COBOL label semantics and matches
     # the type used by ``DisclosureGroup.tran_cat_cd`` and
     # ``TransactionCategoryBalance.tran_cat_cd`` for clean joins.
+    #
+    # DB column name: ``cat_code``.
     # ------------------------------------------------------------------
     cat_cd: Mapped[str] = mapped_column(
+        "cat_code",
         String(4),
         primary_key=True,
+        key="cat_cd",
     )
 
     # ------------------------------------------------------------------
@@ -255,10 +266,14 @@ class TransactionCategory(Base):
     #   ('01', '0001', 'Regular Sales Draft')
     #   ('02', '0001', 'Cash payment')
     #   ('05', '0001', 'Refund credit')
+    #
+    # DB column name: ``tran_cat_type_desc``.
     # ------------------------------------------------------------------
     description: Mapped[str] = mapped_column(
+        "tran_cat_type_desc",
         String(50),
         nullable=False,
+        key="description",
     )
 
     # Note: COBOL ``FILLER PIC X(04)`` — the trailing 4 bytes of

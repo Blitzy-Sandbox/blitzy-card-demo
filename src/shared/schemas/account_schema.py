@@ -939,14 +939,28 @@ class AccountUpdateRequest(BaseModel):
 
     Optional Semantics
     ------------------
-    All 39 fields are declared as required (``...``) because the
-    underlying BMS flow submits every sub-field on every UPDATE
-    operation — a legacy CICS RECEIVE MAP always returns the full
-    set of input fields regardless of which were actually modified.
-    Callers that wish to express a "no change" intent for a given
-    field must submit the existing value rather than omitting the
-    field. This preserves bug-for-bug behavioral parity with the
-    legacy ``COACTUPC.cbl`` READ UPDATE / REWRITE flow.
+    Only ``account_id`` is required (as the path-body consistency check
+    anchor). All other 38 fields are declared :class:`~typing.Optional`
+    with a default value of ``None`` so that callers may submit partial
+    updates (e.g. ``{"account_id": "00000000001", "credit_limit":
+    "7500.00"}``) without re-supplying every unchanged field.
+
+    Any field omitted (or explicitly set to ``None``) is interpreted by
+    the service layer as "preserve the existing stored value" — the
+    service reads the current ``Account`` + ``Customer`` rows first and
+    fills in every ``None`` request field from the existing record
+    *before* running the COBOL ``1200-EDIT-MAP-INPUTS`` validation
+    cascade and the ``1205-COMPARE-OLD-NEW`` change-detection step. As
+    a result, the downstream business-logic pipeline always sees a
+    fully-populated request (matching the legacy BMS RECEIVE MAP
+    behaviour) while the wire contract supports REST-idiomatic partial
+    updates.
+
+    A caller that still wishes to submit the full 39-field payload (as
+    the legacy BMS flow did) may do so — every explicit value wins over
+    the current stored value. This preserves bug-for-bug behavioural
+    parity with ``COACTUPC.cbl`` for full-form updates while additionally
+    supporting partial updates per REST convention (QA finding #5).
     """
 
     # -- Account identity and status ---------------------------------
@@ -957,45 +971,50 @@ class AccountUpdateRequest(BaseModel):
             "11-character zero-padded account identifier. Maps to "
             "BMS field ACCTSIDI (PIC 9(11)). This is the URL path "
             "parameter's body counterpart; the service layer MUST "
-            "verify that the body's account_id matches the URL path."
+            "verify that the body's account_id matches the URL path. "
+            "Required on every request."
         ),
     )
-    active_status: str = Field(
-        ...,
+    active_status: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_FLAG_LEN,
         description=(
             "Account-active indicator ('Y' or 'N'). Maps to BMS "
-            "field ACSTTUSI (PIC X(1))."
+            "field ACSTTUSI (PIC X(1)). Optional — omit to preserve "
+            "the current stored value."
         ),
     )
     # -- Open date (segmented) ---------------------------------------
-    open_date_year: str = Field(
-        ...,
+    open_date_year: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_DATE_YEAR_LEN,
         description=(
             "Year segment of the account open date (CCYY, 4 digits). "
-            "Maps to BMS field OPNYEARI (PIC X(4))."
+            "Maps to BMS field OPNYEARI (PIC X(4)). Optional — omit "
+            "to preserve the current stored value."
         ),
     )
-    open_date_month: str = Field(
-        ...,
+    open_date_month: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_DATE_MM_DD_LEN,
         description=(
             "Month segment of the account open date (MM, 2 digits). "
-            "Maps to BMS field OPNMONI (PIC X(2))."
+            "Maps to BMS field OPNMONI (PIC X(2)). Optional — omit "
+            "to preserve the current stored value."
         ),
     )
-    open_date_day: str = Field(
-        ...,
+    open_date_day: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_DATE_MM_DD_LEN,
         description=(
             "Day segment of the account open date (DD, 2 digits). "
-            "Maps to BMS field OPNDAYI (PIC X(2))."
+            "Maps to BMS field OPNDAYI (PIC X(2)). Optional — omit "
+            "to preserve the current stored value."
         ),
     )
     # -- Credit limit (Decimal) --------------------------------------
-    credit_limit: Decimal = Field(
-        ...,
+    credit_limit: Optional[Decimal] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_digits=_MONEY_MAX_DIGITS,
         decimal_places=_MONEY_DECIMALS,
         description=(
@@ -1003,285 +1022,319 @@ class AccountUpdateRequest(BaseModel):
             "ACRDLIMI and VSAM field ACCT-CREDIT-LIMIT "
             "(PIC S9(10)V99). Decimal (not float) to preserve exact "
             "fixed-point semantics; stored as NUMERIC(15,2) in "
-            "Aurora."
+            "Aurora. Optional — omit to preserve the current stored "
+            "value."
         ),
     )
     # -- Expiration date (segmented) ---------------------------------
-    expiration_date_year: str = Field(
-        ...,
+    expiration_date_year: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_DATE_YEAR_LEN,
         description=(
             "Year segment of the account expiration date (CCYY). "
-            "Maps to BMS field EXPYEARI (PIC X(4))."
+            "Maps to BMS field EXPYEARI (PIC X(4)). Optional — omit "
+            "to preserve the current stored value."
         ),
     )
-    expiration_date_month: str = Field(
-        ...,
+    expiration_date_month: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_DATE_MM_DD_LEN,
         description=(
             "Month segment of the account expiration date (MM). "
-            "Maps to BMS field EXPMONI (PIC X(2))."
+            "Maps to BMS field EXPMONI (PIC X(2)). Optional — omit "
+            "to preserve the current stored value."
         ),
     )
-    expiration_date_day: str = Field(
-        ...,
+    expiration_date_day: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_DATE_MM_DD_LEN,
         description=(
             "Day segment of the account expiration date (DD). "
-            "Maps to BMS field EXPDAYI (PIC X(2))."
+            "Maps to BMS field EXPDAYI (PIC X(2)). Optional — omit "
+            "to preserve the current stored value."
         ),
     )
     # -- Cash credit limit (Decimal) ---------------------------------
-    cash_credit_limit: Decimal = Field(
-        ...,
+    cash_credit_limit: Optional[Decimal] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_digits=_MONEY_MAX_DIGITS,
         decimal_places=_MONEY_DECIMALS,
         description=(
             "Cash-advance sub-limit. Maps to BMS field ACSHLIMI and "
-            "VSAM field ACCT-CASH-CREDIT-LIMIT (PIC S9(10)V99)."
+            "VSAM field ACCT-CASH-CREDIT-LIMIT (PIC S9(10)V99). "
+            "Optional — omit to preserve the current stored value."
         ),
     )
     # -- Reissue date (segmented) ------------------------------------
-    reissue_date_year: str = Field(
-        ...,
+    reissue_date_year: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_DATE_YEAR_LEN,
         description=(
             "Year segment of the last reissue date (CCYY). Maps to "
-            "BMS field RISYEARI (PIC X(4))."
+            "BMS field RISYEARI (PIC X(4)). Optional — omit to "
+            "preserve the current stored value."
         ),
     )
-    reissue_date_month: str = Field(
-        ...,
+    reissue_date_month: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_DATE_MM_DD_LEN,
         description=(
             "Month segment of the last reissue date (MM). Maps to "
-            "BMS field RISMONI (PIC X(2))."
+            "BMS field RISMONI (PIC X(2)). Optional — omit to "
+            "preserve the current stored value."
         ),
     )
-    reissue_date_day: str = Field(
-        ...,
+    reissue_date_day: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_DATE_MM_DD_LEN,
         description=(
             "Day segment of the last reissue date (DD). Maps to "
-            "BMS field RISDAYI (PIC X(2))."
+            "BMS field RISDAYI (PIC X(2)). Optional — omit to "
+            "preserve the current stored value."
         ),
     )
     # -- Disclosure group --------------------------------------------
-    group_id: str = Field(
-        ...,
+    group_id: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_GROUP_ID_LEN,
         description=(
             "Disclosure-group identifier. Maps to BMS field AADDGRPI "
-            "(PIC X(10)) and VSAM field ACCT-GROUP-ID (PIC X(10))."
+            "(PIC X(10)) and VSAM field ACCT-GROUP-ID (PIC X(10)). "
+            "Optional — omit to preserve the current stored value."
         ),
     )
     # -- Customer SSN (segmented) ------------------------------------
-    customer_ssn_part1: str = Field(
-        ...,
+    customer_ssn_part1: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_SSN_PART1_LEN,
         description=(
             "SSN area number (first 3 digits). Maps to BMS field "
-            "ACTSSN1I (PIC X(3))."
+            "ACTSSN1I (PIC X(3)). Optional — omit to preserve the "
+            "current stored value."
         ),
     )
-    customer_ssn_part2: str = Field(
-        ...,
+    customer_ssn_part2: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_SSN_PART2_LEN,
         description=(
             "SSN group number (middle 2 digits). Maps to BMS field "
-            "ACTSSN2I (PIC X(2))."
+            "ACTSSN2I (PIC X(2)). Optional — omit to preserve the "
+            "current stored value."
         ),
     )
-    customer_ssn_part3: str = Field(
-        ...,
+    customer_ssn_part3: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_SSN_PART3_LEN,
         description=(
             "SSN serial number (last 4 digits). Maps to BMS field "
-            "ACTSSN3I (PIC X(4))."
+            "ACTSSN3I (PIC X(4)). Optional — omit to preserve the "
+            "current stored value."
         ),
     )
     # -- Customer date of birth (segmented) --------------------------
-    customer_dob_year: str = Field(
-        ...,
+    customer_dob_year: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_DATE_YEAR_LEN,
         description=(
             "Year segment of the customer date of birth (CCYY). "
-            "Maps to BMS field DOBYEARI (PIC X(4))."
+            "Maps to BMS field DOBYEARI (PIC X(4)). Optional — omit "
+            "to preserve the current stored value."
         ),
     )
-    customer_dob_month: str = Field(
-        ...,
+    customer_dob_month: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_DATE_MM_DD_LEN,
         description=(
             "Month segment of the customer date of birth (MM). "
-            "Maps to BMS field DOBMONI (PIC X(2))."
+            "Maps to BMS field DOBMONI (PIC X(2)). Optional — omit "
+            "to preserve the current stored value."
         ),
     )
-    customer_dob_day: str = Field(
-        ...,
+    customer_dob_day: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_DATE_MM_DD_LEN,
         description=(
             "Day segment of the customer date of birth (DD). Maps "
-            "to BMS field DOBDAYI (PIC X(2))."
+            "to BMS field DOBDAYI (PIC X(2)). Optional — omit to "
+            "preserve the current stored value."
         ),
     )
     # -- FICO + names ------------------------------------------------
-    customer_fico_score: str = Field(
-        ...,
+    customer_fico_score: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_FICO_LEN,
         description=(
             "Customer FICO credit score (3-character numeric "
-            "string). Maps to BMS field ACSTFCOI (PIC X(3))."
+            "string). Maps to BMS field ACSTFCOI (PIC X(3)). "
+            "Optional — omit to preserve the current stored value."
         ),
     )
-    customer_first_name: str = Field(
-        ...,
+    customer_first_name: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_NAME_LEN,
         description=(
             "Customer first (given) name (up to 25 characters). "
-            "Maps to BMS field ACSFNAMI (PIC X(25))."
+            "Maps to BMS field ACSFNAMI (PIC X(25)). Optional — "
+            "omit to preserve the current stored value."
         ),
     )
-    customer_middle_name: str = Field(
-        ...,
+    customer_middle_name: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_NAME_LEN,
         description=(
             "Customer middle name or initial (up to 25 characters). "
-            "Maps to BMS field ACSMNAMI (PIC X(25))."
+            "Maps to BMS field ACSMNAMI (PIC X(25)). Optional — "
+            "omit to preserve the current stored value."
         ),
     )
-    customer_last_name: str = Field(
-        ...,
+    customer_last_name: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_NAME_LEN,
         description=(
             "Customer last (family) name (up to 25 characters). "
-            "Maps to BMS field ACSLNAMI (PIC X(25))."
+            "Maps to BMS field ACSLNAMI (PIC X(25)). Optional — "
+            "omit to preserve the current stored value."
         ),
     )
     # -- Customer address (BMS screen order: line 1, state,
     #    line 2, zip, city, country) --------------------------------
-    customer_addr_line_1: str = Field(
-        ...,
+    customer_addr_line_1: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_ADDR_LINE_LEN,
         description=(
             "Customer address line 1 (up to 50 characters). Maps to "
-            "BMS field ACSADL1I (PIC X(50))."
+            "BMS field ACSADL1I (PIC X(50)). Optional — omit to "
+            "preserve the current stored value."
         ),
     )
-    customer_state_cd: str = Field(
-        ...,
+    customer_state_cd: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_STATE_CD_LEN,
         description=(
             "2-character US state code or territory abbreviation. "
-            "Maps to BMS field ACSSTTEI (PIC X(2))."
+            "Maps to BMS field ACSSTTEI (PIC X(2)). Optional — omit "
+            "to preserve the current stored value."
         ),
     )
-    customer_addr_line_2: str = Field(
-        ...,
+    customer_addr_line_2: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_ADDR_LINE_LEN,
         description=(
             "Customer address line 2 (up to 50 characters). Maps to "
-            "BMS field ACSADL2I (PIC X(50))."
+            "BMS field ACSADL2I (PIC X(50)). Optional — omit to "
+            "preserve the current stored value."
         ),
     )
-    customer_zip: str = Field(
-        ...,
+    customer_zip: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_ZIP_LEN,
         description=(
             "5-character base ZIP code. Maps to BMS field ACSZIPCI "
-            "(PIC X(5))."
+            "(PIC X(5)). Optional — omit to preserve the current "
+            "stored value."
         ),
     )
-    customer_city: str = Field(
-        ...,
+    customer_city: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_CITY_LEN,
         description=(
             "Customer city name (up to 50 characters). Maps to BMS "
-            "field ACSCITYI (PIC X(50))."
+            "field ACSCITYI (PIC X(50)). Optional — omit to "
+            "preserve the current stored value."
         ),
     )
-    customer_country_cd: str = Field(
-        ...,
+    customer_country_cd: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_COUNTRY_CD_LEN,
         description=(
             "3-character ISO country code. Maps to BMS field "
-            "ACSCTRYI (PIC X(3))."
+            "ACSCTRYI (PIC X(3)). Optional — omit to preserve the "
+            "current stored value."
         ),
     )
     # -- Primary phone (segmented) -----------------------------------
-    customer_phone_1_area: str = Field(
-        ...,
+    customer_phone_1_area: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_PHONE_AREA_LEN,
         description=(
             "Primary phone area code (3 digits). Maps to BMS field "
-            "ACSPH1AI (PIC X(3))."
+            "ACSPH1AI (PIC X(3)). Optional — omit to preserve the "
+            "current stored value."
         ),
     )
-    customer_phone_1_prefix: str = Field(
-        ...,
+    customer_phone_1_prefix: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_PHONE_PREFIX_LEN,
         description=(
             "Primary phone prefix / exchange (3 digits). Maps to "
-            "BMS field ACSPH1BI (PIC X(3))."
+            "BMS field ACSPH1BI (PIC X(3)). Optional — omit to "
+            "preserve the current stored value."
         ),
     )
-    customer_phone_1_line: str = Field(
-        ...,
+    customer_phone_1_line: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_PHONE_LINE_LEN,
         description=(
             "Primary phone line number (4 digits). Maps to BMS field "
-            "ACSPH1CI (PIC X(4))."
+            "ACSPH1CI (PIC X(4)). Optional — omit to preserve the "
+            "current stored value."
         ),
     )
     # -- Government ID -----------------------------------------------
-    customer_govt_id: str = Field(
-        ...,
+    customer_govt_id: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_GOVT_ID_LEN,
         description=(
             "Government-issued ID (up to 20 characters). Maps to "
-            "BMS field ACSGOVTI (PIC X(20))."
+            "BMS field ACSGOVTI (PIC X(20)). Optional — omit to "
+            "preserve the current stored value."
         ),
     )
     # -- Secondary phone (segmented) ---------------------------------
-    customer_phone_2_area: str = Field(
-        ...,
+    customer_phone_2_area: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_PHONE_AREA_LEN,
         description=(
             "Secondary phone area code (3 digits). Maps to BMS "
-            "field ACSPH2AI (PIC X(3))."
+            "field ACSPH2AI (PIC X(3)). Optional — omit to preserve "
+            "the current stored value."
         ),
     )
-    customer_phone_2_prefix: str = Field(
-        ...,
+    customer_phone_2_prefix: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_PHONE_PREFIX_LEN,
         description=(
             "Secondary phone prefix / exchange (3 digits). Maps to "
-            "BMS field ACSPH2BI (PIC X(3))."
+            "BMS field ACSPH2BI (PIC X(3)). Optional — omit to "
+            "preserve the current stored value."
         ),
     )
-    customer_phone_2_line: str = Field(
-        ...,
+    customer_phone_2_line: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_PHONE_LINE_LEN,
         description=(
             "Secondary phone line number (4 digits). Maps to BMS "
-            "field ACSPH2CI (PIC X(4))."
+            "field ACSPH2CI (PIC X(4)). Optional — omit to preserve "
+            "the current stored value."
         ),
     )
     # -- EFT account + primary-cardholder flag -----------------------
-    customer_eft_account_id: str = Field(
-        ...,
+    customer_eft_account_id: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_EFT_ACCT_LEN,
         description=(
             "EFT (Automated Clearing House) account identifier (10 "
-            "characters). Maps to BMS field ACSEFTCI (PIC X(10))."
+            "characters). Maps to BMS field ACSEFTCI (PIC X(10)). "
+            "Optional — omit to preserve the current stored value."
         ),
     )
-    customer_pri_cardholder: str = Field(
-        ...,
+    customer_pri_cardholder: Optional[str] = Field(  # noqa: UP045  # schema requires typing.Optional
+        default=None,
         max_length=_FLAG_LEN,
         description=(
             "Primary-cardholder indicator ('Y' or 'N'). Maps to BMS "
-            "field ACSPFLGI (PIC X(1))."
+            "field ACSPFLGI (PIC X(1)). Optional — omit to preserve "
+            "the current stored value."
         ),
     )
 
@@ -1328,7 +1381,9 @@ class AccountUpdateRequest(BaseModel):
 
     @field_validator("credit_limit", "cash_credit_limit")
     @classmethod
-    def _validate_monetary_non_negative(cls, value: Decimal) -> Decimal:
+    def _validate_monetary_non_negative(
+        cls, value: Optional[Decimal]  # noqa: UP045  # schema requires typing.Optional
+    ) -> Optional[Decimal]:  # noqa: UP045  # schema requires typing.Optional
         """Enforce non-negative monetary values on the update request.
 
         Both monetary fields accepted by the update request — the
@@ -1338,22 +1393,34 @@ class AccountUpdateRequest(BaseModel):
         ``current_balance <= credit_limit`` invariant enforced by the
         COBOL ``COACTUPC.cbl`` REWRITE logic.
 
+        Because both monetary fields are optional on the update
+        request (see partial-update support added for QA finding #5),
+        this validator accepts ``None`` and returns it unchanged. The
+        service layer fills any missing monetary values from the
+        currently-stored account record before business logic runs,
+        and the stored values are themselves guaranteed to be
+        non-negative by prior writes. Therefore, ``None`` is a valid
+        input that indicates "preserve the current stored value".
+
         Parameters
         ----------
-        value : Decimal
-            The monetary value supplied by the caller.
+        value : Optional[Decimal]
+            The monetary value supplied by the caller, or ``None`` if
+            the caller chose to omit this field on a partial update.
 
         Returns
         -------
-        Decimal
-            The unmodified value if valid.
+        Optional[Decimal]
+            The unmodified value if valid (or ``None`` when omitted).
 
         Raises
         ------
         ValueError
-            If ``value`` is not a :class:`~decimal.Decimal` instance
-            or is negative.
+            If ``value`` is supplied but is not a :class:`~decimal.Decimal`
+            instance or is negative.
         """
+        if value is None:
+            return None
         if not isinstance(value, Decimal):
             raise ValueError(
                 "monetary fields must be Decimal instances "

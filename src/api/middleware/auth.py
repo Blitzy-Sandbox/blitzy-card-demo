@@ -111,7 +111,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import HTTPException, Request, status
-from jose import JWTError, jwt  # type: ignore[import-untyped]
+from jose import JWTError, jwt
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
@@ -147,9 +147,6 @@ logger = logging.getLogger(__name__)
 #:
 #: * ``/auth/login``   — the sign-on endpoint (equivalent to COSGN00C's
 #:                       ``SEND-SIGNON-SCREEN`` paragraph on initial entry).
-#: * ``/auth/logout``  — logout endpoint (token discard; no JWT required
-#:                       to hit this endpoint — clients simply delete
-#:                       their cached token).
 #: * ``/health``       — liveness probe used by the ECS Fargate task
 #:                       (target group health checks) and Kubernetes-
 #:                       style readiness probes.
@@ -182,7 +179,6 @@ logger = logging.getLogger(__name__)
 PUBLIC_PATHS: set[str] = {
     "/",
     "/auth/login",
-    "/auth/logout",
     "/health",
     "/docs",
     "/redoc",

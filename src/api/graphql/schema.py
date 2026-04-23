@@ -73,6 +73,27 @@ Note that Strawberry converts Python ``snake_case`` to GraphQL
 ``camelCase`` automatically for field names, while GraphQL type
 names retain their original casing.
 
+Error Handling and Information Disclosure Safeguards
+----------------------------------------------------
+The schema is registered with a :class:`strawberry.extensions.MaskErrors`
+extension that inspects every :class:`graphql.GraphQLError` produced
+during query/mutation execution and replaces the error message with a
+generic placeholder when the underlying Python exception is a
+SQLAlchemy error. This prevents SQL statements, schema identifiers,
+bind-parameter values, and internal driver stack frames from being
+serialised into the GraphQL ``errors`` array — a defence-in-depth
+control that addresses the QA finding of SQL + parameter leakage in
+GraphQL error responses (AAP §0.7.2 security requirement).
+
+Legitimate exceptions that carry no sensitive internals — for example,
+:class:`PermissionError` raised by admin-only resolvers, and the
+plain :class:`Exception` messages raised by :mod:`~src.api.graphql.mutations`
+from service-layer responses (e.g. ``"Account not found"``) — are
+passed through unchanged so clients can still act on business
+outcomes. The predicate below is deliberately conservative: it masks
+only the known-leaky SQLAlchemy exception family, leaving every
+other error type untouched.
+
 Auto-Generated Schema
 ---------------------
 The :class:`strawberry.Schema` exposed by this module is ready for
@@ -105,11 +126,131 @@ Cloud migration (AAP §0.5.1).
 
 from __future__ import annotations
 
+import logging
+
 import strawberry
+from graphql import GraphQLError
+from sqlalchemy.exc import SQLAlchemyError
+from strawberry.extensions import MaskErrors
 from strawberry.fastapi import GraphQLRouter
 
 from src.api.graphql.mutations import Mutation
 from src.api.graphql.queries import Query
+
+# ----------------------------------------------------------------------------
+# Module-level logger — emits structured diagnostics for masked errors so
+# operators retain full SQL/stack visibility on the server side while
+# clients receive a sanitised generic message.
+# ----------------------------------------------------------------------------
+logger: logging.Logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Error masking predicate and generic message
+# ============================================================================
+# The GraphQL error surface is a known information-disclosure vector:
+# Strawberry's default behavior is to serialise the full ``str(exc)``
+# of any exception raised inside a resolver into the ``errors[*].message``
+# field of the JSON response. For SQLAlchemy exceptions this includes
+# the complete rendered SQL statement and the bind-parameter values —
+# which may contain PII (account IDs, card numbers, monetary amounts)
+# and leaks the internal schema (table and column names) to untrusted
+# callers.
+#
+# The :class:`strawberry.extensions.MaskErrors` extension addresses
+# this by giving us a hook point in the post-execution pipeline where
+# we can decide, per-error, whether to replace the outgoing message
+# with a generic placeholder. The predicate below returns ``True`` ONLY
+# for SQLAlchemy's exception hierarchy (and its :class:`~sqlalchemy.exc.DBAPIError`
+# subtree, which covers wrapped driver-level errors), so:
+#
+# * Database failures (connectivity issues, constraint violations,
+#   schema mismatches, etc.) → masked to ``_MASKED_ERROR_MESSAGE``.
+#   The original exception is still logged server-side with the full
+#   stack trace via :meth:`logging.Logger.exception` inside the
+#   resolver (queries.py / mutations.py), so operators retain full
+#   diagnostic context.
+#
+# * Business-logic errors raised from mutations (plain ``Exception``
+#   with messages like ``"Account not found"`` or ``"Invalid account
+#   update payload: ..."``) → passed through unchanged. These are
+#   safe by construction — the messages are authored by the
+#   application and contain only user-facing text.
+#
+# * Authorization failures (:class:`PermissionError` raised by
+#   ``_require_admin``) → passed through unchanged. The message is
+#   always the literal string ``"Admin privileges required"`` and
+#   must reach the client so UI layers can prompt re-authentication.
+#
+# * Unexpected / unknown errors → passed through unchanged. This is
+#   deliberate: masking an unknown error class risks hiding a
+#   genuine application bug from the client. A future tightening
+#   pass can widen the mask predicate once the error inventory is
+#   exhaustively documented, but the current default preserves
+#   debuggability while addressing the specific SQL-leak vector.
+# ============================================================================
+_MASKED_ERROR_MESSAGE: str = (
+    "A database error occurred while processing the request. "
+    "The incident has been logged. Please retry the operation or "
+    "contact an administrator if the issue persists."
+)
+
+
+def _should_mask_error(error: GraphQLError) -> bool:
+    """Predicate selecting which :class:`GraphQLError` instances to mask.
+
+    Returns ``True`` when the wrapped ``original_error`` is a
+    SQLAlchemy exception (including any :class:`~sqlalchemy.exc.DBAPIError`
+    subclass such as :class:`~sqlalchemy.exc.IntegrityError`,
+    :class:`~sqlalchemy.exc.OperationalError`, or
+    :class:`~sqlalchemy.exc.StaleDataError`). Returns ``False`` for
+    every other exception type so that authorization failures
+    (:class:`PermissionError`), plain :class:`Exception` business
+    messages raised by mutations, and the null-``original_error``
+    case (GraphQL protocol errors such as validation failures) pass
+    through unchanged.
+
+    Parameters
+    ----------
+    error : GraphQLError
+        The executor-produced error object under consideration. Its
+        ``original_error`` attribute is the wrapped Python exception;
+        it may be ``None`` for protocol-level errors (unknown field,
+        type mismatch, etc.), in which case the error is left as-is.
+
+    Returns
+    -------
+    bool
+        ``True`` to replace the error's message with
+        :data:`_MASKED_ERROR_MESSAGE`; ``False`` to leave the error
+        untouched.
+
+    Notes
+    -----
+    When this predicate returns ``True``, a server-side warning is
+    also logged with the unsanitised original exception so operators
+    have full diagnostic visibility. The client sees only the
+    sanitised generic message.
+    """
+    original: BaseException | None = error.original_error
+    if isinstance(original, SQLAlchemyError):
+        # Emit a single structured warning with the original exception
+        # type so server-side operators can correlate client incidents
+        # with the full stack trace in the logs. The resolver itself
+        # has already called ``logger.exception(...)`` with the
+        # request context, so this log line provides only the high-
+        # level marker for the sanitisation event.
+        logger.warning(
+            "GraphQL error masked: SQLAlchemy exception sanitised",
+            extra={
+                "operation": "graphql_error_mask",
+                "original_error_type": type(original).__name__,
+                "path": list(error.path) if error.path is not None else None,
+            },
+        )
+        return True
+    return False
+
 
 # ============================================================================
 # Strawberry schema
@@ -128,8 +269,23 @@ from src.api.graphql.queries import Query
 # transitively via type annotations on the resolvers. Adding an
 # explicit ``types=[...]`` argument is unnecessary and would make
 # the schema brittle to new types being added in the future.
+#
+# The :class:`strawberry.extensions.MaskErrors` extension is
+# registered with the :func:`_should_mask_error` predicate so that
+# SQLAlchemy exceptions that propagate out of resolvers are
+# sanitised into a generic client-facing message before the GraphQL
+# JSON response is serialised (see module docstring for rationale).
 # ============================================================================
-schema: strawberry.Schema = strawberry.Schema(query=Query, mutation=Mutation)
+schema: strawberry.Schema = strawberry.Schema(
+    query=Query,
+    mutation=Mutation,
+    extensions=[
+        MaskErrors(
+            should_mask_error=_should_mask_error,
+            error_message=_MASKED_ERROR_MESSAGE,
+        ),
+    ],
+)
 
 
 # ============================================================================

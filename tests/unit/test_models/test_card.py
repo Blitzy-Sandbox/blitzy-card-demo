@@ -308,7 +308,13 @@ def test_column_count() -> None:
     # As a second-level guard, verify the column *names* match
     # the expected set exactly. This catches renames (which would
     # not change the count) and spelling regressions.
-    actual_names = frozenset(c.name for c in columns)
+    #
+    # NOTE: We compare against ``Column.key`` (Python attribute
+    # name) rather than ``Column.name`` (DB column name, e.g.
+    # ``card_acct_id``). ``_EXPECTED_COLUMNS`` uses Python-style
+    # names — the DB column names are separately verified by the
+    # SQL migration tests.
+    actual_names = frozenset(c.key for c in columns)
     assert actual_names == _EXPECTED_COLUMNS, (
         f"Card column names must be exactly "
         f"{sorted(_EXPECTED_COLUMNS)!r}; found "
@@ -909,13 +915,19 @@ def test_acct_id_index() -> None:
         f"{[c.name for c in indexed_columns]!r}"
     )
 
-    # The single column must be ``acct_id``.
-    indexed_column_name = indexed_columns[0].name
-    assert indexed_column_name == "acct_id", (
+    # The single column must be ``acct_id`` (Python attribute key).
+    # Column.key is the Python-side access key (e.g. ``acct_id``),
+    # while Column.name is the DB-side physical column name
+    # (``card_acct_id``). The Index is declared on the Python key
+    # via ``Index('ix_card_acct_id', 'acct_id')`` in
+    # ``src/shared/models/card.py`` so the expected match here is
+    # the key, not the physical DB column name.
+    indexed_column_key = indexed_columns[0].key
+    assert indexed_column_key == "acct_id", (
         f"Index {_EXPECTED_ACCT_ID_INDEX_NAME!r} must be on the "
         f"'acct_id' column (the relational target of COBOL "
         f"CARD-ACCT-ID PIC 9(11)); found column "
-        f"{indexed_column_name!r}"
+        f"{indexed_column_key!r}"
     )
 
     # Non-unique — a single account can own multiple cards,
@@ -1265,25 +1277,30 @@ def test_no_filler_columns() -> None:
     guards against the FILLER anti-pattern.
     """
     columns = Card.__table__.columns
-    column_names = frozenset(c.name for c in columns)
+    # Level 1 compares against ``_EXPECTED_COLUMNS`` (Python attribute
+    # names), so use ``Column.key``. Level 2 scans BOTH Python key
+    # AND DB column name for ``'filler'``.
+    column_keys = frozenset(c.key for c in columns)
+    column_db_names = frozenset(c.name for c in columns)
 
-    # Level 1 — exact set match.
-    assert column_names == _EXPECTED_COLUMNS, (
+    # Level 1 — exact set match (Python attribute names).
+    assert column_keys == _EXPECTED_COLUMNS, (
         f"Card column set must be exactly "
         f"{sorted(_EXPECTED_COLUMNS)!r} (7 columns: 6 COBOL "
         f"named fields + 1 Python version_id). COBOL FILLER "
         f"PIC X(59) at the end of CARD-RECORD must NOT be "
         f"mapped — it is purely structural padding to bring "
         f"the VSAM record to RECLN=150. Found "
-        f"{sorted(column_names)!r}; unexpected: "
-        f"{sorted(column_names - _EXPECTED_COLUMNS)!r}; "
-        f"missing: {sorted(_EXPECTED_COLUMNS - column_names)!r}"
+        f"{sorted(column_keys)!r}; unexpected: "
+        f"{sorted(column_keys - _EXPECTED_COLUMNS)!r}; "
+        f"missing: {sorted(_EXPECTED_COLUMNS - column_keys)!r}"
     )
 
     # Level 2 — keyword-search for FILLER-style names. Scan
-    # every column name for substrings that would suggest an
-    # accidentally-mapped padding field.
-    for column_name in column_names:
+    # every column name (both Python key AND DB column name) for
+    # substrings that would suggest an accidentally-mapped padding
+    # field.
+    for column_name in column_keys | column_db_names:
         assert "filler" not in column_name.lower(), (
             f"Card must not expose any FILLER-style column "
             f"(COBOL FILLER PIC X(59) is padding and carries "

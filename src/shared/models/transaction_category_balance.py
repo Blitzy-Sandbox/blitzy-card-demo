@@ -303,10 +303,15 @@ class TransactionCategoryBalance(Base):
     # Logical FK to ``transaction_type.tran_type``. Typical values:
     #   '01' Purchase · '02' Payment · '03' Credit · '04' Debit
     #   '05' Refund   · '06' Adjustment · '07' Fee
+    #
+    # DB column name: ``type_code`` (per V1__schema.sql — the physical
+    # column is named ``type_code``, not ``type_cd``).
     # ------------------------------------------------------------------
     type_cd: Mapped[str] = mapped_column(
+        "type_code",
         String(2),
         primary_key=True,
+        key="type_cd",
     )
 
     # ------------------------------------------------------------------
@@ -319,10 +324,15 @@ class TransactionCategoryBalance(Base):
     # ``DisclosureGroup.tran_cat_cd`` for clean composite-key joins.
     # Together with ``type_cd`` this forms a logical FK to
     # ``transaction_category.(type_cd, cat_cd)``.
+    #
+    # DB column name: ``cat_code`` (per V1__schema.sql — the physical
+    # column is named ``cat_code``, not ``cat_cd``).
     # ------------------------------------------------------------------
     cat_cd: Mapped[str] = mapped_column(
+        "cat_code",
         String(4),
         primary_key=True,
+        key="cat_cd",
     )
 
     # ------------------------------------------------------------------
@@ -348,11 +358,18 @@ class TransactionCategoryBalance(Base):
     #     encounters a never-before-seen category combination for
     #     an account — is arithmetic-neutral and produces correct
     #     posting/interest results from the first transaction on.
+    #
+    # DB column name: ``tran_cat_bal``. The physical column is
+    # NUMERIC(11,2) in V1__schema.sql — the Python Numeric(15, 2)
+    # size is merely a CREATE-TABLE hint and never affects reads
+    # or writes against an existing database.
     # ------------------------------------------------------------------
     balance: Mapped[Decimal] = mapped_column(
+        "tran_cat_bal",
         Numeric(15, 2),
         nullable=False,
         default=Decimal("0.00"),
+        key="balance",
     )
 
     # Note: COBOL ``FILLER PIC X(22)`` — the trailing 22 bytes of

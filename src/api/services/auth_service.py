@@ -152,8 +152,8 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from jose import JWTError, jwt  # type: ignore[import-untyped]
-from passlib.context import CryptContext  # type: ignore[import-untyped]
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 

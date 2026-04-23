@@ -185,7 +185,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from passlib.context import CryptContext  # type: ignore[import-untyped]
+from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.services.user_service import (

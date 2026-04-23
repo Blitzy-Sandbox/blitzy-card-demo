@@ -1473,10 +1473,19 @@ def main() -> None:
     # Log the resolved arguments (filtering out keys that start with
     # ``--`` which are raw argv entries; we only want the resolved
     # key=value pairs).
+    #
+    # IMPORTANT: The ``extra`` dict must NOT use the key name ``args``
+    # because Python's ``logging.Logger.makeRecord`` reserves ``args``
+    # as an internal :class:`LogRecord` attribute (used to carry the
+    # positional format-string arguments). Passing ``extra={"args": ...}``
+    # triggers ``KeyError: "Attempt to overwrite 'args' in LogRecord"``.
+    # The key was renamed to ``resolved_args`` to resolve QA Checkpoint
+    # 5 Issue 24 (tranrept_job crashes on import / invocation); this
+    # unblocks the entire Stage 4b pipeline branch.
     logger.info(
         "Resolved Glue arguments",
         extra={
-            "args": {
+            "resolved_args": {
                 k: v
                 for k, v in resolved_args.items()
                 if not k.startswith("--")

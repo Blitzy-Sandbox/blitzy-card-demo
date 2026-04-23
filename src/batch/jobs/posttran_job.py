@@ -244,6 +244,14 @@ from pyspark.sql.types import (
 # ``init_glue`` / ``commit_job``     → GlueContext + SparkSession lifecycle
 # ``read_table``                     → JDBC SELECT * into a lazy DataFrame
 # ``write_table``                    → JDBC INSERT / overwrite from DataFrame
+# ``write_table_idempotent``         → JDBC INSERT ... ON CONFLICT DO NOTHING
+#                                      (Spark-side equivalent; filters input
+#                                      DataFrame to exclude rows whose PK
+#                                      already exists in the target). Used
+#                                      for the ``transactions`` append at
+#                                      Step 4a to make POSTTRAN retry-safe
+#                                      per QA Checkpoint 5 Issue 22 and
+#                                      AAP §0.7.1.
 # ``get_connection_options``         → JDBC connection opts dict (url, user, …)
 # ``get_versioned_s3_path``          → DALYREJS(+1) → s3://bucket/rejects/…
 # ``write_to_s3``                    → Write reject payload to S3 object
@@ -252,6 +260,7 @@ from src.batch.common.db_connector import (
     get_connection_options,
     read_table,
     write_table,
+    write_table_idempotent,
 )
 from src.batch.common.glue_context import commit_job, init_glue
 from src.batch.common.s3_utils import get_versioned_s3_path, write_to_s3
@@ -1827,17 +1836,114 @@ def main() -> None:
         # --------------------------------------------------------------
         # Step 4: Bulk writes back to PostgreSQL + S3.
         # --------------------------------------------------------------
-        # 4a. Posted transactions → transactions table (append).
+        # 4a. Posted transactions → transactions table (idempotent append).
+        #
+        # Uses :func:`write_table_idempotent` rather than plain
+        # :func:`write_table` to make POSTTRAN safe to re-run after a
+        # partial-failure scenario — resolves QA Checkpoint 5 Issue 22.
+        #
+        # Background
+        # ----------
+        # POSTTRAN commits four side-effects in sequence:
+        #   (4a) append to ``transactions``   (DB, JDBC autocommit)
+        #   (4b) overwrite ``accounts``        (DB, JDBC autocommit)
+        #   (4c) overwrite ``transaction_category_balances`` (DB, autocommit)
+        #   (4d) upload rejects to S3 (DALYREJS(+1))
+        #
+        # Steps 4b and 4c are already idempotent by construction because
+        # they use ``mode="overwrite"`` — the full table is rewritten
+        # from ``account_lookup`` / ``tcatbal_lookup``, both of which
+        # carry the complete post-processing state for every touched
+        # record. A retry produces the same final state regardless of
+        # how many times it runs.
+        #
+        # Step 4a was NOT idempotent before this fix: the plain
+        # ``mode="append"`` JDBC INSERT triggered
+        # ``duplicate key value violates unique constraint
+        # "transactions_pkey"`` on any retry after the first run
+        # committed at least one row. Because Step 4a commits BEFORE
+        # Step 4d executes, any failure during the S3 upload leaves
+        # the ``transactions`` table partially populated — e.g. 262 of
+        # 300 posted rows committed — and the retry is guaranteed to
+        # fail at Step 4a before it can reach Step 4d.
+        #
+        # Fix
+        # ---
+        # :func:`write_table_idempotent` reads the already-posted
+        # ``tran_id`` values from the ``transactions`` table, performs
+        # a ``left_anti`` join against the DataFrame to exclude them,
+        # and appends only the remainder. On a fresh run with zero
+        # pre-existing rows the function writes all 300 posted rows;
+        # on a retry after the first 262 have committed, it writes
+        # only the 38 that are still missing; on a clean re-run of a
+        # fully-committed batch it is a no-op. This replicates the
+        # semantic of PostgreSQL's
+        # ``INSERT INTO transactions (...) ... ON CONFLICT (tran_id)
+        # DO NOTHING`` at the Spark DataFrame layer, because Spark's
+        # JDBC writer does not expose PostgreSQL-specific conflict
+        # handling natively.
+        #
+        # AAP alignment
+        # -------------
+        # * §0.7.1 — Preserve POSTTRAN functionality exactly, including
+        #   safe retry behaviour (the original JES2 JCL was idempotent
+        #   because VSAM ``REWRITE`` on an unchanged key is a no-op).
+        # * §0.4.4 — Transactional Outbox pattern — the Spark-side
+        #   analogue of INSERT ... ON CONFLICT DO NOTHING for JDBC
+        #   sources that lack native conflict clauses.
+        # * §0.7.2 — Batch pipeline sequencing (Stage 1 runs serially
+        #   under Step Functions, so TOCTOU across the anti-join and
+        #   the append is not a concern for POSTTRAN).
         if posted_transactions:
             posted_df = spark.createDataFrame(
                 [Row(**record) for record in posted_transactions],
                 schema=_build_posted_tran_schema(),
             )
-            write_table(posted_df, "transactions", mode="append")
-            logger.info(
-                "Wrote %d posted transaction(s) to the transactions table.",
-                len(posted_transactions),
+            # ``tran_id`` is the single-column PRIMARY KEY on the
+            # ``transactions`` table (see ``db/migrations/V1__schema.sql``).
+            # The idempotency filter joins on this key and appends only
+            # rows whose ``tran_id`` is not already present in the
+            # target — matching the COBOL WS-NEW-TRAN-ID generation
+            # semantics that produce a monotonically increasing
+            # identifier for every posted row.
+            rows_inserted = write_table_idempotent(
+                spark,
+                posted_df,
+                "transactions",
+                key_columns=["tran_id"],
             )
+            if rows_inserted == len(posted_transactions):
+                logger.info(
+                    "Wrote %d posted transaction(s) to the transactions "
+                    "table (clean run — no pre-existing keys).",
+                    rows_inserted,
+                )
+            elif rows_inserted > 0:
+                # Partial retry: some rows were committed on a prior
+                # attempt. This is the scenario Issue 22 describes
+                # (first run committed 262/300, second run needs to
+                # write the remaining 38). Log explicitly so
+                # operators can correlate the count with the prior
+                # failure.
+                logger.info(
+                    "Wrote %d new posted transaction(s); %d were "
+                    "already present from a prior attempt (retry-safe "
+                    "idempotent append).",
+                    rows_inserted,
+                    len(posted_transactions) - rows_inserted,
+                )
+            else:
+                # rows_inserted == 0 — a full re-run of an already-
+                # committed batch. The DB side is a no-op; Step 4d
+                # (S3 reject upload) will still run below and can
+                # re-upload the rejects deterministically.
+                logger.info(
+                    "All %d posted transaction(s) were already present "
+                    "in the transactions table; idempotent append was "
+                    "a no-op (full re-run of a previously-committed "
+                    "batch).",
+                    len(posted_transactions),
+                )
         else:
             logger.info(
                 "No posted transactions to write (every daily transaction "

@@ -431,6 +431,9 @@ class Transaction(Base):
     # additions, or propagated from the ``daily_transaction`` staging
     # row for batch-posted transactions. Stored as String(16) to
     # preserve the original character representation byte-for-byte.
+    #
+    # DB column name: ``tran_id`` (matches the Python attribute —
+    # PK retains the ``tran_`` prefix without redundant renaming).
     # ------------------------------------------------------------------
     tran_id: Mapped[str] = mapped_column(
         String(16),
@@ -445,10 +448,15 @@ class Transaction(Base):
     # whether the transaction is a debit (purchase, fee, cash
     # advance, interest accrual) or credit (payment, refund) for
     # balance-update direction.
+    #
+    # DB column name: ``tran_type_cd`` (per V1__schema.sql — all
+    # columns in the ``transactions`` table carry the ``tran_`` prefix).
     # ------------------------------------------------------------------
     type_cd: Mapped[str] = mapped_column(
+        "tran_type_cd",
         String(2),
         nullable=False,
+        key="type_cd",
     )
 
     # ------------------------------------------------------------------
@@ -461,10 +469,14 @@ class Transaction(Base):
     # during POSTTRAN and which interest rate applies during INTCALC
     # (via the ``disclosure_group`` table, with DEFAULT / ZEROAPR
     # fallback per AAP §0.7.1).
+    #
+    # DB column name: ``tran_cat_cd``.
     # ------------------------------------------------------------------
     cat_cd: Mapped[str] = mapped_column(
+        "tran_cat_cd",
         String(4),
         nullable=False,
+        key="cat_cd",
     )
 
     # ------------------------------------------------------------------
@@ -473,10 +485,14 @@ class Transaction(Base):
     # Identifies the upstream system that produced the record (e.g.
     # 'POS', 'ATM', 'ONLINE', 'BATCH'). Used for audit and
     # reconciliation reporting on TRANREPT.
+    #
+    # DB column name: ``tran_source``.
     # ------------------------------------------------------------------
     source: Mapped[str] = mapped_column(
+        "tran_source",
         String(10),
         nullable=False,
+        key="source",
     )
 
     # ------------------------------------------------------------------
@@ -485,11 +501,15 @@ class Transaction(Base):
     # Free-text description printed on statements (CREASTMT) and
     # transaction reports (TRANREPT). Default empty string ensures
     # non-NULL storage even when the producer omits a description.
+    #
+    # DB column name: ``tran_desc``.
     # ------------------------------------------------------------------
     description: Mapped[str] = mapped_column(
+        "tran_desc",
         String(100),
         nullable=False,
         default="",
+        key="description",
     )
 
     # ------------------------------------------------------------------
@@ -504,11 +524,15 @@ class Transaction(Base):
     # matching ``TransactionCategoryBalance`` bucket and applied to
     # ``Account.curr_bal`` during POSTTRAN. NEVER represented as a
     # floating-point number (AAP §0.7.2 — Financial Precision).
+    #
+    # DB column name: ``tran_amt``.
     # ------------------------------------------------------------------
     amount: Mapped[Decimal] = mapped_column(
+        "tran_amt",
         Numeric(15, 2),
         nullable=False,
         default=Decimal("0.00"),
+        key="amount",
     )
 
     # ------------------------------------------------------------------
@@ -517,11 +541,15 @@ class Transaction(Base):
     # Stored as String(9) to preserve leading zeros. Default empty
     # string accommodates non-merchant transactions (payments, fees,
     # interest accrual rows).
+    #
+    # DB column name: ``tran_merchant_id``.
     # ------------------------------------------------------------------
     merchant_id: Mapped[str] = mapped_column(
+        "tran_merchant_id",
         String(9),
         nullable=False,
         default="",
+        key="merchant_id",
     )
 
     # ------------------------------------------------------------------
@@ -530,33 +558,45 @@ class Transaction(Base):
     # Denormalised snapshot of the merchant directory name, captured
     # at transaction time so that statements and reports render the
     # historical name even if the directory is later updated.
+    #
+    # DB column name: ``tran_merchant_name``.
     # ------------------------------------------------------------------
     merchant_name: Mapped[str] = mapped_column(
+        "tran_merchant_name",
         String(50),
         nullable=False,
         default="",
+        key="merchant_name",
     )
 
     # ------------------------------------------------------------------
     # Merchant city (COBOL ``TRAN-MERCHANT-CITY`` PIC X(50))
     #
     # Denormalised snapshot like ``merchant_name``.
+    #
+    # DB column name: ``tran_merchant_city``.
     # ------------------------------------------------------------------
     merchant_city: Mapped[str] = mapped_column(
+        "tran_merchant_city",
         String(50),
         nullable=False,
         default="",
+        key="merchant_city",
     )
 
     # ------------------------------------------------------------------
     # Merchant ZIP / postal code (COBOL ``TRAN-MERCHANT-ZIP`` PIC X(10))
     #
     # Accommodates both US 5-digit and US 9-digit ZIP+4 formats.
+    #
+    # DB column name: ``tran_merchant_zip``.
     # ------------------------------------------------------------------
     merchant_zip: Mapped[str] = mapped_column(
+        "tran_merchant_zip",
         String(10),
         nullable=False,
         default="",
+        key="merchant_zip",
     )
 
     # ------------------------------------------------------------------
@@ -567,10 +607,14 @@ class Transaction(Base):
     # if unknown) and during online transaction-add (``COTRN02C``)
     # to attach the transaction to the correct account. Stored as
     # String(16) to preserve the exact VSAM byte layout.
+    #
+    # DB column name: ``tran_card_num``.
     # ------------------------------------------------------------------
     card_num: Mapped[str] = mapped_column(
+        "tran_card_num",
         String(16),
         nullable=False,
+        key="card_num",
     )
 
     # ------------------------------------------------------------------
@@ -581,11 +625,15 @@ class Transaction(Base):
     # Denotes when the transaction originated at the upstream system.
     # Parsing to ``datetime`` occurs in the application / PySpark
     # layers, not the schema layer.
+    #
+    # DB column name: ``tran_orig_ts``.
     # ------------------------------------------------------------------
     orig_ts: Mapped[str] = mapped_column(
+        "tran_orig_ts",
         String(26),
         nullable=False,
         default="",
+        key="orig_ts",
     )
 
     # ------------------------------------------------------------------
@@ -597,11 +645,15 @@ class Transaction(Base):
     # ``TRANFILE.AIX`` VSAM alternate index. Supports efficient
     # date-range queries from CREASTMT (statement generation) and
     # TRANREPT (transaction reports).
+    #
+    # DB column name: ``tran_proc_ts``.
     # ------------------------------------------------------------------
     proc_ts: Mapped[str] = mapped_column(
+        "tran_proc_ts",
         String(26),
         nullable=False,
         default="",
+        key="proc_ts",
     )
 
     # Note: COBOL ``FILLER PIC X(20)`` — the trailing 20 bytes of

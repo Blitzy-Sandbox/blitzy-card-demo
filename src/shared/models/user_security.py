@@ -157,18 +157,28 @@ class UserSecurity(Base):
 
     # ------------------------------------------------------------------
     # First name (COBOL ``SEC-USR-FNAME`` PIC X(20))
+    #
+    # DB column name: ``sec_usr_fname`` (per V1__schema.sql —
+    # non-PK columns in the ``user_security`` table carry the
+    # ``sec_usr_`` prefix).
     # ------------------------------------------------------------------
     first_name: Mapped[str] = mapped_column(
+        "sec_usr_fname",
         String(20),
         nullable=False,
+        key="first_name",
     )
 
     # ------------------------------------------------------------------
     # Last name (COBOL ``SEC-USR-LNAME`` PIC X(20))
+    #
+    # DB column name: ``sec_usr_lname``.
     # ------------------------------------------------------------------
     last_name: Mapped[str] = mapped_column(
+        "sec_usr_lname",
         String(20),
         nullable=False,
+        key="last_name",
     )
 
     # ------------------------------------------------------------------
@@ -181,10 +191,18 @@ class UserSecurity(Base):
     # explicitly required by AAP §0.7.2 to upgrade from cleartext
     # 8-char passwords to BCrypt hashed storage. Plaintext is never
     # persisted; authentication verifies via ``passlib.hash.bcrypt``.
+    #
+    # DB column name: ``sec_usr_pwd``. The physical column is
+    # VARCHAR(100) in V1__schema.sql (extra headroom); the Python
+    # String(60) size is merely a CREATE-TABLE hint and never affects
+    # existing-database reads or writes — BCrypt digests always occupy
+    # exactly 60 characters.
     # ------------------------------------------------------------------
     password: Mapped[str] = mapped_column(
+        "sec_usr_pwd",
         String(60),
         nullable=False,
+        key="password",
     )
 
     # ------------------------------------------------------------------
@@ -193,10 +211,14 @@ class UserSecurity(Base):
     # Values (matches COBOL 88-level conditions in USRSEC copybooks):
     #   'A' — Administrator  (admin menu COADM01C)
     #   'U' — Regular user   (main menu  COMEN01C)
+    #
+    # DB column name: ``sec_usr_type``.
     # ------------------------------------------------------------------
     usr_type: Mapped[str] = mapped_column(
+        "sec_usr_type",
         String(1),
         nullable=False,
+        key="usr_type",
     )
 
     # Note: COBOL ``SEC-USR-FILLER PIC X(23)`` — the trailing 23 bytes of

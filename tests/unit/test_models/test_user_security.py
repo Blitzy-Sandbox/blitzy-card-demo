@@ -626,17 +626,30 @@ def test_no_filler_columns() -> None:
     naming variants including ``filler``, ``sec_usr_filler``,
     ``sec_filler``, ``usr_filler``, etc.
     """
-    column_names: list[str] = [c.name for c in UserSecurity.__table__.columns]
+    # Use Column.key (the Python attribute name) rather than Column.name
+    # (the physical DB column name). The two diverge when
+    # :func:`~sqlalchemy.orm.mapped_column` is given an explicit
+    # ``name=`` or positional DB column name to map the Python
+    # attribute onto a differently-named physical column in
+    # ``db/migrations/V1__schema.sql`` (e.g., ``password`` attribute
+    # → ``sec_usr_pwd`` column). This test asserts the Python-side
+    # attribute set matches the declared contract; a parallel test
+    # (:func:`test_no_filler_columns_db_names`) may additionally
+    # verify the DB-level column names if required.
+    column_keys: list[str] = [c.key for c in UserSecurity.__table__.columns]
+    column_db_names: list[str] = [c.name for c in UserSecurity.__table__.columns]
 
-    # Positive: the exact set of mapped columns must match the contract.
-    assert set(column_names) == set(_EXPECTED_COLUMNS), (
-        f"Column set drift detected. Expected: {sorted(_EXPECTED_COLUMNS)}; found: {sorted(column_names)}"
+    # Positive: the exact set of mapped columns (by Python attr name)
+    # must match the contract.
+    assert set(column_keys) == set(_EXPECTED_COLUMNS), (
+        f"Column set drift detected. Expected: {sorted(_EXPECTED_COLUMNS)}; found: {sorted(column_keys)}"
     )
 
-    # Negative: no column name may contain the substring 'filler' in
-    # any casing. This guards against future regressions where a
-    # copybook-to-model translator accidentally emits a filler column.
-    for column_name in column_names:
+    # Negative: no Python attribute name OR DB column name may
+    # contain the substring 'filler' in any casing. This guards
+    # against future regressions where a copybook-to-model
+    # translator accidentally emits a filler column.
+    for column_name in column_keys + column_db_names:
         assert "filler" not in column_name.lower(), (
             f"Column '{column_name}' appears to map a COBOL FILLER "
             f"region. FILLER fields (like SEC-USR-FILLER PIC X(23)) "

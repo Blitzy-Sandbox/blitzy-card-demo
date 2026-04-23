@@ -968,13 +968,19 @@ def test_proc_ts_index() -> None:
         f"{[c.name for c in indexed_columns]!r}"
     )
 
-    # The single column must be ``proc_ts``.
-    indexed_column_name = indexed_columns[0].name
-    assert indexed_column_name == "proc_ts", (
+    # The single column must be ``proc_ts`` (Python attribute key).
+    # Column.key is the Python-side access key (e.g. ``proc_ts``),
+    # while Column.name is the DB-side physical column name
+    # (``tran_proc_ts``). The Index is declared on the Python key
+    # via ``Index('ix_transaction_proc_ts', 'proc_ts')`` in
+    # ``src/shared/models/transaction.py`` so the expected match
+    # here is the key, not the physical DB column name.
+    indexed_column_key = indexed_columns[0].key
+    assert indexed_column_key == "proc_ts", (
         f"Index {_EXPECTED_PROC_TS_INDEX_NAME!r} must be on the "
         f"'proc_ts' column (the relational target of COBOL "
         f"TRAN-PROC-TS PIC X(26)); found column "
-        f"{indexed_column_name!r}"
+        f"{indexed_column_key!r}"
     )
 
     # Non-unique — multiple transactions can share a single
@@ -1346,31 +1352,38 @@ def test_no_filler_columns() -> None:
     fields in CVTRA05Y.cpy, and the 20-byte trailing FILLER is
     absent from the relational model by design.
     """
-    actual_column_names = {col.name for col in Transaction.__table__.columns}
+    # ``_EXPECTED_COLUMNS`` holds Python-attribute names (``amount``,
+    # ``card_num``, ...); the DB physical column names are
+    # prefixed (``tran_amt``, ``tran_card_num``, ...). We therefore
+    # compare against ``Column.key`` (Python attribute key) for
+    # positive equivalence, and scan BOTH forms for 'filler'.
+    actual_column_keys = {col.key for col in Transaction.__table__.columns}
+    actual_column_db_names = {col.name for col in Transaction.__table__.columns}
 
-    # Positive — exact column-set equivalence.
-    assert actual_column_names == set(_EXPECTED_COLUMNS), (
+    # Positive — exact column-set equivalence against Python keys.
+    assert actual_column_keys == set(_EXPECTED_COLUMNS), (
         f"Transaction columns must match _EXPECTED_COLUMNS exactly "
         f"(13 columns from CVTRA05Y.cpy semantic fields, FILLER "
         f"excluded). Missing from actual: "
-        f"{sorted(set(_EXPECTED_COLUMNS) - actual_column_names)!r}. "
+        f"{sorted(set(_EXPECTED_COLUMNS) - actual_column_keys)!r}. "
         f"Extra in actual: "
-        f"{sorted(actual_column_names - set(_EXPECTED_COLUMNS))!r}."
+        f"{sorted(actual_column_keys - set(_EXPECTED_COLUMNS))!r}."
     )
 
     # Exactly 13 columns — redundant with the positive check above
     # and with :func:`test_column_count`, but included here as a
     # defense-in-depth guard in case ``_EXPECTED_COLUMNS`` is
     # accidentally widened in a future refactor.
-    assert len(actual_column_names) == 13, (
+    assert len(actual_column_keys) == 13, (
         f"Transaction must have exactly 13 columns (13 semantic "
         f"COBOL fields, FILLER excluded); found "
-        f"{len(actual_column_names)}: {sorted(actual_column_names)!r}"
+        f"{len(actual_column_keys)}: {sorted(actual_column_keys)!r}"
     )
 
-    # Negative — no column name contains the substring ``filler``
-    # in any case. Catches creative mis-mappings.
-    for column_name in actual_column_names:
+    # Negative — no column name (Python key OR DB name) contains
+    # the substring ``filler`` in any case. Catches creative
+    # mis-mappings.
+    for column_name in actual_column_keys | actual_column_db_names:
         assert "filler" not in column_name.lower(), (
             f"Column name {column_name!r} contains the substring "
             f"'filler' (case-insensitive). COBOL FILLER regions are "

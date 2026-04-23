@@ -254,12 +254,17 @@ def test_primary_key_tran_type() -> None:
     assert len(primary_keys) == 1, (
         f"TransactionType must have exactly one primary key column "
         f"(TRAN-TYPE); found {len(primary_keys)}: "
-        f"{[pk.name for pk in primary_keys]}"
+        f"{[pk.key for pk in primary_keys]}"
     )
 
+    # Use ``Column.key`` (Python attribute key) rather than
+    # ``Column.name`` (DB physical column name). The column is
+    # declared via ``mapped_column("type_code", ..., key="tran_type")``
+    # so ``Column.name`` is ``"type_code"`` but the Python ORM
+    # attribute is ``TransactionType.tran_type``.
     pk_column = primary_keys[0]
-    assert pk_column.name == "tran_type", (
-        f"Primary key column must be 'tran_type' (from COBOL TRAN-TYPE PIC X(02)); found '{pk_column.name}'"
+    assert pk_column.key == "tran_type", (
+        f"Primary key column must be 'tran_type' (from COBOL TRAN-TYPE PIC X(02)); found '{pk_column.key}'"
     )
 
     # PK type validation — must be String(2) to match COBOL PIC X(02).
@@ -567,17 +572,24 @@ def test_no_filler_columns() -> None:
     column count (2) makes this the simplest model in the CardDemo
     schema, so a set-equality check is both feasible and informative.
     """
-    column_names: list[str] = [c.name for c in TransactionType.__table__.columns]
+    # ``_EXPECTED_COLUMNS`` holds Python-attribute names
+    # (``tran_type``, ``description``); the DB physical column names
+    # differ (``type_code``, ``tran_type_desc``). Compare against
+    # ``Column.key`` for positive equivalence and scan BOTH forms
+    # for 'filler' (defense in depth).
+    column_keys: list[str] = [c.key for c in TransactionType.__table__.columns]
+    column_db_names: list[str] = [c.name for c in TransactionType.__table__.columns]
 
     # Positive: the exact set of mapped columns must match the contract.
-    assert set(column_names) == set(_EXPECTED_COLUMNS), (
-        f"Column set drift detected. Expected: {sorted(_EXPECTED_COLUMNS)}; found: {sorted(column_names)}"
+    assert set(column_keys) == set(_EXPECTED_COLUMNS), (
+        f"Column set drift detected. Expected: {sorted(_EXPECTED_COLUMNS)}; found: {sorted(column_keys)}"
     )
 
-    # Negative: no column name may contain the substring 'filler' in
-    # any casing. This guards against future regressions where a
-    # copybook-to-model translator accidentally emits a filler column.
-    for column_name in column_names:
+    # Negative: no column name (Python key OR DB column name) may
+    # contain the substring 'filler' in any casing. This guards
+    # against future regressions where a copybook-to-model
+    # translator accidentally emits a filler column in either form.
+    for column_name in set(column_keys) | set(column_db_names):
         assert "filler" not in column_name.lower(), (
             f"Column '{column_name}' appears to map a COBOL FILLER "
             f"region. FILLER fields (like the trailing PIC X(08) in "

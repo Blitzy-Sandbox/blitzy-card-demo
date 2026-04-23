@@ -363,8 +363,14 @@ def test_primary_key_tran_id() -> None:
     )
 
     pk_column = primary_key_columns[0]
-    assert pk_column.name == "tran_id", (
-        f"Primary-key column must be named 'tran_id' to match COBOL DALYTRAN-ID; found {pk_column.name!r}"
+    # Compare against the Python attribute key (``tran_id``) rather
+    # than the DB column name (``dalytran_id``). The COBOL-derived
+    # Python attribute is ``tran_id`` per CVTRA06Y.cpy; the DB column
+    # is the prefixed VSAM-style name ``dalytran_id`` to match
+    # V1__schema.sql.
+    assert pk_column.key == "tran_id", (
+        f"Primary-key column must be accessed by Python attribute "
+        f"'tran_id' to match COBOL DALYTRAN-ID; found {pk_column.key!r}"
     )
 
     # Type must be ``String(16)`` — PIC X(16).
@@ -855,19 +861,28 @@ def test_mirrors_transaction_layout() -> None:
     daily_columns = DailyTransaction.__table__.columns
     trans_columns = Transaction.__table__.columns
 
-    daily_names = {c.name for c in daily_columns}
-    trans_names = {c.name for c in trans_columns}
+    # The COBOL layouts are byte-for-byte identical except for the
+    # field prefix (DALYTRAN- vs TRAN-). At the physical DB layer
+    # the column names DO differ (dalytran_* vs tran_*) to match
+    # VSAM-style prefixing in V1__schema.sql. At the Python-ORM
+    # layer, however, both tables expose the SAME attribute names
+    # (tran_id, amount, card_num, ...) via ``mapped_column(..., key=...)``,
+    # which is what ``Column.key`` exposes. This is the "pure
+    # rename" contract that allows POSTTRAN to promote rows with a
+    # simple SELECT-INSERT operating on uniform Python attributes.
+    daily_names = {c.key for c in daily_columns}
+    trans_names = {c.key for c in trans_columns}
 
-    # The column-name sets must be identical — same 13 names on both
-    # tables. This is the "pure rename" contract between
-    # DALYTRAN-RECORD and TRAN-RECORD.
+    # The column-key sets must be identical — same 13 Python attribute
+    # names on both tables.
     assert daily_names == trans_names, (
-        f"DailyTransaction and Transaction must have identical column "
-        f"names — the COBOL layouts DALYTRAN-RECORD (CVTRA06Y.cpy) "
-        f"and TRAN-RECORD (CVTRA05Y.cpy) differ only by the field "
-        f"prefix (DALYTRAN- vs TRAN-) and are byte-for-byte "
-        f"structurally identical. This invariant must be preserved "
-        f"at the Python layer so POSTTRAN can promote rows with a "
+        f"DailyTransaction and Transaction must expose identical "
+        f"Python-attribute column keys — the COBOL layouts "
+        f"DALYTRAN-RECORD (CVTRA06Y.cpy) and TRAN-RECORD "
+        f"(CVTRA05Y.cpy) differ only by the field prefix "
+        f"(DALYTRAN- vs TRAN-) and are byte-for-byte structurally "
+        f"identical. This invariant must be preserved at the "
+        f"Python-ORM layer so POSTTRAN can promote rows with a "
         f"simple SELECT-INSERT. "
         f"Missing from DailyTransaction: {sorted(trans_names - daily_names)!r}. "
         f"Extra on DailyTransaction: {sorted(daily_names - trans_names)!r}."
@@ -1225,23 +1240,28 @@ def test_no_filler_columns() -> None:
       (``Filler``, ``FILLER``, ``filler1``, ``filler_padding``,
       etc.).
     """
-    column_names = [c.name for c in DailyTransaction.__table__.columns]
+    # Use Python attribute key for the positive comparison (because
+    # ``_EXPECTED_COLUMNS`` is declared in Python-attribute form).
+    # Scan both the key and the DB column name for ``'filler'``.
+    column_keys = [c.key for c in DailyTransaction.__table__.columns]
+    column_db_names = [c.name for c in DailyTransaction.__table__.columns]
 
     # Positive invariant — exact-set equivalence against the
-    # FILLER-free expected set.
-    assert set(column_names) == set(_EXPECTED_COLUMNS), (
+    # FILLER-free expected set (Python attribute names).
+    assert set(column_keys) == set(_EXPECTED_COLUMNS), (
         f"DailyTransaction columns must exactly match "
         f"{sorted(_EXPECTED_COLUMNS)!r} (COBOL FILLER PIC X(20) is "
-        f"NOT mapped); found {sorted(column_names)!r}. "
+        f"NOT mapped); found {sorted(column_keys)!r}. "
         f"Missing: "
-        f"{sorted(set(_EXPECTED_COLUMNS) - set(column_names))!r}. "
+        f"{sorted(set(_EXPECTED_COLUMNS) - set(column_keys))!r}. "
         f"Extra:   "
-        f"{sorted(set(column_names) - set(_EXPECTED_COLUMNS))!r}."
+        f"{sorted(set(column_keys) - set(_EXPECTED_COLUMNS))!r}."
     )
 
     # Negative invariant — catches any misspelling of FILLER (Filler,
-    # FILLER, filler1, filler_padding, ...).
-    for column_name in column_names:
+    # FILLER, filler1, filler_padding, ...) in EITHER the Python
+    # attribute name OR the DB column name.
+    for column_name in column_keys + column_db_names:
         assert "filler" not in column_name.lower(), (
             f"Column {column_name!r} appears to map COBOL FILLER "
             f"padding, which is forbidden. COBOL FILLER PIC X(20) "

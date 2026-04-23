@@ -74,7 +74,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.dependencies import get_db
+from src.api.dependencies import CurrentUser, get_current_user, get_db
 from src.api.services.auth_service import (
     AuthenticationError,
     AuthService,
@@ -166,18 +166,21 @@ async def login(
     "/logout",
     response_model=SignOutResponse,
     status_code=status.HTTP_200_OK,
-    summary="Sign-out — client-side token discard confirmation",
+    summary="Sign-out — authenticated token discard confirmation",
     response_description="Confirmation payload (stateless; client discards token)",
 )
-async def logout() -> SignOutResponse:
-    """Confirm sign-out.
+async def logout(
+    current_user: CurrentUser = Depends(get_current_user),
+) -> SignOutResponse:
+    """Confirm sign-out for an authenticated caller.
 
-    Because the sign-on flow is stateless (no server-side session),
-    logout is effectively a client-side operation — the client simply
-    discards the JWT. This endpoint exists to provide a consistent REST
-    confirmation envelope for UIs that expect one. No authentication is
-    required (``/auth/logout`` is in ``PUBLIC_PATHS``) so that clients
-    can call it after the JWT has already been discarded.
+    Although the sign-on flow is stateless (no server-side session)
+    and logout is effectively a client-side operation, the endpoint
+    nonetheless requires a valid JWT bearer token. This aligns with
+    enterprise security conventions ("only an authenticated session
+    can be torn down") and prevents anonymous clients from producing
+    spurious audit events or performing any future server-side
+    cleanup tied to a specific ``user_id``.
 
     COBOL mapping
     -------------
@@ -185,20 +188,42 @@ async def logout() -> SignOutResponse:
     by ``EXEC CICS RETURN`` without a COMMAREA or by RTIMOUT on the
     transaction. There was no explicit sign-out transaction. The
     cloud-native equivalent is to discard the JWT bearer token — this
-    endpoint exists only to provide a consistent REST confirmation
-    envelope for clients that expect a 200 response on logout.
+    endpoint exists to provide a consistent REST confirmation envelope
+    for clients that expect a 200 response on logout, while still
+    enforcing a valid authenticated session.
+
+    Parameters
+    ----------
+    current_user : CurrentUser
+        Authenticated user injected by
+        :func:`src.api.dependencies.get_current_user`. Missing or
+        invalid tokens raise ``HTTPException(401)`` via the upstream
+        dependency and never reach this function body. Used here for
+        structured audit logging so that sign-out events can be
+        correlated with the specific ``user_id``.
 
     Returns
     -------
     SignOutResponse
         Fixed confirmation message per AAP Phase 4 Step 2.
+
+    Raises
+    ------
+    HTTPException
+        Status 401 (``Unauthorized``) propagated from
+        :func:`get_current_user` when the ``Authorization`` header is
+        missing, malformed, expired, or otherwise invalid.
     """
-    # Structured log for CloudWatch Logs Insights — the route is
-    # anonymous by design (no JWT required), so we cannot log a
-    # user_id here. A sign-out event is still emitted to support
-    # session-lifecycle auditing correlated by client IP via ALB
-    # access logs.
-    logger.info("Sign-out acknowledged")
+    # Structured log for CloudWatch Logs Insights — now enriched with
+    # the authenticated ``user_id`` for full session-lifecycle
+    # auditability (sign-on / sign-out correlation by user).
+    logger.info(
+        "Sign-out acknowledged",
+        extra={
+            "user_id": current_user.user_id,
+            "user_type": current_user.user_type,
+        },
+    )
 
     # Confirmation message per AAP §0.5.1 (auth_router.py row) and
     # AAP Phase 4 "POST /auth/logout Endpoint" Step 2.

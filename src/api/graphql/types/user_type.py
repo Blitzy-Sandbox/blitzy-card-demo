@@ -34,13 +34,24 @@ COBOL to GraphQL Field Mapping
 ================  ==============  ================  =======================
 COBOL Field       COBOL Type      GraphQL Field     Python Type
 ================  ==============  ================  =======================
-SEC-USR-ID        ``PIC X(08)``   ``usr_id``        ``str``
+SEC-USR-ID        ``PIC X(08)``   ``user_id``       ``str``
 SEC-USR-FNAME     ``PIC X(20)``   ``first_name``    ``str``
 SEC-USR-LNAME     ``PIC X(20)``   ``last_name``     ``str``
 SEC-USR-PWD       ``PIC X(08)``   — (OMITTED)       — (security)
 SEC-USR-TYPE      ``PIC X(01)``   ``usr_type``      ``str``
 SEC-USR-FILLER    ``PIC X(23)``   — (not mapped)    — (COBOL padding)
 ================  ==============  ================  =======================
+
+.. note::
+
+   The GraphQL ``user_id`` field (exposed as ``userId`` via Strawberry's
+   automatic snake_case → camelCase conversion) aligns with the
+   SQLAlchemy ``UserSecurity.user_id`` model column and the other
+   GraphQL identifier conventions (``acctId``, ``tranId``, ``cardNum``).
+   Prior to the QA Checkpoint 5 resolution for Issue 18 this field was
+   named ``usr_id`` to mirror the COBOL ``SEC-USR-ID`` three-letter
+   abbreviation; it was renamed so the GraphQL surface presents a
+   consistent identifier vocabulary.
 
 CRITICAL SECURITY: Password Field Deliberately Omitted
 ------------------------------------------------------
@@ -133,7 +144,7 @@ See Also
 # ----------------------------------------------------------------------------
 # Strawberry GraphQL — provides the @strawberry.type decorator that
 # converts a Python class into a GraphQL schema type. The class body's
-# type annotations (``usr_id: str``, ``first_name: str``, ...) become
+# type annotations (``user_id: str``, ``first_name: str``, ...) become
 # GraphQL schema fields; no runtime validation of field TYPE occurs, but
 # the GraphQL introspection schema is generated from them exactly.
 import strawberry
@@ -173,17 +184,22 @@ class UserType:
 
     Attributes
     ----------
-    usr_id : str
+    user_id : str
         8-character user ID. Maps to COBOL ``SEC-USR-ID`` (``PIC X(08)``)
         and to the SQLAlchemy ``UserSecurity.user_id`` primary-key
         column. This is the login identifier entered on the sign-on
         screen (``COSGN00.bms``) and the logical audit key across every
-        CardDemo transaction. The GraphQL field name
-        (``usr_id``/``usrId``) preserves the COBOL naming convention
-        (``SEC-USR-ID`` → ``usr_id``), while the underlying model
-        column name is the longer ``user_id``; the factory method
-        below performs the one-line attribute rename so the GraphQL
-        surface matches the CardDemo user-interface heritage.
+        CardDemo transaction. The GraphQL field name is ``user_id``
+        (exposed as ``userId`` via Strawberry's automatic
+        snake_case → camelCase conversion) — it matches the underlying
+        SQLAlchemy ``UserSecurity.user_id`` column, the REST path
+        parameter ``/users/{user_id}``, and the other GraphQL
+        identifier conventions on this schema (``acctId``, ``tranId``,
+        ``cardNum``). The QA Checkpoint 5 resolution for Issue 18
+        renamed this field from the COBOL three-letter abbreviation
+        ``usr_id`` to the consistent ``user_id`` form; the COBOL
+        provenance is documented in the module-level mapping table
+        and in the SQLAlchemy model.
     first_name : str
         Up to 20 characters of given name. Maps to COBOL
         ``SEC-USR-FNAME`` (``PIC X(20)``) and the
@@ -209,14 +225,20 @@ class UserType:
     """
 
     # ------------------------------------------------------------------
-    # usr_id — 8-char user ID, COBOL SEC-USR-ID PIC X(08).
+    # user_id — 8-char user ID, COBOL SEC-USR-ID PIC X(08).
     # GraphQL PK; unique per user. Corresponds to
-    # ``UserSecurity.user_id`` (note the model uses the fully spelled
-    # form ``user_id``; this GraphQL field preserves the 3-letter
-    # COBOL abbreviation ``usr_id`` that also appears in the BMS
-    # symbolic map ``COUSR00.CPY`` as ``USRIDnn``).
+    # ``UserSecurity.user_id`` (the fully spelled form also used in the
+    # REST path ``/users/{user_id}``). Strawberry automatically exposes
+    # this field to GraphQL clients as ``userId`` (snake_case →
+    # camelCase). The COBOL ``SEC-USR-ID`` provenance is retained in
+    # the module-level mapping table; the field name itself uses the
+    # fully spelled form so the GraphQL surface presents a consistent
+    # identifier vocabulary matching ``acctId`` / ``tranId`` /
+    # ``cardNum``. This renaming resolved QA Checkpoint 5 Issue 18
+    # (GraphQL field-name inconsistency between ``usrId`` and the
+    # other identifier arguments).
     # ------------------------------------------------------------------
-    usr_id: str
+    user_id: str
 
     # ------------------------------------------------------------------
     # first_name — up to 20 chars, COBOL SEC-USR-FNAME PIC X(20).
@@ -275,15 +297,17 @@ class UserType:
         by AAP §0.7.2 and the COBOL user-list screen behavior
         documented in ``COUSR00.CPY``.
 
-        The factory also performs the one necessary column-name
-        translation: the ORM model uses the fully spelled form
-        ``user_id`` (to match the V1 DDL migration), while the GraphQL
-        field uses the COBOL 3-letter abbreviation ``usr_id`` (to match
-        ``SEC-USR-ID`` in ``CSUSR01Y.cpy`` and ``USRIDnn`` in
-        ``COUSR00.CPY``). This is the ONLY field where the model
-        attribute name and the GraphQL field name differ; all other
-        fields (``first_name``, ``last_name``, ``usr_type``) have
-        identical names on both sides of the boundary.
+        The factory is a straightforward field-by-field copy — the
+        ORM model and the GraphQL type use the same attribute names
+        for all four public fields (``user_id`` / ``first_name`` /
+        ``last_name`` / ``usr_type``). The ``user_id`` field is
+        exposed to GraphQL clients as ``userId`` via Strawberry's
+        automatic snake_case → camelCase conversion; this matches
+        the SQLAlchemy ``UserSecurity.user_id`` column, the REST
+        ``/users/{user_id}`` path parameter, and the other GraphQL
+        identifier conventions on this schema (``acctId``, ``tranId``,
+        ``cardNum``). The COBOL ``SEC-USR-ID`` provenance is
+        documented in the module-level mapping table.
 
         Parameters
         ----------
@@ -322,9 +346,10 @@ class UserType:
         # described in the module docstring. Explicit is safer.
         # ---------------------------------------------------------
         return UserType(
-            # COBOL SEC-USR-ID (PIC X(08)) — model column is user_id,
-            # GraphQL field is usr_id (COBOL abbreviation).
-            usr_id=user.user_id,
+            # COBOL SEC-USR-ID (PIC X(08)) — both the model column and
+            # the GraphQL field are named ``user_id``; Strawberry
+            # exposes the field to clients as ``userId``.
+            user_id=user.user_id,
             # COBOL SEC-USR-FNAME (PIC X(20)) — same name on both sides.
             first_name=user.first_name,
             # COBOL SEC-USR-LNAME (PIC X(20)) — same name on both sides.

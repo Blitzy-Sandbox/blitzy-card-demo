@@ -103,6 +103,17 @@ Public API
 * :func:`write_table` — convenience function that writes a PySpark
   DataFrame to a PostgreSQL table (replaces VSAM
   ``DISP=(NEW,CATLG,DELETE)`` writes and VSAM REWRITE patterns).
+* :func:`write_table_idempotent` — idempotent append write that filters
+  out rows whose primary key already exists in the target table. Used
+  by POSTTRAN (CBTRN02C) to make its ``transactions`` table write
+  safely re-runnable after a partial-failure scenario (DB write
+  committed but subsequent S3 reject-write failed) — resolves the
+  duplicate-primary-key error on retry. Addresses QA Checkpoint 5
+  Issue 22 per AAP §0.7.1 (preserve POSTTRAN functionality exactly,
+  including safe retry behaviour) and AAP §0.4.4 (Transactional
+  Outbox pattern — PySpark equivalent of INSERT ... ON CONFLICT
+  DO NOTHING, because Spark JDBC does not expose PostgreSQL
+  dialect-specific conflict handling natively).
 
 Source
 ------
@@ -123,6 +134,7 @@ AAP §0.7.2 — Security Requirements (IAM roles, Secrets Manager,
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 # ----------------------------------------------------------------------------
@@ -211,6 +223,7 @@ __all__ = [
     "get_table_name",
     "read_table",
     "write_table",
+    "write_table_idempotent",
 ]
 
 
@@ -765,3 +778,255 @@ def write_table(
         .mode(mode)
         .save()
     )
+
+
+def write_table_idempotent(
+    spark_session: Any,
+    dataframe: Any,
+    table_name: str,
+    key_columns: Sequence[str],
+) -> int:
+    """Idempotent ``INSERT`` — append only rows whose primary key does
+    not already exist in the target PostgreSQL table.
+
+    Resolves QA Checkpoint 5 Issue 22 (POSTTRAN non-idempotent crash on
+    retry). This is the PySpark-side equivalent of the PostgreSQL
+    statement ``INSERT INTO <table> ... ON CONFLICT (<keys>) DO
+    NOTHING`` — the canonical idempotency idiom for append-only loads
+    against a table with a primary-key or unique constraint. Spark's
+    JDBC writer does not expose PostgreSQL dialect-specific
+    ``ON CONFLICT`` handling natively, so the equivalent semantic is
+    achieved here at the DataFrame layer: the function reads the
+    already-posted key set from the target table, performs a
+    ``left_anti`` join to exclude those keys from the input DataFrame,
+    and finally calls :func:`write_table` in ``mode="append"`` on the
+    filtered remainder.
+
+    Motivating scenario (QA Checkpoint 5 Issue 22)
+    ----------------------------------------------
+    POSTTRAN (CBTRN02C) performs three bulk writes at the end of the
+    job — appending posted rows to the ``transactions`` table, an
+    overwrite of the ``accounts`` table, an overwrite of the
+    ``transaction_category_balances`` table — followed by an S3
+    upload of the rejected-transactions text file to the
+    ``DALYREJS(+1)`` versioned path. The DB writes commit immediately
+    (JDBC autocommit). If the S3 upload subsequently fails (transient
+    network error, LocalStack outage, expired credentials, missing
+    bucket), the Glue job is marked FAILED by Step Functions, but the
+    committed DB writes are **not** rolled back — leaving the
+    ``transactions`` table populated with e.g. 262 of the 300 daily
+    posted rows.
+
+    On the retry attempt the DataFrame emitted by the validation
+    cascade again contains all 300 rows, and the bare
+    ``write_table(posted_df, "transactions", mode="append")`` call at
+    ``src/batch/jobs/posttran_job.py:1836`` triggers::
+
+        duplicate key value violates unique constraint
+        "transactions_pkey"
+
+    terminating the retry before the job has a chance to reach the S3
+    step. The job becomes effectively un-retryable without manual
+    intervention, violating AAP §0.7.1's "preserve all existing
+    functionality exactly as-is" requirement. The original JCL
+    behaviour under JES2 was idempotent because POSTTRAN used
+    ``REWRITE`` against an existing VSAM record (a no-op when the
+    record already had the same value) rather than a fresh INSERT; on
+    PostgreSQL we therefore need an explicit idempotency layer.
+
+    Implementation
+    --------------
+    1. Read the key-column projection from the target table via
+       :func:`read_table`, narrowed to exactly ``key_columns`` to
+       minimise network traffic. The read is lazy, so the
+       ``.select(...)`` call below is pushed into the JDBC query.
+    2. Perform a ``left_anti`` join of the input DataFrame against the
+       target key set on ``key_columns``. PySpark's ``left_anti``
+       semantic returns "every row in the LEFT DataFrame for which no
+       matching row exists in the RIGHT DataFrame" — precisely the
+       filter we need to exclude already-posted keys.
+    3. Count the filtered DataFrame (cheap in-JVM .count() on a local
+       DataFrame) to produce the return value for caller telemetry.
+    4. If any rows remain, issue the append via :func:`write_table`
+       (``mode="append"``). If zero rows remain — e.g. the entire batch
+       has already been committed on the previous run — the function
+       is a no-op and logs accordingly.
+
+    Concurrency semantics
+    ---------------------
+    This is a time-of-check / time-of-use (TOCTOU) filter: between the
+    read of the key set and the subsequent append, a concurrent
+    writer could insert a row with a colliding key. For POSTTRAN this
+    is an acceptable trade-off because:
+
+    * AAP §0.7.2 batch pipeline sequencing requires Stage 1
+      (POSTTRAN) to run serially under Step Functions — the Stage 1
+      retry policy is ``MaxAttempts=2, BackoffRate=2.0`` with no
+      concurrent invocations. See
+      ``src/batch/pipeline/step_functions_definition.json``.
+    * POSTTRAN is the sole writer to the ``transactions`` table in
+      the batch pipeline — Stage 2 (INTCALC) appends interest rows
+      but under a strictly later TRAN-ID range (post-pipeline
+      completion), and the online API emits transactions through a
+      different code path with a distinct timestamp / source code.
+
+    If this function is ever adopted for a concurrent-writer scenario
+    (outside AAP scope), a follow-up change should move the filter to
+    PostgreSQL by using a psycopg2 ``execute_values`` call with the
+    ``ON CONFLICT (<keys>) DO NOTHING`` clause — the PostgreSQL
+    transactional semantics would eliminate the TOCTOU window. That
+    change is explicitly out-of-scope for the current refactor under
+    AAP §0.7.1's minimal-change clause.
+
+    Schema-preservation note
+    ------------------------
+    This function delegates the actual write to :func:`write_table` in
+    ``mode="append"``, which does **not** issue a ``TRUNCATE`` or a
+    ``DROP``. The target table's primary-key constraint, NOT NULL
+    declarations, DEFAULT clauses (including
+    ``version_id INTEGER NOT NULL DEFAULT 0`` on ``accounts`` and
+    ``cards``), and B-tree indexes are therefore fully preserved —
+    matching the schema contract documented in
+    ``db/migrations/V1__schema.sql``.
+
+    Financial precision
+    -------------------
+    As with :func:`read_table` and :func:`write_table`, the JDBC
+    connector round-trips :class:`pyspark.sql.types.DecimalType`
+    columns to PostgreSQL ``NUMERIC(15, 2)`` without any floating-
+    point conversion (AAP §0.7.2 Financial Precision).
+
+    Parameters
+    ----------
+    spark_session : Any
+        Active :class:`pyspark.sql.SparkSession` used to read the
+        existing key-column projection from the target table. Must be
+        the same session that created ``dataframe`` (otherwise the
+        ``left_anti`` join cannot resolve across sessions). Typed as
+        ``Any`` for the same deployment-context reason as
+        :func:`read_table` and :func:`write_table`.
+    dataframe : Any
+        The :class:`pyspark.sql.DataFrame` to write. Its schema must
+        include every column in ``key_columns``.
+    table_name : str
+        PostgreSQL table name to write to (e.g., ``"transactions"``).
+        Must be one of the tables defined in
+        ``db/migrations/V1__schema.sql``.
+    key_columns : Sequence[str]
+        Column name(s) that constitute the unique key on the target
+        table. For tables with a single-column primary key pass a
+        one-element sequence (e.g., ``["tran_id"]``); for composite
+        keys pass every column (e.g.,
+        ``["acct_id", "tran_type_cd", "tran_cat_cd"]`` for
+        ``transaction_category_balances``). Must be non-empty.
+
+    Returns
+    -------
+    int
+        The number of rows actually written to the target table —
+        i.e., ``input_count - already_posted_count``. Callers may log
+        this value to surface how many rows were skipped as
+        already-posted, which is useful for operator diagnostics on
+        retry.
+
+    Raises
+    ------
+    ValueError
+        If ``key_columns`` is empty. The calling Glue job must supply
+        at least one key column; an empty sequence would yield a
+        cross-product in the ``left_anti`` join and defeat the
+        idempotency guarantee.
+    """
+    if not key_columns:
+        # Refuse silently-broken invocations: an empty key_columns
+        # sequence would collapse the left_anti join to "every row
+        # already exists", writing nothing regardless of input —
+        # masking bugs in the caller. Fail loud at the earliest
+        # possible point.
+        raise ValueError(
+            "write_table_idempotent requires at least one key column; "
+            "received an empty sequence."
+        )
+
+    # Materialise key_columns into a list so we can pass it to both
+    # DataFrame.select(*key_columns) and DataFrame.join(on=key_columns).
+    key_column_list: list[str] = list(key_columns)
+
+    logger.info(
+        "Starting idempotent append to '%s' (key_columns=%s)",
+        table_name,
+        key_column_list,
+    )
+
+    # Step 1 — Read the already-posted keys from the target table.
+    # We read ONLY the key columns (not the full row) to minimise the
+    # network payload and to keep the JDBC query cheap on the
+    # PostgreSQL side: the driver uses the B-tree primary-key index
+    # to satisfy the projection without a sequential scan.
+    existing_keys_df = read_table(spark_session, table_name).select(
+        *key_column_list
+    )
+
+    # Step 2 — Left-anti join filters the input DataFrame down to
+    # rows whose key does NOT appear in the target table. The
+    # ``left_anti`` join idiom is the PySpark equivalent of the SQL
+    # ``WHERE NOT EXISTS (SELECT 1 FROM target WHERE ...)`` pattern
+    # and is exactly what ``INSERT ... ON CONFLICT DO NOTHING``
+    # produces at the row level.
+    filtered_df = dataframe.join(
+        existing_keys_df,
+        on=key_column_list,
+        how="left_anti",
+    )
+
+    # Step 3 — .count() is a Spark action that materialises the
+    # filtered DataFrame. We cache it first so the subsequent append
+    # write does not re-execute the upstream plan (read + join), which
+    # would otherwise double the network round-trips to PostgreSQL.
+    # The cache is released at the end of this function via
+    # .unpersist() to free memory on the Spark executors.
+    filtered_df = filtered_df.cache()
+    try:
+        rows_to_write = filtered_df.count()
+
+        # Step 4 — Early return if nothing needs to be written.
+        # This is the happy-path for a clean retry: every row in the
+        # input DataFrame has already been committed on a previous
+        # attempt, so the function is a no-op.
+        if rows_to_write == 0:
+            logger.info(
+                "No new rows for '%s' (every key already present) — "
+                "idempotent append is a no-op.",
+                table_name,
+            )
+            return 0
+
+        # Step 5 — Issue the append via write_table. This is the same
+        # JDBC INSERT path used by every other writer in the batch
+        # layer, so the schema-preservation (truncate="true" ignored
+        # for append mode) and credential-resolution guarantees of
+        # write_table apply unchanged.
+        write_table(filtered_df, table_name, mode="append")
+        logger.info(
+            "Idempotent append to '%s' wrote %d new row(s); existing "
+            "keys were skipped.",
+            table_name,
+            rows_to_write,
+        )
+        return int(rows_to_write)
+    finally:
+        # Release the cached filtered DataFrame regardless of whether
+        # the write succeeded, failed, or produced zero rows. This
+        # matches the unpersist() cleanup pattern used in
+        # ``posttran_job.py`` step 6 for the input DataFrames.
+        try:
+            filtered_df.unpersist()
+        except Exception as unpersist_err:  # noqa: BLE001 — defensive
+            # unpersist() raising is non-fatal and should never mask
+            # the write's success or failure. Log at DEBUG so the
+            # noise doesn't appear in CloudWatch for healthy runs.
+            logger.debug(
+                "filtered_df.unpersist() raised during cleanup "
+                "(non-fatal): %s",
+                unpersist_err,
+            )

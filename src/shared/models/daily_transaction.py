@@ -321,10 +321,16 @@ class DailyTransaction(Base):
     # Supplied by the upstream issuer / network / merchant feed.
     # Stored as String(16) to preserve the original character
     # representation byte-for-byte.
+    #
+    # DB column name: ``dalytran_id`` (per V1__schema.sql — all
+    # columns in the ``daily_transactions`` table carry the
+    # ``dalytran_`` prefix).
     # ------------------------------------------------------------------
     tran_id: Mapped[str] = mapped_column(
+        "dalytran_id",
         String(16),
         primary_key=True,
+        key="tran_id",
     )
 
     # ------------------------------------------------------------------
@@ -332,10 +338,14 @@ class DailyTransaction(Base):
     #
     # Logical foreign key into ``transaction_type``. Validated by
     # POSTTRAN (reject code 103 = unknown type code).
+    #
+    # DB column name: ``dalytran_type_cd``.
     # ------------------------------------------------------------------
     type_cd: Mapped[str] = mapped_column(
+        "dalytran_type_cd",
         String(2),
         nullable=False,
+        key="type_cd",
     )
 
     # ------------------------------------------------------------------
@@ -344,10 +354,14 @@ class DailyTransaction(Base):
     # Stored as String(4) — not numeric — to preserve leading zeros
     # from migrated VSAM records. Logical foreign key into
     # ``transaction_category`` (composite with ``type_cd``).
+    #
+    # DB column name: ``dalytran_cat_cd``.
     # ------------------------------------------------------------------
     cat_cd: Mapped[str] = mapped_column(
+        "dalytran_cat_cd",
         String(4),
         nullable=False,
+        key="cat_cd",
     )
 
     # ------------------------------------------------------------------
@@ -356,10 +370,14 @@ class DailyTransaction(Base):
     # Identifies the upstream system that produced the record (e.g.
     # 'POS', 'ATM', 'ONLINE', 'BATCH'). Used for audit and
     # reconciliation reporting.
+    #
+    # DB column name: ``dalytran_source``.
     # ------------------------------------------------------------------
     source: Mapped[str] = mapped_column(
+        "dalytran_source",
         String(10),
         nullable=False,
+        key="source",
     )
 
     # ------------------------------------------------------------------
@@ -369,11 +387,15 @@ class DailyTransaction(Base):
     # transaction reports (TRANREPT). Default empty string ensures
     # non-NULL storage even when the upstream feed omits a
     # description.
+    #
+    # DB column name: ``dalytran_desc``.
     # ------------------------------------------------------------------
     description: Mapped[str] = mapped_column(
+        "dalytran_desc",
         String(100),
         nullable=False,
         default="",
+        key="description",
     )
 
     # ------------------------------------------------------------------
@@ -386,11 +408,15 @@ class DailyTransaction(Base):
     # omits an explicit value. Sign convention follows COBOL S9(...)
     # — positive for debits, negative for credits. NEVER represented
     # as a floating-point number (AAP §0.7.2 — Financial Precision).
+    #
+    # DB column name: ``dalytran_amt``.
     # ------------------------------------------------------------------
     amount: Mapped[Decimal] = mapped_column(
+        "dalytran_amt",
         Numeric(15, 2),
         nullable=False,
         default=Decimal("0.00"),
+        key="amount",
     )
 
     # ------------------------------------------------------------------
@@ -399,11 +425,15 @@ class DailyTransaction(Base):
     # Stored as String(9) to preserve leading zeros. Default empty
     # string accommodates non-merchant transactions (payments, fees,
     # interest accrual rows).
+    #
+    # DB column name: ``dalytran_merchant_id``.
     # ------------------------------------------------------------------
     merchant_id: Mapped[str] = mapped_column(
+        "dalytran_merchant_id",
         String(9),
         nullable=False,
         default="",
+        key="merchant_id",
     )
 
     # ------------------------------------------------------------------
@@ -412,33 +442,45 @@ class DailyTransaction(Base):
     # Denormalised snapshot of the merchant directory name, captured
     # at transaction time so that statements and reports render the
     # historical name even if the directory is later updated.
+    #
+    # DB column name: ``dalytran_merchant_name``.
     # ------------------------------------------------------------------
     merchant_name: Mapped[str] = mapped_column(
+        "dalytran_merchant_name",
         String(50),
         nullable=False,
         default="",
+        key="merchant_name",
     )
 
     # ------------------------------------------------------------------
     # Merchant city (COBOL ``DALYTRAN-MERCHANT-CITY`` PIC X(50))
     #
     # Denormalised snapshot like ``merchant_name``.
+    #
+    # DB column name: ``dalytran_merchant_city``.
     # ------------------------------------------------------------------
     merchant_city: Mapped[str] = mapped_column(
+        "dalytran_merchant_city",
         String(50),
         nullable=False,
         default="",
+        key="merchant_city",
     )
 
     # ------------------------------------------------------------------
     # Merchant ZIP / postal code (COBOL ``DALYTRAN-MERCHANT-ZIP`` PIC X(10))
     #
     # Accommodates both US 5-digit and US 9-digit ZIP+4 formats.
+    #
+    # DB column name: ``dalytran_merchant_zip``.
     # ------------------------------------------------------------------
     merchant_zip: Mapped[str] = mapped_column(
+        "dalytran_merchant_zip",
         String(10),
         nullable=False,
         default="",
+        key="merchant_zip",
     )
 
     # ------------------------------------------------------------------
@@ -448,10 +490,14 @@ class DailyTransaction(Base):
     # by POSTTRAN to the associated ``acct_id`` before balance
     # updates are applied. An unresolvable ``card_num`` produces
     # reject code 104 ("Invalid Card / Cross-Reference").
+    #
+    # DB column name: ``dalytran_card_num``.
     # ------------------------------------------------------------------
     card_num: Mapped[str] = mapped_column(
+        "dalytran_card_num",
         String(16),
         nullable=False,
+        key="card_num",
     )
 
     # ------------------------------------------------------------------
@@ -462,11 +508,15 @@ class DailyTransaction(Base):
     # file. Denotes when the transaction originated at the upstream
     # system. Parsing to ``datetime`` occurs in the application /
     # PySpark layers, not the schema layer.
+    #
+    # DB column name: ``dalytran_orig_ts``.
     # ------------------------------------------------------------------
     orig_ts: Mapped[str] = mapped_column(
+        "dalytran_orig_ts",
         String(26),
         nullable=False,
         default="",
+        key="orig_ts",
     )
 
     # ------------------------------------------------------------------
@@ -479,11 +529,15 @@ class DailyTransaction(Base):
     # staging table does not index ``proc_ts`` — its read patterns
     # are full-scan within a single batch run, so the index would
     # only add write overhead without any query benefit.
+    #
+    # DB column name: ``dalytran_proc_ts``.
     # ------------------------------------------------------------------
     proc_ts: Mapped[str] = mapped_column(
+        "dalytran_proc_ts",
         String(26),
         nullable=False,
         default="",
+        key="proc_ts",
     )
 
     # Note: COBOL ``FILLER PIC X(20)`` — the trailing 20 bytes of

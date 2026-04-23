@@ -219,10 +219,16 @@ class DisclosureGroup(Base):
     #   'DEFAULT   ' — baseline fallback disclosure group (10 chars,
     #                  blank-padded — COBOL PIC X(10) semantics)
     #   'ZEROAPR   ' — promotional zero-APR override disclosure group
+    #
+    # DB column name: ``dis_acct_group_id`` (per V1__schema.sql —
+    # all columns in the ``disclosure_groups`` table carry the
+    # ``dis_`` prefix).
     # ------------------------------------------------------------------
     acct_group_id: Mapped[str] = mapped_column(
+        "dis_acct_group_id",
         String(10),
         primary_key=True,
+        key="acct_group_id",
     )
 
     # ------------------------------------------------------------------
@@ -232,10 +238,14 @@ class DisclosureGroup(Base):
     # References ``transaction_type.tran_type``. Typical values:
     #   '01' Purchase · '02' Payment · '03' Credit · '04' Debit
     #   '05' Refund   · '06' Adjustment · '07' Fee
+    #
+    # DB column name: ``dis_tran_type_cd``.
     # ------------------------------------------------------------------
     tran_type_cd: Mapped[str] = mapped_column(
+        "dis_tran_type_cd",
         String(2),
         primary_key=True,
+        key="tran_type_cd",
     )
 
     # ------------------------------------------------------------------
@@ -246,10 +256,14 @@ class DisclosureGroup(Base):
     # as an integer — preserves the COBOL label semantics and matches
     # the type used by ``TransactionCategory.tran_cat_cd`` and
     # ``TransactionCategoryBalance.tran_cat_cd`` for clean joins.
+    #
+    # DB column name: ``dis_tran_cat_cd``.
     # ------------------------------------------------------------------
     tran_cat_cd: Mapped[str] = mapped_column(
+        "dis_tran_cat_cd",
         String(4),
         primary_key=True,
+        key="tran_cat_cd",
     )
 
     # ------------------------------------------------------------------
@@ -272,11 +286,15 @@ class DisclosureGroup(Base):
     #     non-accruing result when a rate row is newly inserted
     #     without an explicit value (consistent with ZEROAPR
     #     fallback semantics).
+    #
+    # DB column name: ``dis_int_rate``.
     # ------------------------------------------------------------------
     int_rate: Mapped[Decimal] = mapped_column(
+        "dis_int_rate",
         Numeric(6, 2),
         nullable=False,
         default=Decimal("0.00"),
+        key="int_rate",
     )
 
     # Note: COBOL ``FILLER PIC X(28)`` — the trailing 28 bytes of

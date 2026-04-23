@@ -109,7 +109,7 @@ Design Notes
   "no floating-point arithmetic" contract is preserved end-to-end.
 
 * **Password exclusion** — The :class:`UserType` declares only four
-  fields (``usr_id`` / ``first_name`` / ``last_name`` / ``usr_type``)
+  fields (``user_id`` / ``first_name`` / ``last_name`` / ``usr_type``)
   and deliberately omits the BCrypt password hash. In addition, the
   :class:`UserListResponse` / :class:`UserListItem` Pydantic envelope
   used by :meth:`UserService.list_users` already strips the password,
@@ -694,7 +694,7 @@ def _user_list_item_to_type(item: Any) -> UserType:
 
     Field mapping (UserListItem → UserType):
 
-    * ``user_id``        → ``usr_id``
+    * ``user_id``        → ``user_id``
     * ``first_name``     → ``first_name``
     * ``last_name``      → ``last_name``
     * ``user_type``      → ``usr_type``
@@ -703,13 +703,24 @@ def _user_list_item_to_type(item: Any) -> UserType:
     deliberately omits the BCrypt password hash. The Pydantic
     :class:`UserListItem` DTO also omits the password, so the
     resolver path from DB through service through GraphQL never
-    carries the hash. The field-name mapping (``user_*`` → ``usr_*``)
-    reflects the COBOL copybook :file:`app/cpy/CSUSR01Y.cpy` which
-    uses the ``SEC-USR-*`` prefix (abbreviated to ``usr_*`` in
-    Python, matching the three letters between ``SEC-`` and ``-``).
+    carries the hash.
+
+    The GraphQL identifier field is named ``user_id`` (exposed as
+    ``userId`` via Strawberry's snake_case → camelCase conversion)
+    to match the SQLAlchemy ``UserSecurity.user_id`` model column,
+    the REST ``/users/{user_id}`` path parameter, and the other
+    GraphQL identifier conventions (``acctId``, ``tranId``,
+    ``cardNum``). Prior to the QA Checkpoint 5 resolution for
+    Issue 18 this field was named ``usr_id`` (abbreviated to mirror
+    the COBOL ``SEC-USR-ID`` copybook field from
+    :file:`app/cpy/CSUSR01Y.cpy`); the name was changed to
+    ``user_id`` so the GraphQL surface presents a consistent
+    identifier vocabulary. The COBOL provenance is documented in
+    :class:`~src.api.graphql.types.user_type.UserType` and in the
+    SQLAlchemy model :class:`~src.shared.models.user_security.UserSecurity`.
     """
     return UserType(
-        usr_id=item.user_id,
+        user_id=item.user_id,
         first_name=item.first_name,
         last_name=item.last_name,
         usr_type=item.user_type,
@@ -850,23 +861,36 @@ class Query:
             )
             return None
 
-        try:
-            response = await service.get_account_view(normalized_id)
-        except Exception:
-            # Service-layer failures (DB connectivity, unexpected
-            # validation errors) are logged for observability and
-            # surfaced as "not found" to keep the read-side API
-            # uniformly shaped. This matches the COBOL behavior
-            # where VSAM I/O errors fall through to the "record
-            # not found" branch of COACTVWC.cbl.
-            logger.exception(
-                "account query: service error",
-                extra={
-                    "operation": "graphql_query_account",
-                    "acct_id": normalized_id,
-                },
-            )
-            return None
+        # Service-layer database failures (connectivity issues,
+        # schema mismatches, constraint violations, etc.) are NOT
+        # caught here. Previously this resolver wrapped the service
+        # call in a broad ``except Exception: return None`` block
+        # to mimic the COBOL "VSAM I/O error falls through to
+        # record-not-found" behavior, but that silent-failure mode
+        # made the API indistinguishable from a genuine
+        # "account does not exist" response and directly caused the
+        # QA Checkpoint 5 observation that GraphQL queries returned
+        # empty data on HTTP 200 despite the database being populated.
+        #
+        # Instead, we now let SQLAlchemy exceptions propagate up to
+        # the Strawberry executor. The schema-level
+        # :class:`strawberry.extensions.MaskErrors` extension
+        # (configured in :mod:`~src.api.graphql.schema`) replaces
+        # the raw SQL + bind-parameter text with a generic client-
+        # safe message, so callers receive a populated ``errors``
+        # array that unambiguously signals a server-side failure
+        # rather than a false-negative "null result". The full
+        # stack trace and SQL remain in the server log for operator
+        # diagnosis.
+        #
+        # The ``response.error_message is not None`` branch below
+        # continues to encode the LEGITIMATE "account not found"
+        # outcome — the service returned successfully but reported
+        # the 11-digit account identifier did not match any row.
+        # That path stays as ``return None`` because GraphQL's
+        # nullable-result idiom is the correct way to signal
+        # "record does not exist" without populating ``errors``.
+        response = await service.get_account_view(normalized_id)
 
         if response.error_message is not None:
             logger.info(
@@ -982,26 +1006,20 @@ class Query:
             .limit(page_size_clamped)
         )
 
-        try:
-            result = await session.execute(stmt)
-            rows: list[Account] = list(result.scalars().all())
-        except Exception:
-            # Database-level failures (connectivity, SQL errors) are
-            # logged for observability and surfaced as an empty page
-            # to keep the read-side API uniformly shaped. This
-            # matches the COBOL behavior where VSAM I/O errors during
-            # a browse fall through to an empty screen rather than
-            # aborting the transaction.
-            logger.exception(
-                "accounts query: database error",
-                extra={
-                    "operation": "graphql_query_accounts",
-                    "page": page_clamped,
-                    "page_size": page_size_clamped,
-                    "offset": offset,
-                },
-            )
-            return []
+        # Database-level failures (connectivity, SQL errors,
+        # schema mismatches) propagate to Strawberry and are
+        # sanitised by the schema-level
+        # :class:`~strawberry.extensions.MaskErrors` extension
+        # before serialisation. We no longer swallow the exception
+        # and return an empty list — that pattern caused QA
+        # Checkpoint 5 to observe ``{"data":{"accounts":[]}}``
+        # responses on HTTP 200 despite the database containing
+        # 50 seed rows, making genuine database failures
+        # indistinguishable from legitimately-empty result sets.
+        # See the module docstring in ``src/api/graphql/schema.py``
+        # for the error-masking contract.
+        result = await session.execute(stmt)
+        rows: list[Account] = list(result.scalars().all())
 
         # AccountType.from_model is the single allowed ORM→GraphQL
         # conversion point — it copies the 12 GraphQL fields
@@ -1067,17 +1085,12 @@ class Query:
             )
             return None
 
-        try:
-            response = await service.get_card_detail(normalized_num)
-        except Exception:
-            logger.exception(
-                "card query: service error",
-                extra={
-                    "operation": "graphql_query_card",
-                    "card_num": normalized_num,
-                },
-            )
-            return None
+        # Database failures propagate to Strawberry and are sanitised
+        # by the schema-level :class:`~strawberry.extensions.MaskErrors`
+        # extension. The ``response.error_message is not None`` branch
+        # below continues to signal the legitimate "card not found"
+        # outcome returned by a successful service call.
+        response = await service.get_card_detail(normalized_num)
 
         if response.error_message is not None:
             logger.info(
@@ -1174,18 +1187,12 @@ class Query:
             page_number=page_clamped,
         )
 
-        try:
-            response = await service.list_cards(request)
-        except Exception:
-            logger.exception(
-                "cards query: service error",
-                extra={
-                    "operation": "graphql_query_cards",
-                    "account_id": normalized_acct,
-                    "page": page_clamped,
-                },
-            )
-            return []
+        # Database failures propagate to Strawberry and are sanitised
+        # by the schema-level :class:`~strawberry.extensions.MaskErrors`
+        # extension. The previous silent ``return []`` pattern made
+        # connectivity errors look identical to legitimately-empty
+        # query windows and was flagged by QA Checkpoint 5.
+        response = await service.list_cards(request)
 
         items = response.cards
         # Respect a caller-supplied ``page_size`` lower than the
@@ -1252,17 +1259,11 @@ class Query:
             )
             return None
 
-        try:
-            response = await service.get_transaction_detail(normalized_id)
-        except Exception:
-            logger.exception(
-                "transaction query: service error",
-                extra={
-                    "operation": "graphql_query_transaction",
-                    "tran_id": normalized_id,
-                },
-            )
-            return None
+        # Database failures propagate to Strawberry and are sanitised
+        # by the schema-level :class:`~strawberry.extensions.MaskErrors`
+        # extension. A populated ``response.message`` below continues
+        # to encode the legitimate "transaction not found" outcome.
+        response = await service.get_transaction_detail(normalized_id)
 
         # The TransactionDetailResponse signals "not found" via a
         # populated ``message`` field (the COBOL COTRN01C screen
@@ -1344,18 +1345,12 @@ class Query:
             page_size=page_size_clamped,
         )
 
-        try:
-            response = await service.list_transactions(request)
-        except Exception:
-            logger.exception(
-                "transactions query: service error",
-                extra={
-                    "operation": "graphql_query_transactions",
-                    "page": page_clamped,
-                    "page_size": page_size_clamped,
-                },
-            )
-            return []
+        # Database failures propagate to Strawberry and are sanitised
+        # by the schema-level :class:`~strawberry.extensions.MaskErrors`
+        # extension. Previously this resolver returned ``[]`` on any
+        # exception, which disguised connectivity failures as empty
+        # pages (QA Checkpoint 5 finding).
+        response = await service.list_transactions(request)
 
         return [_transaction_list_item_to_type(item) for item in response.transactions]
 
@@ -1375,9 +1370,9 @@ class Query:
     async def user(
         self,
         info: Info,
-        usr_id: str,
+        user_id: str,
     ) -> Optional[UserType]:  # noqa: UP045  # schema requires typing.Optional
-        """Resolve the ``user(usr_id: String!)`` query field.
+        """Resolve the ``user(userId: String!)`` query field.
 
         **Authorization**: This resolver reads from the USRSEC table
         and is therefore restricted to administrator callers
@@ -1400,10 +1395,20 @@ class Query:
         ----------
         info : Info
             Strawberry resolver context.
-        usr_id : str
+        user_id : str
             The 8-character user identifier (COBOL ``PIC X(08)`` →
             Python ``str``). Whitespace is stripped before the
-            lookup.
+            lookup. Strawberry exposes this as ``userId`` in the
+            GraphQL schema (automatic snake_case → camelCase
+            conversion) so clients send ``user(userId: "...")``.
+            The longer form ``user_id`` aligns with the SQLAlchemy
+            ``UserSecurity.user_id`` model column, matches the REST
+            path parameter ``/users/{user_id}``, and resolves the
+            QA Checkpoint 5 finding (Issue 18) that the GraphQL
+            surface previously exposed ``usrId`` — inconsistent with
+            the other GraphQL argument names (``acctId``,
+            ``tranId``, ``cardNum``) and with the authoritative
+            model/DB column name.
 
         Returns
         -------
@@ -1427,19 +1432,19 @@ class Query:
 
         session = _get_session(info)
         service: UserService = UserService(session)
-        normalized_id: str = _normalize(usr_id)
+        normalized_id: str = _normalize(user_id)
 
         logger.debug(
             "user query",
             extra={
                 "operation": "graphql_query_user",
-                "usr_id": normalized_id,
+                "user_id": normalized_id,
             },
         )
 
         if not normalized_id:
             logger.warning(
-                "user query: empty usr_id",
+                "user query: empty user_id",
                 extra={"operation": "graphql_query_user"},
             )
             return None
@@ -1455,17 +1460,15 @@ class Query:
             page_size=1,
         )
 
-        try:
-            response = await service.list_users(request)
-        except Exception:
-            logger.exception(
-                "user query: service error",
-                extra={
-                    "operation": "graphql_query_user",
-                    "usr_id": normalized_id,
-                },
-            )
-            return None
+        # Database failures propagate to Strawberry and are sanitised
+        # by the schema-level :class:`~strawberry.extensions.MaskErrors`
+        # extension. :func:`_require_admin` above raises
+        # :class:`PermissionError` BEFORE this line when the caller
+        # is not an administrator; that exception is not a SQLAlchemy
+        # error and therefore passes through the mask predicate
+        # unchanged, reaching the client as an explicit
+        # authorization failure.
+        response = await service.list_users(request)
 
         # Be strict about exact match (the LIKE prefix could
         # theoretically match a shorter prefix if a user ID were
@@ -1479,7 +1482,7 @@ class Query:
             "user query: not found",
             extra={
                 "operation": "graphql_query_user",
-                "usr_id": normalized_id,
+                "user_id": normalized_id,
             },
         )
         return None
@@ -1575,18 +1578,22 @@ class Query:
             page_size=page_size_clamped,
         )
 
-        try:
-            response = await service.list_users(request)
-        except Exception:
-            logger.exception(
-                "users query: service error",
-                extra={
-                    "operation": "graphql_query_users",
-                    "page": page_clamped,
-                    "page_size": page_size_clamped,
-                },
-            )
-            return []
+        # Database failures propagate to Strawberry and are sanitised
+        # by the schema-level :class:`~strawberry.extensions.MaskErrors`
+        # extension so clients never observe raw SQL, parameter
+        # values, or SQLAlchemy exception text. The previous
+        # ``try / except Exception: return []`` pattern was deleted
+        # as part of the QA Checkpoint 5 resolution for Issue 15 —
+        # silently returning an empty list hid real database
+        # failures behind a benign-looking HTTP 200 response,
+        # confusing clients and obstructing operational monitoring.
+        # :func:`_require_admin` above raises
+        # :class:`PermissionError` BEFORE this line when the caller
+        # is not an administrator; that exception is not a
+        # SQLAlchemy error and therefore passes through the mask
+        # predicate unchanged, reaching the client as an explicit
+        # authorization failure.
+        response = await service.list_users(request)
 
         return [_user_list_item_to_type(item) for item in response.users]
 

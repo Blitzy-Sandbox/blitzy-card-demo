@@ -190,7 +190,7 @@ from __future__ import annotations
 
 import logging
 
-from passlib.context import CryptContext  # type: ignore[import-untyped]
+from passlib.context import CryptContext
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 

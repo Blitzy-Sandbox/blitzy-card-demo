@@ -301,8 +301,13 @@ def test_composite_primary_key() -> None:
         f"{[c.name for c in primary_key_columns]}"
     )
 
-    # Invariant 2 — identity and order.
-    actual_pk_names = tuple(c.name for c in primary_key_columns)
+    # Invariant 2 — identity and order (by Python attribute key).
+    # ``_EXPECTED_COMPOSITE_PK_NAMES`` is declared with Python-style
+    # attribute names (``acct_group_id``, ``tran_type_cd``,
+    # ``tran_cat_cd``); the DB-side column names are prefixed
+    # (``dis_acct_group_id``, etc.) via
+    # ``mapped_column("dis_acct_group_id", key="acct_group_id", ...)``.
+    actual_pk_names = tuple(c.key for c in primary_key_columns)
     assert actual_pk_names == _EXPECTED_COMPOSITE_PK_NAMES, (
         f"Composite primary key columns must be declared in the order "
         f"{_EXPECTED_COMPOSITE_PK_NAMES!r} (matching the COBOL "
@@ -312,6 +317,9 @@ def test_composite_primary_key() -> None:
     )
 
     # Invariant 3 — types and lengths of each PK part.
+    # Keyed by Python attribute name (Column.key), not DB name,
+    # because the columns are declared via ``mapped_column(
+    # "dis_acct_group_id", ..., key="acct_group_id")``.
     expected_types: dict[str, int] = {
         "acct_group_id": 10,  # DIS-ACCT-GROUP-ID PIC X(10)
         "tran_type_cd": 2,  # DIS-TRAN-TYPE-CD  PIC X(02)
@@ -319,13 +327,18 @@ def test_composite_primary_key() -> None:
     }
     for pk_column in primary_key_columns:
         assert isinstance(pk_column.type, String), (
-            f"Primary key column {pk_column.name!r} must be declared as "
+            f"Primary key column {pk_column.key!r} must be declared as "
             f"a String type (from COBOL PIC X/9 clauses); found "
             f"{type(pk_column.type).__name__}"
         )
-        expected_length = expected_types[pk_column.name]
+        # ``Column.key`` is typed ``str | None`` in SQLAlchemy 2.x but
+        # every mapped column in this ORM model has an explicit ``key=``
+        # so the value is guaranteed to be a string — assert for mypy
+        # and for defensive runtime safety.
+        assert pk_column.key is not None
+        expected_length = expected_types[pk_column.key]
         assert pk_column.type.length == expected_length, (
-            f"Primary key column {pk_column.name!r} must be "
+            f"Primary key column {pk_column.key!r} must be "
             f"String({expected_length}) per the COBOL copybook; "
             f"found String({pk_column.type.length})"
         )
@@ -367,7 +380,16 @@ def test_composite_key_matches_cobol_group() -> None:
     # so does not appear in this expected set.
     cobol_non_key_columns: frozenset[str] = frozenset({"int_rate"})
 
-    primary_key_names: set[str] = {c.name for c in inspect(DisclosureGroup).primary_key}
+    # Use ``Column.key`` (Python attribute) for comparison against
+    # the cobol_key_columns/cobol_non_key_columns frozensets that
+    # are declared in Python-style attribute form. The DB-side
+    # column names are prefixed (``dis_acct_group_id``, etc.).
+    # ``Column.key`` is typed ``str | None`` in SQLAlchemy 2.x but
+    # every mapped column in this ORM model has an explicit ``key=``
+    # so the value is guaranteed to be a string.
+    primary_key_names: set[str] = {
+        str(c.key) for c in inspect(DisclosureGroup).primary_key
+    }
 
     # Inclusion — every COBOL key elementary field is a PK column.
     missing_key_columns = cobol_key_columns - primary_key_names
@@ -918,20 +940,27 @@ def test_no_filler_columns() -> None:
       ``"filler"`` (case-insensitive), catching any misspelling
       (``Filler``, ``FILLER``, ``filler1``, etc.).
     """
-    column_names = [c.name for c in DisclosureGroup.__table__.columns]
+    # ``Column.key`` is the Python attribute name used in
+    # ``_EXPECTED_COLUMNS`` and matters for the positive check;
+    # ``Column.name`` is the physical DB column name (e.g.
+    # ``dis_acct_group_id``). For the "no filler" check we scan
+    # both so regressions in either form are caught.
+    column_keys = [c.key for c in DisclosureGroup.__table__.columns]
+    column_db_names = [c.name for c in DisclosureGroup.__table__.columns]
 
     # Positive invariant — exact-set equivalence against the
-    # FILLER-free expected set.
-    assert set(column_names) == set(_EXPECTED_COLUMNS), (
+    # FILLER-free expected set (Python attribute names).
+    assert set(column_keys) == set(_EXPECTED_COLUMNS), (
         f"DisclosureGroup columns must exactly match "
         f"{sorted(_EXPECTED_COLUMNS)!r} (COBOL FILLER PIC X(28) is "
-        f"NOT mapped); found {sorted(column_names)!r}. "
-        f"Missing: {sorted(set(_EXPECTED_COLUMNS) - set(column_names))!r}. "
-        f"Extra: {sorted(set(column_names) - set(_EXPECTED_COLUMNS))!r}."
+        f"NOT mapped); found {sorted(column_keys)!r}. "
+        f"Missing: {sorted(set(_EXPECTED_COLUMNS) - set(column_keys))!r}. "
+        f"Extra: {sorted(set(column_keys) - set(_EXPECTED_COLUMNS))!r}."
     )
 
-    # Negative invariant — catches any misspelling of FILLER.
-    for column_name in column_names:
+    # Negative invariant — catches any misspelling of FILLER in
+    # EITHER the Python attribute name OR the DB column name.
+    for column_name in column_keys + column_db_names:
         assert "filler" not in column_name.lower(), (
             f"Column {column_name!r} appears to map COBOL FILLER "
             f"padding, which is forbidden. COBOL FILLER PIC X(28) "
