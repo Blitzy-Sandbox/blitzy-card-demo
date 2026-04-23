@@ -493,13 +493,11 @@ async def db_session(
     async with async_engine.connect() as connection:
         # Outer transaction — everything below runs inside this.
         await connection.begin()
-        async_session_factory: async_sessionmaker[AsyncSession] = (
-            async_sessionmaker(
-                bind=connection,
-                class_=AsyncSession,
-                expire_on_commit=False,
-                join_transaction_mode="create_savepoint",
-            )
+        async_session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
+            bind=connection,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
         )
         async with async_session_factory() as session:
             try:
@@ -905,7 +903,6 @@ async def seed_data(
     }
 
 
-
 # ===========================================================================
 # SECTION 5 — TEST CLASSES (F-001 through F-022)
 # ===========================================================================
@@ -1259,14 +1256,16 @@ class TestAccountEndpoints:
         client: AsyncClient,
         seed_data: dict[str, Any],
     ) -> None:
-        """GET /accounts/{non_existent_id} returns 400 (NOT 404).
+        """GET /accounts/{non_existent_id} returns 404.
 
-        The Account router maps ALL service-layer failures — including
-        the NOTFND branch from ``COACTVWC.cbl`` — to HTTP 400 via the
-        ``response.error_message`` discriminator. This preserves the
-        COBOL single-path error channel (1920-MAIN-PROGRAM in
-        COACTVWC.cbl). See ``src/api/routers/account_router.py`` lines
-        155-161 for the docstring of this design decision.
+        The Account router maps the NOTFND branch from
+        ``COACTVWC.cbl`` (``ACCT-NOT-FOUND`` paragraph, error code
+        ``NFND``) to HTTP 404 Not Found — the semantically correct
+        REST status for a primary-key lookup miss. The router raises
+        ``HTTPException(status_code=404)`` with the canonical
+        CardDemo error envelope so that the client sees both the
+        REST semantic status code *and* the COBOL-preserved ``NFND``
+        error code/message in the body.
 
         The path regex (``^[0-9]{11}$``) is satisfied by the 11-digit
         ID — we want to exercise the service layer's lookup, not the
@@ -1277,7 +1276,7 @@ class TestAccountEndpoints:
             "/accounts/99999999999",  # 11 digits, NOT in seed data
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 400, response.text
+        assert response.status_code == 404, response.text
         body = response.json()
         # The global exception handler wraps HTTPException as the
         # ABEND-DATA envelope ``{"error": {"message", "reason", ...}}``
@@ -1345,7 +1344,7 @@ class TestAccountEndpoints:
         client: AsyncClient,
         seed_data: dict[str, Any],
     ) -> None:
-        """PUT /accounts/{acct_id} under optimistic-concurrency conflict → 400.
+        """PUT /accounts/{acct_id} under optimistic-concurrency conflict → 409.
 
         Simulates a version_id mismatch by patching the shared async
         session's ``flush`` coroutine to raise
@@ -1353,7 +1352,9 @@ class TestAccountEndpoints:
         catches ``StaleDataError`` (account_service.py line 1334) and
         surfaces the COBOL-verbatim literal "Record changed by some
         one else. Please review" via ``error_message``. The router
-        translates that to HTTP 400 per its single-path error convention.
+        translates that to HTTP 409 Conflict — the semantically
+        correct REST status for an optimistic-concurrency violation
+        (``DUPR`` error code in the CardDemo envelope).
 
         Maps to ``COACTUPC.cbl`` DATA-WAS-CHANGED-BEFORE-UPDATE branch
         (line ~1681 ``1205-COMPARE-OLD-NEW``). In the COBOL world the
@@ -1378,8 +1379,7 @@ class TestAccountEndpoints:
             "src.api.services.account_service.AsyncSession.flush",
             new=AsyncMock(
                 side_effect=StaleDataError(
-                    "UPDATE statement on table 'account' expected to "
-                    "update 1 row; 0 were matched."
+                    "UPDATE statement on table 'account' expected to update 1 row; 0 were matched."
                 )
             ),
         ):
@@ -1388,7 +1388,7 @@ class TestAccountEndpoints:
                 headers={"Authorization": f"Bearer {token}"},
                 json=payload,
             )
-        assert response.status_code == 400, response.text
+        assert response.status_code == 409, response.text
         body = response.json()
         # COACTUPC.cbl L3802 literal — "Record changed by some one
         # else. Please review" (note COBOL's "some one" is two words).
@@ -1422,7 +1422,6 @@ class TestAccountEndpoints:
             # NOTE: No Authorization header — triggers 401 at middleware.
         )
         assert response.status_code == 401, response.text
-
 
 
 # ===========================================================================
@@ -1497,9 +1496,7 @@ class TestCardEndpoints:
           ``selected``, ``account_id``, ``card_number``, ``card_status``.
         * Both seed card numbers appear in the returned list.
         """
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         response = await client.get(
             "/cards",
             headers={"Authorization": f"Bearer {token}"},
@@ -1548,9 +1545,7 @@ class TestCardEndpoints:
           account 1) and excludes ``_SEED_CARD_NUM_2`` (card_2 is on
           account 2).
         """
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         response = await client.get(
             "/cards",
             params={"account_id": _SEED_ACCT_ID_1},
@@ -1590,9 +1585,7 @@ class TestCardEndpoints:
           ``expiration_date == "2030-12-31"``).
         * ``body["expiry_year"]`` is "2030".
         """
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         response = await client.get(
             f"/cards/{_SEED_CARD_NUM_1}",
             headers={"Authorization": f"Bearer {token}"},
@@ -1618,13 +1611,14 @@ class TestCardEndpoints:
         client: AsyncClient,
         seed_data: dict[str, Any],
     ) -> None:
-        """GET /cards/{card_num} returns 400 for a non-existent card.
+        """GET /cards/{card_num} returns 404 for a non-existent card.
 
-        Router convention: the card router collapses all service
-        failures (including not-found) into HTTP 400 with the
-        service's error message as the detail. This differs from the
-        transaction router which returns 404 for "NOT found"
-        substring matches.
+        The card router maps the NOTFND branch from COCRDSLC.cbl
+        (EXEC CICS READ DATASET('CARDDAT') with RESP(NOTFND)) to
+        HTTP 404 Not Found — the semantically correct REST status
+        for a primary-key lookup miss. The COBOL-verbatim error
+        text ``_MSG_DETAIL_NOT_FOUND`` ("Did not find cards for
+        this search condition") is preserved in the error envelope.
 
         Maps to ``COCRDSLC.cbl``'s ``EXEC CICS READ`` NOTFND response
         branch, which sent the BMS map with ``ERRMSGO`` set to "Did
@@ -1633,20 +1627,18 @@ class TestCardEndpoints:
 
         Assertions:
 
-        * HTTP 400 (NOT 404 -- card router uniform error policy).
+        * HTTP 404 (NOTFND → 404 REST semantic mapping).
         * ``body["detail"]`` contains "Did not find cards".
         """
         # A well-formed but unseeded 16-digit card number -- must
         # pass the path regex ``^[0-9]{16}$`` and then miss the DB.
         missing_card: str = "9999999999999999"
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         response = await client.get(
             f"/cards/{missing_card}",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code == 400, response.text
+        assert response.status_code == 404, response.text
         body = response.json()
         assert "error" in body
         # Error message sourced verbatim from COCRDSLC.cbl service
@@ -1675,9 +1667,7 @@ class TestCardEndpoints:
         * ``body["status_code"]`` is the new value (set to "N"
           in this test).
         """
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         # CardUpdateRequest requires ALL 7 fields per the schema
         # contract (no PATCH-style partials; every field is declared
         # with ``...``). We copy the seed values for the fields we
@@ -1712,7 +1702,7 @@ class TestCardEndpoints:
         client: AsyncClient,
         seed_data: dict[str, Any],
     ) -> None:
-        """PUT /cards/{card_num} returns 400 on StaleDataError.
+        """PUT /cards/{card_num} returns 409 on StaleDataError.
 
         Simulates a concurrent-modification scenario: another
         session has already incremented ``Card.version_id`` between
@@ -1722,20 +1712,21 @@ class TestCardEndpoints:
         catches this, issues a SAVEPOINT rollback (mirroring CICS
         SYNCPOINT ROLLBACK), and returns ``error_message`` set to
         "Record changed by some one else. Please review" -- the
-        card router then translates this into HTTP 400.
+        card router translates this into HTTP 409 Conflict — the
+        semantically correct REST status for an optimistic-
+        concurrency violation (``DUPR`` error code in the CardDemo
+        envelope).
 
         Note: the COBOL source text is "some one" (two words), not
         "someone" -- preserved verbatim per AAP section 0.7.1.
 
         Assertions:
 
-        * HTTP 400.
+        * HTTP 409 Conflict (optimistic-concurrency violation).
         * ``body["detail"]`` contains "Record changed" (byte-for-
           byte substring of the COBOL error string).
         """
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         # Minimal, valid update payload. The service will reach
         # flush() only after all schema validators pass.
         update_payload: dict[str, str] = {
@@ -1753,8 +1744,7 @@ class TestCardEndpoints:
         # the test is scoped to the service under test; other code
         # paths (seed_data, db_session setup) are unaffected.
         stale_error: StaleDataError = StaleDataError(
-            "UPDATE statement on table 'card' expected to update "
-            "1 row(s); 0 were matched."
+            "UPDATE statement on table 'card' expected to update 1 row(s); 0 were matched."
         )
         with patch(
             "src.api.services.card_service.AsyncSession.flush",
@@ -1766,14 +1756,13 @@ class TestCardEndpoints:
                 headers={"Authorization": f"Bearer {token}"},
             )
 
-        # Card router collapses service-layer errors to 400.
-        assert response.status_code == 400, response.text
+        # Card router maps StaleDataError → 409 Conflict.
+        assert response.status_code == 409, response.text
         body = response.json()
         assert "error" in body
         # COBOL-exact wording preserved: "some one" is two words.
         # Error text is in the ABEND envelope's reason/message slots.
         assert "Record changed" in _error_text(body)
-
 
 
 # ===========================================================================
@@ -1849,9 +1838,7 @@ class TestTransactionEndpoints:
         * Each list item contains the 4 TransactionListItem fields:
           ``tran_id``, ``tran_date``, ``description``, ``amount``.
         """
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         response = await client.get(
             "/transactions",
             headers={"Authorization": f"Bearer {token}"},
@@ -1875,9 +1862,7 @@ class TestTransactionEndpoints:
             assert "amount" in row
 
         # Both seed transaction IDs must appear.
-        returned_ids: set[str] = {
-            row["tran_id"] for row in body["transactions"]
-        }
+        returned_ids: set[str] = {row["tran_id"] for row in body["transactions"]}
         assert _SEED_TRAN_ID_1 in returned_ids
         assert _SEED_TRAN_ID_2 in returned_ids
 
@@ -1919,9 +1904,7 @@ class TestTransactionEndpoints:
         # ``_SEED_TRAN_ID_2 = "0000000000000200"``, the correct
         # longest common prefix is twelve zeros (``000000000000``).
         common_prefix_chars: list[str] = []
-        for char_a, char_b in zip(
-            _SEED_TRAN_ID_1, _SEED_TRAN_ID_2, strict=True
-        ):
+        for char_a, char_b in zip(_SEED_TRAN_ID_1, _SEED_TRAN_ID_2, strict=True):
             if char_a != char_b:
                 break
             common_prefix_chars.append(char_a)
@@ -1930,9 +1913,7 @@ class TestTransactionEndpoints:
         assert _SEED_TRAN_ID_1.startswith(common_prefix)
         assert _SEED_TRAN_ID_2.startswith(common_prefix)
 
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         response = await client.get(
             "/transactions",
             params={"tran_id": common_prefix},
@@ -1946,9 +1927,7 @@ class TestTransactionEndpoints:
         for row in body["transactions"]:
             assert row["tran_id"].startswith(common_prefix), row
         # Both seed transactions must be present.
-        returned_ids: set[str] = {
-            row["tran_id"] for row in body["transactions"]
-        }
+        returned_ids: set[str] = {row["tran_id"] for row in body["transactions"]}
         assert _SEED_TRAN_ID_1 in returned_ids
         assert _SEED_TRAN_ID_2 in returned_ids
 
@@ -1980,9 +1959,7 @@ class TestTransactionEndpoints:
         * ``body["tran_type_cd"]`` equals "01" (seed value).
         * ``body["tran_cat_cd"]`` equals "0001" (seed value).
         """
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         response = await client.get(
             f"/transactions/{_SEED_TRAN_ID_1}",
             headers={"Authorization": f"Bearer {token}"},
@@ -2029,9 +2006,7 @@ class TestTransactionEndpoints:
         """
         # Well-formed ID (matches ^[A-Za-z0-9_\-]{1,16}$) but absent.
         missing_tran: str = "TXNMISSING000000"
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         response = await client.get(
             f"/transactions/{missing_tran}",
             headers={"Authorization": f"Bearer {token}"},
@@ -2074,9 +2049,7 @@ class TestTransactionEndpoints:
         * ``body["acct_id"]`` equals the resolved account (account 1
           for card 1 via the seed xref).
         """
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         # 13-field TransactionAddRequest payload. ``amount`` uses a
         # Decimal-safe string literal to avoid any float coercion.
         new_amount: Decimal = Decimal("99.99")
@@ -2144,9 +2117,7 @@ class TestTransactionEndpoints:
         * ``body["detail"]`` contains "XREF" (byte-exact COBOL
           wording preserved in _MSG_CARD_NOT_IN_XREF).
         """
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         # Well-formed 16-digit card number that is NOT in the seed
         # xref table. Must pass the schema validator (numeric, 16
         # chars) and then miss the CXACAIX lookup.
@@ -2177,7 +2148,6 @@ class TestTransactionEndpoints:
         assert "error" in body
         # Detail text is in the ABEND envelope's reason/message slots.
         assert "XREF" in _error_text(body)
-
 
 
 # ===========================================================================
@@ -2253,9 +2223,7 @@ class TestBillPaymentEndpoints:
         * ``body["current_balance"]`` round-trips to
           Decimal("950.00") (1000.00 - 50.00, exact).
         """
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         payment_amount: Decimal = Decimal("50.00")
         initial_balance: Decimal = Decimal("1000.00")
         expected_balance: Decimal = initial_balance - payment_amount
@@ -2306,9 +2274,7 @@ class TestBillPaymentEndpoints:
         """
         # Well-formed 11-digit account ID that is NOT in the seed.
         missing_acct: str = "99999999999"
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         response = await client.post(
             "/bills/pay",
             json={"acct_id": missing_acct, "amount": "50.00"},
@@ -2345,9 +2311,7 @@ class TestBillPaymentEndpoints:
         * ``body["detail"]`` contains the validation error
           structure with a reference to the ``amount`` field.
         """
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         # Zero is explicitly rejected by _validate_amount_positive.
         response = await client.post(
             "/bills/pay",
@@ -2403,9 +2367,7 @@ class TestBillPaymentEndpoints:
         fixture resets state per-test regardless of the service's
         rollback behavior.
         """
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
 
         # Patch AsyncSession.flush in the bill_service namespace to
         # raise a RuntimeError mid-dual-write. The patched method
@@ -2413,9 +2375,7 @@ class TestBillPaymentEndpoints:
         # UPDATE reach the DB engine; the service's except block
         # then invokes rollback() -- mirroring CICS SYNCPOINT
         # ROLLBACK from COBIL00C.cbl's exception path.
-        flush_error: RuntimeError = RuntimeError(
-            "simulated flush failure for atomicity test"
-        )
+        flush_error: RuntimeError = RuntimeError("simulated flush failure for atomicity test")
         with patch(
             "src.api.services.bill_service.AsyncSession.flush",
             new=AsyncMock(side_effect=flush_error),
@@ -2436,7 +2396,6 @@ class TestBillPaymentEndpoints:
         # the ABEND envelope for 500 HTTPExceptions (no canned default
         # exists for the 500 status).
         assert "Payment processing failed" in _error_text(body)
-
 
 
 # ===========================================================================
@@ -2506,6 +2465,19 @@ class TestReportEndpoints:
         SQS is mocked via a boto3 client stand-in that returns a
         fake ``MessageId``. Real AWS calls never occur.
 
+        Admin privilege requirement
+        ---------------------------
+        The ``/reports/submit`` endpoint is guarded by
+        :func:`src.api.dependencies.get_current_admin_user` (see
+        ``src/api/routers/report_router.py`` line 153), so this test
+        authenticates with an admin-scoped JWT (``user_type='A'`` per
+        ``COSGN00C.cbl`` 88-level ``CDEMO-USRTYP-ADMIN VALUE 'A'``)
+        via inline ``create_test_token`` rather than the shared
+        ``admin_client`` fixture from ``tests/conftest.py`` — the
+        conftest-level fixture has function scope and is incompatible
+        with this test module's module-scoped ``db_session`` /
+        ``client`` fixtures.
+
         Assertions:
 
         * HTTP 200 (success path for the router -- SQS failures map
@@ -2515,9 +2487,7 @@ class TestReportEndpoints:
         * ``body["report_id"]`` is a non-empty string (service-
           generated UUID).
         """
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN)
 
         # Stub SQS client -- send_message returns a fake boto3-style
         # response dict. The report service inspects only the call
@@ -2574,15 +2544,24 @@ class TestReportEndpoints:
         so invalid requests are rejected BEFORE the service is
         invoked -- no SQS call is made.
 
+        Admin privilege requirement
+        ---------------------------
+        The ``/reports/submit`` endpoint is guarded by
+        :func:`src.api.dependencies.get_current_admin_user`. FastAPI
+        resolves dependencies (including authorization) BEFORE body
+        validation, so an anonymous or non-admin caller would short-
+        circuit at 401/403 and never reach the Pydantic model
+        validator under test. We therefore authenticate with an
+        admin-scoped JWT via inline ``create_test_token`` (matching
+        the scope-compatible pattern used by ``test_submit_report``).
+
         Assertions:
 
         * HTTP 422 (Pydantic model-validator error).
         * ``body["detail"]`` contains the validation error
           reference to end_date or start_date.
         """
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN)
         # Inverted date range: start > end violates the
         # _validate_custom_requires_dates invariant.
         response = await client.post(
@@ -2603,7 +2582,6 @@ class TestReportEndpoints:
         # the end_date or start_date field path is surfaced verbatim.
         detail_text: str = _error_text(body)
         assert "end_date" in detail_text or "start_date" in detail_text
-
 
 
 # ===========================================================================
@@ -2689,9 +2667,7 @@ class TestUserEndpoints:
           ADMIN001).
         * Both seed user IDs appear in the returned list.
         """
-        token: str = create_test_token(
-            user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN
-        )
+        token: str = create_test_token(user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN)
         response = await client.get(
             "/users",
             headers={"Authorization": f"Bearer {token}"},
@@ -2705,9 +2681,7 @@ class TestUserEndpoints:
         assert body["page"] == 1
         assert body["total_count"] >= 2
 
-        returned_ids: set[str] = {
-            row["user_id"] for row in body["users"]
-        }
+        returned_ids: set[str] = {row["user_id"] for row in body["users"]}
         # Both seed users must be listed.
         assert _TEST_USER_ID in returned_ids
         assert _TEST_ADMIN_ID in returned_ids
@@ -2731,9 +2705,7 @@ class TestUserEndpoints:
         * HTTP 403 Forbidden.
         """
         # Regular user token (user_type='U').
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
         response = await client.get(
             "/users",
             headers={"Authorization": f"Bearer {token}"},
@@ -2772,9 +2744,7 @@ class TestUserEndpoints:
           field whose value is NOT the plaintext but DOES verify
           via ``CryptContext.verify(plaintext, stored_hash)``.
         """
-        token: str = create_test_token(
-            user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN
-        )
+        token: str = create_test_token(user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN)
         new_user_id: str = "NEWUSER1"
         new_plaintext_pwd: str = "pass1234"
         create_payload: dict[str, str] = {
@@ -2833,9 +2803,7 @@ class TestUserEndpoints:
           COBOL wording preserved in MSG_USER_ID_ALREADY_EXISTS --
           note: "exist" not "exists" -- COBOL-source text).
         """
-        token: str = create_test_token(
-            user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN
-        )
+        token: str = create_test_token(user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN)
         # TESTUSER is already seeded -- duplicate insert triggers
         # UserIdAlreadyExistsError -> 409.
         dup_payload: dict[str, str] = {
@@ -2880,9 +2848,7 @@ class TestUserEndpoints:
           persisted change (integration-level verification, not
           just response-level).
         """
-        token: str = create_test_token(
-            user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN
-        )
+        token: str = create_test_token(user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN)
         new_first: str = "Updated"
         update_payload: dict[str, str] = {
             "first_name": new_first,
@@ -2904,9 +2870,7 @@ class TestUserEndpoints:
         # Integration-level verification: the row in the DB reflects
         # the mutation (not just the response envelope). Refresh
         # the session's view to see the committed change.
-        await db_session.refresh(
-            await db_session.get(UserSecurity, _TEST_USER_ID)
-        )
+        await db_session.refresh(await db_session.get(UserSecurity, _TEST_USER_ID))
         persisted = await db_session.get(UserSecurity, _TEST_USER_ID)
         assert persisted is not None
         assert persisted.first_name == new_first
@@ -2934,9 +2898,7 @@ class TestUserEndpoints:
         * ``db_session.get(UserSecurity, TESTUSER)`` returns None
           after the delete.
         """
-        token: str = create_test_token(
-            user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN
-        )
+        token: str = create_test_token(user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN)
         response = await client.delete(
             f"/users/{_TEST_USER_ID}",
             headers={"Authorization": f"Bearer {token}"},
@@ -2977,9 +2939,7 @@ class TestUserEndpoints:
         * ``body["detail"]`` contains "NOT found" (byte-exact
           COBOL wording preserved in MSG_USER_ID_NOT_FOUND).
         """
-        token: str = create_test_token(
-            user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN
-        )
+        token: str = create_test_token(user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN)
         # Well-formed user_id (matches ^[A-Za-z0-9_\-]{1,8}$)
         # that is NOT in the seed.
         missing_user: str = "NONEXIST"
@@ -2993,7 +2953,6 @@ class TestUserEndpoints:
         # COBOL text: "User ID NOT found..." -- ABEND envelope's
         # reason/message slots carry the detail.
         assert "NOT found" in _error_text(body)
-
 
 
 # ===========================================================================
@@ -3072,17 +3031,11 @@ class TestAdminEndpoints:
         * ``body["user"]`` == the admin's user_id (ADMIN001),
           proving the dependency injected the right principal.
         """
-        token: str = create_test_token(
-            user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN
-        )
-        auth_headers: dict[str, str] = {
-            "Authorization": f"Bearer {token}"
-        }
+        token: str = create_test_token(user_id=_TEST_ADMIN_ID, user_type=_TEST_USER_TYPE_ADMIN)
+        auth_headers: dict[str, str] = {"Authorization": f"Bearer {token}"}
 
         # --- GET /admin/menu ---------------------------------------------
-        menu_response = await client.get(
-            "/admin/menu", headers=auth_headers
-        )
+        menu_response = await client.get("/admin/menu", headers=auth_headers)
         assert menu_response.status_code == 200, menu_response.text
         menu_body = menu_response.json()
 
@@ -3102,9 +3055,7 @@ class TestAdminEndpoints:
             assert "method" in opt
 
         # --- GET /admin/status --------------------------------------------
-        status_response = await client.get(
-            "/admin/status", headers=auth_headers
-        )
+        status_response = await client.get("/admin/status", headers=auth_headers)
         assert status_response.status_code == 200, status_response.text
         status_body = status_response.json()
         assert status_body["status"] == "operational"
@@ -3133,22 +3084,14 @@ class TestAdminEndpoints:
         * HTTP 403 for ``/admin/status`` (verifies the gate applies
           to BOTH admin endpoints, not just one).
         """
-        token: str = create_test_token(
-            user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR
-        )
-        auth_headers: dict[str, str] = {
-            "Authorization": f"Bearer {token}"
-        }
+        token: str = create_test_token(user_id=_TEST_USER_ID, user_type=_TEST_USER_TYPE_REGULAR)
+        auth_headers: dict[str, str] = {"Authorization": f"Bearer {token}"}
 
-        menu_response = await client.get(
-            "/admin/menu", headers=auth_headers
-        )
+        menu_response = await client.get("/admin/menu", headers=auth_headers)
         # Non-admin -> 403 (not 200, not 401).
         assert menu_response.status_code == 403, menu_response.text
 
-        status_response = await client.get(
-            "/admin/status", headers=auth_headers
-        )
+        status_response = await client.get("/admin/status", headers=auth_headers)
         assert status_response.status_code == 403, status_response.text
 
     async def test_admin_access_no_auth(
@@ -3181,5 +3124,3 @@ class TestAdminEndpoints:
 
         status_response = await client.get("/admin/status")
         assert status_response.status_code == 401, status_response.text
-
-

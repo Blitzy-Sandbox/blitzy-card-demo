@@ -147,6 +147,16 @@ logger = logging.getLogger(__name__)
 #:
 #: * ``/auth/login``   — the sign-on endpoint (equivalent to COSGN00C's
 #:                       ``SEND-SIGNON-SCREEN`` paragraph on initial entry).
+#: * ``/auth/logout``  — the sign-out endpoint. JWT is stateless — the
+#:                       server holds no session state to invalidate. Sign-
+#:                       out is purely a client-side token discard; this
+#:                       endpoint exists to provide a consistent REST
+#:                       confirmation envelope (200 OK + "Successfully
+#:                       signed out") for clients. In CICS the equivalent
+#:                       session termination happened implicitly via
+#:                       ``EXEC CICS RETURN`` without a COMMAREA or RTIMOUT
+#:                       on the transaction — there was never an explicit
+#:                       sign-out transaction requiring authentication.
 #: * ``/health``       — liveness probe used by the ECS Fargate task
 #:                       (target group health checks) and Kubernetes-
 #:                       style readiness probes.
@@ -179,6 +189,7 @@ logger = logging.getLogger(__name__)
 PUBLIC_PATHS: set[str] = {
     "/",
     "/auth/login",
+    "/auth/logout",
     "/health",
     "/docs",
     "/redoc",

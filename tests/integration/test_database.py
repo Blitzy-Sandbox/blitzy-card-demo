@@ -569,9 +569,7 @@ class TestSchemaCreation:
     # introspection works at the engine/connection level, not through
     # the ORM session's identity map.
 
-    async def test_all_11_tables_created(
-        self, async_engine: AsyncEngine
-    ) -> None:
+    async def test_all_11_tables_created(self, async_engine: AsyncEngine) -> None:
         """Every VSAM cluster maps to exactly one PostgreSQL table.
 
         # Validates migration of 10 VSAM KSDS + 3 AIX to 11 relational
@@ -598,12 +596,10 @@ class TestSchemaCreation:
         # TransactionType are explicitly validated here per AAP schema
         # requirements (staging table + reference data table).
         assert DailyTransaction.__tablename__ == "daily_transactions", (
-            "DailyTransaction model must map to 'daily_transactions' "
-            "(CVTRA06Y.cpy, pre-POSTTRAN driver CBTRN01C.cbl)."
+            "DailyTransaction model must map to 'daily_transactions' (CVTRA06Y.cpy, pre-POSTTRAN driver CBTRN01C.cbl)."
         )
         assert TransactionType.__tablename__ == "transaction_types", (
-            "TransactionType model must map to 'transaction_types' "
-            "(CVTRA03Y.cpy, TRANTYPE.jcl seed data, 7 rows)."
+            "TransactionType model must map to 'transaction_types' (CVTRA03Y.cpy, TRANTYPE.jcl seed data, 7 rows)."
         )
         # Validate that the required DailyTransaction columns exist on
         # the ORM class - catches missing columns early (before touching
@@ -625,21 +621,17 @@ class TestSchemaCreation:
             actual = await conn.run_sync(_inspect_tables)
 
         assert expected.issubset(actual), (
-            f"Missing tables: expected at least {expected}, "
-            f"found {actual}. Missing: {expected - actual}."
+            f"Missing tables: expected at least {expected}, found {actual}. Missing: {expected - actual}."
         )
         # Reject stray tables - each extra table is a migration defect
         # because every table must originate from an explicit VSAM-to-
         # Aurora mapping (AAP Section 0.2.1).
         unexpected = actual - expected
         assert not unexpected, (
-            f"Unexpected tables present: {unexpected}. Only the 11 "
-            f"tables mapped from VSAM KSDS are allowed."
+            f"Unexpected tables present: {unexpected}. Only the 11 tables mapped from VSAM KSDS are allowed."
         )
 
-    async def test_account_table_columns(
-        self, async_engine: AsyncEngine
-    ) -> None:
+    async def test_account_table_columns(self, async_engine: AsyncEngine) -> None:
         """Account schema matches CVACT01Y.cpy record layout.
 
         # Schema matches ACCOUNT-RECORD from app/cpy/CVACT01Y.cpy
@@ -663,54 +655,52 @@ class TestSchemaCreation:
         # Field inventory derived from CVACT01Y.cpy (ACCT-ID through
         # ACCT-GROUP-ID) plus the ``version_id`` OCC counter that
         # replaces CICS READ-UPDATE pessimistic locking (AAP Section 0.4.3).
+        #
+        # Physical DB column names preserve the COBOL ``ACCT-`` prefix
+        # (V1__schema.sql DDL and the ``mapped_column`` positional first
+        # argument in ``src/shared/models/account.py``). The Python
+        # attribute keys (via ``key="..."``) drop the prefix for
+        # ergonomic ORM use, but SQLAlchemy's ``inspector.get_columns()``
+        # reflects the physical schema — i.e. the prefixed names.
         required = {
             "acct_id",
-            "active_status",
-            "curr_bal",
-            "credit_limit",
-            "cash_credit_limit",
-            "open_date",
-            "expiration_date",
-            "reissue_date",
-            "curr_cyc_credit",
-            "curr_cyc_debit",
-            "addr_zip",
-            "group_id",
+            "acct_active_status",
+            "acct_curr_bal",
+            "acct_credit_limit",
+            "acct_cash_credit_limit",
+            "acct_open_date",
+            "acct_expiration_date",
+            "acct_reissue_date",
+            "acct_curr_cyc_credit",
+            "acct_curr_cyc_debit",
+            "acct_addr_zip",
+            "acct_group_id",
             "version_id",
         }
-        assert required.issubset(columns.keys()), (
-            f"accounts table missing columns: "
-            f"{required - set(columns.keys())}"
-        )
+        assert required.issubset(columns.keys()), f"accounts table missing columns: {required - set(columns.keys())}"
 
         # Primary key must be ``acct_id`` (COBOL PIC 9(11) -> String(11)
         # preserving leading zeros; VSAM KEYS(11 0)).
-        assert pk_cols == ["acct_id"], (
-            f"accounts PK must be ['acct_id'], got {pk_cols}"
-        )
+        assert pk_cols == ["acct_id"], f"accounts PK must be ['acct_id'], got {pk_cols}"
 
         # Monetary columns must all be NUMERIC(15, 2) for exact decimal
         # representation matching COBOL PIC S9(10)V99.
         for mon_col in (
-            "curr_bal",
-            "credit_limit",
-            "cash_credit_limit",
-            "curr_cyc_credit",
-            "curr_cyc_debit",
+            "acct_curr_bal",
+            "acct_credit_limit",
+            "acct_cash_credit_limit",
+            "acct_curr_cyc_credit",
+            "acct_curr_cyc_debit",
         ):
             ct = columns[mon_col]["type"]
             assert getattr(ct, "precision", None) == 15, (
-                f"accounts.{mon_col} must be NUMERIC(15, 2); got "
-                f"precision={getattr(ct, 'precision', None)}"
+                f"accounts.{mon_col} must be NUMERIC(15, 2); got precision={getattr(ct, 'precision', None)}"
             )
             assert getattr(ct, "scale", None) == 2, (
-                f"accounts.{mon_col} must be NUMERIC(15, 2); got "
-                f"scale={getattr(ct, 'scale', None)}"
+                f"accounts.{mon_col} must be NUMERIC(15, 2); got scale={getattr(ct, 'scale', None)}"
             )
 
-    async def test_card_table_columns(
-        self, async_engine: AsyncEngine
-    ) -> None:
+    async def test_card_table_columns(self, async_engine: AsyncEngine) -> None:
         """Card schema matches CVACT02Y.cpy record layout.
 
         # Schema matches CARD-RECORD from app/cpy/CVACT02Y.cpy
@@ -723,15 +713,11 @@ class TestSchemaCreation:
 
         def _get_pk(sync_conn: Connection) -> list[str]:
             inspector = inspect(sync_conn)
-            cols: list[str] = inspector.get_pk_constraint("cards")[
-                "constrained_columns"
-            ]
+            cols: list[str] = inspector.get_pk_constraint("cards")["constrained_columns"]
             return cols
 
         def _get_indexes(sync_conn: Connection) -> list[ReflectedIndex]:
-            indexes: list[ReflectedIndex] = list(
-                inspect(sync_conn).get_indexes("cards")
-            )
+            indexes: list[ReflectedIndex] = list(inspect(sync_conn).get_indexes("cards"))
             return indexes
 
         async with async_engine.connect() as conn:
@@ -739,37 +725,34 @@ class TestSchemaCreation:
             pk_cols = await conn.run_sync(_get_pk)
             indexes = await conn.run_sync(_get_indexes)
 
+        # Physical DB column names use the COBOL ``CARD-`` prefix
+        # (except the PK ``card_num`` which preserves the VSAM KEYS(16
+        # 0) name directly). See V1__schema.sql DDL and
+        # ``src/shared/models/card.py`` ``mapped_column`` positional
+        # first arguments.
         required = {
             "card_num",
-            "acct_id",
-            "cvv_cd",
-            "embossed_name",
-            "expiration_date",
-            "active_status",
+            "card_acct_id",
+            "card_cvv_cd",
+            "card_embossed_name",
+            "card_expiration_date",
+            "card_active_status",
             "version_id",  # OCC column
         }
-        assert required.issubset(columns.keys()), (
-            f"cards table missing columns: "
-            f"{required - set(columns.keys())}"
-        )
+        assert required.issubset(columns.keys()), f"cards table missing columns: {required - set(columns.keys())}"
         # VSAM KEYS(16 0) -> String(16) PK preserving leading zeros
         # (leading zeros lost under Integer representation because COBOL
         # PIC X(16) includes alphanumeric card numbers).
-        assert pk_cols == ["card_num"], (
-            f"cards PK must be ['card_num'], got {pk_cols}"
-        )
+        assert pk_cols == ["card_num"], f"cards PK must be ['card_num'], got {pk_cols}"
 
         # VSAM AIX on acct_id -> non-unique B-tree index
         # (ix_card_acct_id). Replaces CARD.AIX.ACCT from z/OS catalog.
         index_names = {idx["name"] for idx in indexes}
         assert "ix_card_acct_id" in index_names, (
-            f"cards must have 'ix_card_acct_id' B-tree index on acct_id; "
-            f"found indexes: {index_names}"
+            f"cards must have 'ix_card_acct_id' B-tree index on acct_id; found indexes: {index_names}"
         )
 
-    async def test_customer_table_columns(
-        self, async_engine: AsyncEngine
-    ) -> None:
+    async def test_customer_table_columns(self, async_engine: AsyncEngine) -> None:
         """Customer schema matches CVCUS01Y.cpy record layout.
 
         # Schema matches CUSTOMER-RECORD from app/cpy/CVCUS01Y.cpy
@@ -777,42 +760,33 @@ class TestSchemaCreation:
         """
 
         def _get_columns(sync_conn: Connection) -> dict[str, ReflectedColumn]:
-            return {
-                c["name"]: c
-                for c in inspect(sync_conn).get_columns("customers")
-            }
+            return {c["name"]: c for c in inspect(sync_conn).get_columns("customers")}
 
         def _get_pk(sync_conn: Connection) -> list[str]:
-            cols: list[str] = inspect(sync_conn).get_pk_constraint(
-                "customers"
-            )["constrained_columns"]
+            cols: list[str] = inspect(sync_conn).get_pk_constraint("customers")["constrained_columns"]
             return cols
 
         async with async_engine.connect() as conn:
             columns = await conn.run_sync(_get_columns)
             pk_cols = await conn.run_sync(_get_pk)
 
+        # Physical DB column names use the COBOL ``CUST-`` prefix.
+        # See V1__schema.sql DDL and ``src/shared/models/customer.py``
+        # ``mapped_column`` positional first arguments.
         required = {
             "cust_id",
-            "first_name",
-            "middle_name",
-            "last_name",
-            "addr_line_1",
-            "ssn",
-            "dob",
-            "fico_credit_score",
+            "cust_first_name",
+            "cust_middle_name",
+            "cust_last_name",
+            "cust_addr_line_1",
+            "cust_ssn",
+            "cust_dob_yyyy_mm_dd",
+            "cust_fico_credit_score",
         }
-        assert required.issubset(columns.keys()), (
-            f"customers table missing columns: "
-            f"{required - set(columns.keys())}"
-        )
-        assert pk_cols == ["cust_id"], (
-            f"customers PK must be ['cust_id'], got {pk_cols}"
-        )
+        assert required.issubset(columns.keys()), f"customers table missing columns: {required - set(columns.keys())}"
+        assert pk_cols == ["cust_id"], f"customers PK must be ['cust_id'], got {pk_cols}"
 
-    async def test_transaction_table_columns(
-        self, async_engine: AsyncEngine
-    ) -> None:
+    async def test_transaction_table_columns(self, async_engine: AsyncEngine) -> None:
         """Transaction schema matches CVTRA05Y.cpy record layout.
 
         # Schema matches TRAN-RECORD from app/cpy/CVTRA05Y.cpy
@@ -820,21 +794,14 @@ class TestSchemaCreation:
         """
 
         def _get_columns(sync_conn: Connection) -> dict[str, ReflectedColumn]:
-            return {
-                c["name"]: c
-                for c in inspect(sync_conn).get_columns("transactions")
-            }
+            return {c["name"]: c for c in inspect(sync_conn).get_columns("transactions")}
 
         def _get_pk(sync_conn: Connection) -> list[str]:
-            cols: list[str] = inspect(sync_conn).get_pk_constraint(
-                "transactions"
-            )["constrained_columns"]
+            cols: list[str] = inspect(sync_conn).get_pk_constraint("transactions")["constrained_columns"]
             return cols
 
         def _get_indexes(sync_conn: Connection) -> list[ReflectedIndex]:
-            indexes: list[ReflectedIndex] = list(
-                inspect(sync_conn).get_indexes("transactions")
-            )
+            indexes: list[ReflectedIndex] = list(inspect(sync_conn).get_indexes("transactions"))
             return indexes
 
         async with async_engine.connect() as conn:
@@ -842,47 +809,43 @@ class TestSchemaCreation:
             pk_cols = await conn.run_sync(_get_pk)
             indexes = await conn.run_sync(_get_indexes)
 
+        # Physical DB column names use the COBOL ``TRAN-`` prefix
+        # (except the PK ``tran_id`` which is itself prefixed). See
+        # V1__schema.sql DDL and ``src/shared/models/transaction.py``
+        # ``mapped_column`` positional first arguments.
         required = {
             "tran_id",
-            "type_cd",
-            "cat_cd",
-            "source",
-            "description",
-            "amount",
-            "card_num",
-            "orig_ts",
-            "proc_ts",
+            "tran_type_cd",
+            "tran_cat_cd",
+            "tran_source",
+            "tran_desc",
+            "tran_amt",
+            "tran_card_num",
+            "tran_orig_ts",
+            "tran_proc_ts",
         }
         assert required.issubset(columns.keys()), (
-            f"transactions table missing columns: "
-            f"{required - set(columns.keys())}"
+            f"transactions table missing columns: {required - set(columns.keys())}"
         )
-        assert pk_cols == ["tran_id"], (
-            f"transactions PK must be ['tran_id'], got {pk_cols}"
-        )
+        assert pk_cols == ["tran_id"], f"transactions PK must be ['tran_id'], got {pk_cols}"
         # CRITICAL precision - COBOL PIC S9(09)V99 maps to NUMERIC(15, 2).
-        amount_column = columns["amount"]
+        amount_column = columns["tran_amt"]
         ct = amount_column["type"]
         assert getattr(ct, "precision", None) == 15, (
-            f"transactions.amount must be NUMERIC(15, 2); got "
-            f"precision={getattr(ct, 'precision', None)}"
+            f"transactions.tran_amt must be NUMERIC(15, 2); got precision={getattr(ct, 'precision', None)}"
         )
         assert getattr(ct, "scale", None) == 2, (
-            f"transactions.amount must be NUMERIC(15, 2); got "
-            f"scale={getattr(ct, 'scale', None)}"
+            f"transactions.tran_amt must be NUMERIC(15, 2); got scale={getattr(ct, 'scale', None)}"
         )
 
         # VSAM AIX on proc_ts -> non-unique B-tree index from
         # TRANIDX.jcl.
         index_names = {idx["name"] for idx in indexes}
         assert "ix_transaction_proc_ts" in index_names, (
-            f"transactions must have 'ix_transaction_proc_ts' B-tree "
-            f"index on proc_ts; found: {index_names}"
+            f"transactions must have 'ix_transaction_proc_ts' B-tree index on proc_ts; found: {index_names}"
         )
 
-    async def test_transaction_category_balance_composite_pk(
-        self, async_engine: AsyncEngine
-    ) -> None:
+    async def test_transaction_category_balance_composite_pk(self, async_engine: AsyncEngine) -> None:
         """Transaction-category-balance has 3-part composite PK.
 
         # Composite PK matches TRAN-CAT-KEY from app/cpy/CVTRA01Y.cpy -
@@ -890,18 +853,13 @@ class TestSchemaCreation:
         """
 
         def _get_pk(sync_conn: Connection) -> list[str]:
-            cols: list[str] = inspect(sync_conn).get_pk_constraint(
-                "transaction_category_balances"
-            )["constrained_columns"]
+            cols: list[str] = inspect(sync_conn).get_pk_constraint("transaction_category_balances")[
+                "constrained_columns"
+            ]
             return cols
 
         def _get_columns(sync_conn: Connection) -> dict[str, ReflectedColumn]:
-            return {
-                c["name"]: c
-                for c in inspect(sync_conn).get_columns(
-                    "transaction_category_balances"
-                )
-            }
+            return {c["name"]: c for c in inspect(sync_conn).get_columns("transaction_category_balances")}
 
         async with async_engine.connect() as conn:
             pk_cols = await conn.run_sync(_get_pk)
@@ -911,24 +869,26 @@ class TestSchemaCreation:
         # three COBOL components:
         #   TRANCAT-ACCT-ID PIC 9(11) + TRANCAT-TYPE-CD PIC X(02)
         #   + TRANCAT-CD PIC 9(04).
-        assert set(pk_cols) == {"acct_id", "type_cd", "cat_cd"}, (
-            f"transaction_category_balances PK must be "
-            f"{{'acct_id', 'type_cd', 'cat_cd'}}, got {pk_cols}"
+        #
+        # Physical DB column names per V1__schema.sql and the
+        # ``mapped_column`` positional first arguments in
+        # ``src/shared/models/transaction_category_balance.py`` —
+        # ``type_code`` and ``cat_code`` (not ``type_cd``/``cat_cd``,
+        # which are Python attribute keys via ``key="..."``).
+        assert set(pk_cols) == {"acct_id", "type_code", "cat_code"}, (
+            f"transaction_category_balances PK must be {{'acct_id', 'type_code', 'cat_code'}}, got {pk_cols}"
         )
 
-        # Balance column must be NUMERIC(15, 2) - matches COBOL
-        # TRAN-CAT-BAL PIC S9(09)V99 scale.
-        balance_type = columns["balance"]["type"]
+        # Balance column (physical name ``tran_cat_bal``) must be
+        # NUMERIC(15, 2) - matches COBOL TRAN-CAT-BAL PIC S9(09)V99
+        # scale.
+        balance_type = columns["tran_cat_bal"]["type"]
         assert getattr(balance_type, "precision", None) == 15, (
             "transaction_category_balances.balance must be NUMERIC(15, 2)"
         )
-        assert getattr(balance_type, "scale", None) == 2, (
-            "transaction_category_balances.balance must be NUMERIC(15, 2)"
-        )
+        assert getattr(balance_type, "scale", None) == 2, "transaction_category_balances.balance must be NUMERIC(15, 2)"
 
-    async def test_disclosure_group_composite_pk(
-        self, async_engine: AsyncEngine
-    ) -> None:
+    async def test_disclosure_group_composite_pk(self, async_engine: AsyncEngine) -> None:
         """Disclosure-group has 3-part composite PK.
 
         # Composite PK matches DIS-GROUP-KEY from app/cpy/CVTRA02Y.cpy.
@@ -938,43 +898,37 @@ class TestSchemaCreation:
         """
 
         def _get_pk(sync_conn: Connection) -> list[str]:
-            cols: list[str] = inspect(sync_conn).get_pk_constraint(
-                "disclosure_groups"
-            )["constrained_columns"]
+            cols: list[str] = inspect(sync_conn).get_pk_constraint("disclosure_groups")["constrained_columns"]
             return cols
 
         def _get_columns(sync_conn: Connection) -> dict[str, ReflectedColumn]:
-            return {
-                c["name"]: c
-                for c in inspect(sync_conn).get_columns("disclosure_groups")
-            }
+            return {c["name"]: c for c in inspect(sync_conn).get_columns("disclosure_groups")}
 
         async with async_engine.connect() as conn:
             pk_cols = await conn.run_sync(_get_pk)
             columns = await conn.run_sync(_get_columns)
 
+        # Physical DB column names use the COBOL ``DIS-`` prefix per
+        # V1__schema.sql and the ``mapped_column`` positional first
+        # arguments in ``src/shared/models/disclosure_group.py``.
         assert set(pk_cols) == {
-            "acct_group_id",
-            "tran_type_cd",
-            "tran_cat_cd",
+            "dis_acct_group_id",
+            "dis_tran_type_cd",
+            "dis_tran_cat_cd",
         }, (
             f"disclosure_groups PK must be composite of "
-            f"(acct_group_id, tran_type_cd, tran_cat_cd); got {pk_cols}"
+            f"(dis_acct_group_id, dis_tran_type_cd, dis_tran_cat_cd); "
+            f"got {pk_cols}"
         )
-        # int_rate is Numeric(6, 2) - narrower than the Numeric(15, 2)
-        # used for monetary balances because COBOL DIS-INT-RATE is
-        # PIC S9(04)V99 (max 9999.99 - expressed as decimal APR).
-        int_rate_type = columns["int_rate"]["type"]
-        assert getattr(int_rate_type, "precision", None) == 6, (
-            "disclosure_groups.int_rate must be NUMERIC(6, 2)"
-        )
-        assert getattr(int_rate_type, "scale", None) == 2, (
-            "disclosure_groups.int_rate must be NUMERIC(6, 2)"
-        )
+        # int_rate (physical name ``dis_int_rate``) is Numeric(6, 2) -
+        # narrower than the Numeric(15, 2) used for monetary balances
+        # because COBOL DIS-INT-RATE is PIC S9(04)V99 (max 9999.99 -
+        # expressed as decimal APR).
+        int_rate_type = columns["dis_int_rate"]["type"]
+        assert getattr(int_rate_type, "precision", None) == 6, "disclosure_groups.int_rate must be NUMERIC(6, 2)"
+        assert getattr(int_rate_type, "scale", None) == 2, "disclosure_groups.int_rate must be NUMERIC(6, 2)"
 
-    async def test_transaction_category_composite_pk(
-        self, async_engine: AsyncEngine
-    ) -> None:
+    async def test_transaction_category_composite_pk(self, async_engine: AsyncEngine) -> None:
         """Transaction-category has 2-part composite PK.
 
         # Composite PK matches TRAN-CAT-KEY from app/cpy/CVTRA04Y.cpy.
@@ -983,19 +937,20 @@ class TestSchemaCreation:
         """
 
         def _get_pk(sync_conn: Connection) -> list[str]:
-            cols: list[str] = inspect(sync_conn).get_pk_constraint(
-                "transaction_categories"
-            )["constrained_columns"]
+            cols: list[str] = inspect(sync_conn).get_pk_constraint("transaction_categories")["constrained_columns"]
             return cols
 
         async with async_engine.connect() as conn:
             pk_cols = await conn.run_sync(_get_pk)
 
-        assert set(pk_cols) == {"type_cd", "cat_cd"}, (
-            f"transaction_categories PK must be composite of "
-            f"(type_cd, cat_cd); got {pk_cols}"
+        # Physical DB column names per V1__schema.sql and the
+        # ``mapped_column`` positional first arguments in
+        # ``src/shared/models/transaction_category.py`` — ``type_code``
+        # and ``cat_code`` (not ``type_cd``/``cat_cd``, which are
+        # Python attribute keys via ``key="..."``).
+        assert set(pk_cols) == {"type_code", "cat_code"}, (
+            f"transaction_categories PK must be composite of (type_code, cat_code); got {pk_cols}"
         )
-
 
 
 # ===========================================================================
@@ -1055,9 +1010,7 @@ class TestAccountCRUD:
 
         # Use select() for explicit SQL emission rather than get(), to
         # exercise the query builder path used by real services.
-        result = await session.execute(
-            select(Account).where(Account.acct_id == "00000000002")
-        )
+        result = await session.execute(select(Account).where(Account.acct_id == "00000000002"))
         retrieved = result.scalar_one()
         assert retrieved.acct_id == "00000000002"
         assert retrieved.curr_bal == Decimal("2500.75")
@@ -1153,9 +1106,7 @@ class TestCardCRUD:
         session.add(card)
         await session.flush()
 
-        result = await session.execute(
-            select(Card).where(Card.card_num == "4111111111111112")
-        )
+        result = await session.execute(select(Card).where(Card.card_num == "4111111111111112"))
         retrieved = result.scalar_one()
         assert retrieved.card_num == "4111111111111112"
         assert retrieved.acct_id == "00000000005"
@@ -1244,9 +1195,7 @@ class TestCustomerCRUD:
         session.add(cust)
         await session.flush()
 
-        result = await session.execute(
-            select(Customer).where(Customer.cust_id == "000000002")
-        )
+        result = await session.execute(select(Customer).where(Customer.cust_id == "000000002"))
         retrieved = result.scalar_one()
         assert retrieved.first_name == "BOB"
         assert retrieved.last_name == "WILLIAMS"
@@ -1328,11 +1277,7 @@ class TestTransactionCRUD:
         session.add(tran)
         await session.flush()
 
-        result = await session.execute(
-            select(Transaction).where(
-                Transaction.tran_id == "0000000000000002"
-            )
-        )
+        result = await session.execute(select(Transaction).where(Transaction.tran_id == "0000000000000002"))
         retrieved = result.scalar_one()
         assert retrieved.amount == Decimal("123.45")
         assert retrieved.source == "WEB"
@@ -1361,9 +1306,7 @@ class TestTransactionCRUD:
         session.add(tran)
         await session.flush()
 
-        assert (
-            await session.get(Transaction, "0000000000000004") is not None
-        )
+        assert await session.get(Transaction, "0000000000000004") is not None
 
         await session.delete(tran)
         await session.flush()
@@ -1409,9 +1352,7 @@ class TestCardCrossReferenceCRUD:
         await session.flush()
 
         result = await session.execute(
-            select(CardCrossReference).where(
-                CardCrossReference.card_num == "4111111111111116"
-            )
+            select(CardCrossReference).where(CardCrossReference.card_num == "4111111111111116")
         )
         retrieved = result.scalar_one()
         # All three fields preserve leading zeros.
@@ -1441,17 +1382,12 @@ class TestCardCrossReferenceCRUD:
         session.add(xref)
         await session.flush()
 
-        assert (
-            await session.get(CardCrossReference, "4111111111111118")
-            is not None
-        )
+        assert await session.get(CardCrossReference, "4111111111111118") is not None
 
         await session.delete(xref)
         await session.flush()
         session.expire_all()
-        assert (
-            await session.get(CardCrossReference, "4111111111111118") is None
-        )
+        assert await session.get(CardCrossReference, "4111111111111118") is None
 
 
 class TestUserSecurityCRUD:
@@ -1498,9 +1434,7 @@ class TestUserSecurityCRUD:
         session.add(user)
         await session.flush()
 
-        result = await session.execute(
-            select(UserSecurity).where(UserSecurity.user_id == "USER0002")
-        )
+        result = await session.execute(select(UserSecurity).where(UserSecurity.user_id == "USER0002"))
         retrieved = result.scalar_one()
         assert retrieved.first_name == "REGULAR"
         assert retrieved.usr_type == "U"
@@ -1546,7 +1480,6 @@ class TestUserSecurityCRUD:
         assert await session.get(UserSecurity, "USER0004") is None
 
 
-
 # ===========================================================================
 # PHASE 5 - CONSTRAINT VALIDATION TESTS
 # ===========================================================================
@@ -1566,9 +1499,7 @@ class TestConstraints:
     # via NOT NULL constraints.
     """
 
-    async def test_account_primary_key_uniqueness(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_account_primary_key_uniqueness(self, session: AsyncSession) -> None:
         """INSERT duplicate acct_id must raise IntegrityError.
 
         # Maps VSAM DUPREC from ACCTFILE.jcl - when a WRITE is issued
@@ -1590,9 +1521,7 @@ class TestConstraints:
         # Rollback to clean SAVEPOINT so the outer teardown succeeds.
         await session.rollback()
 
-    async def test_card_primary_key_uniqueness(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_card_primary_key_uniqueness(self, session: AsyncSession) -> None:
         """INSERT duplicate card_num must raise IntegrityError.
 
         # Maps VSAM DUPREC from CARDFILE.jcl.
@@ -1607,9 +1536,7 @@ class TestConstraints:
             await session.flush()
         await session.rollback()
 
-    async def test_transaction_not_null_constraints(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_transaction_not_null_constraints(self, session: AsyncSession) -> None:
         """INSERT transaction with NULL required field must fail.
 
         # COBOL fixed-width record semantics: no field in a VSAM record
@@ -1640,9 +1567,7 @@ class TestConstraints:
             await session.flush()
         await session.rollback()
 
-    async def test_user_security_not_null(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_user_security_not_null(self, session: AsyncSession) -> None:
         """INSERT user with NULL password must raise IntegrityError.
 
         # Critical security invariant - users cannot exist without a
@@ -1660,9 +1585,7 @@ class TestConstraints:
             await session.flush()
         await session.rollback()
 
-    async def test_monetary_field_precision(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_monetary_field_precision(self, session: AsyncSession) -> None:
         """Validates COBOL PIC S9(10)V99 -> NUMERIC(15,2) precision.
 
         # This test proves that the COBOL signed decimal format
@@ -1724,9 +1647,7 @@ class TestCompositePrimaryKeys:
     # uniqueness across the tuple, not per-column.
     """
 
-    async def test_transaction_category_balance_composite_pk_insert(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_transaction_category_balance_composite_pk_insert(self, session: AsyncSession) -> None:
         """INSERT TCB with 3-part PK (acct_id, type_cd, cat_cd).
 
         # Maps to TRAN-CAT-KEY from app/cpy/CVTRA01Y.cpy:
@@ -1746,18 +1667,14 @@ class TestCompositePrimaryKeys:
 
         # Retrieve via composite key tuple - SQLAlchemy accepts a tuple
         # of PK values for session.get() on composite PK.
-        retrieved = await session.get(
-            TransactionCategoryBalance, ("00000000001", "01", "1001")
-        )
+        retrieved = await session.get(TransactionCategoryBalance, ("00000000001", "01", "1001"))
         assert retrieved is not None
         assert retrieved.acct_id == "00000000001"
         assert retrieved.type_cd == "01"
         assert retrieved.cat_cd == "1001"
         assert retrieved.balance == Decimal("125.50")
 
-    async def test_transaction_category_balance_duplicate_pk(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_transaction_category_balance_duplicate_pk(self, session: AsyncSession) -> None:
         """INSERT TCB with duplicate 3-part PK must raise IntegrityError.
 
         # VSAM DUPREC equivalent - exact key match triggers uniqueness
@@ -1784,9 +1701,7 @@ class TestCompositePrimaryKeys:
             await session.flush()
         await session.rollback()
 
-    async def test_transaction_category_balance_partial_key_overlap(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_transaction_category_balance_partial_key_overlap(self, session: AsyncSession) -> None:
         """Partial-key overlap must succeed - same acct_id+type_cd,
         different cat_cd.
 
@@ -1818,22 +1733,14 @@ class TestCompositePrimaryKeys:
         await session.flush()
 
         # Retrieve all three independently.
-        r1 = await session.get(
-            TransactionCategoryBalance, ("00000000003", "03", "3001")
-        )
-        r2 = await session.get(
-            TransactionCategoryBalance, ("00000000003", "03", "3002")
-        )
-        r3 = await session.get(
-            TransactionCategoryBalance, ("00000000003", "04", "3001")
-        )
+        r1 = await session.get(TransactionCategoryBalance, ("00000000003", "03", "3001"))
+        r2 = await session.get(TransactionCategoryBalance, ("00000000003", "03", "3002"))
+        r3 = await session.get(TransactionCategoryBalance, ("00000000003", "04", "3001"))
         assert r1 is not None and r1.balance == Decimal("10.00")
         assert r2 is not None and r2.balance == Decimal("20.00")
         assert r3 is not None and r3.balance == Decimal("30.00")
 
-    async def test_disclosure_group_composite_pk_insert(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_disclosure_group_composite_pk_insert(self, session: AsyncSession) -> None:
         """INSERT DisclosureGroup with 3-part PK.
 
         # Maps to DIS-GROUP-KEY from app/cpy/CVTRA02Y.cpy:
@@ -1850,16 +1757,12 @@ class TestCompositePrimaryKeys:
         session.add(dg)
         await session.flush()
 
-        retrieved = await session.get(
-            DisclosureGroup, ("DEFAULT", "01", "1001")
-        )
+        retrieved = await session.get(DisclosureGroup, ("DEFAULT", "01", "1001"))
         assert retrieved is not None
         assert retrieved.acct_group_id == "DEFAULT"
         assert retrieved.int_rate == Decimal("18.99")
 
-    async def test_disclosure_group_default_and_zeroapr(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_disclosure_group_default_and_zeroapr(self, session: AsyncSession) -> None:
         """Both DEFAULT and ZEROAPR groups must coexist.
 
         # DEFAULT/ZEROAPR groups from discgrp.txt - used by INTCALC
@@ -1886,12 +1789,8 @@ class TestCompositePrimaryKeys:
         await session.flush()
 
         # Both must be retrievable independently.
-        default_row = await session.get(
-            DisclosureGroup, ("DEFAULT", "02", "2001")
-        )
-        zeroapr_row = await session.get(
-            DisclosureGroup, ("ZEROAPR", "02", "2001")
-        )
+        default_row = await session.get(DisclosureGroup, ("DEFAULT", "02", "2001"))
+        zeroapr_row = await session.get(DisclosureGroup, ("ZEROAPR", "02", "2001"))
         assert default_row is not None
         assert zeroapr_row is not None
         assert default_row.int_rate == Decimal("19.99")
@@ -1912,9 +1811,7 @@ class TestCompositePrimaryKeys:
         group_ids = {r.acct_group_id for r in rows}
         assert group_ids == {"DEFAULT", "ZEROAPR"}
 
-    async def test_transaction_category_composite_pk_insert(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_transaction_category_composite_pk_insert(self, session: AsyncSession) -> None:
         """INSERT TransactionCategory with 2-part PK (type_cd, cat_cd).
 
         # Maps to TRAN-CAT-KEY from app/cpy/CVTRA04Y.cpy:
@@ -1950,7 +1847,6 @@ class TestCompositePrimaryKeys:
         assert retrieved2.description == "SECOND CATEGORY"
 
 
-
 # ===========================================================================
 # PHASE 7 - TRANSACTION ROLLBACK TESTS
 # ===========================================================================
@@ -1969,9 +1865,7 @@ class TestTransactionRollback:
     # REWRITE fails or when business-logic checks detect a conflict.
     """
 
-    async def test_session_rollback_on_error(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_session_rollback_on_error(self, session: AsyncSession) -> None:
         """Inner-transaction rollback discards uncommitted mutations.
 
         # Mirrors CICS SYNCPOINT ROLLBACK from COACTUPC.cbl -
@@ -2121,9 +2015,7 @@ class TestOptimisticConcurrency:
     # incremented by another transaction.
     """
 
-    async def test_account_version_increments_on_update(
-        self, async_engine: AsyncEngine
-    ) -> None:
+    async def test_account_version_increments_on_update(self, async_engine: AsyncEngine) -> None:
         """UPDATE increments Account.version_id by 1.
 
         # Mirrors CICS READ UPDATE from COACTUPC.cbl - after REWRITE,
@@ -2171,9 +2063,7 @@ class TestOptimisticConcurrency:
                     await s.delete(cleanup)
                     await s.commit()
 
-    async def test_account_concurrent_update_conflict(
-        self, async_engine: AsyncEngine
-    ) -> None:
+    async def test_account_concurrent_update_conflict(self, async_engine: AsyncEngine) -> None:
         """Concurrent update detection via StaleDataError.
 
         # Optimistic concurrency replaces CICS READ UPDATE from
@@ -2239,9 +2129,7 @@ class TestOptimisticConcurrency:
                     await s.delete(cleanup)
                     await s.commit()
 
-    async def test_card_version_increments_on_update(
-        self, async_engine: AsyncEngine
-    ) -> None:
+    async def test_card_version_increments_on_update(self, async_engine: AsyncEngine) -> None:
         """UPDATE increments Card.version_id by 1.
 
         # Optimistic concurrency replaces CICS READ UPDATE from
@@ -2276,9 +2164,7 @@ class TestOptimisticConcurrency:
                     await s.delete(cleanup_card)
                     await s.commit()
 
-    async def test_card_concurrent_update_conflict(
-        self, async_engine: AsyncEngine
-    ) -> None:
+    async def test_card_concurrent_update_conflict(self, async_engine: AsyncEngine) -> None:
         """Concurrent Card update triggers StaleDataError.
 
         # Optimistic concurrency replaces CICS READ UPDATE from
@@ -2335,7 +2221,6 @@ class TestOptimisticConcurrency:
                     await s.commit()
 
 
-
 # ===========================================================================
 # PHASE 9 - MONETARY FIELD PRECISION TESTS
 # ===========================================================================
@@ -2360,9 +2245,7 @@ class TestMonetaryPrecision:
     # equality preserved at every step.
     """
 
-    async def test_account_balance_decimal_precision(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_account_balance_decimal_precision(self, session: AsyncSession) -> None:
         """Store and retrieve exact Decimal for Account.curr_bal.
 
         # Validates COBOL PIC S9(10)V99 -> Python Decimal -> PostgreSQL
@@ -2388,9 +2271,7 @@ class TestMonetaryPrecision:
         # prove no silent rounding occurred.
         assert str(retrieved.curr_bal) == "12345678.99"
 
-    async def test_account_balance_two_decimal_places(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_account_balance_two_decimal_places(self, session: AsyncSession) -> None:
         """Verify NUMERIC(15, 2) normalises to exactly 2 decimal places.
 
         # COBOL PIC S9(10)V99 has exactly 2 implied decimal places.
@@ -2415,9 +2296,7 @@ class TestMonetaryPrecision:
         assert retrieved.curr_bal.as_tuple().exponent == -2
         assert str(retrieved.curr_bal) == "100.10"
 
-    async def test_account_balance_large_value(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_account_balance_large_value(self, session: AsyncSession) -> None:
         """Max-value precision test for PIC S9(10)V99.
 
         # Max value for COBOL PIC S9(10)V99 = 9999999999.99
@@ -2446,9 +2325,7 @@ class TestMonetaryPrecision:
         assert retrieved.curr_cyc_debit == max_val
         assert str(retrieved.curr_bal) == "9999999999.99"
 
-    async def test_account_balance_negative(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_account_balance_negative(self, session: AsyncSession) -> None:
         """Negative monetary value - COBOL PIC S9(10)V99 'S' is signed.
 
         # Maps to COBOL PIC S9(10)V99 where 'S' indicates signed.
@@ -2469,9 +2346,7 @@ class TestMonetaryPrecision:
         assert retrieved.curr_bal < Decimal("0")
         assert str(retrieved.curr_bal) == "-500.25"
 
-    async def test_account_balance_zero(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_account_balance_zero(self, session: AsyncSession) -> None:
         """Zero-balance precision - 0.00 must equal 0.00.
 
         # Zero is the default for newly-opened accounts. Must round-trip
@@ -2494,9 +2369,7 @@ class TestMonetaryPrecision:
         # But the preserved representation carries 2-decimal-place scale.
         assert retrieved.curr_bal.as_tuple().exponent == -2
 
-    async def test_transaction_amount_precision(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_transaction_amount_precision(self, session: AsyncSession) -> None:
         """Precision test for Transaction.amount.
 
         # COBOL PIC S9(09)V99 -> NUMERIC(15, 2). Nine integer digits +
@@ -2543,9 +2416,7 @@ class TestMonetaryPrecision:
         assert str(r_neg.amount) == "-1234567.89"
         assert str(r_penny.amount) == "0.01"
 
-    async def test_category_balance_precision(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_category_balance_precision(self, session: AsyncSession) -> None:
         """Precision test for TransactionCategoryBalance.balance.
 
         # Maps to PIC S9(09)V99 from app/cpy/CVTRA01Y.cpy. Same format
@@ -2574,15 +2445,9 @@ class TestMonetaryPrecision:
         await session.flush()
         session.expire_all()
 
-        r1 = await session.get(
-            TransactionCategoryBalance, ("00000000051", "01", "1001")
-        )
-        r2 = await session.get(
-            TransactionCategoryBalance, ("00000000052", "02", "2001")
-        )
-        r3 = await session.get(
-            TransactionCategoryBalance, ("00000000053", "03", "3001")
-        )
+        r1 = await session.get(TransactionCategoryBalance, ("00000000051", "01", "1001"))
+        r2 = await session.get(TransactionCategoryBalance, ("00000000052", "02", "2001"))
+        r3 = await session.get(TransactionCategoryBalance, ("00000000053", "03", "3001"))
         assert r1 is not None
         assert r2 is not None
         assert r3 is not None
@@ -2591,9 +2456,7 @@ class TestMonetaryPrecision:
         assert r3.balance == Decimal("0.01")
         assert isinstance(r1.balance, Decimal)
 
-    async def test_disclosure_group_int_rate_precision(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_disclosure_group_int_rate_precision(self, session: AsyncSession) -> None:
         """Precision test for DisclosureGroup.int_rate - Numeric(6, 2).
 
         # Maps to COBOL PIC S9(04)V99 -> NUMERIC(6, 2) from
@@ -2611,9 +2474,7 @@ class TestMonetaryPrecision:
         await session.flush()
         session.expire_all()
 
-        retrieved = await session.get(
-            DisclosureGroup, ("TESTGRP", "01", "1001")
-        )
+        retrieved = await session.get(DisclosureGroup, ("TESTGRP", "01", "1001"))
         assert retrieved is not None
         assert retrieved.int_rate == Decimal("18.99")
         assert isinstance(retrieved.int_rate, Decimal)
@@ -2637,16 +2498,11 @@ class TestMonetaryPrecision:
         await session.flush()
         session.expire_all()
 
-        r_zero = await session.get(
-            DisclosureGroup, ("TESTGRP", "02", "2001")
-        )
-        r_max = await session.get(
-            DisclosureGroup, ("TESTGRP", "03", "3001")
-        )
+        r_zero = await session.get(DisclosureGroup, ("TESTGRP", "02", "2001"))
+        r_max = await session.get(DisclosureGroup, ("TESTGRP", "03", "3001"))
         assert r_zero is not None
         assert r_max is not None
         assert r_zero.int_rate == Decimal("0.00")
         assert r_max.int_rate == Decimal("9999.99")
         assert str(r_zero.int_rate) == "0.00"
         assert str(r_max.int_rate) == "9999.99"
-
