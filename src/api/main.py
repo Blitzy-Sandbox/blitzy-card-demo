@@ -96,8 +96,10 @@ responsibilities, implemented by the :func:`create_app` factory:
    :mod:`src.api.graphql.schema`. The schema is served at
    ``POST /graphql`` via
    :class:`strawberry.fastapi.GraphQLRouter` with a ``context_getter``
-   that injects a transactional :class:`~sqlalchemy.ext.asyncio.AsyncSession`
-   into every resolver's ``info.context["db"]``.
+   that injects a per-resolver async session factory
+   (:func:`src.api.database.get_async_session`) into every resolver's
+   ``info.context["db_factory"]`` — enabling safe concurrent execution
+   of sibling resolvers in multi-field GraphQL queries.
 
 Factory pattern
 ---------------
@@ -187,13 +189,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 import uvicorn
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.fastapi import GraphQLRouter
 
-from src.api.database import close_db, init_db
-from src.api.dependencies import get_db
+from src.api.database import close_db, get_async_session, init_db
 from src.api.graphql.schema import schema as graphql_schema
 from src.api.middleware.auth import JWTAuthMiddleware
 from src.api.middleware.error_handler import (
@@ -551,7 +551,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 # ``info.context[...]``. This ``context_getter`` is an async FastAPI
 # dependency callable that injects:
 #
-#   * ``db``        — a transactional :class:`AsyncSession`.
+#   * ``db_factory`` — a callable that each resolver invokes to obtain
+#                      its OWN :class:`AsyncSession` with CICS SYNCPOINT
+#                      / SYNCPOINT ROLLBACK semantics. Providing a
+#                      factory (rather than a single shared session)
+#                      is essential because Strawberry executes
+#                      sibling resolvers concurrently via
+#                      ``asyncio.gather``; SQLAlchemy's
+#                      :class:`AsyncSession` is NOT safe for
+#                      concurrent use (raises
+#                      ``InvalidRequestError: This session is
+#                      provisioning a new connection; concurrent
+#                      operations are not permitted``).
 #   * ``user_id``   — the authenticated user id (from JWT middleware).
 #   * ``user_type`` — ``'A'`` (admin) or ``'U'`` (user).
 #   * ``is_admin``  — boolean convenience flag.
@@ -562,20 +573,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 # ----------------------------------------------------------------------------
 async def get_graphql_context(
     request: Request,
-    db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Build the per-request GraphQL context dictionary.
 
     Strawberry resolvers access request-scoped resources via
     ``info.context[...]`` (see :func:`src.api.graphql.queries._get_session`
-    and :func:`src.api.graphql.mutations._get_session`). By wrapping
-    :func:`src.api.dependencies.get_db` we guarantee that:
+    and :func:`src.api.graphql.mutations._get_session`). This context
+    getter publishes a SESSION FACTORY rather than a single session so
+    that EACH resolver opens its OWN :class:`AsyncSession`:
 
-    * Every resolver shares a transactional session for the duration
-      of its request.
-    * Commit-on-clean-exit and rollback-on-exception semantics are
-      inherited from ``get_db`` -- matching the CICS ``SYNCPOINT`` /
-      ``SYNCPOINT ROLLBACK`` semantics of the legacy online programs.
+    * Strawberry executes sibling resolvers concurrently (via
+      ``asyncio.gather``) when a GraphQL query selects multiple
+      top-level fields (e.g. ``{ accounts users }``). SQLAlchemy's
+      :class:`AsyncSession` is **NOT** safe for concurrent use; any
+      overlapping ``execute`` / ``commit`` call would raise
+      ``InvalidRequestError: This session is provisioning a new
+      connection; concurrent operations are not permitted``. Giving
+      every resolver its own session eliminates that entire class of
+      failure mode.
+    * Each resolver retains commit-on-clean-exit and
+      rollback-on-exception semantics because the factory
+      (:func:`src.api.database.get_async_session`) implements the
+      CICS ``SYNCPOINT`` / ``SYNCPOINT ROLLBACK`` contract internally
+      — matching the transactional behaviour of the legacy online
+      COBOL programs (see ``app/cbl/COACTUPC.cbl`` line 953 for the
+      canonical ROLLBACK path).
 
     Authenticated user identity is also propagated from the
     :class:`~src.api.middleware.auth.JWTAuthMiddleware` through
@@ -607,16 +629,20 @@ async def get_graphql_context(
         because ``/graphql`` is NOT listed in the middleware's public
         paths (any request that reaches this context-getter has
         already passed JWT authentication).
-    db
-        A transactional :class:`AsyncSession` injected by FastAPI's
-        :func:`~fastapi.Depends` machinery.
 
     Returns
     -------
     dict
         A mapping containing:
 
-        * ``"db"`` -- the transactional :class:`AsyncSession`.
+        * ``"db_factory"`` -- the async-generator callable
+          :func:`src.api.database.get_async_session` that each
+          resolver invokes to obtain a FRESH :class:`AsyncSession`
+          with commit/rollback semantics. Resolvers consume this
+          via ``async with _get_session(info) as session:`` (see
+          :func:`src.api.graphql.queries._get_session` and
+          :func:`src.api.graphql.mutations._get_session` which wrap
+          the factory with :func:`contextlib.asynccontextmanager`).
         * ``"user_id"`` -- str, the authenticated user id
           (``CDEMO-USER-ID`` PIC X(08)).
         * ``"user_type"`` -- str, the authenticated user type
@@ -636,6 +662,20 @@ async def get_graphql_context(
         would receive empty claims and the resolver-level guards
         would deny admin-only queries rather than raising a
         confusing ``AttributeError``).
+
+    Notes
+    -----
+    Historical note (QA Checkpoint 10, Issue 1): Prior to this
+    revision, the context getter injected a single shared
+    :class:`AsyncSession` acquired via
+    :func:`~src.api.dependencies.get_db`. That design broke
+    multi-field GraphQL queries with 100% failure rate because
+    Strawberry's concurrent resolver execution invoked overlapping
+    ``execute`` calls on the same session. Replacing the single
+    session with a session FACTORY is the architectural fix;
+    see ``src/api/graphql/queries.py::_get_session`` and
+    ``src/api/graphql/mutations.py::_get_session`` for the consumer
+    side (per-resolver ``async with`` acquisition).
     """
     # Extract JWT claims from request.state (populated by
     # JWTAuthMiddleware on successful authentication). ``getattr``
@@ -645,7 +685,12 @@ async def get_graphql_context(
     user_type: str = getattr(request.state, "user_type", "")
     is_admin: bool = getattr(request.state, "is_admin", False)
     return {
-        "db": db,
+        # Per-resolver session factory (see class docstring). Each
+        # resolver calls into this to obtain its OWN AsyncSession,
+        # avoiding the concurrency bug that single-session sharing
+        # introduced when Strawberry executes sibling resolvers via
+        # asyncio.gather.
+        "db_factory": get_async_session,
         "user_id": user_id,
         "user_type": user_type,
         "is_admin": is_admin,
@@ -1025,9 +1070,15 @@ def create_app() -> FastAPI:
     # addTransaction, payBill).
     #
     # The ``context_getter`` is an async FastAPI dependency callable that
-    # injects an :class:`AsyncSession` into every resolver's
-    # ``info.context["db"]`` so that resolvers can share the request-scoped
-    # transactional session with the REST routers.
+    # injects a SESSION FACTORY (``get_async_session``) into every
+    # resolver's ``info.context["db_factory"]`` so that each resolver
+    # opens its OWN :class:`AsyncSession`. This is essential because
+    # Strawberry executes sibling resolvers concurrently via
+    # ``asyncio.gather`` — the prior single-session design raised
+    # ``sqlalchemy.exc.InvalidRequestError`` on any multi-field query
+    # (QA Checkpoint 10, Issue 1). Each resolver retains CICS
+    # SYNCPOINT / SYNCPOINT ROLLBACK semantics through the factory
+    # (rollback-on-exception, commit-on-clean-exit).
     #
     # The ``context_getter`` argument carries a narrower type in the
     # Strawberry stubs (``Callable[..., Awaitable[None] | None] | None``)

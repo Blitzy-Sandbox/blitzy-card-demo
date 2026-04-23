@@ -159,6 +159,8 @@ associated data copybooks (``app/cpy/CVACT01Y.cpy``,
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Optional
@@ -210,57 +212,106 @@ logger: logging.Logger = logging.getLogger(__name__)
 # ============================================================================
 
 
-def _get_session(info: Info) -> AsyncSession:
-    """Extract the async SQLAlchemy session from Strawberry's Info context.
+@asynccontextmanager
+async def _get_session(info: Info) -> AsyncGenerator[AsyncSession, None]:
+    """Yield a FRESH transactional :class:`AsyncSession` for this mutation.
 
     Every resolver receives a :class:`~strawberry.types.Info` object
     whose ``context`` attribute is the dict supplied by the FastAPI
-    adapter's ``context_getter`` callback (see ``src.api.main`` for
-    where the adapter is wired). By convention established in the
-    GraphQL package (``src/api/graphql/__init__.py``) the FastAPI
-    adapter places the active :class:`AsyncSession` under the
-    ``"db"`` key of the context dict — this session was obtained via
-    :func:`src.api.database.get_async_session` and will be committed
-    on successful request completion or rolled back on exception,
-    matching the CICS SYNCPOINT semantics from the original COBOL
-    programs.
+    adapter's ``context_getter`` callback (see
+    :func:`src.api.main.get_graphql_context`). Strawberry executes
+    sibling resolvers concurrently via :func:`asyncio.gather`, so the
+    FastAPI adapter MUST provide a SESSION FACTORY rather than a
+    single shared session — sharing one
+    :class:`~sqlalchemy.ext.asyncio.AsyncSession` across concurrent
+    resolvers raises ``sqlalchemy.exc.InvalidRequestError`` (QA
+    Checkpoint 10, Issue 1). The factory is placed under the
+    ``"db_factory"`` key of the context dict and is the
+    :func:`src.api.database.get_async_session` async generator
+    function (which itself implements the CICS SYNCPOINT /
+    SYNCPOINT ROLLBACK contract: rollback on exception, commit on
+    clean exit).
+
+    Mutations are atomic units of work — the ``async with`` block
+    in each mutation MUST encompass every database interaction
+    (the service call AND any post-service ``await
+    session.execute(...)`` re-queries to fetch the freshly mutated
+    entity). On clean exit the session commits and the changes
+    become durable; on any exception the session rolls back and
+    no partial state is persisted.
+
+    Usage
+    -----
+    .. code-block:: python
+
+        async with _get_session(info) as session:
+            service: AccountService = AccountService(session)
+            response = await service.update_account(request)
+            # post-service re-query MUST be inside the block —
+            # the session commits when the block exits cleanly.
+            stmt = select(Account).where(Account.acct_id == acct_id)
+            result = await session.execute(stmt)
+            account = result.scalar_one_or_none()
+            return AccountType.from_model(account)
 
     Parameters
     ----------
     info : Info
         The Strawberry resolver context object passed as the first
-        argument to every resolver.
+        argument to every resolver. Its ``context`` attribute MUST
+        be a mapping (or object with attributes) that exposes a
+        ``db_factory`` callable — typically the
+        :func:`src.api.database.get_async_session` async generator
+        function placed in the dict by
+        :func:`src.api.main.get_graphql_context`.
 
-    Returns
-    -------
+    Yields
+    ------
     AsyncSession
-        The request-scoped async SQLAlchemy session.
+        A FRESH :class:`AsyncSession` opened from the factory for
+        the lifetime of this ``async with`` block. The session is
+        committed on clean exit and rolled back on any exception.
 
     Raises
     ------
     RuntimeError
-        If ``info.context`` does not contain a ``"db"`` key or the
-        value is not an :class:`AsyncSession`. This indicates a
-        mis-configured FastAPI + Strawberry integration and should
-        never occur in production; surfacing a clear error here is
-        preferable to silently failing inside a service call.
+        If ``info.context`` does not expose a ``db_factory``
+        callable. This indicates a mis-configured FastAPI +
+        Strawberry integration and should never occur in
+        production; surfacing a clear error here is preferable
+        to silently failing inside a service call.
     """
-    context: object = info.context
-    if not isinstance(context, dict):
+    context = info.context
+    if isinstance(context, dict):
+        factory = context.get("db_factory")
+    else:
+        # Strawberry occasionally wraps the context in a custom
+        # object (e.g. ``BaseContext``) when the consumer overrides
+        # the integration; fall through to attribute access so we
+        # remain compatible with both shapes.
+        factory = getattr(context, "db_factory", None)
+
+    if factory is None:
         raise RuntimeError(
-            "GraphQL Info.context is expected to be a dict supplied by "
-            "the FastAPI + Strawberry integration (see src/api/main.py). "
-            f"Got: {type(context).__name__}."
+            "GraphQL Info.context is missing the 'db_factory' async "
+            "session factory. Expected the FastAPI + Strawberry "
+            "integration (see src/api/main.py) to inject a factory "
+            "callable via the context_getter callback. The factory "
+            "(get_async_session) is an async generator that yields "
+            "a fresh AsyncSession per resolver with CICS SYNCPOINT "
+            "semantics (rollback-on-exception, commit-on-clean-exit)."
         )
-    session = context.get("db")
-    if not isinstance(session, AsyncSession):
-        raise RuntimeError(
-            "GraphQL Info.context['db'] is expected to be an "
-            "sqlalchemy.ext.asyncio.AsyncSession (supplied by the "
-            "FastAPI dependency chain via get_async_session). "
-            f"Got: {type(session).__name__}."
-        )
-    return session
+
+    # ``asynccontextmanager(factory)()`` wraps the
+    # ``get_async_session`` async generator into an async context
+    # manager. The outer ``async with`` drives the generator to its
+    # first yield (which opens the session); on exit the generator
+    # resumes and runs its try/except/else block — committing on
+    # clean exit or rolling back on any exception that propagates
+    # out of the resolver. This preserves the CICS SYNCPOINT
+    # contract end-to-end for each mutation.
+    async with asynccontextmanager(factory)() as session:
+        yield session
 
 
 def _split_iso_date(iso_date: str) -> tuple[str, str, str]:
@@ -791,8 +842,17 @@ class Mutation:
         Parameters
         ----------
         info : Info
-            Strawberry resolver context; carries the async SQLAlchemy
-            session under ``context["db"]``.
+            Strawberry resolver context; carries the async session
+            FACTORY under ``context["db_factory"]``. The mutation
+            opens its OWN per-invocation
+            :class:`~sqlalchemy.ext.asyncio.AsyncSession` via
+            ``async with _get_session(info)`` so it remains safe
+            under Strawberry's concurrent ``asyncio.gather``
+            execution of sibling resolvers (QA Checkpoint 10,
+            Issue 1). The ``async with`` block encompasses ALL
+            database interaction — service calls AND post-service
+            re-queries — so the dual-write commits/rolls-back
+            atomically as a single CICS SYNCPOINT boundary.
         account_input : AccountUpdateInput
             GraphQL input payload — six user-editable fields plus
             the required ``acct_id`` lookup key.
@@ -812,151 +872,170 @@ class Mutation:
             The service layer's error_message field is used as the
             exception message for full fidelity with the COBOL UX.
         """
-        session: AsyncSession = _get_session(info)
-        account_service: AccountService = AccountService(session)
+        # The ``async with _get_session(info) as session`` block opens
+        # a FRESH per-resolver AsyncSession (CICS SYNCPOINT boundary).
+        # ALL database interaction — Step 1 (read), Step 4 (dual-
+        # write via service), Step 5 (re-query for response) — MUST
+        # occur inside this block so the entire mutation either
+        # commits atomically on clean exit or rolls back on any
+        # exception. See QA Checkpoint 10 Issue 1 fix.
+        async with _get_session(info) as session:
+            account_service: AccountService = AccountService(session)
 
-        # ----- Step 1: Fetch current state -----
-        # Replaces COACTUPC.cbl lines ~1300-1500: READ XREF + READ
-        # ACCTDAT + READ CUSTDAT paragraphs. AccountService performs
-        # all three reads and composes the result.
-        current: object = await account_service.get_account_view(account_input.acct_id)
-        if getattr(current, "error_message", None):
-            error_msg: Optional[str] = getattr(current, "error_message", None)  # noqa: UP045  # schema requires typing.Optional
-            logger.warning(
-                "update_account: get_account_view returned error: %s",
-                error_msg,
+            # ----- Step 1: Fetch current state -----
+            # Replaces COACTUPC.cbl lines ~1300-1500: READ XREF + READ
+            # ACCTDAT + READ CUSTDAT paragraphs. AccountService performs
+            # all three reads and composes the result.
+            current: object = await account_service.get_account_view(account_input.acct_id)
+            if getattr(current, "error_message", None):
+                error_msg: Optional[str] = getattr(current, "error_message", None)  # noqa: UP045  # schema requires typing.Optional
+                logger.warning(
+                    "update_account: get_account_view returned error: %s",
+                    error_msg,
+                )
+                raise Exception(error_msg or "Account lookup failed")
+
+            # ----- Step 2: Split composite fields and merge with GraphQL inputs -----
+            # AccountUpdateRequest requires 39 segmented fields (dates, SSN,
+            # phones). AccountViewResponse exposes these as composite strings.
+            # We reverse the composition here, substituting any GraphQL-
+            # supplied values on top.
+
+            # Select open_date source: GraphQL input wins, else existing value.
+            open_date_source: str = (
+                account_input.open_date if account_input.open_date else getattr(current, "open_date", "")
             )
-            raise Exception(error_msg or "Account lookup failed")
+            open_year, open_month, open_day = _split_iso_date(open_date_source)
 
-        # ----- Step 2: Split composite fields and merge with GraphQL inputs -----
-        # AccountUpdateRequest requires 39 segmented fields (dates, SSN,
-        # phones). AccountViewResponse exposes these as composite strings.
-        # We reverse the composition here, substituting any GraphQL-
-        # supplied values on top.
-
-        # Select open_date source: GraphQL input wins, else existing value.
-        open_date_source: str = (
-            account_input.open_date if account_input.open_date else getattr(current, "open_date", "")
-        )
-        open_year, open_month, open_day = _split_iso_date(open_date_source)
-
-        # Select expiration_date source: GraphQL input wins, else existing value.
-        exp_date_source: str = (
-            account_input.expiration_date if account_input.expiration_date else getattr(current, "expiration_date", "")
-        )
-        exp_year, exp_month, exp_day = _split_iso_date(exp_date_source)
-
-        # reissue_date, customer_dob are not editable via GraphQL — always
-        # pass through the existing persisted value (read-then-update).
-        reissue_year, reissue_month, reissue_day = _split_iso_date(getattr(current, "reissue_date", ""))
-        dob_year, dob_month, dob_day = _split_iso_date(getattr(current, "customer_dob", ""))
-
-        # Split composite customer SSN and phone numbers.
-        ssn_part1, ssn_part2, ssn_part3 = _split_composite_ssn(getattr(current, "customer_ssn", ""))
-        ph1_area, ph1_prefix, ph1_line = _split_composite_phone(getattr(current, "customer_phone_1", ""))
-        ph2_area, ph2_prefix, ph2_line = _split_composite_phone(getattr(current, "customer_phone_2", ""))
-
-        # Resolve monetary fields — GraphQL input wins, else existing
-        # persisted Decimal value (already a Decimal in
-        # AccountViewResponse, not a float).
-        credit_limit_val: Decimal = (
-            account_input.credit_limit
-            if account_input.credit_limit is not None
-            else getattr(current, "credit_limit", Decimal("0.00"))
-        )
-        cash_credit_limit_val: Decimal = (
-            account_input.cash_credit_limit
-            if account_input.cash_credit_limit is not None
-            else getattr(current, "cash_credit_limit", Decimal("0.00"))
-        )
-
-        # active_status — GraphQL input wins, else existing value.
-        active_status_val: str = (
-            account_input.active_status
-            if account_input.active_status is not None
-            else getattr(current, "active_status", "")
-        )
-
-        # ----- Step 3: Construct the 39-field AccountUpdateRequest -----
-        try:
-            update_request: AccountUpdateRequest = AccountUpdateRequest(
-                account_id=account_input.acct_id,
-                active_status=active_status_val,
-                open_date_year=open_year,
-                open_date_month=open_month,
-                open_date_day=open_day,
-                credit_limit=credit_limit_val,
-                expiration_date_year=exp_year,
-                expiration_date_month=exp_month,
-                expiration_date_day=exp_day,
-                cash_credit_limit=cash_credit_limit_val,
-                reissue_date_year=reissue_year,
-                reissue_date_month=reissue_month,
-                reissue_date_day=reissue_day,
-                group_id=getattr(current, "group_id", ""),
-                customer_ssn_part1=ssn_part1,
-                customer_ssn_part2=ssn_part2,
-                customer_ssn_part3=ssn_part3,
-                customer_dob_year=dob_year,
-                customer_dob_month=dob_month,
-                customer_dob_day=dob_day,
-                customer_fico_score=getattr(current, "customer_fico_score", ""),
-                customer_first_name=getattr(current, "customer_first_name", ""),
-                customer_middle_name=getattr(current, "customer_middle_name", ""),
-                customer_last_name=getattr(current, "customer_last_name", ""),
-                customer_addr_line_1=getattr(current, "customer_addr_line_1", ""),
-                customer_state_cd=getattr(current, "customer_state_cd", ""),
-                customer_addr_line_2=getattr(current, "customer_addr_line_2", ""),
-                customer_zip=getattr(current, "customer_zip", ""),
-                customer_city=getattr(current, "customer_city", ""),
-                customer_country_cd=getattr(current, "customer_country_cd", ""),
-                customer_phone_1_area=ph1_area,
-                customer_phone_1_prefix=ph1_prefix,
-                customer_phone_1_line=ph1_line,
-                customer_govt_id=getattr(current, "customer_govt_id", ""),
-                customer_phone_2_area=ph2_area,
-                customer_phone_2_prefix=ph2_prefix,
-                customer_phone_2_line=ph2_line,
-                customer_eft_account_id=getattr(current, "customer_eft_account_id", ""),
-                customer_pri_cardholder=getattr(current, "customer_pri_cardholder", ""),
+            # Select expiration_date source: GraphQL input wins, else existing value.
+            exp_date_source: str = (
+                account_input.expiration_date
+                if account_input.expiration_date
+                else getattr(current, "expiration_date", "")
             )
-        except Exception as exc:  # Pydantic ValidationError inherits Exception
-            logger.warning(
-                "update_account: AccountUpdateRequest construction failed: %s",
-                exc,
+            exp_year, exp_month, exp_day = _split_iso_date(exp_date_source)
+
+            # reissue_date, customer_dob are not editable via GraphQL — always
+            # pass through the existing persisted value (read-then-update).
+            reissue_year, reissue_month, reissue_day = _split_iso_date(getattr(current, "reissue_date", ""))
+            dob_year, dob_month, dob_day = _split_iso_date(getattr(current, "customer_dob", ""))
+
+            # Split composite customer SSN and phone numbers.
+            ssn_part1, ssn_part2, ssn_part3 = _split_composite_ssn(getattr(current, "customer_ssn", ""))
+            ph1_area, ph1_prefix, ph1_line = _split_composite_phone(getattr(current, "customer_phone_1", ""))
+            ph2_area, ph2_prefix, ph2_line = _split_composite_phone(getattr(current, "customer_phone_2", ""))
+
+            # Resolve monetary fields — GraphQL input wins, else existing
+            # persisted Decimal value (already a Decimal in
+            # AccountViewResponse, not a float).
+            credit_limit_val: Decimal = (
+                account_input.credit_limit
+                if account_input.credit_limit is not None
+                else getattr(current, "credit_limit", Decimal("0.00"))
             )
-            raise Exception(f"Invalid account update payload: {exc}") from exc
+            cash_credit_limit_val: Decimal = (
+                account_input.cash_credit_limit
+                if account_input.cash_credit_limit is not None
+                else getattr(current, "cash_credit_limit", Decimal("0.00"))
+            )
 
-        # ----- Step 4: Delegate to service layer -----
-        # Replaces COACTUPC.cbl REWRITE ACCTFILE + REWRITE CUSTFILE (lines
-        # 4066 and 4086). The service performs both UPDATEs inside a
-        # single session and commits atomically — mirrors the implicit
-        # CICS SYNCPOINT at end-of-transaction.
-        update_response: object = await account_service.update_account(account_input.acct_id, update_request)
-        if getattr(update_response, "error_message", None):
-            err: Optional[str] = getattr(update_response, "error_message", None)  # noqa: UP045  # schema requires typing.Optional
-            logger.warning("update_account: service returned error: %s", err)
-            raise Exception(err or "Account update failed")
+            # active_status — GraphQL input wins, else existing value.
+            active_status_val: str = (
+                account_input.active_status
+                if account_input.active_status is not None
+                else getattr(current, "active_status", "")
+            )
 
-        # ----- Step 5: Re-query ORM for a complete AccountType response -----
-        # AccountUpdateResponse extends AccountViewResponse (31 business
-        # fields) but we need the full Account ORM row to invoke
-        # AccountType.from_model(), which normalizes ORM attributes to
-        # GraphQL field names.
-        stmt = select(Account).where(Account.acct_id == account_input.acct_id)
-        result = await session.execute(stmt)
-        account_orm: Optional[Account] = result.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
-        if account_orm is None:
-            # Extremely unlikely — the service just persisted the row —
-            # but we guard defensively.
-            raise Exception(f"Account {account_input.acct_id} not found after update")
+            # ----- Step 3: Construct the 39-field AccountUpdateRequest -----
+            try:
+                update_request: AccountUpdateRequest = AccountUpdateRequest(
+                    account_id=account_input.acct_id,
+                    active_status=active_status_val,
+                    open_date_year=open_year,
+                    open_date_month=open_month,
+                    open_date_day=open_day,
+                    credit_limit=credit_limit_val,
+                    expiration_date_year=exp_year,
+                    expiration_date_month=exp_month,
+                    expiration_date_day=exp_day,
+                    cash_credit_limit=cash_credit_limit_val,
+                    reissue_date_year=reissue_year,
+                    reissue_date_month=reissue_month,
+                    reissue_date_day=reissue_day,
+                    group_id=getattr(current, "group_id", ""),
+                    customer_ssn_part1=ssn_part1,
+                    customer_ssn_part2=ssn_part2,
+                    customer_ssn_part3=ssn_part3,
+                    customer_dob_year=dob_year,
+                    customer_dob_month=dob_month,
+                    customer_dob_day=dob_day,
+                    customer_fico_score=getattr(current, "customer_fico_score", ""),
+                    customer_first_name=getattr(current, "customer_first_name", ""),
+                    customer_middle_name=getattr(current, "customer_middle_name", ""),
+                    customer_last_name=getattr(current, "customer_last_name", ""),
+                    customer_addr_line_1=getattr(current, "customer_addr_line_1", ""),
+                    customer_state_cd=getattr(current, "customer_state_cd", ""),
+                    customer_addr_line_2=getattr(current, "customer_addr_line_2", ""),
+                    customer_zip=getattr(current, "customer_zip", ""),
+                    customer_city=getattr(current, "customer_city", ""),
+                    customer_country_cd=getattr(current, "customer_country_cd", ""),
+                    customer_phone_1_area=ph1_area,
+                    customer_phone_1_prefix=ph1_prefix,
+                    customer_phone_1_line=ph1_line,
+                    customer_govt_id=getattr(current, "customer_govt_id", ""),
+                    customer_phone_2_area=ph2_area,
+                    customer_phone_2_prefix=ph2_prefix,
+                    customer_phone_2_line=ph2_line,
+                    customer_eft_account_id=getattr(current, "customer_eft_account_id", ""),
+                    customer_pri_cardholder=getattr(current, "customer_pri_cardholder", ""),
+                )
+            except Exception as exc:  # Pydantic ValidationError inherits Exception
+                logger.warning(
+                    "update_account: AccountUpdateRequest construction failed: %s",
+                    exc,
+                )
+                raise Exception(f"Invalid account update payload: {exc}") from exc
 
-        logger.info(
-            "update_account: succeeded for acct_id=%s (version_id=%s)",
-            account_input.acct_id,
-            getattr(account_orm, "version_id", None),
-        )
-        return AccountType.from_model(account_orm)
+            # ----- Step 4: Delegate to service layer -----
+            # Replaces COACTUPC.cbl REWRITE ACCTFILE + REWRITE CUSTFILE (lines
+            # 4066 and 4086). The service performs both UPDATEs inside a
+            # single session and commits atomically — mirrors the implicit
+            # CICS SYNCPOINT at end-of-transaction.
+            update_response: object = await account_service.update_account(account_input.acct_id, update_request)
+            if getattr(update_response, "error_message", None):
+                err: Optional[str] = getattr(update_response, "error_message", None)  # noqa: UP045  # schema requires typing.Optional
+                logger.warning("update_account: service returned error: %s", err)
+                raise Exception(err or "Account update failed")
+
+            # ----- Step 5: Re-query ORM for a complete AccountType response -----
+            # AccountUpdateResponse extends AccountViewResponse (31 business
+            # fields) but we need the full Account ORM row to invoke
+            # AccountType.from_model(), which normalizes ORM attributes to
+            # GraphQL field names. The re-query happens on the SAME session
+            # as the UPDATE — it sees the post-UPDATE state via SQLAlchemy's
+            # transaction-local visibility.
+            stmt = select(Account).where(Account.acct_id == account_input.acct_id)
+            result = await session.execute(stmt)
+            account_orm: Optional[Account] = result.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
+            if account_orm is None:
+                # Extremely unlikely — the service just persisted the row —
+                # but we guard defensively.
+                raise Exception(f"Account {account_input.acct_id} not found after update")
+
+            logger.info(
+                "update_account: succeeded for acct_id=%s (version_id=%s)",
+                account_input.acct_id,
+                getattr(account_orm, "version_id", None),
+            )
+            # AccountType.from_model is invoked INSIDE the async with
+            # block so the ORM attribute reads occur while the session
+            # is still active. The session is configured with
+            # ``expire_on_commit=False`` (see src/api/database.py) so
+            # attributes remain accessible even after commit, but
+            # constructing the GraphQL type before exit is the safest
+            # contract — a future change to the session config does
+            # not silently break attribute access here.
+            return AccountType.from_model(account_orm)
 
     # ------------------------------------------------------------------
     # update_card — COCRDUPC.cbl → optimistic-concurrency REWRITE
@@ -1010,7 +1089,17 @@ class Mutation:
         Parameters
         ----------
         info : Info
-            Strawberry resolver context.
+            Strawberry resolver context; carries the async session
+            FACTORY under ``context["db_factory"]``. The mutation
+            opens its OWN per-invocation ``AsyncSession`` via
+            ``async with _get_session(info)`` so concurrent sibling
+            resolvers (dispatched via Strawberry's ``asyncio.gather``)
+            do NOT share this session — this is the QA Checkpoint 10
+            Issue 1 fix. The ``async with`` block encompasses the
+            entire read-update-reread flow so it commits atomically
+            (or rolls back on exception) as a single CICS SYNCPOINT
+            boundary — preserving the optimistic-concurrency
+            semantics of the original COCRDUPC.cbl CICS transaction.
         card_input : CardUpdateInput
             GraphQL input payload.
 
@@ -1024,94 +1113,105 @@ class Mutation:
         Exception
             On not-found, stale-data, or validation failure.
         """
-        session = _get_session(info)
-        card_service: CardService = CardService(session)
+        # Open a FRESH AsyncSession for this resolver invocation — see
+        # QA Checkpoint 10 Issue 1 fix in ``_get_session`` above.
+        # Every database interaction — read, update, re-read — MUST
+        # remain inside this block so the dual statement (READ UPDATE
+        # + REWRITE) commits atomically.
+        async with _get_session(info) as session:
+            card_service: CardService = CardService(session)
 
-        # ----- Step 1: Fetch current card state -----
-        # Replaces COCRDUPC.cbl READ FILE('CARDDAT') at the top of the
-        # 9200-WRITE-PROCESSING paragraph.
-        card_detail: object = await card_service.get_card_detail(card_input.card_num)
-        if getattr(card_detail, "error_message", None):
-            err = getattr(card_detail, "error_message", None)
-            logger.warning("update_card: get_card_detail returned error: %s", err)
-            raise Exception(err or "Card lookup failed")
+            # ----- Step 1: Fetch current card state -----
+            # Replaces COCRDUPC.cbl READ FILE('CARDDAT') at the top of the
+            # 9200-WRITE-PROCESSING paragraph.
+            card_detail: object = await card_service.get_card_detail(card_input.card_num)
+            if getattr(card_detail, "error_message", None):
+                err = getattr(card_detail, "error_message", None)
+                logger.warning("update_card: get_card_detail returned error: %s", err)
+                raise Exception(err or "Card lookup failed")
 
-        # ----- Step 2: Merge GraphQL inputs with current state -----
-        # Pull the non-editable account_id from the current card record,
-        # then overlay any GraphQL-supplied editable fields on top of
-        # the existing values.
-        account_id_val: str = getattr(card_detail, "account_id", "")
-        embossed_name_val: str = (
-            card_input.embossed_name
-            if card_input.embossed_name is not None
-            else getattr(card_detail, "embossed_name", "")
-        )
-        status_code_val: str = (
-            card_input.active_status
-            if card_input.active_status is not None
-            else getattr(card_detail, "status_code", "")
-        )
-        expiry_month_val: str = (
-            card_input.expiration_month
-            if card_input.expiration_month is not None
-            else getattr(card_detail, "expiry_month", "")
-        )
-        expiry_year_val: str = (
-            card_input.expiration_year
-            if card_input.expiration_year is not None
-            else getattr(card_detail, "expiry_year", "")
-        )
-        # COBOL CVACT02Y.cpy CARD-EXPIRAION-DATE is PIC X(10) stored as
-        # YYYY-MM-DD; the day component is always "01" because card
-        # expiry on the embossed plastic is month-granular. The
-        # CardUpdateRequest Pydantic contract still requires an
-        # ``expiry_day`` field for future extensibility; we default it
-        # here per the COBOL convention.
-        expiry_day_val: str = "01"
-
-        # ----- Step 3: Construct the CardUpdateRequest -----
-        try:
-            card_update_request: CardUpdateRequest = CardUpdateRequest(
-                account_id=account_id_val,
-                card_number=card_input.card_num,
-                embossed_name=embossed_name_val,
-                status_code=status_code_val,
-                expiry_month=expiry_month_val,
-                expiry_year=expiry_year_val,
-                expiry_day=expiry_day_val,
+            # ----- Step 2: Merge GraphQL inputs with current state -----
+            # Pull the non-editable account_id from the current card record,
+            # then overlay any GraphQL-supplied editable fields on top of
+            # the existing values.
+            account_id_val: str = getattr(card_detail, "account_id", "")
+            embossed_name_val: str = (
+                card_input.embossed_name
+                if card_input.embossed_name is not None
+                else getattr(card_detail, "embossed_name", "")
             )
-        except Exception as exc:
-            logger.warning(
-                "update_card: CardUpdateRequest construction failed: %s",
-                exc,
+            status_code_val: str = (
+                card_input.active_status
+                if card_input.active_status is not None
+                else getattr(card_detail, "status_code", "")
             )
-            raise Exception(f"Invalid card update payload: {exc}") from exc
+            expiry_month_val: str = (
+                card_input.expiration_month
+                if card_input.expiration_month is not None
+                else getattr(card_detail, "expiry_month", "")
+            )
+            expiry_year_val: str = (
+                card_input.expiration_year
+                if card_input.expiration_year is not None
+                else getattr(card_detail, "expiry_year", "")
+            )
+            # COBOL CVACT02Y.cpy CARD-EXPIRAION-DATE is PIC X(10) stored as
+            # YYYY-MM-DD; the day component is always "01" because card
+            # expiry on the embossed plastic is month-granular. The
+            # CardUpdateRequest Pydantic contract still requires an
+            # ``expiry_day`` field for future extensibility; we default it
+            # here per the COBOL convention.
+            expiry_day_val: str = "01"
 
-        # ----- Step 4: Delegate to service layer -----
-        # Replaces COCRDUPC.cbl REWRITE FILE('CARDDAT') (line 1478).
-        # The service performs the optimistic-concurrency check against
-        # the version_id column (set via __mapper_args__["version_id_col"]
-        # on the Card ORM) and surfaces any StaleDataError as an
-        # error_message on the response.
-        card_update_response: object = await card_service.update_card(card_input.card_num, card_update_request)
-        if getattr(card_update_response, "error_message", None):
-            err2 = getattr(card_update_response, "error_message", None)
-            logger.warning("update_card: service returned error: %s", err2)
-            raise Exception(err2 or "Card update failed")
+            # ----- Step 3: Construct the CardUpdateRequest -----
+            try:
+                card_update_request: CardUpdateRequest = CardUpdateRequest(
+                    account_id=account_id_val,
+                    card_number=card_input.card_num,
+                    embossed_name=embossed_name_val,
+                    status_code=status_code_val,
+                    expiry_month=expiry_month_val,
+                    expiry_year=expiry_year_val,
+                    expiry_day=expiry_day_val,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "update_card: CardUpdateRequest construction failed: %s",
+                    exc,
+                )
+                raise Exception(f"Invalid card update payload: {exc}") from exc
 
-        # ----- Step 5: Re-query ORM for a complete CardType response -----
-        stmt2 = select(Card).where(Card.card_num == card_input.card_num)
-        result2 = await session.execute(stmt2)
-        card_orm: Optional[Card] = result2.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
-        if card_orm is None:
-            raise Exception(f"Card {card_input.card_num} not found after update")
+            # ----- Step 4: Delegate to service layer -----
+            # Replaces COCRDUPC.cbl REWRITE FILE('CARDDAT') (line 1478).
+            # The service performs the optimistic-concurrency check against
+            # the version_id column (set via __mapper_args__["version_id_col"]
+            # on the Card ORM) and surfaces any StaleDataError as an
+            # error_message on the response.
+            card_update_response: object = await card_service.update_card(card_input.card_num, card_update_request)
+            if getattr(card_update_response, "error_message", None):
+                err2 = getattr(card_update_response, "error_message", None)
+                logger.warning("update_card: service returned error: %s", err2)
+                raise Exception(err2 or "Card update failed")
 
-        logger.info(
-            "update_card: succeeded for card_num=%s (version_id=%s)",
-            card_input.card_num,
-            getattr(card_orm, "version_id", None),
-        )
-        return CardType.from_model(card_orm)
+            # ----- Step 5: Re-query ORM for a complete CardType response -----
+            # Still inside the async with block — the session is the SAME
+            # one used by the service layer for the UPDATE, so this SELECT
+            # observes the post-UPDATE state via transaction-local
+            # visibility.
+            stmt2 = select(Card).where(Card.card_num == card_input.card_num)
+            result2 = await session.execute(stmt2)
+            card_orm: Optional[Card] = result2.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
+            if card_orm is None:
+                raise Exception(f"Card {card_input.card_num} not found after update")
+
+            logger.info(
+                "update_card: succeeded for card_num=%s (version_id=%s)",
+                card_input.card_num,
+                getattr(card_orm, "version_id", None),
+            )
+            # CardType.from_model is invoked INSIDE the async with block
+            # so ORM attribute access occurs while the session is alive.
+            return CardType.from_model(card_orm)
 
     # ------------------------------------------------------------------
     # add_transaction — COTRN02C.cbl → auto-ID + CCXREF resolution
@@ -1159,7 +1259,17 @@ class Mutation:
         Parameters
         ----------
         info : Info
-            Strawberry resolver context.
+            Strawberry resolver context; carries the async session
+            FACTORY under ``context["db_factory"]``. The mutation
+            opens its OWN per-invocation ``AsyncSession`` via
+            ``async with _get_session(info)`` so concurrent sibling
+            resolvers (dispatched via Strawberry's ``asyncio.gather``)
+            do NOT share this session — this is the QA Checkpoint 10
+            Issue 1 fix. Every database interaction — xref lookups,
+            the INSERT via the service, and the post-insert re-query —
+            lives inside the ``async with`` block so the flow either
+            commits atomically or rolls back as a single CICS
+            SYNCPOINT boundary.
         transaction_input : TransactionAddInput
             GraphQL input payload.
 
@@ -1175,121 +1285,138 @@ class Mutation:
             On cross-reference not-found, validation failure, or
             underlying database error.
         """
-        session = _get_session(info)
-        transaction_service: TransactionService = TransactionService(session)
-
-        # ----- Step 1: Resolve cross-reference (card_num ↔ acct_id) -----
-        # Both card_num and acct_id are required by TransactionAddRequest.
-        # If the GraphQL client supplied only one, fill in the other.
-        resolved_card_num: Optional[str] = transaction_input.card_num  # noqa: UP045  # schema requires typing.Optional
-        resolved_acct_id: Optional[str] = transaction_input.acct_id  # noqa: UP045  # schema requires typing.Optional
-
-        if not resolved_card_num and not resolved_acct_id:
+        # Pre-flight validation that does not require a database
+        # session — performed BEFORE opening the session so an
+        # obviously-malformed request does not consume a connection
+        # from the pool.
+        if not transaction_input.card_num and not transaction_input.acct_id:
             raise Exception("add_transaction: either card_num or acct_id must be supplied")
 
-        if resolved_card_num and not resolved_acct_id:
-            # COTRN02C.cbl READ-CCXREF-FILE at line 609 — look up
-            # account for the given card.
-            xref_stmt = select(CardCrossReference).where(CardCrossReference.card_num == resolved_card_num)
-            xref_result = await session.execute(xref_stmt)
-            xref_row: Optional[CardCrossReference] = xref_result.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
-            if xref_row is None:
-                logger.warning(
-                    "add_transaction: no cross-reference for card_num=%s",
-                    resolved_card_num,
+        # Open a FRESH AsyncSession for this resolver invocation — see
+        # QA Checkpoint 10 Issue 1 fix in ``_get_session`` above. All
+        # remaining DB interaction (xref resolution, INSERT via the
+        # service, post-insert re-query) MUST remain inside this block
+        # so the chained writes commit atomically.
+        async with _get_session(info) as session:
+            transaction_service: TransactionService = TransactionService(session)
+
+            # ----- Step 1: Resolve cross-reference (card_num ↔ acct_id) -----
+            # Both card_num and acct_id are required by
+            # TransactionAddRequest. If the GraphQL client supplied only
+            # one, fill in the other via CardCrossReference lookup.
+            resolved_card_num: Optional[str] = transaction_input.card_num  # noqa: UP045  # schema requires typing.Optional
+            resolved_acct_id: Optional[str] = transaction_input.acct_id  # noqa: UP045  # schema requires typing.Optional
+
+            if resolved_card_num and not resolved_acct_id:
+                # COTRN02C.cbl READ-CCXREF-FILE at line 609 — look up
+                # account for the given card.
+                xref_stmt = select(CardCrossReference).where(CardCrossReference.card_num == resolved_card_num)
+                xref_result = await session.execute(xref_stmt)
+                xref_row: Optional[CardCrossReference] = xref_result.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
+                if xref_row is None:
+                    logger.warning(
+                        "add_transaction: no cross-reference for card_num=%s",
+                        resolved_card_num,
+                    )
+                    raise Exception(f"Card {resolved_card_num} not found in cross-reference")
+                resolved_acct_id = xref_row.acct_id
+            elif resolved_acct_id and not resolved_card_num:
+                # COTRN02C.cbl READ-CXACAIX-FILE at line 576 — look up the
+                # primary card for the given account. The CardCrossReference
+                # table has an alternate index on ``acct_id`` (V2__indexes.sql).
+                xref_stmt2 = select(CardCrossReference).where(CardCrossReference.acct_id == resolved_acct_id)
+                xref_result2 = await session.execute(xref_stmt2)
+                xref_row2: Optional[CardCrossReference] = xref_result2.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
+                if xref_row2 is None:
+                    logger.warning(
+                        "add_transaction: no cross-reference for acct_id=%s",
+                        resolved_acct_id,
+                    )
+                    raise Exception(f"Account {resolved_acct_id} has no card on file")
+                resolved_card_num = xref_row2.card_num
+
+            assert resolved_card_num is not None  # narrow for mypy
+            assert resolved_acct_id is not None
+
+            # ----- Step 2: Generate orig_date -----
+            # COTRN02C.cbl populates TRAN-ORIG-TS with the current
+            # CICS EIBTIMER value; the modernized request takes an
+            # ``orig_date`` field (YYYY-MM-DD) and the service layer
+            # attaches the full timestamp. Use UTC for consistency
+            # across AWS regions.
+            today_iso: str = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+
+            # ----- Step 3: Construct the TransactionAddRequest -----
+            try:
+                tran_request: TransactionAddRequest = TransactionAddRequest(
+                    acct_id=resolved_acct_id,
+                    card_num=resolved_card_num,
+                    tran_type_cd=transaction_input.type_cd,
+                    tran_cat_cd=transaction_input.cat_cd,
+                    tran_source=transaction_input.source,
+                    description=transaction_input.description,
+                    amount=transaction_input.amount,
+                    orig_date=today_iso,
+                    proc_date=today_iso,
+                    merchant_id=transaction_input.merchant_id,
+                    merchant_name=transaction_input.merchant_name,
+                    merchant_city=transaction_input.merchant_city,
+                    merchant_zip=transaction_input.merchant_zip,
                 )
-                raise Exception(f"Card {resolved_card_num} not found in cross-reference")
-            resolved_acct_id = xref_row.acct_id
-        elif resolved_acct_id and not resolved_card_num:
-            # COTRN02C.cbl READ-CXACAIX-FILE at line 576 — look up the
-            # primary card for the given account. The CardCrossReference
-            # table has an alternate index on ``acct_id`` (V2__indexes.sql).
-            xref_stmt2 = select(CardCrossReference).where(CardCrossReference.acct_id == resolved_acct_id)
-            xref_result2 = await session.execute(xref_stmt2)
-            xref_row2: Optional[CardCrossReference] = xref_result2.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
-            if xref_row2 is None:
+            except Exception as exc:
                 logger.warning(
-                    "add_transaction: no cross-reference for acct_id=%s",
-                    resolved_acct_id,
+                    "add_transaction: TransactionAddRequest construction failed: %s",
+                    exc,
                 )
-                raise Exception(f"Account {resolved_acct_id} has no card on file")
-            resolved_card_num = xref_row2.card_num
+                raise Exception(f"Invalid transaction payload: {exc}") from exc
 
-        assert resolved_card_num is not None  # narrow for mypy
-        assert resolved_acct_id is not None
+            # ----- Step 4: Delegate to service layer -----
+            # Replaces COTRN02C.cbl WRITE-TRANSACT-FILE (line 711). The
+            # service is responsible for the auto-ID generation and
+            # cross-reference re-verification.
+            tran_response: object = await transaction_service.add_transaction(tran_request)
+            if getattr(tran_response, "error_message", None):
+                err3 = getattr(tran_response, "error_message", None)
+                logger.warning("add_transaction: service returned error: %s", err3)
+                raise Exception(err3 or "Transaction add failed")
 
-        # ----- Step 2: Generate orig_date -----
-        # COTRN02C.cbl populates TRAN-ORIG-TS with the current
-        # CICS EIBTIMER value; the modernized request takes an
-        # ``orig_date`` field (YYYY-MM-DD) and the service layer
-        # attaches the full timestamp. Use UTC for consistency
-        # across AWS regions.
-        today_iso: str = datetime.now(tz=UTC).strftime("%Y-%m-%d")
-
-        # ----- Step 3: Construct the TransactionAddRequest -----
-        try:
-            tran_request: TransactionAddRequest = TransactionAddRequest(
-                acct_id=resolved_acct_id,
-                card_num=resolved_card_num,
-                tran_type_cd=transaction_input.type_cd,
-                tran_cat_cd=transaction_input.cat_cd,
-                tran_source=transaction_input.source,
-                description=transaction_input.description,
-                amount=transaction_input.amount,
-                orig_date=today_iso,
-                proc_date=today_iso,
-                merchant_id=transaction_input.merchant_id,
-                merchant_name=transaction_input.merchant_name,
-                merchant_city=transaction_input.merchant_city,
-                merchant_zip=transaction_input.merchant_zip,
-            )
-        except Exception as exc:
-            logger.warning(
-                "add_transaction: TransactionAddRequest construction failed: %s",
-                exc,
-            )
-            raise Exception(f"Invalid transaction payload: {exc}") from exc
-
-        # ----- Step 4: Delegate to service layer -----
-        # Replaces COTRN02C.cbl WRITE-TRANSACT-FILE (line 711). The
-        # service is responsible for the auto-ID generation and
-        # cross-reference re-verification.
-        tran_response: object = await transaction_service.add_transaction(tran_request)
-        if getattr(tran_response, "error_message", None):
-            err3 = getattr(tran_response, "error_message", None)
-            logger.warning("add_transaction: service returned error: %s", err3)
-            raise Exception(err3 or "Transaction add failed")
-
-        new_tran_id: Optional[str] = getattr(tran_response, "tran_id", None)  # noqa: UP045  # schema requires typing.Optional
-        if not new_tran_id:
-            # Fallback: if the minimal response does not surface
-            # tran_id, re-query for the largest transaction id on
-            # this card as a best-effort recovery.
-            fallback_stmt = (
-                select(Transaction.tran_id)
-                .where(Transaction.card_num == resolved_card_num)
-                .order_by(desc(Transaction.tran_id))
-                .limit(1)
-            )
-            fallback_result = await session.execute(fallback_stmt)
-            new_tran_id = fallback_result.scalar_one_or_none()
+            new_tran_id: Optional[str] = getattr(tran_response, "tran_id", None)  # noqa: UP045  # schema requires typing.Optional
             if not new_tran_id:
-                raise Exception("add_transaction: could not determine new tran_id")
+                # Fallback: if the minimal response does not surface
+                # tran_id, re-query for the largest transaction id on
+                # this card as a best-effort recovery. Performed on the
+                # SAME session so it observes the just-inserted row.
+                fallback_stmt = (
+                    select(Transaction.tran_id)
+                    .where(Transaction.card_num == resolved_card_num)
+                    .order_by(desc(Transaction.tran_id))
+                    .limit(1)
+                )
+                fallback_result = await session.execute(fallback_stmt)
+                new_tran_id = fallback_result.scalar_one_or_none()
+                if not new_tran_id:
+                    raise Exception("add_transaction: could not determine new tran_id")
 
-        # ----- Step 5: Re-query ORM for the full TransactionType -----
-        stmt3 = select(Transaction).where(Transaction.tran_id == new_tran_id)
-        result3 = await session.execute(stmt3)
-        tran_orm: Optional[Transaction] = result3.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
-        if tran_orm is None:
-            raise Exception(f"Transaction {new_tran_id} not found after insert")
+            # ----- Step 5: Re-query ORM for the full TransactionType -----
+            # Inside the async with block — same session as the INSERT,
+            # so the SELECT observes the just-inserted row via
+            # transaction-local visibility.
+            stmt3 = select(Transaction).where(Transaction.tran_id == new_tran_id)
+            result3 = await session.execute(stmt3)
+            tran_orm: Optional[Transaction] = result3.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
+            if tran_orm is None:
+                raise Exception(f"Transaction {new_tran_id} not found after insert")
 
-        logger.info(
-            "add_transaction: succeeded tran_id=%s card_num=%s amount=%s",
-            new_tran_id,
-            resolved_card_num,
-            transaction_input.amount,
-        )
-        return TransactionType.from_model(tran_orm)
+            logger.info(
+                "add_transaction: succeeded tran_id=%s card_num=%s amount=%s",
+                new_tran_id,
+                resolved_card_num,
+                transaction_input.amount,
+            )
+            # TransactionType.from_model is invoked INSIDE the async with
+            # block so ORM attribute access occurs while the session is
+            # alive.
+            return TransactionType.from_model(tran_orm)
 
     # ------------------------------------------------------------------
     # pay_bill — COBIL00C.cbl → atomic dual-write (Transaction + Account)
@@ -1347,7 +1474,17 @@ class Mutation:
         Parameters
         ----------
         info : Info
-            Strawberry resolver context.
+            Strawberry resolver context; carries the async session
+            FACTORY under ``context["db_factory"]``. The mutation
+            opens its OWN per-invocation ``AsyncSession`` via
+            ``async with _get_session(info)`` so concurrent sibling
+            resolvers (dispatched via Strawberry's ``asyncio.gather``)
+            do NOT share this session — this is the QA Checkpoint 10
+            Issue 1 fix. The ``async with`` block spans every DB
+            interaction (optional balance lookup, service call,
+            fallback lookup, post-insert re-query) to preserve the
+            CICS SYNCPOINT atomicity of the original COBIL00C.cbl
+            flow.
         payment_input : BillPaymentInput
             GraphQL input payload — account_id and optional amount.
 
@@ -1362,108 +1499,121 @@ class Mutation:
             On account-not-found, zero-balance, negative amount, or
             underlying database error.
         """
-        session = _get_session(info)
-        bill_service: BillService = BillService(session)
+        # Open a FRESH AsyncSession for this resolver invocation — see
+        # QA Checkpoint 10 Issue 1 fix in ``_get_session`` above. All
+        # DB interaction (balance lookup, atomic dual-write via the
+        # service, re-query for the response) MUST remain inside this
+        # block so the whole payment flow either commits atomically
+        # or rolls back — mirroring the COBIL00C.cbl SYNCPOINT at the
+        # end of the transaction.
+        async with _get_session(info) as session:
+            bill_service: BillService = BillService(session)
 
-        # ----- Step 1: Resolve the payment amount -----
-        # The BillPaymentRequest Pydantic schema REQUIRES a strictly
-        # positive amount (``_validate_amount_positive``). If the
-        # GraphQL client omits ``amount`` we preserve COBOL "pay in
-        # full" semantics by reading the current balance and
-        # substituting it. This is a separate SELECT — it does not
-        # lock the row — because BillService.pay_bill will re-read
-        # the row inside its own transaction anyway.
-        resolved_amount: Optional[Decimal] = payment_input.amount  # noqa: UP045  # schema requires typing.Optional
-        if resolved_amount is None:
-            acct_stmt = select(Account).where(Account.acct_id == payment_input.acct_id)
-            acct_result = await session.execute(acct_stmt)
-            acct_orm: Optional[Account] = acct_result.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
-            if acct_orm is None:
+            # ----- Step 1: Resolve the payment amount -----
+            # The BillPaymentRequest Pydantic schema REQUIRES a strictly
+            # positive amount (``_validate_amount_positive``). If the
+            # GraphQL client omits ``amount`` we preserve COBOL "pay in
+            # full" semantics by reading the current balance and
+            # substituting it. This is a separate SELECT — it does not
+            # lock the row — because BillService.pay_bill will re-read
+            # the row inside its own transaction anyway.
+            resolved_amount: Optional[Decimal] = payment_input.amount  # noqa: UP045  # schema requires typing.Optional
+            if resolved_amount is None:
+                acct_stmt = select(Account).where(Account.acct_id == payment_input.acct_id)
+                acct_result = await session.execute(acct_stmt)
+                acct_orm: Optional[Account] = acct_result.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
+                if acct_orm is None:
+                    logger.warning(
+                        "pay_bill: account not found acct_id=%s",
+                        payment_input.acct_id,
+                    )
+                    raise Exception(f"Account {payment_input.acct_id} not found")
+                resolved_amount = acct_orm.curr_bal
+                if resolved_amount is None or resolved_amount <= Decimal("0.00"):
+                    # COBIL00C.cbl line ~380: if ACCT-CURR-BAL is zero
+                    # or negative, display the "You have nothing to pay"
+                    # message and return to the menu. The modernized API
+                    # surfaces this as a validation error rather than a
+                    # UI message.
+                    logger.warning(
+                        "pay_bill: zero or negative balance acct_id=%s balance=%s",
+                        payment_input.acct_id,
+                        resolved_amount,
+                    )
+                    raise Exception("You have nothing to pay — account balance is zero")
+
+            # ----- Step 2: Construct the BillPaymentRequest -----
+            try:
+                bill_request: BillPaymentRequest = BillPaymentRequest(
+                    acct_id=payment_input.acct_id,
+                    amount=resolved_amount,
+                )
+            except Exception as exc:
                 logger.warning(
-                    "pay_bill: account not found acct_id=%s",
-                    payment_input.acct_id,
+                    "pay_bill: BillPaymentRequest construction failed: %s",
+                    exc,
                 )
-                raise Exception(f"Account {payment_input.acct_id} not found")
-            resolved_amount = acct_orm.curr_bal
-            if resolved_amount is None or resolved_amount <= Decimal("0.00"):
-                # COBIL00C.cbl line ~380: if ACCT-CURR-BAL is zero
-                # or negative, display the "You have nothing to pay"
-                # message and return to the menu. The modernized API
-                # surfaces this as a validation error rather than a
-                # UI message.
-                logger.warning(
-                    "pay_bill: zero or negative balance acct_id=%s balance=%s",
-                    payment_input.acct_id,
-                    resolved_amount,
+                raise Exception(f"Invalid bill payment payload: {exc}") from exc
+
+            # ----- Step 3: Delegate to service layer -----
+            # Replaces COBIL00C.cbl atomic dual-write. The service handles:
+            #   * CCXREF lookup to find the primary card
+            #   * max(tran_id) + 1 auto-ID generation
+            #   * Transaction INSERT
+            #   * Account balance decrement via Decimal subtraction
+            #   * session.commit() — atomic for both writes
+            #   * session.rollback() on any exception
+            bill_response: object = await bill_service.pay_bill(bill_request)
+            if getattr(bill_response, "confirm", "N") != "Y" or getattr(bill_response, "message", None) is None:
+                err4 = getattr(bill_response, "message", None)
+                logger.warning("pay_bill: service returned non-success: %s", err4)
+                raise Exception(err4 or "Bill payment failed")
+
+            # ----- Step 4: Extract tran_id and re-query for full entity -----
+            # BillPaymentResponse is a minimal 5-field payload: it encodes
+            # the new tran_id inside the success ``message`` field
+            # (format: "Payment successful. Your Transaction ID is
+            # {tran_id}."). We parse it out to re-query the Transaction.
+            new_tran_id2: str = _extract_tran_id_from_message(getattr(bill_response, "message", None))
+            if not new_tran_id2:
+                # Fallback: if the message format changes in the service
+                # layer, look up the most recent payment transaction on
+                # any card tied to this account. Performed on the SAME
+                # session so it observes the just-inserted payment row.
+                fallback_stmt2 = (
+                    select(Transaction.tran_id)
+                    .join(
+                        CardCrossReference,
+                        CardCrossReference.card_num == Transaction.card_num,
+                    )
+                    .where(CardCrossReference.acct_id == payment_input.acct_id)
+                    .order_by(desc(Transaction.tran_id))
+                    .limit(1)
                 )
-                raise Exception("You have nothing to pay — account balance is zero")
+                fallback_result2 = await session.execute(fallback_stmt2)
+                fallback_tran_id: Optional[str] = fallback_result2.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
+                if not fallback_tran_id:
+                    raise Exception("pay_bill: could not determine new tran_id")
+                new_tran_id2 = fallback_tran_id
 
-        # ----- Step 2: Construct the BillPaymentRequest -----
-        try:
-            bill_request: BillPaymentRequest = BillPaymentRequest(
-                acct_id=payment_input.acct_id,
-                amount=resolved_amount,
+            # Final re-query on the same session for the full
+            # Transaction ORM row to build the TransactionType.
+            stmt4 = select(Transaction).where(Transaction.tran_id == new_tran_id2)
+            result4 = await session.execute(stmt4)
+            payment_tran_orm: Optional[Transaction] = result4.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
+            if payment_tran_orm is None:
+                raise Exception(f"Payment transaction {new_tran_id2} not found after insert")
+
+            logger.info(
+                "pay_bill: succeeded tran_id=%s acct_id=%s amount=%s",
+                new_tran_id2,
+                payment_input.acct_id,
+                resolved_amount,
             )
-        except Exception as exc:
-            logger.warning(
-                "pay_bill: BillPaymentRequest construction failed: %s",
-                exc,
-            )
-            raise Exception(f"Invalid bill payment payload: {exc}") from exc
-
-        # ----- Step 3: Delegate to service layer -----
-        # Replaces COBIL00C.cbl atomic dual-write. The service handles:
-        #   * CCXREF lookup to find the primary card
-        #   * max(tran_id) + 1 auto-ID generation
-        #   * Transaction INSERT
-        #   * Account balance decrement via Decimal subtraction
-        #   * session.commit() — atomic for both writes
-        #   * session.rollback() on any exception
-        bill_response: object = await bill_service.pay_bill(bill_request)
-        if getattr(bill_response, "confirm", "N") != "Y" or getattr(bill_response, "message", None) is None:
-            err4 = getattr(bill_response, "message", None)
-            logger.warning("pay_bill: service returned non-success: %s", err4)
-            raise Exception(err4 or "Bill payment failed")
-
-        # ----- Step 4: Extract tran_id and re-query for full entity -----
-        # BillPaymentResponse is a minimal 5-field payload: it encodes
-        # the new tran_id inside the success ``message`` field
-        # (format: "Payment successful. Your Transaction ID is
-        # {tran_id}."). We parse it out to re-query the Transaction.
-        new_tran_id2: str = _extract_tran_id_from_message(getattr(bill_response, "message", None))
-        if not new_tran_id2:
-            # Fallback: if the message format changes in the service
-            # layer, look up the most recent payment transaction on
-            # any card tied to this account.
-            fallback_stmt2 = (
-                select(Transaction.tran_id)
-                .join(
-                    CardCrossReference,
-                    CardCrossReference.card_num == Transaction.card_num,
-                )
-                .where(CardCrossReference.acct_id == payment_input.acct_id)
-                .order_by(desc(Transaction.tran_id))
-                .limit(1)
-            )
-            fallback_result2 = await session.execute(fallback_stmt2)
-            fallback_tran_id: Optional[str] = fallback_result2.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
-            if not fallback_tran_id:
-                raise Exception("pay_bill: could not determine new tran_id")
-            new_tran_id2 = fallback_tran_id
-
-        stmt4 = select(Transaction).where(Transaction.tran_id == new_tran_id2)
-        result4 = await session.execute(stmt4)
-        payment_tran_orm: Optional[Transaction] = result4.scalar_one_or_none()  # noqa: UP045  # schema requires typing.Optional
-        if payment_tran_orm is None:
-            raise Exception(f"Payment transaction {new_tran_id2} not found after insert")
-
-        logger.info(
-            "pay_bill: succeeded tran_id=%s acct_id=%s amount=%s",
-            new_tran_id2,
-            payment_input.acct_id,
-            resolved_amount,
-        )
-        return TransactionType.from_model(payment_tran_orm)
+            # TransactionType.from_model is invoked INSIDE the async
+            # with block so ORM attribute access occurs while the
+            # session is alive.
+            return TransactionType.from_model(payment_tran_orm)
 
 
 # ============================================================================

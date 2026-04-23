@@ -165,6 +165,8 @@ associated data copybooks (``app/cpy/CVACT01Y.cpy``,
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -286,24 +288,46 @@ _ACCT_ID_WIDTH: int = 11
 # ============================================================================
 
 
-def _get_session(info: Info) -> Any:
-    """Extract the async SQLAlchemy session from Strawberry's Info context.
+@asynccontextmanager
+async def _get_session(info: Info) -> AsyncGenerator[AsyncSession, None]:
+    """Yield a FRESH transactional :class:`AsyncSession` for this resolver.
 
     Every resolver receives a :class:`~strawberry.types.Info` object
     whose ``context`` attribute is the dict supplied by the FastAPI
     adapter's ``context_getter`` callback (see :mod:`src.api.main` for
     where the adapter is wired). By convention established in the
     GraphQL package (``src/api/graphql/__init__.py``), the FastAPI
-    adapter places the active :class:`~sqlalchemy.ext.asyncio.AsyncSession`
-    under the ``"db"`` key of the context dict — this session was
-    obtained via :func:`src.api.database.get_async_session` and will
-    be rolled back on exception, matching the CICS SYNCPOINT
-    semantics from the original COBOL programs.
+    adapter places a session FACTORY callable under the
+    ``"db_factory"`` key — that factory is
+    :func:`src.api.database.get_async_session`, which creates a
+    transactional :class:`~sqlalchemy.ext.asyncio.AsyncSession`
+    implementing the CICS ``SYNCPOINT`` / ``SYNCPOINT ROLLBACK``
+    contract (commit on clean exit; rollback on exception).
+
+    This helper is decorated with
+    :func:`contextlib.asynccontextmanager` so callers acquire a
+    session via ``async with _get_session(info) as session: ...``.
+    The ``async with`` block ensures:
+
+    * A **fresh** session is opened per resolver, not shared across
+      sibling resolvers. This eliminates the
+      ``sqlalchemy.exc.InvalidRequestError: This session is
+      provisioning a new connection; concurrent operations are not
+      permitted`` error that plagued multi-field GraphQL queries
+      before QA Checkpoint 10 (Issue 1). Strawberry executes sibling
+      resolvers concurrently via ``asyncio.gather``, and SQLAlchemy's
+      :class:`AsyncSession` is **not** safe for concurrent use.
+    * CICS SYNCPOINT semantics are preserved: on normal exit the
+      session is committed; on exception the session is rolled back
+      and the exception re-raised. Both paths ensure the connection
+      returns to the pool — see
+      :func:`src.api.database.get_async_session` for the underlying
+      try/except/else pattern.
 
     The helper name intentionally matches
     :func:`src.api.graphql.mutations._get_session` for naming
     consistency across the GraphQL layer (both queries and
-    mutations use the same session-extraction idiom).
+    mutations use the same session-acquisition idiom).
 
     Parameters
     ----------
@@ -311,40 +335,55 @@ def _get_session(info: Info) -> Any:
         The Strawberry resolver context object passed as the first
         argument to every resolver.
 
-    Returns
-    -------
-    Any
-        The request-scoped async SQLAlchemy session. Returned as
-        ``Any`` to avoid coupling this module to SQLAlchemy's import
-        path at the call sites of read-only queries (which do not
-        need to perform isinstance() narrowing on the session).
-        Service constructors duck-type on the session and accept any
-        object that quacks like an ``AsyncSession``.
+    Yields
+    ------
+    AsyncSession
+        The per-resolver async SQLAlchemy session, valid for the
+        duration of the enclosing ``async with`` block. Commits on
+        clean exit; rolls back on exception.
 
     Raises
     ------
     RuntimeError
-        If ``info.context`` does not carry a ``"db"`` entry. This
-        indicates a mis-configured FastAPI + Strawberry integration
-        and should never occur in production; surfacing a clear error
-        here is preferable to silently failing inside a service call.
+        If ``info.context`` does not carry a ``"db_factory"`` entry.
+        This indicates a mis-configured FastAPI + Strawberry
+        integration and should never occur in production; surfacing
+        a clear error here is preferable to silently failing inside
+        a service call.
     """
     context = info.context
     # Strawberry's default context is a dict; a custom context class
-    # with a ``db`` attribute is also supported for future flexibility.
+    # with a ``db_factory`` attribute is also supported for future
+    # flexibility (matches the defensive isinstance-or-getattr
+    # pattern used by :func:`_require_admin` below).
     if isinstance(context, dict):
-        session = context.get("db")
+        factory = context.get("db_factory")
     else:
-        session = getattr(context, "db", None)
+        factory = getattr(context, "db_factory", None)
 
-    if session is None:
+    if factory is None:
         raise RuntimeError(
-            "GraphQL Info.context is missing the 'db' async session. "
-            "Expected the FastAPI + Strawberry integration "
-            "(see src/api/main.py) to inject an AsyncSession via the "
-            "context_getter callback."
+            "GraphQL Info.context is missing the 'db_factory' async "
+            "session factory. Expected the FastAPI + Strawberry "
+            "integration (see src/api/main.py) to inject a factory "
+            "callable via the context_getter callback. The factory "
+            "(get_async_session) is an async generator that yields "
+            "a fresh AsyncSession per resolver with CICS SYNCPOINT "
+            "semantics."
         )
-    return session
+
+    # ``factory`` is the ``get_async_session`` async generator
+    # function. Wrap it with :func:`contextlib.asynccontextmanager`
+    # to obtain an async context manager whose __aenter__ drives the
+    # generator to its first yield (opening the session) and whose
+    # __aexit__ drives the generator through its remaining
+    # ``try/except/else`` branches — triggering ``session.rollback()``
+    # on exception or ``session.commit()`` on clean exit. This
+    # preserves the CICS SYNCPOINT / SYNCPOINT ROLLBACK contract
+    # end-to-end for each resolver that acquires its own session via
+    # ``async with _get_session(info) as session: ...``.
+    async with asynccontextmanager(factory)() as session:
+        yield session
 
 
 def _require_admin(info: Info) -> None:
@@ -823,8 +862,13 @@ class Query:
         Parameters
         ----------
         info : Info
-            Strawberry resolver context; carries the async
-            SQLAlchemy session under ``context["db"]``.
+            Strawberry resolver context; carries the async session
+            FACTORY under ``context["db_factory"]``. The resolver
+            opens its OWN per-invocation
+            :class:`~sqlalchemy.ext.asyncio.AsyncSession` via
+            ``async with _get_session(info)`` to remain safe under
+            Strawberry's concurrent ``asyncio.gather`` execution
+            of sibling resolvers.
         acct_id : str
             The 11-digit, zero-padded account identifier (COBOL
             ``PIC 9(11)`` → Python ``str`` to preserve leading
@@ -838,8 +882,6 @@ class Query:
             The resolved GraphQL account type, or ``None`` if no
             account matches the supplied ID.
         """
-        session = _get_session(info)
-        service: AccountService = AccountService(session)
         normalized_id: str = _normalize(acct_id)
 
         logger.debug(
@@ -854,7 +896,9 @@ class Query:
             # Empty / whitespace-only acct_id — treat as "not found"
             # rather than forwarding to the service (which would
             # return a validation-error response for an 11-char
-            # length mismatch).
+            # length mismatch). Short-circuit BEFORE opening a
+            # session — there is no need to acquire a database
+            # connection from the pool just to return null.
             logger.warning(
                 "account query: empty acct_id",
                 extra={"operation": "graphql_query_account"},
@@ -890,20 +934,29 @@ class Query:
         # That path stays as ``return None`` because GraphQL's
         # nullable-result idiom is the correct way to signal
         # "record does not exist" without populating ``errors``.
-        response = await service.get_account_view(normalized_id)
+        #
+        # The ``async with _get_session(info) as session`` block
+        # opens a FRESH per-resolver AsyncSession (CICS SYNCPOINT
+        # boundary) so that this resolver can safely run in
+        # parallel with sibling resolvers in a multi-field GraphQL
+        # query (QA Checkpoint 10, Issue 1). On clean exit the
+        # session commits; on any exception it rolls back.
+        async with _get_session(info) as session:
+            service: AccountService = AccountService(session)
+            response = await service.get_account_view(normalized_id)
 
-        if response.error_message is not None:
-            logger.info(
-                "account query: not found",
-                extra={
-                    "operation": "graphql_query_account",
-                    "acct_id": normalized_id,
-                    "reason": response.error_message,
-                },
-            )
-            return None
+            if response.error_message is not None:
+                logger.info(
+                    "account query: not found",
+                    extra={
+                        "operation": "graphql_query_account",
+                        "acct_id": normalized_id,
+                        "reason": response.error_message,
+                    },
+                )
+                return None
 
-        return _account_view_to_type(response)
+            return _account_view_to_type(response)
 
     # ------------------------------------------------------------------
     # accounts — COACTVWC.cbl → paginated account list
@@ -959,8 +1012,13 @@ class Query:
         Parameters
         ----------
         info : Info
-            Strawberry resolver context; carries the async SQLAlchemy
-            session under ``context["db"]``.
+            Strawberry resolver context; carries the async session
+            FACTORY under ``context["db_factory"]``. The resolver
+            opens its OWN per-invocation
+            :class:`~sqlalchemy.ext.asyncio.AsyncSession` via
+            ``async with _get_session(info)`` to remain safe under
+            Strawberry's concurrent ``asyncio.gather`` execution
+            of sibling resolvers (QA Checkpoint 10, Issue 1).
         page : int, default 1
             1-indexed page number. Values less than 1 are clamped
             to 1.
@@ -976,8 +1034,6 @@ class Query:
             :meth:`AccountType.from_model` (Decimal monetary fields,
             no ``version_id``).
         """
-        session: AsyncSession = _get_session(info)
-
         page_clamped: int = _clamp_page(page)
         page_size_clamped: int = _clamp_page_size(page_size, _USER_PAGE_SIZE_DEFAULT)
         offset: int = (page_clamped - 1) * page_size_clamped
@@ -999,12 +1055,7 @@ class Query:
         # to numeric ascending — matching the COBOL PIC 9(11) browse
         # order from COACTVWC.cbl. Using the PRIMARY KEY also means
         # the OFFSET/LIMIT scan can use the btree index directly.
-        stmt = (
-            select(Account)
-            .order_by(Account.acct_id)
-            .offset(offset)
-            .limit(page_size_clamped)
-        )
+        stmt = select(Account).order_by(Account.acct_id).offset(offset).limit(page_size_clamped)
 
         # Database-level failures (connectivity, SQL errors,
         # schema mismatches) propagate to Strawberry and are
@@ -1018,15 +1069,22 @@ class Query:
         # indistinguishable from legitimately-empty result sets.
         # See the module docstring in ``src/api/graphql/schema.py``
         # for the error-masking contract.
-        result = await session.execute(stmt)
-        rows: list[Account] = list(result.scalars().all())
+        #
+        # The ``async with _get_session(info) as session`` block
+        # opens a FRESH per-resolver AsyncSession (CICS SYNCPOINT
+        # boundary) so this resolver runs safely in parallel with
+        # sibling resolvers — see QA Checkpoint 10 Issue 1 fix.
+        async with _get_session(info) as session:
+            result = await session.execute(stmt)
+            rows: list[Account] = list(result.scalars().all())
 
-        # AccountType.from_model is the single allowed ORM→GraphQL
-        # conversion point — it copies the 12 GraphQL fields
-        # explicitly and deliberately does NOT read version_id, so
-        # the optimistic-concurrency token cannot cross the GraphQL
-        # boundary. See src/api/graphql/types/account_type.py.
-        return [AccountType.from_model(account) for account in rows]
+            # AccountType.from_model is the single allowed
+            # ORM→GraphQL conversion point — it copies the 12
+            # GraphQL fields explicitly and deliberately does NOT
+            # read version_id, so the optimistic-concurrency token
+            # cannot cross the GraphQL boundary. See
+            # ``src/api/graphql/types/account_type.py``.
+            return [AccountType.from_model(account) for account in rows]
 
     # ------------------------------------------------------------------
     # card — COCRDSLC.cbl → single card lookup (Feature F-007)
@@ -1055,7 +1113,13 @@ class Query:
         Parameters
         ----------
         info : Info
-            Strawberry resolver context.
+            Strawberry resolver context; carries the async session
+            FACTORY under ``context["db_factory"]``. The resolver
+            opens its OWN per-invocation
+            :class:`~sqlalchemy.ext.asyncio.AsyncSession` via
+            ``async with _get_session(info)`` to remain safe under
+            Strawberry's concurrent ``asyncio.gather`` execution
+            of sibling resolvers (QA Checkpoint 10, Issue 1).
         card_num : str
             The 16-digit card number (COBOL ``PIC X(16)`` → Python
             ``str``). Whitespace is stripped before the lookup.
@@ -1066,8 +1130,6 @@ class Query:
             The resolved GraphQL card type (CVV scrubbed per
             PCI-DSS), or ``None`` if no card matches.
         """
-        session = _get_session(info)
-        service: CardService = CardService(session)
         normalized_num: str = _normalize(card_num)
 
         logger.debug(
@@ -1079,6 +1141,8 @@ class Query:
         )
 
         if not normalized_num:
+            # Empty / whitespace-only card_num — short-circuit
+            # BEFORE acquiring a session.
             logger.warning(
                 "card query: empty card_num",
                 extra={"operation": "graphql_query_card"},
@@ -1090,20 +1154,27 @@ class Query:
         # extension. The ``response.error_message is not None`` branch
         # below continues to signal the legitimate "card not found"
         # outcome returned by a successful service call.
-        response = await service.get_card_detail(normalized_num)
+        #
+        # The ``async with _get_session(info) as session`` block opens
+        # a FRESH per-resolver AsyncSession (CICS SYNCPOINT boundary)
+        # so this resolver runs safely in parallel with sibling
+        # resolvers — see QA Checkpoint 10 Issue 1 fix.
+        async with _get_session(info) as session:
+            service: CardService = CardService(session)
+            response = await service.get_card_detail(normalized_num)
 
-        if response.error_message is not None:
-            logger.info(
-                "card query: not found",
-                extra={
-                    "operation": "graphql_query_card",
-                    "card_num": normalized_num,
-                    "reason": response.error_message,
-                },
-            )
-            return None
+            if response.error_message is not None:
+                logger.info(
+                    "card query: not found",
+                    extra={
+                        "operation": "graphql_query_card",
+                        "card_num": normalized_num,
+                        "reason": response.error_message,
+                    },
+                )
+                return None
 
-        return _card_detail_to_type(response)
+            return _card_detail_to_type(response)
 
     # ------------------------------------------------------------------
     # cards — COCRDLIC.cbl → paginated card list (Feature F-006)
@@ -1140,16 +1211,27 @@ class Query:
         Parameters
         ----------
         info : Info
-            Strawberry resolver context.
+            Strawberry resolver context; carries the async session
+            FACTORY under ``context["db_factory"]``. The resolver
+            opens its OWN per-invocation
+            :class:`~sqlalchemy.ext.asyncio.AsyncSession` via
+            ``async with _get_session(info)`` to remain safe under
+            Strawberry's concurrent ``asyncio.gather`` execution
+            of sibling resolvers (QA Checkpoint 10, Issue 1).
         account_id : Optional[str]
             Optional 11-digit account filter. When supplied, only
             cards belonging to that account are returned.
         page : int, default 1
             1-indexed page number. Clamped to >= 1.
         page_size : int, default 7
-            Requested page size. The underlying service always
-            returns at most 7 cards per page; callers that pass a
-            smaller ``page_size`` get a truncated slice.
+            Requested page size. Hard-capped at 7 rows per page to
+            match the COBOL BMS screen geometry
+            (``WS-MAX-SCREEN-LINES`` in ``COCRDLIC.cbl``,
+            ``OCCURS 7 TIMES`` in ``COCRDLI.CPY``). Callers that
+            pass a smaller ``page_size`` get a truncated slice;
+            callers that pass ``page_size > 7`` receive a GraphQL
+            validation error rather than silently being given a
+            partial 7-row page (QA Checkpoint 10, Issue 2).
 
         Returns
         -------
@@ -1157,9 +1239,39 @@ class Query:
             The (possibly empty) list of cards, each with CVV,
             embossed name, and expiration date elided per the
             COBOL list-view behavior.
+
+        Raises
+        ------
+        ValueError
+            When ``page_size > 7``. The cap is a non-negotiable
+            COBOL/BMS constraint preserved by the AAP — silently
+            returning fewer rows than requested is a confusing
+            API contract violation flagged by QA Checkpoint 10
+            (Issue 2). ``ValueError`` is raised intentionally
+            because the schema-level :class:`MaskErrors` extension
+            ONLY masks :class:`SQLAlchemyError`, so the validation
+            message reaches the caller verbatim.
         """
-        session = _get_session(info)
-        service: CardService = CardService(session)
+        # ------------------------------------------------------
+        # Issue 2 fix (QA Checkpoint 10):
+        # Reject ``page_size > 7`` BEFORE acquiring a session or
+        # touching the database. Previously this resolver
+        # silently capped the result set at 7 rows when the
+        # caller asked for more, which violated the API contract
+        # promise and made it impossible for clients to detect
+        # truncation. Raising a ``ValueError`` makes the cap
+        # explicit and visible; the schema's ``MaskErrors``
+        # extension does NOT mask non-SQLAlchemy exceptions, so
+        # the message reaches the GraphQL client unchanged.
+        # ------------------------------------------------------
+        if page_size > _CARD_PAGE_SIZE_DEFAULT:
+            raise ValueError(
+                f"page_size must not exceed {_CARD_PAGE_SIZE_DEFAULT} "
+                f"for the cards query (got {page_size}). This is a "
+                "COBOL/BMS screen-geometry constraint preserved from "
+                "WS-MAX-SCREEN-LINES in COCRDLIC.cbl. Reduce "
+                "page_size or paginate via the page parameter."
+            )
 
         page_clamped: int = _clamp_page(page)
         normalized_acct: Optional[str] = (  # noqa: UP045  # schema requires typing.Optional
@@ -1192,16 +1304,26 @@ class Query:
         # extension. The previous silent ``return []`` pattern made
         # connectivity errors look identical to legitimately-empty
         # query windows and was flagged by QA Checkpoint 5.
-        response = await service.list_cards(request)
+        #
+        # The ``async with _get_session(info) as session`` block
+        # opens a FRESH per-resolver AsyncSession (CICS SYNCPOINT
+        # boundary) so this resolver runs safely in parallel with
+        # sibling resolvers — see QA Checkpoint 10 Issue 1 fix.
+        async with _get_session(info) as session:
+            service: CardService = CardService(session)
+            response = await service.list_cards(request)
 
-        items = response.cards
-        # Respect a caller-supplied ``page_size`` lower than the
-        # service's fixed 7-row window. Values at or above 7 have
-        # no effect — the service cap is authoritative.
-        if 0 < page_size < _CARD_PAGE_SIZE_DEFAULT:
-            items = items[:page_size]
+            items = response.cards
+            # Respect a caller-supplied ``page_size`` lower than the
+            # service's fixed 7-row window. Values at exactly 7 (the
+            # cap) have no effect — the service cap is authoritative.
+            # Values above 7 are rejected at the top of the resolver
+            # (Issue 2 fix), so this branch only fires for
+            # 0 < page_size < 7.
+            if 0 < page_size < _CARD_PAGE_SIZE_DEFAULT:
+                items = items[:page_size]
 
-        return [_card_list_item_to_type(item) for item in items]
+            return [_card_list_item_to_type(item) for item in items]
 
     # ------------------------------------------------------------------
     # transaction — COTRN01C.cbl → single transaction (Feature F-010)
@@ -1229,7 +1351,13 @@ class Query:
         Parameters
         ----------
         info : Info
-            Strawberry resolver context.
+            Strawberry resolver context; carries the async session
+            FACTORY under ``context["db_factory"]``. The resolver
+            opens its OWN per-invocation
+            :class:`~sqlalchemy.ext.asyncio.AsyncSession` via
+            ``async with _get_session(info)`` to remain safe under
+            Strawberry's concurrent ``asyncio.gather`` execution
+            of sibling resolvers (QA Checkpoint 10, Issue 1).
         tran_id : str
             The 16-character transaction identifier (COBOL
             ``PIC X(16)`` → Python ``str``).
@@ -1240,8 +1368,6 @@ class Query:
             The resolved GraphQL transaction type, or ``None`` if
             no transaction matches.
         """
-        session = _get_session(info)
-        service: TransactionService = TransactionService(session)
         normalized_id: str = _normalize(tran_id)
 
         logger.debug(
@@ -1253,6 +1379,8 @@ class Query:
         )
 
         if not normalized_id:
+            # Empty / whitespace-only tran_id — short-circuit
+            # BEFORE acquiring a session.
             logger.warning(
                 "transaction query: empty tran_id",
                 extra={"operation": "graphql_query_transaction"},
@@ -1263,24 +1391,31 @@ class Query:
         # by the schema-level :class:`~strawberry.extensions.MaskErrors`
         # extension. A populated ``response.message`` below continues
         # to encode the legitimate "transaction not found" outcome.
-        response = await service.get_transaction_detail(normalized_id)
+        #
+        # The ``async with _get_session(info) as session`` block opens
+        # a FRESH per-resolver AsyncSession (CICS SYNCPOINT boundary)
+        # so this resolver runs safely in parallel with sibling
+        # resolvers — see QA Checkpoint 10 Issue 1 fix.
+        async with _get_session(info) as session:
+            service: TransactionService = TransactionService(session)
+            response = await service.get_transaction_detail(normalized_id)
 
-        # The TransactionDetailResponse signals "not found" via a
-        # populated ``message`` field (the COBOL COTRN01C screen
-        # displays this message on the status bar when the tran_id
-        # does not resolve). A None message indicates success.
-        if response.message is not None:
-            logger.info(
-                "transaction query: not found",
-                extra={
-                    "operation": "graphql_query_transaction",
-                    "tran_id": normalized_id,
-                    "reason": response.message,
-                },
-            )
-            return None
+            # The TransactionDetailResponse signals "not found" via a
+            # populated ``message`` field (the COBOL COTRN01C screen
+            # displays this message on the status bar when the tran_id
+            # does not resolve). A None message indicates success.
+            if response.message is not None:
+                logger.info(
+                    "transaction query: not found",
+                    extra={
+                        "operation": "graphql_query_transaction",
+                        "tran_id": normalized_id,
+                        "reason": response.message,
+                    },
+                )
+                return None
 
-        return _transaction_detail_to_type(response)
+            return _transaction_detail_to_type(response)
 
     # ------------------------------------------------------------------
     # transactions — COTRN00C.cbl → paginated tx list (Feature F-009)
@@ -1311,7 +1446,13 @@ class Query:
         Parameters
         ----------
         info : Info
-            Strawberry resolver context.
+            Strawberry resolver context; carries the async session
+            FACTORY under ``context["db_factory"]``. The resolver
+            opens its OWN per-invocation
+            :class:`~sqlalchemy.ext.asyncio.AsyncSession` via
+            ``async with _get_session(info)`` to remain safe under
+            Strawberry's concurrent ``asyncio.gather`` execution
+            of sibling resolvers (QA Checkpoint 10, Issue 1).
         page : int, default 1
             1-indexed page number. Clamped to >= 1.
         page_size : int, default 10
@@ -1324,9 +1465,6 @@ class Query:
             9 non-list fields defaulted to empty strings per the
             COBOL list-view screen geometry.
         """
-        session = _get_session(info)
-        service: TransactionService = TransactionService(session)
-
         page_clamped: int = _clamp_page(page)
         page_size_clamped: int = _clamp_page_size(page_size, _TRANSACTION_PAGE_SIZE_DEFAULT)
 
@@ -1350,9 +1488,16 @@ class Query:
         # extension. Previously this resolver returned ``[]`` on any
         # exception, which disguised connectivity failures as empty
         # pages (QA Checkpoint 5 finding).
-        response = await service.list_transactions(request)
+        #
+        # The ``async with _get_session(info) as session`` block
+        # opens a FRESH per-resolver AsyncSession (CICS SYNCPOINT
+        # boundary) so this resolver runs safely in parallel with
+        # sibling resolvers — see QA Checkpoint 10 Issue 1 fix.
+        async with _get_session(info) as session:
+            service: TransactionService = TransactionService(session)
+            response = await service.list_transactions(request)
 
-        return [_transaction_list_item_to_type(item) for item in response.transactions]
+            return [_transaction_list_item_to_type(item) for item in response.transactions]
 
     # ------------------------------------------------------------------
     # user — derived from COUSR00C.cbl → single user by ID
@@ -1394,7 +1539,13 @@ class Query:
         Parameters
         ----------
         info : Info
-            Strawberry resolver context.
+            Strawberry resolver context; carries the async session
+            FACTORY under ``context["db_factory"]``. The resolver
+            opens its OWN per-invocation
+            :class:`~sqlalchemy.ext.asyncio.AsyncSession` via
+            ``async with _get_session(info)`` to remain safe under
+            Strawberry's concurrent ``asyncio.gather`` execution
+            of sibling resolvers (QA Checkpoint 10, Issue 1).
         user_id : str
             The 8-character user identifier (COBOL ``PIC X(08)`` →
             Python ``str``). Whitespace is stripped before the
@@ -1427,11 +1578,11 @@ class Query:
         # Admin-only gate — matches REST /users path-prefix gating
         # in src.api.middleware.auth.ADMIN_ONLY_PREFIXES and
         # preserves parity with the legacy CICS COUSR00 transaction
-        # access model (CDEMO-USER-TYPE = 'A').
+        # access model (CDEMO-USER-TYPE = 'A'). Raised BEFORE
+        # session acquisition so unauthorized callers do not even
+        # consume a database connection from the pool.
         _require_admin(info)
 
-        session = _get_session(info)
-        service: UserService = UserService(session)
         normalized_id: str = _normalize(user_id)
 
         logger.debug(
@@ -1443,6 +1594,8 @@ class Query:
         )
 
         if not normalized_id:
+            # Empty / whitespace-only user_id — short-circuit
+            # BEFORE acquiring a session.
             logger.warning(
                 "user query: empty user_id",
                 extra={"operation": "graphql_query_user"},
@@ -1468,24 +1621,31 @@ class Query:
         # error and therefore passes through the mask predicate
         # unchanged, reaching the client as an explicit
         # authorization failure.
-        response = await service.list_users(request)
+        #
+        # The ``async with _get_session(info) as session`` block
+        # opens a FRESH per-resolver AsyncSession (CICS SYNCPOINT
+        # boundary) so this resolver runs safely in parallel with
+        # sibling resolvers — see QA Checkpoint 10 Issue 1 fix.
+        async with _get_session(info) as session:
+            service: UserService = UserService(session)
+            response = await service.list_users(request)
 
-        # Be strict about exact match (the LIKE prefix could
-        # theoretically match a shorter prefix if a user ID were
-        # ever shorter than 8 chars, though the schema guarantees
-        # exactly 8 chars — defensive guard).
-        for item in response.users:
-            if item.user_id == normalized_id:
-                return _user_list_item_to_type(item)
+            # Be strict about exact match (the LIKE prefix could
+            # theoretically match a shorter prefix if a user ID were
+            # ever shorter than 8 chars, though the schema guarantees
+            # exactly 8 chars — defensive guard).
+            for item in response.users:
+                if item.user_id == normalized_id:
+                    return _user_list_item_to_type(item)
 
-        logger.info(
-            "user query: not found",
-            extra={
-                "operation": "graphql_query_user",
-                "user_id": normalized_id,
-            },
-        )
-        return None
+            logger.info(
+                "user query: not found",
+                extra={
+                    "operation": "graphql_query_user",
+                    "user_id": normalized_id,
+                },
+            )
+            return None
 
     # ------------------------------------------------------------------
     # users — COUSR00C.cbl → paginated user list (Feature F-018)
@@ -1526,7 +1686,13 @@ class Query:
         Parameters
         ----------
         info : Info
-            Strawberry resolver context.
+            Strawberry resolver context; carries the async session
+            FACTORY under ``context["db_factory"]``. The resolver
+            opens its OWN per-invocation
+            :class:`~sqlalchemy.ext.asyncio.AsyncSession` via
+            ``async with _get_session(info)`` to remain safe under
+            Strawberry's concurrent ``asyncio.gather`` execution
+            of sibling resolvers (QA Checkpoint 10, Issue 1).
         page : int, default 1
             1-indexed page number. Clamped to >= 1.
         page_size : int, default 10
@@ -1554,11 +1720,10 @@ class Query:
         # access model (CDEMO-USER-TYPE = 'A'). Without this gate,
         # any authenticated user could enumerate the USRSEC table
         # via GraphQL — an information-disclosure inconsistency
-        # with the REST surface.
+        # with the REST surface. Raised BEFORE session acquisition
+        # so unauthorized callers do not even consume a database
+        # connection from the pool.
         _require_admin(info)
-
-        session = _get_session(info)
-        service: UserService = UserService(session)
 
         page_clamped: int = _clamp_page(page)
         page_size_clamped: int = _clamp_page_size(page_size, _USER_PAGE_SIZE_DEFAULT)
@@ -1593,9 +1758,16 @@ class Query:
         # SQLAlchemy error and therefore passes through the mask
         # predicate unchanged, reaching the client as an explicit
         # authorization failure.
-        response = await service.list_users(request)
+        #
+        # The ``async with _get_session(info) as session`` block
+        # opens a FRESH per-resolver AsyncSession (CICS SYNCPOINT
+        # boundary) so this resolver runs safely in parallel with
+        # sibling resolvers — see QA Checkpoint 10 Issue 1 fix.
+        async with _get_session(info) as session:
+            service: UserService = UserService(session)
+            response = await service.list_users(request)
 
-        return [_user_list_item_to_type(item) for item in response.users]
+            return [_user_list_item_to_type(item) for item in response.users]
 
 
 # ----------------------------------------------------------------------------
