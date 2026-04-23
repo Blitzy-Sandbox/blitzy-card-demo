@@ -99,6 +99,8 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.dependencies import (
@@ -243,11 +245,35 @@ async def list_cards(
             "endpoint": "card_list",
         },
     )
-    request = CardListRequest(
-        account_id=account_id,
-        card_number=card_number,
-        page_number=page_number,
-    )
+    # Constructing ``CardListRequest`` here triggers the schema's
+    # field validators (``_validate_account_id``,
+    # ``_validate_card_number_filter``). Those validators raise
+    # ``pydantic.ValidationError`` for inputs such as
+    # ``account_id=abc`` (non-numeric) or ``account_id=123`` (wrong
+    # length). Without this try/except the ``ValidationError`` would
+    # escape the handler and be captured by the generic 500
+    # ``unhandled_exception_handler`` — violating the REST contract
+    # which mandates HTTP 422 Unprocessable Entity for client-side
+    # input errors (RFC 7807, FastAPI convention).
+    #
+    # We therefore translate ``pydantic.ValidationError`` into
+    # ``fastapi.exceptions.RequestValidationError`` — which is the
+    # same exception FastAPI raises for its own Query/Path/Body
+    # parsing failures. The registered ``validation_exception_handler``
+    # (see ``src/api/middleware/error_handler.py``) then produces the
+    # standardized 422 response envelope with per-field error detail,
+    # and applies the CWE-532 sensitive-field redaction when logging.
+    #
+    # Addresses QA Checkpoint 6 Finding #4 (MAJOR): GET /cards?account_id=abc
+    # was returning HTTP 500 instead of the expected HTTP 422.
+    try:
+        request = CardListRequest(
+            account_id=account_id,
+            card_number=card_number,
+            page_number=page_number,
+        )
+    except ValidationError as exc:
+        raise RequestValidationError(errors=exc.errors()) from exc
     service = CardService(db)
     response = await service.list_cards(request)
     if response.error_message:

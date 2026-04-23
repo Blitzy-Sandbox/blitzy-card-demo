@@ -83,5 +83,15 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 # ----------------------------------------------------------------------------
 # Launch the FastAPI application via Uvicorn (ASGI server)
+#
+# ``--no-server-header`` is REQUIRED for the :class:`SecurityHeadersMiddleware`
+# to fully resolve QA Checkpoint 6 Issue #6 (MINOR — ``Server: uvicorn``
+# disclosure, CWE-200). Without this flag Uvicorn injects its own
+# ``Server: uvicorn`` header at the ASGI protocol layer AFTER the Starlette
+# middleware chain finishes, resulting in two conflicting ``Server``
+# response headers on every outbound response. With the flag passed,
+# Uvicorn suppresses its default header and only the opaque ``Server: API``
+# value set by :class:`SecurityHeadersMiddleware.dispatch` reaches the
+# wire.
 # ----------------------------------------------------------------------------
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "80"]
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "80", "--no-server-header"]

@@ -16,8 +16,15 @@
 
 # ---------------------------------------------------------------------------
 # Testing framework — pytest
+# ----------------------------------------------------------------------------
+# Pinned ``pytest>=8.4.2`` to pull the security patch for CVE-2025-71176 —
+# predictable /tmp/pytest-of-<user> path enabling a local privilege-escalation
+# / DoS vector on shared multi-tenant CI runners. Local vector / low severity;
+# pytest is dev-only and is NOT shipped to the production ECS image, but
+# tightening the lower bound eliminates the exposure on CI runners.
+# Addresses QA Checkpoint 6 Finding #7 (INFO).
 # ---------------------------------------------------------------------------
-pytest>=8.3,<9.0
+pytest>=8.4.2,<9.0
 pytest-asyncio>=0.24,<1.0
 pytest-cov>=6.0,<7.0
 

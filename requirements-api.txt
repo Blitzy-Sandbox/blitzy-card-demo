@@ -45,6 +45,21 @@ strawberry-graphql[fastapi]>=0.254,<1.0
 #     Both CVEs affect 3.3.0 and earlier and are fixed in 3.4.0.
 #   - Upper bound <4.0 to avoid any future major-version API breakage.
 #   - See code-review Finding #1 and AAP §0.7.2 (security requirements).
+#
+# Acknowledged transitive-dependency finding — ecdsa (CVE-2024-23342,
+# "Minerva" timing side-channel in ECDSA signature verification):
+#   python-jose depends on ``ecdsa`` as a transitive package for ECDSA-
+#   based JWT algorithms (ES256, ES384, ES512). The CardDemo API is
+#   hard-wired to the HMAC-SHA256 family (``Settings.JWT_ALGORITHM =
+#   "HS256"`` — see ``src/shared/config/settings.py``), so no ECDSA
+#   code path is reachable at runtime and the timing attack is NOT
+#   exploitable in this deployment.
+#   The upstream ``ecdsa`` maintainers have designated this finding
+#   as a non-priority side-channel; no patched release is available
+#   at the time of writing. The risk is accepted until either (a)
+#   ``ecdsa`` ships a patched release or (b) python-jose is swapped
+#   for ``PyJWT`` (which uses ``cryptography`` directly and is not
+#   affected). See QA Checkpoint 6 Finding #8 (INFO).
 # ---------------------------------------------------------------------------
 python-jose[cryptography]>=3.4.0,<4.0
 passlib[bcrypt]==1.7.4

@@ -1,0 +1,383 @@
+# ============================================================================
+# Source: (new) — Security hardening middleware introduced to address
+#         QA Checkpoint 6 Findings #1 (Missing security response headers,
+#         CRITICAL) and #6 (Server header disclosure, MINOR). No direct
+#         COBOL ancestor — this is a modern-era defense-in-depth concern
+#         that did not apply to the original CICS/BMS mainframe stack
+#         where HTTP headers, browsers, and clickjacking were not in
+#         scope. Documented under AAP §0.7.2 "Security Requirements".
+# ============================================================================
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ============================================================================
+"""Security response headers middleware for CardDemo API.
+
+This module installs two cross-cutting response-mutation behaviours on
+every HTTP response leaving the FastAPI application:
+
+1. **Standard security response headers** — mitigate browser-side
+   attack surface that any HTTP API served over the public internet is
+   expected to defend against per the OWASP Secure Headers Project and
+   enterprise hardening checklists:
+
+   * ``X-Content-Type-Options: nosniff`` — prevents MIME type sniffing
+     (e.g., a browser treating a JSON body as executable HTML).
+     CWE-693 defense-in-depth.
+   * ``X-Frame-Options: DENY`` — prevents the response from being
+     embedded in a ``<frame>``, ``<iframe>``, ``<embed>``, or
+     ``<object>`` element. CWE-1021 clickjacking defense. Critical for
+     ``/docs`` and ``/graphql`` which return HTML.
+   * ``Strict-Transport-Security`` (HSTS) — enforces HTTPS for one year
+     including subdomains; ``preload`` directive omitted because
+     inclusion on the HSTS preload list requires the runtime to
+     operate over HTTPS (the middleware cannot verify the transport
+     layer from inside the ASGI app, and emitting ``preload`` over
+     plain HTTP is ignored but noisy). The ``max-age=31536000``
+     (12 months) aligns with chrome/firefox preload requirements.
+   * ``Content-Security-Policy`` — strict default-src ``'self'``
+     baseline; ``frame-ancestors 'none'`` is a belt-and-braces
+     companion to X-Frame-Options. Restrictive enough to block
+     reflected-XSS payloads in any browser that renders API
+     responses (e.g., the ``/docs`` Swagger UI).
+   * ``Referrer-Policy: no-referrer`` — prevents leakage of
+     Authorization tokens via the ``Referer`` header on cross-origin
+     navigation. This is the strictest option and is appropriate for
+     a headless API.
+   * ``Permissions-Policy`` — disables browser features (camera,
+     geolocation, microphone, interest-cohort / FLoC) that this API
+     never needs. Reduces the attack surface if a compromised
+     endpoint is ever rendered in a browser.
+   * ``Cache-Control: no-store`` (auth endpoints only) — prevents the
+     JWT issued by ``POST /auth/login`` from being cached by
+     browsers, intermediate proxies, or CDNs. Per RFC 7234 §5.2.2.3
+     ``no-store`` is the strongest cache-prevention directive.
+
+2. **Server header scrubbing** — rewrites the ``Server`` header to an
+   opaque ``"API"`` value so that ASGI-server name and version
+   fingerprinting (QA Checkpoint 6 Issue #6 — CWE-200) is neutralized.
+
+   .. IMPORTANT::
+      This middleware's ``response.headers["Server"] = "API"``
+      assignment is **necessary but not sufficient** on its own.
+      Uvicorn injects its default ``Server: uvicorn`` header at the
+      ASGI protocol layer AFTER the Starlette middleware chain has
+      finished, so the ASGI transport ends up emitting TWO ``Server``
+      headers (``uvicorn`` and ``API``) unless Uvicorn is explicitly
+      told not to add its own. To fully resolve Issue #6, the
+      application entry point MUST start Uvicorn with
+      ``server_header=False`` (programmatic) or ``--no-server-header``
+      (CLI). Both launch paths are already configured accordingly:
+
+      * ``Dockerfile`` — ``CMD`` includes ``--no-server-header``
+      * ``src/api/main.py`` ``__main__`` block — passes
+        ``server_header=False`` to :func:`uvicorn.run`.
+
+Middleware Ordering
+-------------------
+This middleware must be registered *outside* of :class:`JWTAuthMiddleware`
+so that security headers are attached to **every** response including
+the 401/403 responses generated by auth checks. It must be registered
+*inside* of :class:`CORSMiddleware` so that CORS preflight responses
+(which :class:`CORSMiddleware` produces directly without reaching the
+response chain) are not accidentally stripped of their CORS headers.
+
+Recommended order in ``src/api/main.py`` (innermost first):
+
+.. code-block:: python
+
+    app.add_middleware(JWTAuthMiddleware)       # innermost
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(CORSMiddleware, ...)     # outermost
+
+See Also
+--------
+QA Checkpoint 6 Issue #1 — CRITICAL: Missing security response headers
+QA Checkpoint 6 Issue #6 — MINOR: Server header disclosure
+AAP §0.7.2 — Security Requirements (defense in depth)
+OWASP Secure Headers Project — https://owasp.org/www-project-secure-headers/
+RFC 6797 — HTTP Strict Transport Security (HSTS)
+RFC 7234 §5.2.2.3 — Cache-Control no-store
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Awaitable, Callable
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
+# ----------------------------------------------------------------------------
+# Module-level structured logger.
+#
+# Used only for middleware construction diagnostics. No per-request
+# logging is emitted — security-header injection is a pure response
+# mutation with no failure modes that would warrant a log entry on the
+# hot path.
+# ----------------------------------------------------------------------------
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Security header constants
+# ============================================================================
+#
+# These values are intentionally hard-coded to avoid introducing a new
+# Settings field for each policy string. The policies implement
+# enterprise-standard defaults and are appropriate for a headless REST/
+# GraphQL API that serves JSON/HTML exclusively from the same origin.
+#
+# Any deployment-specific customization (e.g., relaxing the CSP for a
+# future UI sub-domain) should be done via a subclass that overrides
+# ``_build_headers``, not by editing these constants — this preserves
+# the "safe-by-default" property.
+# ============================================================================
+
+# X-Content-Type-Options — CWE-693 defense-in-depth.
+# "nosniff" instructs the browser to honor the declared Content-Type
+# header and NOT to attempt MIME-sniffing the body. Prevents scenarios
+# where a JSON response is executed as HTML or JavaScript because a
+# legacy browser guessed the content type from body contents.
+_HEADER_X_CONTENT_TYPE_OPTIONS: str = "nosniff"
+
+# X-Frame-Options — CWE-1021 clickjacking defense.
+# "DENY" is stricter than "SAMEORIGIN" and is appropriate for an API
+# that never intentionally embeds its own content in frames. Critical
+# for the /docs (Swagger UI) and /graphql (GraphiQL) HTML endpoints
+# which an attacker could otherwise render inside a hidden iframe on a
+# malicious page.
+_HEADER_X_FRAME_OPTIONS: str = "DENY"
+
+# Strict-Transport-Security — RFC 6797 HTTPS enforcement.
+# max-age=31536000 = 365 days (the minimum required for the HSTS
+# preload list). includeSubDomains applies the policy to every
+# subdomain of the ECS Fargate ALB hostname. "preload" is NOT set
+# because the application cannot self-verify it is served over HTTPS
+# from inside the middleware — operators can enable preload via an
+# ALB/CloudFront layer once production hostnames are stable.
+_HEADER_STRICT_TRANSPORT_SECURITY: str = "max-age=31536000; includeSubDomains"
+
+# Content-Security-Policy — XSS defense.
+# default-src 'self' — all content (scripts, styles, images, fonts,
+#   connects) may only come from the same origin as the API.
+# frame-ancestors 'none' — companion to X-Frame-Options: DENY, works
+#   on browsers that implement CSP but not the legacy header.
+# base-uri 'self' — prevents <base> element injection attacks.
+# form-action 'self' — restricts form submission targets.
+# img-src 'self' data: — allow inline data: URIs for documentation UI
+#   icons (Swagger UI uses base64-encoded PNG logos).
+# style-src 'self' 'unsafe-inline' — Swagger UI and GraphiQL rely on
+#   inline styles. This is the minimum relaxation required to keep
+#   /docs rendering; it does NOT allow inline scripts (which would
+#   defeat the XSS protection).
+# script-src 'self' — only same-origin scripts execute; no 'unsafe-inline'
+#   and no 'unsafe-eval' means reflected-XSS payloads in response
+#   bodies cannot execute in modern browsers.
+_HEADER_CONTENT_SECURITY_POLICY: str = (
+    "default-src 'self'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "img-src 'self' data:; "
+    "style-src 'self' 'unsafe-inline'; "
+    "script-src 'self'"
+)
+
+# Referrer-Policy — CWE-200 information leakage defense.
+# "no-referrer" is the strictest option: the Referer header is never
+# sent on any request originating from a page that rendered this
+# response. Prevents scenarios where a URL containing a JWT (query
+# parameter auth) leaks to third parties via the browser's Referer
+# behavior. This API does NOT use query-parameter auth, but the
+# strictest policy is free to apply and guards against future
+# regressions.
+_HEADER_REFERRER_POLICY: str = "no-referrer"
+
+# Permissions-Policy — reduces browser feature attack surface.
+# All listed features are disabled by setting the allowlist to ``()``
+# (empty). A web client never needs camera/microphone/geolocation to
+# exercise a credit-card-domain API, and disabling FLoC
+# (interest-cohort) preserves user privacy.
+_HEADER_PERMISSIONS_POLICY: str = (
+    "accelerometer=(), "
+    "autoplay=(), "
+    "camera=(), "
+    "display-capture=(), "
+    "encrypted-media=(), "
+    "fullscreen=(), "
+    "geolocation=(), "
+    "gyroscope=(), "
+    "magnetometer=(), "
+    "microphone=(), "
+    "midi=(), "
+    "payment=(), "
+    "picture-in-picture=(), "
+    "sync-xhr=(), "
+    "usb=(), "
+    "xr-spatial-tracking=(), "
+    "interest-cohort=()"
+)
+
+# Cache-Control directive used for authentication endpoints.
+# RFC 7234 §5.2.2.3: "no-store" is the strongest directive — the
+# response MUST NOT be stored in any cache (shared or private).
+# Applied to /auth/login responses so that JWT tokens cannot be
+# retrieved from a browser's back-button cache or from an
+# intermediate proxy.
+_HEADER_CACHE_CONTROL_AUTH: str = "no-store"
+
+# Generic, non-identifying Server header value that replaces the
+# Uvicorn default. Leaving the header unset is an option but some
+# monitoring/LB tooling expects any non-empty value; "API" is opaque
+# and contains no version information.
+_HEADER_SERVER_VALUE: str = "API"
+
+# Path prefixes whose responses must carry Cache-Control: no-store.
+# Using a tuple enables the idiomatic ``path.startswith(prefix)``
+# iteration in ``dispatch``. Trailing slash omitted so that both
+# ``/auth/login`` and ``/auth/logout`` (future) match ``/auth``.
+_AUTH_PATH_PREFIXES: tuple[str, ...] = ("/auth",)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Starlette middleware that injects security headers on every response.
+
+    Addresses QA Checkpoint 6 Finding #1 (missing standard security
+    response headers, CRITICAL) and Finding #6 (Server header discloses
+    Uvicorn, MINOR) in a single middleware class. The two concerns are
+    both "mutate the response headers on the way out" and are therefore
+    naturally consolidated here to minimize middleware chain depth and
+    reduce the per-request overhead of iterating the chain.
+
+    Behavior
+    --------
+    On every response (regardless of status code or content type):
+
+    * Sets :data:`_HEADER_X_CONTENT_TYPE_OPTIONS` on ``X-Content-Type-Options``.
+    * Sets :data:`_HEADER_X_FRAME_OPTIONS` on ``X-Frame-Options``.
+    * Sets :data:`_HEADER_STRICT_TRANSPORT_SECURITY` on
+      ``Strict-Transport-Security``.
+    * Sets :data:`_HEADER_CONTENT_SECURITY_POLICY` on
+      ``Content-Security-Policy``.
+    * Sets :data:`_HEADER_REFERRER_POLICY` on ``Referrer-Policy``.
+    * Sets :data:`_HEADER_PERMISSIONS_POLICY` on ``Permissions-Policy``.
+    * Overwrites ``Server`` with :data:`_HEADER_SERVER_VALUE` (neutralizes
+      the Uvicorn default that CWE-200 flags as informational disclosure).
+
+    On responses for paths starting with any of
+    :data:`_AUTH_PATH_PREFIXES`:
+
+    * Sets ``Cache-Control`` to :data:`_HEADER_CACHE_CONTROL_AUTH`
+      (``no-store``) to prevent JWT caching.
+
+    Implementation Note — Header Overwriting Semantics
+    --------------------------------------------------
+    ``response.headers["X-Frame-Options"] = "DENY"`` behaves as an
+    upsert: if the handler already set the header (rare but possible
+    for a future route that wants a custom CSP), the middleware
+    overwrites it. This is the correct default for a security-hardening
+    layer: handlers should not be able to *weaken* the policy. Future
+    work to allow route-specific CSP overrides should use a
+    response-level opt-in marker (e.g., a custom ``x-cd-skip-csp``
+    internal header that this middleware consumes and strips) rather
+    than allowing silent handler overrides.
+
+    Thread Safety
+    -------------
+    The middleware class has no mutable state. ``dispatch`` only reads
+    module-level constants and mutates the per-response
+    ``MutableHeaders`` dict on the response instance — which is local
+    to a single request. Safe under concurrent ASGI workers.
+    """
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Invoke the downstream handler, then mutate the response headers.
+
+        Parameters
+        ----------
+        request : starlette.requests.Request
+            Inbound HTTP request. Only ``request.url.path`` is read,
+            to gate the :data:`_HEADER_CACHE_CONTROL_AUTH` directive to
+            auth endpoints.
+        call_next : Callable[[Request], Awaitable[Response]]
+            Next link in the middleware chain (the inner
+            ``JWTAuthMiddleware`` in our configuration).
+
+        Returns
+        -------
+        starlette.responses.Response
+            The same response instance produced by ``call_next`` with
+            its ``headers`` mutated in place to include the security
+            headers.
+        """
+        # Step 1: Invoke the inner middleware chain and obtain the
+        # response object. The response headers are a ``MutableHeaders``
+        # view over the raw ASGI headers list — mutations propagate
+        # directly to the outbound message.
+        response: Response = await call_next(request)
+
+        # Step 2: Attach standard security headers. We use dict-style
+        # assignment (which is upsert semantics) rather than ``setdefault``
+        # — a handler must not be able to downgrade these policies.
+        # The order of assignment is not semantically significant but
+        # is grouped by concern for readability.
+        response.headers["X-Content-Type-Options"] = _HEADER_X_CONTENT_TYPE_OPTIONS
+        response.headers["X-Frame-Options"] = _HEADER_X_FRAME_OPTIONS
+        response.headers["Strict-Transport-Security"] = _HEADER_STRICT_TRANSPORT_SECURITY
+        response.headers["Content-Security-Policy"] = _HEADER_CONTENT_SECURITY_POLICY
+        response.headers["Referrer-Policy"] = _HEADER_REFERRER_POLICY
+        response.headers["Permissions-Policy"] = _HEADER_PERMISSIONS_POLICY
+
+        # Step 3: Neutralize the Server header. Uvicorn sets
+        # ``Server: uvicorn`` by default at the ASGI protocol layer
+        # AFTER the Starlette middleware chain runs — the middleware
+        # cannot by itself delete Uvicorn's transport-level header.
+        # The full resolution of Issue #6 requires the Uvicorn launch
+        # command to include ``--no-server-header`` (or the Python
+        # equivalent ``server_header=False``). Both launch paths in
+        # this codebase (Dockerfile CMD and main.py ``__main__``
+        # block) are configured accordingly. The assignment below
+        # remains for defense in depth: it ensures a non-disclosing
+        # ``Server: API`` header is present if the application is
+        # ever run under an ASGI server that does NOT inject its own
+        # Server header (e.g., Hypercorn) so an opaque value still
+        # reaches the wire.
+        response.headers["Server"] = _HEADER_SERVER_VALUE
+
+        # Step 4: Gate the JWT-no-store directive to auth paths.
+        # We intentionally do NOT apply ``no-store`` to every response
+        # — health endpoints benefit from brief caching, and over-broad
+        # no-store directives have been known to cause real-world
+        # performance regressions (CDN cache storms).
+        #
+        # ``request.url.path`` is normalized by Starlette — it is the
+        # absolute path without query string and with a leading slash.
+        path: str = request.url.path
+        for prefix in _AUTH_PATH_PREFIXES:
+            if path.startswith(prefix):
+                response.headers["Cache-Control"] = _HEADER_CACHE_CONTROL_AUTH
+                break
+
+        return response
+
+
+__all__: list[str] = [
+    "SecurityHeadersMiddleware",
+]

@@ -373,13 +373,21 @@ def decode_jwt_token(token: str, secret_key: str, algorithm: str) -> dict[str, A
     1. **Signature verification** — ``jose.jwt.decode`` re-computes the
        HMAC-SHA256 signature over the JWT header + payload using
        ``secret_key`` and compares against the signature in the token.
-    2. **Expiration check** — the ``exp`` claim is automatically
-       validated by ``jose.jwt.decode`` (a past ``exp`` raises
-       ``ExpiredSignatureError``, a subclass of ``JWTError``).
+    2. **Expiration check** — the ``exp`` claim is validated in two
+       layers: (a) when an ``exp`` claim IS present, ``jose.jwt.decode``
+       automatically raises ``ExpiredSignatureError`` (a subclass of
+       ``JWTError``) if the timestamp has elapsed; (b) when an ``exp``
+       claim is ABSENT, the explicit required-claim check below rejects
+       the token. This two-layer defense is required because
+       ``jose.jwt.decode`` silently accepts tokens without ``exp`` —
+       which would allow forged non-expiring tokens if the signing key
+       were ever disclosed (CWE-613: Insufficient Session Expiration).
+       Addresses QA Checkpoint 6 Finding #3 (MAJOR).
     3. **Required-claim presence** — the returned payload must contain
-       both ``user_id`` (maps to ``CDEMO-USER-ID`` PIC X(08)) and
-       ``user_type`` (maps to ``CDEMO-USER-TYPE`` PIC X(01), with
-       values ``'A'`` for admin / ``'U'`` for regular user).
+       ``user_id`` (maps to ``CDEMO-USER-ID`` PIC X(08)), ``user_type``
+       (maps to ``CDEMO-USER-TYPE`` PIC X(01), with values ``'A'`` for
+       admin / ``'U'`` for regular user), AND ``exp`` (POSIX timestamp
+       of token expiration, per RFC 7519 §4.1.4).
 
     Parameters
     ----------
@@ -448,9 +456,22 @@ def decode_jwt_token(token: str, secret_key: str, algorithm: str) -> dict[str, A
 
     # Required-claim validation. Maps to COSGN00C.cbl lines 223-228
     # which populate CDEMO-USER-ID and CDEMO-USER-TYPE in COMMAREA only
-    # after a successful USRSEC read. If either is missing we treat the
-    # token as invalid.
-    if "user_id" not in payload or "user_type" not in payload:
+    # after a successful USRSEC read. If any of user_id / user_type /
+    # exp is missing we treat the token as invalid.
+    #
+    # The explicit ``"exp" not in payload`` check is REQUIRED to address
+    # CWE-613 (Insufficient Session Expiration). python-jose silently
+    # accepts tokens that have no ``exp`` claim at all (only tokens
+    # WITH an ``exp`` that is in the past raise ExpiredSignatureError).
+    # Without this check an attacker who obtained the signing secret
+    # could forge a non-expiring admin token and bypass the 30-minute
+    # session window defined by Settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES.
+    # Addresses QA Checkpoint 6 Finding #3 (MAJOR).
+    if (
+        "user_id" not in payload
+        or "user_type" not in payload
+        or "exp" not in payload
+    ):
         logger.warning(
             "JWT missing required claims",
             extra={

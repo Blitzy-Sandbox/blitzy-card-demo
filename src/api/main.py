@@ -196,7 +196,11 @@ from src.api.database import close_db, init_db
 from src.api.dependencies import get_db
 from src.api.graphql.schema import schema as graphql_schema
 from src.api.middleware.auth import JWTAuthMiddleware
-from src.api.middleware.error_handler import register_exception_handlers
+from src.api.middleware.error_handler import (
+    _sanitize_traceback,
+    register_exception_handlers,
+)
+from src.api.middleware.security_headers import SecurityHeadersMiddleware
 from src.api.routers import (
     account_router,
     admin_router,
@@ -354,7 +358,25 @@ class JsonLogFormatter(logging.Formatter):
             # we keep it as a single string value in the JSON payload
             # so the entire log entry remains on one line (matching the
             # "one JSON object per line" contract expected by CloudWatch).
-            log_data["exception"] = self.formatException(record.exc_info)
+            #
+            # Per QA Checkpoint 6 Issue #5 / CWE-209 (Generation of Error
+            # Message Containing Sensitive Information), we also apply
+            # :func:`_sanitize_traceback` to redact absolute filesystem
+            # paths (e.g., ``/tmp/blitzy/...``) from traceback text
+            # before they reach log aggregators. This handles exceptions
+            # emitted by:
+            #   * Our own handlers in :mod:`src.api.middleware.error_handler`
+            #   * Third-party libraries that log ``exc_info=True`` at import
+            #     time (e.g., passlib bcrypt backend probe at startup).
+            #   * Uvicorn's ``uvicorn.error`` logger, which logs the
+            #     unhandled exception a SECOND time via Starlette's
+            #     ``ServerErrorMiddleware`` after our
+            #     ``unhandled_exception_handler`` returns — these
+            #     emissions are routed through this formatter by
+            #     :func:`_configure_json_logging` below.
+            log_data["exception"] = _sanitize_traceback(
+                self.formatException(record.exc_info),
+            )
         # ``default=str`` handles datetime, Decimal, UUID and similar
         # non-JSON-primitive types that commonly appear in ``extra``.
         return json.dumps(log_data, default=str)
@@ -398,6 +420,42 @@ def _configure_json_logging(log_level: str = "INFO") -> None:
     if not isinstance(level_value, int):
         level_value = logging.INFO
     root_logger.setLevel(level_value)
+
+    # ----------------------------------------------------------------
+    # QA Checkpoint 6 Issue #5 / CWE-209 (Information Exposure Through
+    # an Error Message): route Uvicorn's, FastAPI's, Starlette's, and
+    # asyncio's loggers through the root logger so that ALL log records
+    # (including exception tracebacks from ``ServerErrorMiddleware``
+    # and from Uvicorn's ``httptools_impl``) are formatted by our
+    # :class:`JsonLogFormatter` — which applies
+    # :func:`_sanitize_traceback` to redact absolute filesystem paths
+    # from traceback text.
+    #
+    # Why this is needed: Uvicorn (and by extension Starlette's
+    # ``ServerErrorMiddleware``) attaches its own handlers to named
+    # loggers at import/start-up. Those default handlers use a plain-
+    # text formatter that emits raw ``File "/tmp/blitzy/..."`` lines
+    # to stderr when ``log.exception(...)`` is called. This happens
+    # AFTER our :func:`unhandled_exception_handler` returns, so the
+    # sanitized JSON log entry we emit from the handler is followed
+    # by an UN-sanitized stderr traceback from Starlette/Uvicorn — and
+    # the QA report flagged exactly those stderr lines.
+    #
+    # The fix: clear each library logger's handler list and enable
+    # propagation so records bubble up to the root (JSON) handler.
+    # This unifies the log stream format AND ensures every traceback
+    # passes through :func:`_sanitize_traceback`.
+    for framework_logger_name in (
+        "uvicorn",
+        "uvicorn.error",
+        "uvicorn.access",
+        "fastapi",
+        "starlette",
+        "asyncio",
+    ):
+        framework_logger = logging.getLogger(framework_logger_name)
+        framework_logger.handlers = []
+        framework_logger.propagate = True
 
 
 # ----------------------------------------------------------------------------
@@ -793,28 +851,57 @@ def create_app() -> FastAPI:
     #     route). This is the reverse of the "first added = first
     #     executed" mental model used by some other frameworks.
     #
-    # Our policy:
+    # Our policy (innermost → outermost order of ``add_middleware``
+    # calls; request flow is the reverse — outermost first):
     #
     #   1. ``JWTAuthMiddleware`` is added FIRST so it is innermost. This
     #      means CORS preflights (OPTIONS requests with no Authorization
-    #      header) are resolved by CORSMiddleware before the JWT validator
-    #      has a chance to reject them as "missing token".
+    #      header) and security-header injection run before the JWT
+    #      validator has a chance to reject them.
     #
-    #   2. ``CORSMiddleware`` is added LAST so it is outermost.
+    #   2. ``SecurityHeadersMiddleware`` is added SECOND so it wraps the
+    #      JWT middleware. This guarantees security headers
+    #      (X-Content-Type-Options, X-Frame-Options, HSTS, CSP,
+    #      Referrer-Policy, Permissions-Policy, stripped Server header,
+    #      and Cache-Control: no-store on auth endpoints) appear on
+    #      every response — including the 401/403 responses produced
+    #      by the JWT middleware. Addresses QA Checkpoint 6 Issues #1
+    #      (CRITICAL) and #6 (MINOR).
+    #
+    #   3. ``CORSMiddleware`` is added LAST so it is outermost. Placing
+    #      it outside SecurityHeadersMiddleware ensures CORS preflight
+    #      (OPTIONS) responses, which CORSMiddleware generates directly
+    #      without traversing the inner chain, are not mutated by the
+    #      security-header middleware — preflights already carry exactly
+    #      the minimal set of Access-Control-Allow-* headers the browser
+    #      expects. (Actual non-preflight responses still traverse the
+    #      full chain, so security headers are applied to them normally.)
     #
     # Order of request processing under this configuration:
     #
-    #   Request -> CORSMiddleware -> JWTAuthMiddleware -> Routes
+    #   Request -> CORSMiddleware -> SecurityHeadersMiddleware ->
+    #              JWTAuthMiddleware -> Routes
     # ------------------------------------------------------------------
 
-    # 2a. JWT authentication middleware (inner).
+    # 2a. JWT authentication middleware (innermost).
     # Gates access to every non-public path; allows PUBLIC_PATHS (/health,
     # /auth/login, /auth/logout, /, /docs, /redoc, /openapi.json, /static/*)
     # through without an Authorization header. Rejects missing/invalid/
     # expired/malformed tokens with a 401 ABEND-DATA JSON response.
     new_app.add_middleware(JWTAuthMiddleware)
 
-    # 2b. CORS middleware (outer).
+    # 2b. Security response headers middleware (middle).
+    # Injects OWASP-recommended security headers (X-Content-Type-Options,
+    # X-Frame-Options, HSTS, CSP, Referrer-Policy, Permissions-Policy)
+    # on every response regardless of status code. Overwrites the Uvicorn
+    # Server header with an opaque "API" value. Applies
+    # Cache-Control: no-store to /auth/* responses so that JWTs are
+    # never cached by browsers or proxies. Addresses QA Checkpoint 6
+    # Issues #1 (CRITICAL — defense-in-depth) and #6 (MINOR —
+    # information disclosure).
+    new_app.add_middleware(SecurityHeadersMiddleware)
+
+    # 2c. CORS middleware (outermost).
     #
     # ``allow_origins`` is sourced from :attr:`Settings.CORS_ALLOWED_ORIGINS`
     # (env var ``CORS_ALLOWED_ORIGINS``) rather than the prior
@@ -1083,10 +1170,18 @@ if __name__ == "__main__":
         "carddemo-api launching via direct execution (__main__)",
         extra={"event": "api_main_direct_launch"},
     )
+    # ``server_header=False`` is REQUIRED for QA Checkpoint 6 Issue #6
+    # (MINOR — ``Server: uvicorn`` disclosure, CWE-200). Without this,
+    # Uvicorn injects its own ``Server: uvicorn`` header at the ASGI
+    # protocol layer AFTER :class:`SecurityHeadersMiddleware.dispatch`
+    # finishes, resulting in two conflicting ``Server`` headers. With
+    # it set to ``False`` the opaque ``Server: API`` value from
+    # :class:`SecurityHeadersMiddleware` is the only one emitted.
     uvicorn.run(
         "src.api.main:app",
         host="0.0.0.0",  # noqa: S104 — intentional; listen on all interfaces for dev.
         port=8000,
         reload=False,
         log_level="info",
+        server_header=False,
     )

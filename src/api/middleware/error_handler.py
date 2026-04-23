@@ -122,7 +122,10 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
+import re
 import traceback
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -287,6 +290,350 @@ _DEFAULT_HTTP_MESSAGES: dict[int, str] = {
 # ============================================================================
 # Phase 3 — Private Helpers
 # ============================================================================
+
+
+# ----------------------------------------------------------------------------
+# Sensitive-field allowlist for log redaction (QA Checkpoint 6 Issue #2).
+#
+# When a ``fastapi.exceptions.RequestValidationError`` is raised, its
+# ``errors()`` method returns a list of dicts each of the form::
+#
+#     {
+#         "type": "string_too_long",
+#         "loc": ("body", "password"),
+#         "msg": "String should have at most 8 characters",
+#         "input": "<original submitted value>",  <-- CWE-532 risk
+#         "ctx": {"max_length": 8},
+#     }
+#
+# The ``input`` field contains the *original, unmodified* user input
+# that triggered the validation failure. For login endpoints this
+# includes the plaintext password; for user-create endpoints this
+# includes SSNs, card numbers, secrets, tokens, etc. Logging this
+# field verbatim — as the default ``exc.errors()`` usage does —
+# violates CWE-532 ("Insertion of Sensitive Information into Log File")
+# and was the root cause of QA Checkpoint 6 CRITICAL Issue #2.
+#
+# The set below enumerates the exact field names (case-insensitive)
+# whose ``input`` must be masked before the errors list is logged.
+# The set uses singular lower-case names; matching is done via
+# ``field_name.lower() in _SENSITIVE_FIELD_NAMES`` so variants like
+# ``Password`` or ``PASSWORD`` all match.
+#
+# This list is intentionally broad — it is safer to over-redact than
+# to under-redact. The only downside of over-redaction is that a
+# field named ``password_hint`` would also be masked in logs, which
+# is an acceptable false-positive given the field is not critical
+# for debugging (type + loc + msg are still present).
+# ----------------------------------------------------------------------------
+_SENSITIVE_FIELD_NAMES: frozenset[str] = frozenset(
+    {
+        # Direct password-like fields.
+        "password",
+        "passwd",
+        "pwd",
+        "current_password",
+        "new_password",
+        "old_password",
+        "confirm_password",
+        "password_confirm",
+        "user_password",
+        # Secret / API key / token-like fields.
+        "secret",
+        "secret_key",
+        "client_secret",
+        "token",
+        "access_token",
+        "refresh_token",
+        "auth_token",
+        "jwt",
+        "bearer",
+        "api_key",
+        "apikey",
+        "authorization",
+        # Personally-identifying secrets.
+        "ssn",
+        "social_security_number",
+        "pin",
+        # Payment-card sensitive fields.
+        "cvv",
+        "cvv2",
+        "cvc",
+        "card_cvv",
+        "card_num",
+        "card_number",
+        "pan",
+        # Private key fields.
+        "private_key",
+        "signing_key",
+    }
+)
+
+# ----------------------------------------------------------------------------
+# Sentinel string that replaces the ``input`` field of sensitive
+# validation errors. Deliberately distinctive so log consumers can
+# visually spot redaction occurrences, and deterministic so downstream
+# log-anomaly detectors do not mistake the replacement for an
+# attack signature.
+# ----------------------------------------------------------------------------
+_REDACTED_SENTINEL: str = "***REDACTED***"
+
+
+def _redact_validation_errors(
+    errors: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return a deep-copied error list with sensitive ``input`` fields masked.
+
+    Address QA Checkpoint 6 CRITICAL Issue #2 (CWE-532 Insertion of
+    Sensitive Information into Log File). Pydantic's
+    :meth:`fastapi.exceptions.RequestValidationError.errors` returns a
+    list of dicts whose ``input`` entry echoes the user-submitted value
+    verbatim. For authentication endpoints that value is the plaintext
+    password. This helper masks every ``input`` whose corresponding
+    ``loc`` tuple ends in a sensitive field name (see
+    :data:`_SENSITIVE_FIELD_NAMES`).
+
+    Examples
+    --------
+    Before::
+
+        [{"type": "string_too_long", "loc": ("body", "password"),
+          "msg": "String should have at most 8 characters",
+          "input": "MySecret123", "ctx": {"max_length": 8}}]
+
+    After::
+
+        [{"type": "string_too_long", "loc": ("body", "password"),
+          "msg": "String should have at most 8 characters",
+          "input": "***REDACTED***", "ctx": {"max_length": 8}}]
+
+    Notes
+    -----
+    * The function returns a **new** list of **new** dicts. The input
+      list is not mutated — this preserves Pydantic's internal state
+      in case the caller also wants to serialize the raw errors
+      elsewhere (e.g., in a test double).
+    * ``ctx`` is passed through unchanged because Pydantic does not
+      place user input into ``ctx`` — it contains only validator
+      metadata (``max_length``, ``min_length``, ``pattern``, etc.).
+    * The ``loc`` tuple may contain non-string elements (e.g.,
+      integers for list indices) when the validation failure is inside
+      a nested body field. We only inspect string elements for field-
+      name matching; numeric indices are skipped.
+
+    Parameters
+    ----------
+    errors : list[dict[str, Any]]
+        The raw return value of
+        :meth:`RequestValidationError.errors`.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        A redacted copy safe to log.
+    """
+    # We construct a new list entirely — never mutating the caller's
+    # copy. Pydantic errors dicts are shallow enough that a dict copy
+    # plus shallow copies of nested dicts suffices; no deeply nested
+    # mutable state is present.
+    redacted: list[dict[str, Any]] = []
+    for entry in errors:
+        # Shallow-copy the outer dict to avoid mutating the caller's
+        # structure. This is O(k) where k is the small, bounded set of
+        # keys Pydantic populates.
+        new_entry: dict[str, Any] = dict(entry)
+
+        # Determine whether the last string element of ``loc`` is a
+        # sensitive field name. We use the last string rather than any
+        # element so that nested paths like ``("body", "user",
+        # "password")`` still match correctly.
+        loc = entry.get("loc", ())
+        is_sensitive = False
+        for part in reversed(loc):
+            if isinstance(part, str):
+                if part.lower() in _SENSITIVE_FIELD_NAMES:
+                    is_sensitive = True
+                # Break after the first string element regardless of
+                # match — if the last string-typed field name isn't
+                # sensitive, parents aren't either (we don't
+                # aggressively redact all of ``body.user`` just because
+                # ``body.user.password`` is sensitive).
+                break
+
+        if is_sensitive and "input" in new_entry:
+            new_entry["input"] = _REDACTED_SENTINEL
+
+        # Also redact any ``ctx`` sub-value that contains the sensitive
+        # input (Pydantic V2 occasionally includes snippets in ``ctx``
+        # for specialized validators, e.g., uuid4_version). Defensive
+        # check — no known current validator does this, but the
+        # contract with future Pydantic upgrades is worth preserving.
+        if is_sensitive and isinstance(new_entry.get("ctx"), dict):
+            ctx_copy: dict[str, Any] = dict(new_entry["ctx"])
+            # Keys known to sometimes echo user input.
+            for echo_key in ("input", "value", "user_input"):
+                if echo_key in ctx_copy:
+                    ctx_copy[echo_key] = _REDACTED_SENTINEL
+            new_entry["ctx"] = ctx_copy
+
+        redacted.append(new_entry)
+
+    return redacted
+
+
+# ----------------------------------------------------------------------------
+# Path-disclosure regex for log sanitization (QA Checkpoint 6 Issue #5).
+#
+# Python tracebacks produced by ``traceback.format_exc()`` include the
+# absolute file system path of every frame — e.g.::
+#
+#     File "/tmp/blitzy/blitzy-card-demo/blitzy-XX..XX_b3fe62/src/api/routers/card_router.py"
+#
+# These paths disclose deployment details (container image structure,
+# working-directory naming) that serve no debugging purpose and
+# facilitate attacker reconnaissance when logs are leaked. Starlette
+# and FastAPI do not sanitize tracebacks — the application is
+# responsible for scrubbing the output.
+#
+# The strategy implemented in :func:`_sanitize_traceback` is:
+#
+# 1. Compute the project root once at import time (the directory that
+#    contains ``src/``).
+# 2. At log time, rewrite every absolute path that starts with the
+#    project root to a relative path.
+# 3. As a belt-and-braces second pass, rewrite any remaining absolute
+#    path under ``/tmp/``, ``/home/``, ``/app/``, or the active Python
+#    venv's ``site-packages`` to a relative path based on the path's
+#    trailing ``src/`` directory (or an opaque ``<external>``
+#    placeholder when the path lies outside our source tree).
+# ----------------------------------------------------------------------------
+
+
+def _compute_project_root() -> str:
+    """Return the absolute path to the repository root.
+
+    The repository root is the directory that contains ``src/``. We
+    walk up from this file's location four levels (from
+    ``.../src/api/middleware/error_handler.py`` to ``...``) and that
+    directory is the project root by construction.
+
+    This is computed once at import time; the result is cached in
+    :data:`_PROJECT_ROOT` below.
+
+    Returns
+    -------
+    str
+        Absolute filesystem path ending in no trailing slash.
+    """
+    # __file__ resolves to the absolute path when the module is
+    # imported via a fully-qualified name (``from src.api.middleware
+    # import error_handler``). The four parent directories are:
+    #   error_handler.py -> middleware/ -> api/ -> src/ -> project root.
+    here = os.path.abspath(__file__)
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(here))))
+
+
+# Absolute path to the repository root (e.g. ``/tmp/blitzy/.../b3fe62``).
+# Computed once at import time to keep :func:`_sanitize_traceback` on
+# the hot path branch-free.
+_PROJECT_ROOT: str = _compute_project_root()
+
+
+# Regex matching absolute paths inside a traceback's ``File "..."``
+# prefix. We match the full absolute path AND its ``File "..."``
+# context so we can substitute in the same pass. The `[^"]+` class is
+# safe because traceback paths never contain literal double-quotes on
+# any supported platform.
+_TRACEBACK_FILE_LINE_RE: re.Pattern[str] = re.compile(r'File "([^"]+)"')
+
+
+def _sanitize_traceback(tb: str) -> str:
+    """Strip absolute file paths from a Python traceback string.
+
+    Address QA Checkpoint 6 MINOR Issue #5 (CWE-209 Generation of Error
+    Message Containing Sensitive Information). The default
+    :func:`traceback.format_exc` output embeds every frame's absolute
+    path. When a log file is leaked, these paths expose internal
+    deployment layout (container working directory, venv location,
+    blitzy scratch directory). The trade-off: losing the venv prefix
+    marginally reduces debug utility, so we preserve the relative path
+    within our source tree (``src/api/routers/card_router.py``) which
+    retains all information needed to locate the frame.
+
+    The sanitization rewrites every ``File "<abspath>"`` to
+    ``File "<relpath>"`` where:
+
+    * If the abspath starts with the project root, the rel path is the
+      path relative to the project root (preserving ``src/``
+      structure).
+    * If the abspath contains a ``/site-packages/`` segment, the rel
+      path becomes ``<site-packages>/<tail>``.
+    * If the abspath points to a standard-library file (detectable by
+      the Python installation prefix prefix), the rel path becomes
+      ``<stdlib>/<basename>``.
+    * Otherwise, the rel path becomes ``<external>/<basename>``.
+
+    Examples
+    --------
+    Before::
+
+        Traceback (most recent call last):
+          File "/tmp/blitzy/blitzy-card-demo/blitzy-XX..XX_b3fe62/src/api/routers/card_router.py", line 247, in list_cards
+            request = CardListRequest(...)
+          File "/usr/lib/python3.11/site-packages/pydantic/main.py", line 161, in __init__
+            ...
+
+    After::
+
+        Traceback (most recent call last):
+          File "src/api/routers/card_router.py", line 247, in list_cards
+            request = CardListRequest(...)
+          File "<site-packages>/pydantic/main.py", line 161, in __init__
+            ...
+
+    Parameters
+    ----------
+    tb : str
+        Raw traceback string — typically the return value of
+        :func:`traceback.format_exc`.
+
+    Returns
+    -------
+    str
+        The traceback with every ``File "<abspath>"`` rewritten.
+    """
+
+    def _rewrite(match: re.Match[str]) -> str:
+        """Regex substitution callback — rewrites one path."""
+        abs_path = match.group(1)
+
+        # Case 1: path is inside our project tree -> relative to
+        # project root.
+        if abs_path.startswith(_PROJECT_ROOT):
+            rel = os.path.relpath(abs_path, _PROJECT_ROOT)
+            return f'File "{rel}"'
+
+        # Case 2: path is in a venv's site-packages -> opaque
+        # <site-packages>/ prefix. We split on the LAST occurrence of
+        # '/site-packages/' so that nested venvs still produce a
+        # sensible tail.
+        sp_marker = "/site-packages/"
+        if sp_marker in abs_path:
+            tail = abs_path.rsplit(sp_marker, 1)[-1]
+            return f'File "<site-packages>/{tail}"'
+
+        # Case 3: path looks like a stdlib frame. We detect "python3"
+        # in the path as a heuristic — the absolute prefix varies
+        # between distributions but the python3 segment is universal.
+        if "/python3" in abs_path or "/python/" in abs_path:
+            return f'File "<stdlib>/{os.path.basename(abs_path)}"'
+
+        # Case 4: an external path outside all known locations. Emit
+        # just the basename so we still get a filename for debugging,
+        # but the full directory structure is not disclosed.
+        return f'File "<external>/{os.path.basename(abs_path)}"'
+
+    return _TRACEBACK_FILE_LINE_RE.sub(_rewrite, tb)
 
 
 def _utc_now_iso() -> str:
@@ -787,6 +1134,20 @@ def register_exception_handlers(app: FastAPI) -> None:
         # The full errors list is a server-side-only detail — include
         # it in the structured log for debugging but NOT in the
         # response body (which we keep tight to the ABEND-DATA shape).
+        #
+        # CRITICAL SECURITY: Pydantic's ``exc.errors()`` list embeds
+        # the ORIGINAL user-submitted value in each entry's ``input``
+        # field. For a failed ``POST /auth/login`` validation, that
+        # ``input`` is the plaintext password. Logging the raw list
+        # verbatim was the root cause of QA Checkpoint 6 CRITICAL
+        # Issue #2 (CWE-532 Insertion of Sensitive Information into
+        # Log File). We call :func:`_redact_validation_errors` to mask
+        # the ``input`` field for any entry whose ``loc`` tuple ends
+        # in a sensitive field name (password, secret, token, ssn,
+        # card_num, cvv, etc. — see :data:`_SENSITIVE_FIELD_NAMES`).
+        # Non-sensitive fields (e.g., a malformed transaction date)
+        # are passed through unchanged so debugging remains effective.
+        safe_errors = _redact_validation_errors(errors)
         logger.warning(
             "Request validation failed",
             extra={
@@ -795,7 +1156,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "path": path,
                 "method": method,
                 "exception_type": type(exc).__name__,
-                "validation_errors": errors,
+                "validation_errors": safe_errors,
             },
         )
 
@@ -848,6 +1209,16 @@ def register_exception_handlers(app: FastAPI) -> None:
         # dump). CloudWatch Logs Insights can query on `exception_type`
         # to distinguish IntegrityError vs OperationalError vs
         # ProgrammingError for alerting and dashboards.
+        #
+        # The traceback is sanitized by :func:`_sanitize_traceback`
+        # before logging so that absolute filesystem paths (e.g.,
+        # ``/tmp/blitzy/blitzy-card-demo/blitzy-XX..XX_b3fe62/src/``)
+        # are replaced with relative paths (``src/``). Addresses QA
+        # Checkpoint 6 MINOR Issue #5 (CWE-209 Generation of Error
+        # Message Containing Sensitive Information). The relative
+        # paths preserve all debugging information — the specific
+        # module and line number — while denying attackers visibility
+        # into deployment layout.
         logger.error(
             "Database error: %s",
             type(exc).__name__,
@@ -857,7 +1228,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "path": path,
                 "method": method,
                 "exception_type": type(exc).__name__,
-                "traceback": traceback.format_exc(),
+                "traceback": _sanitize_traceback(traceback.format_exc()),
             },
         )
 
@@ -902,6 +1273,13 @@ def register_exception_handlers(app: FastAPI) -> None:
         # logger.critical — this is the severity level CloudWatch
         # alarms should monitor. An unhandled exception is by
         # definition an operator-action event.
+        #
+        # The traceback is sanitized by :func:`_sanitize_traceback`
+        # before logging so that absolute filesystem paths are
+        # replaced with relative paths. Addresses QA Checkpoint 6
+        # MINOR Issue #5 (CWE-209). The relative paths preserve all
+        # debugging information while denying attackers visibility
+        # into deployment layout.
         logger.critical(
             "Unhandled exception: %s",
             type(exc).__name__,
@@ -911,7 +1289,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "path": path,
                 "method": method,
                 "exception_type": type(exc).__name__,
-                "traceback": traceback.format_exc(),
+                "traceback": _sanitize_traceback(traceback.format_exc()),
             },
         )
 

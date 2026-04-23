@@ -175,8 +175,16 @@ from src.api.middleware.auth import JWTAuthMiddleware
 # the FastAPI app instance.
 from src.api.middleware.error_handler import register_exception_handlers
 
+# Security response headers middleware (new in QA Checkpoint 6 remediation).
+# Injects OWASP-recommended security headers on every response and
+# neutralizes the Server header disclosure. No direct COBOL ancestor —
+# this is a modern browser-defense concern that did not exist in the
+# original CICS/BMS mainframe stack. Addresses QA Issues #1 (CRITICAL,
+# missing security headers) and #6 (MINOR, Server: uvicorn disclosure).
+from src.api.middleware.security_headers import SecurityHeadersMiddleware
+
 # ----------------------------------------------------------------------------
-# Public re-export list — only these two symbols are considered part of
+# Public re-export list — only these three symbols are considered part of
 # the public API of the middleware package. Consumers that need submodule
 # internals (PUBLIC_PATHS, ADMIN_ONLY_PREFIXES, decode_jwt_token,
 # CICS_RESP_TO_HTTP, private helpers) must import them from their
@@ -185,10 +193,11 @@ from src.api.middleware.error_handler import register_exception_handlers
 #     from src.api.middleware.auth import PUBLIC_PATHS, decode_jwt_token
 #     from src.api.middleware.error_handler import CICS_RESP_TO_HTTP
 #
-# ``from src.api.middleware import *`` resolves to exactly the two
+# ``from src.api.middleware import *`` resolves to exactly the three
 # symbols declared below.
 # ----------------------------------------------------------------------------
 __all__: list[str] = [
     "JWTAuthMiddleware",
+    "SecurityHeadersMiddleware",
     "register_exception_handlers",
 ]
