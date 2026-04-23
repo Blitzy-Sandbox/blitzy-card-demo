@@ -29,10 +29,10 @@ Structure
 The Strawberry schema is composed of three pieces, each defined in
 its own module:
 
-* :class:`~src.api.graphql.queries.Query` — seven read-side resolvers
-  (``account``, ``card``, ``cards``, ``transaction``, ``transactions``,
-  ``user``, ``users``) converted from the read-oriented online CICS
-  COBOL programs.
+* :class:`~src.api.graphql.queries.Query` — eight read-side resolvers
+  (``account``, ``accounts``, ``card``, ``cards``, ``transaction``,
+  ``transactions``, ``user``, ``users``) converted from the
+  read-oriented online CICS COBOL programs.
 * :class:`~src.api.graphql.mutations.Mutation` — four write-side
   resolvers (``update_account``, ``update_card``, ``add_transaction``,
   ``pay_bill``) converted from the write-oriented online CICS COBOL
@@ -53,6 +53,7 @@ top-level operations:
 
     type Query {
       account(acctId: String!): AccountType
+      accounts(page: Int! = 1, pageSize: Int! = 10): [AccountType!]!
       card(cardNum: String!): CardType
       cards(accountId: String, cardNum: String, page: Int! = 1): [CardType!]!
       transaction(tranId: String!): TransactionType

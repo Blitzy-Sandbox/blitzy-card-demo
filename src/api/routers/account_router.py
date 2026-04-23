@@ -53,10 +53,30 @@ The service layer follows a "response-message" pattern: on business
 failures (e.g. field validation, concurrency conflict, no-changes-
 detected) it returns a populated response with ``error_message`` set
 and the transaction rolled back — it does **not** raise. The router
-inspects ``error_message`` after every call; when present the payload
-is translated into :class:`HTTPException` with HTTP 400 so the global
-error handler can wrap it in the ABEND-DATA envelope. Successful
-responses (``error_message is None``) are returned as-is.
+inspects ``error_message`` after every call and translates the message
+into :class:`HTTPException` with the most semantically appropriate
+HTTP status code so the global error handler can wrap it in the
+ABEND-DATA envelope. The mapping is driven by the service's
+module-level ``_MSG_*`` string constants (imported directly below) —
+this yields an exact-match discrimination that is more precise than
+substring matching and resistant to future message text drift:
+
+==========================================  ===============================
+Service ``error_message`` constant          HTTP status code
+==========================================  ===============================
+``_MSG_VIEW_XREF_NOT_FOUND``                404 Not Found
+``_MSG_VIEW_ACCT_NOT_FOUND``                404 Not Found
+``_MSG_VIEW_CUST_NOT_FOUND``                404 Not Found
+``_MSG_UPDATE_STALE`` (OCC conflict)        409 Conflict
+All other ``error_message`` values          400 Bad Request
+==========================================  ===============================
+
+The 404 mapping aligns with REST conventions for missing resources;
+the 409 mapping aligns with W3C RFC 7231 §6.5.8 for optimistic-
+concurrency conflicts. All other service-layer failures (validation,
+path/body mismatch, no-change-detected, zip-state inconsistency,
+update-failed) remain HTTP 400. Successful responses
+(``error_message is None``) are returned as-is with HTTP 200.
 
 See Also
 --------
@@ -78,7 +98,13 @@ from src.api.dependencies import (
     get_current_user,
     get_db,
 )
-from src.api.services.account_service import AccountService
+from src.api.services.account_service import (
+    _MSG_UPDATE_STALE,
+    _MSG_VIEW_ACCT_NOT_FOUND,
+    _MSG_VIEW_CUST_NOT_FOUND,
+    _MSG_VIEW_XREF_NOT_FOUND,
+    AccountService,
+)
 from src.shared.schemas.account_schema import (
     AccountUpdateRequest,
     AccountUpdateResponse,
@@ -103,6 +129,55 @@ router: APIRouter = APIRouter()
 # check; the authoritative validation remains in the service.
 # ----------------------------------------------------------------------------
 _ACCT_ID_REGEX: str = r"^[0-9]{11}$"
+
+
+# ----------------------------------------------------------------------------
+# Error-message → HTTP status code mapping
+#
+# Maps the service layer's module-level ``_MSG_*`` error string constants to
+# semantically appropriate HTTP status codes. The three "NOT FOUND" messages
+# map to HTTP 404 (missing-resource convention per RFC 7231 §6.5.4) and the
+# optimistic-concurrency stale-record message maps to HTTP 409 (conflict
+# convention per RFC 7231 §6.5.8). Any ``error_message`` not listed here
+# defaults to HTTP 400 Bad Request via :func:`_map_error_to_status`.
+#
+# Using module-level constants from ``account_service`` (rather than inline
+# substring matching) keeps the mapping table precise: two messages with
+# overlapping substrings cannot collide, and any future message-text drift
+# in the service will surface as a ``SyntaxError`` / ``ImportError`` at
+# module load time rather than a silent mis-routing.
+# ----------------------------------------------------------------------------
+_ERROR_MESSAGE_STATUS_MAP: dict[str, int] = {
+    _MSG_VIEW_XREF_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    _MSG_VIEW_ACCT_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    _MSG_VIEW_CUST_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    _MSG_UPDATE_STALE: status.HTTP_409_CONFLICT,
+}
+
+
+def _map_error_to_status(error_message: str) -> int:
+    """Return the HTTP status code for a service-layer ``error_message``.
+
+    Looks up ``error_message`` in :data:`_ERROR_MESSAGE_STATUS_MAP` and
+    returns the mapped status code; falls back to HTTP 400 for any message
+    not registered in the map. The lookup is an exact string-equality
+    match — there is no substring or prefix matching, so two distinct
+    service messages cannot collide even if they share a common substring.
+
+    Parameters
+    ----------
+    error_message:
+        The ``error_message`` field from the service response. MUST be a
+        populated (non-empty) string; callers MUST check
+        ``if response.error_message`` before invoking this function.
+
+    Returns
+    -------
+    int
+        The HTTP status code to use in the raised :class:`HTTPException`.
+        One of 400, 404, or 409.
+    """
+    return _ERROR_MESSAGE_STATUS_MAP.get(error_message, status.HTTP_400_BAD_REQUEST)
 
 
 @router.get(
@@ -146,16 +221,29 @@ async def get_account(
     service = AccountService(db)
     response = await service.get_account_view(acct_id)
     if response.error_message:
-        # Service surfaces user-facing errors (e.g., "Account not found")
-        # via error_message. We translate to 400 so the global handler
-        # wraps it in ABEND-DATA; 404 would be more semantic for the
-        # specific NOTFND case, but the service's response-message
-        # pattern does not differentiate reasons in the response body,
-        # so we default to 400 here (caller can read the message body
-        # for the specific reason). Per AAP §0.7.1 minimal-change, the
-        # service's pattern is preserved untouched.
+        # Translate the service's response-message into an HTTPException
+        # with the most semantically appropriate HTTP status code. The
+        # three "NOT FOUND" messages (xref, acct, cust) map to 404; all
+        # other error messages (validation failures, invalid account IDs,
+        # etc.) map to 400. See :data:`_ERROR_MESSAGE_STATUS_MAP` for the
+        # full table. The global error handler wraps the HTTPException in
+        # the ABEND-DATA envelope.
+        http_status = _map_error_to_status(response.error_message)
+        log_level = logger.info if http_status == status.HTTP_404_NOT_FOUND else logger.warning
+        log_level(
+            "GET /accounts/%s returned service error: %s (HTTP %d)",
+            acct_id,
+            response.error_message,
+            http_status,
+            extra={
+                "user_id": current_user.user_id,
+                "acct_id": acct_id,
+                "endpoint": "account_view",
+                "http_status": http_status,
+            },
+        )
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=http_status,
             detail=response.error_message,
         )
     return response
@@ -212,13 +300,34 @@ async def update_account(
     service = AccountService(db)
     response = await service.update_account(acct_id, request)
     if response.error_message:
-        # Service-layer business failures (validation, optimistic
-        # concurrency violation, no-change-detected, path/body
-        # inconsistency) are surfaced via error_message with the
-        # transaction already rolled back. Translate to HTTP 400 for
-        # the global error handler.
+        # Translate the service's response-message into an HTTPException
+        # with the most semantically appropriate HTTP status code:
+        #
+        #   * _MSG_VIEW_*_NOT_FOUND  -> 404 (missing target record)
+        #   * _MSG_UPDATE_STALE      -> 409 (optimistic-concurrency
+        #                                conflict; RFC 7231 §6.5.8)
+        #   * All other messages     -> 400 (validation, path/body
+        #                                mismatch, no-change-detected,
+        #                                zip/state inconsistency, etc.)
+        #
+        # See :data:`_ERROR_MESSAGE_STATUS_MAP` for the exact table.
+        # The transaction has already been rolled back by the service.
+        http_status = _map_error_to_status(response.error_message)
+        log_level = logger.info if http_status == status.HTTP_404_NOT_FOUND else logger.warning
+        log_level(
+            "PUT /accounts/%s returned service error: %s (HTTP %d)",
+            acct_id,
+            response.error_message,
+            http_status,
+            extra={
+                "user_id": current_user.user_id,
+                "acct_id": acct_id,
+                "endpoint": "account_update",
+                "http_status": http_status,
+            },
+        )
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=http_status,
             detail=response.error_message,
         )
     return response

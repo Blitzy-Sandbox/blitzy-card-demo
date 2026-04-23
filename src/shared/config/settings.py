@@ -347,6 +347,53 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------
+    # CORS configuration
+    # ------------------------------------------------------------------
+    # Replaces the CICS region's implicit "accept any 3270 client"
+    # behavior with an explicit, configurable list of allowed web
+    # origins for the FastAPI ``CORSMiddleware``. This resolves the
+    # code-review MEDIUM finding that ``allow_origins=["*"]`` combined
+    # with ``allow_credentials=True`` is an invalid CORS spec
+    # combination (browsers reject credentialed wildcard-origin
+    # requests per the W3C CORS specification).
+    #
+    # The default here is a SAFE localhost-only list — suitable for
+    # ``docker-compose`` local development where the browser-facing
+    # client may be served from Vite (port 3000) or a Docker-published
+    # port (8080). Staging and production deployments MUST override
+    # this via the ``CORS_ALLOWED_ORIGINS`` environment variable (see
+    # ``AWS_ENDPOINT_URL`` field above for the same override pattern).
+    #
+    # Pydantic BaseSettings parses a comma-separated env var into a
+    # ``list[str]`` automatically via its JSON-or-delimiter decoder:
+    #   CORS_ALLOWED_ORIGINS='["https://app.example.com","https://admin.example.com"]'
+    #   CORS_ALLOWED_ORIGINS='https://app.example.com,https://admin.example.com'
+    # are both accepted.
+    # ------------------------------------------------------------------
+    CORS_ALLOWED_ORIGINS: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "http://localhost:8080",
+        ],
+        description=(
+            "Explicit list of web origins permitted by the FastAPI "
+            "``CORSMiddleware`` ``allow_origins`` parameter. Replaces "
+            "the previous wildcard (``[\"*\"]``) default that was "
+            "incompatible with ``allow_credentials=True`` per the W3C "
+            "CORS specification — browsers reject credentialed "
+            "requests when origins is wildcard, rendering the JWT "
+            "``Authorization: Bearer`` header unusable from any "
+            "modern SPA. Default is a safe localhost-only list for "
+            "``docker-compose`` local development. Staging and "
+            "production deployments MUST override via the "
+            "``CORS_ALLOWED_ORIGINS`` env var (ECS task definition) "
+            "with the actual ALB / CloudFront domain(s). Empty list "
+            "disables CORS entirely (browser will block all cross-"
+            "origin callers)."
+        ),
+    )
+
+    # ------------------------------------------------------------------
     # Model configuration — controls .env loading and validation
     # behavior for the Pydantic BaseSettings subclass.
     # ------------------------------------------------------------------

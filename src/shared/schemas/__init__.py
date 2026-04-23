@@ -48,6 +48,16 @@ as-is").
 
 Submodules
 ----------
+admin_schema
+    Admin menu (``GET /admin/menu``) and admin status
+    (``GET /admin/status``) response models (F-003). Derived from
+    ``app/cpy-bms/COADM01.CPY`` (admin symbolic map) and
+    ``app/cpy/COADM02Y.cpy`` (the 4-entry ``CDEMO-ADMIN-OPTIONS-DATA``
+    navigation table). Added to satisfy the code-review MINOR finding
+    on typed response models (previously ``dict[str, Any]``). Exposes:
+    :class:`AdminMenuOption`, :class:`AdminMenuResponse`,
+    :class:`AdminStatusResponse`.
+
 auth_schema
     Sign-on request, JWT-token response, token payload, and sign-out
     response models. Derived from ``app/cpy-bms/COSGN00.CPY`` (sign-on
@@ -130,8 +140,13 @@ so callers can write::
 
 instead of importing from each submodule individually. The re-export
 list matches the ``exports`` block declared for this file in
-AAP §0.5.1 — 34 public symbols in total (33 Pydantic ``BaseModel``
-subclasses plus the single ``ReportType`` string enum).
+AAP §0.5.1 — originally 34 public symbols (33 Pydantic ``BaseModel``
+subclasses plus the single ``ReportType`` string enum). Three
+additional symbols (:class:`AdminMenuOption`, :class:`AdminMenuResponse`,
+and :class:`AdminStatusResponse`) were added from the new
+``admin_schema`` submodule to satisfy the code-review MINOR finding
+that ``admin_router.py`` returned untyped ``dict[str, Any]`` values.
+Total public surface is now 37 symbols.
 
 Design Notes
 ------------
@@ -199,6 +214,20 @@ from .account_schema import (
     AccountUpdateRequest,
     AccountUpdateResponse,
     AccountViewResponse,
+)
+
+# ---------------------------------------------------------------------------
+# Re-exports from .admin_schema — source: app/cpy-bms/COADM01.CPY
+# (F-003 Admin Menu) + app/cpy/COADM02Y.cpy (admin options table).
+# ---------------------------------------------------------------------------
+# AdminMenuOption      — One row of the 4-entry admin navigation table
+#                         (option, label, endpoint, method).
+# AdminMenuResponse    — GET /admin/menu payload (menu_title + options).
+# AdminStatusResponse  — GET /admin/status payload (status, user).
+from .admin_schema import (
+    AdminMenuOption,
+    AdminMenuResponse,
+    AdminStatusResponse,
 )
 
 # ---------------------------------------------------------------------------
@@ -337,14 +366,19 @@ from .user_schema import (
 #    for per-line suppression directives.
 # 2. It makes ``from src.shared.schemas import *`` — when used in
 #    interactive sessions, tests, or docs examples — expose exactly
-#    the 34 public contract classes below and nothing else (no
+#    the 37 public contract classes below and nothing else (no
 #    accidental leakage of ``BaseModel``, ``ConfigDict``, ``Decimal``,
 #    or ``Enum`` which are re-imported as module attributes by the
 #    submodules).
 # 3. It documents the complete public API surface of the package in
-#    one place, mirroring the ``exports`` block declared for this
-#    file in AAP §0.5.1 (34 entries — 33 Pydantic ``BaseModel``
-#    subclasses plus 1 ``ReportType`` string enum).
+#    one place. Originally the ``exports`` block in AAP §0.5.1
+#    declared 34 entries (33 Pydantic ``BaseModel`` subclasses plus
+#    1 ``ReportType`` string enum). Three additional symbols —
+#    :class:`AdminMenuOption`, :class:`AdminMenuResponse`, and
+#    :class:`AdminStatusResponse` — were added from the new
+#    ``admin_schema`` submodule to satisfy the code-review MINOR
+#    finding that ``admin_router.py`` returned untyped
+#    ``dict[str, Any]`` values. Total public surface is now 37.
 #
 # Entries are listed in alphabetical order for readability per the
 # agent prompt directive — no COBOL / BMS source-file grouping is
@@ -354,6 +388,9 @@ __all__: list[str] = [
     "AccountUpdateRequest",
     "AccountUpdateResponse",
     "AccountViewResponse",
+    "AdminMenuOption",
+    "AdminMenuResponse",
+    "AdminStatusResponse",
     "BillPaymentRequest",
     "BillPaymentResponse",
     "CardDetailResponse",

@@ -57,11 +57,35 @@ WS-INFOMSG / WS-ERRMSG                                response ``info_message``
 
 Error surfacing
 ---------------
-Same "response-message" pattern as ``account_router``: services
-return a populated response with ``error_message`` set when a
-business failure occurs — router translates to HTTPException 400 for
-the global ABEND-DATA wrapper. When ``error_message`` is ``None``
-the response is returned as-is.
+Same "response-message" pattern as ``account_router``: the service
+returns a populated response with ``error_message`` set when a
+business failure occurs (the transaction has already been rolled
+back). The router inspects ``error_message`` after every call and
+translates the message into :class:`HTTPException` with the most
+semantically appropriate HTTP status code. The mapping is driven by
+the service's module-level ``_MSG_*`` string constants (imported
+directly below) — this yields an exact-match discrimination that
+is more precise than substring matching and resistant to future
+message text drift:
+
+==========================================  ===============================
+Service ``error_message`` constant          HTTP status code
+==========================================  ===============================
+``_MSG_DETAIL_NOT_FOUND`` (GET detail)      404 Not Found
+``_MSG_UPDATE_NOT_FOUND`` (PUT update)      404 Not Found
+``_MSG_UPDATE_STALE`` (OCC conflict)        409 Conflict
+All other ``error_message`` values          400 Bad Request
+==========================================  ===============================
+
+The 404 mapping aligns with REST conventions for missing resources;
+the 409 mapping aligns with W3C RFC 7231 §6.5.8 for optimistic-
+concurrency conflicts. All other service-layer failures (list empty
+results, detail-lookup I/O errors, generic update failures) remain
+HTTP 400. The list endpoint (``GET /cards``) has no not-found or
+concurrency messages in its service contract, so it continues to
+route uniformly to HTTP 400 on any populated ``error_message``.
+Successful responses (``error_message is None``) are returned as-is
+with HTTP 200.
 
 See Also
 --------
@@ -82,7 +106,12 @@ from src.api.dependencies import (
     get_current_user,
     get_db,
 )
-from src.api.services.card_service import CardService
+from src.api.services.card_service import (
+    _MSG_DETAIL_NOT_FOUND,
+    _MSG_UPDATE_NOT_FOUND,
+    _MSG_UPDATE_STALE,
+    CardService,
+)
 from src.shared.schemas.card_schema import (
     CardDetailResponse,
     CardListRequest,
@@ -107,6 +136,56 @@ router: APIRouter = APIRouter()
 # independently repeats this validation.
 # ----------------------------------------------------------------------------
 _CARD_NUM_REGEX: str = r"^[0-9]{16}$"
+
+
+# ----------------------------------------------------------------------------
+# Error-message → HTTP status code mapping
+#
+# Maps the service layer's module-level ``_MSG_*`` error string constants to
+# semantically appropriate HTTP status codes. The two not-found messages
+# (``_MSG_DETAIL_NOT_FOUND`` from get-detail and ``_MSG_UPDATE_NOT_FOUND``
+# from update-path) are identical string literals in the service layer
+# (both COBOL-sourced from "Did not find cards for this search condition")
+# but we register both symbols for explicitness and future divergence
+# safety. The optimistic-concurrency stale-record message maps to HTTP 409
+# (RFC 7231 §6.5.8). Any ``error_message`` not listed here defaults to
+# HTTP 400 Bad Request via :func:`_map_error_to_status`.
+#
+# Using module-level constants from ``card_service`` (rather than inline
+# substring matching) keeps the mapping table precise: two messages with
+# overlapping substrings cannot collide, and any future message-text drift
+# in the service will surface as an ``ImportError`` at module load time
+# rather than a silent mis-routing.
+# ----------------------------------------------------------------------------
+_ERROR_MESSAGE_STATUS_MAP: dict[str, int] = {
+    _MSG_DETAIL_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    _MSG_UPDATE_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    _MSG_UPDATE_STALE: status.HTTP_409_CONFLICT,
+}
+
+
+def _map_error_to_status(error_message: str) -> int:
+    """Return the HTTP status code for a service-layer ``error_message``.
+
+    Looks up ``error_message`` in :data:`_ERROR_MESSAGE_STATUS_MAP` and
+    returns the mapped status code; falls back to HTTP 400 for any message
+    not registered in the map. The lookup is an exact string-equality
+    match — there is no substring or prefix matching.
+
+    Parameters
+    ----------
+    error_message:
+        The ``error_message`` field from the service response. MUST be a
+        populated (non-empty) string; callers MUST check
+        ``if response.error_message`` before invoking this function.
+
+    Returns
+    -------
+    int
+        The HTTP status code to use in the raised :class:`HTTPException`.
+        One of 400, 404, or 409.
+    """
+    return _ERROR_MESSAGE_STATUS_MAP.get(error_message, status.HTTP_400_BAD_REQUEST)
 
 
 @router.get(
@@ -217,8 +296,26 @@ async def get_card(
     service = CardService(db)
     response = await service.get_card_detail(card_num)
     if response.error_message:
+        # Translate the service's response-message into an HTTPException
+        # with the most semantically appropriate HTTP status code.
+        # _MSG_DETAIL_NOT_FOUND -> 404; everything else -> 400. See
+        # :data:`_ERROR_MESSAGE_STATUS_MAP` for the full table.
+        http_status = _map_error_to_status(response.error_message)
+        log_level = logger.info if http_status == status.HTTP_404_NOT_FOUND else logger.warning
+        log_level(
+            "GET /cards/%s returned service error: %s (HTTP %d)",
+            card_num,
+            response.error_message,
+            http_status,
+            extra={
+                "user_id": current_user.user_id,
+                "card_num": card_num,
+                "endpoint": "card_detail",
+                "http_status": http_status,
+            },
+        )
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=http_status,
             detail=response.error_message,
         )
     return response
@@ -275,8 +372,32 @@ async def update_card(
     service = CardService(db)
     response = await service.update_card(card_num, request)
     if response.error_message:
+        # Translate the service's response-message into an HTTPException
+        # with the most semantically appropriate HTTP status code:
+        #
+        #   * _MSG_UPDATE_NOT_FOUND  -> 404 (missing target card)
+        #   * _MSG_UPDATE_STALE      -> 409 (optimistic-concurrency
+        #                                conflict; RFC 7231 §6.5.8)
+        #   * All other messages     -> 400 (update-failed, etc.)
+        #
+        # See :data:`_ERROR_MESSAGE_STATUS_MAP` for the full table.
+        # The transaction has already been rolled back by the service.
+        http_status = _map_error_to_status(response.error_message)
+        log_level = logger.info if http_status == status.HTTP_404_NOT_FOUND else logger.warning
+        log_level(
+            "PUT /cards/%s returned service error: %s (HTTP %d)",
+            card_num,
+            response.error_message,
+            http_status,
+            extra={
+                "user_id": current_user.user_id,
+                "card_num": card_num,
+                "endpoint": "card_update",
+                "http_status": http_status,
+            },
+        )
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=http_status,
             detail=response.error_message,
         )
     return response

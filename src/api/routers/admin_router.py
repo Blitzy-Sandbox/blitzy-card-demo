@@ -102,11 +102,15 @@ See Also
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from fastapi import APIRouter, Depends
 
 from src.api.dependencies import CurrentUser, get_current_admin_user
+from src.shared.schemas import (
+    AdminMenuOption,
+    AdminMenuResponse,
+    AdminStatusResponse,
+)
 
 # ----------------------------------------------------------------------------
 # Module logger.
@@ -137,11 +141,15 @@ router: APIRouter = APIRouter()
 # ============================================================================
 # GET /admin/menu -- Admin menu options
 # ============================================================================
-@router.get("/menu", summary="Admin Menu Options")
+@router.get(
+    "/menu",
+    response_model=AdminMenuResponse,
+    summary="Admin Menu Options",
+)
 async def get_admin_menu(
     current_user: CurrentUser = Depends(get_current_admin_user),
-) -> dict[str, Any]:
-    """Return the 4-option admin menu as JSON.
+) -> AdminMenuResponse:
+    """Return the 4-option admin menu as a typed Pydantic response.
 
     Replaces the COADM01C ``SEND MAP('COADM1A') MAPSET('COADM01')``
     refresh loop. The original program built 12 ``OPTNnnnO`` output
@@ -170,6 +178,25 @@ async def get_admin_menu(
     ``PROCESS-ENTER-KEY``) because the server does not retain
     conversational state between requests.
 
+    Response Model
+    --------------
+    The return value is a fully-typed :class:`AdminMenuResponse`
+    Pydantic model (``src/shared/schemas/admin_schema.py``) — added
+    in resolution of the code-review MINOR finding that this endpoint
+    previously returned an untyped ``dict[str, Any]``. FastAPI uses
+    the declared ``response_model`` to:
+
+    * Render the exact schema in the OpenAPI document at
+      ``GET /openapi.json`` (consumed by Swagger UI, Redoc, and
+      client-code generators).
+    * Enforce strict field validation on the outbound JSON
+      (``extra="forbid"`` on the Pydantic models rejects any
+      accidentally-added attributes).
+
+    The on-the-wire JSON shape is identical to the previous
+    ``dict``-based implementation — existing clients and integration
+    tests continue to parse the payload unchanged.
+
     Parameters
     ----------
     current_user : :class:`CurrentUser`
@@ -183,9 +210,9 @@ async def get_admin_menu(
 
     Returns
     -------
-    dict[str, Any]
-        JSON payload with the admin menu title and the 4-option
-        navigation list. Shape::
+    :class:`AdminMenuResponse`
+        Typed Pydantic model with the admin menu title and the
+        4-option navigation list. Serializes to::
 
             {
               "menu_title": "Administrative Menu",
@@ -230,48 +257,61 @@ async def get_admin_menu(
     )
 
     # ------------------------------------------------------------------
-    # Build the 4-entry options list. The content is a faithful
-    # translation of ``app/cpy/COADM02Y.cpy`` rows 24-42 (the 4
-    # populated entries of the ``CDEMO-ADMIN-OPTIONS-DATA`` table).
-    # Each entry carries the legacy option number as declared in the
-    # COBOL ``PIC 9(02) VALUE n.`` literal, the human-readable label
+    # Build the 4-entry options list as typed :class:`AdminMenuOption`
+    # instances. The content is a faithful translation of
+    # ``app/cpy/COADM02Y.cpy`` rows 24-42 (the 4 populated entries of
+    # the ``CDEMO-ADMIN-OPTIONS-DATA`` table).  Each entry carries the
+    # legacy option number as declared in the COBOL
+    # ``PIC 9(02) VALUE n.`` literal, the human-readable label
     # (trimmed of the trailing space padding the COBOL ``PIC X(35)``
     # field imposes), and the equivalent REST endpoint/method pair
     # replacing the legacy ``PIC X(08)`` program name.
+    #
+    # Explicit model construction (rather than relying on FastAPI's
+    # automatic dict-to-model coercion from the ``response_model``)
+    # provides two benefits:
+    #   1. Field-level Pydantic validation is triggered inside this
+    #      function body (ge/min_length/max_length from the model),
+    #      producing a clear traceback at the violation site if the
+    #      source COPY constants ever drift out of spec, rather than a
+    #      ResponseValidationError emitted at the ASGI boundary.
+    #   2. Static type checkers (mypy strict) verify that every field
+    #      required by :class:`AdminMenuOption` is supplied here and
+    #      that every value matches its declared type.
     # ------------------------------------------------------------------
-    options: list[dict[str, Any]] = [
+    options: list[AdminMenuOption] = [
         # Option 1 -> COADM02Y.cpy lines 24-27 (was XCTL to COUSR00C,
         # COBOL label "User List (Security)")
-        {
-            "option": 1,
-            "label": "User List",
-            "endpoint": "/users",
-            "method": "GET",
-        },
+        AdminMenuOption(
+            option=1,
+            label="User List",
+            endpoint="/users",
+            method="GET",
+        ),
         # Option 2 -> COADM02Y.cpy lines 29-32 (was XCTL to COUSR01C,
         # COBOL label "User Add (Security)")
-        {
-            "option": 2,
-            "label": "User Add",
-            "endpoint": "/users",
-            "method": "POST",
-        },
+        AdminMenuOption(
+            option=2,
+            label="User Add",
+            endpoint="/users",
+            method="POST",
+        ),
         # Option 3 -> COADM02Y.cpy lines 34-37 (was XCTL to COUSR02C,
         # COBOL label "User Update (Security)")
-        {
-            "option": 3,
-            "label": "User Update",
-            "endpoint": "/users/{user_id}",
-            "method": "PUT",
-        },
+        AdminMenuOption(
+            option=3,
+            label="User Update",
+            endpoint="/users/{user_id}",
+            method="PUT",
+        ),
         # Option 4 -> COADM02Y.cpy lines 39-42 (was XCTL to COUSR03C,
         # COBOL label "User Delete (Security)")
-        {
-            "option": 4,
-            "label": "User Delete",
-            "endpoint": "/users/{user_id}",
-            "method": "DELETE",
-        },
+        AdminMenuOption(
+            option=4,
+            label="User Delete",
+            endpoint="/users/{user_id}",
+            method="DELETE",
+        ),
     ]
 
     # The top-level "menu_title" preserves the COBOL title string the
@@ -281,20 +321,24 @@ async def get_admin_menu(
     # run-time date/time header fields because they are now rendered
     # client-side (the ``CURDATEO`` / ``CURTIMEO`` values were terminal
     # chrome, not business data).
-    return {
-        "menu_title": "Administrative Menu",
-        "options": options,
-    }
+    return AdminMenuResponse(
+        menu_title="Administrative Menu",
+        options=options,
+    )
 
 
 # ============================================================================
 # GET /admin/status -- Admin system status
 # ============================================================================
-@router.get("/status", summary="Admin System Status")
+@router.get(
+    "/status",
+    response_model=AdminStatusResponse,
+    summary="Admin System Status",
+)
 async def get_admin_status(
     current_user: CurrentUser = Depends(get_current_admin_user),
-) -> dict[str, Any]:
-    """Return the admin system status envelope.
+) -> AdminStatusResponse:
+    """Return the admin system status envelope as a typed Pydantic response.
 
     Cloud-native addition -- there is no direct COBOL equivalent. In
     the legacy architecture the admin "system oversight" information
@@ -310,6 +354,13 @@ async def get_admin_status(
     * Distinguishes from ``GET /health`` (public, DB-independent) by
       requiring admin privileges.
 
+    Response Model
+    --------------
+    The return value is a :class:`AdminStatusResponse` Pydantic
+    model. See the note on :func:`get_admin_menu` for the rationale
+    (code-review MINOR finding: replace untyped ``dict[str, Any]``).
+    The on-the-wire JSON shape is unchanged.
+
     Parameters
     ----------
     current_user : :class:`CurrentUser`
@@ -320,8 +371,8 @@ async def get_admin_status(
 
     Returns
     -------
-    dict[str, Any]
-        JSON payload with two keys::
+    :class:`AdminStatusResponse`
+        Typed Pydantic model that serializes to::
 
             {
               "status": "operational",
@@ -331,7 +382,11 @@ async def get_admin_status(
         The ``status`` value is a fixed literal for forward
         compatibility -- additional operational fields (database
         connectivity, worker queue depth, etc.) may be added in a
-        future revision without breaking existing clients.
+        future revision without breaking existing clients. The
+        :class:`AdminStatusResponse` model declares ``status`` as a
+        free-form non-empty ``str`` rather than a ``Literal`` so that
+        future states such as ``"degraded"`` or ``"maintenance"`` do
+        not require a schema version bump.
 
     Raises
     ------
@@ -351,10 +406,10 @@ async def get_admin_status(
             "feature": "F-003",
         },
     )
-    return {
-        "status": "operational",
-        "user": current_user.user_id,
-    }
+    return AdminStatusResponse(
+        status="operational",
+        user=current_user.user_id,
+    )
 
 
 # ----------------------------------------------------------------------------

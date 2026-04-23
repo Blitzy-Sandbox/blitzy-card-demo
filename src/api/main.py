@@ -88,10 +88,13 @@ responsibilities, implemented by the :func:`create_app` factory:
    transactions inventoried in AAP §0.2.3).
 
 4. **Mount the GraphQL endpoint** — :mod:`src.api.graphql.schema`
-   provides a single Strawberry schema stitching Query (read-side
-   resolvers from :mod:`src.api.graphql.queries`) and Mutation
-   (write-side resolvers from :mod:`src.api.graphql.mutations`). The
-   schema is served at ``POST /graphql`` via
+   provides a single Strawberry schema stitching Query (eight
+   read-side resolvers defined in :mod:`src.api.graphql.queries`)
+   and Mutation (four write-side resolvers defined in
+   :mod:`src.api.graphql.mutations`). See the authoritative
+   resolver enumeration and the GraphQL SDL in
+   :mod:`src.api.graphql.schema`. The schema is served at
+   ``POST /graphql`` via
    :class:`strawberry.fastapi.GraphQLRouter` with a ``context_getter``
    that injects a transactional :class:`~sqlalchemy.ext.asyncio.AsyncSession`
    into every resolver's ``info.context["db"]``.
@@ -129,9 +132,16 @@ Security posture
 * Routes under ``/admin/*`` and ``/users/*`` are additionally gated by
   :data:`src.api.middleware.auth.ADMIN_ONLY_PREFIXES` — non-admin
   users receive an ``ABEND-DATA`` 403 response (``FRBD`` code).
-* ``CORSMiddleware`` is configured permissively here; production
-  deployments should override ``allow_origins`` via environment
-  configuration to restrict cross-origin callers.
+* ``CORSMiddleware`` reads its ``allow_origins`` list from
+  :attr:`Settings.CORS_ALLOWED_ORIGINS` (env var
+  ``CORS_ALLOWED_ORIGINS``), which defaults to a safe localhost-only
+  list for local development. The prior wildcard (``["*"]``) default
+  was invalid in combination with ``allow_credentials=True`` per the
+  W3C CORS specification — browsers reject credentialed requests
+  when origins is wildcard, which would render the JWT
+  ``Authorization: Bearer`` header unusable from any SPA. Staging
+  and production deployments must set ``CORS_ALLOWED_ORIGINS``
+  explicitly to the actual ALB / CloudFront domain(s).
 
 Monitoring posture
 ------------------
@@ -716,12 +726,32 @@ def create_app() -> FastAPI:
 
     Notes
     -----
-    The factory deliberately does NOT call :func:`get_settings` during
-    the app construction itself (only inside request handlers and the
-    ``lifespan`` callback). This keeps module import cheap and avoids
-    a :class:`pydantic.ValidationError` during tooling runs
-    (``mypy``, ``ruff``, ``pytest`` collection) where required env vars
-    may not yet be configured.
+    The factory makes exactly ONE :func:`get_settings` call during app
+    construction — to read :attr:`Settings.CORS_ALLOWED_ORIGINS` and
+    configure the CORS middleware allow-list (see code-review MEDIUM
+    security finding: wildcard ``["*"]`` combined with
+    ``allow_credentials=True`` is invalid per the W3C CORS spec). All
+    other settings access is deferred to request handlers and the
+    ``lifespan`` callback. This construction-time settings read is
+    compatible with:
+
+    * **pytest collection** — the root ``tests/conftest.py`` populates
+      ``DATABASE_URL``, ``DATABASE_URL_SYNC``, and ``JWT_SECRET_KEY``
+      via ``os.environ.setdefault(...)`` BEFORE importing
+      :func:`create_app`, so :class:`Settings` validation succeeds.
+    * **mypy** and **ruff** — both are pure static analyzers that
+      operate on the AST and never execute module-level code; the
+      ``get_settings()`` call is never triggered during type-check /
+      lint runs.
+    * **Production (ECS Fargate)** — the ECS task definition injects
+      the required env vars from AWS Secrets Manager at container
+      start, well before the ASGI worker imports this module.
+
+    If a downstream caller imports :mod:`src.api.main` outside any of
+    the above contexts without the required env vars set, a
+    :class:`pydantic.ValidationError` will surface at import time —
+    the same fail-fast behavior as the Settings class itself (AAP
+    §0.7.2 "Environment variable validation at startup").
     """
     # ------------------------------------------------------------------
     # 1. Instantiate the FastAPI app.
@@ -786,13 +816,24 @@ def create_app() -> FastAPI:
 
     # 2b. CORS middleware (outer).
     #
-    # Permissive defaults are used here to match the previous mainframe
-    # model where the CICS region accepted any authenticated 3270 client.
-    # Production deployments should override ``allow_origins`` via an
-    # environment-driven config list once the target ALB domain is known.
+    # ``allow_origins`` is sourced from :attr:`Settings.CORS_ALLOWED_ORIGINS`
+    # (env var ``CORS_ALLOWED_ORIGINS``) rather than the prior
+    # wildcard ``["*"]`` default. Per the W3C CORS specification,
+    # ``allow_origins=["*"]`` combined with ``allow_credentials=True``
+    # is an invalid configuration — browsers reject credentialed
+    # requests when origins is wildcard, which would render the JWT
+    # ``Authorization: Bearer`` header unusable from any modern SPA
+    # (see code-review MEDIUM security finding). By reading the allow-
+    # list from settings, local development remains permissive via the
+    # safe localhost-only default (``http://localhost:3000``,
+    # ``http://localhost:8080``), while staging and production
+    # deployments set ``CORS_ALLOWED_ORIGINS`` explicitly on the ECS
+    # task definition to the actual ALB / CloudFront domain(s). This
+    # closes the CORS-wildcard-with-credentials vulnerability without
+    # sacrificing the cross-origin access required by SPA clients.
     new_app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=list(get_settings().CORS_ALLOWED_ORIGINS),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

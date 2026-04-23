@@ -118,12 +118,12 @@ GET /cards                        success         200 OK
 GET /cards                        service error   400 Bad Request
 GET /cards                        unauth          401 / 403
 GET /cards/{card_num}             success         200 OK
-GET /cards/{card_num}             not found       400 Bad Request
+GET /cards/{card_num}             not found       404 Not Found
 GET /cards/{card_num}             bad path        422 Unprocessable
 GET /cards/{card_num}             unauth          401 / 403
 PUT /cards/{card_num}             success         200 OK
-PUT /cards/{card_num}             not found       400 Bad Request
-PUT /cards/{card_num}             concurrency     400 Bad Request
+PUT /cards/{card_num}             not found       404 Not Found
+PUT /cards/{card_num}             concurrency     409 Conflict
 PUT /cards/{card_num}             validation      422 Unprocessable
 PUT /cards/{card_num}             unauth          401 / 403
 ================================  ==============  ========================
@@ -136,14 +136,34 @@ Critical behavioral invariants
    COCRDLIC program performs STARTBR + 7 × READNEXT for each
    forward scroll. This is the single most important invariant for
    F-006.
-2. **All business errors route to HTTP 400** (not 404/409). The
-   router uniformly converts ``response.error_message`` to
-   ``HTTPException(status_code=400, detail=response.error_message)``
-   regardless of whether the underlying cause was a NOTFND condition,
-   an optimistic-concurrency conflict, or a generic I/O failure. This
-   is the "response-message" pattern consistent with
-   ``account_router`` and differs from the xref-substring-based
-   routing in ``transaction_router``.
+2. **Business errors route to HTTP 400 / 404 / 409 based on the
+   service's ``error_message`` constant.** The router looks up the
+   exact error-message string in the module-level mapping
+   :data:`src.api.routers.card_router._ERROR_MESSAGE_STATUS_MAP`
+   and raises :class:`HTTPException` with the registered status
+   code. The mapping is:
+
+   * ``_MSG_DETAIL_NOT_FOUND`` / ``_MSG_UPDATE_NOT_FOUND``
+     (both carry the literal
+     ``"Did not find cards for this search condition"`` — card_service
+     defines the symbols separately for readability / future
+     divergence, but they collapse to a single dict entry)
+     -> HTTP **404 Not Found** (RFC 7231 §6.5.4).
+   * ``_MSG_UPDATE_STALE``
+     (``"Record changed by some one else. Please review"``)
+     -> HTTP **409 Conflict** (RFC 7231 §6.5.8 — optimistic
+     concurrency conflict).
+   * Any other populated ``error_message`` (list-path "no records",
+     generic I/O failure, validation failures, etc.) falls through to
+     the default HTTP **400 Bad Request** bucket.
+
+   The ``list_cards`` handler keeps the uniform HTTP 400 route for
+   ALL business errors because no not-found / concurrency literals
+   reach it — the list path only ever surfaces ``_MSG_LIST_NO_RECORDS``
+   / ``_MSG_LIST_NO_MORE`` / generic lookup errors.
+   This mapping-driven pattern differs from ``transaction_router``'s
+   substring-based approach and from ``user_router``'s typed-
+   exception approach; all three are intentional per-feature designs.
 3. **Card number is exactly 16 digits**. The path regex
    ``^[0-9]{16}$`` rejects any malformed ``card_num`` path parameter
    with FastAPI's automatic HTTP 422 *before* the service runs.
@@ -1021,8 +1041,9 @@ class TestCardList:
     # ------------------------------------------------------------------
     # 5. Empty results — mock returns empty list; service populates
     #    error_message with the COBOL-exact "NO RECORDS FOUND" string.
-    #    Router converts this to HTTP 400 per its uniform "any
-    #    error_message → 400" invariant.
+    #    Router's ``list_cards`` handler converts this to HTTP 400
+    #    (the list path does NOT consult ``_ERROR_MESSAGE_STATUS_MAP``
+    #    because no not-found / concurrency literals reach it).
     # ------------------------------------------------------------------
     async def test_list_cards_empty_results(self, client: AsyncClient) -> None:
         """Empty-filter list yields HTTP 400 with the COBOL-exact message.
@@ -1035,12 +1056,23 @@ class TestCardList:
         MAP`` with an empty row area — the modern service layer
         returns a ``CardListResponse`` with ``cards=[]`` and
         ``error_message`` set, which the router converts to
-        HTTP 400 per its uniform error-routing invariant.
+        HTTP 400.
+
+        The list endpoint surfaces ``_MSG_LIST_NO_RECORDS`` /
+        ``_MSG_LIST_NO_MORE`` / generic lookup failures — none of
+        which are registered in
+        :data:`_ERROR_MESSAGE_STATUS_MAP`. They therefore fall
+        through to the default HTTP 400 bucket. This is distinct
+        from the ``get_card`` / ``update_card`` handlers, which
+        map ``_MSG_*_NOT_FOUND`` → 404 and ``_MSG_UPDATE_STALE``
+        → 409.
 
         CRITICAL: the router status is 400 (not 200 with an empty
-        list, not 404). This is the uniform "any error_message →
-        400" behavior confirmed by direct inspection of
-        ``card_router.py`` lines 174-178.
+        list, not 404). 200-with-empty-list is explicitly rejected
+        to preserve the COBOL BMS semantics of surfacing
+        ``_MSG_LIST_NO_RECORDS`` as a message, and 404 would be
+        inappropriate because the collection endpoint itself exists
+        — only the filtered result set is empty.
 
         Assertions:
             * HTTP 400 Bad Request (NOT 200 with empty list,
@@ -1069,11 +1101,14 @@ class TestCardList:
 
             response = await client.get("/cards")
 
-        # HTTP 400 per the uniform "any error_message → 400" router
-        # behavior (card_router.py lines 174-178).
+        # HTTP 400 — ``_MSG_LIST_NO_RECORDS`` is NOT registered in
+        # ``_ERROR_MESSAGE_STATUS_MAP``, so the ``list_cards``
+        # handler falls through to its default 400 branch.
         assert response.status_code == status.HTTP_400_BAD_REQUEST, (
             f"Empty-filter list with populated error_message MUST "
-            f"return HTTP 400; got {response.status_code}: {response.text}"
+            f"return HTTP 400 (default bucket — "
+            f"``_MSG_LIST_NO_RECORDS`` is not in the status map); "
+            f"got {response.status_code}: {response.text}"
         )
 
         # The error response is wrapped by the global ABEND-DATA
@@ -1157,8 +1192,8 @@ class TestCardList:
 #
 #   1. Happy path (full detail record, HTTP 200).
 #   2. Not found (service returns _MSG_DETAIL_NOT_FOUND; router
-#      converts to HTTP 400 per the uniform "any error_message → 400"
-#      invariant — explicitly NOT 404).
+#      looks up the literal in ``_ERROR_MESSAGE_STATUS_MAP`` and
+#      converts to HTTP 404 per RFC 7231 §6.5.4).
 #   3. Path-regex violation (malformed card_num triggers FastAPI's
 #      automatic 422).
 #   4. Unauthenticated request → 401/403.
@@ -1290,11 +1325,12 @@ class TestCardDetail:
         mock_instance.get_card_detail.assert_awaited_once_with(_TEST_CARD_NUM)
 
     # ------------------------------------------------------------------
-    # 2. Not found — service returns _MSG_DETAIL_NOT_FOUND → HTTP 400
-    #    (NOT 404, per the router's uniform error-routing invariant).
+    # 2. Not found — service returns _MSG_DETAIL_NOT_FOUND → HTTP 404
+    #    (per the router's ``_ERROR_MESSAGE_STATUS_MAP`` lookup,
+    #    aligned with RFC 7231 §6.5.4).
     # ------------------------------------------------------------------
     async def test_get_card_not_found(self, client: AsyncClient) -> None:
-        """Non-existent card returns HTTP 400 with the COBOL-exact message.
+        """Non-existent card returns HTTP 404 with the COBOL-exact message.
 
         Mirrors the ``COCRDSLC.cbl`` ``9000-READ-DATA`` branch at
         line 154 (``MOVE 'Did not find cards for this search
@@ -1302,30 +1338,28 @@ class TestCardDetail:
         ``DFHRESP(NOTFND)`` from the CARDDAT read. The COBOL program
         then issued a ``SEND MAP`` with the error-channel populated;
         the modern service layer returns a
-        :class:`CardDetailResponse` with ``error_message`` set, which
-        the router converts to HTTP 400 per its uniform
-        "any error_message → 400" invariant.
+        :class:`CardDetailResponse` with
+        ``error_message = _MSG_DETAIL_NOT_FOUND``. The router looks
+        up this literal in :data:`_ERROR_MESSAGE_STATUS_MAP` and
+        raises ``HTTPException`` with HTTP 404 Not Found per
+        RFC 7231 §6.5.4. The COBOL-exact error text is preserved
+        byte-for-byte in the response body.
 
-        CRITICAL DEVIATION FROM COMMON REST CONVENTIONS:
-        This endpoint returns HTTP 400 (NOT 404) for not-found
-        results. This is the deliberate, documented behavior of the
-        card_router — confirmed by direct inspection of lines
-        219-223 of card_router.py:
-
-        .. code-block:: python
-
-            if response.error_message:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=response.error_message,
-                )
-
-        Any drift here (e.g. adding a 404 discriminator based on
-        substring matching) would break parity with the
-        ``account_router`` counterpart that uses the same pattern.
+        RELATIONSHIP TO ``_MSG_UPDATE_NOT_FOUND``:
+        ``card_service`` defines two symbols —
+        ``_MSG_DETAIL_NOT_FOUND`` and ``_MSG_UPDATE_NOT_FOUND`` —
+        but both carry the identical literal
+        ``"Did not find cards for this search condition"``. The
+        router's status map is keyed on the *string value*, so
+        registering both symbols yields a single dict entry that
+        serves both endpoints. Both the ``get_card`` and
+        ``update_card`` handlers therefore return HTTP 404 for this
+        literal.
 
         Assertions:
-            * HTTP 400 Bad Request (explicitly NOT 404).
+            * HTTP 404 Not Found (per ``_ERROR_MESSAGE_STATUS_MAP``
+              in ``src/api/routers/card_router.py``, aligned with
+              RFC 7231 §6.5.4).
             * The ``detail`` field is the COBOL-exact
               ``_MSG_DETAIL_NOT_FOUND`` string, preserved
               byte-for-byte.
@@ -1346,13 +1380,20 @@ class TestCardDetail:
 
             response = await client.get(f"/cards/{_TEST_CARD_NUM}")
 
-        # HTTP 400 per the uniform "any error_message → 400" router
-        # behavior (card_router.py lines 219-223). This deliberately
-        # differs from common REST conventions that would use 404.
-        assert response.status_code == status.HTTP_400_BAD_REQUEST, (
-            f"Not-found detail MUST return HTTP 400 (uniform "
-            f"error_message routing, NOT 404); got "
+        # HTTP 404 — ``_MSG_DETAIL_NOT_FOUND`` is mapped to 404 in
+        # ``_ERROR_MESSAGE_STATUS_MAP`` per RFC 7231 §6.5.4.
+        assert response.status_code == status.HTTP_404_NOT_FOUND, (
+            f"Not-found detail MUST return HTTP 404 "
+            f"(``_MSG_DETAIL_NOT_FOUND`` → 404 per "
+            f"``_ERROR_MESSAGE_STATUS_MAP``); got "
             f"{response.status_code}: {response.text}"
+        )
+        # Explicit negative assertion to lock out accidental drift
+        # BACK to the legacy uniform-400 pattern.
+        assert response.status_code != status.HTTP_400_BAD_REQUEST, (
+            "Router MUST NOT use 400 for card-not-found; the "
+            "response-message mapping requires _MSG_DETAIL_NOT_FOUND "
+            "→ HTTP 404 per RFC 7231 §6.5.4."
         )
 
         # The error response is wrapped by the global ABEND-DATA
@@ -1362,7 +1403,7 @@ class TestCardDetail:
         # for the COBOL literal (byte-for-byte). This is resilient to
         # envelope-shape tweaks and enforces the COBOL parity promise.
         assert _MSG_DETAIL_NOT_FOUND in response.text, (
-            f"400 response MUST carry the COCRDSLC.cbl L154 literal "
+            f"404 response MUST carry the COCRDSLC.cbl L154 literal "
             f"{_MSG_DETAIL_NOT_FOUND!r} byte-for-byte (AAP §0.7.1 — "
             f"preserve existing error messages exactly); got {response.text}"
         )
@@ -1498,13 +1539,16 @@ class TestCardDetail:
 #
 #   1. Happy path (HTTP 200, ``info_message`` contains
 #      ``_MSG_UPDATE_SUCCESS`` "Changes committed to database").
-#   2. Not-found (service returns ``_MSG_DETAIL_NOT_FOUND``; router
-#      converts to HTTP 400, mirroring the COCRDUPC
+#   2. Not-found (service returns ``_MSG_UPDATE_NOT_FOUND`` — same
+#      literal as ``_MSG_DETAIL_NOT_FOUND``, collapsed to a single
+#      entry in ``_ERROR_MESSAGE_STATUS_MAP``; router converts to
+#      HTTP 404 per RFC 7231 §6.5.4, mirroring the COCRDUPC
 #      ``DFHRESP(NOTFND)`` branch at L204).
 #   3. Optimistic-concurrency conflict (service returns
 #      ``_MSG_UPDATE_CONCURRENCY`` "Record changed by some one else.
-#      Please review"; router converts to HTTP 400 — NOT 409, per
-#      the uniform error-routing invariant).
+#      Please review"; router looks up the literal in
+#      ``_ERROR_MESSAGE_STATUS_MAP`` and converts to HTTP 409 per
+#      RFC 7231 §6.5.8).
 #   4. Pydantic validation failure (invalid status_code,
 #      expiry_month, or card_number) → HTTP 422, before the service
 #      is invoked.
@@ -1622,10 +1666,10 @@ class TestCardUpdate:
         assert call_request.expiry_day == request_body["expiry_day"]
 
     # ------------------------------------------------------------------
-    # 2. Not-found — service returns _MSG_DETAIL_NOT_FOUND → HTTP 400
+    # 2. Not-found — service returns _MSG_DETAIL_NOT_FOUND → HTTP 404
     # ------------------------------------------------------------------
     async def test_update_card_not_found(self, client: AsyncClient) -> None:
-        """Update targeting a non-existent card returns HTTP 400.
+        """Update targeting a non-existent card returns HTTP 404.
 
         Mirrors the ``COCRDUPC.cbl`` ``9100-GETCARD-BYACCTCARD``
         paragraph at line 204: the pre-UPDATE check that verifies
@@ -1634,12 +1678,19 @@ class TestCardUpdate:
         condition' TO WS-ERR-MESSAGE`` and skips the rewrite.
 
         The Python service returns a :class:`CardUpdateResponse`
-        with ``error_message = _MSG_DETAIL_NOT_FOUND`` — the router's
-        uniform "any error_message → 400" invariant (card_router.py
-        lines 277-281) converts this to HTTP 400, NOT 404.
+        with ``error_message = _MSG_DETAIL_NOT_FOUND`` (card_service
+        exposes both ``_MSG_DETAIL_NOT_FOUND`` and
+        ``_MSG_UPDATE_NOT_FOUND`` which share the identical string
+        literal). The router looks up the literal in
+        :data:`_ERROR_MESSAGE_STATUS_MAP` and raises
+        ``HTTPException`` with HTTP 404 Not Found per
+        RFC 7231 §6.5.4. The COBOL-exact error text is preserved
+        byte-for-byte in the response body.
 
         Assertions:
-            * HTTP 400 Bad Request (explicitly NOT 404).
+            * HTTP 404 Not Found (per ``_ERROR_MESSAGE_STATUS_MAP``
+              in ``src/api/routers/card_router.py``, aligned with
+              RFC 7231 §6.5.4).
             * ``detail`` equals the COBOL-exact not-found message
               byte-for-byte.
             * Service was invoked exactly once with the correct
@@ -1660,9 +1711,10 @@ class TestCardUpdate:
                 json=request_body,
             )
 
-        assert response.status_code == status.HTTP_400_BAD_REQUEST, (
-            f"Update of non-existent card MUST return HTTP 400 "
-            f"(uniform error_message routing, NOT 404); got "
+        assert response.status_code == status.HTTP_404_NOT_FOUND, (
+            f"Update of non-existent card MUST return HTTP 404 "
+            f"(``_MSG_DETAIL_NOT_FOUND`` → 404 per "
+            f"``_ERROR_MESSAGE_STATUS_MAP``); got "
             f"{response.status_code}: {response.text}"
         )
 
@@ -1672,7 +1724,7 @@ class TestCardUpdate:
         # from test_bill_router.py, we search the full response text
         # for the COBOL literal (byte-for-byte).
         assert _MSG_DETAIL_NOT_FOUND in response.text, (
-            f"400 response MUST carry the COCRDUPC.cbl L204 literal "
+            f"404 response MUST carry the COCRDUPC.cbl L204 literal "
             f"{_MSG_DETAIL_NOT_FOUND!r} byte-for-byte (AAP §0.7.1 — "
             f"preserve existing error messages exactly); got {response.text}"
         )
@@ -1681,12 +1733,12 @@ class TestCardUpdate:
         mock_instance.update_card.assert_awaited_once()
 
     # ------------------------------------------------------------------
-    # 3. Optimistic-concurrency conflict — HTTP 400 (NOT 409)
+    # 3. Optimistic-concurrency conflict — HTTP 409 (RFC 7231 §6.5.8)
     # ------------------------------------------------------------------
     async def test_update_card_concurrent_modification(
         self, client: AsyncClient
     ) -> None:
-        """Concurrency conflict returns HTTP 400 with the COBOL-exact message.
+        """Concurrency conflict returns HTTP 409 with the COBOL-exact message.
 
         This is the signature behavior of Feature F-008 — the
         direct translation of COCRDUPC's optimistic-concurrency
@@ -1709,20 +1761,21 @@ class TestCardUpdate:
         The Python port uses SQLAlchemy's row-versioning to detect
         the same race: a ``StaleDataError`` on UPDATE is caught by
         :meth:`CardService.update_card`, which returns a response
-        with ``error_message = _MSG_UPDATE_CONCURRENCY``.
-
-        CRITICAL — HTTP STATUS DRIFT WATCHPOINT:
-        A naïve REST-conventional mapping would translate this to
-        HTTP 409 Conflict. The CardDemo card_router DELIBERATELY
-        does NOT do that — it uniformly maps ALL service-reported
-        errors to HTTP 400 (confirmed at card_router.py lines
-        277-281). This test locks that behavior in place to prevent
-        accidental drift toward "more RESTful" status codes that
-        would break downstream clients that inspect ``detail`` strings
-        rather than status codes.
+        with ``error_message = _MSG_UPDATE_CONCURRENCY``
+        (identical to ``_MSG_UPDATE_STALE`` in the router's map —
+        both carry the same literal ``"Record changed by some one
+        else. Please review"``). The router looks up this literal
+        in :data:`_ERROR_MESSAGE_STATUS_MAP` and raises
+        ``HTTPException`` with HTTP 409 Conflict per
+        RFC 7231 §6.5.8 (Conflict). The COBOL-exact error text is
+        preserved byte-for-byte in the response body, so downstream
+        clients that match on the ``detail`` substring continue to
+        work unchanged.
 
         Assertions:
-            * HTTP 400 Bad Request (explicitly NOT 409).
+            * HTTP 409 Conflict (per ``_ERROR_MESSAGE_STATUS_MAP``
+              in ``src/api/routers/card_router.py``, aligned with
+              RFC 7231 §6.5.8).
             * ``detail`` equals the COBOL-exact concurrency message
               "Record changed by some one else. Please review"
               byte-for-byte (46 chars).
@@ -1743,17 +1796,21 @@ class TestCardUpdate:
                 json=request_body,
             )
 
-        # HTTP 400 — NOT 409 Conflict. This is the deliberate
-        # behavior per card_router.py L277-281.
-        assert response.status_code == status.HTTP_400_BAD_REQUEST, (
-            f"Optimistic-concurrency conflict MUST return HTTP 400 "
-            f"(uniform error_message routing, NOT 409 Conflict); "
+        # HTTP 409 Conflict — ``_MSG_UPDATE_CONCURRENCY`` / the
+        # shared "Record changed by some one else..." literal is
+        # mapped to 409 in ``_ERROR_MESSAGE_STATUS_MAP`` per
+        # RFC 7231 §6.5.8.
+        assert response.status_code == status.HTTP_409_CONFLICT, (
+            f"Optimistic-concurrency conflict MUST return HTTP 409 "
+            f"(``_MSG_UPDATE_CONCURRENCY`` → 409 per RFC 7231 §6.5.8); "
             f"got {response.status_code}: {response.text}"
         )
-        # Explicit negative assertion to lock out accidental drift.
-        assert response.status_code != status.HTTP_409_CONFLICT, (
-            "Router MUST NOT use 409 Conflict for concurrency errors; "
-            "all service-layer errors are uniformly 400 per F-008 spec."
+        # Explicit negative assertion to lock out accidental drift
+        # BACK to the legacy uniform-400 behavior.
+        assert response.status_code != status.HTTP_400_BAD_REQUEST, (
+            "Router MUST NOT use 400 for optimistic-concurrency "
+            "conflict; RFC 7231 §6.5.8 mandates 409 Conflict for "
+            "version-mismatch errors."
         )
 
         # The error response is wrapped by the global ABEND-DATA
@@ -1764,7 +1821,7 @@ class TestCardUpdate:
         # Note the mixed-case "some one else" (two words) is the
         # exact COBOL source, not a typo (COCRDUPC.cbl L208).
         assert _MSG_UPDATE_CONCURRENCY in response.text, (
-            f"400 response MUST carry the COCRDUPC.cbl L208 literal "
+            f"409 response MUST carry the COCRDUPC.cbl L208 literal "
             f"{_MSG_UPDATE_CONCURRENCY!r} byte-for-byte (AAP §0.7.1 — "
             f"preserve existing error messages exactly); got {response.text}"
         )

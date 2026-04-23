@@ -84,13 +84,13 @@ HTTP status-code expectations
 Endpoint                          Outcome         HTTP status
 ================================  ==============  ========================
 GET  /accounts/{acct_id}          success         200 OK
-GET  /accounts/{acct_id}          not found       400 Bad Request
+GET  /accounts/{acct_id}          not found       404 Not Found
 GET  /accounts/{acct_id}          zero id         400 Bad Request
 GET  /accounts/{acct_id}          bad path        422 Unprocessable
 GET  /accounts/{acct_id}          unauth          401 / 403
 PUT  /accounts/{acct_id}          success         200 OK
-PUT  /accounts/{acct_id}          not found       400 Bad Request
-PUT  /accounts/{acct_id}          concurrency     400 Bad Request
+PUT  /accounts/{acct_id}          not found       404 Not Found
+PUT  /accounts/{acct_id}          concurrency     409 Conflict
 PUT  /accounts/{acct_id}          no changes      200 OK (info_message)
 PUT  /accounts/{acct_id}          rollback        400 Bad Request
 PUT  /accounts/{acct_id}          bad date        400 Bad Request
@@ -101,23 +101,36 @@ PUT  /accounts/{acct_id}          unauth          401 / 403
 
 Critical behavioral invariants
 ------------------------------
-1. **All business errors route to HTTP 400** (not 404/409). The
-   router uniformly converts ``response.error_message`` to
-   ``HTTPException(status_code=400, detail=response.error_message)``
-   regardless of underlying cause (NOTFND, optimistic-concurrency
-   conflict, validation, path/body mismatch, no-changes-detected).
-   This is the "response-message" pattern that matches the original
-   COBOL UX: a single error string in the ERRMSGI BMS field rather
-   than an HTTP-style error code. Confirmed at
-   ``src/api/routers/account_router.py`` lines 134-144 (GET) and
-   185-194 (PUT).
+1. **Business errors route to HTTP 400 / 404 / 409 based on the
+   service's ``error_message`` constant.** The router no longer
+   maps every populated ``error_message`` uniformly to HTTP 400;
+   instead it looks up the exact error-message string in the
+   module-level mapping
+   :data:`src.api.routers.account_router._ERROR_MESSAGE_STATUS_MAP`
+   and raises :class:`HTTPException` with the registered status
+   code. The mapping is:
+
+   * ``_MSG_VIEW_XREF_NOT_FOUND`` /
+     ``_MSG_VIEW_ACCT_NOT_FOUND`` /
+     ``_MSG_VIEW_CUST_NOT_FOUND``  -> HTTP **404 Not Found**
+   * ``_MSG_UPDATE_STALE``          -> HTTP **409 Conflict**
+   * All other error messages       -> HTTP **400 Bad Request**
+
+   The 404 mapping aligns with RFC 7231 §6.5.4 (missing resource);
+   the 409 mapping aligns with RFC 7231 §6.5.8 (optimistic-
+   concurrency conflict). Validation / path-body mismatch / no-
+   change-detected / zip-state inconsistency / update-failed all
+   remain HTTP 400. Confirmed at
+   ``src/api/routers/account_router.py`` lines 137-197
+   (``_ERROR_MESSAGE_STATUS_MAP`` table + ``_map_error_to_status``
+   helper) and the two route handlers that call the helper.
 2. **Account ID is exactly 11 digits** (PIC 9(11)). The path regex
    ``^[0-9]{11}$`` rejects malformed ``acct_id`` path parameters
    with FastAPI's automatic HTTP 422 *before* the service runs.
    The value ``00000000000`` (11 zeros) DOES match the regex — the
    zero-check happens in the service layer, which returns a
    response with ``error_message`` set; the router then translates
-   to HTTP 400.
+   to HTTP 400 (zero-ID is a validation message, not a not-found).
 3. **Monetary fields MUST use Decimal, NEVER float.** The five
    money-typed fields on :class:`AccountViewResponse` —
    ``credit_limit``, ``cash_credit_limit``, ``current_balance``,
@@ -133,16 +146,27 @@ Critical behavioral invariants
    Python port wraps both in a single SQLAlchemy transaction that
    rolls back on exception (via :func:`get_db` context manager).
    From the router's perspective this surfaces as a response with
-   ``error_message`` set — the tests exercise this through the
+   ``error_message`` set to ``_MSG_UPDATE_FAILED`` — NOT one of
+   the three not-found constants and NOT ``_MSG_UPDATE_STALE`` —
+   so the router translates it to HTTP **400 Bad Request** (the
+   default mapping bucket). The tests exercise this through the
    ``test_update_account_dual_write_rollback`` case.
-5. **Optimistic-concurrency conflict surfaces as HTTP 400.** The
-   SQLAlchemy ``version_id_col`` on :class:`Account` raises
+5. **Optimistic-concurrency conflict surfaces as HTTP 409
+   Conflict.** The SQLAlchemy ``version_id_col`` on
+   :class:`Account` raises
    :class:`sqlalchemy.orm.exc.StaleDataError` when another user
    modifies the row between SELECT and UPDATE. The service catches
    it and returns a response with
    ``error_message="Record changed by some one else. Please review"``
-   (the COBOL-exact literal from COACTUPC.cbl). The router
-   translates to HTTP 400 — deliberately NOT 409 Conflict.
+   (the COBOL-exact literal from COACTUPC.cbl, byte-for-byte
+   preserved). The router looks up this message in
+   :data:`_ERROR_MESSAGE_STATUS_MAP`, finds the ``HTTP_409_CONFLICT``
+   mapping, and raises ``HTTPException(409)`` — aligning with RFC
+   7231 §6.5.8 "the request could not be completed due to a
+   conflict with the current state of the target resource". The
+   ``detail`` field preserves the COBOL-exact message byte-for-byte
+   so existing CICS-era help-text clients continue to display the
+   same literal.
 6. **Authentication is enforced by middleware**, not by the
    ``get_current_user`` dependency alone. The
    :class:`JWTAuthMiddleware` runs BEFORE FastAPI dependency
@@ -810,12 +834,14 @@ _MSG_STATE_INVALID: str = "State is not valid."
 #
 #   1. Happy path — full 31-field account view, HTTP 200.
 #   2. Account not found — service returns _MSG_VIEW_ACCT_NOT_FOUND,
-#      router converts to HTTP 400 (NOT 404 — uniform error
-#      routing, see module docstring invariant #1).
+#      router looks up the literal in ``_ERROR_MESSAGE_STATUS_MAP``
+#      and converts to HTTP 404 (RFC 7231 §6.5.4 — see module
+#      docstring invariant #1).
 #   3. Invalid ID (non-numeric) — path regex rejects, HTTP 422
 #      from FastAPI BEFORE the service runs.
 #   4. Zero account ID — regex accepts (11 zeros match ``[0-9]{11}``),
-#      service returns _MSG_ACCT_INVALID, router converts to HTTP 400.
+#      service returns _MSG_ACCT_INVALID, which is NOT in the
+#      mapping → HTTP 400 (default bucket for validation errors).
 #   5. Unauthenticated — no Authorization header, middleware rejects
 #      with HTTP 401 (WWW-Authenticate header per RFC 7235).
 #
@@ -1014,10 +1040,10 @@ class TestAccountView:
         mock_instance.get_account_view.assert_awaited_once_with(_TEST_ACCT_ID)
 
     # ----------------------------------------------------------------------
-    # 2. Not found — service returns error_message; router → HTTP 400
+    # 2. Not found — service returns error_message; router → HTTP 404
     # ----------------------------------------------------------------------
     async def test_get_account_not_found(self, client: AsyncClient) -> None:
-        """Non-existent account returns HTTP 400 with COBOL-exact message.
+        """Non-existent account returns HTTP 404 with COBOL-exact message.
 
         Mirrors the ``COACTVWC.cbl`` ``READ-ACCOUNT-FILE`` branch
         that handled DFHRESP(NOTFND) on the direct ACCTFILE read:
@@ -1030,12 +1056,17 @@ class TestAccountView:
         In the Python port the service catches the "empty query
         result" case and returns a response with
         ``error_message = _MSG_VIEW_ACCT_NOT_FOUND``. The router
-        translates ANY non-None ``error_message`` to HTTP 400 —
-        deliberately NOT 404 — per invariant #1 in the module
-        docstring.
+        looks up this specific literal in
+        :data:`_ERROR_MESSAGE_STATUS_MAP` — which maps all three
+        COACTVWC not-found literals (xref-miss, acct-miss,
+        customer-miss) to HTTP 404 — and raises ``HTTPException``
+        with that status. All non-mapped errors default to HTTP 400.
+        This pattern aligns the API with RFC 7231 §6.5.4 (Not Found)
+        while preserving the COBOL-exact error text byte-for-byte.
 
         Assertions:
-            * HTTP 400 Bad Request (explicitly NOT 404).
+            * HTTP 404 Not Found (per ``_ERROR_MESSAGE_STATUS_MAP``
+              in ``src/api/routers/account_router.py``).
             * The response carries the COBOL-exact literal
               ``"Did not find this account in account master file"``
               byte-for-byte.
@@ -1057,19 +1088,22 @@ class TestAccountView:
 
             response = await client.get(f"/accounts/{missing_acct_id}")
 
-        # HTTP 400 — NOT 404. This is the deliberate behavior per
-        # account_router.py L134-144 (uniform error routing).
-        assert response.status_code == status.HTTP_400_BAD_REQUEST, (
-            f"Account-not-found MUST return HTTP 400 (uniform "
-            f"error_message routing, NOT 404); got "
+        # HTTP 404 — the literal ``_MSG_VIEW_ACCT_NOT_FOUND`` is
+        # registered in ``_ERROR_MESSAGE_STATUS_MAP`` with value
+        # 404 per RFC 7231 §6.5.4 (Not Found).
+        assert response.status_code == status.HTTP_404_NOT_FOUND, (
+            f"Account-not-found MUST return HTTP 404 (resource not "
+            f"found — ``_MSG_VIEW_ACCT_NOT_FOUND`` is mapped to 404 "
+            f"in ``_ERROR_MESSAGE_STATUS_MAP``); got "
             f"{response.status_code}: {response.text}"
         )
         # Explicit negative assertion to lock out accidental drift
-        # toward REST-conventional 404.
-        assert response.status_code != status.HTTP_404_NOT_FOUND, (
-            "Router MUST NOT use 404 for account-not-found; the "
-            "response-message pattern requires all service errors "
-            "to be uniformly HTTP 400 per F-004 spec."
+        # BACK to the legacy uniform-400 pattern. REST convention
+        # (RFC 7231 §6.5.4) mandates 404 for resource-not-found.
+        assert response.status_code != status.HTTP_400_BAD_REQUEST, (
+            "Router MUST NOT use 400 for account-not-found; the "
+            "response-message mapping requires _MSG_VIEW_ACCT_NOT_FOUND "
+            "→ HTTP 404 per RFC 7231 §6.5.4."
         )
 
         # The error response is wrapped by the global
@@ -1079,7 +1113,7 @@ class TestAccountView:
         # the ABEND-DATA shape). We search the raw response text
         # byte-for-byte to avoid coupling to the exact wrapper shape.
         assert _MSG_VIEW_ACCT_NOT_FOUND in response.text, (
-            f"400 response MUST carry the COACTVWC.cbl not-found "
+            f"404 response MUST carry the COACTVWC.cbl not-found "
             f"literal {_MSG_VIEW_ACCT_NOT_FOUND!r} byte-for-byte "
             f"(AAP §0.7.1 — preserve existing error messages "
             f"exactly); got {response.text}"
@@ -1298,20 +1332,23 @@ class TestAccountView:
 #   1. Happy path — successful dual-write, HTTP 200 with
 #      _MSG_UPDATE_SUCCESS info_message.
 #   2. Account not found — service returns _MSG_VIEW_ACCT_NOT_FOUND,
-#      router → HTTP 400.
+#      router → HTTP 404 (RFC 7231 §6.5.4 — per
+#      ``_ERROR_MESSAGE_STATUS_MAP``).
 #   3. Concurrent modification — service returns _MSG_UPDATE_STALE
-#      (StaleDataError caught internally), router → HTTP 400
-#      (NOT 409 — see invariant #5 in module docstring).
+#      (StaleDataError caught internally), router → HTTP 409
+#      Conflict (RFC 7231 §6.5.8 — see invariant #5 in module
+#      docstring).
 #   4. No changes detected — service returns info_message
 #      _MSG_NO_CHANGES (error_message is None), router → HTTP 200.
 #   5. Dual-write rollback — service returns _MSG_UPDATE_FAILED
-#      (transaction rolled back), router → HTTP 400.
-#   6. Invalid date fields — service returns date validation error,
-#      router → HTTP 400.
-#   7. Invalid FICO score — service returns FICO range error,
-#      router → HTTP 400.
+#      (transaction rolled back); not in mapping → HTTP 400
+#      (default bucket for validation-like failures).
+#   6. Invalid date fields — service returns date validation error
+#      (not in mapping) → HTTP 400.
+#   7. Invalid FICO score — service returns FICO range error
+#      (not in mapping) → HTTP 400.
 #   8. Invalid state code — service returns state/zip validation
-#      error, router → HTTP 400.
+#      error (not in mapping) → HTTP 400.
 #   9. Unauthenticated — middleware rejects with HTTP 401.
 #
 # All happy-path and business-failure tests use the ``client``
@@ -1439,10 +1476,10 @@ class TestAccountUpdate:
         assert parsed_request.customer_last_name == "PUBLIC"
 
     # ----------------------------------------------------------------------
-    # 2. Account not found — service returns error_message; router → 400
+    # 2. Account not found — service returns error_message; router → 404
     # ----------------------------------------------------------------------
     async def test_update_account_not_found(self, client: AsyncClient) -> None:
-        """PUT on non-existent account returns HTTP 400.
+        """PUT on non-existent account returns HTTP 404.
 
         The COACTUPC program performed the initial
         ``READ UPDATE DATASET('ACCTFILE') RIDFLD(WS-ACCT-ID)`` at
@@ -1456,11 +1493,14 @@ class TestAccountUpdate:
         In the Python port the service catches the empty-result
         case and returns a response with
         ``error_message = _MSG_VIEW_ACCT_NOT_FOUND``. The router
-        translates to HTTP 400 — deliberately NOT 404 per the
-        uniform error-routing invariant.
+        looks up this literal in :data:`_ERROR_MESSAGE_STATUS_MAP`
+        and raises ``HTTPException`` with HTTP 404 Not Found per
+        RFC 7231 §6.5.4. The COBOL-exact error text is preserved
+        byte-for-byte in the response body.
 
         Assertions:
-            * HTTP 400 Bad Request.
+            * HTTP 404 Not Found (per ``_ERROR_MESSAGE_STATUS_MAP``
+              in ``src/api/routers/account_router.py``).
             * COBOL-exact not-found literal present in response.
             * Service invoked exactly once.
         """
@@ -1481,14 +1521,15 @@ class TestAccountUpdate:
                 json=request_body,
             )
 
-        assert response.status_code == status.HTTP_400_BAD_REQUEST, (
-            f"Update on non-existent account MUST return HTTP 400 "
-            f"(uniform error routing, NOT 404); got "
+        assert response.status_code == status.HTTP_404_NOT_FOUND, (
+            f"Update on non-existent account MUST return HTTP 404 "
+            f"(_MSG_VIEW_ACCT_NOT_FOUND → 404 per "
+            f"``_ERROR_MESSAGE_STATUS_MAP``); got "
             f"{response.status_code}: {response.text}"
         )
 
         assert _MSG_VIEW_ACCT_NOT_FOUND in response.text, (
-            f"400 response MUST carry the COACTVWC/COACTUPC "
+            f"404 response MUST carry the COACTVWC/COACTUPC "
             f"not-found literal {_MSG_VIEW_ACCT_NOT_FOUND!r} "
             f"byte-for-byte; got {response.text}"
         )
@@ -1497,10 +1538,10 @@ class TestAccountUpdate:
         mock_instance.update_account.assert_awaited_once()
 
     # ----------------------------------------------------------------------
-    # 3. Concurrent modification — optimistic concurrency → HTTP 400
+    # 3. Concurrent modification — optimistic concurrency → HTTP 409
     # ----------------------------------------------------------------------
     async def test_update_account_concurrent_modification(self, client: AsyncClient) -> None:
-        """Concurrent modification returns HTTP 400 with COBOL-exact msg.
+        """Concurrent modification returns HTTP 409 with COBOL-exact msg.
 
         This is the signature behavior of F-005 — the direct
         translation of the COACTUPC optimistic-concurrency pattern.
@@ -1526,20 +1567,19 @@ class TestAccountUpdate:
         :class:`sqlalchemy.orm.exc.StaleDataError` on UPDATE is
         caught by :meth:`AccountService.update_account`, which
         returns a response with
-        ``error_message = _MSG_UPDATE_STALE``.
-
-        CRITICAL — HTTP STATUS DRIFT WATCHPOINT:
-        A naïve REST-conventional mapping would translate this to
-        HTTP 409 Conflict. The CardDemo account_router
-        DELIBERATELY does NOT do that — it uniformly maps ALL
-        service-reported errors to HTTP 400 per the response-
-        message pattern. This test locks that behavior in place
-        to prevent accidental drift toward "more RESTful" status
-        codes that would break downstream clients parsing
-        ``detail`` strings.
+        ``error_message = _MSG_UPDATE_STALE``. The router then
+        looks up this literal in
+        :data:`_ERROR_MESSAGE_STATUS_MAP` and raises
+        ``HTTPException`` with HTTP 409 Conflict per
+        RFC 7231 §6.5.8 (Conflict). The COBOL-exact error text
+        is preserved byte-for-byte in the response body, so
+        downstream clients that match on the ``detail`` substring
+        continue to work unchanged.
 
         Assertions:
-            * HTTP 400 Bad Request (explicitly NOT 409).
+            * HTTP 409 Conflict (per ``_ERROR_MESSAGE_STATUS_MAP``
+              in ``src/api/routers/account_router.py``, aligned
+              with RFC 7231 §6.5.8).
             * ``detail`` carries the COBOL-exact concurrency
               message ``"Record changed by some one else. Please
               review"`` byte-for-byte (46 chars). Note the
@@ -1563,24 +1603,26 @@ class TestAccountUpdate:
                 json=request_body,
             )
 
-        # HTTP 400 — NOT 409 Conflict. This is the deliberate
-        # behavior per account_router.py L185-194.
-        assert response.status_code == status.HTTP_400_BAD_REQUEST, (
-            f"Optimistic-concurrency conflict MUST return HTTP 400 "
-            f"(uniform error_message routing, NOT 409 Conflict); got "
+        # HTTP 409 Conflict — ``_MSG_UPDATE_STALE`` is mapped to
+        # 409 in ``_ERROR_MESSAGE_STATUS_MAP`` per RFC 7231 §6.5.8.
+        assert response.status_code == status.HTTP_409_CONFLICT, (
+            f"Optimistic-concurrency conflict MUST return HTTP 409 "
+            f"(``_MSG_UPDATE_STALE`` → 409 per RFC 7231 §6.5.8); got "
             f"{response.status_code}: {response.text}"
         )
-        # Explicit negative assertion to lock out drift.
-        assert response.status_code != status.HTTP_409_CONFLICT, (
-            "Router MUST NOT use 409 Conflict for concurrency errors; "
-            "all service-layer errors are uniformly 400 per F-005 spec."
+        # Explicit negative assertion to lock out accidental drift
+        # BACK to the legacy uniform-400 behavior.
+        assert response.status_code != status.HTTP_400_BAD_REQUEST, (
+            "Router MUST NOT use 400 for optimistic-concurrency "
+            "conflict; RFC 7231 §6.5.8 mandates 409 Conflict for "
+            "version-mismatch errors."
         )
 
         # The error response is wrapped by the global ABEND-DATA
         # handler — the COBOL-exact concurrency message appears
         # somewhere in the response envelope. Byte-for-byte check.
         assert _MSG_UPDATE_STALE in response.text, (
-            f"400 response MUST carry the COACTUPC.cbl concurrency "
+            f"409 response MUST carry the COACTUPC.cbl concurrency "
             f"literal {_MSG_UPDATE_STALE!r} byte-for-byte (AAP "
             f"§0.7.1 — preserve existing error messages exactly); "
             f"got {response.text}"
@@ -1708,15 +1750,19 @@ class TestAccountUpdate:
         returns a response with
         ``error_message = _MSG_UPDATE_FAILED``.
 
-        From the router's perspective this surfaces identically to
-        any other business failure — error_message is set, router
-        raises HTTPException(400). The database-level atomicity
-        is tested in :mod:`tests.integration.test_database`; this
+        From the router's perspective this surfaces as a generic
+        business failure — ``_MSG_UPDATE_FAILED`` is NOT registered
+        in :data:`_ERROR_MESSAGE_STATUS_MAP` (only the three COACTVWC
+        not-found literals and ``_MSG_UPDATE_STALE`` are), so it
+        falls through to the default HTTP 400 bucket for
+        validation-like failures. The database-level atomicity is
+        tested in :mod:`tests.integration.test_database`; this
         test simply confirms the router correctly surfaces the
-        error to the HTTP client.
+        error to the HTTP client with the default status.
 
         Assertions:
-            * HTTP 400 Bad Request.
+            * HTTP 400 Bad Request (default bucket — the message
+              is NOT in ``_ERROR_MESSAGE_STATUS_MAP``).
             * ``detail`` carries the COBOL-exact _MSG_UPDATE_FAILED
               literal byte-for-byte.
             * Service invoked exactly once.
@@ -1736,11 +1782,14 @@ class TestAccountUpdate:
                 json=request_body,
             )
 
-        # HTTP 400 — service-layer rollback is surfaced as a
-        # business error, uniformly 400 per the router's pattern.
+        # HTTP 400 — _MSG_UPDATE_FAILED is NOT in
+        # ``_ERROR_MESSAGE_STATUS_MAP`` (only the 3 not-found
+        # literals and _MSG_UPDATE_STALE are registered), so it
+        # falls through to the default 400 bucket.
         assert response.status_code == status.HTTP_400_BAD_REQUEST, (
-            f"Dual-write rollback MUST return HTTP 400 (the router "
-            f"surfaces all service errors as 400); got "
+            f"Dual-write rollback MUST return HTTP 400 (default "
+            f"bucket — ``_MSG_UPDATE_FAILED`` is not in the "
+            f"status map); got "
             f"{response.status_code}: {response.text}"
         )
 
