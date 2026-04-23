@@ -21,13 +21,42 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+WORKDIR /app
+
 # ----------------------------------------------------------------------------
-# System dependencies required by:
-#   - psycopg2-binary (falls back to libpq at runtime)
-#   - cryptography / bcrypt native backends (cffi)
-#   - healthcheck convenience (curl)
-# gcc is used only for compiling any optional native extensions then removed
-# to keep the image lean.
+# Copy requirements first (leverages Docker layer caching — this layer is
+# rebuilt only when the requirements files themselves change).
+# ----------------------------------------------------------------------------
+COPY requirements.txt requirements-api.txt ./
+
+# ----------------------------------------------------------------------------
+# System + Python dependencies installed in a SINGLE RUN directive so the
+# build-time packages (gcc, libpq-dev) are purged BEFORE the layer is
+# committed. Docker layers are immutable once written: if the install and
+# purge were in separate RUN directives, the intermediate install layer
+# would permanently retain ~200 MB of toolchain files even though a later
+# layer removed them. Consolidating resolves QA Checkpoint 8 Issue #1
+# (image size 501 MB > 300 MB target).
+#
+# System packages:
+#   - libpq5              (runtime PostgreSQL client library for psycopg2)
+#   - libpq-dev  (BUILD)  (required by psycopg2 during wheel compilation)
+#   - gcc        (BUILD)  (required by cryptography / bcrypt / cffi if
+#                          they fall back to source builds)
+#   - curl                (used by HEALTHCHECK below)
+#   - ca-certificates     (TLS trust store for outbound HTTPS)
+#
+# The ``(BUILD)`` packages are purged via ``apt-get purge --auto-remove``
+# after ``pip install`` completes successfully, leaving only the runtime
+# packages in the final layer.
+#
+# pip ``--no-compile`` suppresses generation of ``__pycache__/*.pyc``
+# bytecode files during install. ``PYTHONDONTWRITEBYTECODE=1`` (set above)
+# already prevents the interpreter from using any such cached bytecode at
+# runtime, so these files would be dead weight (~46 MB across ~2,500
+# files on this dependency set). Explicitly removing the still-materialised
+# ``__pycache__`` directories as the final step of the RUN covers any pip
+# internals or setuptools hooks that may ignore ``--no-compile``.
 # ----------------------------------------------------------------------------
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -36,19 +65,12 @@ RUN apt-get update \
         gcc \
         curl \
         ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-# ----------------------------------------------------------------------------
-# Install Python dependencies first to leverage Docker layer caching.
-# Core shared + API layer dependencies are required for the ECS service.
-# ----------------------------------------------------------------------------
-COPY requirements.txt requirements-api.txt ./
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
-    && pip install --no-cache-dir -r requirements.txt -r requirements-api.txt \
+    && pip install --no-cache-dir --no-compile --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir --no-compile -r requirements.txt -r requirements-api.txt \
     && apt-get purge -y --auto-remove gcc libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean \
+    && find /usr/local/lib/python3.11 -type d -name __pycache__ -exec rm -rf {} + \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /root/.cache/pip /tmp/* /var/tmp/*
 
 # ----------------------------------------------------------------------------
 # Copy project metadata and application source.

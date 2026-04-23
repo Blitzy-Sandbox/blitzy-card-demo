@@ -10,9 +10,12 @@
 #
 # Per AAP §0.4.4 (Architectural Decisions) and §0.5.1 (docker-compose.yml
 # target file description).
+#
+# NOTE: The top-level ``version`` attribute is intentionally omitted. Docker
+# Compose V2 (Compose Spec) deprecated the field; declaring it emits a
+# deprecation warning on every ``docker compose`` invocation while having no
+# effect on runtime behaviour. Removed to resolve QA Checkpoint 8 Issue #2.
 # ============================================================================
-
-version: "3.8"
 
 services:
   # --------------------------------------------------------------------------
