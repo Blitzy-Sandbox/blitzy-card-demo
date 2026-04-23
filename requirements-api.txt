@@ -1,0 +1,72 @@
+# ============================================================================
+# CardDemo — API Layer Dependencies (FastAPI on AWS ECS Fargate)
+# ----------------------------------------------------------------------------
+# Supports the 18 online CICS COBOL programs converted to REST/GraphQL
+# endpoints running on ECS Fargate. Replaces the CICS runtime that hosted
+# all interactive transactions.
+#
+# Per AAP §0.6.1 "API Layer Dependencies (requirements-api.txt)"
+# and §0.4.4 "FastAPI as the primary web framework, supporting both REST
+# and GraphQL".
+# ============================================================================
+
+# Inherit core shared dependencies (boto3, pydantic, python-dotenv)
+-r requirements.txt
+
+# ---------------------------------------------------------------------------
+# Web framework — REST + GraphQL
+# ---------------------------------------------------------------------------
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.34,<1.0
+
+# ---------------------------------------------------------------------------
+# Database ORM — Aurora PostgreSQL (replaces VSAM KSDS file I/O)
+# ---------------------------------------------------------------------------
+sqlalchemy[asyncio]>=2.0,<3.0
+asyncpg>=0.30,<1.0
+psycopg2-binary>=2.9,<3.0
+alembic>=1.14,<2.0
+
+# ---------------------------------------------------------------------------
+# GraphQL (via Strawberry, integrated with FastAPI)
+# ---------------------------------------------------------------------------
+strawberry-graphql[fastapi]>=0.254,<1.0
+
+# ---------------------------------------------------------------------------
+# Authentication & security
+#   - JWT tokens replace CICS COMMAREA session state
+#   - BCrypt password hashing preserves existing COBOL-era security behavior
+#
+# Version policy for python-jose:
+#   - Minimum 3.4.0 is REQUIRED to pick up the fixes for:
+#       * CVE-2024-33663 — algorithm confusion with OpenSSH ECDSA keys
+#         (unauthorized-action risk in JWT verification)
+#       * CVE-2024-33664 — DoS via compressed JWE tokens
+#     Both CVEs affect 3.3.0 and earlier and are fixed in 3.4.0.
+#   - Upper bound <4.0 to avoid any future major-version API breakage.
+#   - See code-review Finding #1 and AAP §0.7.2 (security requirements).
+#
+# Acknowledged transitive-dependency finding — ecdsa (CVE-2024-23342,
+# "Minerva" timing side-channel in ECDSA signature verification):
+#   python-jose depends on ``ecdsa`` as a transitive package for ECDSA-
+#   based JWT algorithms (ES256, ES384, ES512). The CardDemo API is
+#   hard-wired to the HMAC-SHA256 family (``Settings.JWT_ALGORITHM =
+#   "HS256"`` — see ``src/shared/config/settings.py``), so no ECDSA
+#   code path is reachable at runtime and the timing attack is NOT
+#   exploitable in this deployment.
+#   The upstream ``ecdsa`` maintainers have designated this finding
+#   as a non-priority side-channel; no patched release is available
+#   at the time of writing. The risk is accepted until either (a)
+#   ``ecdsa`` ships a patched release or (b) python-jose is swapped
+#   for ``PyJWT`` (which uses ``cryptography`` directly and is not
+#   affected). See QA Checkpoint 6 Finding #8 (INFO).
+# ---------------------------------------------------------------------------
+python-jose[cryptography]>=3.4.0,<4.0
+passlib[bcrypt]==1.7.4
+bcrypt>=4.2,<5.0
+
+# ---------------------------------------------------------------------------
+# Request handling
+# ---------------------------------------------------------------------------
+python-multipart>=0.0.18,<1.0
+httpx>=0.28,<1.0

@@ -1,0 +1,27 @@
+# ============================================================================
+# CardDemo — Core Shared Dependencies
+# ----------------------------------------------------------------------------
+# Foundational Python packages used by BOTH the API layer (FastAPI/ECS)
+# and the batch layer (PySpark/AWS Glue).
+#
+# Per AAP §0.6.1 "Core / Shared Dependencies (requirements.txt)".
+# No COBOL source equivalent — this is a new artifact for the
+# mainframe-to-cloud modernization migration.
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# AWS SDK (Secrets Manager, SQS, S3)
+# ---------------------------------------------------------------------------
+boto3>=1.35,<2.0
+botocore>=1.35,<2.0
+
+# ---------------------------------------------------------------------------
+# Data validation (replaces COBOL copybook record layouts)
+# ---------------------------------------------------------------------------
+pydantic>=2.10,<3.0
+pydantic-settings>=2.7,<3.0
+
+# ---------------------------------------------------------------------------
+# Environment / configuration
+# ---------------------------------------------------------------------------
+python-dotenv>=1.0.1,<2.0

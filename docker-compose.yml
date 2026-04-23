@@ -1,0 +1,147 @@
+# ============================================================================
+# CardDemo — Local Development Stack (docker-compose)
+# ----------------------------------------------------------------------------
+# Brings up the full cloud-native stack on a developer workstation without
+# requiring AWS access:
+#   - api        : FastAPI service (built from local Dockerfile)
+#   - postgres   : Aurora-compatible PostgreSQL 16 (replaces VSAM KSDS)
+#   - localstack : AWS service simulator (S3 for GDG replacement,
+#                  SQS FIFO for TDQ replacement, Secrets Manager)
+#
+# Per AAP §0.4.4 (Architectural Decisions) and §0.5.1 (docker-compose.yml
+# target file description).
+#
+# NOTE: The top-level ``version`` attribute is intentionally omitted. Docker
+# Compose V2 (Compose Spec) deprecated the field; declaring it emits a
+# deprecation warning on every ``docker compose`` invocation while having no
+# effect on runtime behaviour. Removed to resolve QA Checkpoint 8 Issue #2.
+# ============================================================================
+
+services:
+  # --------------------------------------------------------------------------
+  # API service — FastAPI running on Uvicorn
+  # Replaces the CICS region for all online COBOL programs.
+  # --------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: carddemo-api:local
+    container_name: carddemo-api
+    restart: unless-stopped
+    ports:
+      - "8000:80"
+    volumes:
+      - ./src:/app/src:ro
+    environment:
+      # Database — points to the local PostgreSQL service
+      DATABASE_URL: postgresql+asyncpg://carddemo:carddemo@postgres:5432/carddemo
+      DATABASE_URL_SYNC: postgresql+psycopg2://carddemo:carddemo@postgres:5432/carddemo
+      # AWS simulation via LocalStack
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_ENDPOINT_URL: http://localstack:4566
+      # Auth configuration (JWT replaces CICS COMMAREA)
+      JWT_SECRET_KEY: dev-secret-key-change-in-production
+      JWT_ALGORITHM: HS256
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+      # Environment marker
+      ENVIRONMENT: development
+      LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_started
+    command: >
+      uvicorn src.api.main:app
+      --host 0.0.0.0
+      --port 80
+      --reload
+    networks:
+      - carddemo-net
+
+  # --------------------------------------------------------------------------
+  # PostgreSQL 16 — Aurora PostgreSQL-compatible
+  # Replaces the 10 VSAM KSDS datasets + 3 AIX paths
+  #
+  # NOTE on host port: we publish the container's 5432 on host port 5433
+  # (not the conventional 5432) to avoid a collision with a host-level
+  # PostgreSQL installation that many developer workstations run on the
+  # default port. QA Checkpoint 2 Issue 9 documented this collision
+  # preventing `docker compose up -d postgres` from starting on hosts
+  # where port 5432 was already bound. INTERNAL traffic between
+  # containers still uses port 5432 (see `DATABASE_URL`/`DATABASE_URL_SYNC`
+  # on the `api` service above, and the `POSTGRES_HOST:-postgres` +
+  # `POSTGRES_PORT:-5432` pattern elsewhere) because the port remapping
+  # only applies to host↔container traffic, not to the bridge network
+  # between containers. To connect from the host with `psql`, use
+  # `psql -h localhost -p 5433 -U carddemo -d carddemo`.
+  # --------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: carddemo-postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: carddemo
+      POSTGRES_USER: carddemo
+      POSTGRES_PASSWORD: carddemo
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Auto-initialise schema, indexes, and seed data on first container start
+      # (docker-entrypoint-initdb.d runs *.sql files in sorted order)
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carddemo -d carddemo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - carddemo-net
+
+  # --------------------------------------------------------------------------
+  # LocalStack — AWS service emulator
+  # Simulates:
+  #   - S3 (replaces z/OS GDG generations for statement/report output)
+  #   - SQS FIFO (replaces CICS TDQ WRITEQ JOBS queue)
+  #   - Secrets Manager (database credentials)
+  # --------------------------------------------------------------------------
+  localstack:
+    image: localstack/localstack:3
+    container_name: carddemo-localstack
+    restart: unless-stopped
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: s3,sqs,secretsmanager
+      DEFAULT_REGION: us-east-1
+      DEBUG: "0"
+      DATA_DIR: /var/lib/localstack
+      DOCKER_HOST: unix:///var/run/docker.sock
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:4566/_localstack/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - carddemo-net
+
+volumes:
+  pgdata:
+    name: carddemo-pgdata
+  localstack_data:
+    name: carddemo-localstack-data
+
+networks:
+  carddemo-net:
+    name: carddemo-net
+    driver: bridge

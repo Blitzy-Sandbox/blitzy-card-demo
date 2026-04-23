@@ -1,0 +1,40 @@
+{
+  "Name": "carddemo-posttran",
+  "Description": "Stage 1: Transaction posting - Processes daily transaction file, validates against cross-reference and account data, updates transaction master and category balances, writes rejects to S3. Converted from POSTTRAN.jcl (CBTRN02C).",
+  "Role": "arn:aws:iam::ACCOUNT_ID:role/carddemo-glue-role",
+  "GlueVersion": "5.1",
+  "WorkerType": "G.1X",
+  "NumberOfWorkers": 2,
+  "Timeout": 120,
+  "MaxRetries": 0,
+  "Command": {
+    "Name": "glueetl",
+    "ScriptLocation": "s3://BUCKET_NAME/glue-scripts/posttran_job.py",
+    "PythonVersion": "3"
+  },
+  "DefaultArguments": {
+    "--job-language": "python",
+    "--job-bookmark-option": "job-bookmark-enable",
+    "--enable-metrics": "true",
+    "--enable-continuous-cloudwatch-log": "true",
+    "--enable-spark-ui": "true",
+    "--spark-event-logs-path": "s3://BUCKET_NAME/glue-spark-logs/posttran/",
+    "--TempDir": "s3://BUCKET_NAME/glue-temp/posttran/",
+    "--aurora_connection_name": "carddemo-aurora-connection",
+    "--s3_output_path": "s3://BUCKET_NAME/carddemo/daily-rejects/",
+    "--extra-py-files": "s3://BUCKET_NAME/glue-scripts/common/"
+  },
+  "Connections": {
+    "Connections": ["carddemo-aurora-connection"]
+  },
+  "ExecutionProperty": {
+    "MaxConcurrentRuns": 1
+  },
+  "Tags": {
+    "project": "carddemo",
+    "pipeline-stage": "1-posttran",
+    "source": "POSTTRAN.jcl",
+    "cobol-program": "CBTRN02C",
+    "environment": "production"
+  }
+}

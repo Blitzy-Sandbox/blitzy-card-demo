@@ -1,0 +1,503 @@
+# =============================================================================
+# CardDemo — AWS Glue Job Deployment Pipeline (Batch Workload)
+# -----------------------------------------------------------------------------
+# GitHub Actions workflow that deploys the PySpark batch workload of the
+# CardDemo modernization to AWS Glue 5.1 and keeps the Step Functions state
+# machine that orchestrates the 5-stage pipeline in sync with the repository.
+#
+# Replaces the following z/OS mainframe artifacts:
+#   - samples/jcl/BATCMP.jcl  — Batch COBOL compile via EXEC BUILDBAT; replaced
+#                               by "aws s3 sync" uploads of the PySpark scripts
+#                               (no compile step needed for Python).
+#   - app/jcl/POSTTRAN.jcl    — Stage 1 JES2 submission of CBTRN02C; replaced
+#                               by "carddemo-posttran" Glue job definition.
+#   - app/jcl/INTCALC.jcl     — Stage 2 JES2 submission of CBACT04C; replaced
+#                               by "carddemo-intcalc" Glue job definition.
+#   - app/jcl/COMBTRAN.jcl    — Stage 3 DFSORT + IDCAMS REPRO; replaced by
+#                               "carddemo-combtran" Glue job definition.
+#   - app/jcl/CREASTMT.JCL    — Stage 4a statement generation (CBSTM03A/B);
+#                               replaced by "carddemo-creastmt" Glue job.
+#   - app/jcl/TRANREPT.jcl    — Stage 4b transaction report (CBTRN03C);
+#                               replaced by "carddemo-tranrept" Glue job.
+#
+# Architecture (per AAP §0.4.4):
+#   1. upload-scripts     — Sync src/batch/**, src/shared/**, requirements*.txt
+#                           to the Glue scripts S3 bucket (replaces the
+#                           &HLQ..CARDDEMO.PRC.UTIL proclib naming from
+#                           BATCMP.jcl).
+#   2. update-glue-jobs   — Create or update all 11 Glue job definitions so
+#                           they point at the freshly uploaded scripts.
+#   3. update-pipeline    — Push the latest Step Functions ASL definition,
+#                           which replaces the JCL COND parameter sequencing
+#                           from the five JCL members above.
+#
+# Security (per AAP §0.7.2):
+#   - All AWS access uses IAM roles via OIDC (aws-actions/configure-aws-
+#     credentials@v4). No long-lived access keys are stored in the workflow.
+#   - ARNs are supplied via GitHub Secrets (AWS_DEPLOY_ROLE_ARN,
+#     GLUE_ROLE_ARN, STEP_FUNCTIONS_ARN).
+# =============================================================================
+
+name: deploy-glue
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/batch/**"
+      - "src/shared/**"
+      - "requirements.txt"
+      - "requirements-glue.txt"
+      - "infra/glue-job-configs/**"
+      - ".github/workflows/deploy-glue.yml"
+  workflow_dispatch:
+    inputs:
+      force_recreate:
+        description: "Force recreate Glue jobs (delete + create). Default: false (update only)."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+# Do not cancel in-progress deployments — Glue job updates are not idempotent
+# mid-flight and cancelling could leave inconsistent state between the S3
+# scripts and the Glue job definitions.
+concurrency:
+  group: deploy-glue
+  cancel-in-progress: false
+
+env:
+  # AWS region — overridable via repository or environment vars.
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  # S3 bucket that stores the PySpark scripts consumed by Glue. Replaces the
+  # mainframe &HLQ..CARDDEMO.PRC.UTIL dataset naming from samples/jcl/BATCMP.jcl.
+  S3_GLUE_BUCKET: ${{ vars.S3_GLUE_BUCKET || 'carddemo-glue-scripts' }}
+  # AWS Glue runtime version. Per AAP §0.4.4: "AWS Glue 5.1 (Spark 3.5.6,
+  # Python 3.11, Scala 2.12.18)". Glue 5.0 (Spark 3.5.4) and Glue 5.1
+  # (Spark 3.5.6) are distinct GlueVersion values in the CreateJob/UpdateJob
+  # API — see the AWS Glue "Migrating to version 5.1" guide. This value is
+  # injected via `jq` into each job configuration JSON at deploy time (see
+  # the `--arg glue_version` usages below) so it overrides the value stored
+  # in infra/glue-job-configs/*.json; the two sources must therefore stay
+  # in sync. Keep this aligned with the `GlueVersion` field in every file
+  # under infra/glue-job-configs/.
+  GLUE_VERSION: "5.1"
+  # Python runtime major version (Glue's --python-version).
+  PYTHON_VERSION: "3"
+  # Worker type and count per AAP §0.5.1: "Glue 5.1, G.1X, 2 workers".
+  WORKER_TYPE: "G.1X"
+  NUMBER_OF_WORKERS: "2"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1 — upload-scripts
+  # Uploads all PySpark scripts, shared Python modules, and requirements files
+  # to the Glue scripts S3 bucket. Replaces the JCL BATCMP step that placed
+  # load modules into &HLQ..CARDDEMO.LOADLIB.
+  # ---------------------------------------------------------------------------
+  upload-scripts:
+    name: Upload PySpark scripts and shared modules to S3
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write # required for OIDC role assumption (no access keys)
+    outputs:
+      shared_zip_key: ${{ steps.package-shared.outputs.shared_zip_key }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify S3 bucket exists
+        run: |
+          set -euo pipefail
+          echo "Verifying bucket s3://${S3_GLUE_BUCKET} is accessible..."
+          aws s3api head-bucket --bucket "${S3_GLUE_BUCKET}"
+
+      - name: Sync PySpark batch scripts to S3
+        # Uploads src/batch/ recursively so that every Glue job script plus
+        # the common helpers and the pipeline definition are available at
+        # s3://${S3_GLUE_BUCKET}/src/batch/**. Mirrors the AAP directive:
+        #   aws s3 sync src/batch/ s3://${S3_GLUE_BUCKET}/src/batch/ --delete
+        run: |
+          set -euo pipefail
+          aws s3 sync src/batch/ "s3://${S3_GLUE_BUCKET}/src/batch/" \
+            --delete \
+            --exclude "*.pyc" \
+            --exclude "__pycache__/*" \
+            --exclude "**/__pycache__/*"
+
+      - name: Sync shared Python modules to S3
+        # Uploads src/shared/ recursively so that PySpark jobs can import
+        # shared models, schemas, constants, utils, and config from s3.
+        # Mirrors the AAP directive:
+        #   aws s3 sync src/shared/ s3://${S3_GLUE_BUCKET}/src/shared/ --delete
+        run: |
+          set -euo pipefail
+          aws s3 sync src/shared/ "s3://${S3_GLUE_BUCKET}/src/shared/" \
+            --delete \
+            --exclude "*.pyc" \
+            --exclude "__pycache__/*" \
+            --exclude "**/__pycache__/*"
+
+      - name: Package shared modules as Glue --extra-py-files zip
+        id: package-shared
+        # AWS Glue's --extra-py-files parameter requires .py files or .zip
+        # archives (not directories). We package src/shared/ and
+        # src/batch/common/ into a single zip so every Glue job can import
+        # "src.shared.*" and "src.batch.common.*" transparently.
+        #
+        # The zip MUST preserve the "src/" package root so that absolute
+        # imports (e.g., `from src.shared.models.account import Account`)
+        # resolve correctly inside the Glue executor. The built-in
+        # `python -m zipfile -c` strips one leading directory component,
+        # which would break such imports, so we build the archive
+        # programmatically with arcnames that match the on-disk paths.
+        run: |
+          set -euo pipefail
+          SHARED_ZIP="carddemo_shared.zip"
+          rm -f "${SHARED_ZIP}"
+
+          python <<'PYCODE'
+          import fnmatch
+          import os
+          import zipfile
+
+          SOURCE_DIRS = ["src/shared", "src/batch/common"]
+          EXCLUDE_PATTERNS = ["*.pyc", "*__pycache__*"]
+
+          def excluded(path: str) -> bool:
+              return any(fnmatch.fnmatch(path, pat) for pat in EXCLUDE_PATTERNS)
+
+          with zipfile.ZipFile("carddemo_shared.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+              for src_dir in SOURCE_DIRS:
+                  for root, dirs, files in os.walk(src_dir):
+                      # Prune __pycache__ and similar dirs in place.
+                      dirs[:] = [d for d in dirs if not excluded(d)]
+                      for fname in files:
+                          if excluded(fname):
+                              continue
+                          full_path = os.path.join(root, fname)
+                          if any(excluded(part) for part in full_path.split(os.sep)):
+                              continue
+                          # Preserve the full "src/..." path so absolute
+                          # imports resolve inside the Glue executor.
+                          zf.write(full_path, arcname=full_path)
+          PYCODE
+
+          # Confirm the zip is non-empty and well-formed before upload.
+          python -m zipfile -l "${SHARED_ZIP}" | head -20
+
+          aws s3 cp "${SHARED_ZIP}" \
+            "s3://${S3_GLUE_BUCKET}/src/${SHARED_ZIP}"
+
+          echo "shared_zip_key=src/${SHARED_ZIP}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload requirements files to S3
+        # Per AAP Phase 3 step 5: publish the requirements manifests alongside
+        # the scripts so Glue jobs can pip-install additional dependencies via
+        # --additional-python-modules or a bootstrap layer.
+        run: |
+          set -euo pipefail
+          aws s3 cp requirements.txt \
+            "s3://${S3_GLUE_BUCKET}/requirements.txt"
+          aws s3 cp requirements-glue.txt \
+            "s3://${S3_GLUE_BUCKET}/requirements-glue.txt"
+
+      - name: Summarize uploaded artifacts
+        run: |
+          set -euo pipefail
+          echo "=== Uploaded artifacts summary ==="
+          aws s3 ls "s3://${S3_GLUE_BUCKET}/src/batch/jobs/" || true
+          echo "---"
+          aws s3 ls "s3://${S3_GLUE_BUCKET}/src/shared/" || true
+
+  # ---------------------------------------------------------------------------
+  # Job 2 — update-glue-jobs
+  # Creates or updates all 11 AWS Glue job definitions so they reference the
+  # freshly uploaded PySpark scripts. Replaces JES2 batch program submission
+  # for all 10 batch COBOL programs plus the DFSORT replacement (combtran).
+  # ---------------------------------------------------------------------------
+  update-glue-jobs:
+    name: Update Glue job definitions (11 jobs)
+    runs-on: ubuntu-latest
+    needs: upload-scripts
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SHARED_ZIP_KEY: ${{ needs.upload-scripts.outputs.shared_zip_key }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify jq is available
+        run: |
+          set -euo pipefail
+          jq --version
+
+      - name: Create or update all 11 Glue job definitions
+        # Iterates over the complete set of 11 PySpark jobs listed in
+        # AAP §0.5.1 ("Batch Layer — PySpark Glue Jobs"):
+        #   5 pipeline-stage jobs (have config files in infra/glue-job-configs/)
+        #     posttran, intcalc, combtran, creastmt, tranrept
+        #   6 utility jobs (use the inline template below)
+        #     prtcatbl, daily-tran-driver, read-account, read-card,
+        #     read-customer, read-xref
+        env:
+          GLUE_ROLE_ARN: ${{ secrets.GLUE_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+
+          # Job catalog: "glue-job-name:script-file:kind"
+          #   kind=pipeline -> expect a config JSON in infra/glue-job-configs/
+          #   kind=utility  -> generate config from the inline template
+          JOBS=(
+            "posttran:posttran_job.py:pipeline"
+            "intcalc:intcalc_job.py:pipeline"
+            "combtran:combtran_job.py:pipeline"
+            "creastmt:creastmt_job.py:pipeline"
+            "tranrept:tranrept_job.py:pipeline"
+            "prtcatbl:prtcatbl_job.py:utility"
+            "daily-tran-driver:daily_tran_driver_job.py:utility"
+            "read-account:read_account_job.py:utility"
+            "read-card:read_card_job.py:utility"
+            "read-customer:read_customer_job.py:utility"
+            "read-xref:read_xref_job.py:utility"
+          )
+
+          # Description map for utility jobs (mirrors AAP §0.5.1 table).
+          declare -A UTILITY_DESC=(
+            [prtcatbl]="Print category balance utility - Converted from PRTCATBL.jcl"
+            [daily-tran-driver]="Daily transaction driver - Converted from CBTRN01C.cbl"
+            [read-account]="Account diagnostic reader - Converted from CBACT01C.cbl + READACCT.jcl"
+            [read-card]="Card diagnostic reader - Converted from CBACT02C.cbl + READCARD.jcl"
+            [read-customer]="Customer diagnostic reader - Converted from CBCUS01C.cbl + READCUST.jcl"
+            [read-xref]="Cross-reference diagnostic reader - Converted from CBACT03C.cbl + READXREF.jcl"
+          )
+
+          # Common S3 URIs derived once.
+          S3_BATCH_BASE="s3://${S3_GLUE_BUCKET}/src/batch"
+          S3_SHARED_ZIP="s3://${S3_GLUE_BUCKET}/${SHARED_ZIP_KEY}"
+          S3_TEMP_BASE="s3://${S3_GLUE_BUCKET}/glue-temp"
+          S3_SPARK_LOGS_BASE="s3://${S3_GLUE_BUCKET}/glue-spark-logs"
+
+          FORCE_RECREATE="${{ github.event.inputs.force_recreate || 'false' }}"
+
+          for entry in "${JOBS[@]}"; do
+            IFS=":" read -r JOB_KEY SCRIPT_FILE KIND <<< "${entry}"
+            JOB_NAME="carddemo-${JOB_KEY}"
+            SCRIPT_S3_URI="${S3_BATCH_BASE}/jobs/${SCRIPT_FILE}"
+            TEMP_DIR="${S3_TEMP_BASE}/${JOB_KEY}/"
+            SPARK_LOGS="${S3_SPARK_LOGS_BASE}/${JOB_KEY}/"
+
+            echo ""
+            echo "=================================================================="
+            echo "Processing Glue job: ${JOB_NAME} (${KIND})"
+            echo "  script    : ${SCRIPT_S3_URI}"
+            echo "  shared    : ${S3_SHARED_ZIP}"
+            echo "=================================================================="
+
+            if [ "${KIND}" = "pipeline" ]; then
+              # --- Pipeline stage: load canonical config JSON and substitute ---
+              CONFIG_FILE="infra/glue-job-configs/${JOB_KEY}.json"
+              if [ ! -f "${CONFIG_FILE}" ]; then
+                echo "ERROR: Expected config file not found: ${CONFIG_FILE}" >&2
+                exit 1
+              fi
+
+              # Substitute the BUCKET_NAME placeholder in the config JSON.
+              RENDERED=$(sed "s|BUCKET_NAME|${S3_GLUE_BUCKET}|g" "${CONFIG_FILE}")
+
+              # Override the deploy-time fields that must match the freshly
+              # uploaded artifacts and the IAM role supplied via secrets:
+              #   - Role                             -> GLUE_ROLE_ARN secret
+              #   - Command.ScriptLocation           -> S3 path to the script
+              #   - DefaultArguments --extra-py-files -> S3 path to the zip
+              #   - DefaultArguments --TempDir       -> job-specific temp dir
+              FULL_CONFIG=$(
+                echo "${RENDERED}" | jq \
+                  --arg role "${GLUE_ROLE_ARN}" \
+                  --arg script "${SCRIPT_S3_URI}" \
+                  --arg shared "${S3_SHARED_ZIP}" \
+                  --arg tempdir "${TEMP_DIR}" \
+                  --arg sparklogs "${SPARK_LOGS}" \
+                  --arg glue_version "${GLUE_VERSION}" \
+                  --arg worker_type "${WORKER_TYPE}" \
+                  --argjson num_workers "${NUMBER_OF_WORKERS}" \
+                  '.Role = $role
+                   | .GlueVersion = $glue_version
+                   | .WorkerType = $worker_type
+                   | .NumberOfWorkers = $num_workers
+                   | .Command.ScriptLocation = $script
+                   | .DefaultArguments["--extra-py-files"] = $shared
+                   | .DefaultArguments["--TempDir"] = $tempdir
+                   | .DefaultArguments["--spark-event-logs-path"] = $sparklogs
+                   | .DefaultArguments["--additional-python-modules"] = "pydantic,boto3"'
+              )
+            else
+              # --- Utility job: build the full JobInput document inline. ---
+              DESCRIPTION="${UTILITY_DESC[${JOB_KEY}]:-CardDemo utility Glue job}"
+              FULL_CONFIG=$(
+                jq -n \
+                  --arg name "${JOB_NAME}" \
+                  --arg description "${DESCRIPTION}" \
+                  --arg role "${GLUE_ROLE_ARN}" \
+                  --arg script "${SCRIPT_S3_URI}" \
+                  --arg shared "${S3_SHARED_ZIP}" \
+                  --arg tempdir "${TEMP_DIR}" \
+                  --arg sparklogs "${SPARK_LOGS}" \
+                  --arg python_version "${PYTHON_VERSION}" \
+                  --arg glue_version "${GLUE_VERSION}" \
+                  --arg worker_type "${WORKER_TYPE}" \
+                  --argjson num_workers "${NUMBER_OF_WORKERS}" \
+                  --arg job_key "${JOB_KEY}" \
+                  '{
+                     Name: $name,
+                     Description: $description,
+                     Role: $role,
+                     GlueVersion: $glue_version,
+                     WorkerType: $worker_type,
+                     NumberOfWorkers: $num_workers,
+                     Timeout: 60,
+                     MaxRetries: 0,
+                     Command: {
+                       Name: "glueetl",
+                       ScriptLocation: $script,
+                       PythonVersion: $python_version
+                     },
+                     DefaultArguments: {
+                       "--job-language": "python",
+                       "--job-bookmark-option": "job-bookmark-disable",
+                       "--enable-metrics": "true",
+                       "--enable-continuous-cloudwatch-log": "true",
+                       "--enable-spark-ui": "true",
+                       "--spark-event-logs-path": $sparklogs,
+                       "--TempDir": $tempdir,
+                       "--extra-py-files": $shared,
+                       "--additional-python-modules": "pydantic,boto3",
+                       "--aurora_connection_name": "carddemo-aurora-connection"
+                     },
+                     Connections: {
+                       Connections: ["carddemo-aurora-connection"]
+                     },
+                     ExecutionProperty: {
+                       MaxConcurrentRuns: 1
+                     },
+                     Tags: {
+                       project: "carddemo",
+                       "job-kind": "utility",
+                       "job-key": $job_key,
+                       environment: "production"
+                     }
+                   }'
+              )
+            fi
+
+            # Persist the full create-job JSON and the trimmed update-job JSON.
+            # AWS Glue's UpdateJob API rejects a top-level "Name" field on the
+            # JobUpdate payload (it's passed separately via --job-name), so we
+            # strip it when producing the update payload.
+            CREATE_PAYLOAD_PATH="${RUNNER_TEMP}/${JOB_NAME}-create.json"
+            UPDATE_PAYLOAD_PATH="${RUNNER_TEMP}/${JOB_NAME}-update.json"
+            echo "${FULL_CONFIG}" > "${CREATE_PAYLOAD_PATH}"
+            echo "${FULL_CONFIG}" | jq 'del(.Name)' > "${UPDATE_PAYLOAD_PATH}"
+
+            # Optional force-recreate path (workflow_dispatch input).
+            if [ "${FORCE_RECREATE}" = "true" ]; then
+              echo "force_recreate=true — deleting job if it exists..."
+              aws glue delete-job --job-name "${JOB_NAME}" 2>/dev/null || true
+            fi
+
+            # Create-or-update pattern (Glue has no single API call for this).
+            if aws glue get-job --job-name "${JOB_NAME}" >/dev/null 2>&1; then
+              echo "Glue job exists — issuing UpdateJob..."
+              aws glue update-job \
+                --job-name "${JOB_NAME}" \
+                --job-update "file://${UPDATE_PAYLOAD_PATH}"
+              echo "Updated ${JOB_NAME}."
+            else
+              echo "Glue job does not exist — issuing CreateJob..."
+              aws glue create-job \
+                --cli-input-json "file://${CREATE_PAYLOAD_PATH}"
+              echo "Created ${JOB_NAME}."
+            fi
+          done
+
+          echo ""
+          echo "All 11 Glue job definitions deployed successfully."
+
+  # ---------------------------------------------------------------------------
+  # Job 3 — update-pipeline
+  # Pushes the latest Step Functions Amazon States Language (ASL) definition,
+  # which orchestrates the 5-stage pipeline:
+  #   Stage1 (POSTTRAN) -> Stage2 (INTCALC) -> Stage3 (COMBTRAN) ->
+  #     Parallel(Stage4a (CREASTMT), Stage4b (TRANREPT))
+  # This replaces the JCL COND parameter sequencing from
+  # CREASTMT.JCL (COND=(0,NE)) and the implicit JES2 job chaining between
+  # POSTTRAN.jcl / INTCALC.jcl / COMBTRAN.jcl / TRANREPT.jcl.
+  # ---------------------------------------------------------------------------
+  update-pipeline:
+    name: Update Step Functions state machine (5-stage pipeline)
+    runs-on: ubuntu-latest
+    needs: update-glue-jobs
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate Step Functions definition is well-formed JSON
+        run: |
+          set -euo pipefail
+          DEFINITION_FILE="src/batch/pipeline/step_functions_definition.json"
+          if [ ! -f "${DEFINITION_FILE}" ]; then
+            echo "ERROR: Missing ${DEFINITION_FILE}" >&2
+            exit 1
+          fi
+          # Parse-only sanity check (fails fast on malformed JSON).
+          jq -e 'has("StartAt") and has("States")' "${DEFINITION_FILE}" >/dev/null
+
+      - name: Update Step Functions state machine definition
+        run: |
+          set -euo pipefail
+          aws stepfunctions update-state-machine \
+            --state-machine-arn "${{ secrets.STEP_FUNCTIONS_ARN }}" \
+            --definition "file://src/batch/pipeline/step_functions_definition.json"
+          echo "Step Functions state machine updated successfully."
+
+      - name: Describe state machine (post-deploy verification)
+        run: |
+          set -euo pipefail
+          aws stepfunctions describe-state-machine \
+            --state-machine-arn "${{ secrets.STEP_FUNCTIONS_ARN }}" \
+            --query '{name:name,status:status,type:type,roleArn:roleArn,updateDate:updateDate}' \
+            --output table

@@ -1,0 +1,207 @@
+# ============================================================================
+# CardDemo — Python project metadata and tooling configuration
+# ----------------------------------------------------------------------------
+# Replaces the mainframe compile/link process defined by samples/jcl/BATCMP.jcl,
+# samples/jcl/CICCMP.jcl, and samples/jcl/BMSCMP.jcl.
+#
+# Per AAP §0.6 (Dependency Inventory) and §0.4 (Target Design).
+# ============================================================================
+
+[build-system]
+requires = ["setuptools>=75.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "carddemo"
+version = "2.0.0"
+description = "CardDemo — Credit Card Management Application modernized from COBOL/CICS/VSAM to Python/FastAPI/PySpark/Aurora PostgreSQL"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "AWS CardDemo Modernization", email = "carddemo@example.com" }
+]
+keywords = ["cobol", "modernization", "fastapi", "pyspark", "aws", "glue", "aurora"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Framework :: FastAPI",
+    "Topic :: Office/Business :: Financial",
+]
+
+[project.urls]
+Repository = "https://github.com/aws-samples/aws-mainframe-modernization-carddemo"
+Documentation = "https://github.com/aws-samples/aws-mainframe-modernization-carddemo/tree/main/docs"
+
+# ----------------------------------------------------------------------------
+# Packaging — only the src/ tree is a distributable Python package.
+# The legacy app/ tree (COBOL, copybooks, BMS, JCL) is retained for
+# traceability but must not be packaged.
+# ----------------------------------------------------------------------------
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+exclude = ["app*", "tests*", "docs*", "samples*", "diagrams*", "infra*", "db*"]
+
+# ----------------------------------------------------------------------------
+# Ruff — linting and formatting
+# ----------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = [
+    "app",
+    "samples",
+    "diagrams",
+    "venv",
+    ".venv",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "F",  # pyflakes
+    "W",  # pycodestyle warnings
+    "I",  # isort
+    "N",  # pep8-naming
+    "UP", # pyupgrade
+    "B",  # flake8-bugbear
+]
+ignore = [
+    "E501", # line too long (handled by formatter)
+    "B008", # do not perform function call in argument defaults (FastAPI Depends idiom)
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ----------------------------------------------------------------------------
+# Mypy — static type checking
+# ----------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+# Required because "src/" is a namespace package (no __init__.py). Without this,
+# mypy resolves modules under both "shared.models" and "src.shared.models",
+# causing "Source file found twice under different module names" errors when
+# scanning directories like "src". See mypy docs on mapping file paths to modules.
+explicit_package_bases = true
+plugins = [
+    "pydantic.mypy",
+    "sqlalchemy.ext.mypy.plugin",
+]
+exclude = [
+    "app/",
+    "samples/",
+    "diagrams/",
+    "venv/",
+    "build/",
+    "dist/",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "awsglue.*",
+    "pyspark.*",
+    "moto.*",
+    "testcontainers.*",
+    # boto3 and botocore ship without bundled type stubs (no py.typed marker).
+    # The optional "boto3-stubs" package would provide them, but it adds a
+    # significant install-time surface for a dependency only used by a handful
+    # of AWS client factory functions in src/shared/config/aws_config.py.
+    # Adding the packages here matches the pattern used for awsglue/pyspark.
+    "boto3.*",
+    "botocore.*",
+    # python-jose (the JWT library) has no type stubs bundled; types-python-jose
+    # exists but adds a dependency for a handful of jwt.encode/jwt.decode calls.
+    "jose",
+    "jose.*",
+    # passlib does not ship type stubs; types-passlib exists but carries the
+    # same objection as types-python-jose (a dev-only stub for a single CryptContext usage).
+    "passlib",
+    "passlib.*",
+]
+ignore_missing_imports = true
+
+# factory-boy ships a py.typed marker, so ignore_missing_imports has no effect.
+# Its bundled .pyi stubs are incomplete (factory.Sequence and factory.LazyFunction
+# are not exported at the package root, and factory.Factory cannot be subclassed
+# in strict mode because it resolves to Any). Using follow_imports = "skip"
+# tells mypy to treat all symbols from factory as Any without analyzing the
+# package itself, which is the approach recommended in mypy docs for packages
+# with incorrectly marked py.typed. This keeps tests/conftest.py factory
+# definitions strict-mypy clean without disabling strict mode globally.
+[[tool.mypy.overrides]]
+module = [
+    "factory",
+    "factory.*",
+]
+follow_imports = "skip"
+ignore_missing_imports = true
+disable_error_code = ["attr-defined", "name-defined", "misc", "no-untyped-call"]
+
+# ----------------------------------------------------------------------------
+# Pytest configuration
+# ----------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--tb=short",
+    "--cov=src",
+    "--cov-report=term-missing",
+    "--cov-report=xml",
+    "--cov-fail-under=80",
+]
+markers = [
+    "unit: Unit tests (fast, isolated)",
+    "integration: Integration tests (require external services)",
+    "e2e: End-to-end pipeline tests",
+    "slow: Tests that take more than a few seconds",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:pydantic.*",
+    "ignore::DeprecationWarning:passlib.*",
+]
+
+# ----------------------------------------------------------------------------
+# Coverage.py configuration
+# ----------------------------------------------------------------------------
+[tool.coverage.run]
+branch = true
+source = ["src"]
+omit = [
+    "src/batch/pipeline/*.json",
+    "*/__init__.py",
+    "*/tests/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+show_missing = true
+skip_covered = false

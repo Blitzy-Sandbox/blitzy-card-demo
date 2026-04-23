@@ -1,0 +1,41 @@
+{
+  "Name": "carddemo-creastmt",
+  "Description": "Stage 4a: Statement generation - Creates text and HTML statements for each card using 4-entity join (transactions, cross-references, accounts, customers). Runs in PARALLEL with Stage 4b (tranrept). Converted from CREASTMT.JCL (CBSTM03A + CBSTM03B).",
+  "Role": "arn:aws:iam::ACCOUNT_ID:role/carddemo-glue-role",
+  "GlueVersion": "5.1",
+  "WorkerType": "G.1X",
+  "NumberOfWorkers": 2,
+  "Timeout": 1440,
+  "MaxRetries": 0,
+  "Command": {
+    "Name": "glueetl",
+    "ScriptLocation": "s3://BUCKET_NAME/glue-scripts/creastmt_job.py",
+    "PythonVersion": "3"
+  },
+  "DefaultArguments": {
+    "--job-language": "python",
+    "--job-bookmark-option": "job-bookmark-enable",
+    "--enable-metrics": "true",
+    "--enable-continuous-cloudwatch-log": "true",
+    "--enable-spark-ui": "true",
+    "--spark-event-logs-path": "s3://BUCKET_NAME/glue-spark-logs/creastmt/",
+    "--TempDir": "s3://BUCKET_NAME/glue-temp/creastmt/",
+    "--aurora_connection_name": "carddemo-aurora-connection",
+    "--s3_statement_text_path": "s3://BUCKET_NAME/carddemo/statements/text/",
+    "--s3_statement_html_path": "s3://BUCKET_NAME/carddemo/statements/html/",
+    "--extra-py-files": "s3://BUCKET_NAME/glue-scripts/common/"
+  },
+  "Connections": {
+    "Connections": ["carddemo-aurora-connection"]
+  },
+  "ExecutionProperty": {
+    "MaxConcurrentRuns": 1
+  },
+  "Tags": {
+    "project": "carddemo",
+    "pipeline-stage": "4a-creastmt",
+    "source": "CREASTMT.JCL",
+    "cobol-program": "CBSTM03A,CBSTM03B",
+    "environment": "production"
+  }
+}

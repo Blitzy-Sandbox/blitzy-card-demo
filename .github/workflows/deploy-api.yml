@@ -1,0 +1,333 @@
+# =============================================================================
+# CardDemo — API Deployment Pipeline (AWS ECS Fargate)
+# -----------------------------------------------------------------------------
+# GitHub Actions workflow that builds the FastAPI Docker image, publishes it
+# to Amazon ECR, rolls the new image out to the ECS Fargate service behind an
+# Application Load Balancer, and verifies the service is healthy.
+#
+# Replaces the following z/OS mainframe artifacts (per AAP §0.7.1):
+#   - samples/jcl/CICCMP.jcl — CICS COBOL compile via EXEC BUILDONL plus the
+#                              SDSF batch command
+#                                /MODIFY CICSAWSA,'CEMT SET PROG(CICSPGMN)
+#                                NEWCOPY'
+#                              used to hot-swap the online COBOL program in
+#                              the CICS region.  Replaced by:
+#                                Docker build -> ECR push -> ECS rolling
+#                                deployment with a new task definition
+#                                revision.
+#   - samples/jcl/BMSCMP.jcl — BMS map compile via EXEC BUILDBMS plus the
+#                              SDSF batch command
+#                                /MODIFY CICSAWSA,'CEMT SET PROG(CICSMAP)
+#                                NEWCOPY'
+#                              used to hot-swap the screen map program in the
+#                              CICS region.  Replaced by:  no BMS compile
+#                              step is required in the target because all 17
+#                              BMS mapsets are modeled as Pydantic REST /
+#                              Strawberry GraphQL request-response schemas in
+#                              src/shared/schemas/** and src/api/graphql/**.
+#
+# Pipeline architecture (per AAP §0.4.4 "API deployment: build Docker -> push
+# to ECR -> update ECS service"):
+#   1. build-and-push — Build the FastAPI container image from Dockerfile,
+#                       tag it with the immutable commit SHA and "latest",
+#                       and push both tags to ECR.
+#   2. deploy         — Render a new ECS task definition revision referencing
+#                       the freshly pushed image and deploy it to the Fargate
+#                       service, waiting for service stability.
+#   3. health-check   — Call the FastAPI /health endpoint via the ALB URL
+#                       (supplied via the API_HEALTH_URL secret) to verify
+#                       the new revision is serving 200 OK responses.
+#
+# Security (per AAP §0.7.2):
+#   - All AWS access is acquired via GitHub OIDC + IAM role assumption
+#     (aws-actions/configure-aws-credentials@v4 with role-to-assume).  No
+#     long-lived access keys are stored in the workflow or the repository.
+#   - The deployment IAM role is supplied via the AWS_DEPLOY_ROLE_ARN
+#     GitHub secret.
+#   - Runtime secrets (DATABASE_URL, JWT_SECRET_KEY, etc.) are resolved by
+#     the ECS task at start-time from AWS Secrets Manager via the "secrets"
+#     stanza of infra/ecs-task-definition.json.
+# =============================================================================
+
+name: deploy-api
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/api/**"
+      - "src/shared/**"
+      - "Dockerfile"
+      - "requirements.txt"
+      - "requirements-api.txt"
+      - "infra/ecs-task-definition.json"
+      - ".github/workflows/deploy-api.yml"
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Override image tag (defaults to the commit SHA)"
+        required: false
+        default: ""
+
+# Do not cancel in-progress deployments.  Cancelling a rolling ECS deployment
+# mid-flight can leave the service in a "both revisions running" limbo; we
+# would rather queue the next run and let the current deployment finish.
+concurrency:
+  group: deploy-api
+  cancel-in-progress: false
+
+env:
+  # AWS region — overridable via repository or environment vars.
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  # ECR repository that holds the carddemo-api container image.
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'carddemo-api' }}
+  # ECS cluster and service that host the FastAPI workload (Fargate).
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER || 'carddemo-cluster' }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE || 'carddemo-api-service' }}
+  # Path to the canonical task definition JSON checked into the repository.
+  # Must match the "family" and container "name" defined in that file so
+  # that aws-actions/amazon-ecs-render-task-definition can find the target
+  # container.  See infra/ecs-task-definition.json.
+  ECS_TASK_DEFINITION_FILE: infra/ecs-task-definition.json
+  # Container name inside the task definition — must equal the value of
+  # containerDefinitions[0].name in infra/ecs-task-definition.json.
+  CONTAINER_NAME: carddemo-api
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1 — build-and-push
+  # Replaces the z/OS CICCMP.jcl "EXEC BUILDONL,MEM=&MEMNAME,HLQ=&HLQ" step.
+  # Builds the FastAPI Docker image from ./Dockerfile, tags it with the Git
+  # SHA for immutable versioning, and publishes it to Amazon ECR.
+  # ---------------------------------------------------------------------------
+  build-and-push:
+    name: Build Docker image and push to ECR
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write  # Required for OIDC-based AWS role assumption.
+    outputs:
+      # Full ECR URI (registry/repo:tag) consumed by the deploy job.
+      image: ${{ steps.image-uri.outputs.image }}
+      # Exposed for downstream jobs that want the short tag (Git SHA).
+      image_tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        # IAM role-based authentication — NOT access keys.  Per AAP §0.7.2:
+        # "AWS services must have required access via IAM roles and policies
+        #  (not access keys)."
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Compute image tag
+        id: tag
+        # Prefer the workflow_dispatch override when provided, otherwise tag
+        # the image with the commit SHA for immutable versioning.
+        run: |
+          set -euo pipefail
+          INPUT_TAG="${{ github.event.inputs.image_tag }}"
+          if [ -n "${INPUT_TAG}" ]; then
+            echo "Using operator-supplied image tag: ${INPUT_TAG}"
+            echo "tag=${INPUT_TAG}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "Using commit SHA as image tag: ${{ github.sha }}"
+            echo "tag=${{ github.sha }}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image to ECR
+        # Publishes both the SHA-tagged image (for immutable rollbacks) and
+        # the "latest" tag (convenience for local pulls / debugging).  The
+        # GitHub Actions cache backend is used to accelerate subsequent
+        # builds by reusing layer cache between runs.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.tag.outputs.tag }}
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Export image URI for downstream jobs
+        id: image-uri
+        # Expose the full registry/repo:tag URI as a job output so the
+        # deploy job can consume it without recomputing the registry.
+        run: |
+          set -euo pipefail
+          IMAGE_URI="${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.tag.outputs.tag }}"
+          echo "Built image URI: ${IMAGE_URI}"
+          echo "image=${IMAGE_URI}" >> "${GITHUB_OUTPUT}"
+
+  # ---------------------------------------------------------------------------
+  # Job 2 — deploy
+  # Replaces the z/OS CICCMP.jcl NEWCOPY step:
+  #   /MODIFY CICSAWSA,'CEMT SET PROG(CICSPGMN) NEWCOPY'
+  # Renders a new ECS task definition revision that points at the freshly
+  # pushed image and performs a rolling deployment to the Fargate service.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy new task definition to ECS Fargate
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write  # Required for OIDC-based AWS role assumption.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify task definition template exists
+        # Fail fast if the canonical task definition has been accidentally
+        # moved or deleted.  The path must stay in lockstep with the
+        # paths filter at the top of this workflow.
+        run: |
+          set -euo pipefail
+          if [ ! -f "${ECS_TASK_DEFINITION_FILE}" ]; then
+            echo "::error::Task definition template not found at ${ECS_TASK_DEFINITION_FILE}"
+            exit 1
+          fi
+          echo "Task definition template found: ${ECS_TASK_DEFINITION_FILE}"
+
+      - name: Render new ECS task definition with new image URI
+        id: render-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ env.ECS_TASK_DEFINITION_FILE }}
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ needs.build-and-push.outputs.image }}
+
+      - name: Deploy rendered task definition to ECS
+        # Performs a rolling update of the Fargate service.  Per AAP §0.7.2
+        # we must deliver a monitored, stable deployment: the action waits
+        # for the ECS service to reach "steady state" (all new tasks
+        # RUNNING + old tasks drained) before reporting success.
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-task-def.outputs.task-definition }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.ECS_SERVICE }}
+          wait-for-service-stability: true
+          wait-for-minutes: 10
+
+      - name: Summarize deployment
+        # Emit a concise, human-readable summary to the Actions run log.
+        run: |
+          set -euo pipefail
+          echo "Deployment complete:"
+          echo "  cluster        : ${ECS_CLUSTER}"
+          echo "  service        : ${ECS_SERVICE}"
+          echo "  container      : ${CONTAINER_NAME}"
+          echo "  image          : ${{ needs.build-and-push.outputs.image }}"
+          echo "  image tag      : ${{ needs.build-and-push.outputs.image_tag }}"
+          echo "  task definition: $(echo '${{ steps.render-task-def.outputs.task-definition }}' | head -c 200)"
+
+  # ---------------------------------------------------------------------------
+  # Job 3 — health-check
+  # Independent post-deploy verification that the new revision is actually
+  # serving traffic.  Calls the FastAPI /health endpoint via the ALB URL
+  # supplied through the API_HEALTH_URL GitHub secret, with a short retry
+  # loop to absorb ALB target-group registration jitter.
+  # ---------------------------------------------------------------------------
+  health-check:
+    name: Verify API health after deployment
+    needs: deploy
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        # Configured for parity with the other jobs and so that this job
+        # can optionally be extended to query ECS / ALB for the service
+        # URL dynamically.  Per AAP §0.7.2 we never use access keys.
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Wait for ALB target registration
+        # Even though the previous job waited for ECS service stability,
+        # ALB target-group health checks can lag by a handful of seconds
+        # after the task reports RUNNING.  A fixed 30-second pause
+        # smooths that race.
+        run: sleep 30
+
+      - name: Probe /health endpoint (with retries)
+        env:
+          API_HEALTH_URL: ${{ secrets.API_HEALTH_URL }}
+        # Runs curl with --fail --silent --show-error against the /health
+        # endpoint.  Retries up to five times with a 10-second backoff to
+        # cover any remaining warm-up latency.  Fails the job if all
+        # attempts return a non-2xx response or the secret is absent.
+        run: |
+          set -euo pipefail
+
+          if [ -z "${API_HEALTH_URL}" ]; then
+            echo "::error::The API_HEALTH_URL secret is not configured for this environment."
+            echo "Set it to the base URL of the ALB fronting the ECS service (e.g. https://api.example.com)."
+            exit 1
+          fi
+
+          # Strip any trailing slash so HEALTH_URL/health stays canonical.
+          BASE_URL="${API_HEALTH_URL%/}"
+          HEALTH_URL="${BASE_URL}/health"
+          echo "Probing ${HEALTH_URL}..."
+
+          MAX_ATTEMPTS=5
+          BACKOFF_SECONDS=10
+
+          for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
+            HTTP_CODE=$(curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --max-time 15 \
+              "${HEALTH_URL}" || echo "000")
+
+            if [ "${HTTP_CODE}" = "200" ]; then
+              echo "Health check succeeded on attempt ${attempt} (HTTP 200)."
+              exit 0
+            fi
+
+            echo "Attempt ${attempt}/${MAX_ATTEMPTS} returned HTTP ${HTTP_CODE}; retrying in ${BACKOFF_SECONDS}s..."
+            sleep "${BACKOFF_SECONDS}"
+          done
+
+          echo "::error::Health check failed after ${MAX_ATTEMPTS} attempts (last HTTP ${HTTP_CODE})."
+          exit 1
+
+      - name: Final verification via curl --fail
+        env:
+          API_HEALTH_URL: ${{ secrets.API_HEALTH_URL }}
+        # Final explicit curl --fail (matches the AAP "Phase 5 step 4 +
+        # step 5" requirement verbatim) so the Actions run log contains
+        # the canonical one-liner that signals a healthy deployment.
+        run: |
+          set -euo pipefail
+          BASE_URL="${API_HEALTH_URL%/}"
+          curl --fail --silent --show-error --max-time 15 "${BASE_URL}/health" >/dev/null
+          echo "Final /health probe returned 200 OK."

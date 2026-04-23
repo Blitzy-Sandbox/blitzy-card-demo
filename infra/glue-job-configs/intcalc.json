@@ -1,0 +1,41 @@
+{
+  "Name": "carddemo-intcalc",
+  "Description": "Stage 2: Interest calculation - Computes interest and fees from category balances using disclosure group rates. Formula: (TRAN-CAT-BAL * DIS-INT-RATE) / 1200. Writes system-generated transactions to S3. Converted from INTCALC.jcl (CBACT04C).",
+  "Role": "arn:aws:iam::ACCOUNT_ID:role/carddemo-glue-role",
+  "GlueVersion": "5.1",
+  "WorkerType": "G.1X",
+  "NumberOfWorkers": 2,
+  "Timeout": 120,
+  "MaxRetries": 0,
+  "Command": {
+    "Name": "glueetl",
+    "ScriptLocation": "s3://BUCKET_NAME/glue-scripts/intcalc_job.py",
+    "PythonVersion": "3"
+  },
+  "DefaultArguments": {
+    "--job-language": "python",
+    "--job-bookmark-option": "job-bookmark-enable",
+    "--enable-metrics": "true",
+    "--enable-continuous-cloudwatch-log": "true",
+    "--enable-spark-ui": "true",
+    "--spark-event-logs-path": "s3://BUCKET_NAME/glue-spark-logs/intcalc/",
+    "--TempDir": "s3://BUCKET_NAME/glue-temp/intcalc/",
+    "--aurora_connection_name": "carddemo-aurora-connection",
+    "--s3_output_path": "s3://BUCKET_NAME/carddemo/systran/",
+    "--processing_date": "2022071800",
+    "--extra-py-files": "s3://BUCKET_NAME/glue-scripts/common/"
+  },
+  "Connections": {
+    "Connections": ["carddemo-aurora-connection"]
+  },
+  "ExecutionProperty": {
+    "MaxConcurrentRuns": 1
+  },
+  "Tags": {
+    "project": "carddemo",
+    "pipeline-stage": "2-intcalc",
+    "source": "INTCALC.jcl",
+    "cobol-program": "CBACT04C",
+    "environment": "production"
+  }
+}
