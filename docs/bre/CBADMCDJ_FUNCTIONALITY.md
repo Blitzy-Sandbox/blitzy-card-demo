@@ -1,6 +1,6 @@
 # CBADMCDJ.jcl — Comprehensive Functionality and Validation Documentation
 
-## Abstract
+## 1. Title and Abstract
 
 This document provides a complete functional walkthrough of `app/jcl/CBADMCDJ.jcl`, the IBM CICS Resource Definition batch job that registers the CardDemo application's CICS resources (programs, mapsets, transactions, and one library) with the CICS region under the resource group `CARDDEMO`. The document describes every JCL statement, every DFHCSDUP control card, every implicit check that DFHCSDUP performs, every anomaly observed (duplicate DEFINEs, dangling references, documentation typos, the commented-out re-run safeguard), and every dependency that must be satisfied before, during, and after job execution. It is paired with the canonical 20-column Business Rules Extraction in [`CBADMCDJ_BRE.csv`](CBADMCDJ_BRE.csv) and [`CBADMCDJ_BRE.md`](CBADMCDJ_BRE.md).
 
@@ -8,7 +8,7 @@ The deliverable is authored from the perspective of a senior mainframe-moderniza
 
 ---
 
-## 1. Job Purpose Statement
+## 2. Job Purpose Statement
 
 CBADMCDJ.jcl is a **configuration / resource registration job**, not a data-processing batch job. It runs the IBM-supplied DFHCSDUP utility (the CICS CSD update batch utility program) once against the CICS System Definition file (CSD) at DSN `OEM.CICSTS.DFHCSD` and writes catalog entries that the CICS region reads at startup or via `CEDA INSTALL GROUP(CARDDEMO)`. The job has exactly one EXEC step, no DB2 SQL, no SORT, no FTP, and no data transformation. Its output side effects are entirely confined to the CSD VSAM file (binary RRDS) and the SYSPRINT/OUTDD job log streams.
 
@@ -18,11 +18,11 @@ The job's net effect is to register one LIBRARY, twenty MAPSET DEFINEs (15 uniqu
 
 ---
 
-## 2. Job Structure Walkthrough
+## 3. Job Structure Walkthrough
 
 The following Mermaid diagram summarizes the job's static structure. The diagram is followed by a line-by-line narrative covering all 167 lines of `CBADMCDJ.jcl`.
 
-### 2.1 Mermaid Diagram
+### 3.1 Mermaid Diagram
 
 ```mermaid
 graph TD
@@ -44,7 +44,7 @@ graph TD
     N --> O["End of job<br/>/* and //<br/>line 163-167"]
 ```
 
-### 2.2 Line-by-Line Narrative
+### 3.2 Line-by-Line Narrative
 
 The narrative below covers every line in `app/jcl/CBADMCDJ.jcl`. Comment-only lines are included because they document author intent and operational guidance.
 
@@ -103,7 +103,7 @@ Comment lines using the DFHCSDUP `*/*  ... */` comment syntax (note: this is NOT
 Standalone `*` lines forming whitespace separators with the inline label `* START CARDDEMO RESOURCES:` at line 40.
 
 **Line 42 — Commented-out DELETE GROUP**
-`* DELETE GROUP(CARDDEMO)` is intentionally commented out. As shipped, the job is non-idempotent: a second run with the group already populated will produce duplicate-resource warnings or errors from DFHCSDUP. The line-38 instructional comment advises the operator to **un-comment this line on re-runs** to ensure idempotency. This is flagged in the Risk Register (Section 10).
+`* DELETE GROUP(CARDDEMO)` is intentionally commented out. As shipped, the job is non-idempotent: a second run with the group already populated will produce duplicate-resource warnings or errors from DFHCSDUP. The line-38 instructional comment advises the operator to **un-comment this line on re-runs** to ensure idempotency. This is flagged in the Risk Register (Section 11).
 
 **Line 43 — Blank line**
 Visual separator before the LIBRARY DEFINE.
@@ -115,7 +115,7 @@ Defines a CICS LIBRARY resource named `COM2DOLL` under group `CARDDEMO` with `DS
 Visual separator.
 
 **Lines 47-48 — Commented-out TDQUEUE definitions**
-`* DEFINE TDQUEUE(CSSD) GROUP(CARDDEMO) TYPE(INTRA)` and `* DEFINE TDQUEUE(IRDC) GROUP(CARDDEMO) TYPE(INTRA)` — two intra-partition Transient Data Queue definitions that are commented out. CSSD is the standard CICS Statistics Sample Domain queue; IRDC is the Inter-Region Data Communication queue. The original developer left these as placeholders for future use; they have no runtime effect.
+`* DEFINE TDQUEUE(CSSD) GROUP(CARDDEMO) TYPE(INTRA)` and `* DEFINE TDQUEUE(IRDC) GROUP(CARDDEMO) TYPE(INTRA)` — two intra-partition Transient Data Queue (TDQ) definitions left commented out by the original developer. Per CICS conventions, intra-partition TDQs are local to the CICS region and used for inter-task data passing within the same region. The names CSSD and IRDC appear to be application-specific identifiers; their intended functional purpose is not documented in the source artifacts and these definitions have no runtime effect while commented out.
 
 **Line 49 — Blank line**
 Visual separator before the MAPSET section.
@@ -329,11 +329,11 @@ JCL comment line.
 
 ---
 
-## 3. DFHCSDUP Utility Deep-Dive
+## 4. DFHCSDUP Utility Deep-Dive
 
 The CICS CSD update batch utility program DFHCSDUP is a component of resource definition online (RDO). It provides offline services to read from and write to a CICS system definition file (CSD), either while CICS is running or while it is inactive. CardDemo's CBADMCDJ.jcl uses it offline to bulk-register the application's CICS resources.
 
-### 3.1 PARM Options Used
+### 4.1 PARM Options Used
 
 The PARM string `'CSD(READWRITE),PAGESIZE(60),NOCOMPAT'` controls DFHCSDUP's operating mode for this run.
 
@@ -343,23 +343,23 @@ The PARM string `'CSD(READWRITE),PAGESIZE(60),NOCOMPAT'` controls DFHCSDUP's ope
 | `PAGESIZE(60)` | listing format | SYSPRINT is paginated at 60 lines per page (vs. default 50). Affects readability only; no functional impact. |
 | `NOCOMPAT` | format selector | Operates in modern CSD format. The opposite, `COMPAT`, would force pre-CICS/ESA layout which CardDemo does not need. |
 
-### 3.2 REGION=0M
+### 4.2 REGION=0M
 
 `REGION=0M` requests the maximum available virtual storage. DFHCSDUP itself is a small utility (the load module is well under 1 MB), but `REGION=0M` is conservative for CSD updates that may pull large group lists into memory during the LIST step. For CardDemo's relatively small CARDDEMO group (45 DEFINEs total), a much smaller region (`REGION=8M`) would suffice; `REGION=0M` adds no cost on modern systems.
 
-### 3.3 STEPLIB Binding
+### 4.3 STEPLIB Binding
 
 The STEPLIB binds the job to a specific CICS TS version: `OEM.CICSTS.V05R06M0.CICS.SDFHLOAD` resolves to **CICS Transaction Server 5.6** (V05R06M0 = Version 5, Release 6, Modification 0). If the target CICS region runs a different version (e.g., CICS TS 5.5 or 6.1), the STEPLIB DSN must be updated.
 
 The version-encoded DSN is a strong **modernization risk indicator**: it suggests the job was authored for one specific CICS TS release and has not been parameterized for cross-version reuse. **Recommendation**: parameterize via JCL JOB symbolic (e.g., `&CICSVER`) to enable cross-version reuse without source edits.
 
-### 3.4 CSD VSAM File
+### 4.4 CSD VSAM File
 
 The DFHCSD DD points to the binary CSD VSAM file (`OEM.CICSTS.DFHCSD`). This file is **shared across multiple CICS regions** that need access to the same resource catalog. Concurrent DFHCSDUP runs against the same CSD must be serialized via JES dataset enqueue — z/OS automatically grants exclusive access for DFHCSDUP's update operations because the DD specifies `DISP=SHR` but DFHCSDUP issues an internal exclusive ENQ during DEFINE/DELETE operations.
 
 The CSD is structurally a VSAM RRDS (Relative Record Data Set); each record represents one resource definition (one PROGRAM, MAPSET, TRANSACTION, LIBRARY, FILE, etc.). DFHCSDUP traverses records by group name when processing `LIST GROUP(...)` and `DELETE GROUP(...)`.
 
-### 3.5 SYSPRINT Output Conventions
+### 4.5 SYSPRINT Output Conventions
 
 DFHCSDUP emits the following SYSPRINT records during a typical run:
 
@@ -371,7 +371,7 @@ DFHCSDUP emits the following SYSPRINT records during a typical run:
 - **The verbatim LIST GROUP output:** showing every accepted resource with its full attribute set
 - **Termination message and return code:** RC=0 if no errors/warnings; RC=4 if duplicate-name warnings only; RC=8 if any DEFINE failed; RC=12 if a system error occurred
 
-### 3.6 Supported Control Card Types Used in CBADMCDJ.jcl
+### 4.6 Supported Control Card Types Used in CBADMCDJ.jcl
 
 CBADMCDJ.jcl uses six distinct DFHCSDUP control card types. The full DFHCSDUP grammar supports many more (FILE, TDQUEUE, TSQUEUE, JOURNAL, LSRPOOL, MQCONN, etc.) but those are not exercised here.
 
@@ -386,11 +386,11 @@ CBADMCDJ.jcl uses six distinct DFHCSDUP control card types. The full DFHCSDUP gr
 
 ---
 
-## 4. Resource Catalog
+## 5. Resource Catalog
 
 This section enumerates every resource definition produced by CBADMCDJ.jcl, organized by resource type.
 
-### 4.1 LIBRARY Definitions
+### 5.1 LIBRARY Definitions
 
 The CBADMCDJ.jcl job defines exactly one LIBRARY resource. CICS LIBRARYs are dynamically managed load library concatenations that participate in CICS dynamic program library lookup at INSTALL time. A LIBRARY is added to the dynamic library search order via `CEDA INSTALL LIBRARY(name)` (or via group install if the LIBRARY is in a group being installed).
 
@@ -404,7 +404,7 @@ The CBADMCDJ.jcl job defines exactly one LIBRARY resource. CICS LIBRARYs are dyn
 - DFHCSDUP does NOT verify DSN existence at DEFINE time — that check is deferred to INSTALL time.
 - Only `DSNAME01` is specified; up to 16 dataset names (`DSNAME01`–`DSNAME16`) could be concatenated for a multi-volume LIBRARY.
 
-### 4.2 MAPSET Definitions
+### 5.2 MAPSET Definitions
 
 CBADMCDJ.jcl issues 20 `DEFINE MAPSET` directives. Of these, 15 are unique by name and 5 are exact-duplicate re-issues. The mapset names follow the CardDemo convention `COxxxxx` + `S` suffix (the trailing `S` distinguishes the mapset from the related program, e.g., `COSGN00M` mapset vs. `COSGN00C` program).
 
@@ -433,7 +433,7 @@ CBADMCDJ.jcl issues 20 `DEFINE MAPSET` directives. Of these, 15 are unique by na
 
 **Summary:** 20 DEFINE MAPSET directives, of which 5 unique mapsets have source files (`COSGN00.bms`, `COACTVW.bms`, `COACTUP.bms`, `COTRN00.bms`, `COBIL00.bms`) and 10 unique mapsets are dangling (no source). Five mapsets are defined twice (duplicates: COSGN00M, COACT00S, COACTVWS, COACTUPS, COACTDES). The `LIST GROUP(CARDDEMO)` at line 159 will surface duplicate-name warnings during execution.
 
-### 4.3 PROGRAM Definitions
+### 5.3 PROGRAM Definitions
 
 CBADMCDJ.jcl issues 19 `DEFINE PROGRAM` directives. Of these, 15 are unique by name and 4 are exact-duplicate re-issues (COACT00C, COACTVWC, COACTUPC, COACTDEC each appear twice). The program names follow the CardDemo convention `COxxxxx` + `C` suffix (the trailing `C` distinguishes the program from the related copybook or mapset).
 
@@ -463,7 +463,7 @@ CBADMCDJ.jcl issues 19 `DEFINE PROGRAM` directives. Of these, 15 are unique by n
 
 **TRANSID embedded in DEFINE PROGRAM:** Of the 15 unique programs, 6 have a TRANSID clause embedded in their DEFINE PROGRAM directive: `COSGN00C → CC00`, `COADM00C → CCAD`, `COTSTP1C → CCT1`, `COTSTP2C → CCT2`, `COTSTP3C → CCT3`, `COTSTP4C → CCT4`. The remaining 9 programs are reachable only via XCTL/LINK from another program (no direct TRANSID).
 
-### 4.4 TRANSACTION Definitions
+### 5.4 TRANSACTION Definitions
 
 CBADMCDJ.jcl issues 5 `DEFINE TRANSACTION` directives. Each binds a 4-character transaction ID (TRANSID) to a CICS program. CICS uses these bindings to route incoming transaction requests (entered at a 3270 terminal or via EXEC CICS START commands) to the appropriate program for execution.
 
@@ -484,11 +484,11 @@ CBADMCDJ.jcl issues 5 `DEFINE TRANSACTION` directives. Each binds a 4-character 
 ---
 
 
-## 5. Implicit Checks and Validations
+## 6. Implicit Checks and Validations
 
 DFHCSDUP performs the following implicit checks during execution. Each check is documented as either successful or failed in the SYSPRINT listing. Understanding the precise semantics of each check is critical to the modernization translation: in the cloud target, every implicit check that DFHCSDUP performs becomes either a Spring Boot startup-time validator, a Bean Validation (JSR 380) constraint, or a custom `@Validated` configuration check.
 
-### 5.1 DFHCSDUP-Performed Checks
+### 6.1 DFHCSDUP-Performed Checks
 
 | Check | Performed By | Trigger | Failure Behavior |
 |---|---|---|---|
@@ -504,7 +504,7 @@ DFHCSDUP performs the following implicit checks during execution. Each check is 
 | **TASKDATAL(ANY) (task data location)** | DFHCSDUP | Each TRANSACTION DEFINE | All CardDemo transactions use `TASKDATAL(ANY)`. Accepted without further check. |
 | **Duplicate TRANSACTION-ID across groups** | DFHCSDUP partial | Each DEFINE TRANSACTION | DFHCSDUP warns if the same TRANSID is defined within the same group. Cross-group conflicts are NOT detected at DEFINE time and produce a "DUPLICATE TRANSACTION ID" abend at INSTALL time if both groups are installed. |
 
-### 5.2 Operator-Performed Checks (Recommended)
+### 6.2 Operator-Performed Checks (Recommended)
 
 The following checks are not performed by DFHCSDUP itself; they MUST be performed manually by the operator before submitting CBADMCDJ.jcl in production.
 
@@ -512,9 +512,9 @@ The following checks are not performed by DFHCSDUP itself; they MUST be performe
 2. **Verify the CSD is backed up**: `LISTCAT ENT(OEM.CICSTS.DFHCSD)` followed by an `IDCAMS BACKUP` is recommended before any DFHCSDUP write run. The CSD is a critical CICS region asset; corruption requires re-creation from backup.
 3. **Verify no other DFHCSDUP run is concurrent**: dataset enqueue prevents this implicitly, but explicit operator coordination avoids waiting jobs holding system resources.
 4. **Plan the post-run INSTALL**: after DFHCSDUP finishes successfully, the operator must run `CEDA INSTALL GROUP(CARDDEMO)` in the live CICS region to load the new resources into memory. Without this step, the CSD has the new definitions but the running CICS region does not.
-5. **Plan the dangling-reference remediation**: either obtain the 10 missing program sources and 10 missing mapset sources, or remove the corresponding DEFINEs from CBADMCDJ.jcl before the run. If the dangling DEFINEs are left in place, INSTALL succeeds but any user invoking the affected TRANSIDs (CCDM, CCT1-CCT4) gets an AEY9 abend (see Section 6 below).
+5. **Plan the dangling-reference remediation**: either obtain the 10 missing program sources and 10 missing mapset sources, or remove the corresponding DEFINEs from CBADMCDJ.jcl before the run. If the dangling DEFINEs are left in place, INSTALL succeeds but any user invoking the affected TRANSIDs (CCDM, CCT1-CCT4) gets an AEY9 abend (see Section 7 below).
 
-### 5.3 CICS-Performed Checks at INSTALL Time
+### 6.3 CICS-Performed Checks at INSTALL Time
 
 When the operator runs `CEDA INSTALL GROUP(CARDDEMO)` after CBADMCDJ.jcl completes, CICS performs additional checks that DFHCSDUP did not:
 
@@ -522,7 +522,7 @@ When the operator runs `CEDA INSTALL GROUP(CARDDEMO)` after CBADMCDJ.jcl complet
 - **Program load module presence:** For each PROGRAM with `STATUS(ENABLED)` (the default), CICS attempts to locate the load module in DFHRPL or in any installed LIBRARY. If found, the program is added to the dynamic program directory; if not found, CICS marks the program as UNUSABLE but the install continues for other resources.
 - **TRANSACTION-to-PROGRAM resolution:** CICS verifies that each TRANSACTION's bound PROGRAM is defined and locatable. If the program is missing, the transaction is INSTALLED but marked UNUSABLE; runtime invocation produces AEY9 abend.
 
-### 5.4 CICS-Performed Checks at Runtime (Per Transaction Invocation)
+### 6.4 CICS-Performed Checks at Runtime (Per Transaction Invocation)
 
 The final layer of checks fires only when an end user actually invokes a transaction:
 
@@ -534,7 +534,7 @@ These layered checks mean that **the dangling references in CBADMCDJ.jcl are NOT
 
 ---
 
-## 6. Anomaly Inventory
+## 7. Anomaly Inventory
 
 The following anomalies have been identified in CBADMCDJ.jcl. Each is presented with its location, severity, and remediation advice. Anomalies are sorted by severity (HIGH first); within severity, by JCL line order.
 
@@ -606,11 +606,11 @@ Five mapsets (`COSGN00M`, `COACT00S`, `COACTVWS`, `COACTUPS`, `COACTDES`) and fo
 
 ---
 
-## 7. Dangling Reference Inventory
+## 8. Dangling Reference Inventory
 
-This section is a stand-alone reference table for the operations team. It restates the dangling-resource findings from Anomaly 1 (Section 6) so they can be tracked separately from the broader anomaly catalog. Each row corresponds exactly to one Error-Handling rule row in [`CBADMCDJ_BRE.csv`](CBADMCDJ_BRE.csv) and [`CBADMCDJ_BRE.md`](CBADMCDJ_BRE.md).
+This section is a stand-alone reference table for the operations team. It restates the dangling-resource findings from Anomaly 1 (Section 7) so they can be tracked separately from the broader anomaly catalog. Each row corresponds exactly to one Error-Handling rule row in [`CBADMCDJ_BRE.csv`](CBADMCDJ_BRE.csv) and [`CBADMCDJ_BRE.md`](CBADMCDJ_BRE.md).
 
-### 7.1 Missing Programs (10 entries)
+### 8.1 Missing Programs (10 entries)
 
 | # | Resource Name | Type | Description | Source Line(s) | Affected TRANSID(s) | Severity |
 |---|---|---|---|---|---|---|
@@ -625,7 +625,7 @@ This section is a stand-alone reference table for the operations team. It restat
 | 9 | COTSTP3C | PROGRAM | PGM1 TEST (typo; should be PGM3 TEST) | 140-142 | CCT3 (line 142 embedded; line 154-155 redundant) | HIGH |
 | 10 | COTSTP4C | PROGRAM | PGM4 TEST | 143-145 | CCT4 (line 145 embedded; line 156-157 redundant) | HIGH |
 
-### 7.2 Missing Mapsets (10 entries)
+### 8.2 Missing Mapsets (10 entries)
 
 | # | Resource Name | Type | Description | Source Line(s) | Consumed By Program | Severity |
 |---|---|---|---|---|---|---|
@@ -640,7 +640,7 @@ This section is a stand-alone reference table for the operations team. It restat
 | 9 | COTSTP3S | MAPSET | PGM3 TEST | 93-94 | COTSTP3C (also dangling) | HIGH |
 | 10 | COTSTP4S | MAPSET | PGM4 TEST | 95-96 | COTSTP4C (also dangling) | HIGH |
 
-### 7.3 Remediation Options
+### 8.3 Remediation Options
 
 For each dangling resource, the operations team has two options:
 
@@ -659,11 +659,11 @@ For each dangling resource, the operations team has two options:
 ---
 
 
-## 8. Operational Instructions
+## 9. Operational Instructions
 
 This section provides concrete, step-by-step operational instructions for running CBADMCDJ.jcl in production. The instructions assume the operator has standard z/OS operator authority including dataset write access to the CSD and the load library.
 
-### 8.1 Pre-Run Prerequisites
+### 9.1 Pre-Run Prerequisites
 
 1. **Verify the load library exists and is populated.** Issue:
    ```text
@@ -685,7 +685,7 @@ This section provides concrete, step-by-step operational instructions for runnin
 
 4. **Confirm the operator has authority to write to the CSD.** RACF dataset profiles must permit ALTER access to `OEM.CICSTS.DFHCSD` for the submitting user ID. If unauthorized, the JCL fails at allocation time with an `IEF285I` message.
 
-### 8.2 First-Time Run (group `CARDDEMO` does NOT yet exist)
+### 9.2 First-Time Run (group `CARDDEMO` does NOT yet exist)
 
 1. **Submit CBADMCDJ.jcl as-is** (with `DELETE GROUP(CARDDEMO)` commented out at line 42).
 2. **Inspect SYSPRINT** for any DEFINE rejections. The only acceptable rejections are duplicate-name warnings (5 mapsets + 4 programs = 9 expected warnings); the job ends with RC=4.
@@ -693,7 +693,7 @@ This section provides concrete, step-by-step operational instructions for runnin
 4. **In the live CICS region**, run `CEDA INSTALL GROUP(CARDDEMO)`. Inspect the CEDA panel for any UNUSABLE resources; expect at least 10 PROGRAMs and 10 MAPSETs to be marked UNUSABLE (corresponding to the dangling references).
 5. **Test the working transaction.** Sign on with TRANSID `CC00` (the CardDemo login). The COSGN00 mapset should display. Other transactions (CCDM, CCT1-CCT4) will abend at runtime with AEY9 because their bound programs are dangling.
 
-### 8.3 Re-Run (group `CARDDEMO` already exists)
+### 9.3 Re-Run (group `CARDDEMO` already exists)
 
 The default job is non-idempotent. To re-run without producing duplicate-name warnings on every existing resource:
 
@@ -702,29 +702,29 @@ The default job is non-idempotent. To re-run without producing duplicate-name wa
 3. **Inspect SYSPRINT.** The DELETE should report removal of all existing CARDDEMO resources (one INFO line per resource removed), then the DEFINEs run as in the first-time scenario.
 4. **Re-comment line 42** (`* DELETE GROUP(CARDDEMO)`) before committing the file back to source control. This is critical — leaving the DELETE active in source control creates a HIGH-severity risk of accidentally deleting production resources on a future run.
 
-### 8.4 Recovery (job aborts mid-run)
+### 9.4 Recovery (job aborts mid-run)
 
 If the DFHCSDUP step abends partway through the SYSIN deck:
 
 1. **Inspect SYSPRINT** to find the last successful DEFINE. Note the resource name.
 2. **Take a CSD backup** before re-running. Even if the job aborted, partial writes may have committed.
 3. **Run `LISTCAT ENT(OEM.CICSTS.DFHCSD)`** to verify the CSD is structurally sound. If LISTCAT reports inconsistencies, restore from backup before proceeding.
-4. **Re-run with `DELETE GROUP(CARDDEMO)` un-commented** (treat as a re-run per Section 8.3).
+4. **Re-run with `DELETE GROUP(CARDDEMO)` un-commented** (treat as a re-run per Section 9.3).
 
-### 8.5 Expected SYSPRINT Output
+### 9.5 Expected SYSPRINT Output
 
 The job produces a SYSPRINT listing of approximately 200-300 lines, structured as follows:
 
 - **DFHCSDUP banner (5-10 lines):** product name, version, date/time, PARM echo
 - **DD allocation messages (5-10 lines):** confirmation of STEPLIB, DFHCSD, OUTDD, SYSPRINT bindings
-- **One INFO message per successful DEFINE** (~37 unique resources × 1 line each = ~37 lines)
+- **One INFO message per successful DEFINE** (~36 unique resources × 1 line each = ~36 lines)
 - **9 duplicate-name warnings** (5 mapsets + 4 programs)
 - **The verbatim output of `LIST GROUP(CARDDEMO)`** (~50-100 lines, depending on attribute verbosity)
 - **DFHCSDUP termination message and return code:** RC=0 if no errors; RC=4 if duplicate warnings only; RC=8 if any DEFINE failed; RC=12 if a system-level error occurred
 
 A successful first-time run produces RC=4 (because of the 9 duplicate-name warnings). The post-run verification should confirm RC=4 is the maximum return code; any higher value requires investigation.
 
-### 8.6 Post-Run Cleanup and Documentation
+### 9.6 Post-Run Cleanup and Documentation
 
 After a successful run:
 
@@ -735,11 +735,11 @@ After a successful run:
 
 ---
 
-## 9. Modernization Recommendations
+## 10. Modernization Recommendations
 
 This section restates the AWS Glue / Spring Batch mappings in narrative form. The same mappings appear in tabular form in Section 5 of [`CBADMCDJ_BRE.md`](CBADMCDJ_BRE.md). Both forms are required by Rule R18 of the Agent Action Plan to ensure parity across the deliverable.
 
-### 9.1 Cloud Target Architecture Overview
+### 10.1 Cloud Target Architecture Overview
 
 In the Java 25 + Spring Boot 3.x target, CBADMCDJ.jcl's entire functionality is **replaced**, not migrated. The CICS resource registration model has no direct cloud equivalent because Spring Boot applications register their endpoints, beans, and routes through annotation-driven configuration at JVM startup, not through a separate offline catalog-update job. Concretely:
 
@@ -749,7 +749,7 @@ In the Java 25 + Spring Boot 3.x target, CBADMCDJ.jcl's entire functionality is 
 
 This means the CBADMCDJ.jcl deliverable becomes purely **informational** during modernization — it documents what the legacy system registered, but the registration mechanism itself is wholly absent from the target.
 
-### 9.2 Step-by-Step Modernization
+### 10.2 Step-by-Step Modernization
 
 The following sequence describes how each artifact in CBADMCDJ.jcl maps to a Java 25 + Spring Boot 3.x equivalent. The sequence assumes the modernization team is also migrating the underlying COBOL programs (a parallel workstream); CBADMCDJ.jcl on its own has no migration target.
 
@@ -795,7 +795,7 @@ The following sequence describes how each artifact in CBADMCDJ.jcl maps to a Jav
 
 10. **Replace COMP-3 fields with `BigDecimal`.** All `S9(09)V99 COMP-3` fields (ACCT-CURR-BAL, ACCT-CREDIT-LIMIT, ACCT-CASH-CREDIT-LIMIT, ACCT-CURR-CYC-CREDIT, ACCT-CURR-CYC-DEBIT, etc. in CVACT01Y.cpy) become `java.math.BigDecimal` columns with `precision=12 scale=2` JPA `@Column` annotations. This preserves exact decimal arithmetic — never use `double` for monetary amounts.
 
-### 9.3 What CBADMCDJ.jcl Actually Maps to in the Target
+### 10.3 What CBADMCDJ.jcl Actually Maps to in the Target
 
 The following table summarizes the direct mapping for each line/element in CBADMCDJ.jcl. Note that most rows resolve to "(none)" — the registration is implicit in Spring Boot, not an explicit job step.
 
@@ -816,7 +816,7 @@ The following table summarizes the direct mapping for each line/element in CBADM
 | `DEFINE TRANSACTION(CCDM) PROGRAM(COADM00C)` (line 147-148) | `@RequestMapping("/admin/menu")` on `AdminMenuController` (NEW — the legacy COADM00C is dangling) | Currently a gap; modernization must produce this controller from scratch. |
 | `LIST GROUP(CARDDEMO)` (line 159) | `GET /actuator/mappings` and `GET /actuator/beans` | Spring Actuator produces equivalent verification output. |
 
-### 9.4 Considerations for Dangling References During Modernization
+### 10.4 Considerations for Dangling References During Modernization
 
 The 10 dangling programs and 10 dangling mapsets create a unique situation during modernization:
 
@@ -829,7 +829,7 @@ The recommended approach depends on stakeholder requirements; this BRE deliverab
 ---
 
 
-## 10. Risk Register (Top 5)
+## 11. Risk Register (Top 5)
 
 The following Top-5 risk register summarizes the highest-priority modernization risks observed in CBADMCDJ.jcl and its underlying COBOL programs. Each risk is ranked HIGH, MEDIUM, or LOW based on impact and probability of occurrence. The same five risks (with identical ranking and mitigation guidance) are also documented in Section 5.3 of [`CBADMCDJ_BRE.md`](CBADMCDJ_BRE.md) per Rule R18 of the Agent Action Plan.
 
@@ -846,7 +846,7 @@ The following Top-5 risk register summarizes the highest-priority modernization 
 **Mitigation:**
 1. Either obtain the missing source from a complete CardDemo distribution, OR
 2. Remove the corresponding DEFINE PROGRAM and DEFINE MAPSET directives from CBADMCDJ.jcl before deployment.
-3. In the modernization target, the modernization team explicitly decides whether to build the missing functionality (Option 2 in Section 9.4) or skip it (Option 1 in Section 9.4).
+3. In the modernization target, the modernization team explicitly decides whether to build the missing functionality (Option 2 in Section 10.4) or skip it (Option 1 in Section 10.4).
 
 ### Risk #2 — Plaintext Password Storage in USRSEC VSAM File (HIGH)
 
@@ -927,30 +927,30 @@ The following Top-5 risk register summarizes the highest-priority modernization 
 
 ---
 
-## 11. Cross-References
+## 12. Cross-References
 
 This document is part of a three-file Business Rules Extraction deliverable for `app/jcl/CBADMCDJ.jcl`. The companion documents and source artifacts are:
 
-### 11.1 Companion BRE Artifacts
+### 12.1 Companion BRE Artifacts
 
 - **Companion BRE table (Markdown):** [`CBADMCDJ_BRE.md`](CBADMCDJ_BRE.md) — Markdown rendering of the 20-column rule table with Modernization Mapping appendix
 - **Companion BRE table (CSV, machine-readable):** [`CBADMCDJ_BRE.csv`](CBADMCDJ_BRE.csv) — RFC 4180-compliant CSV for spreadsheet/database import
 
-### 11.2 Source Artifact (Read-Only)
+### 12.2 Source Artifact (Read-Only)
 
 - **Primary subject:** [`../../app/jcl/CBADMCDJ.jcl`](../../app/jcl/CBADMCDJ.jcl) — 167 lines, IBM CICS Resource Definition job invoking DFHCSDUP
 
-### 11.3 Existing Repository Documentation
+### 12.3 Existing Repository Documentation
 
 - **Existing technical specifications:** [`../technical-specifications.md`](../technical-specifications.md) — authoritative Java 25 + Spring Boot 3.x migration blueprint (1239 lines)
 - **Project guide and status:** [`../project-guide.md`](../project-guide.md) — central project status reference
 - **Documentation home:** [`../index.md`](../index.md) — top-level documentation entry point
 
-### 11.4 Cross-Validation Reference
+### 12.4 Cross-Validation Reference
 
 - **Static CSD listing:** [`../../app/csd/CARDDEMO.CSD`](../../app/csd/CARDDEMO.CSD) — informational reference; the static "exported" form of the resource definitions written by CBADMCDJ.jcl
 
-### 11.5 Source COBOL Programs (5 OK Programs in Scope)
+### 12.5 Source COBOL Programs (5 OK Programs in Scope)
 
 - [`../../app/cbl/COSGN00C.cbl`](../../app/cbl/COSGN00C.cbl) — Login transaction CC00 (260 lines)
 - [`../../app/cbl/COACTVWC.cbl`](../../app/cbl/COACTVWC.cbl) — Account/card view (941 lines)
@@ -958,7 +958,7 @@ This document is part of a three-file Business Rules Extraction deliverable for 
 - [`../../app/cbl/COTRN00C.cbl`](../../app/cbl/COTRN00C.cbl) — Transaction list/lookup (699 lines)
 - [`../../app/cbl/COBIL00C.cbl`](../../app/cbl/COBIL00C.cbl) — Bill payment (572 lines)
 
-### 11.6 Source BMS Mapsets (5 OK Mapsets in Scope)
+### 12.6 Source BMS Mapsets (5 OK Mapsets in Scope)
 
 - [`../../app/bms/COSGN00.bms`](../../app/bms/COSGN00.bms) — Login screen mapset
 - [`../../app/bms/COACTVW.bms`](../../app/bms/COACTVW.bms) — Account view screen mapset
@@ -966,7 +966,7 @@ This document is part of a three-file Business Rules Extraction deliverable for 
 - [`../../app/bms/COTRN00.bms`](../../app/bms/COTRN00.bms) — Transaction list screen mapset
 - [`../../app/bms/COBIL00.bms`](../../app/bms/COBIL00.bms) — Bill payment screen mapset
 
-### 11.7 Glossary of Acronyms
+### 12.7 Glossary of Acronyms
 
 | Acronym | Expansion |
 |---|---|
