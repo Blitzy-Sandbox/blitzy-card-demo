@@ -831,7 +831,7 @@ The recommended approach depends on stakeholder requirements; this BRE deliverab
 
 ## 11. Risk Register (Top 5)
 
-The following Top-5 risk register summarizes the highest-priority modernization risks observed in CBADMCDJ.jcl and its underlying COBOL programs. Each risk is ranked HIGH, MEDIUM, or LOW based on impact and probability of occurrence. The same five risks (with identical ranking and mitigation guidance) are also documented in Section 5.3 of [`CBADMCDJ_BRE.md`](CBADMCDJ_BRE.md) per Rule R18 of the Agent Action Plan.
+The following Top-5 risk register summarizes the highest-priority modernization risks observed in CBADMCDJ.jcl and its underlying COBOL programs. Each risk is ranked HIGH, MEDIUM, or LOW based on impact and probability of occurrence. The same five risks (with identical ranking and mitigation guidance) are also documented in the [Top-5 Modernization Risk Register](CBADMCDJ_BRE.md#top-5-modernization-risk-register) section of `CBADMCDJ_BRE.md` per Rule R18 of the Agent Action Plan.
 
 ### Risk #1 — Dangling Resource References (HIGH)
 
