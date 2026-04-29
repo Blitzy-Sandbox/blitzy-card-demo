@@ -6,6 +6,12 @@ nav:
   - Business Rules Extraction:
       - CBADMCDJ BRE Table: bre/CBADMCDJ_BRE.md
       - CBADMCDJ Functionality: bre/CBADMCDJ_FUNCTIONALITY.md
+markdown_extensions:
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:mermaid2.fence_mermaid
 plugins:
   - techdocs-core
   - mermaid2

@@ -938,7 +938,9 @@ This document is part of a three-file Business Rules Extraction deliverable for 
 
 ### 12.2 Source Artifact (Read-Only)
 
-- **Primary subject:** [`../../app/jcl/CBADMCDJ.jcl`](../../app/jcl/CBADMCDJ.jcl) — 167 lines, IBM CICS Resource Definition job invoking DFHCSDUP
+> **Note:** Source-artifact links below resolve to the repository on GitHub because MkDocs serves only files within the `docs/` tree. To browse these files locally, use the equivalent path under the repository root (e.g., `app/jcl/CBADMCDJ.jcl`).
+
+- **Primary subject:** [`app/jcl/CBADMCDJ.jcl`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/app/jcl/CBADMCDJ.jcl) — 167 lines, IBM CICS Resource Definition job invoking DFHCSDUP
 
 ### 12.3 Existing Repository Documentation
 
@@ -948,23 +950,23 @@ This document is part of a three-file Business Rules Extraction deliverable for 
 
 ### 12.4 Cross-Validation Reference
 
-- **Static CSD listing:** [`../../app/csd/CARDDEMO.CSD`](../../app/csd/CARDDEMO.CSD) — informational reference; the static "exported" form of the resource definitions written by CBADMCDJ.jcl
+- **Static CSD listing:** [`app/csd/CARDDEMO.CSD`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/app/csd/CARDDEMO.CSD) — informational reference; the static "exported" form of the resource definitions written by CBADMCDJ.jcl
 
 ### 12.5 Source COBOL Programs (5 OK Programs in Scope)
 
-- [`../../app/cbl/COSGN00C.cbl`](../../app/cbl/COSGN00C.cbl) — Login transaction CC00 (260 lines)
-- [`../../app/cbl/COACTVWC.cbl`](../../app/cbl/COACTVWC.cbl) — Account/card view (941 lines)
-- [`../../app/cbl/COACTUPC.cbl`](../../app/cbl/COACTUPC.cbl) — Account/card update (4236 lines — largest in scope)
-- [`../../app/cbl/COTRN00C.cbl`](../../app/cbl/COTRN00C.cbl) — Transaction list/lookup (699 lines)
-- [`../../app/cbl/COBIL00C.cbl`](../../app/cbl/COBIL00C.cbl) — Bill payment (572 lines)
+- [`app/cbl/COSGN00C.cbl`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/app/cbl/COSGN00C.cbl) — Login transaction CC00 (260 lines)
+- [`app/cbl/COACTVWC.cbl`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/app/cbl/COACTVWC.cbl) — Account/card view (941 lines)
+- [`app/cbl/COACTUPC.cbl`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/app/cbl/COACTUPC.cbl) — Account/card update (4236 lines — largest in scope)
+- [`app/cbl/COTRN00C.cbl`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/app/cbl/COTRN00C.cbl) — Transaction list/lookup (699 lines)
+- [`app/cbl/COBIL00C.cbl`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/app/cbl/COBIL00C.cbl) — Bill payment (572 lines)
 
 ### 12.6 Source BMS Mapsets (5 OK Mapsets in Scope)
 
-- [`../../app/bms/COSGN00.bms`](../../app/bms/COSGN00.bms) — Login screen mapset
-- [`../../app/bms/COACTVW.bms`](../../app/bms/COACTVW.bms) — Account view screen mapset
-- [`../../app/bms/COACTUP.bms`](../../app/bms/COACTUP.bms) — Account update screen mapset
-- [`../../app/bms/COTRN00.bms`](../../app/bms/COTRN00.bms) — Transaction list screen mapset
-- [`../../app/bms/COBIL00.bms`](../../app/bms/COBIL00.bms) — Bill payment screen mapset
+- [`app/bms/COSGN00.bms`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/app/bms/COSGN00.bms) — Login screen mapset
+- [`app/bms/COACTVW.bms`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/app/bms/COACTVW.bms) — Account view screen mapset
+- [`app/bms/COACTUP.bms`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/app/bms/COACTUP.bms) — Account update screen mapset
+- [`app/bms/COTRN00.bms`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/app/bms/COTRN00.bms) — Transaction list screen mapset
+- [`app/bms/COBIL00.bms`](https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/app/bms/COBIL00.bms) — Bill payment screen mapset
 
 ### 12.7 Glossary of Acronyms
 
