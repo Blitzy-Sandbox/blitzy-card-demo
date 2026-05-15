@@ -11,6 +11,7 @@ metadata:
   - refactor
   - typescript
   - web-app
+  - COBOL
   labels:
     blitzy.com/language: java
   annotations:
