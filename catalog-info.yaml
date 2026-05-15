@@ -5,13 +5,17 @@ metadata:
   description: AWS CardDemo COBOL mainframe application migrated to Java 25 + Spring
     Boot 3.x
   tags:
+  - COBOL
+  - cobol
   - java
+  - migration
   - modernization
   - new-feature
+  - python
   - refactor
+  - rewrite
   - typescript
   - web-app
-  - COBOL
   labels:
     blitzy.com/language: java
   annotations:
