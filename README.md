@@ -329,6 +329,8 @@ src/test/resources/
 
 Every Spring Batch job has a paired `*BaselineParityIT` that runs the migrated Java job against canonical ASCII fixtures and diffs the produced output byte-for-byte against the captured COBOL reference output in `src/test/resources/baseline/expected/`. Zero delta is required.
 
+**Capture status — deferred-capture placeholders.** Authentic COBOL capture (running the original `app/jcl/*.jcl` jobs against the canonical inputs on a z/OS or Micro Focus / GnuCOBOL environment) is the long-term source of truth for these reference outputs. Until that capture environment is available, files under `src/test/resources/baseline/expected/` are committed as documented placeholders whose first line is `# BASELINE_CAPTURE_PENDING_<NAME>`. Each placeholder enumerates the producer JCL and COBOL program, the input fixtures consumed, the output DD specification (LRECL/RECFM), and the record-layout copybook so that the captured output can be reproduced exactly when the COBOL runtime becomes available. The associated `*BaselineParityIT` is expected to recognize the `BASELINE_CAPTURE_PENDING_` marker and fail fast with a clear "baseline capture pending" diagnostic — preventing accidental green builds against unpopulated baselines. Re-capture must follow the procedure in [`docs/testing/baseline-parity.md`](docs/testing/baseline-parity.md).
+
 For details on the test pyramid, naming conventions, and coverage targets, see [`docs/testing/test-strategy.md`](docs/testing/test-strategy.md). For the operating procedure used when input fixtures change and new COBOL reference outputs must be captured, see [`docs/testing/baseline-parity.md`](docs/testing/baseline-parity.md).
 
 <br/>

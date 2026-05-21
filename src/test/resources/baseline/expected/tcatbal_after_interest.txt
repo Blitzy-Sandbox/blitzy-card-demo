@@ -1,0 +1,22 @@
+# BASELINE_CAPTURE_PENDING_TCATBAL_AFTER_INTEREST
+# This file is a placeholder for the captured COBOL reference output produced by
+# running app/jcl/INTCALC.jcl (CBACT04C, PARM='2022071800') against the inputs in
+# src/test/resources/baseline/input/.
+# 
+# Procedure: docs/testing/baseline-parity.md
+# Producer: app/jcl/INTCALC.jcl -> app/cbl/CBACT04C.cbl
+# PARM: '2022071800' (effective date for interest accrual; drives TRAN-ID prefix)
+# Record layout: app/cpy/CVTRA05Y.cpy (350-byte TRAN-RECORD)
+# Inputs:
+#   - src/test/resources/baseline/input/tcatbal.txt
+#   - src/test/resources/baseline/input/acctdata.txt
+#   - src/test/resources/baseline/input/cardxref.txt
+#   - src/test/resources/baseline/input/discgrp.txt
+# 
+# Formula: monthly_interest = ROUND_HALF_EVEN((TRAN-CAT-BAL * DIS-INT-RATE) / 1200, 2)
+# Skip rule: if DIS-INT-RATE = 0 (ZEROAPR group or zero rate), no record is generated.
+# Fallback rule: if no specific group match, use DEFAULT group rate.
+# 
+# Until populated with the actual captured output, InterestCalculationBaselineParityIT
+# will fail with a clear "baseline capture pending" error, prompting capture before
+# parity validation runs.
