@@ -1,0 +1,20 @@
+# BASELINE_CAPTURE_PENDING_STATEMENTS_TEXT
+# This file is a placeholder for the captured COBOL reference output produced by
+# running app/jcl/CREASTMT.JCL (CBSTM03A, STMTFILE DD - text variant) against the
+# inputs in src/test/resources/baseline/input/.
+# 
+# Procedure: docs/testing/baseline-parity.md
+# Producer: app/jcl/CREASTMT.JCL -> app/cbl/CBSTM03A.CBL
+# Output DD: //STMTFILE (LRECL=80, RECFM=FB)
+# Record layout: see STATEMENT-LINES copybook in CBSTM03A working storage
+# Inputs:
+#   - src/test/resources/baseline/input/dailytran.txt (sorted by card-num + tran-id)
+#   - src/test/resources/baseline/input/cardxref.txt
+#   - src/test/resources/baseline/input/custdata.txt
+#   - src/test/resources/baseline/input/acctdata.txt
+# 
+# Format: 80-character fixed-width text statement, one block per card.
+# Block structure: 13 fixed lines (header/details) + N transaction lines + 2 footer lines.
+# 
+# Until populated, StatementGenerationBaselineParityIT will fail with a clear
+# "baseline capture pending" error.
