@@ -1,50 +1,205 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    Test-time logging configuration (AAP §0.5.4, §0.10.5).
+    ============================================================================
+    CardDemo Migration  |  Test-Time Logback Configuration
+    File: src/test/resources/logback-test.xml
+    Source of truth: AAP §0.5.4 (Test Configuration Updates) and §0.10.5
+                     (Security Constraints, NON-NEGOTIABLE).
+    ============================================================================
 
-    Two defence-in-depth controls for the user directive "No financial data
-    written to logs at any level":
+    PURPOSE
+    Activated automatically when tests run. Logback's discovery order is
+    logback-test.xml, then logback.xml, then logback.groovy; Spring Boot's
+    LogbackLoggingSystem honours the same precedence via
+    `getStandardConfigLocations()`. Because the file name carries the
+    `-test` suffix, the production runtime is unaffected by this file;
+    only test runs use it (mvn test, mvn verify, IDE test execution).
 
-    1. A pattern layout that mask-replaces card numbers (PAN), account IDs,
-       and currency-shaped tokens before the line is written.
-    2. The dedicated LoggingPiiRedactionTest class (under
-       src/test/java/com/aws/carddemo/security/) asserts at runtime that
-       captured log lines never contain known PII fixtures.
+    DEFENCE-IN-DEPTH PCI/PII REDACTION (AAP §0.10.5, NON-NEGOTIABLE)
+    The user directive "No financial data written to logs at any level"
+    is enforced by THREE coordinated controls:
 
-    The PatternLayout below mirrors src/main/resources/logback-spring.xml so
-    test and production redaction behave identically.
+      1. THIS FILE: the CONSOLE appender's pattern layout chains three
+         %replace conversion words that mask any substring resembling a
+         card number (PAN), an 11-digit account ID, or a labelled balance
+         /amount value. Even if production code or a test fixture
+         accidentally calls log.info("processing account {} card {}
+         balance={}", id, pan, amount), the appender masks the offending
+         substrings before the line is emitted.
+
+      2. application-test.properties: pins Hibernate SQL parameter
+         loggers at WARN so JDBC bound parameters never reach the layout.
+
+      3. LoggingPiiRedactionTest (AAP §0.10.5): a dedicated JUnit 5 test
+         class that drives selected service paths with known-PII fixtures
+         and asserts via a ListAppender that captured log lines do NOT
+         contain account numbers, card numbers, or balances. THIS FILE IS
+         NECESSARY BUT NOT SUFFICIENT; the assertion test is the ultimate
+         compliance gate.
+
+    REDACTION ORDER (longest patterns first; innermost executes first)
+    Logback's nested %replace calls execute from innermost to outermost
+    on the raw %m (message) text:
+
+        innermost : card numbers (13 to 19 digits, PAN range)
+        middle    : account IDs  (11 digits, CardDemo CVACT01Y width)
+        outermost : balances     (labelled decimal amounts, PIC V99 scale 2)
+
+    Longest-first ordering matters: an 11-digit subsequence inside a
+    16-digit PAN must NOT be mis-masked as an account number. By
+    replacing the PAN first with a non-numeric token
+    (****CARD-MASKED****), the account regex sees no residual digits
+    from the card and cannot accidentally partial-match.
+
+    MINIMAL CHANGE CLAUSE (AAP §0.10.2)
+    Only the appenders, layouts, and filters required for the test
+    pyramid are configured here. No file appender (test logs are
+    ephemeral; Surefire captures stdout to target/surefire-reports/),
+    no async appender (synchronous output is fine for the wall-clock
+    targets in AAP §0.7.2), no rolling policy, no SMTP/email appender,
+    no plaintext credentials. Package-specific log levels for the
+    application (e.g., logging.level.com.aws.carddemo=DEBUG) are driven
+    from application-test.properties via Spring Boot's
+    LogbackLoggingSystem; they are deliberately NOT hardcoded here so
+    the properties file remains the single source of truth.
+    ============================================================================
 -->
-<configuration>
+<configuration scan="false" debug="false">
 
-    <!-- Replace 13-19 digit card-number runs with **** **** **** LAST4 -->
-    <conversionRule conversionWord="msg"
-                    converterClass="ch.qos.logback.classic.pattern.MessageConverter"/>
+    <!--
+        Include Spring Boot's standard Logback defaults. Exposes the
+        property names LOG_LEVEL_PATTERN, LOG_DATEFORMAT_PATTERN, PID,
+        CONSOLE_LOG_CHARSET, etc., and registers Spring Boot's converter
+        words (clr, wEx, applicationName, correlationId). Importing the
+        defaults keeps this test file aligned with the framework's
+        expectations and means future Spring Boot upgrades that adjust
+        the default format are picked up automatically.
+    -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
 
+    <!--
+        ========================================================================
+        PCI / PII redaction regex properties (AAP §0.10.5)
+        ========================================================================
+        These regex / mask pairs are referenced inside the CONSOLE appender's
+        pattern via Logback's %replace conversion word. Defining them as
+        Logback properties keeps the appender pattern legible and lets any
+        future appender (e.g., JSON-encoded structured logs) reuse the same
+        redaction policy without duplicating the regular expressions.
+
+        Regex notes
+          * Single backslash escape; Logback's %replace passes the regex
+            string verbatim to java.util.regex.Pattern#compile, so `\b`
+            (word boundary) and `\d` (digit) are written with a single
+            backslash in the XML, NOT doubled.
+          * Anchored on word boundaries (`\b`) to avoid partial matches
+            inside longer digit runs and to allow the regex engine to skip
+            quickly through non-digit text.
+          * No `.*` or look-arounds; keeps each match O(n) in message
+            length with no risk of catastrophic backtracking.
+    -->
+
+    <!-- Card numbers (PAN): 13 to 19 consecutive digits.
+         Covers Visa (13 or 16), Mastercard (16), Amex (15), Discover
+         (16), Maestro (12 to 19; lower bound deliberately conservative
+         at 13 to avoid mis-masking 12-digit timestamps or counts). -->
+    <property name="CARD_NUMBER_REGEX" value="\b\d{13,19}\b"/>
+    <property name="CARD_NUMBER_MASK"  value="****CARD-MASKED****"/>
+
+    <!-- Account numbers: exactly 11 consecutive digits.
+         Matches the COBOL CVACT01Y.cpy account-id width (PIC X(11)).
+         CardDemo test fixtures use IDs such as "00000000010" through
+         "00000000060". The card regex above runs first, so any 16-digit
+         PAN has already been masked to a non-numeric token by the time
+         this pattern is applied. -->
+    <property name="ACCOUNT_NUMBER_REGEX" value="\b\d{11}\b"/>
+    <property name="ACCOUNT_NUMBER_MASK"  value="****ACCT-MASKED****"/>
+
+    <!-- Balance / amount: a label ("balance" or "amount",
+         case-insensitive) followed by an optional `:` or `=` separator
+         and a signed decimal value with exactly TWO fractional digits;
+         i.e., the COBOL PIC V99 scale=2 monetary convention.
+         The leading label anchor is deliberate: it avoids masking
+         non-monetary decimals such as response times, page sizes, or
+         coverage percentages while still catching every
+         business-amount log call that follows the project's
+         "label=value" convention. Capture group $1 preserves the
+         original label casing in the redacted output. -->
+    <property name="BALANCE_REGEX" value="(?i)(balance|amount)\s*[:=]?\s*[-]?\d+\.\d{2}"/>
+    <property name="BALANCE_MASK"  value="$1=****AMT-MASKED****"/>
+
+    <!--
+        ========================================================================
+        CONSOLE appender, defence-in-depth PII redaction
+        ========================================================================
+        Synchronous ConsoleAppender with a PatternLayoutEncoder. The
+        pattern chains three %replace conversion words; nesting is
+        right-to-left, so the INNERMOST %replace operates on the raw
+        %m message first (card numbers), then the result feeds the
+        middle %replace (account numbers), and finally the outermost
+        %replace (balances).
+
+        Layout breakdown:
+          %d{...}                : ISO-8601 timestamp (Spring Boot default)
+          ${LOG_LEVEL_PATTERN}   : 5-char right-padded level (e.g., "INFO ")
+          [%t]                   : thread name (useful for parallel JUnit 5
+                                   runs where multiple worker threads
+                                   interleave their output)
+          %-40.40logger{39}      : logger name, abbreviated to 39 chars,
+                                   padded/truncated to width 40
+          : %replace(...)        : separator and the chained masking pipeline
+          %n                     : platform-specific line separator
+    -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
-            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %replace(%replace(%msg){'\\b\\d{13,19}\\b','***REDACTED-PAN***'}){'\\b\\d{11}\\b','***REDACTED-ACCT***'}%n</pattern>
+            <pattern>%d{${LOG_DATEFORMAT_PATTERN:-yyyy-MM-dd HH:mm:ss.SSS}} ${LOG_LEVEL_PATTERN:-%5p} [%t] %-40.40logger{39} : %replace(%replace(%replace(%m){'${CARD_NUMBER_REGEX}','${CARD_NUMBER_MASK}'}){'${ACCOUNT_NUMBER_REGEX}','${ACCOUNT_NUMBER_MASK}'}){'${BALANCE_REGEX}','${BALANCE_MASK}'}%n</pattern>
+            <charset>${CONSOLE_LOG_CHARSET:-UTF-8}</charset>
         </encoder>
     </appender>
 
     <!--
-        Root level is INFO for the project as a whole; raise carddemo packages
-        to DEBUG so tests can assert against expected debug-level statements
-        (and LoggingPiiRedactionTest can confirm that even DEBUG output is
-        scrubbed).
+        ========================================================================
+        Verbose third-party libraries: noise reduction + defence in depth
+        ========================================================================
+        Pinning Hibernate SQL loggers at WARN serves two purposes:
+          1. Keeps test stdout focused on the application's own log
+             output (Hibernate at DEBUG emits one line per SQL statement
+             plus one line per bound parameter, overwhelming on a batch
+             IT that posts thousands of transactions).
+          2. PII defence in depth: JDBC parameter binding at TRACE
+             would echo balance and account-id values straight to the
+             layout, which the %replace chain would then have to mask.
+             Suppressing the source eliminates that risk entirely.
+
+        Testcontainers and Docker-Java are kept at the levels that
+        balance diagnosability against noise: container-startup
+        progress is helpful when Docker has trouble; the Docker REST
+        API chatter is not.
+
+        Application-level loggers (com.aws.carddemo.*) are deliberately
+        NOT declared here; application-test.properties owns those
+        levels via Spring Boot's LogbackLoggingSystem, per AAP §0.10.2.
+    -->
+    <logger name="org.hibernate.SQL"                               level="WARN"/>
+    <logger name="org.hibernate.type.descriptor.sql"               level="WARN"/>
+    <logger name="org.hibernate.orm.jdbc.bind"                     level="WARN"/>
+    <logger name="org.hibernate.engine.jdbc.spi.SqlStatementLogger" level="WARN"/>
+    <logger name="com.github.dockerjava"                           level="WARN"/>
+    <logger name="org.testcontainers"                              level="INFO"/>
+
+    <!--
+        ========================================================================
+        Root logger
+        ========================================================================
+        Default to INFO; package-specific overrides
+        (logging.level.com.aws.carddemo=DEBUG, etc.) are applied by
+        Spring Boot from application-test.properties after Logback
+        bootstrap completes. The CONSOLE appender is the only
+        attached output; file appenders are intentionally omitted
+        (see Minimal Change Clause notes in the header comment).
     -->
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
     </root>
-
-    <logger name="com.aws.carddemo" level="DEBUG" additivity="false">
-        <appender-ref ref="CONSOLE"/>
-    </logger>
-
-    <!-- Quieten noisy frameworks during tests -->
-    <logger name="org.springframework.test.context.transaction" level="WARN"/>
-    <logger name="org.hibernate.SQL" level="WARN"/>
-    <logger name="org.hibernate.type.descriptor.sql.BasicBinder" level="WARN"/>
-    <logger name="org.testcontainers" level="WARN"/>
-    <logger name="com.github.dockerjava" level="WARN"/>
 
 </configuration>
