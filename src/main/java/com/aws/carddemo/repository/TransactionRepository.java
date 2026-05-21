@@ -17,13 +17,19 @@
 package com.aws.carddemo.repository;
 
 import com.aws.carddemo.entity.Transaction;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 /**
  * Spring Data JPA repository for {@link Transaction} entities — the Java
  * replacement for COBOL {@code EXEC CICS READ DATASET('TRANSACT')
  * RIDFLD(TRAN-ID)} from {@code app/cbl/COTRN01C.cbl}
- * {@code READ-TRANSACT-FILE} paragraph (lines 267–296).
+ * {@code READ-TRANSACT-FILE} paragraph (lines 267–296) and the
+ * {@code STARTBR / READNEXT} browse loop in
+ * {@code app/cbl/COTRN00C.cbl} {@code PROCESS-PAGE-FORWARD} (lines 279–328).
  *
  * <h2>COBOL Provenance — COTRN01C.cbl §READ-TRANSACT-FILE</h2>
  *
@@ -54,6 +60,32 @@ import org.springframework.data.jpa.repository.JpaRepository;
  * propagate to the controller layer for translation, mirroring the COBOL
  * {@code HANDLE ABEND} fallback).
  *
+ * <h2>COBOL Provenance — COTRN00C.cbl §PROCESS-PAGE-FORWARD (paged list)</h2>
+ *
+ * <p>The Java migration of {@code COTRN00C.cbl} uses
+ * {@link #findAll(Pageable)} (inherited from {@link JpaRepository}) as the
+ * direct Java replacement for the {@code STARTBR-TRANSACT-FILE} +
+ * {@code PERFORM UNTIL WS-IDX >= 11 OR TRANSACT-EOF OR ERR-FLG-ON}
+ * loop (lines 281–303 of {@code COTRN00C.cbl}). The fixed
+ * {@code PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > 10} bound
+ * materialises as a Spring Data {@link Pageable} with page size 10 — see
+ * {@link com.aws.carddemo.service.TransactionListService#PAGE_SIZE}.
+ *
+ * <p>The COBOL workflow does not implement explicit account-key or
+ * card-key filtering on the {@code TRANSACT} browse — the operator
+ * navigates by {@code TRAN-ID} alone via the {@code TRNIDINI} starting-
+ * browse key. The Java migration introduces two derived filter query
+ * methods ({@link #findByAccountId(String, Pageable)} and
+ * {@link #findByCardNumber(String, Pageable)}) as documented Java-migration
+ * additions (AAP §0.10.2 "All deviations from literal COBOL logic must be
+ * documented with the original COBOL paragraph name and reason for
+ * divergence"). Reason: the REST controller layer for the migrated
+ * transaction-list endpoint exposes account and card filters as URL query
+ * parameters, which is the natural REST equivalent of the BMS map-driven
+ * starting-browse-key idiom. These filters keep the result set focused on
+ * the operator's current account / card context without forcing a client-
+ * side filter pass.
+ *
  * <h2>Primary Key Type — String</h2>
  *
  * <p>The {@code Transaction} primary key {@link Transaction#getTransactionId()}
@@ -68,23 +100,97 @@ import org.springframework.data.jpa.repository.JpaRepository;
  *
  * <p>This interface is a <strong>minimum-viable JPA repository</strong>
  * created to satisfy {@link com.aws.carddemo.service.TransactionDetailService}
- * compilation and the transaction-detail test suite. Subsequent migration
- * agents (REFACTOR flavor) will add custom query methods (e.g.,
- * {@code findByCardNumberOrderByOriginTimestampDesc(String)} for the
- * COTRN00C transaction-list pagination query, {@code findAllByOriginTimestampBetween(...)}
- * for the TRANREPT date-range report), a {@code @Repository} stereotype
- * annotation (if the project policy requires explicit stereotype marking —
- * Spring Data infers the bean from the {@code JpaRepository} extension
- * and a stereotype is not strictly necessary), and any custom
- * {@code @Modifying @Query} insert that the COTRN02C transaction-add
- * workflow requires.
+ * and {@link com.aws.carddemo.service.TransactionListService} compilation
+ * and the corresponding test suites. Subsequent migration agents
+ * (REFACTOR flavor) will add additional custom query methods (e.g.,
+ * {@code findAllByOriginTimestampBetween(...)} for the TRANREPT date-range
+ * report), a {@code @Repository} stereotype annotation (if the project
+ * policy requires explicit stereotype marking — Spring Data infers the
+ * bean from the {@code JpaRepository} extension and a stereotype is not
+ * strictly necessary), and any custom {@code @Modifying @Query} insert
+ * that the COTRN02C transaction-add workflow requires.
  *
  * @see com.aws.carddemo.service.TransactionDetailService
+ * @see com.aws.carddemo.service.TransactionListService
  * @see Transaction
  */
 public interface TransactionRepository extends JpaRepository<Transaction, String> {
-    // All required methods (findById, save, deleteById, ...) are inherited
-    // from JpaRepository. Custom query methods will be added by subsequent
-    // migration agents as additional COBOL programs (COTRN00C, COTRN02C,
-    // CBTRN02C, CBTRN03C) are migrated.
+
+    /**
+     * Page through {@link Transaction} rows whose {@code TRAN-CARD-NUM}
+     * matches the supplied 16-character PAN.
+     *
+     * <p>Spring Data derives the JPQL {@code SELECT t FROM Transaction t
+     * WHERE t.cardNumber = ?1} from this method name at proxy-creation time
+     * (the property name {@code cardNumber} on {@link Transaction} matches
+     * the {@code TRAN-CARD-NUM PIC X(16)} field from
+     * {@code app/cpy/CVTRA05Y.cpy}).
+     *
+     * <h3>COBOL Provenance — Java-migration addition</h3>
+     *
+     * <p>The COBOL {@code COTRN00C.cbl} workflow does not contain an
+     * explicit card-key filter — the operator navigates by {@code TRAN-ID}
+     * via {@code TRNIDINI} starting-browse key. The Java migration adds
+     * this method as documented Java-migration addition (AAP §0.10.2):
+     * the REST controller surfaces a {@code ?card=NNNN...} query parameter
+     * that maps onto this repository call when the request's
+     * {@code cardNumberFilter} field is populated.
+     *
+     * @param cardNumber 16-character Visa-format PAN (e.g.
+     *                   {@code "4111111111111101"}); must not be
+     *                   {@code null}. Whitespace-padded values are passed
+     *                   through verbatim (the database column is fixed
+     *                   width).
+     * @param pageable   pagination request (page index + page size). The
+     *                   page size should be
+     *                   {@link com.aws.carddemo.service.TransactionListService#PAGE_SIZE}
+     *                   ({@code 10}) to match the COBOL
+     *                   {@code WS-MAX-SCREEN-LINES} semantic.
+     * @return a {@link Page} of {@link Transaction} rows matching the
+     *         supplied card number; never {@code null}. Empty page when no
+     *         rows match.
+     */
+    Page<Transaction> findByCardNumber(String cardNumber, Pageable pageable);
+
+    /**
+     * Page through {@link Transaction} rows whose underlying card belongs
+     * to the supplied 11-character zero-padded account identifier.
+     *
+     * <p>The {@code Transaction} entity does <em>not</em> carry an
+     * {@code accountId} column directly — {@code TRAN-CARD-NUM} is the
+     * foreign key into {@code CARDDAT} ({@code CARD-NUM} PIC X(16)), and
+     * {@code CARDDAT.CARD-ACCT-ID} is the foreign key into {@code ACCTDAT}
+     * ({@code ACCT-ID} PIC 9(11)). This method therefore uses a custom
+     * {@link Query @Query} that joins {@code transactions} to {@code cards}
+     * on {@code card_number} and filters on {@code cards.account_id}. The
+     * underlying table aliases match the entity property names so the
+     * derived JPQL is portable across the Hibernate dialects used in the
+     * migration test suite (H2 for unit tests, PostgreSQL for ITs).
+     *
+     * <h3>COBOL Provenance — Java-migration addition</h3>
+     *
+     * <p>The COBOL {@code COTRN00C.cbl} workflow does not contain an
+     * explicit account-key filter. The Java migration adds this method as
+     * a documented Java-migration addition (AAP §0.10.2): the REST
+     * controller surfaces a {@code ?account=NNNN...} query parameter that
+     * maps onto this repository call when the request's
+     * {@code accountIdFilter} field is populated. This is the natural REST
+     * equivalent of the {@code CARDDAT → TRANSACT} alternate-index walk
+     * that operators would perform manually in the 3270 workflow when
+     * researching transactions for a specific account.
+     *
+     * @param accountId 11-character zero-padded account identifier (e.g.
+     *                  {@code "00000000010"}); must not be {@code null}.
+     * @param pageable  pagination request (page index + page size). The
+     *                  page size should be
+     *                  {@link com.aws.carddemo.service.TransactionListService#PAGE_SIZE}
+     *                  ({@code 10}) to match the COBOL
+     *                  {@code WS-MAX-SCREEN-LINES} semantic.
+     * @return a {@link Page} of {@link Transaction} rows whose card belongs
+     *         to the supplied account ID; never {@code null}. Empty page
+     *         when no rows match.
+     */
+    @Query("SELECT t FROM Transaction t WHERE t.cardNumber IN ("
+            + "SELECT c.cardNumber FROM Card c WHERE c.accountId = :accountId)")
+    Page<Transaction> findByAccountId(@Param("accountId") String accountId, Pageable pageable);
 }
