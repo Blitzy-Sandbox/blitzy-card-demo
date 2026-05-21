@@ -19,37 +19,61 @@
     The user directive "No financial data written to logs at any level"
     is enforced by THREE coordinated controls:
 
-      1. THIS FILE: the CONSOLE appender's pattern layout chains three
+      1. THIS FILE: the CONSOLE appender's pattern layout chains five
          %replace conversion words that mask any substring resembling a
-         card number (PAN), an 11-digit account ID, or a labelled balance
-         /amount value. Even if production code or a test fixture
-         accidentally calls log.info("processing account {} card {}
-         balance={}", id, pan, amount), the appender masks the offending
+         card number (PAN), an 11-digit account ID, a labelled
+         balance/amount value, a CVV/CVC code, or a BCrypt password
+         hash. Even if production code or a test fixture accidentally
+         calls log.info("processing account {} card {} cvv {} hash {} balance={}",
+         id, pan, cvv, hash, amount), the appender masks the offending
          substrings before the line is emitted.
+
+         The %replace chain is the "equivalent always-on filter" called
+         out by the review checkpoint: it applies BEFORE emission, at
+         ALL log levels (DEBUG, INFO, WARN, ERROR, TRACE), to ALL log
+         events that reach this appender. A custom Logback TurboFilter
+         (which receives the LoggingEvent before message rendering) is
+         intentionally NOT used here because the standard TurboFilter
+         API returns only FilterReply (ACCEPT/DENY/NEUTRAL) and cannot
+         transform message content — masking must happen at or after
+         message rendering, which is exactly what %replace does.
 
       2. application-test.properties: pins Hibernate SQL parameter
          loggers at WARN so JDBC bound parameters never reach the layout.
+         (Defence in depth — the %replace chain would still catch them.)
 
       3. LoggingPiiRedactionTest (AAP §0.10.5): a dedicated JUnit 5 test
-         class that drives selected service paths with known-PII fixtures
-         and asserts via a ListAppender that captured log lines do NOT
-         contain account numbers, card numbers, or balances. THIS FILE IS
-         NECESSARY BUT NOT SUFFICIENT; the assertion test is the ultimate
-         compliance gate.
+         class (to be added by a subsequent agent) that drives selected
+         service paths with known-PII fixtures and asserts via a
+         ListAppender that captured log lines do NOT contain account
+         numbers, card numbers, balances, CVVs, or BCrypt hashes. THIS
+         FILE IS NECESSARY BUT NOT SUFFICIENT; the assertion test is the
+         ultimate compliance gate.
 
     REDACTION ORDER (longest patterns first; innermost executes first)
     Logback's nested %replace calls execute from innermost to outermost
     on the raw %m (message) text:
 
-        innermost : card numbers (13 to 19 digits, PAN range)
-        middle    : account IDs  (11 digits, CardDemo CVACT01Y width)
-        outermost : balances     (labelled decimal amounts, PIC V99 scale 2)
+        innermost (1) : BCrypt hashes    (60-char `$2[abxy]$NN$<53 chars>` literal)
+                    (2): card numbers    (13-19 digits, PAN range)
+                    (3): CVV/CVC codes   (3-4 digits adjacent to a CVV/CVC label)
+                    (4): account IDs     (11 digits, CardDemo CVACT01Y width)
+        outermost (5) : balances         (labelled decimal amounts, PIC V99 scale 2)
 
-    Longest-first ordering matters: an 11-digit subsequence inside a
-    16-digit PAN must NOT be mis-masked as an account number. By
-    replacing the PAN first with a non-numeric token
-    (****CARD-MASKED****), the account regex sees no residual digits
-    from the card and cannot accidentally partial-match.
+    Longest-first ordering matters:
+      - The 60-char BCrypt hash starts with `$2`, contains a 22-char
+        salt and a 31-char hash separated by `$`; some of its body
+        characters could be digits and partially match the card or
+        account regex if those ran first.
+      - An 11-digit subsequence inside a 16-digit PAN must NOT be
+        mis-masked as an account number; the card regex runs first to
+        replace the 16-digit PAN with a non-numeric token
+        (****CARD-MASKED****) so the account regex sees no residual
+        digits from the card and cannot accidentally partial-match.
+      - A 3-digit CVV inside an 11-digit account ID would also
+        mis-mask; the account regex runs after the CVV regex but
+        because account IDs are anchored on `\b`, the order is safer
+        than reversed.
 
     MINIMAL CHANGE CLAUSE (AAP §0.10.2)
     Only the appenders, layouts, and filters required for the test
@@ -92,26 +116,59 @@
             string verbatim to java.util.regex.Pattern#compile, so `\b`
             (word boundary) and `\d` (digit) are written with a single
             backslash in the XML, NOT doubled.
-          * Anchored on word boundaries (`\b`) to avoid partial matches
-            inside longer digit runs and to allow the regex engine to skip
-            quickly through non-digit text.
+          * Anchored on word boundaries (`\b`) where applicable to avoid
+            partial matches inside longer digit runs and to allow the
+            regex engine to skip quickly through non-digit text.
           * No `.*` or look-arounds; keeps each match O(n) in message
             length with no risk of catastrophic backtracking.
     -->
 
+    <!--
+        BCrypt password hashes — 60-character literal of the form
+        `$2[abxy]$NN$<22-char-salt><31-char-hash>` where the version tag
+        is `$2a$` (legacy), `$2b$` (canonical), `$2x$` (broken — bug fix
+        compatibility), or `$2y$` (PHP variant); NN is the cost factor
+        (typically `04`–`12`); the salt and hash are Base64-OpenBSD
+        encoded ([A-Za-z0-9./]).
+
+        Anchored on the literal `$2[abxy]$` prefix and the exact 53-char
+        Base64-OpenBSD body (22 salt + 31 hash); no partial-match risk
+        on numeric balances or account IDs because those contain neither
+        `$` nor letters. Runs FIRST in the chain (innermost %replace) so
+        the body characters (which include digits) cannot mis-match the
+        card / CVV / account / balance patterns that run after it.
+    -->
+    <property name="BCRYPT_REGEX" value="\$2[abxy]\$\d{2}\$[A-Za-z0-9./]{53}"/>
+    <property name="BCRYPT_MASK"  value="****BCRYPT-HASH-MASKED****"/>
+
     <!-- Card numbers (PAN): 13 to 19 consecutive digits.
          Covers Visa (13 or 16), Mastercard (16), Amex (15), Discover
          (16), Maestro (12 to 19; lower bound deliberately conservative
-         at 13 to avoid mis-masking 12-digit timestamps or counts). -->
+         at 13 to avoid mis-masking 12-digit timestamps or counts).
+         Runs second (after BCrypt) so account-id (11-digit) matches
+         later see the PAN already replaced with a non-numeric token. -->
     <property name="CARD_NUMBER_REGEX" value="\b\d{13,19}\b"/>
     <property name="CARD_NUMBER_MASK"  value="****CARD-MASKED****"/>
+
+    <!-- CVV / CVC: a 3-or-4 digit security code adjacent to a
+         CVV / CVC / CVV2 / CSC / CID label, case-insensitive. The
+         label anchor is deliberate: it avoids masking unrelated
+         3-or-4-digit subsequences (e.g., 3-digit response codes,
+         4-digit years) while catching every CVV log call that follows
+         the project's "label=value" convention. Capture group $1
+         preserves the original label casing in the redacted output.
+         Runs third (after card numbers) so 4-digit CVVs cannot mis-mask
+         positions inside a 13+ digit PAN that has already been
+         replaced. -->
+    <property name="CVV_REGEX" value="(?i)\b(cvv2?|cvc2?|csc|cid|card-cvv|cardcvv)\s*[:=]?\s*\d{3,4}\b"/>
+    <property name="CVV_MASK"  value="$1=****CVV-MASKED****"/>
 
     <!-- Account numbers: exactly 11 consecutive digits.
          Matches the COBOL CVACT01Y.cpy account-id width (PIC X(11)).
          CardDemo test fixtures use IDs such as "00000000010" through
-         "00000000060". The card regex above runs first, so any 16-digit
-         PAN has already been masked to a non-numeric token by the time
-         this pattern is applied. -->
+         "00000000060". The card and CVV regexes above run first, so any
+         16-digit PAN and any 3-or-4-digit CVV have already been masked
+         to non-numeric tokens by the time this pattern is applied. -->
     <property name="ACCOUNT_NUMBER_REGEX" value="\b\d{11}\b"/>
     <property name="ACCOUNT_NUMBER_MASK"  value="****ACCT-MASKED****"/>
 
@@ -133,11 +190,11 @@
         CONSOLE appender, defence-in-depth PII redaction
         ========================================================================
         Synchronous ConsoleAppender with a PatternLayoutEncoder. The
-        pattern chains three %replace conversion words; nesting is
+        pattern chains five %replace conversion words; nesting is
         right-to-left, so the INNERMOST %replace operates on the raw
-        %m message first (card numbers), then the result feeds the
-        middle %replace (account numbers), and finally the outermost
-        %replace (balances).
+        %m message first (BCrypt hashes), then the result feeds the
+        next %replace (card numbers), then CVV/CVC codes, then account
+        numbers, and finally the outermost %replace (balances).
 
         Layout breakdown:
           %d{...}                : ISO-8601 timestamp (Spring Boot default)
@@ -152,7 +209,7 @@
     -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
-            <pattern>%d{${LOG_DATEFORMAT_PATTERN:-yyyy-MM-dd HH:mm:ss.SSS}} ${LOG_LEVEL_PATTERN:-%5p} [%t] %-40.40logger{39} : %replace(%replace(%replace(%m){'${CARD_NUMBER_REGEX}','${CARD_NUMBER_MASK}'}){'${ACCOUNT_NUMBER_REGEX}','${ACCOUNT_NUMBER_MASK}'}){'${BALANCE_REGEX}','${BALANCE_MASK}'}%n</pattern>
+            <pattern>%d{${LOG_DATEFORMAT_PATTERN:-yyyy-MM-dd HH:mm:ss.SSS}} ${LOG_LEVEL_PATTERN:-%5p} [%t] %-40.40logger{39} : %replace(%replace(%replace(%replace(%replace(%m){'${BCRYPT_REGEX}','${BCRYPT_MASK}'}){'${CARD_NUMBER_REGEX}','${CARD_NUMBER_MASK}'}){'${CVV_REGEX}','${CVV_MASK}'}){'${ACCOUNT_NUMBER_REGEX}','${ACCOUNT_NUMBER_MASK}'}){'${BALANCE_REGEX}','${BALANCE_MASK}'}%n</pattern>
             <charset>${CONSOLE_LOG_CHARSET:-UTF-8}</charset>
         </encoder>
     </appender>

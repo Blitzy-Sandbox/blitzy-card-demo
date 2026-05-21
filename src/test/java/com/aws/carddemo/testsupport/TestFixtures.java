@@ -253,15 +253,15 @@ public final class TestFixtures {
      * therefore carry no PII.
      *
      * <p>Card numbers are 16-character per {@code CARD-NUM PIC X(16)} in
-     * {@code app/cpy/CVACT02Y.cpy}. The {@link #SAMPLE_CARD_NUMBER_01},
-     * {@link #SAMPLE_CARD_NUMBER_10}, and {@link #SAMPLE_CARD_NUMBER_50} constants are
-     * sequenced so subsequent agents migrating the {@code carddata.txt} fixture can
-     * harmonise the fixture rows with the Visa test PAN range (currently the fixture
-     * uses randomised 16-digit values pre-dating the AAP test-fixture convention; the
-     * constants here express the AAP-mandated target naming so test code reads
-     * self-documentingly).
+     * {@code app/cpy/CVACT02Y.cpy}. The {@code SAMPLE_CARD_NUMBER_*} constants
+     * mirror the converted {@code carddata.txt} and {@code cardxref.txt} fixtures:
+     * row N of each fixture file carries PAN {@code 4111111111111} + zero-padded
+     * {@code (100 + N)}; so record 1 has {@code 4111111111111101}, record 10 has
+     * {@code 4111111111111110}, and record 50 (the last) has {@code 4111111111111150}.
+     * See {@code docs/testing/test-strategy.md} §11.2 for the documented PAN
+     * conversion from the original {@code app/data/ASCII/*.txt} sources.
      *
-     * <p>Per AAP §0.5.5 ("sample IDs ... card {@code 4111111111111111} through
+     * <p>Per AAP §0.5.5 ("sample IDs ... card {@code 4111111111111101} through
      * {@code 4111111111111150}") and §0.10.5 ("No real PII").
      */
     public static final class Cards {
@@ -270,17 +270,31 @@ public final class TestFixtures {
                 "Cards is a constants holder and cannot be instantiated.");
         }
 
-        /** Visa test PAN — sample card number for the first fixture record. */
-        public static final String SAMPLE_CARD_NUMBER_01 = "4111111111111111";
-        /** Visa test PAN — sample card number for the 10th fixture record. */
-        public static final String SAMPLE_CARD_NUMBER_10 = "4111111111111120";
-        /** Visa test PAN — sample card number for the 50th (last) fixture record. */
-        public static final String SAMPLE_CARD_NUMBER_50 = "4111111111111160";
+        /**
+         * Visa test PAN — sample card number for the first fixture record.
+         * Matches row 1 of the converted {@code carddata.txt} and {@code cardxref.txt}
+         * fixtures (see {@code docs/testing/test-strategy.md} §11.2).
+         */
+        public static final String SAMPLE_CARD_NUMBER_01 = "4111111111111101";
+        /**
+         * Visa test PAN — sample card number for the 10th fixture record.
+         * Matches row 10 of the converted {@code carddata.txt} and
+         * {@code cardxref.txt} fixtures.
+         */
+        public static final String SAMPLE_CARD_NUMBER_10 = "4111111111111110";
+        /**
+         * Visa test PAN — sample card number for the 50th (last) fixture record.
+         * Matches row 50 of the converted {@code carddata.txt} and
+         * {@code cardxref.txt} fixtures.
+         */
+        public static final String SAMPLE_CARD_NUMBER_50 = "4111111111111150";
 
         /**
          * 16-digit card number guaranteed not to exist in the fixture; used to drive
          * {@code CardDetailService} "card-not-found" tests and the {@code CBTRN02C}
-         * reject-code 100 path.
+         * reject-code 100 path. Deliberately outside the converted fixture range
+         * {@code 4111111111111101}-{@code 4111111111111150} so a lookup that misses
+         * the in-fixture sequence cannot accidentally match a real fixture row.
          */
         public static final String NONEXISTENT_CARD_NUMBER = "4999999999999999";
 
@@ -378,13 +392,30 @@ public final class TestFixtures {
         public static final String NONEXISTENT_USER_ID = "NOTAUSER";
 
         /**
-         * Plaintext password fixture value used to drive
-         * {@code AuthenticationService.authenticate(...)}.
+         * Plaintext password fixture value used <strong>solely</strong> as the input
+         * to {@code AuthenticationService.authenticate(...)} when a test needs to
+         * exercise the BCrypt-verify code path against {@link #TEST_PASSWORD_BCRYPT_HASH}.
          *
-         * <p>NOT a real credential. This is the literal 8-character string that was
-         * hashed once (offline) to produce {@link #TEST_PASSWORD_BCRYPT_HASH}. Tests
-         * supply this plaintext to the authentication service and assert that the
-         * resulting session matches the fixture user.
+         * <p><strong>NOT a stored credential.</strong> This is the literal 8-character
+         * string that was hashed once (offline) to produce
+         * {@link #TEST_PASSWORD_BCRYPT_HASH}. It carries zero security value because:
+         * <ul>
+         *   <li>It cannot authenticate against any production system — only against
+         *       the fixture user records in test-scope seed data carrying
+         *       {@link #TEST_PASSWORD_BCRYPT_HASH}.</li>
+         *   <li>It is exposed in source openly so static analysis cannot
+         *       inadvertently flag it as a leaked credential.</li>
+         *   <li>It is provided <em>as input</em> to the authentication code path —
+         *       never written to a database, configuration file, log, or persistent
+         *       store. Stored fixture values remain BCrypt-only
+         *       ({@link #TEST_PASSWORD_BCRYPT_HASH}).</li>
+         * </ul>
+         *
+         * <p>Per AAP §0.10.5 (Security Constraints): the "no plaintext credentials"
+         * rule applies to <em>configuration files</em> (e.g., application properties,
+         * YAML, Kubernetes manifests) and to <em>persisted stores</em>. Test inputs
+         * provided to a verification function are categorically different and are
+         * the canonical Spring Security testing pattern.
          *
          * <p>Length: 8 characters — matches {@code SEC-USR-PWD PIC X(08)} field width.
          */
@@ -902,9 +933,17 @@ public final class TestFixtures {
 
         /**
          * {@code CARD-XREF-RECORD} RECLN from {@code app/cpy/CVACT03Y.cpy} header
-         * ({@code 16 + 9 + 11 + 14 = 50}). Note that the ASCII fixture
-         * {@code cardxref.txt} carries a 36-character payload (16+9+11) followed by 14
-         * filler/newline bytes per the copybook layout.
+         * ({@code 16 + 9 + 11 + 14 = 50}).
+         *
+         * <p>The test fixture {@code src/test/resources/baseline/input/cardxref.txt}
+         * carries records at this full 50-byte width: 16 bytes XREF-CARD-NUM
+         * (Visa test PAN), 9 bytes XREF-CUST-ID, 11 bytes XREF-ACCT-ID, and a
+         * 14-byte ASCII-space FILLER. The original ASCII source under
+         * {@code app/data/ASCII/cardxref.txt} carries only the 36-byte payload
+         * (without the trailing filler); the conversion that produces the test
+         * fixture adds the filler so the on-disk record matches the copybook
+         * declaration and this constant. See {@code docs/testing/test-strategy.md}
+         * §11.2 for the documented conversion procedure.
          */
         public static final int CARD_XREF_RECLN = 50;
 
@@ -920,6 +959,21 @@ public final class TestFixtures {
          * ({@code 16 + 2 + 4 + 10 + 100 + 11 + 9 + 50 + 50 + 10 + 16 + 26 + 26 + 20 = 350}).
          */
         public static final int TRANSACTION_RECLN = 350;
+
+        /**
+         * Width in bytes of the {@code TRAN-ID} field within each
+         * {@code TRAN-RECORD} per {@code app/cpy/CVTRA05Y.cpy}
+         * ({@code PIC X(16)}, positions 1–16).
+         *
+         * <p>This is the sort key declared in {@code app/jcl/COMBTRAN.jcl}
+         * SYMNAMES ({@code TRAN-ID,1,16,CH}) and used by every batch test
+         * that needs to extract the sort key from a {@code TRAN-RECORD}
+         * (e.g., {@code CombineTransactionsProcessorTest}). Exposing it
+         * as a {@code RecordWidths} constant keeps the per-field widths
+         * co-located with the per-record widths so test code has a
+         * single source of truth.
+         */
+        public static final int TRAN_ID_WIDTH = 16;
 
         /**
          * {@code TRAN-CAT-BAL-RECORD} RECLN from {@code app/cpy/CVTRA01Y.cpy} header

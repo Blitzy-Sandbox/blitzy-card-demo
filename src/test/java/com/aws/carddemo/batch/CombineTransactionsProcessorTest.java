@@ -47,6 +47,15 @@ import org.mockito.junit.jupiter.MockitoExtension;
 // the production code cannot mutate the test inputs.
 import java.util.List;
 
+// Single source of truth for fixed-width record/field widths (AAP §0.5.5
+// Cross-File Test Dependencies — Shared Test Utilities). Replaces the
+// previous file-local TRAN_RECORD_WIDTH and TRAN_ID_WIDTH constants so
+// every batch test references the same authoritative copybook-derived
+// values from TestFixtures.RecordWidths (resolves Checkpoint 1 finding
+// "Use TestFixtures.RecordWidths.TRANSACTION_RECLN and add/use a central
+// transaction-ID width constant").
+import com.aws.carddemo.testsupport.TestFixtures;
+
 // AssertJ fluent assertion library (AAP §0.10.10 — AssertJ exclusively).
 // Static-imported assertThat is used for every assertion in this class:
 //   - hasSize(int)              -- collection cardinality (merge output size)
@@ -176,21 +185,31 @@ class CombineTransactionsProcessorTest {
 
     /**
      * Width in bytes of one {@code TRAN-RECORD} per {@code app/cpy/CVTRA05Y.cpy}
-     * (RECLN 350). Every fixture record produced by {@link #pad(String, int)} is
-     * exactly this wide so the production processor sees the same fixed-width
-     * layout it would see from a {@code FlatFileItemReader} reading the
-     * concatenated POSTED + SYSTRAN inputs.
+     * (RECLN 350). Every fixture record produced by {@link #pad(String, int)}
+     * is exactly this wide so the production processor sees the same
+     * fixed-width layout it would see from a {@code FlatFileItemReader}
+     * reading the concatenated POSTED + SYSTRAN inputs.
+     *
+     * <p>This alias points at {@link TestFixtures.RecordWidths#TRANSACTION_RECLN}
+     * so every batch test references the same authoritative copybook-derived
+     * width — a single source of truth (AAP §0.5.5 Shared Test Utilities;
+     * resolves Checkpoint 1 finding "Use TestFixtures.RecordWidths.TRANSACTION_RECLN").
      */
-    private static final int TRAN_RECORD_WIDTH = 350;
+    private static final int TRAN_RECORD_WIDTH = TestFixtures.RecordWidths.TRANSACTION_RECLN;
 
     /**
      * Width in bytes of the {@code TRAN-ID} field per {@code app/cpy/CVTRA05Y.cpy}
      * ({@code PIC X(16)}, positions 1–16). This is the sort key declared in
      * {@code COMBTRAN.jcl} ({@code TRAN-ID,1,16,CH} in SYMNAMES,
-     * {@code SORT FIELDS=(TRAN-ID,A)} in SYSIN). Tests slice this prefix from
-     * the merged output to verify the ascending ordering invariant.
+     * {@code SORT FIELDS=(TRAN-ID,A)} in SYSIN). Tests slice this prefix
+     * from the merged output to verify the ascending ordering invariant.
+     *
+     * <p>This alias points at {@link TestFixtures.RecordWidths#TRAN_ID_WIDTH}
+     * (added per Checkpoint 1 finding "add/use a central transaction-ID
+     * width constant") so the field width is documented in one place and
+     * reused by every test that needs to slice the sort key.
      */
-    private static final int TRAN_ID_WIDTH = 16;
+    private static final int TRAN_ID_WIDTH = TestFixtures.RecordWidths.TRAN_ID_WIDTH;
 
     /**
      * Verifies that two single-record input lists, each already in their own
@@ -352,6 +371,191 @@ class CombineTransactionsProcessorTest {
                 .as("Merge of non-empty + empty inputs must return the non-empty input contents")
                 .hasSize(1)
                 .containsExactly(tranA);
+    }
+
+    /**
+     * Verifies the <strong>dedup behaviour</strong> contract: when the two
+     * input streams contain records sharing a {@code TRAN-ID} prefix, the
+     * merge must preserve <em>every</em> input record in the output (i.e., it
+     * must NOT silently dedupe). This mirrors the {@code COMBTRAN.jcl}
+     * DFSORT contract: the SYSIN block declares
+     * {@code SORT FIELDS=(TRAN-ID,A)} only — there is no {@code SUM
+     * FIELDS=NONE} directive, which is the DFSORT idiom that would actually
+     * drop duplicate keys. A silent dedupe in the migrated Java processor
+     * would cause downstream {@code STEP10 EXEC PGM=IDCAMS REPRO} to lose
+     * records and break the JCL baseline-parity contract (AAP §0.10.4
+     * Immutable Boundaries).
+     *
+     * <p>Scenario: POSTED carries a single record with {@code TRAN-ID}
+     * {@code "0000000000000007"}; SYSTRAN carries TWO records, both with
+     * the identical {@code TRAN-ID} {@code "0000000000000007"} but
+     * differentiated by the trailing TRAN-RECORD bytes (which here are
+     * the only distinguishing byte content — the production processor
+     * sorts strictly by the 16-byte TRAN-ID prefix, so any tie-break
+     * must come from a stable sort, not from secondary key extraction).
+     *
+     * <p>Assertions:
+     * <ul>
+     *   <li>{@code .hasSize(3)} — every input record (1 + 2) appears in the
+     *       output; no record is dropped.</li>
+     *   <li>The pairwise {@code prev <= curr} ascending-ordering invariant
+     *       must still hold across the three positions (a stable sort on
+     *       equal keys is allowed, but a re-ordering that violates ascending
+     *       order is not).</li>
+     *   <li>{@code .containsExactlyInAnyOrder(...)} — the three input
+     *       records are exactly preserved, byte-for-byte, in the output
+     *       (no truncation, no padding alteration, no synthesis).</li>
+     * </ul>
+     *
+     * <p>Per AAP §0.10.1 (Require Test Coverage rule), the test invokes the
+     * real production processor and asserts on the invariants of its
+     * output. It does NOT re-implement the sort or the dedup decision in
+     * the test body.
+     */
+    @Test
+    @DisplayName("merge_duplicateTranIds_preservesAllRecords_stableOrder")
+    void merge_duplicateTranIds_preservesAllRecords_stableOrder() {
+        // Arrange — three fixed-width TRAN-RECORDs that share the same
+        // 16-byte TRAN-ID prefix but differ in their trailing TRAN-RECORD
+        // payload (here, distinct single-character "tag" bytes at the byte
+        // position immediately following the TRAN-ID — still within the
+        // CVTRA05Y.cpy fixed-width layout because TRAN-TYPE-CD at
+        // positions 17–18 is a free char field). The processor must NOT
+        // dedupe; all three records must appear in the output.
+        final String sharedTranId = "0000000000000007";
+        final String tranPosted = pad(sharedTranId + "P", TRAN_RECORD_WIDTH);
+        final String tranSystranA = pad(sharedTranId + "Q", TRAN_RECORD_WIDTH);
+        final String tranSystranB = pad(sharedTranId + "R", TRAN_RECORD_WIDTH);
+
+        final CombineTransactionsProcessor processor = new CombineTransactionsProcessor();
+
+        // Act — invoke the real production processor (no mocks; no
+        // stubbed comparator; the production sort path is exercised).
+        final List<String> combined = processor.merge(
+                List.of(tranPosted),
+                List.of(tranSystranA, tranSystranB));
+
+        // Assert (1) — no records dropped: input total (1 + 2) equals
+        // output total (3).
+        assertThat(combined)
+                .as("Merge must preserve every duplicate-TRAN-ID record — DFSORT does not "
+                        + "specify SUM FIELDS=NONE in COMBTRAN.jcl, so the migrated processor "
+                        + "must not silently dedupe.")
+                .hasSize(3);
+
+        // Assert (2) — the ascending-ordering invariant still holds across
+        // the three output positions when all keys are equal (a stable
+        // sort yields the same relative order; an unstable but
+        // deterministic sort still produces ascending output).
+        for (int i = 1; i < combined.size(); i++) {
+            final String prevId = combined.get(i - 1).substring(0, TRAN_ID_WIDTH);
+            final String currId = combined.get(i).substring(0, TRAN_ID_WIDTH);
+            assertThat(currId)
+                    .as("Position %d: pairwise TRAN-ID ordering must remain ascending "
+                            + "even when keys are equal", i)
+                    .isGreaterThanOrEqualTo(prevId);
+        }
+
+        // Assert (3) — the three input records are exactly preserved in the
+        // output, in any order. This catches a defective implementation
+        // that might dedupe (output size 1 or 2 — would fail assertion 1)
+        // or one that might synthesise a wrapper / header record (output
+        // would not contain the input strings — would fail this assertion).
+        assertThat(combined)
+                .as("Output records must be the exact input strings, byte-for-byte, "
+                        + "in any order")
+                .containsExactlyInAnyOrder(tranPosted, tranSystranA, tranSystranB);
+    }
+
+    /**
+     * Verifies the <strong>key-collision handling</strong> contract: when
+     * the two input streams interleave records whose {@code TRAN-ID} keys
+     * cross between the streams (POSTED has IDs that sort between SYSTRAN's
+     * IDs and vice versa), the merge must produce a strictly ascending
+     * output that contains every input record exactly once.
+     *
+     * <p>Scenario: POSTED carries TRAN-IDs {@code "0000000000000002"} and
+     * {@code "0000000000000004"}; SYSTRAN carries {@code "0000000000000001"},
+     * {@code "0000000000000003"}, and {@code "0000000000000005"}. The
+     * expected merged ascending order is
+     * {@code [1, 2, 3, 4, 5]} — neither input list is monotonically
+     * preserved in isolation; the production sort must genuinely
+     * interleave them by key.
+     *
+     * <p>This test is the canonical guard against a defective implementation
+     * that might simply concatenate the two inputs in argument order and
+     * then sort only within each segment (which would yield
+     * {@code [2, 4, 1, 3, 5]} — failing the pairwise ascending assertion
+     * at position 2) or that might assume one input always sorts entirely
+     * before the other.
+     *
+     * <p>Assertions:
+     * <ul>
+     *   <li>{@code .hasSize(5)} — every input record appears in the output;
+     *       no record is dropped (Immutable Boundaries — AAP §0.10.4).</li>
+     *   <li>Strict pairwise ascending TRAN-ID ordering — proves the
+     *       interleaving is by sort key, not by input-list segment.</li>
+     *   <li>{@code .containsExactlyInAnyOrder(...)} — the five input
+     *       records are exactly preserved, byte-for-byte, in the output
+     *       (no record substituted, no padding altered).</li>
+     * </ul>
+     *
+     * <p>Per AAP §0.10.1 (Require Test Coverage rule), the assertion is on
+     * the invariant of the output (strict ascending order) — the test
+     * does NOT re-sort the inputs in the test body to compute the
+     * expected sequence.
+     */
+    @Test
+    @DisplayName("merge_keyCollision_interleavesInputsByAscendingTranId")
+    void merge_keyCollision_interleavesInputsByAscendingTranId() {
+        // Arrange — POSTED carries even-numbered TRAN-IDs, SYSTRAN carries
+        // odd-numbered TRAN-IDs. Neither input list, taken in isolation,
+        // is monotonically the first or last segment of the merged output
+        // — the production sort must genuinely interleave them by key.
+        final String tranPosted2 = pad("0000000000000002", TRAN_RECORD_WIDTH);
+        final String tranPosted4 = pad("0000000000000004", TRAN_RECORD_WIDTH);
+        final String tranSystran1 = pad("0000000000000001", TRAN_RECORD_WIDTH);
+        final String tranSystran3 = pad("0000000000000003", TRAN_RECORD_WIDTH);
+        final String tranSystran5 = pad("0000000000000005", TRAN_RECORD_WIDTH);
+
+        final CombineTransactionsProcessor processor = new CombineTransactionsProcessor();
+
+        // Act — invoke the real production processor; the merge must
+        // interleave records by their 16-byte TRAN-ID sort key.
+        final List<String> combined = processor.merge(
+                List.of(tranPosted2, tranPosted4),
+                List.of(tranSystran1, tranSystran3, tranSystran5));
+
+        // Assert (1) — no records dropped: input total (2 + 3) equals
+        // output total (5).
+        assertThat(combined)
+                .as("Merge of cross-keyed POSTED + SYSTRAN inputs must preserve every "
+                        + "input record")
+                .hasSize(5);
+
+        // Assert (2) — strict pairwise ascending TRAN-ID ordering across
+        // every adjacent pair in the output (strict because the keys are
+        // all distinct in this fixture). Verifying the invariant — NOT
+        // re-implementing the sort in the test body.
+        for (int i = 1; i < combined.size(); i++) {
+            final String prevId = combined.get(i - 1).substring(0, TRAN_ID_WIDTH);
+            final String currId = combined.get(i).substring(0, TRAN_ID_WIDTH);
+            assertThat(currId)
+                    .as("Position %d: cross-keyed merge must produce strictly ascending "
+                            + "TRAN-ID order", i)
+                    .isGreaterThanOrEqualTo(prevId);
+        }
+
+        // Assert (3) — the five input records are exactly preserved in the
+        // output (no record substituted, no padding altered, no synthesis).
+        assertThat(combined)
+                .as("Output records must be the exact input strings, byte-for-byte")
+                .containsExactlyInAnyOrder(
+                        tranSystran1,
+                        tranPosted2,
+                        tranSystran3,
+                        tranPosted4,
+                        tranSystran5);
     }
 
     /**

@@ -9,7 +9,7 @@
 
         Runtime envelope per AAP §0.8.2: Java 17 LTS + Spring Boot 3.x.
         Test envelope per AAP §0.6.1: JUnit Jupiter 5.10.x + Mockito 5.x + AssertJ +
-            spring-batch-test + spring-security-test + Testcontainers BOM 2.0.3 +
+            spring-batch-test + spring-security-test + Testcontainers BOM 1.20.4 +
             Awaitility, all in `test` scope (test deps must never leak into the
             production JAR — see AAP §0.6.1 note on scope).
 
@@ -17,17 +17,24 @@
         so the Spring Boot release engineering team's compatibility matrix is honoured.
         Explicit version pins exist only for build plugins and the Testcontainers BOM.
 
-        JaCoCo coverage enforcement (≥80% line on com.aws.carddemo.service.**, ≥70%
-        branch on the same package — AAP §0.7.1) is gated by the `jacoco` profile to
+        Spring Boot is pinned at 3.3.13 — the latest patch in the 3.3.x line at the
+        time of this checkpoint. The 3.3.x stream up to 3.3.10 carried CVE-2025-22235
+        (Spring Boot conditional address-resolution bypass on the Tomcat connector);
+        3.3.11 patched it. Staying on the latest patch in the active line gives the
+        deepest CVE coverage available without bumping the minor version and risking
+        unrelated regressions.
+
+        JaCoCo coverage enforcement (AAP §0.7.1) is gated by the `jacoco` profile to
         avoid blocking early-stage builds before the migration has produced enough
-        source/test code to satisfy the threshold. CI invokes `mvn verify -Pjacoco`
-        to enforce the rule (AAP §0.9.1 canonical command table).
+        source/test code to satisfy the thresholds. CI invokes `mvn verify -Pjacoco`
+        to enforce all package rules (service, validation, io, repository) — see
+        the `<rules>` block at the bottom of this file.
     -->
 
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.5</version>
+        <version>3.3.13</version>
         <relativePath/>
     </parent>
 
@@ -68,7 +75,11 @@
         <maven-failsafe-plugin.version>3.5.2</maven-failsafe-plugin.version>
         <jacoco-maven-plugin.version>0.8.12</jacoco-maven-plugin.version>
 
-        <!-- Testcontainers BOM pin (outside the Spring Boot BOM) -->
+        <!--
+            Testcontainers BOM pin (outside the Spring Boot BOM). The 1.20.x
+            line aligns the testcontainers core, junit-jupiter, postgresql,
+            and localstack modules at a tested-together release.
+        -->
         <testcontainers.version>1.20.4</testcontainers.version>
 
         <!-- AWS Spring Cloud (outside Spring Boot BOM) -->
@@ -227,7 +238,36 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- Testcontainers — ephemeral PostgreSQL 16 + LocalStack containers -->
+        <!--
+            Testcontainers — ephemeral PostgreSQL 16 + LocalStack containers.
+
+            AAP §0.10.7 framework constraint: only JUnit 5 (Jupiter) is on
+            the test source classpath for TEST AUTHORING; no `org.junit.Test`
+            imports, no `junit-vintage-engine`, no `@RunWith` annotations.
+            However, Testcontainers 1.20.x (and every published 1.x line)
+            transitively depends on junit:junit:4.13.2 at compile-time for
+            its `org.junit.rules.TestRule` interface — the GenericContainer
+            base class implements `TestRule` to support legacy JUnit 4
+            `@Rule` usage. The JUnit 5 binding in
+            `org.testcontainers:junit-jupiter` re-uses that base class.
+
+            The junit:junit:4.13.2 API artefact is therefore an unavoidable
+            transitive at compile-time. To compensate, the test classpath:
+              1. Excludes the `junit-vintage-engine` runtime so JUnit 4
+                 `@Test`-annotated classes (if any ever slipped in) cannot
+                 be discovered or executed by the JUnit Platform.
+              2. Forbids `org.junit.Test` / `org.junit.runner.*` imports
+                 in test source via code review (the AAP §0.10.7 rule).
+              3. Documents the situation here so future readers do not
+                 attempt the (broken) exclusion of junit:junit from the
+                 testcontainers artefacts — that exclusion makes
+                 AbstractBatchIT / AbstractRepositoryIT fail compilation
+                 with "cannot access org.junit.rules.TestRule".
+
+            See Testcontainers GitHub issue #970 and AAP §0.6.1
+            "Mockito Java 17 + interface-mock note" for the same rationale
+            applied to other transitive APIs.
+        -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>
@@ -406,12 +446,25 @@
                             </execution>
 
                             <!--
-                                Coverage rule enforcement (AAP §0.7.1):
-                                - LINE 0.80 on com.aws.carddemo.service.*
-                                - BRANCH 0.70 on the same package
-                                The rule uses PACKAGE element with an includes filter so
-                                only the service layer is gated; other layers report
-                                coverage without blocking the build.
+                                Coverage rule enforcement (AAP §0.7.1 and
+                                docs/testing/test-strategy.md §4).
+
+                                Layer-specific thresholds enforced by JaCoCo
+                                on PACKAGE elements with includes filters so
+                                each rule scopes to exactly one production
+                                package family. dto.** and config.** are not
+                                gated (data carriers and Spring configuration
+                                classes are exercised indirectly by ITs); they
+                                report coverage without blocking the build.
+
+                                Thresholds (AAP §0.7.1 table):
+                                  - service     : LINE >= 0.80 / BRANCH >= 0.70 (user mandate)
+                                  - validation  : LINE >= 0.90 / BRANCH >= 0.85
+                                  - io          : LINE >= 0.90 / BRANCH >= 0.85
+                                  - repository  : LINE >= 0.75 (mostly Spring-generated)
+
+                                Each rule has its own <execution> id so failure
+                                diagnostics point clearly at the offending layer.
                             -->
                             <execution>
                                 <id>check-service-coverage</id>
@@ -437,6 +490,117 @@
                                                     <counter>BRANCH</counter>
                                                     <value>COVEREDRATIO</value>
                                                     <minimum>0.70</minimum>
+                                                </limit>
+                                            </limits>
+                                        </rule>
+                                    </rules>
+                                </configuration>
+                            </execution>
+
+                            <!--
+                                Validation layer (com.aws.carddemo.validation.**)
+                                LINE >= 0.90 / BRANCH >= 0.85 per AAP §0.7.1.
+                                The validation surface is small and high-criticality
+                                (date validator, lookup validator); near-total
+                                coverage is achievable and expected.
+                            -->
+                            <execution>
+                                <id>check-validation-coverage</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <rule>
+                                            <element>PACKAGE</element>
+                                            <includes>
+                                                <include>com.aws.carddemo.validation</include>
+                                                <include>com.aws.carddemo.validation.*</include>
+                                            </includes>
+                                            <limits>
+                                                <limit>
+                                                    <counter>LINE</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.90</minimum>
+                                                </limit>
+                                                <limit>
+                                                    <counter>BRANCH</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.85</minimum>
+                                                </limit>
+                                            </limits>
+                                        </rule>
+                                    </rules>
+                                </configuration>
+                            </execution>
+
+                            <!--
+                                I/O layer (com.aws.carddemo.io.**) LINE >= 0.90 /
+                                BRANCH >= 0.85 per AAP §0.7.1. Replaces VSAM
+                                file-status code interpretation and other small,
+                                critical adapter utilities (FileStatusMapper).
+                            -->
+                            <execution>
+                                <id>check-io-coverage</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <rule>
+                                            <element>PACKAGE</element>
+                                            <includes>
+                                                <include>com.aws.carddemo.io</include>
+                                                <include>com.aws.carddemo.io.*</include>
+                                            </includes>
+                                            <limits>
+                                                <limit>
+                                                    <counter>LINE</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.90</minimum>
+                                                </limit>
+                                                <limit>
+                                                    <counter>BRANCH</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.85</minimum>
+                                                </limit>
+                                            </limits>
+                                        </rule>
+                                    </rules>
+                                </configuration>
+                            </execution>
+
+                            <!--
+                                Repository layer (com.aws.carddemo.repository.**)
+                                LINE >= 0.75 per AAP §0.7.1. Branch coverage is
+                                not gated here because Spring Data repositories
+                                are predominantly interface-only contracts whose
+                                implementations are generated by Spring at
+                                startup; integration tests (extending
+                                AbstractRepositoryIT) exercise the custom queries
+                                and @Modifying methods where branch logic exists.
+                            -->
+                            <execution>
+                                <id>check-repository-coverage</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <rule>
+                                            <element>PACKAGE</element>
+                                            <includes>
+                                                <include>com.aws.carddemo.repository</include>
+                                                <include>com.aws.carddemo.repository.*</include>
+                                            </includes>
+                                            <limits>
+                                                <limit>
+                                                    <counter>LINE</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.75</minimum>
                                                 </limit>
                                             </limits>
                                         </rule>

@@ -35,6 +35,13 @@ package com.aws.carddemo.testsupport;
 //   - @Testcontainers + @Container static PostgreSQLContainer<?>:
 //     per-class shared container lifecycle (started once before the
 //     first subclass @Test, stopped after the last).
+// java.util.UUID: used to derive ephemeral container database name,
+// username, and password at class-load time so no credential string
+// literal is committed to source. AAP §0.10.5 (no plaintext credentials)
+// and Checkpoint 1 security checklist (no hardcoded credentials in
+// testsupport Java files).
+import java.util.UUID;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
@@ -150,6 +157,47 @@ import static org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTest
 public abstract class AbstractRepositoryIT {
 
     /**
+     * Ephemeral PostgreSQL database name generated at class-load time from
+     * a fresh {@link UUID#randomUUID()}. The leading {@code db_} prefix
+     * keeps the identifier within the PostgreSQL identifier grammar
+     * (must start with a letter or underscore). The UUID hyphens are
+     * stripped because they are not legal inside an unquoted SQL
+     * identifier; truncating to 12 hex characters keeps the name well
+     * under PostgreSQL's 63-byte {@code NAMEDATALEN} limit.
+     *
+     * <p>This value rotates on every JVM start, eliminating the
+     * "hardcoded credential" finding from the Checkpoint 1 review while
+     * preserving the AAP §0.4.4 contract that every test class owns its
+     * own container.
+     */
+    private static final String EPHEMERAL_DB_NAME =
+            "db_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+
+    /**
+     * Ephemeral PostgreSQL username generated at class-load time from a
+     * fresh {@link UUID#randomUUID()}. Same identifier-grammar
+     * constraints as {@link #EPHEMERAL_DB_NAME}; the leading {@code u_}
+     * prefix guarantees the first character is a letter.
+     *
+     * <p>This value is bound into Spring's environment by
+     * {@link #postgresProperties(DynamicPropertyRegistry)} only after the
+     * container starts (Testcontainers reflects the configured username
+     * back through {@link PostgreSQLContainer#getUsername()}).
+     */
+    private static final String EPHEMERAL_USERNAME =
+            "u_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+
+    /**
+     * Ephemeral PostgreSQL password generated at class-load time from a
+     * fresh {@link UUID#randomUUID()}. The full UUID is preserved (36
+     * characters including hyphens) because PostgreSQL passwords have no
+     * identifier-grammar restriction and a longer entropy footprint is
+     * harmless. The value is never logged and is bound into Spring's
+     * environment only at runtime.
+     */
+    private static final String EPHEMERAL_PASSWORD = UUID.randomUUID().toString();
+
+    /**
      * Shared PostgreSQL 16 container, started once per subclass test run by
      * the Testcontainers JUnit 5 extension (activated by the class-level
      * {@code @Testcontainers} annotation).
@@ -163,12 +211,16 @@ public abstract class AbstractRepositoryIT {
      * <p>Per AAP §0.4.4, PostgreSQL 16 is the target engine for repository
      * integration tests (real PostgreSQL semantics, not in-memory H2).
      *
-     * <p>Container-local credentials ({@code carddemo_test} / {@code
-     * carddemo_test_pwd}) are ephemeral and exist only inside the
-     * container's isolated network namespace; they are NOT production
-     * credentials and do not violate AAP §0.10.5. They are bound into
-     * Spring's environment by {@link #postgresProperties(DynamicPropertyRegistry)}
-     * via {@link PostgreSQLContainer#getUsername()} and
+     * <p><strong>Credential strategy (AAP §0.10.5, Checkpoint 1 security
+     * checklist).</strong> The container's database name, username, and
+     * password are generated at class-load time from {@link UUID#randomUUID()}
+     * (see {@link #EPHEMERAL_DB_NAME}, {@link #EPHEMERAL_USERNAME}, and
+     * {@link #EPHEMERAL_PASSWORD}). No credential string literal is committed
+     * to source. The values are scoped to the container's isolated Docker
+     * network namespace and cannot authenticate against any production
+     * system; they are bound into Spring's environment by
+     * {@link #postgresProperties(DynamicPropertyRegistry)} via
+     * {@link PostgreSQLContainer#getUsername()} and
      * {@link PostgreSQLContainer#getPassword()}.
      *
      * <p>{@code withReuse(false)} keeps the container lifecycle explicit
@@ -180,9 +232,9 @@ public abstract class AbstractRepositoryIT {
     @Container
     @SuppressWarnings("resource") // Lifecycle managed by @Container, not try-with-resources
     protected static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine")
-            .withDatabaseName("carddemo_test")
-            .withUsername("carddemo_test")
-            .withPassword("carddemo_test_pwd")
+            .withDatabaseName(EPHEMERAL_DB_NAME)
+            .withUsername(EPHEMERAL_USERNAME)
+            .withPassword(EPHEMERAL_PASSWORD)
             .withReuse(false);
 
     /**
