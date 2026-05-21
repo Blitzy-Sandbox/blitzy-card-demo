@@ -1,0 +1,17 @@
+# BASELINE_CAPTURE_PENDING_POSTED
+# This file is a placeholder for the captured COBOL reference output produced by
+# running app/jcl/POSTTRAN.jcl (CBTRN02C) against the inputs in
+# src/test/resources/baseline/input/.
+# 
+# Procedure: docs/testing/baseline-parity.md
+# Producer: app/jcl/POSTTRAN.jcl -> app/cbl/CBTRN02C.cbl
+# Record layout: app/cpy/CVTRA05Y.cpy (350-byte TRAN-RECORD)
+# Inputs:
+#   - src/test/resources/baseline/input/dailytran.txt
+#   - src/test/resources/baseline/input/cardxref.txt
+#   - src/test/resources/baseline/input/acctdata.txt
+#   - src/test/resources/baseline/input/tcatbal.txt
+# 
+# Until populated with the actual captured output, TransactionPostingBaselineParityIT
+# will fail with a clear "baseline capture pending" error, prompting capture before
+# parity validation runs.
