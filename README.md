@@ -14,6 +14,7 @@
     - [**Signon Screen**](#signon-screen)
     - [**Main Menu**](#main-menu)
     - [**Admin Menu**](#admin-menu)
+- [Testing](#testing)
 - [Support](#support)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
@@ -270,6 +271,65 @@ The Regular user can perform the user functions and the Admin users can only per
 #### **Admin Menu**
 
 ![Alt text](./diagrams/Admin-Menu.png?raw=true "Admin Menu")
+
+<br/>
+
+## Testing
+
+The migrated Java codebase ships with a JUnit 5 + Mockito test suite that enforces functional and byte-identical parity with the original COBOL/JCL baseline. The suite is split into unit tests (`*Test.java`) and integration tests (`*IT.java`) and is executed exclusively through Maven; no separate test runner is required.
+
+### Prerequisites
+
+- Java 17 LTS on `PATH` (verify with `java -version`)
+- Maven 3.8+ on `PATH` (verify with `mvn -version`)
+- Docker running and accessible to Testcontainers (verify with `docker info`)
+
+### Common Invocations
+
+| Action | Command |
+| :----- | :------ |
+| Build + unit tests only | `mvn clean test` |
+| Build + unit + integration tests | `mvn clean verify` |
+| Build + all tests + JaCoCo coverage | `mvn clean verify -Pjacoco` |
+| Run a single unit test class | `mvn -Dtest=AuthenticationServiceTest test` |
+| Run a single unit test method | `mvn -Dtest=AuthenticationServiceTest#authenticate_validUserValidPassword_returnsUserSession test` |
+| Run a single integration test class | `mvn -Dit.test=TransactionPostingBaselineParityIT verify` |
+| Skip integration tests | `mvn test -DskipITs` |
+| Regenerate coverage report only | `mvn jacoco:report` |
+
+### Test Layout
+
+```
+src/test/java/com/aws/carddemo/
+  ├── service/        — Service-layer unit tests (*Test.java)
+  ├── batch/          — Batch processor unit tests and Spring Batch ITs (*Test.java, *IT.java)
+  ├── repository/     — JPA repository integration tests (*IT.java)
+  ├── controller/     — REST controller slice tests (*Test.java)
+  ├── validation/     — Validation utility unit tests (*Test.java)
+  ├── io/             — File and VSAM-status mapper unit tests (*Test.java)
+  ├── e2e/            — End-to-end user-journey tests (*Test.java)
+  └── testsupport/    — FixtureLoader, BaselineDiffUtil, TestFixtures, base IT classes
+
+src/test/resources/
+  ├── baseline/input/    — Canonical ASCII golden inputs (copies of app/data/ASCII/*.txt)
+  ├── baseline/expected/ — COBOL reference outputs for byte-identical parity diffs
+  ├── fixtures/edge/     — CSV-driven edge-case parameters for @ParameterizedTest
+  ├── application-test.properties
+  ├── junit-platform.properties
+  └── logback-test.xml
+```
+
+### Coverage
+
+- **Service-layer line coverage floor: ≥80%** (enforced by the JaCoCo Maven plugin `check` goal; the build fails if any class under `com.aws.carddemo.service.**` drops below this threshold).
+- HTML coverage report: `target/site/jacoco/index.html`
+- XML coverage report (machine-readable for CI): `target/site/jacoco/jacoco.xml`
+
+### Baseline Parity
+
+Every Spring Batch job has a paired `*BaselineParityIT` that runs the migrated Java job against canonical ASCII fixtures and diffs the produced output byte-for-byte against the captured COBOL reference output in `src/test/resources/baseline/expected/`. Zero delta is required.
+
+For details on the test pyramid, naming conventions, and coverage targets, see [`docs/testing/test-strategy.md`](docs/testing/test-strategy.md). For the operating procedure used when input fixtures change and new COBOL reference outputs must be captured, see [`docs/testing/baseline-parity.md`](docs/testing/baseline-parity.md).
 
 <br/>
 
