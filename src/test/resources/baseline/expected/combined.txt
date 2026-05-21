@@ -1,0 +1,16 @@
+# BASELINE_CAPTURE_PENDING_COMBINED
+# This file is a placeholder for the captured DFSORT output produced by
+# running app/jcl/COMBTRAN.jcl against the concatenation of:
+#   - prior TRANSACT.BKUP (~= src/test/resources/baseline/expected/posted.txt)
+#   - prior SYSTRAN(0)    (~= src/test/resources/baseline/expected/tcatbal_after_interest.txt)
+# 
+# Procedure: docs/testing/baseline-parity.md
+# Producer: app/jcl/COMBTRAN.jcl (DFSORT - no COBOL program)
+# Sort key: TRAN-ID,1,16,CH,ASCENDING
+# Record layout: app/cpy/CVTRA05Y.cpy (350-byte TRAN-RECORD)
+# 
+# Deterministic reproduction (when posted.txt and tcatbal_after_interest.txt are real):
+#   cat posted.txt tcatbal_after_interest.txt | LC_ALL=C sort -k1.1,1.16 > combined.txt
+# 
+# Until populated, CombineTransactionsBaselineParityIT will fail with a clear
+# "baseline capture pending" error.
