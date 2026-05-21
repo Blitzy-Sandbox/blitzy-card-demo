@@ -46,6 +46,22 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
+        <!--
+            Default JVM argLine for forked Surefire/Failsafe processes.
+
+            Empty by default so that `@{argLine}` in the Surefire/Failsafe
+            <argLine> always resolves cleanly (Java would otherwise interpret
+            the literal `@{argLine}` as an @argfile directive and abort the
+            forked VM with "could not open `{argLine}`").
+
+            When the `jacoco` profile is active, JaCoCo's prepare-agent /
+            prepare-agent-integration goals override this property with the
+            javaagent flag, transparently chaining into the JVM args.
+            See AAP §0.9.1 (mvn test / mvn verify must succeed without
+            -Pjacoco) and §0.7.1 (-Pjacoco enforces the coverage rule).
+        -->
+        <argLine/>
+
         <!-- Plugin versions (explicit pins; outside the Spring Boot BOM) -->
         <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
@@ -232,6 +248,21 @@
         <dependency>
             <groupId>org.awaitility</groupId>
             <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            H2 in-memory database — optional fallback (AAP §0.6.1).
+
+            The primary repository-IT strategy uses Testcontainers PostgreSQL 16
+            (AAP §0.4.4); H2 is reserved for the rare repository unit test that
+            does not require PostgreSQL-specific behaviour, where the
+            Testcontainers overhead is not justified. Version is BOM-managed by
+            spring-boot-starter-parent.
+        -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
