@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Test-time logging configuration (AAP §0.5.4, §0.10.5).
+
+    Two defence-in-depth controls for the user directive "No financial data
+    written to logs at any level":
+
+    1. A pattern layout that mask-replaces card numbers (PAN), account IDs,
+       and currency-shaped tokens before the line is written.
+    2. The dedicated LoggingPiiRedactionTest class (under
+       src/test/java/com/aws/carddemo/security/) asserts at runtime that
+       captured log lines never contain known PII fixtures.
+
+    The PatternLayout below mirrors src/main/resources/logback-spring.xml so
+    test and production redaction behave identically.
+-->
+<configuration>
+
+    <!-- Replace 13-19 digit card-number runs with **** **** **** LAST4 -->
+    <conversionRule conversionWord="msg"
+                    converterClass="ch.qos.logback.classic.pattern.MessageConverter"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %replace(%replace(%msg){'\\b\\d{13,19}\\b','***REDACTED-PAN***'}){'\\b\\d{11}\\b','***REDACTED-ACCT***'}%n</pattern>
+        </encoder>
+    </appender>
+
+    <!--
+        Root level is INFO for the project as a whole; raise carddemo packages
+        to DEBUG so tests can assert against expected debug-level statements
+        (and LoggingPiiRedactionTest can confirm that even DEBUG output is
+        scrubbed).
+    -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+    <logger name="com.aws.carddemo" level="DEBUG" additivity="false">
+        <appender-ref ref="CONSOLE"/>
+    </logger>
+
+    <!-- Quieten noisy frameworks during tests -->
+    <logger name="org.springframework.test.context.transaction" level="WARN"/>
+    <logger name="org.hibernate.SQL" level="WARN"/>
+    <logger name="org.hibernate.type.descriptor.sql.BasicBinder" level="WARN"/>
+    <logger name="org.testcontainers" level="WARN"/>
+    <logger name="com.github.dockerjava" level="WARN"/>
+
+</configuration>

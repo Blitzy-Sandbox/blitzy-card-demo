@@ -1,0 +1,48 @@
+# Maven build artefacts
+target/
+dependency-reduced-pom.xml
+.mvn/wrapper/maven-wrapper.jar
+
+# IDE-specific metadata
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.classpath
+.project
+.settings/
+*.code-workspace
+nbproject/
+nb-configuration.xml
+
+# OS-specific metadata
+.DS_Store
+Thumbs.db
+
+# Logback / log output
+logs/
+*.log
+
+# Test output
+/test-output/
+/coverage/
+
+# Spring Boot dev-tools
+.springboot.tmp/
+
+# JaCoCo
+*.exec
+
+# Local environment overrides (never committed — credentials)
+.env
+.env.local
+application-secrets.properties
+application-secrets.yml
+application-secrets.yaml
+
+# Node (in case the migration introduces a UI subproject later)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
