@@ -1,0 +1,26 @@
+# BASELINE_CAPTURE_PENDING_TRANSACTION_REPORT
+# This file is a placeholder for the captured COBOL reference output produced by
+# running app/jcl/TRANREPT.jcl (CBTRN03C) against the inputs in
+# src/test/resources/baseline/input/ and the upstream TRANSACT data.
+# 
+# Procedure: docs/testing/baseline-parity.md
+# Producer: app/jcl/TRANREPT.jcl -> app/cbl/CBTRN03C.cbl
+# Output DD: //TRANREPT (LRECL=133, RECFM=FB)
+# Record layout: app/cpy/CVTRA07Y.cpy
+# Inputs:
+#   - upstream TRANSACT VSAM (~= src/test/resources/baseline/expected/combined.txt
+#     after IDCAMS REPRO; or posted.txt if INTCALC not run)
+#   - src/test/resources/baseline/input/cardxref.txt
+#   - src/test/resources/baseline/input/trantype.txt
+#   - src/test/resources/baseline/input/trancatg.txt
+#   - DATEPARM (inline): 2022-01-01 to 2022-07-06
+# 
+# Format: 133-character fixed-width paginated report.
+# Structure: REPORT-NAME-HEADER + TRANSACTION-HEADER-1 + 133-hyphen-rule +
+#            (20 detail lines + page-total) repeated per page +
+#            account-totals when card-num changes +
+#            grand-total at end.
+# Page size: 20 detail lines per page.
+# 
+# Until populated, TransactionReportBaselineParityIT will fail with a clear
+# "baseline capture pending" error.
