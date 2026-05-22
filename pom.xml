@@ -368,6 +368,27 @@
         </dependency>
 
         <!-- =============================================================
+             OpenSearch Java client (typed) + AwsSdk2Transport
+             (AAP §0.4.1, §0.6.6, CP3 checkpoint requirement)
+             The modern typed `org.opensearch.client.opensearch.OpenSearchClient`
+             replaces the legacy `RestHighLevelClient` in OpenSearchIndexer
+             and the new OpenSearchConfig produces it with SigV4 + TLS via
+             `AwsSdk2Transport` and the AWS SDK v2 HTTP client family.
+             ============================================================= -->
+        <dependency>
+            <groupId>org.opensearch.client</groupId>
+            <artifactId>opensearch-java</artifactId>
+            <version>${opensearch-client.version}</version>
+        </dependency>
+        <dependency>
+            <!-- Synchronous HTTP client used by AwsSdk2Transport for OpenSearch
+                 calls. Already transitively pulled in by other AWS SDK v2
+                 starters; declared explicitly for build determinism. -->
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>apache-client</artifactId>
+        </dependency>
+
+        <!-- =============================================================
              Persistence: PostgreSQL JDBC driver + Flyway 10.x
              ============================================================= -->
         <dependency>

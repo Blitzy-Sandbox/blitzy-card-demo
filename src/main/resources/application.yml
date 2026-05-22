@@ -499,6 +499,36 @@ carddemo:
       # Secret ARN for the RDS master credentials. Empty default → local
       # profile reads username/password from the DataSource bean directly.
       rds-secret-arn: ${RDS_SECRET_ARN:}
+      # ---------------------------------------------------------------
+      # AAP §0.6.4 — Secrets Manager dynamic rotation without restart
+      # ---------------------------------------------------------------
+      # When `enabled: true`, SecretsManagerConfig spins up a scheduled
+      # SQS poller that listens for SNS-delivered rotation notifications.
+      # On every successful poll cycle the ContextRefresher is invoked
+      # once so every @RefreshScope bean (HikariCP DataSource, JWT
+      # provider, MSK producer/consumer factories) re-reads its
+      # rotated credential from Secrets Manager on next use.
+      #
+      # Default: disabled (matchIfMissing=false in the @ConditionalOn-
+      # Property). Production overlays flip `enabled: true` once the
+      # rotation Lambda + SNS topic + SQS queue are deployed.
+      rotation-listener:
+        enabled: ${SECRETS_ROTATION_LISTENER_ENABLED:false}
+        # URL of the SQS queue that receives rotation notifications from
+        # the SNS topic attached to the Secrets Manager rotation Lambda.
+        queue-url: ${SECRETS_ROTATION_QUEUE_URL:}
+        # Poll interval (ms) between SQS ReceiveMessage cycles. 30 s is
+        # a safe default — rotations are infrequent.
+        poll-interval-ms: 30000
+        # Max messages per ReceiveMessage call (SQS hard limit is 10).
+        max-messages: 10
+        # SQS long-poll wait time (s). 20 s is the SQS maximum and
+        # minimises empty receives.
+        wait-time-seconds: 20
+        # Visibility timeout (s) applied per poll. Failed refresh leaves
+        # the message in-flight until this window elapses, after which
+        # SQS re-delivers it for retry.
+        visibility-timeout-seconds: 60
     opensearch:
       # OpenSearch domain endpoint for audit / transaction-log indexing.
       endpoint: ${OPENSEARCH_ENDPOINT:}

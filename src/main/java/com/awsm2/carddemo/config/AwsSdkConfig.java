@@ -23,6 +23,8 @@ import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.core.retry.RetryMode;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.cloudwatch.CloudWatchAsyncClient;
 import software.amazon.awssdk.services.cloudwatch.CloudWatchAsyncClientBuilder;
@@ -36,6 +38,7 @@ import software.amazon.awssdk.services.sns.SnsClient;
 import software.amazon.awssdk.services.sqs.SqsClient;
 
 import java.net.URI;
+import java.time.Duration;
 
 /**
  * AWS SDK for Java v2 client bean configuration per AAP &sect;0.4.1 and &sect;0.5.1.
@@ -254,6 +257,51 @@ public class AwsSdkConfig {
     }
 
     // -----------------------------------------------------------------------
+    // Shared client-override defaults — bounded timeouts + retry policy
+    // -----------------------------------------------------------------------
+    //
+    // Per CP3 checkpoint requirement (and AAP §0.6.6 — resilience), every
+    // AWS SDK client must enforce explicit bounds on:
+    //
+    //   * apiCallTimeout         — total budget for a single high-level API
+    //                              call across all retries; bounds the
+    //                              worst-case latency contribution any one
+    //                              adapter can add to a request.
+    //   * apiCallAttemptTimeout  — budget for a single underlying HTTP
+    //                              attempt; protects against a hung socket
+    //                              eating the entire apiCallTimeout window.
+    //   * retryPolicy            — RetryMode.STANDARD applies the AWS-SDK-
+    //                              recommended exponential-backoff +
+    //                              full-jitter strategy with 3 attempts
+    //                              (1 try + 2 retries) for transient
+    //                              5xx / throttling errors.
+    //
+    // The values below are intentionally conservative defaults that work
+    // across all profiles. Per-service tuning (e.g., longer timeout for
+    // S3 multi-part uploads or bulk Glue calls) can override these on a
+    // case-by-case basis at the call site via overrideConfiguration() on
+    // each individual request.
+
+    /** API-call total budget. Default 30 s. */
+    private static final Duration DEFAULT_API_CALL_TIMEOUT = Duration.ofSeconds(30);
+    /** Per-attempt HTTP budget. Default 10 s. */
+    private static final Duration DEFAULT_API_CALL_ATTEMPT_TIMEOUT = Duration.ofSeconds(10);
+
+    /**
+     * Builds the shared {@link ClientOverrideConfiguration} applied to
+     * every AWS SDK client produced by this configuration.
+     *
+     * @return the configured override profile
+     */
+    private ClientOverrideConfiguration clientOverrideConfiguration() {
+        return ClientOverrideConfiguration.builder()
+                .apiCallTimeout(DEFAULT_API_CALL_TIMEOUT)
+                .apiCallAttemptTimeout(DEFAULT_API_CALL_ATTEMPT_TIMEOUT)
+                .retryPolicy(RetryMode.STANDARD)
+                .build();
+    }
+
+    // -----------------------------------------------------------------------
     // Service clients
     // -----------------------------------------------------------------------
 
@@ -282,6 +330,7 @@ public class AwsSdkConfig {
         var builder = S3Client.builder()
                 .region(awsRegion())
                 .credentialsProvider(awsCredentialsProvider())
+                .overrideConfiguration(clientOverrideConfiguration())
                 .serviceConfiguration(S3Configuration.builder()
                         .pathStyleAccessEnabled(s3PathStyleAccessEnabled)
                         .build());
@@ -315,7 +364,8 @@ public class AwsSdkConfig {
         // COBOL replacement: JES2 + JCL job stream submission per AAP §0.6.3
         var builder = SfnClient.builder()
                 .region(awsRegion())
-                .credentialsProvider(awsCredentialsProvider());
+                .credentialsProvider(awsCredentialsProvider())
+                .overrideConfiguration(clientOverrideConfiguration());
 
         URI override = endpointOverrideUri();
         if (override != null) {
@@ -347,7 +397,8 @@ public class AwsSdkConfig {
         // per AAP §0.6.4
         var builder = SecretsManagerClient.builder()
                 .region(awsRegion())
-                .credentialsProvider(awsCredentialsProvider());
+                .credentialsProvider(awsCredentialsProvider())
+                .overrideConfiguration(clientOverrideConfiguration());
 
         URI override = endpointOverrideUri();
         if (override != null) {
@@ -376,7 +427,8 @@ public class AwsSdkConfig {
         // COBOL replacement: SDSF / RMF metric capture per AAP §0.6.6
         CloudWatchAsyncClientBuilder builder = CloudWatchAsyncClient.builder()
                 .region(awsRegion())
-                .credentialsProvider(awsCredentialsProvider());
+                .credentialsProvider(awsCredentialsProvider())
+                .overrideConfiguration(clientOverrideConfiguration());
 
         URI override = endpointOverrideUri();
         if (override != null) {
@@ -409,7 +461,8 @@ public class AwsSdkConfig {
         // per AAP §0.6.6
         var builder = KmsClient.builder()
                 .region(awsRegion())
-                .credentialsProvider(awsCredentialsProvider());
+                .credentialsProvider(awsCredentialsProvider())
+                .overrideConfiguration(clientOverrideConfiguration());
 
         URI override = endpointOverrideUri();
         if (override != null) {
@@ -434,7 +487,8 @@ public class AwsSdkConfig {
         // per AAP §0.4.1
         var builder = GlueClient.builder()
                 .region(awsRegion())
-                .credentialsProvider(awsCredentialsProvider());
+                .credentialsProvider(awsCredentialsProvider())
+                .overrideConfiguration(clientOverrideConfiguration());
 
         URI override = endpointOverrideUri();
         if (override != null) {
@@ -471,7 +525,8 @@ public class AwsSdkConfig {
         // per AAP §0.6.4
         var builder = SqsClient.builder()
                 .region(awsRegion())
-                .credentialsProvider(awsCredentialsProvider());
+                .credentialsProvider(awsCredentialsProvider())
+                .overrideConfiguration(clientOverrideConfiguration());
 
         URI override = endpointOverrideUri();
         if (override != null) {
@@ -506,7 +561,8 @@ public class AwsSdkConfig {
         // COBOL replacement: TSO SEND command for operator notifications
         var builder = SnsClient.builder()
                 .region(awsRegion())
-                .credentialsProvider(awsCredentialsProvider());
+                .credentialsProvider(awsCredentialsProvider())
+                .overrideConfiguration(clientOverrideConfiguration());
 
         URI override = endpointOverrideUri();
         if (override != null) {

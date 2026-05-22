@@ -16,8 +16,10 @@
  */
 package com.awsm2.carddemo.validation;
 
+import com.awsm2.carddemo.exception.ValidationException;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -301,7 +303,13 @@ public class ValidationLookupService {
         Map.entry("NM", Set.of("87", "88")),
         // CSLKPCDY.cpy:L1222-L1223 — Nevada
         Map.entry("NV", Set.of("88", "89")),
-        // CSLKPCDY.cpy:L1224-L1231 — New York (NY50, NY54, NY63, NY10-NY14 per source)
+        // CSLKPCDY.cpy:L1224-L1231 — New York
+        // Source-listing order in CSLKPCDY.cpy: NY50, NY54, NY63, NY10, NY11,
+        // NY12, NY13, NY14. The `Set.of(...)` literal below uses ascending
+        // numeric order purely as a readable convention; `Set` membership is
+        // order-agnostic, so runtime validation behaviour is unaffected
+        // either way and the source semantic of "any of these eight ZIP
+        // prefixes maps to NY" is preserved exactly.
         Map.entry("NY", Set.of("10", "11", "12", "13", "14", "50", "54", "63")),
         // CSLKPCDY.cpy:L1232-L1234 — Ohio
         Map.entry("OH", Set.of("43", "44", "45")),
@@ -469,5 +477,147 @@ public class ValidationLookupService {
         }
         String zipPrefix = zipCode.substring(0, 2);
         return validPrefixes.contains(zipPrefix);
+    }
+
+    // =====================================================================
+    // Exception-throwing validation API (CP3 checkpoint requirement)
+    // =====================================================================
+    //
+    // The CP3 checkpoint requires that ValidationLookupService expose
+    // exception-throwing variants of the boolean lookup methods so that
+    // service-layer callers can short-circuit a validation cascade with
+    // a single throw and feed the resulting message into the standard
+    // ApiResponse error envelope via GlobalExceptionHandler.
+    //
+    // Per AAP §0.4.1, the typed ValidationException maps to HTTP 400 in
+    // the GlobalExceptionHandler. Each throwing method:
+    //
+    //   * Calls the corresponding boolean predicate as the source of truth
+    //   * Throws ValidationException with a deterministic FieldError on
+    //     failure so the caller's resulting JSON response identifies the
+    //     offending field by name
+    //   * Returns void on success so the caller can chain validations
+    //
+    // The original boolean `isValidXxx(...)` methods remain available
+    // unchanged for callers that need the predicate semantics directly
+    // (e.g., conditional warnings, search-as-you-type validation hints).
+
+    /** Field name surfaced in the {@code FieldError} for area-code failures. */
+    private static final String FIELD_AREA_CODE = "areaCode";
+    /** Field name surfaced in the {@code FieldError} for state-code failures. */
+    private static final String FIELD_STATE_CODE = "stateCode";
+    /** Field name surfaced in the {@code FieldError} for state+ZIP failures. */
+    private static final String FIELD_STATE_ZIP = "stateZipCombination";
+
+    /** Reason code stamped on area-code validation failures. */
+    static final String REASON_CODE_AREA_CODE = "INVALID_AREA_CODE";
+    /** Reason code stamped on state-code validation failures. */
+    static final String REASON_CODE_STATE_CODE = "INVALID_STATE_CODE";
+    /** Reason code stamped on state+ZIP validation failures. */
+    static final String REASON_CODE_STATE_ZIP = "INVALID_STATE_ZIP_COMBINATION";
+
+    /**
+     * Validates a NANPA area code and throws a typed
+     * {@link ValidationException} if the code is unknown.
+     *
+     * <p>Replaces (AAP &sect;0.4.1): COBOL {@code 88-LEVEL
+     * VALID-PHONE-AREA-CODE} from {@code CSLKPCDY.cpy:L30-L520} when
+     * used as a guard (e.g., {@code IF NOT VALID-PHONE-AREA-CODE GO TO
+     * REJECT-RECORD.}). Service callers in the Java target replace the
+     * COBOL conditional branch with a single call to this method.</p>
+     *
+     * <p>The exception's {@code fieldErrors} list always contains exactly
+     * one entry &mdash; field name {@code "areaCode"} &mdash; so callers
+     * never see a {@code ValidationException} from this method with an
+     * empty error list.</p>
+     *
+     * @param areaCode the 3-digit area code to validate
+     * @throws ValidationException with reason
+     *         {@link #REASON_CODE_AREA_CODE} when the code is null,
+     *         blank, or absent from the NANPA registry
+     */
+    public void validateAreaCode(String areaCode) {
+        // COBOL: CSLKPCDY.cpy 88-level VALID-PHONE-AREA-CODE (L30-L520)
+        if (!isValidAreaCode(areaCode)) {
+            throw new ValidationException(
+                    REASON_CODE_AREA_CODE,
+                    "Invalid NANPA phone area code: " + safe(areaCode),
+                    List.of(new ValidationException.FieldError(
+                            FIELD_AREA_CODE,
+                            "Area code is not a recognised NANPA registry value")));
+        }
+    }
+
+    /**
+     * Validates a US state / federal-district / territory code and throws
+     * a typed {@link ValidationException} if the code is unknown.
+     *
+     * <p>Replaces (AAP &sect;0.4.1): COBOL {@code 88-LEVEL
+     * VALID-US-STATE-CODE} from {@code CSLKPCDY.cpy:L1013-L1069} when
+     * used as a guard.</p>
+     *
+     * @param stateCode the 2-character state code (uppercase per COBOL
+     *                  convention)
+     * @throws ValidationException with reason
+     *         {@link #REASON_CODE_STATE_CODE} when the state code is
+     *         null, blank, or unknown
+     */
+    public void validateStateCode(String stateCode) {
+        // COBOL: CSLKPCDY.cpy 88-level VALID-US-STATE-CODE (L1013-L1069)
+        if (!isValidStateCode(stateCode)) {
+            throw new ValidationException(
+                    REASON_CODE_STATE_CODE,
+                    "Invalid US state/territory code: " + safe(stateCode),
+                    List.of(new ValidationException.FieldError(
+                            FIELD_STATE_CODE,
+                            "State code is not a recognised US state/territory")));
+        }
+    }
+
+    /**
+     * Validates that the supplied state code + ZIP code form a
+     * geographically consistent combination per USPS conventions, and
+     * throws a typed {@link ValidationException} on mismatch.
+     *
+     * <p>Replaces (AAP &sect;0.4.1): COBOL {@code 88-LEVEL
+     * VALID-US-STATE-ZIP-CD2-COMBO} from
+     * {@code CSLKPCDY.cpy:L1074-L1313} when used as a guard in
+     * {@code COACTUPC.cbl} customer address edits.</p>
+     *
+     * @param stateCode the 2-character state code
+     * @param zipCode   the 5-digit or ZIP+4 ZIP code
+     * @throws ValidationException with reason
+     *         {@link #REASON_CODE_STATE_ZIP} when the combination is
+     *         invalid
+     */
+    public void validateStateZipCombination(String stateCode, String zipCode) {
+        // COBOL: CSLKPCDY.cpy 88-level VALID-US-STATE-ZIP-CD2-COMBO (L1074-L1313)
+        if (!isValidStateZipCombination(stateCode, zipCode)) {
+            throw new ValidationException(
+                    REASON_CODE_STATE_ZIP,
+                    "State/ZIP combination is geographically inconsistent: "
+                            + "state=" + safe(stateCode) + " zip=" + safe(zipCode),
+                    List.of(new ValidationException.FieldError(
+                            FIELD_STATE_ZIP,
+                            "State and ZIP code prefix do not match per USPS conventions")));
+        }
+    }
+
+    /**
+     * PCI-DSS-safe rendering of an arbitrary input string for use in
+     * exception messages. Returns the value unchanged when present,
+     * {@code "<null>"} for a null reference, and {@code "<blank>"} for
+     * an empty/whitespace-only string. The result never reveals masked
+     * or sensitive content because area / state / ZIP values are public
+     * by nature.
+     */
+    private static String safe(String value) {
+        if (value == null) {
+            return "<null>";
+        }
+        if (value.isBlank()) {
+            return "<blank>";
+        }
+        return value;
     }
 }

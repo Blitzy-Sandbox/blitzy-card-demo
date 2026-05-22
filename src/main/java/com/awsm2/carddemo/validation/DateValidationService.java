@@ -614,5 +614,54 @@ public class DateValidationService {
         public static DateValidationResult invalid(String resultCode, String message) {
             return new DateValidationResult(false, resultCode, message);
         }
+
+        // =================================================================
+        // Compatibility accessor methods (CP3 checkpoint requirement)
+        // =================================================================
+        //
+        // The CP3 checkpoint requires that DateValidationResult expose
+        // `isValid()` and `errorMessage()` compatibility methods alongside
+        // the auto-generated record accessors `valid()` and `message()`.
+        // Service-layer callers and JSON serialisers written to the
+        // checkpoint contract use these accessor names; the record
+        // accessors above remain available for callers that prefer them.
+        //
+        // Both methods are pure delegates to the underlying record
+        // components and therefore allocate nothing and preserve the
+        // null-safety guarantees of the canonical constructor.
+
+        /**
+         * Compatibility alias for {@link #valid()} &mdash; returns
+         * {@code true} when the validated date is valid. Mirrors the
+         * JavaBean-style {@code is&lt;Boolean&gt;()} convention required
+         * by the CP3 checkpoint and by consumers that integrate with
+         * Spring's standard property-accessor reflection.
+         *
+         * @return {@code true} if the date is valid; {@code false} otherwise
+         */
+        public boolean isValid() {
+            return valid;
+        }
+
+        /**
+         * Compatibility alias for {@link #message()} &mdash; returns the
+         * human-readable failure description when the result represents
+         * a validation failure. The CP3 checkpoint mandates this accessor
+         * name so consumers can use it interchangeably with
+         * {@code BindingResult}-style validation results.
+         *
+         * <p>When the result represents a successful validation
+         * ({@link #valid()} is {@code true}), the value of this method
+         * is typically the literal {@code "Date is valid"} from
+         * {@link #VALID}; callers should always guard with
+         * {@link #isValid()} before treating the value as an error
+         * message.</p>
+         *
+         * @return the human-readable result text (never {@code null};
+         *         may be empty for invalid sentinel cases)
+         */
+        public String errorMessage() {
+            return message;
+        }
     }
 }

@@ -20,7 +20,9 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 import org.springframework.cache.annotation.EnableCaching;
+import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 
 /**
@@ -80,14 +82,31 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
  * {@code com.awsm2.carddemo.config} rather than on this main class, keeping
  * configuration responsibilities clearly delineated:</p>
  * <ul>
- *   <li>{@code @EnableJpaRepositories} &mdash; belongs on {@code JpaConfig}.</li>
  *   <li>{@code @EnableBatchProcessing} &mdash; belongs on {@code BatchConfig}.</li>
  *   <li>{@code @EnableKafka} &mdash; belongs on {@code KafkaConfig}.</li>
  *   <li>{@code @EnableWebSecurity} &mdash; belongs on {@code SecurityConfig}.</li>
  *   <li>{@code @OpenAPIDefinition} &mdash; belongs on {@code OpenApiConfig}.</li>
- *   <li>{@code @EnableScheduling} &mdash; will only be added when a concrete
- *       {@code @Scheduled} task is introduced; speculative activation is
- *       forbidden by the Minimal Change Clause.</li>
+ * </ul>
+ *
+ * <h2>JPA repositories and scheduling enabled here (CP3)</h2>
+ * <ul>
+ *   <li>{@link EnableJpaRepositories} &mdash; activates Spring Data JPA
+ *       repository discovery for the {@code com.awsm2.carddemo.repository}
+ *       package (AAP &sect;0.4.1, &sect;0.6.2 &mdash; VSAM &rarr; RDS
+ *       PostgreSQL migration via Spring Data JPA). The {@code JpaConfig}
+ *       class still declares its own {@code @EnableJpaRepositories} for
+ *       local self-documentation, but having the annotation here ensures
+ *       repository scanning works even before {@code JpaConfig} loads.</li>
+ *   <li>{@link EnableScheduling} &mdash; activates Spring's task
+ *       scheduling infrastructure required by
+ *       {@code SecretsManagerConfig.SecretsRotationListener#pollOnce()}
+ *       (AAP &sect;0.6.4 &mdash; Secrets Manager dynamic rotation
+ *       without restart, driven by an SQS-poll {@link
+ *       org.springframework.scheduling.annotation.Scheduled} method).
+ *       Scheduling is enabled application-wide so any future
+ *       {@code @Scheduled} methods (e.g., periodic OpenSearch index
+ *       rotation, CloudWatch metric flushes) work without further
+ *       configuration.</li>
  * </ul>
  *
  * <h2>Provenance &mdash; COBOL entry points replaced</h2>
@@ -136,6 +155,8 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
 @ConfigurationPropertiesScan
 @EnableCaching
 @EnableAsync
+@EnableScheduling
+@EnableJpaRepositories(basePackages = "com.awsm2.carddemo.repository")
 @EnableTransactionManagement
 public class CardDemoApplication {
 

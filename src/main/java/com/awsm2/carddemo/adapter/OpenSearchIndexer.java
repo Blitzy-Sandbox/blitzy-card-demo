@@ -17,20 +17,17 @@
 package com.awsm2.carddemo.adapter;
 
 import com.awsm2.carddemo.exception.CardDemoException;
-import org.opensearch.action.DocWriteResponse;
-import org.opensearch.action.bulk.BulkItemResponse;
-import org.opensearch.action.bulk.BulkRequest;
-import org.opensearch.action.bulk.BulkResponse;
-import org.opensearch.action.index.IndexRequest;
-import org.opensearch.action.index.IndexResponse;
-import org.opensearch.action.search.SearchRequest;
-import org.opensearch.action.search.SearchResponse;
-import org.opensearch.client.RequestOptions;
-import org.opensearch.client.RestHighLevelClient;
-import org.opensearch.common.xcontent.XContentType;
-import org.opensearch.index.query.QueryBuilder;
-import org.opensearch.search.SearchHit;
-import org.opensearch.search.builder.SearchSourceBuilder;
+import org.opensearch.client.opensearch.OpenSearchClient;
+import org.opensearch.client.opensearch._types.OpenSearchException;
+import org.opensearch.client.opensearch._types.Result;
+import org.opensearch.client.opensearch._types.query_dsl.Query;
+import org.opensearch.client.opensearch.core.BulkRequest;
+import org.opensearch.client.opensearch.core.BulkResponse;
+import org.opensearch.client.opensearch.core.IndexResponse;
+import org.opensearch.client.opensearch.core.SearchResponse;
+import org.opensearch.client.opensearch.core.bulk.BulkOperation;
+import org.opensearch.client.opensearch.core.bulk.BulkResponseItem;
+import org.opensearch.client.opensearch.core.search.Hit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -48,12 +45,12 @@ import java.util.Objects;
  * compliance pipelines.
  *
  * <p>This adapter is the <strong>only</strong> place in
- * {@code src/main/java/com/awsm2/carddemo/} that touches the OpenSearch REST
- * high-level client directly. Per AAP &sect;0.7.1 ("Isolate all AWS service
- * integrations in dedicated adapter classes &mdash; never inline AWS SDK calls
- * in business logic"), all OpenSearch interactions must go through the three
- * public methods exposed here: {@link #indexDocument(String, String, Map)},
- * {@link #search(String, QueryBuilder, Integer)}, and
+ * {@code src/main/java/com/awsm2/carddemo/} that touches the OpenSearch client
+ * directly. Per AAP &sect;0.7.1 ("Isolate all AWS service integrations in
+ * dedicated adapter classes &mdash; never inline AWS SDK calls in business
+ * logic"), all OpenSearch interactions must go through the three public
+ * methods exposed here: {@link #indexDocument(String, String, Map)},
+ * {@link #search(String, Query, Integer)}, and
  * {@link #bulkIndex(String, Map)}.</p>
  *
  * <h2>Replaces (AAP &sect;0.6.6)</h2>
@@ -91,21 +88,25 @@ import java.util.Objects;
  * <h2>AAP authority</h2>
  * <ul>
  *   <li>AAP &sect;0.3.1 / &sect;0.4.1 &mdash; "OpenSearchIndexer &mdash;
- *       OpenSearch REST high-level client for indexing transaction logs and
+ *       OpenSearch typed Java client for indexing transaction logs and
  *       audit events" (one of eight adapter classes in the target).</li>
  *   <li>AAP &sect;0.6.6 &mdash; Cross-Cutting Audit, Observability, and
  *       PCI-DSS (PRIMARY): "Amazon OpenSearch indexes both CloudTrail events
  *       and application-emitted audit logs &hellip; The
- *       {@code AuditLogService} writes to OpenSearch via the REST high-level
- *       client; failures are buffered to a local SQS DLQ for retry."</li>
+ *       {@code AuditLogService} writes to OpenSearch via the REST client;
+ *       failures are buffered to a local SQS DLQ for retry."</li>
  *   <li>AAP &sect;0.5.1 &mdash; dependency:
- *       {@code org.opensearch.client:opensearch-rest-high-level-client}
- *       2.18.0 (legacy client artifact resolved in {@code pom.xml}).</li>
+ *       {@code org.opensearch.client:opensearch-java} 2.18.0 (modern typed
+ *       client resolved in {@code pom.xml}).</li>
  *   <li>AAP &sect;0.7.1 &mdash; rule: "Isolate all AWS service integrations
  *       in dedicated adapter classes (S3OutputService, CacheService,
  *       AuditLogService, StepFunctionsOrchestrator, KafkaEventPublisher,
  *       SecretsManagerService, OpenSearchIndexer) &mdash; never inline AWS
  *       SDK calls in business logic."</li>
+ *   <li>CP3 checkpoint &mdash; explicitly forbids
+ *       {@code RestHighLevelClient} usage; this adapter consumes the typed
+ *       {@link OpenSearchClient} produced by
+ *       {@code com.awsm2.carddemo.config.OpenSearchConfig}.</li>
  * </ul>
  *
  * <h2>Callers</h2>
@@ -121,38 +122,51 @@ import java.util.Objects;
  *       during end-of-day pipelines.</li>
  * </ul>
  *
- * <h2>Client choice (AAP &sect;0.5.1)</h2>
- * <p>This adapter consumes the <strong>legacy</strong>
- * {@link RestHighLevelClient} resolved by {@code pom.xml} as
- * {@code org.opensearch.client:opensearch-rest-high-level-client:2.18.0}. The
- * legacy client is selected (rather than the modern typed
- * {@code org.opensearch.client:opensearch-java}) to match the dependency
- * declared in AAP &sect;0.5.1 and to align with the bean type produced by
- * {@code com.awsm2.carddemo.config.OpenSearchConfig}. The class deliberately
- * avoids any {@code org.elasticsearch.*} imports &mdash; AWS supports the
- * OpenSearch fork only.</p>
+ * <h2>Client choice (AAP &sect;0.5.1, CP3 checkpoint)</h2>
+ * <p>This adapter consumes the <strong>modern typed</strong>
+ * {@link OpenSearchClient} resolved by {@code pom.xml} as
+ * {@code org.opensearch.client:opensearch-java:2.18.0}. The typed client is
+ * selected (rather than the legacy
+ * {@code org.opensearch.client:opensearch-rest-high-level-client}) to satisfy
+ * the CP3 checkpoint requirement, to align with the bean type produced by
+ * {@code com.awsm2.carddemo.config.OpenSearchConfig}, and to gain compile-time
+ * safety on request/response shapes. The class deliberately avoids any
+ * {@code org.elasticsearch.*} imports &mdash; AWS supports the OpenSearch
+ * fork only &mdash; and no {@code org.opensearch.action.*},
+ * {@code org.opensearch.client.RestHighLevelClient}, or
+ * {@code org.opensearch.client.RequestOptions} imports are used.</p>
  *
  * <h2>Transport configuration (AAP &sect;0.6.6, &sect;0.7.2)</h2>
- * <p>The {@link RestHighLevelClient} bean is built by
- * {@code com.awsm2.carddemo.config.OpenSearchConfig} with:</p>
+ * <p>The {@link OpenSearchClient} bean is built by
+ * {@code com.awsm2.carddemo.config.OpenSearchConfig} on top of
+ * {@code org.opensearch.client.transport.aws.AwsSdk2Transport} with:</p>
  * <ul>
  *   <li>Endpoint sourced from the {@code OPENSEARCH_ENDPOINT} environment
  *       variable (per AAP &sect;0.7.2 required environment variables).</li>
  *   <li>TLS 1.2+ enforced (per AAP &sect;0.6.6 "TLS 1.2+ is enforced on the
  *       ALB &hellip; MSK &hellip; RDS &hellip; and ElastiCache").</li>
- *   <li>SigV4 signing via AWS SDK credentials in production; HTTP basic auth
- *       in the local profile against the LocalStack stand-in.</li>
+ *   <li>SigV4 signing via AWS SDK credentials provider in production; HTTP
+ *       basic auth in the local profile against the LocalStack stand-in.</li>
  * </ul>
  * <p>This adapter is intentionally transport-agnostic &mdash; it consumes the
  * injected client without configuring it, allowing the same code path to
  * exercise both production and local profiles.</p>
  *
  * <h2>Exception model (AAP &sect;0.7.1)</h2>
- * <p>All transport-level {@link IOException}s thrown by the OpenSearch client
- * are wrapped as {@link CardDemoException} with a verbatim reason code so that
- * callers ({@code AuditLogService}, {@code TransactionReportService}) need
- * not depend on the OpenSearch client type tree. The reason codes emitted by
- * this adapter are:</p>
+ * <p>Two failure classes are wrapped as {@link CardDemoException} with a
+ * verbatim reason code so that callers ({@code AuditLogService},
+ * {@code TransactionReportService}) need not depend on the OpenSearch client
+ * type tree:</p>
+ * <ul>
+ *   <li>Transport-level {@link IOException}s &mdash; raised by the
+ *       {@code AwsSdk2Transport} on network/SigV4 failures.</li>
+ *   <li>Service-level {@link OpenSearchException}s &mdash; raised by the
+ *       typed client on non-2xx responses from the OpenSearch domain (4xx
+ *       client errors, 5xx server errors). Unlike the legacy high-level
+ *       REST client, the typed client surfaces these as a single typed
+ *       exception type rather than an {@code IOException} subclass.</li>
+ * </ul>
+ * <p>The reason codes emitted by this adapter are:</p>
  * <ul>
  *   <li>{@code OPENSEARCH_INDEX_ERROR} &mdash; single-document index failed.</li>
  *   <li>{@code OPENSEARCH_SEARCH_ERROR} &mdash; query execution failed.</li>
@@ -177,20 +191,21 @@ import java.util.Objects;
  *       application logs (AAP &sect;0.6.6).</li>
  * </ul>
  * <p>Log messages emitted by this class deliberately include only operational
- * metadata (index name, doc ID, hit counts, version IDs, IOException causes)
+ * metadata (index name, doc ID, hit counts, version IDs, exception causes)
  * &mdash; never document field values &mdash; consistent with the AAP
  * &sect;0.6.6 PCI-DSS logging discipline.</p>
  *
  * <h2>Thread safety</h2>
  * <p>This adapter is thread-safe because (a) the injected
- * {@link RestHighLevelClient} is itself thread-safe (it manages its own
- * connection pool), (b) the adapter carries no mutable state, and (c) every
- * public method creates its own request object and does not share local
- * state across invocations. Multiple Spring-managed callers may invoke any
- * method concurrently.</p>
+ * {@link OpenSearchClient} is itself thread-safe (the underlying
+ * {@code AwsSdk2Transport} manages its own connection pool), (b) the adapter
+ * carries no mutable state, and (c) every public method creates its own
+ * request payload via builder lambdas and does not share local state across
+ * invocations. Multiple Spring-managed callers may invoke any method
+ * concurrently.</p>
  *
  * @see com.awsm2.carddemo.exception.CardDemoException
- * @see org.opensearch.client.RestHighLevelClient
+ * @see org.opensearch.client.opensearch.OpenSearchClient
  */
 // Net-new capability — replaces COBOL DISPLAY + JES SYSPRINT for searchable retention (AAP §0.6.6)
 @Component
@@ -198,7 +213,7 @@ public class OpenSearchIndexer {
 
     /**
      * SLF4J logger emitting structured operational log messages with index
-     * names, doc IDs, hit counts, version IDs, and IOException causes per AAP
+     * names, doc IDs, hit counts, version IDs, and exception causes per AAP
      * &sect;0.6.6 PCI-DSS logging discipline (never log secret/PII values; log
      * only operational metadata).
      */
@@ -238,31 +253,31 @@ public class OpenSearchIndexer {
     private static final String REASON_CODE_BULK_INDEX_ERROR = "OPENSEARCH_BULK_INDEX_ERROR";
 
     /**
-     * The injected OpenSearch REST high-level client. Bean produced by
-     * {@code com.awsm2.carddemo.config.OpenSearchConfig} with endpoint, TLS,
-     * and SigV4 (or HTTP basic auth in local profile) configuration. Held as
-     * {@code final} to make the field's thread-safety contract explicit: the
-     * reference is set once at construction by Spring's DI container and
-     * never reassigned.
+     * The injected modern typed OpenSearch client. Bean produced by
+     * {@code com.awsm2.carddemo.config.OpenSearchConfig} on top of
+     * {@code AwsSdk2Transport} with endpoint, TLS, and SigV4 (or HTTP basic
+     * auth in local profile) configuration. Held as {@code final} to make
+     * the field's thread-safety contract explicit: the reference is set once
+     * at construction by Spring's DI container and never reassigned.
      */
-    private final RestHighLevelClient openSearchClient;
+    private final OpenSearchClient openSearchClient;
 
     /**
      * Constructor injection only &mdash; per AAP &sect;0.3.3 Dependency
-     * Injection pattern. The {@link RestHighLevelClient} bean is supplied by
+     * Injection pattern. The {@link OpenSearchClient} bean is supplied by
      * {@code com.awsm2.carddemo.config.OpenSearchConfig}; Spring's container
      * resolves the dependency at startup. {@code final} field assignment
      * guarantees the client reference is immutable after construction.
      *
-     * @param openSearchClient the OpenSearch REST high-level client bean;
-     *                         must not be {@code null}
+     * @param openSearchClient the modern typed OpenSearch client bean; must
+     *                         not be {@code null}
      * @throws NullPointerException if {@code openSearchClient} is {@code null}
      *                              (defensive check; Spring DI normally
      *                              ensures a non-null instance, but explicit
      *                              validation here protects unit tests and
      *                              ad-hoc instantiations)
      */
-    public OpenSearchIndexer(RestHighLevelClient openSearchClient) {
+    public OpenSearchIndexer(OpenSearchClient openSearchClient) {
         this.openSearchClient = Objects.requireNonNull(openSearchClient,
                 "openSearchClient must not be null");
     }
@@ -275,24 +290,26 @@ public class OpenSearchIndexer {
      * Index a single structured document into the named OpenSearch index.
      *
      * <p>Per AAP &sect;0.6.6 the failure mode is best-effort with retry:
-     * IOException from the transport is wrapped as a typed
+     * transport-level {@link IOException} and service-level
+     * {@link OpenSearchException} are wrapped as a typed
      * {@link CardDemoException} so that {@code AuditLogService} can catch it
      * and buffer the failed event to a local SQS dead-letter queue for
-     * subsequent retry, without the OpenSearch client type leaking into the
-     * service layer.</p>
+     * subsequent retry, without the OpenSearch client type tree leaking into
+     * the service layer.</p>
      *
      * <p>The supplied {@code docId} should be deterministic (e.g., transaction
      * ID, audit UUID, or composite key) so that retries are idempotent and a
      * replayed event does not generate a duplicate document. OpenSearch
-     * upserts on matching IDs &mdash; the {@link DocWriteResponse.Result}
-     * return value distinguishes {@code CREATED} (new document) from
-     * {@code UPDATED} (overwrite).</p>
+     * upserts on matching IDs &mdash; the {@link Result} return value
+     * distinguishes {@link Result#Created} (new document) from
+     * {@link Result#Updated} (overwrite).</p>
      *
-     * <p>Document contents are serialized to JSON by the OpenSearch client.
-     * Field values may be primitives, strings, dates (via
-     * {@code java.time}), or nested {@link Map}s. The caller is responsible
-     * for scrubbing PII / primary account numbers from the map per AAP
-     * &sect;0.6.6 PCI-DSS discipline; this adapter performs no sanitization.</p>
+     * <p>Document contents are serialized to JSON by the OpenSearch client
+     * via the underlying Jackson mapper. Field values may be primitives,
+     * strings, dates (via {@code java.time}), or nested {@link Map}s. The
+     * caller is responsible for scrubbing PII / primary account numbers from
+     * the map per AAP &sect;0.6.6 PCI-DSS discipline; this adapter performs
+     * no sanitization.</p>
      *
      * @param indexName target OpenSearch index (e.g., {@code "carddemo-audit"},
      *                  {@code "carddemo-transactions"}). Must not be
@@ -303,21 +320,24 @@ public class OpenSearchIndexer {
      * @param document  structured fields as a {@code Map<String, Object>}
      *                  (will be JSON-serialized by the client). Must not be
      *                  {@code null} or empty.
-     * @return the {@link DocWriteResponse.Result} of the operation
-     *         ({@code CREATED}, {@code UPDATED}, {@code DELETED}, or
-     *         {@code NOOP}). Never {@code null} on successful return.
+     * @return the {@link Result} of the operation
+     *         ({@link Result#Created}, {@link Result#Updated},
+     *         {@link Result#Deleted}, {@link Result#NoOp}, or
+     *         {@link Result#NotFound}). Never {@code null} on successful
+     *         return.
      * @throws IllegalArgumentException if any argument is {@code null}, blank,
      *                                  or empty (programmer error, not a
      *                                  transient transport fault)
      * @throws CardDemoException with reason code
      *                           {@code OPENSEARCH_INDEX_ERROR} if the
      *                           OpenSearch transport throws an
-     *                           {@link IOException} during index
+     *                           {@link IOException} or the service returns
+     *                           an {@link OpenSearchException}
      */
     // Replaces: DISPLAY statements in CBTRN02C, COACTUPC, CBACT04C — now indexed for fraud investigation per AAP §0.6.6
-    public DocWriteResponse.Result indexDocument(String indexName,
-                                                 String docId,
-                                                 Map<String, Object> document) {
+    public Result indexDocument(String indexName,
+                                String docId,
+                                Map<String, Object> document) {
         // Validate arguments at the boundary so programmer errors fail fast and
         // are distinguishable from transient transport faults.
         if (indexName == null || indexName.isBlank()) {
@@ -331,21 +351,22 @@ public class OpenSearchIndexer {
         }
 
         try {
-            // Build the legacy IndexRequest. The .source(Map, XContentType.JSON)
-            // overload serializes the map as a JSON document body via the
-            // OpenSearch x-content layer.
-            IndexRequest request = new IndexRequest(indexName)
+            // Use the typed-client builder lambda form. The .document() setter
+            // hands the Map directly to the client's Jackson serializer; the
+            // typed client serializes the map to JSON internally — no explicit
+            // XContentType is required (legacy API artifact).
+            IndexResponse response = openSearchClient.index(i -> i
+                    .index(indexName)
                     .id(docId)
-                    .source(document, XContentType.JSON);
+                    .document(document));
 
-            IndexResponse response = openSearchClient.index(request, RequestOptions.DEFAULT);
-            DocWriteResponse.Result result = response.getResult();
+            Result result = response.result();
 
             LOG.debug("OpenSearch index OK index={} id={} result={} version={}",
-                    indexName, docId, result, response.getVersion());
+                    indexName, docId, result, response.version());
 
             return result;
-        } catch (IOException e) {
+        } catch (IOException | OpenSearchException e) {
             // PCI-DSS-safe logging: include index/id/cause only — never the
             // document body, which may carry PII (AAP §0.6.6).
             LOG.error("OpenSearch index FAILED index={} id={} cause={}",
@@ -375,16 +396,23 @@ public class OpenSearchIndexer {
      * <p>The {@code maxHits} parameter caps the result set size for safety:
      * if {@code null} or non-positive, the cap defaults to
      * {@value #DEFAULT_SEARCH_SIZE}. Callers requiring paginated retrieval
-     * beyond the cap should use OpenSearch's scroll API directly (not yet
-     * exposed through this adapter), but the typical fraud-investigation and
-     * compliance-report flows operate within the default cap.</p>
+     * beyond the cap should use OpenSearch's scroll or point-in-time APIs
+     * directly (not yet exposed through this adapter), but the typical
+     * fraud-investigation and compliance-report flows operate within the
+     * default cap.</p>
+     *
+     * <p>The {@link Query} argument is the typed-client DSL representation of
+     * a query (constructed via builder factories such as
+     * {@code Query.of(q -> q.match(...))}, {@code Query.of(q -> q.term(...))},
+     * etc.). When {@code null}, the request is sent without a query clause
+     * &mdash; OpenSearch returns documents from the index up to the
+     * resolved cap.</p>
      *
      * @param indexName index to search. Must not be {@code null} or blank.
-     * @param query     OpenSearch DSL {@link QueryBuilder} (may be
-     *                  {@code null} for a match-all behavior &mdash; in that
-     *                  case the request omits the {@code query} field and
-     *                  OpenSearch returns documents from the index up to
-     *                  {@code maxHits}).
+     * @param query     OpenSearch DSL {@link Query} (may be {@code null} for
+     *                  a match-all behavior &mdash; in that case the request
+     *                  omits the {@code query} field and OpenSearch returns
+     *                  documents from the index up to {@code maxHits}).
      * @param maxHits   maximum number of hits to return. If {@code null} or
      *                  non-positive, defaults to
      *                  {@value #DEFAULT_SEARCH_SIZE}.
@@ -397,11 +425,13 @@ public class OpenSearchIndexer {
      * @throws CardDemoException with reason code
      *                           {@code OPENSEARCH_SEARCH_ERROR} if the
      *                           OpenSearch transport throws an
-     *                           {@link IOException} during search
+     *                           {@link IOException} or the service returns
+     *                           an {@link OpenSearchException}
      */
     // Enables: regulatory queries, fraud investigation, compliance reports per AAP §0.6.6
+    @SuppressWarnings({"rawtypes", "unchecked"})
     public List<Map<String, Object>> search(String indexName,
-                                            QueryBuilder query,
+                                            Query query,
                                             Integer maxHits) {
         if (indexName == null || indexName.isBlank()) {
             throw new IllegalArgumentException("indexName must not be null or blank");
@@ -410,29 +440,35 @@ public class OpenSearchIndexer {
         // Resolve the requested cap: positive caller value, otherwise the
         // module default. This is a safety cap, not a hard limit — callers
         // requiring larger result sets should use the scroll API.
-        int size = (maxHits != null && maxHits.intValue() > 0)
+        final int size = (maxHits != null && maxHits.intValue() > 0)
                 ? maxHits.intValue()
                 : DEFAULT_SEARCH_SIZE;
 
         try {
-            SearchSourceBuilder sourceBuilder = new SearchSourceBuilder()
-                    .size(size);
-            if (query != null) {
-                sourceBuilder.query(query);
-            }
+            // Use the typed-client builder lambda form. We parameterize the
+            // response type on Map.class — the typed client deserializes
+            // each hit's source JSON into a Map<String, Object> via its
+            // Jackson mapper. The Class<Map> token resolves the TDocument
+            // type parameter to raw Map; the raw-type usage is intentional
+            // and covered by the method-level @SuppressWarnings above
+            // because Java's reflective Class<T> tokens cannot carry the
+            // value type parameter of a generic Map.
+            SearchResponse<Map> response = openSearchClient.search(s -> {
+                s.index(indexName).size(size);
+                if (query != null) {
+                    s.query(query);
+                }
+                return s;
+            }, Map.class);
 
-            SearchRequest request = new SearchRequest(indexName)
-                    .source(sourceBuilder);
-
-            SearchResponse response = openSearchClient.search(request, RequestOptions.DEFAULT);
-            SearchHit[] hits = response.getHits().getHits();
+            List<Hit<Map>> hits = response.hits().hits();
 
             // Materialize the source maps into a mutable, growable list using
             // ArrayList — the external_imports schema explicitly lists this
             // collection type for accumulating search-hit results.
-            List<Map<String, Object>> results = new ArrayList<>(hits.length);
-            for (SearchHit hit : hits) {
-                Map<String, Object> source = hit.getSourceAsMap();
+            List<Map<String, Object>> results = new ArrayList<>(hits.size());
+            for (Hit<Map> hit : hits) {
+                Map<String, Object> source = hit.source();
                 if (source != null) {
                     // Preserve insertion order on a per-document basis so
                     // downstream code (audit-log review, report generation)
@@ -443,19 +479,23 @@ public class OpenSearchIndexer {
                 } else {
                     // A hit without a source (rare — fields-only retrieval)
                     // returns an empty map so callers can still iterate the
-                    // hits collection without null checks.
+                    // results collection without null checks.
                     results.add(Collections.emptyMap());
                 }
             }
 
-            long totalHits = (response.getHits().getTotalHits() != null)
-                    ? response.getHits().getTotalHits().value
+            // The typed client's HitsMetadata.total() may be null if the
+            // search response omits the totals block. Guard for null and
+            // surface -1 as the "unknown" sentinel to keep log parsing
+            // straightforward.
+            long totalHits = (response.hits().total() != null)
+                    ? response.hits().total().value()
                     : -1L;
             LOG.debug("OpenSearch search OK index={} totalHits={} returned={}",
                     indexName, totalHits, results.size());
 
             return results;
-        } catch (IOException e) {
+        } catch (IOException | OpenSearchException e) {
             LOG.error("OpenSearch search FAILED index={} cause={}",
                     indexName, e.getMessage(), e);
             throw new CardDemoException(
@@ -479,9 +519,10 @@ public class OpenSearchIndexer {
      * because (a) batch jobs need to know how many succeeded so they can
      * retry only the failed subset, and (b) the OpenSearch bulk API returns
      * a structured response with per-item success / error indication. Only a
-     * transport-level {@link IOException} (the entire round-trip faulted)
-     * surfaces as {@link CardDemoException}. Partial failures are reflected
-     * in the {@code int} return value and logged at {@code WARN} level.</p>
+     * transport-level {@link IOException} or service-level
+     * {@link OpenSearchException} (the entire round-trip faulted) surfaces
+     * as {@link CardDemoException}. Partial failures are reflected in the
+     * {@code int} return value and logged at {@code WARN} level.</p>
      *
      * <p>An empty or {@code null} {@code documents} map is a no-op &mdash;
      * the method returns {@code 0} without contacting OpenSearch. This makes
@@ -504,7 +545,8 @@ public class OpenSearchIndexer {
      * @throws CardDemoException with reason code
      *                           {@code OPENSEARCH_BULK_INDEX_ERROR} if the
      *                           OpenSearch transport throws an
-     *                           {@link IOException} during the bulk round-trip
+     *                           {@link IOException} or the service returns
+     *                           an {@link OpenSearchException}
      */
     // Used by: batch jobs (TransactionReportService, StatementGenerationService) for high-volume audit emission
     public int bulkIndex(String indexName, Map<String, Map<String, Object>> documents) {
@@ -517,63 +559,86 @@ public class OpenSearchIndexer {
             return 0;
         }
 
+        // Pre-build the list of typed BulkOperation objects. Each entry is
+        // an "index" operation with its own id() and source document. The
+        // outer index() (set on the BulkRequest builder below) is not
+        // strictly required when each IndexOperation specifies its own
+        // index(), but we set it on both to keep the request explicit and
+        // resilient to per-entry omissions in callers.
+        List<BulkOperation> operations = new ArrayList<>(documents.size());
+        for (Map.Entry<String, Map<String, Object>> entry : documents.entrySet()) {
+            String id = entry.getKey();
+            Map<String, Object> doc = entry.getValue();
+
+            // Skip entries with blank IDs or null/empty document bodies
+            // rather than failing the whole bulk: malformed entries are
+            // logged and excluded from the count returned to the caller.
+            if (id == null || id.isBlank() || doc == null || doc.isEmpty()) {
+                LOG.warn("OpenSearch bulk index skipping malformed entry index={} id={}",
+                        indexName, id);
+                continue;
+            }
+
+            // Capture the entry values in effectively-final locals for use
+            // inside the nested IndexOperation builder lambda. The typed
+            // client's BulkOperation.Builder.index(Function<IndexOperation
+            // .Builder<TDocument>, ObjectBuilder<IndexOperation<TDocument>>>)
+            // overload accepts a lambda that configures the index operation.
+            final String docId = id;
+            final Map<String, Object> docBody = doc;
+
+            BulkOperation op = new BulkOperation.Builder()
+                    .index(io -> io
+                            .index(indexName)
+                            .id(docId)
+                            .document(docBody))
+                    .build();
+            operations.add(op);
+        }
+
+        // If every entry was malformed, short-circuit without contacting
+        // OpenSearch — same observable contract as an empty input.
+        if (operations.isEmpty()) {
+            LOG.warn("OpenSearch bulk index all entries malformed index={} count=0", indexName);
+            return 0;
+        }
+
         try {
-            BulkRequest bulkRequest = new BulkRequest();
-            int submittedCount = 0;
-            for (Map.Entry<String, Map<String, Object>> entry : documents.entrySet()) {
-                String id = entry.getKey();
-                Map<String, Object> doc = entry.getValue();
+            BulkRequest bulkRequest = new BulkRequest.Builder()
+                    .index(indexName)
+                    .operations(operations)
+                    .build();
 
-                // Skip entries with blank IDs or null/empty document bodies
-                // rather than failing the whole bulk: malformed entries are
-                // logged and excluded from the count returned to the caller.
-                if (id == null || id.isBlank() || doc == null || doc.isEmpty()) {
-                    LOG.warn("OpenSearch bulk index skipping malformed entry index={} id={}",
-                            indexName, id);
-                    continue;
-                }
+            BulkResponse bulkResponse = openSearchClient.bulk(bulkRequest);
 
-                IndexRequest indexRequest = new IndexRequest(indexName)
-                        .id(id)
-                        .source(doc, XContentType.JSON);
-                bulkRequest.add(indexRequest);
-                submittedCount++;
-            }
-
-            // If every entry was malformed, short-circuit without contacting
-            // OpenSearch — same observable contract as an empty input.
-            if (submittedCount == 0) {
-                LOG.warn("OpenSearch bulk index all entries malformed index={} count=0", indexName);
-                return 0;
-            }
-
-            BulkResponse bulkResponse = openSearchClient.bulk(bulkRequest, RequestOptions.DEFAULT);
-            BulkItemResponse[] items = bulkResponse.getItems();
-
+            // BulkResponse.items() returns a non-null List<BulkResponseItem>
+            // per the typed-client contract. Iterate to count successes
+            // (item.error() == null) vs failures (item.error() != null).
+            List<BulkResponseItem> items = bulkResponse.items();
             int successCount = 0;
             int errorCount = 0;
-            for (BulkItemResponse item : items) {
-                if (item.isFailed()) {
+            for (BulkResponseItem item : items) {
+                if (item.error() != null) {
                     errorCount++;
                 } else {
                     successCount++;
                 }
             }
 
-            if (errorCount > 0) {
+            if (errorCount > 0 || bulkResponse.errors()) {
                 // Surface partial failure at WARN — the caller (batch job)
                 // will inspect the return count and decide whether to retry
                 // the failed subset. We do not throw here because batch jobs
                 // need a numeric success count, not an exception.
                 LOG.warn("OpenSearch bulk index partial failure index={} success={} errors={} hasFailures={}",
-                        indexName, successCount, errorCount, bulkResponse.hasFailures());
+                        indexName, successCount, errorCount, bulkResponse.errors());
             } else {
                 LOG.debug("OpenSearch bulk index OK index={} count={}", indexName, successCount);
             }
 
             return successCount;
-        } catch (IOException e) {
-            // PCI-DSS-safe logging: include only counts and the IOException
+        } catch (IOException | OpenSearchException e) {
+            // PCI-DSS-safe logging: include only counts and the exception
             // message — never document bodies (AAP §0.6.6).
             LOG.error("OpenSearch bulk index FAILED index={} count={} cause={}",
                     indexName, documents.size(), e.getMessage(), e);
