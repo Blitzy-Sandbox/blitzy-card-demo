@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.blitzy.carddemo</groupId>
+        <artifactId>carddemo-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>carddemo-tests</artifactId>
+    <packaging>jar</packaging>
+
+    <name>CardDemo Tests</name>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <!-- This module only hosts tests; no main jar is produced. -->
+                    <skipIfEmpty>true</skipIfEmpty>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+    <description>
+        Cross-module test harness:
+          - Golden-record parity tests (byte-for-byte vs. captured COBOL output)
+          - jqwik property-based tests (100% coverage on monetary code per AAP §0.6.1)
+          - JFR-based performance regression baselines (no regression beyond 10% band)
+        Golden fixtures live under src/test/resources/golden/&lt;program&gt;/.
+    </description>
+
+    <dependencies>
+        <!-- Test the full app stack -->
+        <dependency>
+            <groupId>com.blitzy.carddemo</groupId>
+            <artifactId>carddemo-domain</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.blitzy.carddemo</groupId>
+            <artifactId>carddemo-application</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.blitzy.carddemo</groupId>
+            <artifactId>carddemo-adapter-file</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.blitzy.carddemo</groupId>
+            <artifactId>carddemo-adapter-db</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.blitzy.carddemo</groupId>
+            <artifactId>carddemo-batch</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>net.jqwik</groupId>
+            <artifactId>jqwik</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

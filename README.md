@@ -322,3 +322,19 @@ Watch this space for updates
 <br/>
 
 
+
+## Java 25 Implementation
+
+A source-to-source migration of this application to **Java 25 LTS** is under way
+in a sibling top-level tree at [`java/`](java/README.md). It is a hexagonal
+Maven multi-module build that translates every COBOL program, copybook, BMS
+map, symbolic copybook, and JCL job into Java records, sealed interfaces,
+application classes, and main entry points respectively.
+
+The original COBOL source tree at [`app/`](app/) **remains unmodified** and
+serves as the immutable **reference implementation** plus the source of
+golden-record test fixtures for the Java baseline. See
+[`java/README.md`](java/README.md) for build and run instructions and
+[`java/MIGRATION_NOTES.md`](java/MIGRATION_NOTES.md) for the migration log.
+
+<br/>

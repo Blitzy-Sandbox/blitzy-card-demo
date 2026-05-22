@@ -1,0 +1,71 @@
+###############################################################################
+# CardDemo application.properties — template
+#
+# Per AAP §0.7.2, runtime configuration follows the 12-factor approach:
+#   - copy this file to ``application.properties`` and edit, or
+#   - set values via the equivalent environment variables (see CARDDEMO_ENV_*).
+#
+# Every key documented here is the **single source of truth** for downstream
+# code-generation agents.
+###############################################################################
+
+# ----------------------------------------------------------------------------
+# Data file roots
+# ----------------------------------------------------------------------------
+# Default: read the in-repo fixtures shipped under ../app/data/ASCII/ relative
+# to the working directory the program is launched from.
+carddemo.data.root=../app/data/ASCII
+carddemo.data.output.root=./out
+
+# Per-dataset overrides (uncomment to use)
+# carddemo.file.acctdata.path=../app/data/ASCII/acctdata.txt
+# carddemo.file.carddata.path=../app/data/ASCII/carddata.txt
+# carddemo.file.cardxref.path=../app/data/ASCII/cardxref.txt
+# carddemo.file.custdata.path=../app/data/ASCII/custdata.txt
+# carddemo.file.dailytran.path=../app/data/ASCII/dailytran.txt
+# carddemo.file.discgrp.path=../app/data/ASCII/discgrp.txt
+# carddemo.file.tcatbal.path=../app/data/ASCII/tcatbal.txt
+# carddemo.file.trancatg.path=../app/data/ASCII/trancatg.txt
+# carddemo.file.trantype.path=../app/data/ASCII/trantype.txt
+
+# ----------------------------------------------------------------------------
+# Codepage selection (per file)
+# ----------------------------------------------------------------------------
+# Default codepage for EBCDIC datasets; the 9 ASCII fixtures shipped under
+# ../app/data/ASCII/ are pre-transcoded for test convenience.
+carddemo.charset.default=IBM-1047
+
+# Per-file overrides — only set when a single file differs from the default.
+# carddemo.file.acctdata.charset=US-ASCII
+# carddemo.file.carddata.charset=US-ASCII
+
+# ----------------------------------------------------------------------------
+# Batch run context (ScopedValue carrier)
+# ----------------------------------------------------------------------------
+# These values are bound into the BatchRunContext ScopedValue at process entry
+# per AAP §0.6.6. They are NOT thread-locals.
+carddemo.batch.run.id=
+carddemo.batch.processing.date=
+carddemo.batch.tenant=default
+
+# ----------------------------------------------------------------------------
+# Optional JDBC adapter (carddemo-adapter-db) — empty by default
+# ----------------------------------------------------------------------------
+# Only set when a DB2 / relational adapter is required. File-based batch is
+# the default per AAP §0.6.12.
+# carddemo.jdbc.url=
+# carddemo.jdbc.user=
+# carddemo.jdbc.password=
+
+# ----------------------------------------------------------------------------
+# Logging
+# ----------------------------------------------------------------------------
+# Standard Logback configuration is read from carddemo-app/src/main/resources/
+# logback.xml at launch (auto-detected). To override, set:
+#   -Dlogback.configurationFile=/path/to/your/logback.xml
+# on the java command line.
+#
+# PCI mandate per AAP §0.7.2: no card PAN may be logged in full; downstream
+# code-generation agents must mask all but the last 4 digits in log statements
+# and error messages.
+carddemo.logging.pan.mask.enabled=true

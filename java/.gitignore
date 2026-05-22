@@ -1,0 +1,35 @@
+# Maven build artifacts
+target/
+**/target/
+
+# IDE settings
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+.metadata/
+bin/
+out/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Java Flight Recorder output (kept out of git; produced by JFR baseline tests at AAP §0.6.11)
+*.jfr
+
+# jqwik failure-replay database (test runtime artifact)
+.jqwik-database
+**/.jqwik-database
+
+# Local application overrides (template is application.properties.example, committed)
+application.properties

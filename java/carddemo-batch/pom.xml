@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.blitzy.carddemo</groupId>
+        <artifactId>carddemo-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>carddemo-batch</artifactId>
+    <packaging>jar</packaging>
+
+    <name>CardDemo Batch</name>
+    <description>
+        Batch drivers that compose use cases from carddemo-application.
+        Virtual-thread fan-out for per-record work that is provably reorder-safe.
+        ScopedValue propagates batch-run context (run ID, processing date, tenant)
+        per AAP §0.6.6 — ThreadLocal is forbidden in new code.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.blitzy.carddemo</groupId>
+            <artifactId>carddemo-application</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
