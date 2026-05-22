@@ -83,7 +83,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     verified end-to-end while the runtime DB execution awaits its
 //     production-side dependencies.
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -459,26 +458,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @see TestFixtures.Customers
  */
 @DisplayName("CustomerRepository — CUSTREC.cpy / CVCUS01Y.cpy migration parity ITs")
-@Disabled("Awaits production-side prerequisites: (1) @Entity / @Id / @Column / "
-        + "@Version / @Table(name = \"customers\") annotations on "
-        + "com.aws.carddemo.entity.Customer so Hibernate can map the entity onto a "
-        + "PostgreSQL table — column widths must mirror the COBOL CUSTREC.cpy / "
-        + "CVCUS01Y.cpy PIC clauses (cust_id CHAR(9) PK, first_name/middle_name/"
-        + "last_name VARCHAR(25), addr_line_1/2/3 VARCHAR(50), addr_state_cd "
-        + "CHAR(2), addr_country_cd CHAR(3), addr_zip VARCHAR(10), phone_num_1/2 "
-        + "VARCHAR(15), ssn CHAR(9), govt_issued_id VARCHAR(20), dob_yyyy_mm_dd "
-        + "CHAR(10), eft_account_id VARCHAR(10), pri_card_holder_ind CHAR(1), "
-        + "fico_credit_score INTEGER); (2) Flyway V1__schema.sql under "
-        + "src/main/resources/db/migration/ creating the customers table with the "
-        + "schema above plus a version BIGINT column for JPA optimistic locking; "
-        + "(3) Flyway V3__seed.sql (optional — every test in this IT seeds its own "
-        + "customers via the inherited TestEntityManager; a project-wide seed of "
-        + "50 rows from app/data/ASCII/custdata.txt is documented in AAP §0.5.1 "
-        + "but is not strictly required to activate this class). Per AAP §0.8.1 "
-        + "the testing flavor cannot modify those production files for testability "
-        + "alone; the next REFACTOR-flavor agent removes this annotation when the "
-        + "prerequisites are complete. See the class Javadoc 'Reactivation "
-        + "Checklist' for the full list.")
 class CustomerRepositoryIT extends AbstractRepositoryIT {
 
     /**

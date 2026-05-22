@@ -16,6 +16,13 @@
  */
 package com.aws.carddemo.entity;
 
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import jakarta.persistence.Version;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import java.util.Objects;
 
 /**
@@ -89,6 +96,8 @@ import java.util.Objects;
  * @see com.aws.carddemo.service.AccountViewService
  * @see com.aws.carddemo.repository.CustomerRepository
  */
+@Entity
+@Table(name = "customers")
 public class Customer {
 
     /**
@@ -96,21 +105,29 @@ public class Customer {
      * ({@code PIC 9(09)}). Zero-padded numeric string
      * (e.g. {@code "000000001"}).
      */
+    @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "cust_id", columnDefinition = "CHAR(9)", nullable = false, length = 9)
     private String customerId;
 
     /** {@code CUST-FIRST-NAME} per {@code CUSTREC.cpy} ({@code PIC X(25)}). */
+    @Column(name = "first_name", length = 25)
     private String firstName;
 
     /** {@code CUST-MIDDLE-NAME} per {@code CUSTREC.cpy} ({@code PIC X(25)}). */
+    @Column(name = "middle_name", length = 25)
     private String middleName;
 
     /** {@code CUST-LAST-NAME} per {@code CUSTREC.cpy} ({@code PIC X(25)}). */
+    @Column(name = "last_name", length = 25)
     private String lastName;
 
     /** {@code CUST-ADDR-LINE-1} per {@code CUSTREC.cpy} ({@code PIC X(50)}). */
+    @Column(name = "addr_line_1", length = 50)
     private String addressLine1;
 
     /** {@code CUST-ADDR-LINE-2} per {@code CUSTREC.cpy} ({@code PIC X(50)}). */
+    @Column(name = "addr_line_2", length = 50)
     private String addressLine2;
 
     /**
@@ -118,21 +135,29 @@ public class Customer {
      * COBOL uses this slot for the city; the field name preserves the
      * source-of-truth label rather than introducing a {@code city} alias.
      */
+    @Column(name = "addr_line_3", length = 50)
     private String addressLine3;
 
     /** {@code CUST-ADDR-STATE-CD} per {@code CUSTREC.cpy} ({@code PIC X(02)}). */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "addr_state_cd", columnDefinition = "CHAR(2)", length = 2)
     private String addressStateCode;
 
     /** {@code CUST-ADDR-COUNTRY-CD} per {@code CUSTREC.cpy} ({@code PIC X(03)}). */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "addr_country_cd", columnDefinition = "CHAR(3)", length = 3)
     private String addressCountryCode;
 
     /** {@code CUST-ADDR-ZIP} per {@code CUSTREC.cpy} ({@code PIC X(10)}). */
+    @Column(name = "addr_zip", length = 10)
     private String addressZip;
 
     /** {@code CUST-PHONE-NUM-1} per {@code CUSTREC.cpy} ({@code PIC X(15)}). */
+    @Column(name = "phone_num_1", length = 15)
     private String phoneNumber1;
 
     /** {@code CUST-PHONE-NUM-2} per {@code CUSTREC.cpy} ({@code PIC X(15)}). */
+    @Column(name = "phone_num_2", length = 15)
     private String phoneNumber2;
 
     /**
@@ -141,6 +166,8 @@ public class Customer {
      * the JPA attribute converter (added by REFACTOR-flavor agents) will
      * persist the value as AES-GCM ciphertext.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "ssn", columnDefinition = "CHAR(9)", length = 9)
     private String ssn;
 
     /**
@@ -148,6 +175,7 @@ public class Customer {
      * Driver's licence number or equivalent government-issued identifier;
      * subject to the same encryption-at-rest policy as {@link #ssn}.
      */
+    @Column(name = "govt_issued_id", length = 20)
     private String governmentIssuedId;
 
     /**
@@ -157,9 +185,12 @@ public class Customer {
      * field {@code CUST-DOB-YYYYMMDD} (no separators); the migration uses the
      * separated form that CVCUS01Y standardised on for ISO compatibility.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "dob_yyyy_mm_dd", columnDefinition = "CHAR(10)", length = 10)
     private String dateOfBirth;
 
     /** {@code CUST-EFT-ACCOUNT-ID} per {@code CUSTREC.cpy} ({@code PIC X(10)}). */
+    @Column(name = "eft_account_id", length = 10)
     private String eftAccountId;
 
     /**
@@ -167,6 +198,8 @@ public class Customer {
      * ({@code PIC X(01)}). {@code 'Y'} for primary card holder, {@code 'N'}
      * for secondary.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "pri_card_holder_ind", columnDefinition = "CHAR(1)", length = 1)
     private String primaryCardHolderIndicator;
 
     /**
@@ -174,13 +207,15 @@ public class Customer {
      * Range 300–850; nullable to represent a customer whose FICO has never
      * been pulled (COBOL {@code LOW-VALUES} sentinel).
      */
+    @Column(name = "fico_credit_score")
     private Integer ficoCreditScore;
 
     /**
      * JPA optimistic-locking version. Incremented by Hibernate on each
-     * {@code save()} once the {@code @Version} annotation is added by
-     * subsequent REFACTOR-flavor agents.
+     * {@code save()}.
      */
+    @Version
+    @Column(name = "version", nullable = false)
     private Long version;
 
     /** Default no-arg constructor (required by JPA reflection-based instantiation). */

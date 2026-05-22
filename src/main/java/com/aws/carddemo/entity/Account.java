@@ -16,6 +16,13 @@
  */
 package com.aws.carddemo.entity;
 
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import jakarta.persistence.Version;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import java.math.BigDecimal;
 import java.util.Objects;
 
@@ -84,6 +91,8 @@ import java.util.Objects;
  * @see com.aws.carddemo.service.AccountViewService
  * @see com.aws.carddemo.repository.AccountRepository
  */
+@Entity
+@Table(name = "accounts")
 public class Account {
 
     /**
@@ -92,6 +101,9 @@ public class Account {
      * (e.g. {@code "00000000010"}) to preserve the COBOL key format byte-for-byte
      * across VSAM-to-PostgreSQL migration.
      */
+    @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "acct_id", columnDefinition = "CHAR(11)", nullable = false, length = 11)
     private String accountId;
 
     /**
@@ -99,6 +111,8 @@ public class Account {
      * ({@code PIC X(01)}). Conventionally {@code 'Y'} (active) or {@code 'N'}
      * (inactive); other values are reserved for future use.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "active_status", columnDefinition = "CHAR(1)", nullable = false, length = 1)
     private String activeStatus;
 
     /**
@@ -106,18 +120,21 @@ public class Account {
      * ({@code PIC S9(10)V99}). Always a {@link BigDecimal} with scale 2 per
      * AAP §0.10.3 financial-precision mandate.
      */
+    @Column(name = "curr_bal", precision = 12, scale = 2, nullable = false)
     private BigDecimal currentBalance;
 
     /**
      * {@code ACCT-CREDIT-LIMIT} — total credit limit per {@code CVACT01Y.cpy}
      * ({@code PIC S9(10)V99}). {@link BigDecimal} scale 2.
      */
+    @Column(name = "credit_limit", precision = 12, scale = 2, nullable = false)
     private BigDecimal creditLimit;
 
     /**
      * {@code ACCT-CASH-CREDIT-LIMIT} — cash advance limit per {@code CVACT01Y.cpy}
      * ({@code PIC S9(10)V99}). {@link BigDecimal} scale 2.
      */
+    @Column(name = "cash_credit_limit", precision = 12, scale = 2, nullable = false)
     private BigDecimal cashCreditLimit;
 
     /**
@@ -125,6 +142,7 @@ public class Account {
      * billing cycle per {@code CVACT01Y.cpy} ({@code PIC S9(10)V99}).
      * {@link BigDecimal} scale 2.
      */
+    @Column(name = "curr_cyc_credit", precision = 12, scale = 2, nullable = false)
     private BigDecimal currentCycleCredit;
 
     /**
@@ -132,6 +150,7 @@ public class Account {
      * cycle per {@code CVACT01Y.cpy} ({@code PIC S9(10)V99}).
      * {@link BigDecimal} scale 2.
      */
+    @Column(name = "curr_cyc_debit", precision = 12, scale = 2, nullable = false)
     private BigDecimal currentCycleDebit;
 
     /**
@@ -139,6 +158,8 @@ public class Account {
      * ({@code PIC X(10)}). Stored as an ISO-style {@code YYYY-MM-DD} string to
      * preserve the COBOL record format.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "open_date", columnDefinition = "CHAR(10)", length = 10)
     private String openDate;
 
     /**
@@ -149,12 +170,16 @@ public class Account {
      * {@link #expirationDate}; record-layout serialisation handles the COBOL
      * mapping.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "expiration_date", columnDefinition = "CHAR(10)", length = 10)
     private String expirationDate;
 
     /**
      * {@code ACCT-REISSUE-DATE} — most recent card reissue date per
      * {@code CVACT01Y.cpy} ({@code PIC X(10)}). ISO-style {@code YYYY-MM-DD}.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "reissue_date", columnDefinition = "CHAR(10)", length = 10)
     private String reissueDate;
 
     /**
@@ -162,6 +187,7 @@ public class Account {
      * {@code CVACT01Y.cpy} ({@code PIC X(10)}). String to preserve leading
      * zeros (e.g. {@code "00501"} is a valid US ZIP).
      */
+    @Column(name = "addr_zip", length = 10)
     private String addressZip;
 
     /**
@@ -170,6 +196,7 @@ public class Account {
      * calculation) to look up the discount group's APR rate; {@code "DEFAULT   "}
      * triggers the DEFAULT-group fallback path.
      */
+    @Column(name = "group_id", length = 10)
     private String groupId;
 
     /**
@@ -179,16 +206,19 @@ public class Account {
      * can look up the customer directly without re-reading the
      * {@code CARDAIX} cross-reference.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "customer_id", columnDefinition = "CHAR(9)", length = 9)
     private String customerId;
 
     /**
      * JPA optimistic-locking version. Replaces COBOL's before/after-image record
      * comparison used by {@code COACTUPC.cbl}; incremented automatically by
-     * Hibernate on each {@code save()} once the {@code @Version} annotation is
-     * added by subsequent REFACTOR-flavor agents. Read-only paths in
+     * Hibernate on each {@code save()}. Read-only paths in
      * {@link com.aws.carddemo.service.AccountViewService} do not mutate this
      * field.
      */
+    @Version
+    @Column(name = "version", nullable = false)
     private Long version;
 
     /** Default no-arg constructor (required by JPA reflection-based instantiation). */

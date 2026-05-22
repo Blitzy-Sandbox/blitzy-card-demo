@@ -106,7 +106,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     compile-time wiring is verified end-to-end while the runtime DB
 //     execution awaits its production-side dependencies.
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -562,28 +561,6 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * @see TestFixtures.Accounts
  */
 @DisplayName("AccountRepository — CVACT01Y.cpy migration parity ITs")
-@Disabled("Awaits production-side prerequisites: (1) @Entity / @Id / @Column / "
-        + "@Version / @Table(name = \"accounts\") annotations on "
-        + "com.aws.carddemo.entity.Account so Hibernate can map the entity onto a "
-        + "PostgreSQL table — column widths must mirror the COBOL CVACT01Y.cpy "
-        + "PIC clauses (acct_id CHAR(11) PK, active_status CHAR(1), curr_bal / "
-        + "credit_limit / cash_credit_limit / curr_cyc_credit / curr_cyc_debit "
-        + "NUMERIC(12, 2) for PIC S9(10)V99 with scale 2, open_date / "
-        + "expiration_date / reissue_date CHAR(10) for PIC X(10) ISO YYYY-MM-DD "
-        + "strings, addr_zip / group_id VARCHAR(10), customer_id CHAR(9) for the "
-        + "denormalised Java-migration FK, version BIGINT for JPA optimistic "
-        + "locking); (2) Flyway V1__schema.sql under "
-        + "src/main/resources/db/migration/ creating the accounts table with the "
-        + "schema above; (3) Flyway V3__seed.sql (optional — every test in this "
-        + "IT seeds its own accounts via the inherited TestEntityManager; a "
-        + "project-wide seed of 50 rows from app/data/ASCII/acctdata.txt is "
-        + "documented in AAP §0.5.1 but is not strictly required to activate "
-        + "this class). Per AAP §0.8.1 the testing flavor cannot modify those "
-        + "production files for testability alone; the next REFACTOR-flavor "
-        + "agent removes this annotation when the prerequisites are complete. "
-        + "See the class Javadoc 'Reactivation Checklist' for the full list "
-        + "including the deferred custom-finder (by customer ID, by active "
-        + "status) tests.")
 class AccountRepositoryIT extends AbstractRepositoryIT {
 
     /**

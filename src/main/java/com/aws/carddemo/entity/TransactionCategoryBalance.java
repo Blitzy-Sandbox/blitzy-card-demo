@@ -16,6 +16,10 @@
  */
 package com.aws.carddemo.entity;
 
+import jakarta.persistence.Column;
+import jakarta.persistence.EmbeddedId;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Table;
 import java.math.BigDecimal;
 import java.util.Objects;
 
@@ -136,17 +140,19 @@ import java.util.Objects;
  * @see TransactionCategoryBalanceKey
  * @see com.aws.carddemo.repository.TransactionCategoryBalanceRepository
  */
+@Entity
+@Table(name = "transaction_category_balances")
 public class TransactionCategoryBalance {
 
     /**
      * Composite primary key holding the
      * {@code (TRANCAT-ACCT-ID, TRANCAT-TYPE-CD, TRANCAT-CD)} 3-tuple.
-     * The REFACTOR-flavor migration agent will annotate this field with
-     * {@code @EmbeddedId} once the persistence wiring lands; Hibernate
-     * will then materialise the value object from the three key columns
-     * of the {@code transaction_category_balances} table on every read
-     * and decompose it back into the three columns on every write.
+     * The {@link EmbeddedId} annotation tells Hibernate to materialise
+     * the value object from the three key columns of the
+     * {@code transaction_category_balances} table on every read and to
+     * decompose it back into the three columns on every write.
      */
+    @EmbeddedId
     private TransactionCategoryBalanceKey key;
 
     /**
@@ -166,6 +172,7 @@ public class TransactionCategoryBalance {
      * column type {@code NUMERIC(11, 2)} preserves both the precision
      * and the scale at the storage boundary.
      */
+    @Column(name = "tran_cat_bal", precision = 11, scale = 2, nullable = false)
     private BigDecimal tranCatBal;
 
     /**

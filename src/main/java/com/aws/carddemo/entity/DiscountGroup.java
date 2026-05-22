@@ -16,6 +16,10 @@
  */
 package com.aws.carddemo.entity;
 
+import jakarta.persistence.Column;
+import jakarta.persistence.EmbeddedId;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Table;
 import java.math.BigDecimal;
 import java.util.Objects;
 
@@ -139,17 +143,19 @@ import java.util.Objects;
  * @see DiscountGroupKey
  * @see com.aws.carddemo.repository.DiscountGroupRepository
  */
+@Entity
+@Table(name = "discount_groups")
 public class DiscountGroup {
 
     /**
      * Composite primary key holding the
      * {@code (DIS-ACCT-GROUP-ID, DIS-TRAN-TYPE-CD, DIS-TRAN-CAT-CD)} tuple.
-     * The REFACTOR-flavor migration agent will annotate this field with
-     * {@code @EmbeddedId} once the persistence wiring lands; Hibernate
-     * will then materialise the value object from the three key columns
-     * of the {@code discount_groups} table on every read and decompose it
-     * back into the three columns on every write.
+     * The {@link EmbeddedId} annotation tells Hibernate to materialise the
+     * value object from the three key columns of the {@code discount_groups}
+     * table on every read and to decompose it back into the three columns
+     * on every write.
      */
+    @EmbeddedId
     private DiscountGroupKey key;
 
     /**
@@ -173,6 +179,7 @@ public class DiscountGroup {
      * Flyway DDL must declare it that way to honour the COBOL
      * {@code PIC S9(04)V99} contract byte-for-byte.
      */
+    @Column(name = "dis_int_rate", precision = 6, scale = 2, nullable = false)
     private BigDecimal disIntRate;
 
     /**

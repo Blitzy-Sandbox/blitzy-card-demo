@@ -21,6 +21,8 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.util.Optional;
+
 /**
  * Spring Data JPA repository for {@link SecurityUser} entities — the Java
  * replacement for COBOL {@code EXEC CICS READ DATASET('USRSEC') RIDFLD(WS-USER-ID)}
@@ -142,4 +144,28 @@ public interface UserSecurityRepository extends JpaRepository<SecurityUser, Stri
      *         {@link com.aws.carddemo.service.UserListResponse}.
      */
     Page<SecurityUser> findByUserType(String userType, Pageable pageable);
+
+    /**
+     * Returns the {@link SecurityUser} whose {@code user_id} primary key matches
+     * the supplied {@code userId}. Semantically equivalent to the inherited
+     * {@link #findById(Object)} (because {@code user_id} is the entity's
+     * {@code @Id} column), this method is exposed under the explicit
+     * {@code findByUserId} name to satisfy AAP §0.5.1 documentation parity:
+     * the AAP specifies a custom query method by that name on this repository.
+     *
+     * <p>The COBOL equivalent is the {@code READ-USER-SEC-FILE} paragraph in
+     * {@code app/cbl/COSGN00C.cbl} (lines 209–257) — a single-key VSAM
+     * {@code READ DATASET('USRSEC') RIDFLD(WS-USER-ID)}.
+     *
+     * <p>Spring Data resolves this method via property-driven derivation:
+     * {@code findBy + UserId} → {@code SELECT u FROM SecurityUser u WHERE
+     * u.userId = :userId}. No {@code @Query} annotation is required.
+     *
+     * @param userId the 8-character {@code SEC-USR-ID PIC X(08)} primary key
+     *               value; must not be {@code null}.
+     * @return {@code Optional.of(user)} when a matching row exists,
+     *         {@code Optional.empty()} otherwise.
+     * @see #findById(Object)
+     */
+    Optional<SecurityUser> findByUserId(String userId);
 }

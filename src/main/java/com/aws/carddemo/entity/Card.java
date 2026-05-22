@@ -16,6 +16,13 @@
  */
 package com.aws.carddemo.entity;
 
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import jakarta.persistence.Version;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import java.util.Objects;
 
 /**
@@ -79,6 +86,8 @@ import java.util.Objects;
  * @see com.aws.carddemo.service.CardDetailService
  * @see com.aws.carddemo.repository.CardRepository
  */
+@Entity
+@Table(name = "cards")
 public class Card {
 
     /**
@@ -87,6 +96,9 @@ public class Card {
      * {@code 4111111111111101}–{@code 4111111111111150} in the fixture
      * dataset).
      */
+    @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "card_num", columnDefinition = "CHAR(16)", nullable = false, length = 16)
     private String cardNumber;
 
     /**
@@ -96,6 +108,8 @@ public class Card {
      * numeric value; the Java migration carries it as a fixed-width
      * zero-padded string to preserve the byte-for-byte VSAM key format.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "card_acct_id", columnDefinition = "CHAR(11)", nullable = false, length = 11)
     private String accountId;
 
     /**
@@ -106,6 +120,8 @@ public class Card {
      * per AAP §0.10.5 — the {@link #toString()} method explicitly omits
      * this field.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "card_cvv_cd", columnDefinition = "CHAR(3)", length = 3)
     private String cvvCode;
 
     /**
@@ -114,6 +130,7 @@ public class Card {
      * embossed on the credit card (typically {@code "FIRSTNAME LASTNAME"}
      * with trailing spaces to fill the field width).
      */
+    @Column(name = "card_embossed_name", length = 50)
     private String embossedName;
 
     /**
@@ -129,6 +146,8 @@ public class Card {
      * enhancement that did not exist in COBOL but is needed for the REST
      * API contract.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "card_expiration_date", columnDefinition = "CHAR(10)", length = 10)
     private String expirationDate;
 
     /**
@@ -138,17 +157,19 @@ public class Card {
      * future use. Drives reject-code paths in posting workflows
      * ({@code CBTRN02C}: inactive cards rejected with code 102).
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "card_active_status", columnDefinition = "CHAR(1)", nullable = false, length = 1)
     private String activeStatus;
 
     /**
      * JPA optimistic-locking version. Replaces COBOL's before/after-image
      * record comparison used by {@code COCRDUPC.cbl}; incremented
-     * automatically by Hibernate on each {@code save()} once the
-     * {@code @Version} annotation is added by subsequent REFACTOR-flavor
-     * agents. Read-only paths in
+     * automatically by Hibernate on each {@code save()}. Read-only paths in
      * {@link com.aws.carddemo.service.CardDetailService} do not mutate this
      * field.
      */
+    @Version
+    @Column(name = "version", nullable = false)
     private Long version;
 
     /** Default no-arg constructor (required by JPA reflection-based instantiation). */

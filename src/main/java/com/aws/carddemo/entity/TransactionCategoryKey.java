@@ -16,6 +16,10 @@
  */
 package com.aws.carddemo.entity;
 
+import jakarta.persistence.Column;
+import jakarta.persistence.Embeddable;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import java.io.Serializable;
 import java.util.Objects;
 
@@ -115,6 +119,7 @@ import java.util.Objects;
  * @see TransactionCategory
  * @see com.aws.carddemo.repository.TransactionCategoryRepository
  */
+@Embeddable
 public class TransactionCategoryKey implements Serializable {
 
     /**
@@ -138,6 +143,8 @@ public class TransactionCategoryKey implements Serializable {
      * code so the {@code TRAN-CAT-RECORD} can be resolved to a human-readable
      * type label via {@link TransactionType#getTranTypeDesc()}.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "tran_type_cd", columnDefinition = "CHAR(2)", nullable = false, length = 2)
     private String tranTypeCd;
 
     /**
@@ -151,6 +158,7 @@ public class TransactionCategoryKey implements Serializable {
      * layer (Flyway DDL + JDBC driver) is responsible for the zero-padded
      * rendering at the storage and presentation boundaries.
      */
+    @Column(name = "tran_cat_cd", nullable = false)
     private Integer tranCatCd;
 
     /**

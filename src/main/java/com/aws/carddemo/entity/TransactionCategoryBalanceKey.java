@@ -16,6 +16,10 @@
  */
 package com.aws.carddemo.entity;
 
+import jakarta.persistence.Column;
+import jakarta.persistence.Embeddable;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import java.io.Serializable;
 import java.util.Objects;
 
@@ -130,6 +134,7 @@ import java.util.Objects;
  * @see TransactionCategoryBalance
  * @see com.aws.carddemo.repository.TransactionCategoryBalanceRepository
  */
+@Embeddable
 public class TransactionCategoryBalanceKey implements Serializable {
 
     /**
@@ -152,6 +157,8 @@ public class TransactionCategoryBalanceKey implements Serializable {
      * {@code TRAN-CAT-BAL-RECORD} can be resolved to a parent account
      * via {@link Account#getAccountId()}.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "trancat_acct_id", columnDefinition = "CHAR(11)", nullable = false, length = 11)
     private String trancatAcctId;
 
     /**
@@ -162,6 +169,8 @@ public class TransactionCategoryBalanceKey implements Serializable {
      * Each value identifies a {@link TransactionType} reference row keyed
      * by the same 2-character primary key.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "trancat_type_cd", columnDefinition = "CHAR(2)", nullable = false, length = 2)
     private String trancatTypeCd;
 
     /**
@@ -175,6 +184,7 @@ public class TransactionCategoryBalanceKey implements Serializable {
      * layer (Flyway DDL + JDBC driver) is responsible for the zero-padded
      * rendering at the storage and presentation boundaries.
      */
+    @Column(name = "trancat_cd", nullable = false)
     private Integer trancatCd;
 
     /**

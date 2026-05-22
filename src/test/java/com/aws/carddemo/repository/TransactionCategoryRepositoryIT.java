@@ -82,7 +82,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     wiring is verified end-to-end while the runtime DB execution
 //     awaits its production-side dependencies.
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -363,19 +362,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @see TestFixtures.Transactions
  */
 @DisplayName("TransactionCategoryRepository — CVTRA04Y.cpy / trancatg.txt composite-key ITs")
-@Disabled("Awaits production-side prerequisites: (1) @Embeddable on "
-        + "com.aws.carddemo.entity.TransactionCategoryKey so Hibernate can use it as an "
-        + "@EmbeddedId target; (2) @Entity / @EmbeddedId / @Column / "
-        + "@Table(name = \"transaction_categories\") annotations on "
-        + "com.aws.carddemo.entity.TransactionCategory so Hibernate can map the entity onto a "
-        + "PostgreSQL table; (3) Flyway V1__schema.sql under src/main/resources/db/migration/ "
-        + "creating the transaction_categories table (tran_type_cd CHAR(2), tran_cat_cd INTEGER, "
-        + "tran_cat_type_desc VARCHAR(50), PRIMARY KEY (tran_type_cd, tran_cat_cd)); (4) Flyway "
-        + "V3__seed.sql under src/main/resources/db/migration/ with 18 INSERT statements from "
-        + "app/data/ASCII/trancatg.txt covering (TRAN-TYPE-CD, TRAN-CAT-CD) tuples (01,1)..(07,1). "
-        + "Per AAP §0.8.1 the testing flavor cannot modify those production files for testability "
-        + "alone; the next REFACTOR-flavor agent removes this annotation when the prerequisites "
-        + "are complete. See the class Javadoc 'Reactivation Checklist' for the full list.")
 class TransactionCategoryRepositoryIT extends AbstractRepositoryIT {
 
     /**

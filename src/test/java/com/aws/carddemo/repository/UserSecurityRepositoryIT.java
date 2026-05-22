@@ -78,7 +78,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     so the compile-time wiring is verified end-to-end while the runtime
 //     DB execution awaits its production-side dependencies.
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -385,20 +384,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @see TestFixtures.Users
  */
 @DisplayName("UserSecurityRepository — CSUSR01Y.cpy migration parity ITs (BCrypt persistence)")
-@Disabled("Awaits production-side prerequisites: (1) @Entity / @Id / @Column / "
-        + "@Version / @Table(name = \"security_users\") annotations on "
-        + "com.aws.carddemo.entity.SecurityUser so Hibernate can map the entity onto a "
-        + "PostgreSQL table — CRITICAL: the password column must be annotated "
-        + "@Column(name = \"password\", length = 60, nullable = false) so the BCrypt "
-        + "60-char hash round-trips without truncation per AAP §0.10.5; (2) Flyway "
-        + "V1__schema.sql under src/main/resources/db/migration/ creating the "
-        + "security_users table with user_id CHAR(8) PK, first_name VARCHAR(20), "
-        + "last_name VARCHAR(20), password VARCHAR(60) NOT NULL (widened from "
-        + "PIC X(08)), user_type CHAR(1) NOT NULL, locked BOOLEAN, version BIGINT. "
-        + "Per AAP §0.8.1 the testing flavor cannot modify those production files for "
-        + "testability alone; the next REFACTOR-flavor agent removes this annotation "
-        + "when the prerequisites are complete. See the class Javadoc 'Reactivation "
-        + "Checklist' for the full list.")
 class UserSecurityRepositoryIT extends AbstractRepositoryIT {
 
     /**

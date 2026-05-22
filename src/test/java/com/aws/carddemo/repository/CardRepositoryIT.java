@@ -114,7 +114,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     compile-time wiring is verified end-to-end while the runtime DB
 //     execution awaits its production-side dependencies.
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -496,25 +495,6 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * @see TestFixtures.Accounts
  */
 @DisplayName("CardRepository — CVACT02Y.cpy migration parity ITs")
-@Disabled("Awaits production-side prerequisites: (1) @Entity / @Id / @Column / "
-        + "@Version / @Table(name = \"cards\") annotations on "
-        + "com.aws.carddemo.entity.Card so Hibernate can map the entity onto a "
-        + "PostgreSQL table — column widths must mirror the COBOL CVACT02Y.cpy "
-        + "PIC clauses (card_num CHAR(16) PK for PIC X(16), card_acct_id "
-        + "CHAR(11) for PIC 9(11), card_cvv_cd CHAR(3) for PIC 9(03), "
-        + "card_embossed_name VARCHAR(50) for PIC X(50), card_expiration_date "
-        + "CHAR(10) for PIC X(10) ISO YYYY-MM-DD string, card_active_status "
-        + "CHAR(1) for PIC X(01), version BIGINT for JPA optimistic locking); "
-        + "(2) Flyway V1__schema.sql under src/main/resources/db/migration/ "
-        + "creating the cards table with the schema above; (3) Flyway "
-        + "V3__seed.sql (optional — every test in this IT seeds its own cards "
-        + "via the inherited TestEntityManager; a project-wide seed of 50 rows "
-        + "from app/data/ASCII/carddata.txt is documented in AAP §0.5.1 but "
-        + "is not strictly required to activate this class). Per AAP §0.8.1 "
-        + "the testing flavor cannot modify those production files for "
-        + "testability alone; the next REFACTOR-flavor agent removes this "
-        + "annotation when the prerequisites are complete. See the class "
-        + "Javadoc 'Reactivation Checklist' for the full list.")
 class CardRepositoryIT extends AbstractRepositoryIT {
 
     /**

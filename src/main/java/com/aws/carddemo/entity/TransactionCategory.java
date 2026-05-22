@@ -16,6 +16,10 @@
  */
 package com.aws.carddemo.entity;
 
+import jakarta.persistence.Column;
+import jakarta.persistence.EmbeddedId;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Table;
 import java.util.Objects;
 
 /**
@@ -134,16 +138,18 @@ import java.util.Objects;
  * @see Transaction#getTransactionTypeCode()
  * @see Transaction#getTransactionCategoryCode()
  */
+@Entity
+@Table(name = "transaction_categories")
 public class TransactionCategory {
 
     /**
      * Composite primary key holding the {@code (TRAN-TYPE-CD, TRAN-CAT-CD)}
-     * tuple. The REFACTOR-flavor migration agent will annotate this field
-     * with {@code @EmbeddedId} once the persistence wiring lands; Hibernate
-     * will then materialise the value object from the two key columns of
-     * the {@code transaction_categories} table on every read and decompose
+     * tuple. The {@link EmbeddedId} annotation tells Hibernate to
+     * materialise the value object from the two key columns of the
+     * {@code transaction_categories} table on every read and to decompose
      * it back into the two columns on every write.
      */
+    @EmbeddedId
     private TransactionCategoryKey key;
 
     /**
@@ -156,6 +162,7 @@ public class TransactionCategory {
      * depending on the seed-script {@code RTRIM} policy (REFACTOR-flavor
      * decision — see {@code V3__seed.sql} once that script lands).
      */
+    @Column(name = "tran_cat_type_desc", nullable = false, length = 50)
     private String tranCatTypeDesc;
 
     /**

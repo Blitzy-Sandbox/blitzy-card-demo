@@ -16,6 +16,10 @@
  */
 package com.aws.carddemo.entity;
 
+import jakarta.persistence.Column;
+import jakarta.persistence.Embeddable;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import java.io.Serializable;
 import java.util.Objects;
 
@@ -148,6 +152,7 @@ import java.util.Objects;
  * @see DiscountGroup
  * @see com.aws.carddemo.repository.DiscountGroupRepository
  */
+@Embeddable
 public class DiscountGroupKey implements Serializable {
 
     /**
@@ -177,7 +182,16 @@ public class DiscountGroupKey implements Serializable {
      * COBOL {@code PIC X(10)} field is space-padded to its declared width,
      * so the Java side must preserve the trailing spaces verbatim so that
      * {@code findById} lookups match the on-disk storage byte-for-byte.
+     *
+     * <p>The {@code columnDefinition = "CHAR(10)"} mapping is critical for
+     * the sentinel rows: PostgreSQL {@code CHAR(N)} preserves trailing
+     * spaces on retrieval, whereas {@code VARCHAR} would silently strip
+     * the padding and break the {@code "DEFAULT   "} / {@code "ZEROAPR   "}
+     * findById lookups (AAP §0.5.1 DEFAULT-fallback and ZEROAPR-skip edge
+     * cases).
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "dis_acct_group_id", columnDefinition = "CHAR(10)", nullable = false, length = 10)
     private String disAcctGroupId;
 
     /**
@@ -192,6 +206,8 @@ public class DiscountGroupKey implements Serializable {
      * resolved to a human-readable type label via
      * {@link TransactionType#getTranTypeDesc()}.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "dis_tran_type_cd", columnDefinition = "CHAR(2)", nullable = false, length = 2)
     private String disTranTypeCd;
 
     /**
@@ -205,6 +221,7 @@ public class DiscountGroupKey implements Serializable {
      * layer (Flyway DDL + JDBC driver) is responsible for the zero-padded
      * rendering at the storage and presentation boundaries.
      */
+    @Column(name = "dis_tran_cat_cd", nullable = false)
     private Integer disTranCatCd;
 
     /**

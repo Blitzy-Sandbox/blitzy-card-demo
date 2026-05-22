@@ -16,6 +16,13 @@
  */
 package com.aws.carddemo.entity;
 
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 import java.util.Objects;
 
 /**
@@ -71,20 +78,14 @@ import java.util.Objects;
  *       and no business workflow mutates rows thereafter.</li>
  * </ul>
  *
- * <h2>Design Note — Stub Status</h2>
+ * <h2>JPA Mapping</h2>
  *
- * <p>This class is a <strong>minimum-viable POJO</strong> created to satisfy
- * {@link com.aws.carddemo.repository.TransactionTypeRepository} compilation
- * and the {@code TransactionTypeRepositoryIT} integration test suite per
- * AAP §0.5.1. Subsequent migration agents (REFACTOR flavor) will add JPA
- * annotations ({@code @Entity}, {@code @Id}, {@code @Column},
- * {@code @Table(name = "transaction_types")}) and Bean Validation
- * constraints ({@code @Size(min = 2, max = 2)} on {@link #tranType},
- * {@code @Size(max = 50)} on {@link #tranTypeDesc}) once the entity is
- * wired into the Hibernate {@code SessionFactory}. The Flyway scripts
- * under {@code src/main/resources/db/migration/} (also REFACTOR-flavor)
- * will create the {@code transaction_types} table and populate it with
- * the 7 reference rows from {@code app/data/ASCII/trantype.txt}.
+ * <p>Mapped to the {@code transaction_types} relational table. The
+ * 2-character {@link #tranType} primary key is declared {@code CHAR(2)}
+ * so PostgreSQL preserves any trailing space padding consistent with the
+ * COBOL {@code PIC X(02)} fixed-width key format. The 50-character
+ * description is declared {@code VARCHAR(50) NOT NULL} since the Flyway
+ * seed populates every row with a non-null label.
  *
  * <h2>Security — toString() Includes All Fields</h2>
  *
@@ -98,6 +99,8 @@ import java.util.Objects;
  * @see com.aws.carddemo.repository.TransactionTypeRepository
  * @see Transaction#getTransactionTypeCode()
  */
+@Entity
+@Table(name = "transaction_types")
 public class TransactionType {
 
     /**
@@ -110,18 +113,18 @@ public class TransactionType {
      * string to preserve the COBOL key format byte-for-byte across
      * VSAM-to-PostgreSQL migration.
      */
+    @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "tran_type", columnDefinition = "CHAR(2)", nullable = false, length = 2)
     private String tranType;
 
     /**
      * 50-character {@code TRAN-TYPE-DESC} free-form description per
      * {@code CVTRA03Y.cpy} ({@code PIC X(50)}). Carries the
      * human-readable label corresponding to {@link #tranType}
-     * (e.g. {@code "Purchase"} for type {@code "01"}). The COBOL
-     * fixed-width field right-pads with spaces; the Java migration
-     * stores the trimmed value or the space-padded value verbatim
-     * depending on the seed-script {@code RTRIM} policy (REFACTOR-flavor
-     * decision).
+     * (e.g. {@code "Purchase"} for type {@code "01"}).
      */
+    @Column(name = "tran_type_desc", nullable = false, length = 50)
     private String tranTypeDesc;
 
     /** Default no-arg constructor (required by JPA reflection-based instantiation). */

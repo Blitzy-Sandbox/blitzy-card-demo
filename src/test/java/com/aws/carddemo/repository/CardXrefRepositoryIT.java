@@ -99,7 +99,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     compile-time wiring is verified end-to-end while the runtime DB
 //     execution awaits its production-side dependencies.
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -446,28 +445,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @see TestFixtures.Customers
  */
 @DisplayName("CardXrefRepository — CVACT03Y.cpy bi-directional lookup ITs")
-@Disabled("Awaits production-side prerequisites: (1) @Entity / @Id / @Column / "
-        + "@Table(name = \"card_xref\") annotations on "
-        + "com.aws.carddemo.entity.CardXref so Hibernate can map the entity "
-        + "onto a PostgreSQL table — column widths must mirror the COBOL "
-        + "CVACT03Y.cpy PIC clauses (xref_card_num CHAR(16) PK for PIC X(16), "
-        + "xref_cust_id CHAR(9) for PIC 9(09), xref_acct_id CHAR(11) for PIC "
-        + "9(11) plus an INDEX on xref_acct_id so the findByAccountId(...) "
-        + "derived-query lookup runs at index-scan speed mirroring the COBOL "
-        + "CARDAIX alternate-index performance characteristic); (2) Flyway "
-        + "V1__schema.sql under src/main/resources/db/migration/ creating the "
-        + "card_xref table with the schema above; (3) Flyway V3__seed.sql "
-        + "(optional — every test in this IT seeds its own xrefs via the "
-        + "inherited TestEntityManager; a project-wide seed of 50 rows from "
-        + "app/data/ASCII/cardxref.txt is documented in AAP §0.5.1 but is not "
-        + "strictly required to activate this class). Per AAP §0.8.1 the "
-        + "testing flavor cannot modify those production files for "
-        + "testability alone; the next REFACTOR-flavor agent removes this "
-        + "annotation when the prerequisites are complete. See the class "
-        + "Javadoc 'Reactivation Checklist' for the full list, and note that "
-        + "the customer-key reverse-lookup test (deferred until "
-        + "findByCustomerId is added to CardXrefRepository per the production "
-        + "stub-status note) belongs to a subsequent REFACTOR-agent step.")
 class CardXrefRepositoryIT extends AbstractRepositoryIT {
 
     /**

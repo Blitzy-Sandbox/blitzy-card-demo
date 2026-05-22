@@ -16,6 +16,13 @@
  */
 package com.aws.carddemo.entity;
 
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Index;
+import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import java.util.Objects;
 
 /**
@@ -67,6 +74,10 @@ import java.util.Objects;
  * @see com.aws.carddemo.service.AccountViewService
  * @see com.aws.carddemo.repository.CardXrefRepository
  */
+@Entity
+@Table(name = "card_xref", indexes = {
+        @Index(name = "idx_cardxref_account_id", columnList = "xref_acct_id")
+})
 public class CardXref {
 
     /**
@@ -75,6 +86,9 @@ public class CardXref {
      * {@code 4111111111111101}–{@code 4111111111111150} in the fixture
      * dataset).
      */
+    @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "xref_card_num", columnDefinition = "CHAR(16)", nullable = false, length = 16)
     private String cardNumber;
 
     /**
@@ -82,6 +96,8 @@ public class CardXref {
      * ({@code PIC 9(09)}). Zero-padded numeric string referring to
      * {@link Customer#getCustomerId()}.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "xref_cust_id", columnDefinition = "CHAR(9)", nullable = false, length = 9)
     private String customerId;
 
     /**
@@ -92,6 +108,8 @@ public class CardXref {
      * {@link com.aws.carddemo.repository.CardXrefRepository#findByAccountId(String)}
      * resolves against.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "xref_acct_id", columnDefinition = "CHAR(11)", nullable = false, length = 11)
     private String accountId;
 
     /** Default no-arg constructor (required by JPA reflection-based instantiation). */

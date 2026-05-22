@@ -86,7 +86,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     while the runtime DB execution awaits its production-side
 //     dependencies.
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -381,26 +380,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @see TestFixtures.DiscountGroups
  */
 @DisplayName("DiscountGroupRepository — CVTRA02Y.cpy / discgrp.txt migration parity ITs")
-@Disabled("Awaits production-side prerequisites: (1) @Embeddable on "
-        + "com.aws.carddemo.entity.DiscountGroupKey so Hibernate can use it as an "
-        + "@EmbeddedId target; (2) @Entity / @EmbeddedId / @Column / "
-        + "@Table(name = \"discount_groups\") annotations on "
-        + "com.aws.carddemo.entity.DiscountGroup so Hibernate can map the entity onto a "
-        + "PostgreSQL table (with dis_int_rate NUMERIC(6,2) preserving the COBOL "
-        + "PIC S9(04)V99 scale-2 contract); (3) Flyway V1__schema.sql under "
-        + "src/main/resources/db/migration/ creating the discount_groups table "
-        + "(dis_acct_group_id CHAR(10), dis_tran_type_cd CHAR(2), dis_tran_cat_cd INTEGER, "
-        + "dis_int_rate NUMERIC(6,2), PRIMARY KEY (dis_acct_group_id, dis_tran_type_cd, "
-        + "dis_tran_cat_cd)). CHAR(10) is critical — VARCHAR would silently strip the "
-        + "trailing-space padding required by the 'DEFAULT   ' and 'ZEROAPR   ' sentinels "
-        + "(AAP §0.5.1 DEFAULT-fallback and ZEROAPR-skip edge cases); (4) Flyway "
-        + "V3__seed.sql under src/main/resources/db/migration/ with 51 INSERT statements "
-        + "from app/data/ASCII/discgrp.txt covering account-specific groups "
-        + "A000000001..A000000007 plus the DEFAULT and ZEROAPR sentinel rows. Per AAP "
-        + "§0.8.1 the testing flavor cannot modify those production files for testability "
-        + "alone; the next REFACTOR-flavor agent removes this annotation when the "
-        + "prerequisites are complete. See the class Javadoc 'Reactivation Checklist' "
-        + "for the full list.")
 class DiscountGroupRepositoryIT extends AbstractRepositoryIT {
 
     /**
@@ -556,13 +535,14 @@ class DiscountGroupRepositoryIT extends AbstractRepositoryIT {
         // Arrange — the DEFAULT group provides a catch-all rate when account-specific
         // lookup fails. The key uses the canonical 10-char DEFAULT_GROUP sentinel
         // ("DEFAULT   ", 7 chars + 3 trailing spaces) from TestFixtures.
+        // The (DEFAULT, 01, 1) row is already seeded by Flyway V3__seed.sql (at
+        // rate 15.00) — re-inserting it would violate the composite primary key.
+        // This test verifies the LOOKUP MECHANICS against the seeded data, NOT
+        // the insert path (which is covered by save_newDiscountGroup_persists*).
         DiscountGroupKey defaultKey = buildKey(
                 TestFixtures.DiscountGroups.DEFAULT_GROUP,
                 "01",
                 1);
-        DiscountGroup defaultRow = buildDiscountGroup(defaultKey, new BigDecimal("18.00"));
-        entityManager.persistAndFlush(defaultRow);
-        entityManager.clear();
 
         // Act — InterestCalculationProcessor will look up this exact composite key
         // when an account's specific group returns no match (AAP §0.5.1
@@ -573,9 +553,13 @@ class DiscountGroupRepositoryIT extends AbstractRepositoryIT {
         assertThat(result)
                 .as("DEFAULT group lookup must succeed (AAP §0.5.1 DEFAULT-fallback edge case)")
                 .isPresent();
+        // The V3 seed maps (DEFAULT, 01, 1) → 15.00. The exact rate value is a
+        // property of the seed catalog, not of this lookup test; what matters
+        // for AAP §0.5.1 is that a row IS returned and that the rate's scale
+        // is preserved at 2 decimal places per AAP §0.10.3.
         assertThat(result.get().getDisIntRate())
-                .as("DEFAULT group rate must round-trip exactly")
-                .isEqualByComparingTo(new BigDecimal("18.00"));
+                .as("DEFAULT group rate must round-trip exactly with seed value")
+                .isEqualByComparingTo(new BigDecimal("15.00"));
         assertThat(result.get().getDisIntRate().scale())
                 .as("DEFAULT group rate scale must equal 2 per AAP §0.10.3")
                 .isEqualTo(2);
@@ -636,14 +620,14 @@ class DiscountGroupRepositoryIT extends AbstractRepositoryIT {
         // Arrange — the ZEROAPR group is recognised by InterestCalculationProcessor as a
         // "skip interest computation" signal (AAP §0.5.1 "ZEROAPR skip" edge case).
         // The key uses the canonical 10-char ZEROAPR_GROUP sentinel ("ZEROAPR   ",
-        // 7 chars + 3 trailing spaces) from TestFixtures.
+        // 7 chars + 3 trailing spaces) from TestFixtures. The (ZEROAPR, 01, 1) row
+        // is already seeded by Flyway V3__seed.sql (at rate 0.00) — re-inserting it
+        // would violate the composite primary key. This test verifies the LOOKUP
+        // MECHANICS against the seeded data, NOT the insert path.
         DiscountGroupKey zeroaprKey = buildKey(
                 TestFixtures.DiscountGroups.ZEROAPR_GROUP,
                 "01",
                 1);
-        DiscountGroup zeroaprRow = buildDiscountGroup(zeroaprKey, new BigDecimal("0.00"));
-        entityManager.persistAndFlush(zeroaprRow);
-        entityManager.clear();
 
         // Act — drive the production repository against the real DB
         Optional<DiscountGroup> result = discountGroupRepository.findById(zeroaprKey);
@@ -865,6 +849,52 @@ class DiscountGroupRepositoryIT extends AbstractRepositoryIT {
                 .as("count() must return a non-negative row tally; negative values would "
                         + "indicate a Spring Data JPA implementation defect")
                 .isGreaterThanOrEqualTo(0);
+    }
+
+    /**
+     * Seed integrity assertion — the Flyway {@code V3__seed.sql} migration
+     * inserts the canonical 51 discount-group rows from
+     * {@code app/data/ASCII/discgrp.txt}: 17 account-specific rows under
+     * {@code "A000000000"} + 17 {@code "DEFAULT   "} fallback rows +
+     * 17 {@code "ZEROAPR   "} zero-rate override rows. This test verifies
+     * the seed landed by asserting that the repository contains at least
+     * those 51 rows after Flyway runs.
+     *
+     * <p>Test methods elsewhere in this class insert synthetic rows
+     * (using {@code "TESTGRP   "}, {@code "MAXRATE   "}, {@code "99"}
+     * type code, etc.) and rely on transactional rollback to keep the
+     * row count stable; the {@code @DataJpaTest} default rollback policy
+     * is sufficient — but to be robust against test ordering effects we
+     * assert {@code .isGreaterThanOrEqualTo(51)} rather than the exact
+     * count.
+     *
+     * <p>Per the AAP §0.5.1 file-by-file plan:
+     * <blockquote>"51 INSERT statements from app/data/ASCII/discgrp.txt"</blockquote>
+     * Confirms the {@code V3__seed.sql} script produced by the same
+     * REFACTOR-flavor agent landed all rows.
+     */
+    @Test
+    @DisplayName("findAll() returns at least the 51 seeded discount groups (Flyway V3 integrity)")
+    void findAll_seededReferenceData_returnsAtLeastFiftyOneGroups() {
+        // Act — query the repository for every row currently visible to the
+        // test transaction. Flyway runs before @DataJpaTest's transactional
+        // wrapper begins, so the 51 seed rows are visible to this query.
+        long total = discountGroupRepository.count();
+        java.util.List<DiscountGroup> allGroups = discountGroupRepository.findAll();
+
+        // Assert — at least 51 rows from V3__seed.sql + however many
+        // synthetic rows other tests in the same class may have inserted
+        // (transactional rollback should clean those up, but the floor of
+        // 51 holds either way).
+        assertThat(total)
+                .as("count() must report at least 51 rows from the V3__seed.sql "
+                        + "migration (17 A000000000 + 17 DEFAULT + 17 ZEROAPR per "
+                        + "app/data/ASCII/discgrp.txt and AAP §0.5.1)")
+                .isGreaterThanOrEqualTo(51L);
+        assertThat(allGroups)
+                .as("findAll() must surface at least the 51 seeded reference rows "
+                        + "to satisfy AAP §0.5.1 'V3__seed.sql produces 51 INSERT statements'")
+                .hasSizeGreaterThanOrEqualTo(51);
     }
 
     // =========================================================================

@@ -16,6 +16,14 @@
  */
 package com.aws.carddemo.entity;
 
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import jakarta.persistence.Version;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 import java.util.Objects;
 
 /**
@@ -47,14 +55,13 @@ import java.util.Objects;
  *       the Java replacement for COBOL's before/after-image record comparison.</li>
  * </ul>
  *
- * <h2>Design Note — Stub Status</h2>
+ * <h2>JPA Mapping</h2>
  *
- * <p>This class is a <strong>minimum-viable POJO</strong> created to satisfy
- * {@link com.aws.carddemo.service.AuthenticationService} compilation and the
- * authentication test suite. Subsequent migration agents (REFACTOR flavor) will
- * add JPA annotations ({@code @Entity}, {@code @Id}, {@code @Column},
- * {@code @Version}), Bean Validation constraints, and a proper equals/hashCode
- * contract once the entity is wired into the Hibernate {@code SessionFactory}.
+ * <p>Mapped to the {@code security_users} relational table. The {@code password}
+ * column is widened to {@code VARCHAR(60)} to accommodate BCrypt hashes
+ * ({@code $2a$10$<22-char-salt><31-char-hash>} = 60 characters); the COBOL
+ * {@code PIC X(08)} plaintext storage is intentionally NOT preserved per the
+ * AAP §0.10.5 security mandate.
  *
  * <h2>Security — toString() Excludes Password</h2>
  *
@@ -66,6 +73,8 @@ import java.util.Objects;
  * @see com.aws.carddemo.service.AuthenticationService
  * @see com.aws.carddemo.repository.UserSecurityRepository
  */
+@Entity
+@Table(name = "security_users")
 public class SecurityUser {
 
     /**
@@ -73,12 +82,17 @@ public class SecurityUser {
      * and the JPA primary key. Matches the {@code UserSecurityRepository<SecurityUser,
      * String>} ID parameter.
      */
+    @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "user_id", columnDefinition = "CHAR(8)", nullable = false, length = 8)
     private String userId;
 
     /** 20-character first name — COBOL {@code SEC-USR-FNAME PIC X(20)}. */
+    @Column(name = "first_name", length = 20)
     private String firstName;
 
     /** 20-character last name — COBOL {@code SEC-USR-LNAME PIC X(20)}. */
+    @Column(name = "last_name", length = 20)
     private String lastName;
 
     /**
@@ -89,7 +103,11 @@ public class SecurityUser {
      * per AAP §0.10.5. The production
      * {@link com.aws.carddemo.service.AuthenticationService} verifies a candidate
      * plaintext against this field via {@code passwordEncoder.matches(plaintext, hash)}.
+     *
+     * <p>Column widened to {@code VARCHAR(60)} (from COBOL {@code PIC X(08)}) to
+     * accommodate the BCrypt hash format.
      */
+    @Column(name = "password", length = 60, nullable = false)
     private String password;
 
     /**
@@ -99,6 +117,8 @@ public class SecurityUser {
      *   <li>{@code "A"} — admin user (drives COBOL {@code XCTL COADM01C}; Java {@code ADMIN_MENU} route)</li>
      * </ul>
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "user_type", columnDefinition = "CHAR(1)", nullable = false, length = 1)
     private String userType;
 
     /**
@@ -107,12 +127,15 @@ public class SecurityUser {
      * rejects authentication BEFORE attempting the BCrypt verify, preventing CPU
      * exhaustion via repeated attempts against locked accounts.
      */
+    @Column(name = "locked", nullable = false)
     private boolean locked;
 
     /**
      * Optimistic-locking version counter — JPA {@code @Version} field (Java-migration
      * addition; replaces COBOL before/after-image record comparison).
      */
+    @Version
+    @Column(name = "version", nullable = false)
     private Long version;
 
     /** Default constructor — required by JPA and the test-suite setters. */

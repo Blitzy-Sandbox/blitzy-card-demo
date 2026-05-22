@@ -114,7 +114,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     compile-time wiring is verified end-to-end while the runtime DB
 //     execution awaits its production-side dependencies.
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -437,28 +436,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @see TestFixtures.Transactions
  */
 @DisplayName("TransactionRepository — CVTRA05Y.cpy migration parity ITs")
-@Disabled("Awaits production-side prerequisites: (1) @Entity / @Id / @Column / "
-        + "@Table(name = \"transactions\") annotations on "
-        + "com.aws.carddemo.entity.Transaction so Hibernate can map the entity onto a "
-        + "PostgreSQL table — column widths must mirror the COBOL CVTRA05Y.cpy "
-        + "PIC clauses (transaction_id CHAR(16) PK for PIC X(16), "
-        + "transaction_type_code CHAR(2) for PIC X(02), transaction_category_code "
-        + "CHAR(4) for PIC 9(04), source CHAR(10) for PIC X(10), description "
-        + "CHAR(100) for PIC X(100), amount NUMERIC(11, 2) for PIC S9(09)V99 with "
-        + "scale 2, merchant_id CHAR(9) for PIC 9(09), merchant_name VARCHAR(50) "
-        + "for PIC X(50), merchant_city VARCHAR(50) for PIC X(50), merchant_zip "
-        + "VARCHAR(10) for PIC X(10), card_number CHAR(16) for PIC X(16), "
-        + "origin_timestamp CHAR(26) for PIC X(26), process_timestamp CHAR(26) for "
-        + "PIC X(26)); (2) Flyway V1__schema.sql under "
-        + "src/main/resources/db/migration/ creating the transactions table with "
-        + "the schema above; (3) Flyway V3__seed.sql (optional — every test in this "
-        + "IT seeds its own transactions via the inherited TestEntityManager; a "
-        + "project-wide seed of 300 rows from app/data/ASCII/dailytran.txt is "
-        + "documented in AAP §0.4.4 but is not strictly required to activate this "
-        + "class). Per AAP §0.8.1 the testing flavor cannot modify those production "
-        + "files for testability alone; the next REFACTOR-flavor agent removes this "
-        + "annotation when the prerequisites are complete. See the class Javadoc "
-        + "'Reactivation Checklist' section for the full list.")
 class TransactionRepositoryIT extends AbstractRepositoryIT {
 
     /**

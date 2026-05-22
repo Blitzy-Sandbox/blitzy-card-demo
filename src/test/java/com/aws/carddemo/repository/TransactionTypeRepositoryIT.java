@@ -73,7 +73,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     compile-time wiring is verified end-to-end while the runtime DB
 //     execution awaits its production-side dependencies.
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -290,17 +289,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @see TestFixtures.Transactions
  */
 @DisplayName("TransactionTypeRepository — CVTRA03Y.cpy / trantype.txt reference data ITs")
-@Disabled("Awaits production-side prerequisites: (1) @Entity / @Id / @Column / "
-        + "@Table(name = \"transaction_types\") annotations on "
-        + "com.aws.carddemo.entity.TransactionType so Hibernate can map the entity onto a "
-        + "PostgreSQL table; (2) Flyway V1__schema.sql under src/main/resources/db/migration/ "
-        + "creating the transaction_types table (tran_type CHAR(2) PRIMARY KEY, tran_type_desc "
-        + "VARCHAR(50) NOT NULL); (3) Flyway V3__seed.sql under src/main/resources/db/migration/ "
-        + "with 7 INSERT statements from app/data/ASCII/trantype.txt (01=Purchase, 02=Payment, "
-        + "03=Credit, 04=Authorization, 05=Refund, 06=Reversal, 07=Adjustment). Per AAP §0.8.1 the "
-        + "testing flavor cannot modify those production files for testability alone; the next "
-        + "REFACTOR-flavor agent removes this annotation when the prerequisites are complete. See "
-        + "the class Javadoc 'Reactivation Checklist' for the full list.")
 class TransactionTypeRepositoryIT extends AbstractRepositoryIT {
 
     /**

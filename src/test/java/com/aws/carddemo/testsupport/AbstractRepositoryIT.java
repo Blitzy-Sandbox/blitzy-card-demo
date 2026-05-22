@@ -46,6 +46,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -154,6 +155,55 @@ import static org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTest
 @AutoConfigureTestDatabase(replace = NONE)
 @Testcontainers
 @ActiveProfiles("test")
+// CRITICAL (CK7 remediation -- Phase 9 Spring TestContext caching fix):
+//
+// Without @DirtiesContext, Spring's TestContext framework caches the
+// ApplicationContext (including its HikariCP DataSource bean) by
+// MergedContextConfiguration key. When subclass IT classes share an
+// identical configuration footprint (same @ActiveProfiles, same
+// @DataJpaTest slice, same @AutoConfigureTestDatabase setting), Spring
+// reuses the cached context across them.
+//
+// However, each IT subclass owns its own @Container static PostgreSQLContainer
+// instance with a fresh random host port (e.g., 32793 for IT class A,
+// 32816 for IT class B). When IT class A's @Container static field
+// completes (Testcontainers JUnit 5 extension calls .stop() after the
+// last @Test method on A), the container at port 32793 dies.
+//
+// If IT class B then reuses the cached ApplicationContext from A, B's
+// HikariCP DataSource still points at the dead port 32793 -- even though
+// B's @DynamicPropertySource registered port 32816. @DynamicPropertySource
+// evaluates LAZILY (deferred supplier callback) but does NOT rebuild
+// existing beans; the cached DataSource was constructed against A's
+// supplier output and is never re-initialised.
+//
+// Empirical evidence (CK7 Phase 9 runtime testing):
+//   - CustomerRepositoryIT (first to run, 8/8 PASS in 6.506s)
+//   - Subsequent ITs fail with:
+//       Connection to localhost:32812 refused
+//       HikariPool-1 - Connection is not available, request timed out after 30000ms
+//   - docker ps shows the new postgres container alive on port 32816
+//   - Spring is dialing port 32812 -- the dead container's port from the
+//     first IT
+//
+// Fix: @DirtiesContext(classMode = AFTER_CLASS) forces Spring to discard
+// the cached ApplicationContext after the last @Test method on each IT
+// subclass completes. The next IT subclass triggers a fresh context
+// startup, which re-evaluates @DynamicPropertySource against its own
+// fresh container's getJdbcUrl() and constructs a new HikariCP
+// DataSource bean against the live port.
+//
+// Wall-clock cost is acceptable per AAP §0.7.2 ({@code < 5 min} for
+// {@code mvn verify}): each IT class re-creates its context in ~2-3s
+// alongside its own ~1-2s container startup; total for 10 ITs stays well
+// under 1 minute on warm JVM.
+//
+// Alternative considered: a JVM-singleton PostgreSQLContainer shared
+// across all ITs (one container, started once) would also work but
+// requires refactoring away from @Container static (an annotation-driven
+// lifecycle the AAP §0.10.2 Minimal Change Clause prefers). @DirtiesContext
+// is the minimal, idiomatic Spring fix.
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 public abstract class AbstractRepositoryIT {
 
     /**

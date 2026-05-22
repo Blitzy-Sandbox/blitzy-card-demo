@@ -99,7 +99,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     while the runtime DB execution awaits its production-side
 //     dependencies.
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -458,25 +457,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @see TestFixtures.Transactions
  */
 @DisplayName("TransactionCategoryBalanceRepository — CVTRA01Y.cpy composite-key ITs")
-@Disabled("Awaits production-side prerequisites: (1) @Embeddable on "
-        + "com.aws.carddemo.entity.TransactionCategoryBalanceKey so Hibernate can use it "
-        + "as an @EmbeddedId target; (2) @Entity / @EmbeddedId / @Column / "
-        + "@Table(name = \"transaction_category_balances\") annotations on "
-        + "com.aws.carddemo.entity.TransactionCategoryBalance so Hibernate can map the "
-        + "entity onto a PostgreSQL table (with tran_cat_bal NUMERIC(11,2) preserving the "
-        + "COBOL PIC S9(09)V99 scale-2 contract); (3) Flyway V1__schema.sql under "
-        + "src/main/resources/db/migration/ creating the transaction_category_balances "
-        + "table (trancat_acct_id CHAR(11), trancat_type_cd CHAR(2), trancat_cd INTEGER, "
-        + "tran_cat_bal NUMERIC(11,2), PRIMARY KEY (trancat_acct_id, trancat_type_cd, "
-        + "trancat_cd)). CHAR(11) on trancat_acct_id is critical — it preserves the "
-        + "zero-padded PIC 9(11) format required by byte-for-byte parity with the COBOL "
-        + "tcatbal.txt fixture; (4) Flyway V3__seed.sql under "
-        + "src/main/resources/db/migration/ with 50 INSERT statements from "
-        + "app/data/ASCII/tcatbal.txt covering the canonical 3-tuple keys for accounts "
-        + "00000000001..00000000050. Per AAP §0.8.1 the testing flavor cannot modify "
-        + "those production files for testability alone; the next REFACTOR-flavor agent "
-        + "removes this annotation when the prerequisites are complete. See the class "
-        + "Javadoc 'Reactivation Checklist' for the full list.")
 class TransactionCategoryBalanceRepositoryIT extends AbstractRepositoryIT {
 
     /**
