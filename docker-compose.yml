@@ -1,0 +1,124 @@
+# ---------------------------------------------------------------------------
+# Local development stack for AWS CardDemo (COBOL -> Java/Spring Boot target).
+# Per AAP §0.3.1: "docker-compose.yml - local development stack
+# (Spring Boot app, PostgreSQL, LocalStack Pro for S3/SQS/Secrets Manager/KMS,
+#  Redis, Kafka)"
+#
+# NOTE: LocalStack Pro requires a valid LOCALSTACK_AUTH_TOKEN. The provided
+# token is EXPIRED, so this compose file uses the LocalStack community image
+# (3.8) which does not require licensing. Upgrade to localstack-pro:latest
+# when a valid token becomes available.
+# ---------------------------------------------------------------------------
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: carddemo-postgres
+    environment:
+      POSTGRES_USER: carddemo
+      POSTGRES_PASSWORD: carddemo
+      POSTGRES_DB: carddemo
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carddemo -d carddemo"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: carddemo-redis
+    command: redis-server --maxmemory-policy allkeys-lru --maxmemory 256mb
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  zookeeper:
+    image: bitnami/zookeeper:3.9
+    container_name: carddemo-zookeeper
+    environment:
+      ALLOW_ANONYMOUS_LOGIN: "yes"
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: carddemo-kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_CFG_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    ports:
+      - "9092:9092"
+
+  localstack:
+    # LocalStack 3.8 is the last community-licensable version prior to the
+    # March 2026 auth-token requirement (Pro license required afterwards).
+    image: localstack/localstack:3.8
+    container_name: carddemo-localstack
+    ports:
+      - "4566:4566"
+      - "4510-4559:4510-4559"
+    environment:
+      SERVICES: "s3,sqs,sns,kms,secretsmanager,lambda,dynamodb,ses,events,logs,cloudwatch,sts,iam,kinesis,firehose,dynamodbstreams,stepfunctions"
+      DEBUG: "0"
+      AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION:-us-east-1}"
+      AWS_ACCESS_KEY_ID: "test"
+      AWS_SECRET_ACCESS_KEY: "test"
+      DOCKER_HOST: "unix:///var/run/docker.sock"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "./localstack/init:/etc/localstack/init/ready.d"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  carddemo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: carddemo-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      AWS_REGION: "${AWS_DEFAULT_REGION:-us-east-1}"
+      AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION:-us-east-1}"
+      AWS_ACCESS_KEY_ID: "test"
+      AWS_SECRET_ACCESS_KEY: "test"
+      SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/carddemo"
+      SPRING_DATASOURCE_USERNAME: carddemo
+      SPRING_DATASOURCE_PASSWORD: carddemo
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      AWS_ENDPOINT_URL: http://localstack:4566
+      S3_OUTPUT_BUCKET: carddemo-output
+      OPENSEARCH_ENDPOINT: http://localstack:4566
+      MSK_BOOTSTRAP_SERVERS: kafka:9092
+      ECS_CLUSTER_NAME: carddemo-local
+      KMS_KEY_ARN: arn:aws:kms:us-east-1:000000000000:key/local-cmk
+      RDS_SECRET_ARN: arn:aws:secretsmanager:us-east-1:000000000000:secret:rds-secret
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:
+    driver: local
