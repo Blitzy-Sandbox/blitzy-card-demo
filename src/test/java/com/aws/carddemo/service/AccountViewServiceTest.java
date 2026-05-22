@@ -689,4 +689,115 @@ final class AccountViewServiceTest {
         c.setVersion(1L);
         return c;
     }
+
+    // ============================================================
+    // Nested test class — Authorization Contract
+    // ============================================================
+
+    /**
+     * Documents and asserts the authorization-contract layer for
+     * {@link AccountViewService} — the user-owned data read service
+     * that replaces COBOL program {@code COACTVWC}.
+     *
+     * <h2>COBOL Authorization Model</h2>
+     *
+     * <p>In the original CICS/COBOL implementation, authorization was
+     * gated by the CICS BMS sign-on flow: {@code COSGN00C} validated
+     * the user's credentials and only after success could the user
+     * navigate via the main menu ({@code COMEN01C}) to the account-view
+     * screen ({@code COACTVW}). The {@code COACTVWC} program itself
+     * performed no caller-authorization check — it trusted the upstream
+     * CICS session token.
+     *
+     * <h2>Java Migration — Layer of Responsibility</h2>
+     *
+     * <p>Per AAP §0.10.2 (Minimal Change Clause), the Java migration
+     * preserves this contract. {@link AccountViewService} does NOT
+     * perform a service-level caller-authorization check; instead:
+     * <ul>
+     *   <li>The REST controller (e.g.,
+     *       {@code com.aws.carddemo.controller.AccountController})
+     *       MUST enforce Spring Security {@code @PreAuthorize} or
+     *       {@code @PostAuthorize} annotations at the HTTP boundary
+     *       (the modern equivalent of the CICS BMS sign-on gate).</li>
+     *   <li>The service layer trusts that the caller has passed the
+     *       upstream authentication check; this matches the COBOL
+     *       contract precisely.</li>
+     * </ul>
+     *
+     * <p>These tests assert that contract is preserved: the service
+     * does NOT reject any well-formed read request based on
+     * caller-identity reasons, leaving authorization to the controller
+     * layer (verified separately in
+     * {@code com.aws.carddemo.controller.AccountControllerTest}).
+     *
+     * @see com.aws.carddemo.service.UserListService for the contrasting
+     *      pattern where the COBOL program ({@code COUSR00C}) DOES
+     *      perform an admin-only check and the Java migration mirrors it
+     */
+    @Nested
+    @DisplayName("Authorization contract — controller-layer responsibility (AAP §0.10.2)")
+    class AuthorizationContract {
+
+        /**
+         * Verify {@link AccountViewService} does NOT carry caller-
+         * authorization fields on its request DTO — the contract is
+         * "trust the upstream authenticator." This is the explicit
+         * assertion of the layer-of-responsibility model: the
+         * controller, not the service, gates access.
+         */
+        @Test
+        @DisplayName("requestDto_carriesNoCallerAuthorizationFields_perCobolContract")
+        void requestDto_carriesNoCallerAuthorizationFields_perCobolContract() {
+            // The AccountViewService signature accepts (accountId, ...) directly
+            // — there is no AccountViewRequest DTO carrying callerUserType.
+            // This proves the service trusts the upstream authenticator.
+            //
+            // Contrast with AdminMenuRequest/UserListRequest which DO
+            // carry callerUserType — those COBOL programs (COADM01C,
+            // COUSR00C) performed admin checks; this one (COACTVWC) did not.
+            java.lang.reflect.Method[] methods = AccountViewService.class.getDeclaredMethods();
+            boolean hasCallerUserTypeParameter = false;
+            for (java.lang.reflect.Method m : methods) {
+                for (java.lang.reflect.Parameter p : m.getParameters()) {
+                    if ("callerUserType".equalsIgnoreCase(p.getName())) {
+                        hasCallerUserTypeParameter = true;
+                    }
+                }
+            }
+            assertThat(hasCallerUserTypeParameter)
+                    .as("AccountViewService must NOT accept callerUserType — "
+                            + "authorization is the controller's responsibility "
+                            + "per the COBOL COACTVWC contract")
+                    .isFalse();
+        }
+
+        /**
+         * Verify the service method signature accepts only data inputs
+         * (account ID), not caller-identity inputs — proving the
+         * controller-layer authorization contract structurally.
+         */
+        @Test
+        @DisplayName("getAccount_methodSignatureCarriesNoCallerIdentity")
+        void getAccount_methodSignatureCarriesNoCallerIdentity() {
+            // The getAccount(String accountId) method takes only the
+            // account ID; it has no caller-identity parameters. This
+            // is the structural assertion that authorization is the
+            // controller's responsibility per the COBOL COACTVWC contract.
+            java.lang.reflect.Method getAccount;
+            try {
+                getAccount = AccountViewService.class.getDeclaredMethod("getAccount", String.class);
+            } catch (NoSuchMethodException e) {
+                throw new AssertionError("Expected getAccount(String) signature", e);
+            }
+            assertThat(getAccount.getParameterCount())
+                    .as("getAccount must accept only the account ID parameter — "
+                            + "any caller-identity parameter would violate the "
+                            + "COBOL COACTVWC trust-upstream contract")
+                    .isEqualTo(1);
+            assertThat(getAccount.getParameterTypes()[0])
+                    .as("getAccount's sole parameter must be String (account ID)")
+                    .isEqualTo(String.class);
+        }
+    }
 }

@@ -999,4 +999,145 @@ final class BillPaymentServiceTest {
             verify(transactionRepository, times(1)).save(any(Transaction.class));
         }
     }
+    // ============================================================
+    // Nested test class — Authorization Contract
+    // ============================================================
+
+    /**
+     * Documents and asserts the authorization-contract layer for
+     * {@link BillPaymentService} — the service that replaces COBOL program
+     * {@code COBIL00C} (which pays bills from user-owned accounts).
+     *
+     * <h2>COBOL Authorization Model</h2>
+     *
+     * <p>In the original CICS/COBOL implementation, authorization was
+     * gated by the CICS BMS sign-on flow: {@code COSGN00C} validated
+     * the user's credentials and only after success could the user
+     * navigate via the main menu (or admin menu for admin-only flows)
+     * to this program's screen. The COBOL program itself performed no
+     * caller-authorization check — it trusted the upstream CICS session.
+     *
+     * <h2>Java Migration — Layer of Responsibility</h2>
+     *
+     * <p>Per AAP §0.10.2 (Minimal Change Clause), the Java migration
+     * preserves this contract. {@link BillPaymentService} does NOT perform a
+     * service-level caller-authorization check; instead:
+     * <ul>
+     *   <li>The REST controller (e.g., the Spring MVC controller
+     *       that fronts this service) MUST enforce Spring Security
+     *       {@code @PreAuthorize} or {@code @PostAuthorize}
+     *       annotations at the HTTP boundary (the modern equivalent
+     *       of the CICS BMS sign-on gate).</li>
+     *   <li>The service layer trusts that the caller has passed the
+     *       upstream authentication check; this matches the COBOL
+     *       contract precisely.</li>
+     * </ul>
+     *
+     * <p>These tests assert that contract is preserved structurally.
+     *
+     * @see com.aws.carddemo.service.UserListService for the contrasting
+     *      pattern where the COBOL program does perform an admin-only
+     *      check and the Java migration mirrors it via {@code callerUserType}
+     */
+    @Nested
+    @DisplayName("Authorization contract — controller-layer responsibility (AAP §0.10.2)")
+    class AuthorizationContract {
+
+        /**
+         * Verify {@link BillPaymentService} method signatures carry NO
+         * {@code callerUserType}-style parameter — proving the
+         * authorization is the controller's responsibility per the
+         * COBOL COBIL00C trust-upstream contract.
+         */
+        @Test
+        @DisplayName("methodSignatures_carryNoCallerIdentity_perCobolContract")
+        void methodSignatures_carryNoCallerIdentity_perCobolContract() {
+            java.lang.reflect.Method[] methods = BillPaymentService.class.getDeclaredMethods();
+            boolean hasCallerUserTypeParam = false;
+            for (java.lang.reflect.Method m : methods) {
+                if (!java.lang.reflect.Modifier.isPublic(m.getModifiers())) {
+                    continue;
+                }
+                for (java.lang.reflect.Parameter p : m.getParameters()) {
+                    if (p.getName().toLowerCase().contains("callerusertype")
+                            || p.getName().toLowerCase().contains("calleruser")) {
+                        hasCallerUserTypeParam = true;
+                    }
+                }
+            }
+            assertThat(hasCallerUserTypeParam)
+                    .as("BillPaymentService must NOT accept callerUserType — "
+                            + "authorization is the controller's responsibility "
+                            + "per the COBOL COBIL00C contract")
+                    .isFalse();
+        }
+
+        /**
+         * Verify the request DTO {@link BillPaymentRequest} carries no
+         * {@code callerUserType} field — the structural assertion
+         * of the layer-of-responsibility model.
+         *
+         * <p>Contrast with {@code AdminMenuRequest}, {@code UserListRequest},
+         * {@code MainMenuRequest} which DO carry {@code callerUserType}
+         * — those COBOL programs (COADM01C, COUSR00C, COMEN01C)
+         * performed admin checks; this one (COBIL00C) did not.
+         */
+        @Test
+        @DisplayName("requestDto_doesNotCarryCallerUserType_perCobolContract")
+        void requestDto_doesNotCarryCallerUserType_perCobolContract() {
+            java.lang.reflect.Field[] fields = BillPaymentRequest.class.getDeclaredFields();
+            for (java.lang.reflect.Field f : fields) {
+                assertThat(f.getName().toLowerCase())
+                        .as("Field %s on BillPaymentRequest must not be a caller-identity field",
+                                f.getName())
+                        .doesNotContain("calleruser");
+            }
+        }
+    }
+    // ============================================================
+    // Nested test class — Logging Safety (AAP §0.10.5)
+    // ============================================================
+
+    /**
+     * Coverage for AAP §0.10.5 NON-NEGOTIABLE: "No financial data
+     * written to logs at any level". The production
+     * {@link BillPaymentService} migrates COBOL program {@code COBIL00C} which
+     * handles account balance and payment amounts.
+     *
+     * <p>The defensive-design assertion below verifies the production
+     * class declares no logger field. This is the cheapest, most
+     * reliable defence against accidental log-leak regressions: if no
+     * logger exists, no logger call is possible.
+     *
+     * <p>Where the service must emit audit events (e.g., transaction
+     * creation, authentication), the production class delegates those
+     * to a centralised audit-log service that already implements the
+     * PII/PAN/financial-value redaction required by AAP §0.10.5; that
+     * delegation is verified at the audit-log-service unit test level.
+     */
+    @Nested
+    @DisplayName("Logging safety — no financial data in logs (AAP §0.10.5)")
+    class LoggingSafety {
+
+        /**
+         * Verify {@link BillPaymentService} declares no logger fields. The
+         * production class is a pure-logic service with no SLF4J,
+         * java.util.logging, or commons-logging dependency at the
+         * field level. Any future regression introducing a logger
+         * is caught by this test.
+         */
+        @Test
+        @DisplayName("service_declaresNoLoggerField_preventingFinancialDataLeak")
+        void service_declaresNoLoggerField_preventingFinancialDataLeak() {
+            // Scan every declared field of the production service for
+            // any logger-like type. The defensive design forbids
+            // logger fields entirely on services that handle
+            // account balance and payment amounts.
+            assertThat(BillPaymentService.class.getDeclaredFields())
+                    .as("BillPaymentService must declare no logger fields "
+                            + "(AAP §0.10.5 defensive design — account balance and payment amounts "
+                            + "must never reach a log stream)")
+                    .noneMatch(f -> f.getType().getName().toLowerCase().contains("log"));
+        }
+    }
 }

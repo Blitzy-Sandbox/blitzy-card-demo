@@ -786,4 +786,99 @@ final class TransactionListServiceTest {
         }
         return list;
     }
+    // ============================================================
+    // Nested test class — Authorization Contract
+    // ============================================================
+
+    /**
+     * Documents and asserts the authorization-contract layer for
+     * {@link TransactionListService} — the service that replaces COBOL program
+     * {@code COTRN00C} (which lists user-owned transaction history).
+     *
+     * <h2>COBOL Authorization Model</h2>
+     *
+     * <p>In the original CICS/COBOL implementation, authorization was
+     * gated by the CICS BMS sign-on flow: {@code COSGN00C} validated
+     * the user's credentials and only after success could the user
+     * navigate via the main menu (or admin menu for admin-only flows)
+     * to this program's screen. The COBOL program itself performed no
+     * caller-authorization check — it trusted the upstream CICS session.
+     *
+     * <h2>Java Migration — Layer of Responsibility</h2>
+     *
+     * <p>Per AAP §0.10.2 (Minimal Change Clause), the Java migration
+     * preserves this contract. {@link TransactionListService} does NOT perform a
+     * service-level caller-authorization check; instead:
+     * <ul>
+     *   <li>The REST controller (e.g., the Spring MVC controller
+     *       that fronts this service) MUST enforce Spring Security
+     *       {@code @PreAuthorize} or {@code @PostAuthorize}
+     *       annotations at the HTTP boundary (the modern equivalent
+     *       of the CICS BMS sign-on gate).</li>
+     *   <li>The service layer trusts that the caller has passed the
+     *       upstream authentication check; this matches the COBOL
+     *       contract precisely.</li>
+     * </ul>
+     *
+     * <p>These tests assert that contract is preserved structurally.
+     *
+     * @see com.aws.carddemo.service.UserListService for the contrasting
+     *      pattern where the COBOL program does perform an admin-only
+     *      check and the Java migration mirrors it via {@code callerUserType}
+     */
+    @Nested
+    @DisplayName("Authorization contract — controller-layer responsibility (AAP §0.10.2)")
+    class AuthorizationContract {
+
+        /**
+         * Verify {@link TransactionListService} method signatures carry NO
+         * {@code callerUserType}-style parameter — proving the
+         * authorization is the controller's responsibility per the
+         * COBOL COTRN00C trust-upstream contract.
+         */
+        @Test
+        @DisplayName("methodSignatures_carryNoCallerIdentity_perCobolContract")
+        void methodSignatures_carryNoCallerIdentity_perCobolContract() {
+            java.lang.reflect.Method[] methods = TransactionListService.class.getDeclaredMethods();
+            boolean hasCallerUserTypeParam = false;
+            for (java.lang.reflect.Method m : methods) {
+                if (!java.lang.reflect.Modifier.isPublic(m.getModifiers())) {
+                    continue;
+                }
+                for (java.lang.reflect.Parameter p : m.getParameters()) {
+                    if (p.getName().toLowerCase().contains("callerusertype")
+                            || p.getName().toLowerCase().contains("calleruser")) {
+                        hasCallerUserTypeParam = true;
+                    }
+                }
+            }
+            assertThat(hasCallerUserTypeParam)
+                    .as("TransactionListService must NOT accept callerUserType — "
+                            + "authorization is the controller's responsibility "
+                            + "per the COBOL COTRN00C contract")
+                    .isFalse();
+        }
+
+        /**
+         * Verify the request DTO {@link TransactionListRequest} carries no
+         * {@code callerUserType} field — the structural assertion
+         * of the layer-of-responsibility model.
+         *
+         * <p>Contrast with {@code AdminMenuRequest}, {@code UserListRequest},
+         * {@code MainMenuRequest} which DO carry {@code callerUserType}
+         * — those COBOL programs (COADM01C, COUSR00C, COMEN01C)
+         * performed admin checks; this one (COTRN00C) did not.
+         */
+        @Test
+        @DisplayName("requestDto_doesNotCarryCallerUserType_perCobolContract")
+        void requestDto_doesNotCarryCallerUserType_perCobolContract() {
+            java.lang.reflect.Field[] fields = TransactionListRequest.class.getDeclaredFields();
+            for (java.lang.reflect.Field f : fields) {
+                assertThat(f.getName().toLowerCase())
+                        .as("Field %s on TransactionListRequest must not be a caller-identity field",
+                                f.getName())
+                        .doesNotContain("calleruser");
+            }
+        }
+    }
 }

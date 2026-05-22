@@ -644,4 +644,77 @@ final class CardDetailServiceTest {
         c.setVersion(1L);
         return c;
     }
+    // ============================================================
+    // Nested test class — Authorization Contract
+    // ============================================================
+
+    /**
+     * Documents and asserts the authorization-contract layer for
+     * {@link CardDetailService} — the service that replaces COBOL program
+     * {@code COCRDSLC} (which reads user-owned card data).
+     *
+     * <h2>COBOL Authorization Model</h2>
+     *
+     * <p>In the original CICS/COBOL implementation, authorization was
+     * gated by the CICS BMS sign-on flow: {@code COSGN00C} validated
+     * the user's credentials and only after success could the user
+     * navigate via the main menu (or admin menu for admin-only flows)
+     * to this program's screen. The COBOL program itself performed no
+     * caller-authorization check — it trusted the upstream CICS session.
+     *
+     * <h2>Java Migration — Layer of Responsibility</h2>
+     *
+     * <p>Per AAP §0.10.2 (Minimal Change Clause), the Java migration
+     * preserves this contract. {@link CardDetailService} does NOT perform a
+     * service-level caller-authorization check; instead:
+     * <ul>
+     *   <li>The REST controller (e.g., the Spring MVC controller
+     *       that fronts this service) MUST enforce Spring Security
+     *       {@code @PreAuthorize} or {@code @PostAuthorize}
+     *       annotations at the HTTP boundary (the modern equivalent
+     *       of the CICS BMS sign-on gate).</li>
+     *   <li>The service layer trusts that the caller has passed the
+     *       upstream authentication check; this matches the COBOL
+     *       contract precisely.</li>
+     * </ul>
+     *
+     * <p>These tests assert that contract is preserved structurally.
+     *
+     * @see com.aws.carddemo.service.UserListService for the contrasting
+     *      pattern where the COBOL program does perform an admin-only
+     *      check and the Java migration mirrors it via {@code callerUserType}
+     */
+    @Nested
+    @DisplayName("Authorization contract — controller-layer responsibility (AAP §0.10.2)")
+    class AuthorizationContract {
+
+        /**
+         * Verify {@link CardDetailService} method signatures carry NO
+         * {@code callerUserType}-style parameter — proving the
+         * authorization is the controller's responsibility per the
+         * COBOL COCRDSLC trust-upstream contract.
+         */
+        @Test
+        @DisplayName("methodSignatures_carryNoCallerIdentity_perCobolContract")
+        void methodSignatures_carryNoCallerIdentity_perCobolContract() {
+            java.lang.reflect.Method[] methods = CardDetailService.class.getDeclaredMethods();
+            boolean hasCallerUserTypeParam = false;
+            for (java.lang.reflect.Method m : methods) {
+                if (!java.lang.reflect.Modifier.isPublic(m.getModifiers())) {
+                    continue;
+                }
+                for (java.lang.reflect.Parameter p : m.getParameters()) {
+                    if (p.getName().toLowerCase().contains("callerusertype")
+                            || p.getName().toLowerCase().contains("calleruser")) {
+                        hasCallerUserTypeParam = true;
+                    }
+                }
+            }
+            assertThat(hasCallerUserTypeParam)
+                    .as("CardDetailService must NOT accept callerUserType — "
+                            + "authorization is the controller's responsibility "
+                            + "per the COBOL COCRDSLC contract")
+                    .isFalse();
+        }
+    }
 }
