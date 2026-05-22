@@ -373,7 +373,7 @@ This translates to three concrete invariants enforced by every PR review:
     *
     * @see <a href="file:../app/cbl/CBACT01C.cbl">CBACT01C.cbl</a>
     */
-   @CobolProgram(value = "CBACT01C", source = "app/cbl/CBACT01C.cbl", translated = "2025-09-16")
+   @CobolProgram(value = "CBACT01C", sourcePath = "app/cbl/CBACT01C.cbl", translationDate = "2025-09-16")
    public final class CbAct01C { /* ... */ }
    ```
 
