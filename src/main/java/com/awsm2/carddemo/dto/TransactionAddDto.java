@@ -341,9 +341,7 @@ public record TransactionAddDto(
         @Schema(description = "Origination timestamp supplied by the operator/client "
                         + "(ISO-8601, yyyy-MM-dd'T'HH:mm:ss). Maps to BMS TORIGDT PIC X(10) "
                         + "(date portion only, displayed as YYYY-MM-DD) and to "
-                        + "TRAN-ORIG-TS PIC X(26) on the record. The service captures the "
-                        + "processing timestamp (TRAN-PROC-TS) internally; the client "
-                        + "supplies only the origination timestamp. Java native "
+                        + "TRAN-ORIG-TS PIC X(26) on the record. Java native "
                         + "LocalDateTime replaces the LE CEEDAYS dependency per AAP "
                         + "\u00a70.6.3.",
                 example = "2026-05-20T14:30:45",
@@ -351,6 +349,44 @@ public record TransactionAddDto(
                 requiredMode = Schema.RequiredMode.REQUIRED)
         @JsonProperty("originationTimestamp")
         LocalDateTime originationTimestamp,
+
+        /**
+         * Processing timestamp supplied by the operator/client. Maps to
+         * {@code TPROCDT PIC X(10)} on the BMS map (line 200 of
+         * {@code app/bms/COTRN02.bms}) and to {@code TPROCDTI PIC X(10)}
+         * in the symbolic-map copybook ({@code app/cpy-bms/COTRN02.CPY}),
+         * which the COBOL {@code COTRN02C} program validates as
+         * {@code YYYY-MM-DD} (lines 288-298 emptiness check, 369-377 format
+         * check, 425-432 calendar-validity check via {@code CSUTLDTC}) and
+         * then moves directly to {@code TRAN-PROC-TS} on the
+         * {@code TRAN-RECORD} (line 465).  In the Java target the field is
+         * carried as {@link LocalDateTime} so a single ISO-8601 timestamp
+         * can capture both the calendar date and the time-of-day portion
+         * persisted to {@code TRAN-PROC-TS PIC X(26)}.  This preserves the
+         * COBOL contract that the processing date is operator-supplied
+         * (required) and not service-generated.  Calendar-validity checks
+         * are delegated to {@code DateValidationService} (port of
+         * {@code CSUTLDPY.cpy} and {@code CSUTLDTC.cbl}) per AAP
+         * &sect;0.6.3.
+         */
+        @NotNull(message = "Processing date is required")
+        @JsonFormat(shape = JsonFormat.Shape.STRING,
+                pattern = "yyyy-MM-dd'T'HH:mm:ss")
+        @Schema(description = "Processing timestamp supplied by the operator/client "
+                        + "(ISO-8601, yyyy-MM-dd'T'HH:mm:ss). Maps to BMS TPROCDT "
+                        + "PIC X(10) (line 200 of app/bms/COTRN02.bms; date portion "
+                        + "only, displayed as YYYY-MM-DD) and to TRAN-PROC-TS "
+                        + "PIC X(26) on the TRAN-RECORD. The COBOL COTRN02C "
+                        + "program requires this field (lines 288-298 emptiness "
+                        + "check, 369-377 format check, 425-432 calendar-validity "
+                        + "check) and moves it directly to TRAN-PROC-TS at line "
+                        + "465. Calendar-validity validation is delegated to "
+                        + "DateValidationService per AAP \u00a70.6.3.",
+                example = "2026-05-20T14:30:45",
+                format = "date-time",
+                requiredMode = Schema.RequiredMode.REQUIRED)
+        @JsonProperty("processingTimestamp")
+        LocalDateTime processingTimestamp,
 
         @NotNull(message = "Merchant ID is required")
         @Schema(description = "9-digit merchant identifier. Maps to BMS MID PIC X(09) and "
@@ -430,10 +466,32 @@ public record TransactionAddDto(
      * present.
      *
      * <p>Every other component is rendered as-is &mdash; none of the other
-     * fields carry sensitive cardholder data.  Equality and hash semantics
-     * are unaffected; {@link Object#equals(Object)} and
-     * {@link Object#hashCode()} continue to use every component including
-     * the unmasked PAN, per the Java record contract.
+     * fields carry sensitive cardholder data.
+     *
+     * <p><b>NOTE on record-generated {@code equals()}/{@code hashCode()}
+     * (accepted risk per AAP &sect;0.6.6).</b>  Java records auto-generate
+     * {@link Object#equals(Object)} and {@link Object#hashCode()} over
+     * every component &mdash; including the unmasked PAN
+     * {@link #cardNumber()} &mdash; and the Java record contract forbids
+     * overriding these methods to exclude components without converting
+     * the type to a regular class (a significant scope expansion that
+     * would also break the AAP-mandated Minimal Change Clause).  The
+     * risk that the unmasked PAN participates in equality/hash
+     * operations is <b>accepted</b> because:
+     * <ul>
+     *   <li>The PAN value, when present, lives in JVM memory for at
+     *       most the duration of a single
+     *       {@code POST /api/transactions} request (the service
+     *       persists a tokenized/masked value via JPA and discards the
+     *       DTO reference at the end of the controller invocation).</li>
+     *   <li>{@link Object#equals(Object)} and {@link Object#hashCode()}
+     *       on this DTO are not invoked by any audit, logging, caching,
+     *       or persistence path &mdash; only {@code toString()} (which
+     *       is PCI-DSS-masked) reaches CloudWatch / OpenSearch.</li>
+     *   <li>Debugger inspection and heap-dump analysis are governed by
+     *       the platform's PCI-DSS access controls (AAP &sect;0.6.6)
+     *       and are out of scope for DTO-level mitigation.</li>
+     * </ul>
      *
      * @return a string representation safe for logging and audit emission
      */
@@ -450,6 +508,7 @@ public record TransactionAddDto(
                 + ", description=" + description
                 + ", amount=" + amount
                 + ", originationTimestamp=" + originationTimestamp
+                + ", processingTimestamp=" + processingTimestamp
                 + ", merchantId=" + merchantId
                 + ", merchantName=" + merchantName
                 + ", merchantCity=" + merchantCity

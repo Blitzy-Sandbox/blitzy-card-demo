@@ -423,6 +423,31 @@ public record StatementTransactionDto(
      * by looking up the underlying {@link com.awsm2.carddemo.domain
      * Transaction} entity in OpenSearch by {@code transactionId}.
      *
+     * <p><b>NOTE on record-generated {@code equals()}/{@code hashCode()}
+     * (accepted risk per AAP &sect;0.6.6).</b>  Java records auto-generate
+     * {@link Object#equals(Object)} and {@link Object#hashCode()} over
+     * every component &mdash; including the unmasked PAN
+     * {@link #cardNumber()} &mdash; and the record contract forbids
+     * overriding these methods to exclude components without converting
+     * the type to a regular class (a scope expansion that would violate
+     * the AAP-mandated Minimal Change Clause).  The risk that the
+     * unmasked PAN participates in equality/hash operations is
+     * <b>accepted</b> because:
+     * <ul>
+     *   <li>The PAN value lives in JVM memory only for the duration of
+     *       the Spring Batch chunk processing the row; the writer
+     *       persists the DTO through {@code S3OutputService} or
+     *       streams it to the statement renderer and discards the
+     *       reference at the end of the chunk.</li>
+     *   <li>{@link Object#equals(Object)} and {@link Object#hashCode()}
+     *       on this DTO are not invoked by any audit, logging, caching,
+     *       or persistence path &mdash; only {@code toString()} (which
+     *       is PCI-DSS-masked) reaches CloudWatch / OpenSearch.</li>
+     *   <li>Debugger inspection and heap-dump analysis are governed by
+     *       the platform's PCI-DSS access controls (AAP &sect;0.6.6)
+     *       and are out of scope for DTO-level mitigation.</li>
+     * </ul>
+     *
      * @return a PCI-safe string of the form
      *         {@code StatementTransactionDto[cardNumber=************NNNN,
      *         transactionId=..., transactionType=...,

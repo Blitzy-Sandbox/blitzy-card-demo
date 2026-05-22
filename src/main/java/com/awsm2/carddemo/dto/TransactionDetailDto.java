@@ -295,10 +295,14 @@ public record TransactionDetailDto(
                 + "populating this field. The legacy BMS map renders the "
                 + "value through the formatted working-storage variable "
                 + "WS-TRAN-AMT PIC +99999999.99 in COTRN01C.cbl; the REST "
-                + "response carries the typed numeric value.",
+                + "response carries the typed numeric value. The OpenAPI "
+                + "format is `decimal` (NOT `double`) to advertise exact "
+                + "decimal precision to generated clients per AAP "
+                + "\u00a70.6.1 (binary floating-point semantics are "
+                + "forbidden for monetary values).",
                 example = "123.45",
                 type = "number",
-                format = "double")
+                format = "decimal")
         @JsonProperty("amount")
         BigDecimal amount,
 
@@ -440,6 +444,31 @@ public record TransactionDetailDto(
      * to keep log volume manageable; the complete record is always
      * available by re-querying {@code GET /api/transactions/{id}} or by
      * looking up the transaction in OpenSearch by {@code transactionId}.
+     *
+     * <p><b>NOTE on record-generated {@code equals()}/{@code hashCode()}
+     * (accepted risk per AAP &sect;0.6.6).</b>  Java records auto-generate
+     * {@link Object#equals(Object)} and {@link Object#hashCode()} over
+     * every component &mdash; including the unmasked PAN
+     * {@link #cardNumber()} &mdash; and the record contract forbids
+     * overriding these methods to exclude components without converting
+     * the type to a regular class (a scope expansion that would violate
+     * the AAP-mandated Minimal Change Clause).  The risk that the
+     * unmasked PAN participates in equality/hash operations is
+     * <b>accepted</b> because:
+     * <ul>
+     *   <li>The PAN value, when present, lives in JVM memory for at
+     *       most the duration of a single
+     *       {@code GET /api/transactions/{id}} response (the service
+     *       discards the DTO reference at the end of the controller
+     *       invocation).</li>
+     *   <li>{@link Object#equals(Object)} and {@link Object#hashCode()}
+     *       on this DTO are not invoked by any audit, logging, caching,
+     *       or persistence path &mdash; only {@code toString()} (which
+     *       is PCI-DSS-masked) reaches CloudWatch / OpenSearch.</li>
+     *   <li>Debugger inspection and heap-dump analysis are governed by
+     *       the platform's PCI-DSS access controls (AAP &sect;0.6.6)
+     *       and are out of scope for DTO-level mitigation.</li>
+     * </ul>
      *
      * @return a PCI-safe string of the form
      *         {@code TransactionDetailDto[transactionId=...,

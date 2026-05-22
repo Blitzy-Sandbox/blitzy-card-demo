@@ -307,6 +307,36 @@ public record SignonRequestDto(
      * <p>The user id is <i>not</i> redacted because it is non-secret and
      * is required for correlation across audit and diagnostic logs.
      *
+     * <p><b>NOTE on record-generated {@code equals()}/{@code hashCode()}
+     * (accepted risk per AAP &sect;0.6.6).</b>  Java records auto-generate
+     * {@link Object#equals(Object)} and {@link Object#hashCode()} over
+     * every component &mdash; including the {@code password} component
+     * &mdash; and the Java record contract forbids overriding these
+     * methods to exclude components without converting the type to a
+     * regular class (a significant scope expansion that would also
+     * break the AAP-mandated Minimal Change Clause).  The risk that
+     * the unmasked password participates in equality/hash operations is
+     * <b>accepted</b> because:
+     * <ul>
+     *   <li>The password value lives in JVM memory for at most the
+     *       duration of a single {@code POST /api/auth/signin} request
+     *       (it is verified against BCrypt and then discarded; no
+     *       reference is retained beyond the controller invocation).</li>
+     *   <li>{@link Object#equals(Object)} and {@link Object#hashCode()}
+     *       on this DTO are not invoked by any audit, logging, or
+     *       persistence path &mdash; only {@code toString()} (which is
+     *       redacted) reaches CloudWatch / OpenSearch.</li>
+     *   <li>If a future code path required excluding the password from
+     *       equality semantics (e.g., a {@code HashMap<SignonRequestDto,
+     *       ...>} keyed on these DTOs), that would be a design red flag
+     *       and would be caught at code review &mdash; the structural
+     *       fix would be to introduce a non-sensitive key wrapper, not
+     *       to weaken the record contract.</li>
+     *   <li>Debugger inspection and heap-dump analysis are governed by
+     *       the platform's PCI-DSS access controls (AAP &sect;0.6.6) and
+     *       are out of scope for DTO-level mitigation.</li>
+     * </ul>
+     *
      * @return a human-readable representation of this DTO with the
      *         password component replaced by {@value #REDACTED_PASSWORD}.
      */

@@ -476,10 +476,25 @@ public class RedisConfig {
      *   <li><b>Safe polymorphic typing via {@link BasicPolymorphicTypeValidator}:</b>
      *       activates Jackson default typing so that polymorphic domain
      *       objects (interface fields, abstract base classes) deserialize
-     *       to the correct concrete type. The validator is a whitelist
-     *       restricted to {@code com.awsm2.carddemo.*}, {@code java.util.*},
+     *       to the correct concrete type. The validator is a strict
+     *       subtype-only whitelist restricted to
+     *       {@code com.awsm2.carddemo.*}, {@code java.util.*},
      *       {@code java.lang.*}, {@code java.math.*}, and {@code java.time.*}
      *       &mdash; NOT the legacy unsafe {@code LaissezFaireSubTypeValidator}.
+     *       <p>An explicit
+     *       {@link BasicPolymorphicTypeValidator.Builder#denyForExactBaseType(Class)
+     *       denyForExactBaseType(Object.class)} rule blocks any attempt to
+     *       deserialize a JSON value whose nominal base type is the raw
+     *       {@link Object} class &mdash; this is the attack surface the
+     *       FasterXML team explicitly documents for shutting down Jackson
+     *       RCE gadgets (CVE-2017-7525 / CVE-2017-15095 family). The
+     *       previous configuration that called {@code allowIfBaseType(Object.class)}
+     *       defeated the subtype whitelist because any class assignment-
+     *       compatible with {@link Object} (i.e. every Java type) would
+     *       be admitted; the current configuration relies solely on
+     *       {@code allowIfSubType} for positive matches and on
+     *       {@code denyForExactBaseType} as belt-and-braces protection
+     *       against polymorphism rooted at {@link Object}.
      *       This prevents deserialization gadgets in arbitrary classpath
      *       packages (RCE protection per OWASP A08:2021).</li>
      *   <li><b>{@link com.fasterxml.jackson.databind.ObjectMapper.DefaultTyping#NON_FINAL}:</b>
@@ -501,8 +516,24 @@ public class RedisConfig {
         // Whitelist-based polymorphic typing — prevents Jackson RCE gadgets
         // while permitting safe deserialization of CardDemo domain types and
         // common JDK collection / number / time types.
+        //
+        // SECURITY NOTE: per Jackson `BasicPolymorphicTypeValidator` semantics,
+        // `allowIfBaseType(Object.class)` would admit ANY legal subtype for
+        // the `Object` base type — defeating the subtype whitelist below and
+        // re-opening the deserialization-gadget attack surface that the
+        // explicit `allowIfSubType(...)` rules are designed to close. This
+        // configuration therefore avoids `allowIfBaseType(Object.class)` and
+        // relies solely on `allowIfSubType` for positive matches.
+        //
+        // `denyForExactBaseType(Object.class)` is added explicitly per
+        // FasterXML guidance to block any JSON payload whose nominal base
+        // type is the raw `Object` class — the classic Jackson RCE gadget
+        // pattern (CVE-2017-7525 / CVE-2017-15095 family) embeds an
+        // `@class` hint under a base type of `Object` to coerce the
+        // deserializer into instantiating arbitrary classes. This deny
+        // rule short-circuits that pattern.
         BasicPolymorphicTypeValidator ptv = BasicPolymorphicTypeValidator.builder()
-                .allowIfBaseType(Object.class)
+                .denyForExactBaseType(Object.class)
                 .allowIfSubType("com.awsm2.carddemo.")
                 .allowIfSubType("java.util.")
                 .allowIfSubType("java.lang.")

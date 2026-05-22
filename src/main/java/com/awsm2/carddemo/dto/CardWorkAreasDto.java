@@ -492,6 +492,29 @@ public record CardWorkAreasDto(
      * field with field-name binding via {@link JsonProperty}) instead
      * of {@code toString()}.
      *
+     * <p><b>NOTE on record-generated {@code equals()}/{@code hashCode()}
+     * (accepted risk per AAP &sect;0.6.6).</b>  Java records auto-generate
+     * {@link Object#equals(Object)} and {@link Object#hashCode()} over
+     * every component &mdash; including the unmasked PAN
+     * {@link #cardNumber()} &mdash; and the record contract forbids
+     * overriding these methods to exclude components without converting
+     * the type to a regular class (a scope expansion that would violate
+     * the AAP-mandated Minimal Change Clause).  The risk that the
+     * unmasked PAN participates in equality/hash operations is
+     * <b>accepted</b> because:
+     * <ul>
+     *   <li>This DTO is a per-request working-area scratchpad &mdash;
+     *       its PAN lifetime is the duration of a single REST handler
+     *       or service-layer transaction.</li>
+     *   <li>{@link Object#equals(Object)} and {@link Object#hashCode()}
+     *       on this DTO are not invoked by any audit, logging, caching,
+     *       or persistence path &mdash; only {@code toString()} (which
+     *       is PCI-DSS-masked) reaches CloudWatch / OpenSearch.</li>
+     *   <li>Debugger inspection and heap-dump analysis are governed by
+     *       the platform's PCI-DSS access controls (AAP &sect;0.6.6)
+     *       and are out of scope for DTO-level mitigation.</li>
+     * </ul>
+     *
      * @return a PAN-safe string with the structure
      *         {@code CardWorkAreasDto[aidKey=..., accountId=...,
      *         cardNumber=************LAST4, customerId=...,

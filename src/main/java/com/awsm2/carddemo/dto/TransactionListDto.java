@@ -261,6 +261,36 @@ public record TransactionListDto(
 ) {
 
     /**
+     * Defensively masks a card-number-shaped string for safe logging.
+     *
+     * <p>The masking algorithm preserves only the last 4 characters and
+     * prefixes them with 12 asterisks, producing the PCI-DSS-compliant
+     * {@code "************nnnn"} form.  {@code null} inputs render as
+     * literal {@code null}; inputs shorter than 4 characters are rendered
+     * as {@code "****"} (fully masked) to avoid leaking partial digit
+     * information.
+     *
+     * <p>The masking is <b>idempotent</b>: a string already in the
+     * {@code "************nnnn"} form passes through unchanged.
+     *
+     * <p>This helper is used by {@link TransactionRow#toString()} as a
+     * defense-in-depth layer over the producer's pre-masking convention.
+     *
+     * @param value the card-number-shaped value to mask (may be {@code null})
+     * @return the masked representation, or {@code null} if the input is
+     *         {@code null}; otherwise the masked string
+     */
+    static String maskPan(String value) {
+        if (value == null) {
+            return null;
+        }
+        if (value.length() < 4) {
+            return "****";
+        }
+        return "************" + value.substring(value.length() - 4);
+    }
+
+    /**
      * One row of the paged transaction list.
      *
      * <p>Mirrors a single occurrence of the 10-row BMS table {@code COTRN0A}
@@ -428,10 +458,14 @@ public record TransactionListDto(
                     + "decimal-precision rule (never float/double for "
                     + "monetary values). The producer sets the scale to 2 "
                     + "with RoundingMode.HALF_EVEN before populating this "
-                    + "field.",
+                    + "field. The OpenAPI format is `decimal` (NOT "
+                    + "`double`) to advertise exact decimal precision to "
+                    + "generated clients per AAP \u00a70.6.1 (binary "
+                    + "floating-point semantics are forbidden for "
+                    + "monetary values).",
                     example = "123.45",
                     type = "number",
-                    format = "double")
+                    format = "decimal")
             @JsonProperty("amount")
             BigDecimal amount
     ) {
@@ -448,9 +482,10 @@ public record TransactionListDto(
          * <ul>
          *   <li>{@code transactionId} &mdash; non-sensitive primary key
          *       used to look up the full record in OpenSearch or RDS</li>
-         *   <li>{@code cardNumber} &mdash; the pre-masked value (safe by
-         *       construction, but emitted with a comment marker for the
-         *       benefit of code reviewers)</li>
+         *   <li>{@code cardNumber} &mdash; <b>defensively masked</b> via
+         *       {@link TransactionListDto#maskPan(String)} regardless of
+         *       whether the producer pre-masked the value (defense in
+         *       depth)</li>
          *   <li>{@code processingTimestamp} &mdash; non-sensitive temporal
          *       context</li>
          *   <li>{@code amount} &mdash; non-sensitive monetary context</li>
@@ -464,20 +499,57 @@ public record TransactionListDto(
          * remain available via {@code TransactionDetailDto} and OpenSearch
          * lookup by {@code transactionId}.
          *
-         * <p>Even though every field on this record is already PCI-safe
-         * (the card number is pre-masked at the producer), the explicit
-         * override provides defense in depth and a single audited
-         * location to update if the masking format or fields-of-interest
-         * for logging ever change.
+         * <p>Although the producer ({@code TransactionListService}) is
+         * expected to pre-mask the card number before constructing the
+         * row, {@link TransactionListDto#maskPan(String)} is applied here
+         * as <b>defense in depth</b> so any direct construction path
+         * (test fixtures, mappers, integration scenarios) that passes a
+         * raw 16-digit PAN cannot leak that PAN into CloudWatch Logs,
+         * OpenSearch indices, or any framework/interceptor that logs the
+         * row.  The {@code maskPan} helper is idempotent, so values that
+         * are already in the canonical {@code "************nnnn"} form
+         * pass through unchanged.
+         *
+         * <p><b>NOTE on record-generated {@code equals()}/{@code hashCode()}
+         * (accepted risk per AAP &sect;0.6.6).</b>  Java records auto-generate
+         * {@link Object#equals(Object)} and {@link Object#hashCode()} over
+         * every component &mdash; including {@link #cardNumber()} &mdash;
+         * and the record contract forbids overriding these methods to
+         * exclude components without converting the type to a regular
+         * class (a scope expansion that would violate the AAP-mandated
+         * Minimal Change Clause).  The risk that the (typically already
+         * masked) PAN participates in equality/hash operations is
+         * <b>accepted</b> because:
+         * <ul>
+         *   <li>The producer ({@code TransactionListService}) pre-masks
+         *       the PAN at row construction time, so the canonical
+         *       in-memory value is the masked form
+         *       ({@code ************XXXX}).</li>
+         *   <li>{@link Object#equals(Object)} and {@link Object#hashCode()}
+         *       on rows are not invoked by any audit, logging, caching,
+         *       or persistence path &mdash; only {@code toString()}
+         *       (defensively masked above) reaches CloudWatch /
+         *       OpenSearch.</li>
+         *   <li>Debugger inspection and heap-dump analysis are governed
+         *       by the platform's PCI-DSS access controls (AAP
+         *       &sect;0.6.6) and are out of scope for DTO-level
+         *       mitigation.</li>
+         * </ul>
          *
          * @return a string of the form
          *         {@code TransactionRow[transactionId=..., cardNumber=...,
          *         processingTimestamp=..., amount=..., description=...]}
+         *         with the card number defensively masked
          */
         @Override
         public String toString() {
+            // Defensive masking — the producer (TransactionListService)
+            // is expected to pre-mask the PAN per PCI-DSS Requirement
+            // 3.4, but maskPan() is applied here as defense in depth so
+            // a direct construction path with a raw PAN cannot leak it
+            // through toString(). The maskPan() helper is idempotent.
             return "TransactionRow[transactionId=" + transactionId
-                    + ", cardNumber=" + cardNumber  // already masked at producer
+                    + ", cardNumber=" + maskPan(cardNumber)
                     + ", processingTimestamp=" + processingTimestamp
                     + ", amount=" + amount
                     + ", description=" + description

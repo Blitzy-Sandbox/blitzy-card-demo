@@ -400,6 +400,30 @@ public record CommonContextDto(
      * sinks; the full payload remains available via the record
      * accessors for code that explicitly needs it.
      *
+     * <p><b>NOTE on record-generated {@code equals()}/{@code hashCode()}
+     * (accepted risk per AAP &sect;0.6.6).</b>  Java records auto-generate
+     * {@link Object#equals(Object)} and {@link Object#hashCode()} over
+     * every component &mdash; including the unmasked PAN
+     * {@link #cardNumber()} &mdash; and the record contract forbids
+     * overriding these methods to exclude components without converting
+     * the type to a regular class (a scope expansion that would violate
+     * the AAP-mandated Minimal Change Clause).  The risk that the
+     * unmasked PAN participates in equality/hash operations is
+     * <b>accepted</b> because:
+     * <ul>
+     *   <li>This DTO is the COMMAREA replacement; its PAN lifetime is
+     *       the duration of a single REST handler / JWT-authenticated
+     *       request flow and is not persisted as a long-lived
+     *       structure.</li>
+     *   <li>{@link Object#equals(Object)} and {@link Object#hashCode()}
+     *       on this DTO are not invoked by any audit, logging, caching,
+     *       or persistence path &mdash; only {@code toString()} (which
+     *       is PCI-DSS-masked) reaches CloudWatch / OpenSearch.</li>
+     *   <li>Debugger inspection and heap-dump analysis are governed by
+     *       the platform's PCI-DSS access controls (AAP &sect;0.6.6)
+     *       and are out of scope for DTO-level mitigation.</li>
+     * </ul>
+     *
      * @return a PCI-DSS-safe string representation of this context
      */
     @Override

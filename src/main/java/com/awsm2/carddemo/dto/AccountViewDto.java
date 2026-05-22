@@ -463,7 +463,46 @@ public record AccountViewDto(
                 example = "1980-05-15",
                 format = "date")
         @JsonProperty("dateOfBirth")
-        LocalDate dateOfBirth
+        LocalDate dateOfBirth,
+
+        @Schema(description = "Government-issued identifier (driver's license, "
+                + "passport, etc.). Maps to CUST-GOVT-ISSUED-ID PIC X(20) in "
+                + "CVCUS01Y.cpy and BMS field ACSGOVT PIC X(20) on the legacy "
+                + "COACTVW account-inquiry screen.",
+                example = "D12345678",
+                maxLength = 20)
+        @JsonProperty("governmentIssuedId")
+        String governmentIssuedId,
+
+        @Schema(description = "EFT (Electronic Funds Transfer) account "
+                + "identifier. Maps to CUST-EFT-ACCOUNT-ID PIC X(10) in "
+                + "CVCUS01Y.cpy and BMS field ACSEFTC PIC X(10) on the legacy "
+                + "COACTVW account-inquiry screen.",
+                example = "1234567890",
+                maxLength = 10)
+        @JsonProperty("eftAccountId")
+        String eftAccountId,
+
+        @Schema(description = "Primary card holder indicator ('Y' or 'N'). "
+                + "Maps to CUST-PRI-CARD-HOLDER-IND PIC X(01) in CVCUS01Y.cpy "
+                + "and BMS field ACSPFLG PIC X(01) on the legacy COACTVW "
+                + "account-inquiry screen.",
+                example = "Y",
+                maxLength = 1,
+                allowableValues = {"Y", "N", " "})
+        @JsonProperty("primaryCardHolderIndicator")
+        String primaryCardHolderIndicator,
+
+        @Schema(description = "FICO credit score (PIC 9(03), 0-999). Maps to "
+                + "CUST-FICO-CREDIT-SCORE PIC 9(03) in CVCUS01Y.cpy and BMS "
+                + "field ACSTFCO PIC 9(03) on the legacy COACTVW account-"
+                + "inquiry screen. The PIC clause permits 0-999; standard "
+                + "FICO scores fall within 300-850.",
+                example = "720",
+                minimum = "0",
+                maximum = "999")
+        @JsonProperty("ficoCreditScore")
+        Integer ficoCreditScore
 
 ) {
 
@@ -542,6 +581,10 @@ public record AccountViewDto(
                 + ", countryCode=" + countryCode
                 + ", zipCode=" + zipCode
                 + ", dateOfBirth=" + dateOfBirth
+                + ", governmentIssuedId=" + governmentIssuedId
+                + ", eftAccountId=" + eftAccountId
+                + ", primaryCardHolderIndicator=" + primaryCardHolderIndicator
+                + ", ficoCreditScore=" + ficoCreditScore
                 + "]";
     }
 }

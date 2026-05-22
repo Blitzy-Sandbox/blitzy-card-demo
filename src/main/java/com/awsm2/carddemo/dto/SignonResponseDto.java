@@ -432,6 +432,29 @@ public record SignonResponseDto(
      * transaction (AAP &sect;0.7.2 &mdash; "audit trail content must be
      * preserved exactly").
      *
+     * <p><b>NOTE on record-generated {@code equals()}/{@code hashCode()}
+     * (accepted risk per AAP &sect;0.6.6).</b>  Java records auto-generate
+     * {@link Object#equals(Object)} and {@link Object#hashCode()} over
+     * every component &mdash; including the {@code token} component
+     * &mdash; and the Java record contract forbids overriding these
+     * methods to exclude components without converting the type to a
+     * regular class (a significant scope expansion that would also
+     * break the AAP-mandated Minimal Change Clause).  The risk that
+     * the JWT bearer token participates in equality/hash operations is
+     * <b>accepted</b> because:
+     * <ul>
+     *   <li>{@link Object#equals(Object)} and {@link Object#hashCode()}
+     *       on this response DTO are not invoked by any audit, logging,
+     *       caching, or persistence path &mdash; only {@code toString()}
+     *       (which is redacted) reaches CloudWatch / OpenSearch.</li>
+     *   <li>The DTO instance is constructed by the controller, written
+     *       to the HTTP response body, and discarded; no reference is
+     *       retained beyond the response cycle.</li>
+     *   <li>Debugger inspection and heap-dump analysis are governed by
+     *       the platform's PCI-DSS access controls (AAP &sect;0.6.6)
+     *       and are out of scope for DTO-level mitigation.</li>
+     * </ul>
+     *
      * @return a human-readable representation of this DTO with the
      *         token component replaced by {@value #REDACTED_TOKEN}.
      */

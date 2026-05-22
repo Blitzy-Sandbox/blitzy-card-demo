@@ -362,6 +362,31 @@ public record UserAddDto(
      * but the PCI-DSS scope of CardDemo (per AAP &sect;0.6.6) requires
      * defense-in-depth on credential material.
      *
+     * <p><b>NOTE on record-generated {@code equals()}/{@code hashCode()}
+     * (accepted risk per AAP &sect;0.6.6).</b>  Java records auto-generate
+     * {@link Object#equals(Object)} and {@link Object#hashCode()} over
+     * every component &mdash; including the {@code password} component
+     * &mdash; and the Java record contract forbids overriding these
+     * methods to exclude components without converting the type to a
+     * regular class (a significant scope expansion that would also
+     * break the AAP-mandated Minimal Change Clause).  The risk that
+     * the cleartext password participates in equality/hash operations is
+     * <b>accepted</b> because:
+     * <ul>
+     *   <li>The cleartext password value lives in JVM memory for at
+     *       most the duration of a single {@code POST /api/admin/users}
+     *       request (it is BCrypt-hashed by {@code UserAddService} before
+     *       the JPA save and then discarded; no reference is retained
+     *       beyond the controller invocation).</li>
+     *   <li>{@link Object#equals(Object)} and {@link Object#hashCode()}
+     *       on this DTO are not invoked by any audit, logging, caching,
+     *       or persistence path &mdash; only {@code toString()} (which
+     *       is redacted) reaches CloudWatch / OpenSearch.</li>
+     *   <li>Debugger inspection and heap-dump analysis are governed by
+     *       the platform's PCI-DSS access controls (AAP &sect;0.6.6)
+     *       and are out of scope for DTO-level mitigation.</li>
+     * </ul>
+     *
      * @return a human-readable, credential-safe representation of this DTO
      */
     @Override

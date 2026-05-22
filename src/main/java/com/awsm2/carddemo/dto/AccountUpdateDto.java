@@ -598,9 +598,14 @@ public record AccountUpdateDto(
 
         @Size(max = 50,
                 message = "Address line 3 must be at most 50 characters")
-        @Schema(description = "Customer address line 3 (optional; not rendered "
-                        + "on the BMS COACTUP screen). Maps to "
-                        + "CUST-ADDR-LINE-3 PIC X(50).",
+        @Schema(description = "Customer address line 3 / city. Maps to "
+                        + "CUST-ADDR-LINE-3 PIC X(50) and BMS field ACSCITY "
+                        + "PIC X(50) on the COACTUP screen (line 392 of "
+                        + "app/bms/COACTUP.bms). The COBOL program "
+                        + "COACTUPC.cbl moves ACSCITYI directly to "
+                        + "ACUP-NEW-CUST-ADDR-LINE-3 (lines 1329-1333), "
+                        + "confirming that this field carries the city "
+                        + "value rendered in the BMS 'City' label.",
                 maxLength = 50)
         @JsonProperty("addressLine3")
         String addressLine3,
@@ -656,6 +661,95 @@ public record AccountUpdateDto(
                 requiredMode = Schema.RequiredMode.REQUIRED)
         @JsonProperty("dateOfBirth")
         LocalDate dateOfBirth,
+
+        /**
+         * Government-issued identifier (driver's license, passport, etc.)
+         * captured by {@code CUST-GOVT-ISSUED-ID PIC X(20)} in
+         * {@code CVCUS01Y.cpy} and rendered on the BMS {@code COACTUP}
+         * screen as the unprotected input field {@code ACSGOVT} (line 433
+         * of {@code app/bms/COACTUP.bms}, length 20).  Optional in the
+         * Customer record and on the BMS screen (no {@code @NotBlank}).
+         */
+        @Size(max = 20,
+                message = "Government-issued ID must be at most 20 characters")
+        @Schema(description = "Government-issued identifier (driver's license, "
+                        + "passport, etc.). Maps to CUST-GOVT-ISSUED-ID "
+                        + "PIC X(20) in CVCUS01Y.cpy and BMS field ACSGOVT "
+                        + "PIC X(20) on the COACTUP screen (line 433 of "
+                        + "app/bms/COACTUP.bms). Optional on the source "
+                        + "screen.",
+                example = "D12345678",
+                maxLength = 20)
+        @JsonProperty("governmentIssuedId")
+        String governmentIssuedId,
+
+        /**
+         * Electronic Funds Transfer (EFT) account identifier captured by
+         * {@code CUST-EFT-ACCOUNT-ID PIC X(10)} in {@code CVCUS01Y.cpy} and
+         * rendered on the BMS {@code COACTUP} screen as the unprotected
+         * input field {@code ACSEFTC} (line 464 of {@code app/bms/COACTUP.bms},
+         * length 10).  Optional in the Customer record and on the BMS screen.
+         */
+        @Size(max = 10,
+                message = "EFT account ID must be at most 10 characters")
+        @Schema(description = "EFT (Electronic Funds Transfer) account "
+                        + "identifier. Maps to CUST-EFT-ACCOUNT-ID PIC X(10) "
+                        + "in CVCUS01Y.cpy and BMS field ACSEFTC PIC X(10) "
+                        + "on the COACTUP screen (line 464 of "
+                        + "app/bms/COACTUP.bms). Optional on the source "
+                        + "screen.",
+                example = "1234567890",
+                maxLength = 10)
+        @JsonProperty("eftAccountId")
+        String eftAccountId,
+
+        /**
+         * Primary card holder indicator ({@code "Y"} or {@code "N"})
+         * captured by {@code CUST-PRI-CARD-HOLDER-IND PIC X(01)} in
+         * {@code CVCUS01Y.cpy} and rendered on the BMS {@code COACTUP}
+         * screen as the unprotected input field {@code ACSPFLG} (line 474
+         * of {@code app/bms/COACTUP.bms}, length 1).
+         */
+        @Pattern(regexp = "^[YN ]?$",
+                message = "Primary card holder indicator must be 'Y', 'N', or blank")
+        @Size(max = 1,
+                message = "Primary card holder indicator must be at most 1 character")
+        @Schema(description = "Primary card holder indicator ('Y' or 'N'). "
+                        + "Maps to CUST-PRI-CARD-HOLDER-IND PIC X(01) in "
+                        + "CVCUS01Y.cpy and BMS field ACSPFLG PIC X(01) on "
+                        + "the COACTUP screen (line 474 of "
+                        + "app/bms/COACTUP.bms).",
+                example = "Y",
+                maxLength = 1,
+                allowableValues = {"Y", "N", " "})
+        @JsonProperty("primaryCardHolderIndicator")
+        String primaryCardHolderIndicator,
+
+        /**
+         * FICO credit score ({@code 300}&ndash;{@code 850}) captured by
+         * {@code CUST-FICO-CREDIT-SCORE PIC 9(03)} in {@code CVCUS01Y.cpy}
+         * and rendered on the BMS {@code COACTUP} screen as the
+         * unprotected input field {@code ACSTFCO} (line 318 of
+         * {@code app/bms/COACTUP.bms}, length 3).  The 3-digit width on
+         * the BMS screen permits the full FICO range; the Java target
+         * applies a {@code @Min}/{@code @Max} bound as a defensive check.
+         */
+        @jakarta.validation.constraints.Min(value = 0,
+                message = "FICO credit score must be >= 0 (PIC 9(03) lower bound)")
+        @jakarta.validation.constraints.Max(value = 999,
+                message = "FICO credit score must be <= 999 (PIC 9(03) upper bound)")
+        @Schema(description = "FICO credit score (PIC 9(03), 0-999). Maps "
+                        + "to CUST-FICO-CREDIT-SCORE PIC 9(03) in "
+                        + "CVCUS01Y.cpy and BMS field ACSTFCO PIC 9(03) on "
+                        + "the COACTUP screen (line 318 of "
+                        + "app/bms/COACTUP.bms). The PIC clause permits "
+                        + "0-999; standard FICO scores fall within "
+                        + "300-850.",
+                example = "720",
+                minimum = "0",
+                maximum = "999")
+        @JsonProperty("ficoCreditScore")
+        Integer ficoCreditScore,
 
         // ===================================================================
         // Optimistic-locking version (replaces COACTUPC.cbl snapshot-compare)
@@ -756,6 +850,10 @@ public record AccountUpdateDto(
                 + ", countryCode=" + countryCode
                 + ", zipCode=" + zipCode
                 + ", dateOfBirth=" + dateOfBirth
+                + ", governmentIssuedId=" + governmentIssuedId
+                + ", eftAccountId=" + eftAccountId
+                + ", primaryCardHolderIndicator=" + primaryCardHolderIndicator
+                + ", ficoCreditScore=" + ficoCreditScore
                 + ", version=" + version
                 + "]";
     }

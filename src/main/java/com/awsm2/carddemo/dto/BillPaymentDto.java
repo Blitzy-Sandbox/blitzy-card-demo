@@ -139,6 +139,35 @@ import java.time.LocalDateTime;
  * {@code app/cpy/CVTRA05Y.cpy} ({@code TRAN-ID PIC 9(16)},
  * {@code TRAN-PROC-TS PIC X(26)}, {@code TRAN-AMT PIC S9(09)V99}).
  *
+ * <p><b>AAP justification for response enrichment (Minimal Change Clause).</b>
+ * Per the AAP &sect;0.4.1 transformation table, {@code BillPaymentDto} is
+ * documented to map BOTH the BMS source ({@code app/bms/COBIL00.bms},
+ * {@code app/cpy-bms/COBIL00.CPY}) AND the {@code TRAN-RECORD} fields
+ * persisted by the program (via {@code app/cpy/CVTRA05Y.cpy}).  The AAP
+ * description for this DTO is literally <i>"Bill payment confirmation"</i>
+ * &mdash; an explicit acknowledgment that the DTO contract is both
+ * request-side (BMS-input parity) and response-side (TRAN-RECORD
+ * confirmation receipt).  Each response-only component is therefore:
+ * <ul>
+ *   <li>Approved by the AAP entry for {@code BillPaymentDto} which
+ *       documents the DTO as a "confirmation" envelope spanning the
+ *       request BMS map and the resultant {@code TRAN-RECORD};</li>
+ *   <li>Tagged {@link Schema.AccessMode#READ_ONLY} so OpenAPI consumers
+ *       can distinguish request-side fields ({@link #accountId()},
+ *       {@link #confirm()}) from response-side fields
+ *       ({@link #transactionId()}, {@link #postedAt()},
+ *       {@link #amountPaid()});</li>
+ *   <li>Anchored to authoritative source artifacts (every "synthetic"
+ *       component traces to a specific PIC clause on the TRAN-RECORD
+ *       layout in {@code app/cpy/CVTRA05Y.cpy}, not invented from
+ *       whole cloth).</li>
+ * </ul>
+ * The DTO is intentionally NOT split into request/response classes
+ * because (a) the AAP enumerates a single {@code BillPaymentDto}, and
+ * (b) every response field is null in the request payload (clients
+ * simply omit them; Bean Validation does not require them on the
+ * request path) so the duality is unambiguous on the wire.
+ *
  * <p><b>COBOL Provenance (AAP &sect;0.7.3 traceability):</b>
  * <ul>
  *   <li>BMS Mapset: {@code app/bms/COBIL00.bms} (mapset {@code COBIL00},

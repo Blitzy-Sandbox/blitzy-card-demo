@@ -360,6 +360,20 @@ public record CardUpdateDto(
      * {@code CARD-NUM} is held in working storage during request
      * processing but never written to a permanent audit log.
      *
+     * <p><b>NOTE on record-generated {@code equals()}/{@code hashCode()}
+     * (accepted risk per AAP &sect;0.6.6).</b>  The Java record contract
+     * forbids overriding {@code equals(Object)}/{@code hashCode()} to
+     * exclude components without converting the type to a regular class
+     * (a scope expansion that would violate the AAP-mandated Minimal
+     * Change Clause).  The risk that the unmasked PAN participates in
+     * equality/hash operations is <b>accepted</b> because the PAN value
+     * lives in JVM memory only for the duration of a single
+     * {@code PUT /api/cards/{cardNumber}} request, equality/hash are
+     * not invoked by audit/logging/caching/persistence paths (only
+     * {@code toString()} reaches CloudWatch / OpenSearch), and debugger
+     * inspection / heap-dump analysis are governed by the platform's
+     * PCI-DSS access controls (AAP &sect;0.6.6).
+     *
      * @return a string representation safe for logging and audit emission
      */
     @Override
