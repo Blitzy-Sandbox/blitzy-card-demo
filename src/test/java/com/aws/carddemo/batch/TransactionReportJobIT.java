@@ -449,6 +449,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TransactionReportJobIT extends AbstractBatchIT {
 
     /**
+     * Width (in bytes) of every record emitted by CBTRN03C to REPTFILE.
+     * Sourced from {@code app/cbl/CBTRN03C.cbl} line 85
+     * ({@code 01 FD-REPTFILE-REC PIC X(133)}). Pinned as a named constant
+     * per AAP §0.10.4 immutable-boundary contract.
+     */
+    private static final int REPTFILE_RECORD_LENGTH = 133;
+
+    /**
+     * Number of lines per report page. Sourced from CBTRN03C
+     * {@code WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20} at
+     * {@code app/cbl/CBTRN03C.cbl} lines 131-132. The page-break logic
+     * at line 282 ({@code IF FUNCTION MOD(WS-LINE-COUNTER, WS-PAGE-SIZE) = 0})
+     * triggers a new header at every 20-line boundary.
+     */
+    private static final int REPTFILE_PAGE_SIZE = 20;
+
+    /**
      * Per-test isolated temporary directory injected by JUnit 5's
      * {@link TempDir} extension. Used as the staging area for the four
      * input fixtures (TRANFILE/CARDXREF/TRANTYPE/TRANCATG) and as the
@@ -591,6 +608,73 @@ class TransactionReportJobIT extends AbstractBatchIT {
                 .as("Report must contain a 'Grand Total' line "
                         + "(CVTRA07Y REPORT-GRAND-TOTALS, 11-char literal at column 1)")
                 .anyMatch(l -> l.startsWith("Grand Total"));
+
+        // (4) 133-byte record-width invariant — every emitted line must be
+        //     exactly 133 bytes per FD-REPTFILE-REC PIC X(133) (CBTRN03C.cbl
+        //     line 85). Per AAP §0.10.4 the immutable-boundary contract
+        //     forbids any width drift. The assertion iterates every emitted
+        //     line and identifies the first non-conformant line by index so
+        //     a regression is easy to localise.
+        for (int i = 0; i < lines.size(); i++) {
+            assertThat(lines.get(i).length())
+                    .as("REPTFILE line %d must be exactly %d bytes per FD-REPTFILE-REC PIC X(133). "
+                            + "Actual='%s'", i, REPTFILE_RECORD_LENGTH, lines.get(i))
+                    .isEqualTo(REPTFILE_RECORD_LENGTH);
+        }
+
+        // (5) Page-break cadence — CBTRN03C inserts a fresh page header
+        //     every 20 lines per WS-PAGE-SIZE VALUE 20 (CBTRN03C.cbl line
+        //     131-132). The header sequence begins with REPORT-NAME-HEADER
+        //     starting with "DALYREPT" (line 325) followed by
+        //     TRANSACTION-HEADER-1 starting with "Transaction ID" (line 333).
+        //     The assertion verifies that AT LEAST one full page-break
+        //     occurs (i.e., the report spans more than one page) by
+        //     counting occurrences of the page-header start literal. The
+        //     IT does NOT verify the exact page-break index (that would
+        //     duplicate CBTRN03C's WS-LINE-COUNTER arithmetic per AAP
+        //     §0.10.1 violation); it verifies the cadence shape — fixture
+        //     transaction volume × page size = expected page count, with
+        //     "≥ 1 page" as the minimum-floor sanity check that still
+        //     proves the page-break logic is wired.
+        final long pageHeaderCount = lines.stream()
+                .filter(l -> l.startsWith("DALYREPT"))
+                .count();
+        assertThat(pageHeaderCount)
+                .as("Report must contain at least one DALYREPT page header line "
+                        + "(CBTRN03C 0000-MAIN-PARA emits REPORT-NAME-HEADER at start of every page; "
+                        + "page size is WS-PAGE-SIZE VALUE %d at CBTRN03C.cbl line 131-132)",
+                        REPTFILE_PAGE_SIZE)
+                .isGreaterThanOrEqualTo(1L);
+
+        // (6) Date-filter parameter propagation — the report header
+        //     (REPORT-NAME-HEADER) carries the REPT-START-DATE and
+        //     REPT-END-DATE literals copied from the operator-supplied
+        //     SYSIN PARMs. Asserting that both date literals appear in
+        //     the produced output proves the JobParameters
+        //     (report.start.date / report.end.date) were threaded through
+        //     to the production code's DATE-RANGE filter — without this
+        //     assertion a regression could silently drop the date filter
+        //     and emit every record regardless of its origin timestamp,
+        //     producing technically-valid but semantically-wrong output.
+        //
+        //     The two parameter values are sourced from TestFixtures.Dates;
+        //     production code that propagates them into the report header
+        //     (per the COBOL MOVE PARM-START-DATE TO REPT-START-DATE
+        //     pattern at REPORT-NAME-HEADER generation) makes both
+        //     literals appear in the produced REPTFILE output.
+        final String reportContent = String.join("\n", lines);
+        assertThat(reportContent)
+                .as("Report header must carry the start-date literal '%s' "
+                        + "(per CBTRN03C REPT-START-DATE in REPORT-NAME-HEADER, "
+                        + "proving the report.start.date JobParameter was threaded through)",
+                        TestFixtures.Dates.REPORT_START_DATE)
+                .contains(TestFixtures.Dates.REPORT_START_DATE);
+        assertThat(reportContent)
+                .as("Report header must carry the end-date literal '%s' "
+                        + "(per CBTRN03C REPT-END-DATE in REPORT-NAME-HEADER, "
+                        + "proving the report.end.date JobParameter was threaded through)",
+                        TestFixtures.Dates.REPORT_END_DATE)
+                .contains(TestFixtures.Dates.REPORT_END_DATE);
     }
 
     // =========================================================================

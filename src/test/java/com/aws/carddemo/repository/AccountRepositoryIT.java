@@ -89,22 +89,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     test class and each method so IDE runner output and CI test reports
 //     surface the COBOL-parity intent (rather than the camelCase method
 //     name alone).
-//
-//   * @Disabled defers <em>runtime</em> execution until the production-
-//     side prerequisites (JPA @Entity/@Id/@Column/@Version annotations on
-//     Account + Flyway V1__schema.sql + V3__seed.sql) are landed by
-//     subsequent REFACTOR-flavor migration agents. JUnit 5 reports
-//     @Disabled tests as "skipped" (not "failed") so the Surefire/Failsafe
-//     build stays green; the reactivation criteria appear in the
-//     annotation's value attribute and in the class-level Javadoc
-//     "Reactivation Checklist" section. The sibling
-//     {@code CustomerRepositoryIT}, {@code UserSecurityRepositoryIT},
-//     {@code TransactionCategoryRepositoryIT},
-//     {@code TransactionTypeRepositoryIT}, and
-//     {@code DiscountGroupRepositoryIT} use the same @Disabled pattern —
-//     this IT mirrors that established project convention so the
-//     compile-time wiring is verified end-to-end while the runtime DB
-//     execution awaits its production-side dependencies.
 // ---------------------------------------------------------------------------
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -188,6 +172,7 @@ import org.springframework.dao.OptimisticLockingFailureException;
 // ---------------------------------------------------------------------------
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Optional;
 
 // ---------------------------------------------------------------------------
@@ -368,25 +353,20 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  *       non-negative tally.</li>
  * </ul>
  *
- * <h2>Custom-Finder Tests Deferred</h2>
+ * <h2>Custom-Finder Tests</h2>
  *
  * <p>AAP §0.5.1 enumerates "custom queries (by customer ID, by status)"
- * as part of the AccountRepositoryIT coverage scope. As of this commit
- * the production {@link AccountRepository} interface declares ONLY the
- * inherited {@code JpaRepository<Account, String>} methods
- * ({@code findById}, {@code save}, {@code findAll}, {@code count},
- * {@code deleteById}, etc.) — the COCRDLIC card-list query
- * {@code findByCustomerId(String)} and the reporting query
- * {@code findAllByActiveStatus(String)} are documented in the production
- * AccountRepository Javadoc as "Subsequent migration agents (REFACTOR
- * flavor) will add custom query methods". Test methods that exercise
- * those methods cannot compile until the methods exist on the production
- * repository. The AAP §0.10.2 Minimal Change Clause and AAP §0.8.1
- * scope-boundary clause forbid this IT from modifying the production
- * AccountRepository for the purpose of test compilation. The
- * by-customer-id and by-active-status custom-finder tests are therefore
- * documented in the "Reactivation Checklist" below as a step the next
- * REFACTOR agent will complete alongside the @Version annotation work.
+ * as part of the AccountRepositoryIT coverage scope. The production
+ * {@link AccountRepository} interface now declares the COCRDLIC
+ * card-list query {@code findByCustomerId(String)} and the reporting
+ * query {@code findByActiveStatus(String)} alongside the inherited
+ * {@code JpaRepository<Account, String>} methods. The custom-finder
+ * paths are exercised by
+ * {@link #findByCustomerId_existingCustomer_returnsMatchingAccounts()},
+ * {@link #findByCustomerId_unknownCustomer_returnsEmptyList()},
+ * {@link #findByCustomerId_multipleAccounts_returnsOnlyTargetCustomerAccounts()},
+ * {@link #findByActiveStatus_active_returnsActiveAccountsOnly()}, and
+ * {@link #findByActiveStatus_inactive_returnsInactiveAccountsOnly()}.
  *
  * <h2>Mock Boundary (AAP §0.10.1 Require Test Coverage Rule)</h2>
  *
@@ -425,135 +405,33 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * method end. This means the synthetic accounts persisted by every test
  * in this class are gone before the next test sees the database state.
  * Each test starts from the Flyway-seeded account catalog (50 rows from
- * {@code app/data/ASCII/acctdata.txt} once the V3__seed.sql Flyway
- * script lands per the Reactivation Checklist below); test order
+ * {@code app/data/ASCII/acctdata.txt} via V3__seed.sql); test order
  * independence is guaranteed.
  *
- * <h2>Why this class is currently {@code @Disabled}</h2>
+ * <h2>Activation State</h2>
  *
- * <p>The suite loads the {@code @DataJpaTest} Spring slice via
+ * <p>This IT is active and executes under {@code mvn verify} (Failsafe).
+ * The suite loads the {@code @DataJpaTest} Spring slice via
  * {@link AbstractRepositoryIT} and exercises the production
  * {@link AccountRepository} bean against a real PostgreSQL 16
- * database. That requires every production-side prerequisite to be in
- * place: the {@link Account} entity must be annotated as a JPA
- * {@code @Entity} (with {@code @Id} on {@code accountId},
- * {@code @Column} annotations on every field, {@code @Version} on
- * {@code version}, etc.) so Hibernate can map the entity onto a
- * database table, and the Flyway scripts under
- * {@code src/main/resources/db/migration/} must exist to create the
- * {@code accounts} table and seed reference accounts. As of this commit
- * those production-side prerequisites are <em>intentionally deferred</em>
- * by the REFACTOR-flavor migration agents.
+ * database. The {@link Account} entity carries the required JPA
+ * annotations ({@code @Entity}, {@code @Id}, {@code @Column},
+ * {@code @Version}) so Hibernate maps the entity onto the
+ * {@code accounts} table created by Flyway {@code V1__schema.sql} and
+ * seeded by {@code V3__seed.sql}. The custom-finder coverage required
+ * by AAP §0.5.1 ({@code findByCustomerId(String)} and
+ * {@code findByActiveStatus(String)}) is exercised by dedicated test
+ * methods below in addition to the {@code findById} / save /
+ * optimistic-locking happy paths.
  *
- * <p>This testing-flavor AAP (§0.8.1 "Cross-cutting files that the
- * migration creates and that this Action Plan exercises (but does not
- * own)") <strong>explicitly forbids</strong> modifying any production
- * source under {@code src/main/java/com/aws/carddemo/} for the purpose
- * of <em>testability alone</em>: the testing flavor CREATEs tests
- * against those classes but does NOT redesign them. The suite is
- * therefore registered, compiled, and preserved end-to-end (the
- * production stubs created alongside this IT enable compilation), but
- * the JUnit Jupiter {@code @Disabled} marker below defers
- * <em>runtime</em> execution until the production-side migration
- * agents complete the JPA annotation and Flyway seed work. Once both
- * arrive, removing the {@code @Disabled} annotation (and its companion
- * unused import) activates all 8 tests unchanged. The sibling
- * {@code CustomerRepositoryIT}, {@code UserSecurityRepositoryIT},
- * {@code TransactionCategoryRepositoryIT},
- * {@code TransactionTypeRepositoryIT}, and
- * {@code DiscountGroupRepositoryIT} use the same {@code @Disabled}
- * pattern — this IT mirrors that established project convention.
+ * <h3>Operational Prerequisite</h3>
  *
- * <h3>Reactivation Checklist (for the next REFACTOR-flavor agent)</h3>
- *
- * <p>Remove the {@code @Disabled} annotation (and the unused
- * {@code org.junit.jupiter.api.Disabled} import) once <em>all</em> of
- * the following production-side prerequisites are in place:
- *
- * <ol>
- *   <li><strong>{@code @Entity} + {@code @Id} + {@code @Column} +
- *       {@code @Version} on {@link com.aws.carddemo.entity.Account}</strong>
- *       — REFACTOR agents add {@code @Entity},
- *       {@code @Table(name = "accounts")},
- *       {@code @Id} on {@code accountId},
- *       {@code @Column(name = "acct_id", length = 11, nullable = false)}
- *       on {@code accountId},
- *       {@code @Column(name = "active_status", length = 1)} on
- *       {@code activeStatus},
- *       {@code @Column(name = "curr_bal", precision = 12, scale = 2)}
- *       on {@code currentBalance},
- *       {@code @Column(name = "credit_limit", precision = 12, scale = 2)}
- *       on {@code creditLimit},
- *       {@code @Column(name = "cash_credit_limit", precision = 12, scale = 2)}
- *       on {@code cashCreditLimit},
- *       {@code @Column(name = "open_date", length = 10)} on
- *       {@code openDate} (preserving the COBOL {@code PIC X(10)} ISO
- *       {@code YYYY-MM-DD} string contract),
- *       {@code @Column(name = "expiration_date", length = 10)} on
- *       {@code expirationDate} (note the Java field name corrects the
- *       COBOL ACCT-EXPIRAION-DATE misspelling; the COLUMN name may
- *       retain the misspelling for source-of-truth fidelity or be
- *       corrected — both options preserve the AAP §0.10.4 immutable
- *       boundary as long as the {@code length = 10} matches the COBOL
- *       PIC X(10) field width),
- *       {@code @Column(name = "reissue_date", length = 10)} on
- *       {@code reissueDate},
- *       {@code @Column(name = "curr_cyc_credit", precision = 12, scale = 2)}
- *       on {@code currentCycleCredit},
- *       {@code @Column(name = "curr_cyc_debit", precision = 12, scale = 2)}
- *       on {@code currentCycleDebit},
- *       {@code @Column(name = "addr_zip", length = 10)} on
- *       {@code addressZip},
- *       {@code @Column(name = "group_id", length = 10)} on
- *       {@code groupId},
- *       {@code @Column(name = "customer_id", length = 9)} on
- *       {@code customerId} (denormalised FK; Java-migration addition),
- *       and {@code @Version @Column(name = "version")} on
- *       {@code version}. Without these annotations Hibernate cannot
- *       map the entity onto the PostgreSQL table and
- *       {@code @DataJpaTest} context startup fails.</li>
- *   <li><strong>Flyway {@code V1__schema.sql}</strong> under
- *       {@code src/main/resources/db/migration/} containing a CREATE
- *       TABLE statement for {@code accounts} with column types matching
- *       the COBOL {@code PIC} clauses verbatim: {@code acct_id CHAR(11)}
- *       for {@code PIC 9(11)}, every monetary field
- *       {@code NUMERIC(12, 2)} for {@code PIC S9(10)V99} (10 integer
- *       digits plus 2 fractional digits = 12 total), date fields
- *       {@code CHAR(10)} for {@code PIC X(10)} ISO date strings, and
- *       {@code version BIGINT NOT NULL DEFAULT 0} for JPA optimistic-
- *       locking support.</li>
- *   <li><strong>Flyway {@code V3__seed.sql}</strong> (optional for this
- *       IT — every test seeds its own accounts via the inherited
- *       {@code TestEntityManager}; a project-wide seed of 50 rows from
- *       {@code app/data/ASCII/acctdata.txt} is documented in AAP §0.5.1
- *       but is not strictly required to activate this class).</li>
- *   <li><strong>Custom-finder methods on
- *       {@link AccountRepository}</strong> — the AAP §0.5.1 "custom
- *       queries (by customer ID, by status)" coverage is currently
- *       deferred because the production repository does not yet declare
- *       {@code findByCustomerId(String)} or
- *       {@code findAllByActiveStatus(String)} method signatures. Once
- *       REFACTOR agents add those signatures (per the production
- *       AccountRepository Javadoc's explicit deferral note), the
- *       corresponding by-customer-id and by-active-status test methods
- *       should be added to this IT class. The pattern mirrors the
- *       {@code UserSecurityRepositoryIT.findByUserType_*} tests already
- *       in the suite.</li>
- *   <li><strong>Docker available to Testcontainers</strong> at test
- *       runtime — the {@code mvn verify} build agent must be able to
- *       run {@code postgres:16-alpine}. CI agents that cannot start
- *       containers (e.g. nested-virtualisation-free environments) can
- *       set {@code TESTCONTAINERS_RYUK_DISABLED=true} as documented in
- *       {@code src/test/resources/application-test.properties}.</li>
- * </ol>
- *
- * <p>When items 1–3 and 5 above are complete, deleting the
- * {@code @Disabled} annotation and the
- * {@code import org.junit.jupiter.api.Disabled;} line activates the
- * suite. Item 4 (custom-finder tests) is an enhancement to be added in
- * a subsequent commit. No other code changes are required: the existing
- * 8 test method bodies are written against the production API exactly
- * as it will be once the REFACTOR work completes.
+ * <p>Docker must be available to Testcontainers at test runtime — the
+ * {@code mvn verify} build agent must be able to run
+ * {@code postgres:16-alpine}. CI agents that cannot start containers
+ * (e.g. nested-virtualisation-free environments) can set
+ * {@code TESTCONTAINERS_RYUK_DISABLED=true} as documented in
+ * {@code src/test/resources/application-test.properties}.
  *
  * @see AccountRepository
  * @see Account
@@ -1169,6 +1047,218 @@ class AccountRepositoryIT extends AbstractRepositoryIT {
     }
 
     // =========================================================================
+    // Custom-Finder Tests (AAP §0.5.1 — by customer ID, by active status)
+    // =========================================================================
+
+    /**
+     * Verifies that
+     * {@link AccountRepository#findByCustomerId(String)} returns the
+     * account row(s) whose denormalised {@code customer_id} foreign-key
+     * column equals the supplied 9-character customer identifier. The
+     * canonical fixture customer {@code SAMPLE_CUSTOMER_ID_10} is set
+     * on the synthetic account by
+     * {@link #buildSyntheticAccount(String, BigDecimal, BigDecimal, String)},
+     * so we can assert at least that one row comes back without
+     * relying on Flyway seed details that might shift over time.
+     *
+     * <p>COBOL provenance: COCRDLIC.cbl's customer-scoped browse over
+     * the {@code ACCTDAT} alternate-index by {@code CUST-ID}.
+     *
+     * <p>Mock boundary: none — the production repository is exercised
+     * against the real PostgreSQL container (AAP §0.10.1).
+     */
+    @Test
+    @DisplayName("findByCustomerId(existing CUST-ID) returns matching accounts (COCRDLIC parity)")
+    void findByCustomerId_existingCustomer_returnsMatchingAccounts() {
+        // Arrange — seed a synthetic account with the canonical
+        // SAMPLE_CUSTOMER_ID_10 foreign-key value.
+        Account seeded = buildSyntheticAccount(
+                "20000000010",
+                new BigDecimal("100.00"),
+                new BigDecimal("5000.00"),
+                "Y");
+        seeded.setCustomerId(TestFixtures.Customers.SAMPLE_CUSTOMER_ID_10);
+        entityManager.persistAndFlush(seeded);
+        entityManager.clear();
+
+        // Act — drive the derived query against the real repository.
+        List<Account> results = accountRepository.findByCustomerId(
+                TestFixtures.Customers.SAMPLE_CUSTOMER_ID_10);
+
+        // Assert — every returned account carries the requested
+        // customerId; the size is at least 1 (the row we seeded).
+        assertThat(results)
+                .as("findByCustomerId must return at least the seeded account")
+                .isNotNull()
+                .isNotEmpty()
+                .allSatisfy(a -> assertThat(a.getCustomerId())
+                        .as("Every returned account must match the customer ID filter")
+                        .isEqualTo(TestFixtures.Customers.SAMPLE_CUSTOMER_ID_10));
+    }
+
+    /**
+     * Verifies that
+     * {@link AccountRepository#findByCustomerId(String)} returns an
+     * empty (but non-{@code null}) list when no row matches the
+     * supplied customer identifier. This corresponds to the COBOL
+     * {@code DFHRESP(NOTFND)} response on the {@code STARTBR /
+     * READNEXT} alternate-index walk.
+     */
+    @Test
+    @DisplayName("findByCustomerId(unknown CUST-ID) returns empty list (DFHRESP(NOTFND) parity)")
+    void findByCustomerId_unknownCustomer_returnsEmptyList() {
+        // Act — query for a customer ID guaranteed to never appear.
+        List<Account> results = accountRepository.findByCustomerId(
+                TestFixtures.Customers.NONEXISTENT_CUSTOMER_ID);
+
+        // Assert — Spring Data List-typed derived queries return an
+        // empty list (never null) for unmatched filters.
+        assertThat(results)
+                .as("findByCustomerId for an unknown customer must return an "
+                        + "empty list (never null)")
+                .isNotNull()
+                .isEmpty();
+    }
+
+    /**
+     * Verifies that
+     * {@link AccountRepository#findByCustomerId(String)} discriminates
+     * between distinct customers — seeding two accounts on two
+     * different customers and asserting the finder returns only the
+     * row matching the target customer. A buggy WHERE clause (e.g.
+     * missing the customer-ID predicate) would silently return both
+     * rows and fail this assertion.
+     */
+    @Test
+    @DisplayName("findByCustomerId discriminates among multiple customers (returns only target customer's accounts)")
+    void findByCustomerId_multipleAccounts_returnsOnlyTargetCustomerAccounts() {
+        // Arrange — seed two synthetic accounts on two distinct
+        // customers. Account 1 belongs to customer 000000001;
+        // Account 2 belongs to customer 000000050.
+        Account customer01Account = buildSyntheticAccount(
+                "20000000011",
+                new BigDecimal("100.00"),
+                new BigDecimal("5000.00"),
+                "Y");
+        customer01Account.setCustomerId(TestFixtures.Customers.SAMPLE_CUSTOMER_ID_01);
+        entityManager.persist(customer01Account);
+
+        Account customer50Account = buildSyntheticAccount(
+                "20000000012",
+                new BigDecimal("200.00"),
+                new BigDecimal("8000.00"),
+                "Y");
+        customer50Account.setCustomerId(TestFixtures.Customers.SAMPLE_CUSTOMER_ID_50);
+        entityManager.persist(customer50Account);
+
+        entityManager.flush();
+        entityManager.clear();
+
+        // Act — request the customer 000000001 accounts only.
+        List<Account> results = accountRepository.findByCustomerId(
+                TestFixtures.Customers.SAMPLE_CUSTOMER_ID_01);
+
+        // Assert — every returned account belongs to customer 01;
+        // none belongs to customer 50.
+        assertThat(results)
+                .as("findByCustomerId must return only target-customer accounts")
+                .isNotEmpty()
+                .allSatisfy(a -> assertThat(a.getCustomerId())
+                        .isEqualTo(TestFixtures.Customers.SAMPLE_CUSTOMER_ID_01))
+                .noneSatisfy(a -> assertThat(a.getCustomerId())
+                        .isEqualTo(TestFixtures.Customers.SAMPLE_CUSTOMER_ID_50));
+    }
+
+    /**
+     * Verifies that
+     * {@link AccountRepository#findByActiveStatus(String)} returns
+     * only accounts whose {@code ACCT-ACTIVE-STATUS PIC X(01)} flag
+     * equals {@code "Y"}. We seed one active and one inactive
+     * synthetic row to disambiguate the predicate.
+     *
+     * <p>COBOL provenance: the reporting and validation pattern
+     * {@code IF ACCT-ACTIVE-STATUS = 'Y'} used across the
+     * transaction-validation cascade (e.g. CBTRN02C reject code 102).
+     */
+    @Test
+    @DisplayName("findByActiveStatus('Y') returns only active accounts")
+    void findByActiveStatus_active_returnsActiveAccountsOnly() {
+        // Arrange — seed two synthetic accounts: one active, one
+        // inactive.
+        Account active = buildSyntheticAccount(
+                "20000000013",
+                new BigDecimal("0.00"),
+                new BigDecimal("1000.00"),
+                "Y");
+        Account inactive = buildSyntheticAccount(
+                "20000000014",
+                new BigDecimal("0.00"),
+                new BigDecimal("1000.00"),
+                "N");
+        entityManager.persist(active);
+        entityManager.persist(inactive);
+        entityManager.flush();
+        entityManager.clear();
+
+        // Act — request active accounts only.
+        List<Account> results = accountRepository.findByActiveStatus("Y");
+
+        // Assert — every returned account has activeStatus 'Y'.
+        assertThat(results)
+                .as("findByActiveStatus must include the seeded active row")
+                .isNotNull()
+                .isNotEmpty()
+                .allSatisfy(a -> assertThat(a.getActiveStatus())
+                        .as("Every returned account must have active status 'Y'")
+                        .isEqualTo("Y"));
+    }
+
+    /**
+     * Verifies that
+     * {@link AccountRepository#findByActiveStatus(String)} returns
+     * only accounts whose {@code activeStatus} equals {@code "N"} —
+     * the inverse case of the previous test, proving the predicate is
+     * actually applied and not silently dropped.
+     */
+    @Test
+    @DisplayName("findByActiveStatus('N') returns only inactive accounts")
+    void findByActiveStatus_inactive_returnsInactiveAccountsOnly() {
+        // Arrange — seed one synthetic active and one synthetic
+        // inactive account.
+        Account active = buildSyntheticAccount(
+                "20000000015",
+                new BigDecimal("0.00"),
+                new BigDecimal("1000.00"),
+                "Y");
+        Account inactive = buildSyntheticAccount(
+                "20000000016",
+                new BigDecimal("0.00"),
+                new BigDecimal("1000.00"),
+                "N");
+        entityManager.persist(active);
+        entityManager.persist(inactive);
+        entityManager.flush();
+        entityManager.clear();
+
+        // Act — request inactive accounts only.
+        List<Account> results = accountRepository.findByActiveStatus("N");
+
+        // Assert — every returned account has activeStatus 'N'; the
+        // seeded inactive row is present; the seeded active row is
+        // absent.
+        assertThat(results)
+                .as("findByActiveStatus('N') must include the seeded inactive row")
+                .isNotNull()
+                .isNotEmpty()
+                .allSatisfy(a -> assertThat(a.getActiveStatus())
+                        .as("Every returned account must have active status 'N'")
+                        .isEqualTo("N"));
+        assertThat(results)
+                .as("findByActiveStatus('N') must not include any active rows")
+                .noneSatisfy(a -> assertThat(a.getActiveStatus()).isEqualTo("Y"));
+    }
+
+    // =========================================================================
     // Synthetic Account Builder (Test Helper — no business logic per AAP §0.10.1)
     // =========================================================================
 
@@ -1242,7 +1332,3 @@ class AccountRepositoryIT extends AbstractRepositoryIT {
     }
 
 }
-
-
-
-

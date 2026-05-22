@@ -680,6 +680,44 @@ class CombineTransactionsJobIT extends AbstractBatchIT {
                             TRAN_ID_LENGTH, i, prevTranId, currTranId)
                     .isGreaterThanOrEqualTo(prevTranId);
         }
+
+        // ---- Assert: TRAN-ID uniqueness / dedup contract (AAP §0.5.1 "dedup,
+        //                                                   key collision") ----
+        // The COMBTRAN.jcl DFSORT step concatenates two distinct datasets
+        // (AWS.M2.CARDDEMO.TRANSACT.BKUP(0) — yesterday's posted transactions
+        // — and AWS.M2.CARDDEMO.SYSTRAN(0) — system-generated transactions
+        // from INTCALC) keyed on TRAN-ID (PIC X(16)). By the upstream
+        // pipeline design these two datasets occupy DISJOINT TRAN-ID subspaces:
+        //   * POSTTRAN.jcl emits TRAN-IDs that begin with the dailytran.txt
+        //     prefix family (e.g. TXN000000000xxxx for synthetic fixtures)
+        //   * INTCALC.jcl emits TRAN-IDs that begin with the INTCALC date
+        //     prefix (e.g. 2022071800nnnnnn — see TestFixtures.Dates.INTCALC_PARM
+        //     and TestFixtures.Transactions.SAMPLE_INTEREST_TRANSACTION_ID)
+        // so the merge cannot legitimately produce duplicate TRAN-IDs and
+        // the output Set cardinality MUST equal the output List cardinality.
+        //
+        // If the production combineTransactionsJob ever emits a duplicate
+        // TRAN-ID — whether by accidentally double-reading one SORTIN, by
+        // re-emitting a key on collision rather than rejecting it, or by
+        // any DFSORT-replacement misconfiguration — this assertion fires
+        // and pinpoints the regression. The check directly enforces the
+        // §0.5.1 "dedup / key-collision handling" contract.
+        //
+        // Implementation note: We compare a Set's size to the List's size
+        // rather than building a frequency map. The assertion fails fast
+        // with the exact line count delta, leaving root-cause investigation
+        // to the produced output file (which JUnit @TempDir keeps until the
+        // JVM exits the test class).
+        final List<String> outputTranIds = outputLines.stream()
+                .map(line -> line.substring(0, TRAN_ID_LENGTH))
+                .toList();
+        assertThat(outputTranIds)
+                .as("Output TRAN-IDs must be unique — duplicates indicate a key-collision "
+                        + "regression in the DFSORT-replacement merge. Per AAP §0.5.1 the "
+                        + "COMBTRAN merge step must NOT emit duplicate TRAN-IDs because the "
+                        + "two SORTIN DDs (POSTTRAN backup + INTCALC systran) carry disjoint "
+                        + "TRAN-ID subspaces by upstream-pipeline construction.")
+                .doesNotHaveDuplicates();
     }
 
     // =========================================================================

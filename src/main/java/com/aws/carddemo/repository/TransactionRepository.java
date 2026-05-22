@@ -23,6 +23,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.math.BigDecimal;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -249,4 +251,112 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *         paragraph lines 484–488).
      */
     Optional<Transaction> findTopByOrderByTransactionIdDesc();
+
+    /**
+     * Page through {@link Transaction} rows whose
+     * {@link Transaction#getOriginTimestamp() originTimestamp} falls
+     * within the supplied inclusive {@code [startTimestamp,
+     * endTimestamp]} window.
+     *
+     * <p>Java replacement for the COBOL TRANREPT.jcl
+     * {@code TRAN-ORIG-TS &gt;= WS-START-DATE AND TRAN-ORIG-TS &lt;=
+     * WS-END-DATE} filter that the {@code CBTRN03C.cbl} transaction-
+     * detail-report program applies before printing each transaction
+     * record. Spring Data derives the equivalent JPQL
+     * {@code SELECT t FROM Transaction t WHERE t.originTimestamp
+     * BETWEEN :startTimestamp AND :endTimestamp} from this method name.
+     *
+     * <p>The {@code originTimestamp} column is
+     * {@code CHAR(26) PIC X(26)} — a fixed-width ISO-style timestamp
+     * string (e.g. {@code "2022-07-18-08.00.00.000000"}). Because the
+     * format is sortable lexicographically by design, a JPQL
+     * {@code BETWEEN} on this column produces the same row set as a
+     * timestamp-typed range query, and both endpoints are inclusive
+     * (matching the COBOL {@code >= ... AND <= ...} comparison).
+     *
+     * <p>Callers that want a date-only filter (no time-of-day) typically
+     * pass {@code "2022-07-18-00.00.00.000000"} as the start and
+     * {@code "2022-07-18-23.59.59.999999"} as the end. The
+     * {@code TRANREPT.jcl} report-submission service computes these
+     * boundary values from the operator-supplied YYYY-MM-DD date
+     * strings.
+     *
+     * @param startTimestamp inclusive lower bound of the timestamp
+     *                       range — must be a 26-character ISO
+     *                       timestamp string; must not be
+     *                       {@code null}.
+     * @param endTimestamp   inclusive upper bound of the timestamp
+     *                       range — must be a 26-character ISO
+     *                       timestamp string; must not be
+     *                       {@code null}.
+     * @param pageable       pagination request (page index + page
+     *                       size).
+     * @return a {@link Page} of {@link Transaction} rows whose
+     *         {@code originTimestamp} falls within the window; never
+     *         {@code null}. Empty page when no rows match.
+     */
+    Page<Transaction> findByOriginTimestampBetween(String startTimestamp,
+                                                  String endTimestamp,
+                                                  Pageable pageable);
+
+    /**
+     * Sum the {@link Transaction#getAmount() amount} of every
+     * {@link Transaction} whose {@code cardNumber} matches the
+     * supplied 16-character PAN, grouped by
+     * {@link Transaction#getTransactionCategoryCode()
+     * transactionCategoryCode}.
+     *
+     * <p>Java replacement for the COBOL CBSTM03A.cbl per-card aggregation
+     * pattern that totals each category's transactions before printing
+     * the statement summary block. The COBOL paragraph uses a
+     * {@code STARTBR / READNEXT WHILE TRAN-CARD-NUM = WS-CARD-NUM}
+     * browse to accumulate category-specific totals into
+     * {@code WS-CAT-TOT-PURCHASE}, {@code WS-CAT-TOT-CASH}, etc. Spring
+     * Data drives the equivalent SQL aggregate query that returns one
+     * row per distinct category code with the summed amount.
+     *
+     * <p>The query uses an explicit {@link Query @Query} JPQL string
+     * (rather than a Spring Data derived method name) because Spring
+     * Data does not support {@code GROUP BY} via method-name derivation
+     * — only via explicit JPQL or native SQL.
+     *
+     * @param cardNumber 16-character Visa-format PAN (e.g.
+     *                   {@code "4111111111111101"}); must not be
+     *                   {@code null}.
+     * @return a {@link List} of {@link CategoryAggregate} projections,
+     *         one per distinct {@code transactionCategoryCode}, with
+     *         the summed {@code amount}; never {@code null}. Empty
+     *         list when no rows match.
+     */
+    @Query("SELECT t.transactionCategoryCode AS transactionCategoryCode, "
+            + "SUM(t.amount) AS totalAmount "
+            + "FROM Transaction t "
+            + "WHERE t.cardNumber = :cardNumber "
+            + "GROUP BY t.transactionCategoryCode")
+    List<CategoryAggregate> sumAmountByCategoryForCard(@Param("cardNumber") String cardNumber);
+
+    /**
+     * Spring Data interface-based projection carrying one row of the
+     * {@link #sumAmountByCategoryForCard(String)} aggregate result:
+     * the transaction category code and the summed monetary amount.
+     *
+     * <p>Spring Data instantiates an automatic proxy that exposes these
+     * two getters; callers do not implement this interface manually.
+     */
+    interface CategoryAggregate {
+
+        /**
+         * @return the 4-character {@code transactionCategoryCode}
+         *         (PIC X(04) / CHAR(4)) on which this aggregate row
+         *         is grouped.
+         */
+        String getTransactionCategoryCode();
+
+        /**
+         * @return the {@link BigDecimal} sum of the
+         *         {@code amount NUMERIC(11,2)} column for the group;
+         *         scale is preserved by the SQL aggregate.
+         */
+        BigDecimal getTotalAmount();
+    }
 }

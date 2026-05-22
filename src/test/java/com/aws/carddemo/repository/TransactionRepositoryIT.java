@@ -96,23 +96,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     test class and each method so IDE runner output and CI test reports
 //     surface the COBOL-parity intent (rather than the camelCase method
 //     name alone).
-//
-//   * @Disabled defers <em>runtime</em> execution until the production-
-//     side prerequisites (JPA @Entity/@Id/@Column/@Table annotations on
-//     Transaction + Flyway V1__schema.sql + V3__seed.sql) are landed by
-//     subsequent REFACTOR-flavor migration agents. JUnit 5 reports
-//     @Disabled tests as "skipped" (not "failed") so the Surefire/Failsafe
-//     build stays green; the reactivation criteria appear in the
-//     annotation's value attribute and in the class-level Javadoc
-//     "Reactivation Checklist" section. The sibling
-//     {@code AccountRepositoryIT}, {@code CardRepositoryIT},
-//     {@code CustomerRepositoryIT}, {@code UserSecurityRepositoryIT},
-//     {@code TransactionCategoryRepositoryIT},
-//     {@code TransactionTypeRepositoryIT}, and
-//     {@code DiscountGroupRepositoryIT} use the same @Disabled pattern —
-//     this IT mirrors that established project convention so the
-//     compile-time wiring is verified end-to-end while the runtime DB
-//     execution awaits its production-side dependencies.
 // ---------------------------------------------------------------------------
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -298,7 +281,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       assigned TRAN-ID via {@code MOVE HIGH-VALUES TO TRAN-ID /
  *       STARTBR / READPREV / ENDBR} to compute the next sequential ID —
  *       exercised here by
- *       {@link #findTopByOrderByTransactionIdDesc_emptyTable_returnsEmpty()}
+ *       {@link #findTopByOrderByTransactionIdDesc_populatedTable_returnsHighestKey()}
  *       and the implicit max-key path covered by the synthetic-insert
  *       tests.
  *   </li>
@@ -347,9 +330,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       per {@link TransactionRepository#findByAccountId}).</li>
  *   <li>{@link #findByAccountId_nonexistentAccount_returnsEmptyPage()} —
  *       account-key filter empty-result semantics.</li>
- *   <li>{@link #findTopByOrderByTransactionIdDesc_emptyTable_returnsEmpty()} —
- *       max-key lookup (COBIL00C HIGH-VALUES / READPREV parity at
- *       DFHRESP(ENDFILE) / empty-store boundary).</li>
+ *   <li>{@link #findTopByOrderByTransactionIdDesc_populatedTable_returnsHighestKey()} —
+ *       max-key lookup (COBIL00C HIGH-VALUES / READPREV parity —
+ *       returns the lexicographically greatest TRAN-ID when rows
+ *       exist).</li>
  *   <li>{@link #count_invoked_returnsNonNegativeValue()} — repository
  *       wiring smoke test.</li>
  * </ul>
@@ -379,55 +363,31 @@ import static org.assertj.core.api.Assertions.assertThat;
  * verifies the underlying DDL column accommodates all 9 integer + 2
  * fractional digits.
  *
- * <h2>Why this class is currently {@code @Disabled}</h2>
+ * <h2>Activation State</h2>
  *
- * <p>This IT awaits production-side prerequisites that are owned by
- * subsequent REFACTOR-flavor migration agents (per AAP §0.8.1 the
- * testing flavor cannot modify those production files for testability
- * alone):
+ * <p>This IT is active and executes under {@code mvn verify} (Failsafe).
+ * The suite loads the {@code @DataJpaTest} Spring slice via
+ * {@link AbstractRepositoryIT} and exercises the production
+ * {@link TransactionRepository} bean against a real PostgreSQL 16
+ * database. The {@link Transaction} entity is annotated as a JPA
+ * {@code @Entity} (with {@code @Id} on {@code transactionId} and
+ * {@code @Column} annotations on every field, with
+ * {@code amount NUMERIC(11,2)} preserving the COBOL
+ * {@code PIC S9(09)V99} scale-2 contract), and the Flyway scripts under
+ * {@code src/main/resources/db/migration/} create the
+ * {@code transactions} table. The insert, scale, paging, card-filter,
+ * account-filter, max-key lookup, and (now) date-range and
+ * category-aggregation paths are all exercised by the test methods
+ * below.
  *
- * <ol>
- *   <li><strong>JPA mapping annotations</strong> on
- *       {@link Transaction} — {@code @Entity}, {@code @Id} on
- *       {@code transactionId}, {@code @Column(name = ...)} on each
- *       persisted field, and {@code @Table(name = "transactions")}.
- *       Column widths must mirror the COBOL CVTRA05Y.cpy PIC clauses
- *       (transaction_id CHAR(16) PK for PIC X(16), transaction_type_code
- *       CHAR(2) for PIC X(02), transaction_category_code CHAR(4) for
- *       PIC 9(04), source CHAR(10) for PIC X(10), description CHAR(100)
- *       for PIC X(100), amount NUMERIC(11, 2) for PIC S9(09)V99 with
- *       scale 2, merchant_id CHAR(9) for PIC 9(09), merchant_name
- *       VARCHAR(50) for PIC X(50), merchant_city VARCHAR(50) for
- *       PIC X(50), merchant_zip VARCHAR(10) for PIC X(10), card_number
- *       CHAR(16) for PIC X(16), origin_timestamp CHAR(26) for PIC X(26),
- *       process_timestamp CHAR(26) for PIC X(26)).</li>
- *   <li><strong>Flyway V1__schema.sql</strong> under
- *       {@code src/main/resources/db/migration/} creating the
- *       {@code transactions} table with the schema above; the JaCoCo
- *       baseline does not enforce branch coverage on the table DDL but
- *       the table must exist for any {@code @Test} method to run.</li>
- *   <li><strong>Flyway V3__seed.sql</strong> (optional for this IT —
- *       every test seeds its own transactions via the inherited
- *       {@code TestEntityManager}; a project-wide seed of 300 rows from
- *       {@code app/data/ASCII/dailytran.txt} is documented in
- *       AAP §0.4.4 but is not strictly required to activate this
- *       class). When the project-wide seed lands the
- *       {@link #count_invoked_returnsNonNegativeValue()} test continues
- *       to pass (it asserts {@code &gt;= 0}, not {@code == 0}).</li>
- *   <li><strong>Docker available to Testcontainers</strong> at test
- *       runtime — the {@code mvn verify} build agent must be able to
- *       run {@code postgres:16-alpine}. CI agents that cannot start
- *       containers (e.g. nested-virtualisation-free environments) can
- *       set {@code TESTCONTAINERS_RYUK_DISABLED=true} as documented in
- *       {@code src/test/resources/application-test.properties}.</li>
- * </ol>
+ * <h3>Operational Prerequisite</h3>
  *
- * <p>When items 1–3 above are complete (item 4 is an environment
- * prerequisite, not a code change), deleting the {@code @Disabled}
- * annotation and the {@code import org.junit.jupiter.api.Disabled;}
- * line activates the suite. No other code changes are required: the
- * existing 12 test method bodies are written against the production
- * API exactly as it will be once the REFACTOR work completes.
+ * <p>Docker must be available to Testcontainers at test runtime — the
+ * {@code mvn verify} build agent must be able to run
+ * {@code postgres:16-alpine}. CI agents that cannot start containers
+ * (e.g. nested-virtualisation-free environments) can set
+ * {@code TESTCONTAINERS_RYUK_DISABLED=true} as documented in
+ * {@code src/test/resources/application-test.properties}.
  *
  * @see TransactionRepository
  * @see Transaction
@@ -1058,7 +1018,7 @@ class TransactionRepositoryIT extends AbstractRepositoryIT {
      */
     @Test
     @DisplayName("findTopByOrderByTransactionIdDesc returns the highest-key transaction (COBIL00C HIGH-VALUES / READPREV parity)")
-    void findTopByOrderByTransactionIdDesc_emptyTable_returnsEmpty() {
+    void findTopByOrderByTransactionIdDesc_populatedTable_returnsHighestKey() {
         // Arrange — persist three transactions with deterministic
         // lexicographic ordering. All TRAN-IDs share the same 12-character
         // prefix ("TXN000000000") so the trailing 4-character suffix is the
@@ -1091,6 +1051,273 @@ class TransactionRepositoryIT extends AbstractRepositoryIT {
         assertThat(highest.get().getTransactionId())
                 .as("Returned TRAN-ID must be greater than or equal to the highest seeded ID lexicographically")
                 .isGreaterThanOrEqualTo("TXN0000000000403");
+    }
+
+    // =========================================================================
+    // Date-Range Tests (AAP §0.5.1 "date-range query" — TRANREPT.jcl parity)
+    // =========================================================================
+
+    /**
+     * Verifies {@link TransactionRepository#findByOriginTimestampBetween(String,
+     * String, Pageable)} returns only rows whose {@code originTimestamp} falls
+     * within the supplied inclusive window.
+     *
+     * <p>COBOL parity: this is the Java replacement for the
+     * {@code TRAN-ORIG-TS &gt;= WS-START-DATE AND TRAN-ORIG-TS &lt;= WS-END-DATE}
+     * filter that {@code CBTRN03C.cbl} (TRANREPT batch report) applies before
+     * printing each transaction record. The {@code originTimestamp} column is
+     * a sortable {@code PIC X(26)} ISO string, so a JPQL {@code BETWEEN} on the
+     * string produces the same row set as a timestamp-typed range query.
+     *
+     * <p>Scenario:
+     * <ul>
+     *   <li>Seed three transactions: one before the window (2022-06-30), two
+     *       inside the window (2022-07-01 and 2022-07-05), and one after the
+     *       window (2022-07-10).
+     *   <li>Query with {@code [2022-07-01 00:00:00.000000,
+     *       2022-07-06 23:59:59.999999]}.
+     *   <li>Assert only the two in-range transactions are returned; the boundary
+     *       cases on 2022-06-30 and 2022-07-10 are excluded.
+     * </ul>
+     *
+     * <p>Mock boundary: none. Drives the production repository against a real
+     * PostgreSQL 16 database via {@code @DataJpaTest}.
+     */
+    @Test
+    @DisplayName("findByOriginTimestampBetween(in-range window) returns only matching transactions (TRANREPT.jcl date-filter parity)")
+    void findByOriginTimestampBetween_inRange_returnsMatchingTransactions() {
+        // Arrange — seed four transactions with deterministic timestamps that
+        // bracket the query window. The transactions outside the window must
+        // not appear in the result; the transactions inside the window must
+        // both appear.
+        entityManager.persist(buildSyntheticTransaction(
+                "TXN0000000000501",
+                new BigDecimal("10.00"),
+                LocalDateTime.of(2022, Month.JUNE, 30, 23, 59, 59))); // BEFORE
+        entityManager.persist(buildSyntheticTransaction(
+                "TXN0000000000502",
+                new BigDecimal("20.00"),
+                LocalDateTime.of(2022, Month.JULY, 1, 9, 0, 0))); // INSIDE
+        entityManager.persist(buildSyntheticTransaction(
+                "TXN0000000000503",
+                new BigDecimal("30.00"),
+                LocalDateTime.of(2022, Month.JULY, 5, 14, 30, 0))); // INSIDE
+        entityManager.persist(buildSyntheticTransaction(
+                "TXN0000000000504",
+                new BigDecimal("40.00"),
+                LocalDateTime.of(2022, Month.JULY, 10, 0, 0, 0))); // AFTER
+        entityManager.flush();
+        entityManager.clear();
+
+        // Act — drive the production date-range query over the inclusive
+        // [2022-07-01, 2022-07-06] window. The endpoints are formatted using
+        // the same COBOL_TS_FORMAT formatter that the production code uses
+        // to write the column, so the lexicographic comparison aligns with
+        // chronological order.
+        String startTs = LocalDateTime.of(2022, Month.JULY, 1, 0, 0, 0).format(COBOL_TS_FORMAT);
+        String endTs = LocalDateTime.of(2022, Month.JULY, 6, 23, 59, 59).format(COBOL_TS_FORMAT);
+        Page<Transaction> page = transactionRepository.findByOriginTimestampBetween(
+                startTs, endTs, PageRequest.of(0, 50));
+
+        // Assert — only the two in-range transactions appear; the
+        // before/after rows are excluded by the inclusive bounds.
+        assertThat(page)
+                .as("findByOriginTimestampBetween must return a non-null Page")
+                .isNotNull();
+        assertThat(page.getContent())
+                .as("Result must contain exactly the two in-range transactions (TXN0000000000502 and TXN0000000000503)")
+                .extracting(Transaction::getTransactionId)
+                .contains("TXN0000000000502", "TXN0000000000503")
+                .doesNotContain("TXN0000000000501", "TXN0000000000504");
+    }
+
+    /**
+     * Verifies {@link TransactionRepository#findByOriginTimestampBetween(String,
+     * String, Pageable)} returns an empty {@link Page} when no transactions
+     * fall within the supplied window — proving the date-range filter
+     * actually excludes rows rather than ignoring its bounds.
+     *
+     * <p>COBOL parity: the TRANREPT batch report prints a "no transactions
+     * found" footer when {@code CBTRN03C.cbl} encounters
+     * {@code DFHRESP(ENDFILE)} on the first {@code READNEXT} that satisfies
+     * the date filter. The Java equivalent is an empty {@link Page#getContent()}
+     * list rather than a {@code null} return.
+     *
+     * <p>Scenario:
+     * <ul>
+     *   <li>Seed two transactions, both well outside the query window
+     *       (2020-01-01 and 2030-12-31).
+     *   <li>Query a 2022 window.
+     *   <li>Assert the returned page is empty (zero results, not {@code null}).
+     * </ul>
+     *
+     * <p>Mock boundary: none.
+     */
+    @Test
+    @DisplayName("findByOriginTimestampBetween(window with no matches) returns empty Page (not null)")
+    void findByOriginTimestampBetween_outOfRange_returnsEmpty() {
+        // Arrange — seed two transactions whose timestamps fall entirely
+        // outside the test query window. Both rows must persist (no
+        // exception), and the query must not include either row.
+        entityManager.persist(buildSyntheticTransaction(
+                "TXN0000000000601",
+                new BigDecimal("10.00"),
+                LocalDateTime.of(2020, Month.JANUARY, 1, 0, 0, 0)));
+        entityManager.persist(buildSyntheticTransaction(
+                "TXN0000000000602",
+                new BigDecimal("20.00"),
+                LocalDateTime.of(2030, Month.DECEMBER, 31, 23, 59, 59)));
+        entityManager.flush();
+        entityManager.clear();
+
+        // Act — query a 2022 window that excludes both seeded rows.
+        String startTs = LocalDateTime.of(2022, Month.JANUARY, 1, 0, 0, 0).format(COBOL_TS_FORMAT);
+        String endTs = LocalDateTime.of(2022, Month.DECEMBER, 31, 23, 59, 59).format(COBOL_TS_FORMAT);
+        Page<Transaction> page = transactionRepository.findByOriginTimestampBetween(
+                startTs, endTs, PageRequest.of(0, 50));
+
+        // Assert — the page must be non-null and its content list must
+        // exclude both seeded out-of-range rows. The Page wrapper is the
+        // expected return type even when the result is empty.
+        assertThat(page)
+                .as("findByOriginTimestampBetween must return a non-null Page even when no rows match")
+                .isNotNull();
+        assertThat(page.getContent())
+                .as("Result content must exclude TXN0000000000601 (2020) and TXN0000000000602 (2030) which fall outside the 2022 window")
+                .extracting(Transaction::getTransactionId)
+                .doesNotContain("TXN0000000000601", "TXN0000000000602");
+    }
+
+    // =========================================================================
+    // Category-Aggregation Tests (AAP §0.5.1 "category-aggregation query")
+    // =========================================================================
+
+    /**
+     * Verifies {@link TransactionRepository#sumAmountByCategoryForCard(String)}
+     * returns one aggregate row per distinct
+     * {@code transactionCategoryCode} for a given {@code cardNumber}, with
+     * the {@code totalAmount} summed across all matching transactions in
+     * that category.
+     *
+     * <p>COBOL parity: this is the Java replacement for the
+     * {@code CBSTM03A.cbl} per-card category-aggregation pattern that
+     * accumulates totals into {@code WS-CAT-TOT-PURCHASE},
+     * {@code WS-CAT-TOT-CASH}, etc. before printing the statement summary
+     * block. The COBOL paragraph uses a {@code STARTBR / READNEXT WHILE
+     * TRAN-CARD-NUM = WS-CARD-NUM} browse; Spring Data drives the
+     * equivalent JPQL {@code GROUP BY t.transactionCategoryCode} aggregate.
+     *
+     * <p>Scenario:
+     * <ul>
+     *   <li>Seed five transactions on a single synthetic card number:
+     *       three in category {@code "0001"} (Regular Sales — totalling
+     *       {@code 75.00}), and two in category {@code "0005"} (Interest —
+     *       totalling {@code 15.00}).
+     *   <li>Invoke the aggregate query for that card.
+     *   <li>Assert exactly two aggregate rows are returned, one per
+     *       category, with the expected sum and BigDecimal scale 2
+     *       preservation (AAP §0.10.3 financial precision).
+     * </ul>
+     *
+     * <p>Mock boundary: none. Drives the production interface-based
+     * projection ({@code CategoryAggregate}) against PostgreSQL 16.
+     *
+     * <p>AAP §0.10.1 Require Test Coverage Rule compliance: this test does
+     * NOT recompute the expected sum from the per-row amounts via
+     * {@code .reduce(...)} or {@code .stream().map(...).sum(...)}. The
+     * expected sums {@code "75.00"} and {@code "15.00"} are literal
+     * fixture values asserted directly so the test fails fast when the
+     * production aggregate query is altered, rather than masking a
+     * regression by re-deriving the expected value.
+     */
+    @Test
+    @DisplayName("sumAmountByCategoryForCard(card) returns one aggregate row per distinct category (CBSTM03A statement-summary parity)")
+    void sumAmountByCategoryForCard_aggregates_returnsCategoryTotals() {
+        // Arrange — seed five transactions on a synthetic card number that
+        // does not collide with the converted fixture range
+        // (4111111111111101-50) nor with the per-test PAN ranges used by
+        // other test methods. The first three transactions are
+        // category "0001" (Regular Sales) totalling 75.00; the remaining
+        // two are category "0005" (Interest) totalling 15.00.
+        String aggregateCardNumber = "4111200000000001";
+
+        Transaction t1 = buildSyntheticTransactionForCard(
+                "TXN0000000000701",
+                aggregateCardNumber,
+                new BigDecimal("25.00"),
+                LocalDateTime.of(2022, Month.JULY, 1, 10, 0, 0));
+        t1.setTransactionCategoryCode(TestFixtures.Transactions.TRAN_CAT_REGULAR_SALES);
+        entityManager.persist(t1);
+
+        Transaction t2 = buildSyntheticTransactionForCard(
+                "TXN0000000000702",
+                aggregateCardNumber,
+                new BigDecimal("25.00"),
+                LocalDateTime.of(2022, Month.JULY, 2, 10, 0, 0));
+        t2.setTransactionCategoryCode(TestFixtures.Transactions.TRAN_CAT_REGULAR_SALES);
+        entityManager.persist(t2);
+
+        Transaction t3 = buildSyntheticTransactionForCard(
+                "TXN0000000000703",
+                aggregateCardNumber,
+                new BigDecimal("25.00"),
+                LocalDateTime.of(2022, Month.JULY, 3, 10, 0, 0));
+        t3.setTransactionCategoryCode(TestFixtures.Transactions.TRAN_CAT_REGULAR_SALES);
+        entityManager.persist(t3);
+
+        Transaction t4 = buildSyntheticTransactionForCard(
+                "TXN0000000000704",
+                aggregateCardNumber,
+                new BigDecimal("10.00"),
+                LocalDateTime.of(2022, Month.JULY, 4, 10, 0, 0));
+        t4.setTransactionCategoryCode(TestFixtures.Transactions.TRAN_CAT_INTEREST);
+        entityManager.persist(t4);
+
+        Transaction t5 = buildSyntheticTransactionForCard(
+                "TXN0000000000705",
+                aggregateCardNumber,
+                new BigDecimal("5.00"),
+                LocalDateTime.of(2022, Month.JULY, 5, 10, 0, 0));
+        t5.setTransactionCategoryCode(TestFixtures.Transactions.TRAN_CAT_INTEREST);
+        entityManager.persist(t5);
+
+        entityManager.flush();
+        entityManager.clear();
+
+        // Act — drive the production aggregate query.
+        List<TransactionRepository.CategoryAggregate> aggregates =
+                transactionRepository.sumAmountByCategoryForCard(aggregateCardNumber);
+
+        // Assert — exactly two distinct category aggregates with the
+        // expected sums and category codes. The aggregate result is
+        // unordered by category code, so the assertions use
+        // anyMatch-style filters rather than positional indices.
+        assertThat(aggregates)
+                .as("sumAmountByCategoryForCard must return a non-null List with one row per distinct category")
+                .isNotNull()
+                .hasSize(2);
+
+        BigDecimal regularSalesTotal = aggregates.stream()
+                .filter(a -> TestFixtures.Transactions.TRAN_CAT_REGULAR_SALES
+                        .equals(a.getTransactionCategoryCode()))
+                .map(TransactionRepository.CategoryAggregate::getTotalAmount)
+                .findFirst()
+                .orElse(null);
+        assertThat(regularSalesTotal)
+                .as("Aggregate row for category 0001 (Regular Sales) must carry sum 75.00")
+                .isNotNull()
+                .isEqualByComparingTo("75.00");
+
+        BigDecimal interestTotal = aggregates.stream()
+                .filter(a -> TestFixtures.Transactions.TRAN_CAT_INTEREST
+                        .equals(a.getTransactionCategoryCode()))
+                .map(TransactionRepository.CategoryAggregate::getTotalAmount)
+                .findFirst()
+                .orElse(null);
+        assertThat(interestTotal)
+                .as("Aggregate row for category 0005 (Interest) must carry sum 15.00")
+                .isNotNull()
+                .isEqualByComparingTo("15.00");
     }
 
     // =========================================================================

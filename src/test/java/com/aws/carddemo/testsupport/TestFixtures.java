@@ -770,6 +770,29 @@ public final class TestFixtures {
         public static final String BANK_ADDRESS_LINE_1 = "410 Terry Ave N";
         /** Bank address line 2 — verbatim from CBSTM03A line 172. */
         public static final String BANK_ADDRESS_LINE_2 = "Seattle WA 99999";
+
+        /**
+         * Statement banner literal emitted by {@code CBSTM03A} 5000-STATEMENT-HEAD
+         * once per customer. Verbatim from {@code app/cbl/CBSTM03A.CBL} line 88
+         * ({@code FILLER VALUE ALL 'START OF STATEMENT' PIC X(18)}).
+         *
+         * <p>Tests use this sentinel to count distinct per-customer statements
+         * in the produced STMTFILE output without parsing the per-customer
+         * detail block.
+         */
+        public static final String START_OF_STATEMENT = "START OF STATEMENT";
+
+        /**
+         * Statement footer literal emitted by {@code CBSTM03A} 6000-STATEMENT-FOOT
+         * once per customer. Verbatim from {@code app/cbl/CBSTM03A.CBL} line 145
+         * ({@code FILLER VALUE ALL 'END OF STATEMENT' PIC X(16)}).
+         *
+         * <p>Paired with {@link #START_OF_STATEMENT} the two sentinels bracket a
+         * single customer's statement block in the STMTFILE output, enabling
+         * tests to slice the file into per-customer pages without reimplementing
+         * the page-break algorithm.
+         */
+        public static final String END_OF_STATEMENT = "END OF STATEMENT";
     }
 
     // ================================================================

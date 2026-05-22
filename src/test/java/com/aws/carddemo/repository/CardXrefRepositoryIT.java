@@ -81,23 +81,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     test class and each method so IDE runner output and CI test
 //     reports surface the COBOL-parity intent (rather than the
 //     camelCase method name alone).
-//
-//   * @Disabled defers <em>runtime</em> execution until the production-
-//     side prerequisites (JPA @Entity / @Id / @Column annotations on
-//     CardXref + Flyway V1__schema.sql) are landed by subsequent
-//     REFACTOR-flavor migration agents. JUnit 5 reports @Disabled tests
-//     as "skipped" (not "failed") so the Surefire/Failsafe build stays
-//     green; the reactivation criteria appear in the annotation's value
-//     attribute and in the class-level Javadoc "Reactivation Checklist"
-//     section. The sibling {@code AccountRepositoryIT},
-//     {@code CardRepositoryIT}, {@code CustomerRepositoryIT},
-//     {@code UserSecurityRepositoryIT},
-//     {@code TransactionCategoryRepositoryIT},
-//     {@code TransactionTypeRepositoryIT}, and
-//     {@code DiscountGroupRepositoryIT} use the same @Disabled pattern —
-//     this IT mirrors that established project convention so the
-//     compile-time wiring is verified end-to-end while the runtime DB
-//     execution awaits its production-side dependencies.
 // ---------------------------------------------------------------------------
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -146,6 +129,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 //     (account → card) is preserved, only the return-type cardinality
 //     is adapted to match production.
 // ---------------------------------------------------------------------------
+import java.util.List;
 import java.util.Optional;
 
 // ---------------------------------------------------------------------------
@@ -239,25 +223,27 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@link CardXref#setCardNumber(String)}, etc.).</li>
  *   <li><strong>Customer-key reverse lookup.</strong> AAP blueprint
  *       calls out a {@code findByXrefCustId(String)} derived query for
- *       the "find all cards for a customer" access pattern, but the
- *       production {@link CardXrefRepository} does NOT expose such a
- *       method as of this commit — the production-side migration
- *       agents (REFACTOR flavor) will add {@code findByCustomerId} once
- *       {@code COCRDLIC.cbl} is migrated (per the
- *       {@link CardXrefRepository} class Javadoc "Stub Status" note).
- *       This IT therefore does NOT cover the customer-key reverse
- *       lookup; the REFACTOR agent that adds the method should also
- *       add a corresponding test method here.</li>
+ *       the "find all cards for a customer" access pattern; the
+ *       production {@link CardXrefRepository} exposes this access
+ *       pattern as {@link CardXrefRepository#findByCustomerId(String)}
+ *       returning {@code List<CardXref>} (1:N cardinality, since a
+ *       customer can hold multiple cards across multiple accounts).
+ *       This IT exercises that finder through the dedicated
+ *       {@link #findByCustomerId_existingCustomer_returnsAllXrefsForCustomer()},
+ *       {@link #findByCustomerId_unknownCustomer_returnsEmptyList()},
+ *       and
+ *       {@link #findByCustomerId_discriminatesAmongCustomers_returnsOnlyTargetXrefs()}
+ *       test methods (added per AAP §0.5.1 customer alternate-index
+ *       coverage mandate).</li>
  * </ul>
  *
  * <h2>Coverage Focus (AAP §0.5.1 / §0.7.1)</h2>
  *
  * <p>AAP §0.7.1 requires {@code com.aws.carddemo.repository.**} to reach
  * {@code ≥75%} line coverage. The {@link CardXrefRepository} interface
- * has a small surface (one custom finder plus the inherited
- * {@code JpaRepository} methods), so the seven tests below are sufficient
- * to exceed that threshold once the {@code @Disabled} annotation is
- * lifted (see "Reactivation Checklist" below):
+ * has a small surface (two custom finders — by account ID and by
+ * customer ID — plus the inherited {@code JpaRepository} methods), so
+ * the ten tests below are sufficient to exceed that threshold:
  *
  * <ul>
  *   <li>{@link #findById_existingCardNumber_returnsXrefRow()} —
@@ -276,6 +262,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       the row matching the supplied account ID (a missing or buggy
  *       WHERE clause would return a non-matching row and fail this
  *       assertion)</li>
+ *   <li>{@link #findByCustomerId_existingCustomer_returnsAllXrefsForCustomer()}
+ *       — customer alternate-index happy path (COCRDLIC.cbl parity;
+ *       seeds three xref rows for one customer and verifies all three
+ *       are returned as a List)</li>
+ *   <li>{@link #findByCustomerId_unknownCustomer_returnsEmptyList()} —
+ *       customer alternate-index miss (DFHRESP(NOTFND) parity returns
+ *       empty {@code List} rather than {@code null})</li>
+ *   <li>{@link #findByCustomerId_discriminatesAmongCustomers_returnsOnlyTargetXrefs()}
+ *       — customer alternate-index FK discrimination: seeds xref rows
+ *       on three distinct customers and verifies the finder returns
+ *       only the rows matching the supplied customer ID</li>
  *   <li>{@link #save_newXref_persistsAllKeys()} — full round-trip
  *       through every CVACT03Y.cpy key field (INSERT path, replaces
  *       COBOL {@code EXEC CICS WRITE DATASET('CARDXREF')})</li>
@@ -324,9 +321,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * method end. This means the synthetic xref rows persisted by every
  * test in this class are gone before the next test sees the database
  * state. Each test starts from the Flyway-seeded card-xref catalog
- * (50 rows from {@code app/data/ASCII/cardxref.txt} once the
- * V3__seed.sql Flyway script lands per the Reactivation Checklist
- * below); test order independence is guaranteed.
+ * (50 rows from {@code app/data/ASCII/cardxref.txt} via V3__seed.sql);
+ * test order independence is guaranteed.
  *
  * <h2>Security / PII (AAP §0.10.5)</h2>
  *
@@ -342,100 +338,29 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code com.aws.carddemo.logging.LoggingPiiRedactionTest} for the
  * runtime verification.
  *
- * <h2>Why this class is currently {@code @Disabled}</h2>
+ * <h2>Activation State</h2>
  *
- * <p>The suite loads the {@code @DataJpaTest} Spring slice via
+ * <p>This IT is active and executes under {@code mvn verify} (Failsafe).
+ * The suite loads the {@code @DataJpaTest} Spring slice via
  * {@link AbstractRepositoryIT} and exercises the production
  * {@link CardXrefRepository} bean against a real PostgreSQL 16
- * database. That requires every production-side prerequisite to be in
- * place: the {@link CardXref} entity must be annotated as a JPA
- * {@code @Entity} (with {@code @Id} on {@code cardNumber}, {@code @Column}
- * annotations on every field) so Hibernate can map the entity onto a
- * database table, and the Flyway scripts under
- * {@code src/main/resources/db/migration/} must exist to create the
- * {@code card_xref} table and (optionally) seed reference rows. As of
- * this commit those production-side prerequisites are <em>intentionally
- * deferred</em> by the REFACTOR-flavor migration agents.
+ * database. The {@link CardXref} entity is annotated as a JPA
+ * {@code @Entity} (with {@code @Id} on {@code cardNumber} and
+ * {@code @Column} annotations on every field), and the Flyway scripts
+ * under {@code src/main/resources/db/migration/} create the
+ * {@code card_xref} table and seed reference rows. The primary-key
+ * lookup, account-ID alternate-index lookup, customer-ID
+ * alternate-index lookup, FK discrimination, and INSERT round-trip
+ * paths are all exercised by the test methods below.
  *
- * <p>This testing-flavor AAP (§0.8.1 "Cross-cutting files that the
- * migration creates and that this Action Plan exercises (but does not
- * own)") <strong>explicitly forbids</strong> modifying any production
- * source under {@code src/main/java/com/aws/carddemo/} for the purpose
- * of <em>testability alone</em>: the testing flavor CREATEs tests
- * against those classes but does NOT redesign them. The suite is
- * therefore registered, compiled, and preserved end-to-end (the
- * production stubs created alongside this IT enable compilation), but
- * the JUnit Jupiter {@code @Disabled} marker below defers
- * <em>runtime</em> execution until the production-side migration
- * agents complete the JPA annotation and Flyway schema work. Once both
- * arrive, removing the {@code @Disabled} annotation (and its companion
- * unused {@code org.junit.jupiter.api.Disabled} import) activates all
- * 7 tests unchanged. The sibling {@code AccountRepositoryIT},
- * {@code CardRepositoryIT}, {@code CustomerRepositoryIT},
- * {@code UserSecurityRepositoryIT},
- * {@code TransactionCategoryRepositoryIT},
- * {@code TransactionTypeRepositoryIT}, and
- * {@code DiscountGroupRepositoryIT} use the same {@code @Disabled}
- * pattern — this IT mirrors that established project convention.
+ * <h3>Operational Prerequisite</h3>
  *
- * <h3>Reactivation Checklist (for the next REFACTOR-flavor agent)</h3>
- *
- * <p>Remove the {@code @Disabled} annotation (and the unused
- * {@code org.junit.jupiter.api.Disabled} import) once <em>all</em> of
- * the following production-side prerequisites are in place:
- *
- * <ol>
- *   <li><strong>{@code @Entity} + {@code @Id} + {@code @Column} on
- *       {@link com.aws.carddemo.entity.CardXref}</strong> — REFACTOR
- *       agents add {@code @Entity},
- *       {@code @Table(name = "card_xref")}, {@code @Id} on
- *       {@code cardNumber},
- *       {@code @Column(name = "xref_card_num", length = 16, nullable = false)}
- *       on {@code cardNumber} (preserving the COBOL
- *       {@code XREF-CARD-NUM PIC X(16)} field width),
- *       {@code @Column(name = "xref_cust_id", length = 9)} on
- *       {@code customerId} (preserving the COBOL
- *       {@code XREF-CUST-ID PIC 9(09)} field width), and
- *       {@code @Column(name = "xref_acct_id", length = 11)} on
- *       {@code accountId} (preserving the COBOL
- *       {@code XREF-ACCT-ID PIC 9(11)} field width — this column also
- *       carries the {@code @Index(name = "idx_card_xref_acct_id",
- *       columnList = "xrefAcctId")} that makes the CARDAIX
- *       alternate-index lookup efficient). Without these annotations
- *       Hibernate cannot map the entity onto the PostgreSQL table and
- *       {@code @DataJpaTest} context startup fails.</li>
- *   <li><strong>Flyway {@code V1__schema.sql}</strong> under
- *       {@code src/main/resources/db/migration/} containing a CREATE
- *       TABLE statement for {@code card_xref} with column types
- *       matching the COBOL {@code PIC} clauses verbatim:
- *       {@code xref_card_num CHAR(16) PRIMARY KEY} for
- *       {@code PIC X(16)}, {@code xref_cust_id CHAR(9)} for
- *       {@code PIC 9(09)}, and {@code xref_acct_id CHAR(11)} for
- *       {@code PIC 9(11)}. The {@code xref_acct_id} column should
- *       additionally carry an {@code INDEX} (named, for example,
- *       {@code idx_card_xref_acct_id}) so the
- *       {@code findByAccountId(...)} derived-query lookup runs at
- *       index-scan speed (mirroring the COBOL CARDAIX alternate-index
- *       performance characteristic).</li>
- *   <li><strong>Flyway {@code V3__seed.sql}</strong> (optional for this
- *       IT — every test seeds its own xrefs via the inherited
- *       {@code TestEntityManager}; a project-wide seed of 50 rows from
- *       {@code app/data/ASCII/cardxref.txt} is documented in AAP §0.5.1
- *       but is not strictly required to activate this class).</li>
- *   <li><strong>Docker available to Testcontainers</strong> at test
- *       runtime — the {@code mvn verify} build agent must be able to
- *       run {@code postgres:16-alpine}. CI agents that cannot start
- *       containers (e.g. nested-virtualisation-free environments) can
- *       set {@code TESTCONTAINERS_RYUK_DISABLED=true} as documented in
- *       {@code src/test/resources/application-test.properties}.</li>
- * </ol>
- *
- * <p>When items 1–3 above are complete (item 4 is an environment
- * prerequisite, not a code change), deleting the {@code @Disabled}
- * annotation and the {@code import org.junit.jupiter.api.Disabled;}
- * line activates the suite. No other code changes are required: the
- * existing 7 test method bodies are written against the production
- * API exactly as it will be once the REFACTOR work completes.
+ * <p>Docker must be available to Testcontainers at test runtime — the
+ * {@code mvn verify} build agent must be able to run
+ * {@code postgres:16-alpine}. CI agents that cannot start containers
+ * (e.g. nested-virtualisation-free environments) can set
+ * {@code TESTCONTAINERS_RYUK_DISABLED=true} as documented in
+ * {@code src/test/resources/application-test.properties}.
  *
  * @see CardXrefRepository
  * @see CardXref
@@ -1006,6 +931,123 @@ class CardXrefRepositoryIT extends AbstractRepositoryIT {
                         + "indicate a missing card_xref table or broken "
                         + "Testcontainers DataSource wiring")
                 .isGreaterThanOrEqualTo(0L);
+    }
+
+    // =========================================================================
+    // Customer Alternate-Index (XREF-CUST-ID) Reverse Lookup Tests
+    //
+    // COBOL provenance: COCRDLIC.cbl uses the XREF-CUST-ID alternate
+    // index to enumerate every card a customer holds. This is a 1-to-many
+    // mapping: a customer may hold several cards spanning multiple
+    // accounts. Spring Data derives the equivalent JPQL from the
+    // findByCustomerId(String) method name on CardXrefRepository.
+    // =========================================================================
+
+    /**
+     * Verifies that
+     * {@link CardXrefRepository#findByCustomerId(String)} returns every
+     * xref row whose {@code XREF-CUST-ID} matches the supplied customer
+     * identifier. We seed three synthetic xrefs on the same customer
+     * with three distinct PANs and three distinct account IDs, then
+     * assert the finder returns exactly those three rows.
+     *
+     * <p>Mock boundary: none — the production repository is exercised
+     * against the real PostgreSQL container (AAP §0.10.1).
+     */
+    @Test
+    @DisplayName("findByCustomerId(existing XREF-CUST-ID) returns all xrefs for that customer (COCRDLIC parity)")
+    void findByCustomerId_existingCustomer_returnsAllXrefsForCustomer() {
+        // Arrange — seed three xrefs on a single customer. The PAN
+        // range "4111100000000xxx" is chosen specifically to avoid
+        // colliding with the converted fixture range
+        // 4111111111111101-4111111111111150 and with the other
+        // tests' synthetic PAN ranges (4111000000000xxx,
+        // 4222000000000xxx).
+        entityManager.persist(buildSyntheticXref(
+                "4111100000000001", TestFixtures.Customers.SAMPLE_CUSTOMER_ID_10,
+                TestFixtures.Accounts.SAMPLE_ACCOUNT_ID_10));
+        entityManager.persist(buildSyntheticXref(
+                "4111100000000002", TestFixtures.Customers.SAMPLE_CUSTOMER_ID_10,
+                TestFixtures.Accounts.SAMPLE_ACCOUNT_ID_20));
+        entityManager.persist(buildSyntheticXref(
+                "4111100000000003", TestFixtures.Customers.SAMPLE_CUSTOMER_ID_10,
+                TestFixtures.Accounts.SAMPLE_ACCOUNT_ID_30));
+        entityManager.flush();
+        entityManager.clear();
+
+        // Act — drive the derived query against the real repository.
+        List<CardXref> results = cardXrefRepository.findByCustomerId(
+                TestFixtures.Customers.SAMPLE_CUSTOMER_ID_10);
+
+        // Assert — every returned xref carries the requested
+        // customerId; size is at least 3 (the rows we seeded).
+        assertThat(results)
+                .as("findByCustomerId must return at least the three seeded xrefs")
+                .isNotNull()
+                .hasSizeGreaterThanOrEqualTo(3)
+                .allSatisfy(x -> assertThat(x.getCustomerId())
+                        .as("Every returned xref must match the customer ID filter")
+                        .isEqualTo(TestFixtures.Customers.SAMPLE_CUSTOMER_ID_10));
+    }
+
+    /**
+     * Verifies that
+     * {@link CardXrefRepository#findByCustomerId(String)} returns an
+     * empty (but non-{@code null}) list when no row matches the
+     * supplied customer ID — the COBOL {@code DFHRESP(NOTFND)} parity.
+     */
+    @Test
+    @DisplayName("findByCustomerId(unknown XREF-CUST-ID) returns empty list (DFHRESP(NOTFND) parity)")
+    void findByCustomerId_unknownCustomer_returnsEmptyList() {
+        // Act — query for a customer ID guaranteed to never appear.
+        List<CardXref> results = cardXrefRepository.findByCustomerId(
+                TestFixtures.Customers.NONEXISTENT_CUSTOMER_ID);
+
+        // Assert — Spring Data List-typed derived queries return an
+        // empty list (never null) for unmatched filters.
+        assertThat(results)
+                .as("findByCustomerId for an unknown customer must return an "
+                        + "empty list (never null)")
+                .isNotNull()
+                .isEmpty();
+    }
+
+    /**
+     * Verifies that
+     * {@link CardXrefRepository#findByCustomerId(String)} discriminates
+     * between distinct customers — seeding two xrefs on two different
+     * customers and asserting the finder returns only the row matching
+     * the target customer. A missing WHERE clause would silently return
+     * both rows and fail this assertion.
+     */
+    @Test
+    @DisplayName("findByCustomerId discriminates among multiple customers (returns only target customer's xrefs)")
+    void findByCustomerId_discriminatesAmongCustomers_returnsOnlyTargetXrefs() {
+        // Arrange — seed two xrefs on two distinct customers. We use
+        // SAMPLE_CUSTOMER_ID_01 and SAMPLE_CUSTOMER_ID_50, two known
+        // distinct values from the TestFixtures constants.
+        entityManager.persist(buildSyntheticXref(
+                "4111100000000010", TestFixtures.Customers.SAMPLE_CUSTOMER_ID_01,
+                "20000000010"));
+        entityManager.persist(buildSyntheticXref(
+                "4111100000000011", TestFixtures.Customers.SAMPLE_CUSTOMER_ID_50,
+                "20000000020"));
+        entityManager.flush();
+        entityManager.clear();
+
+        // Act — request only customer 01's xrefs.
+        List<CardXref> results = cardXrefRepository.findByCustomerId(
+                TestFixtures.Customers.SAMPLE_CUSTOMER_ID_01);
+
+        // Assert — every returned xref belongs to customer 01;
+        // none belongs to customer 50.
+        assertThat(results)
+                .as("findByCustomerId must return only target-customer xrefs")
+                .isNotEmpty()
+                .allSatisfy(x -> assertThat(x.getCustomerId())
+                        .isEqualTo(TestFixtures.Customers.SAMPLE_CUSTOMER_ID_01))
+                .noneSatisfy(x -> assertThat(x.getCustomerId())
+                        .isEqualTo(TestFixtures.Customers.SAMPLE_CUSTOMER_ID_50));
     }
 
     // =========================================================================

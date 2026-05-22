@@ -96,23 +96,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     test class and each method so IDE runner output and CI test reports
 //     surface the COBOL-parity intent (rather than the camelCase method
 //     name alone).
-//
-//   * @Disabled defers <em>runtime</em> execution until the production-
-//     side prerequisites (JPA @Entity / @Id / @Column / @Version
-//     annotations on Card + Flyway V1__schema.sql + V3__seed.sql) are
-//     landed by subsequent REFACTOR-flavor migration agents. JUnit 5
-//     reports @Disabled tests as "skipped" (not "failed") so the
-//     Surefire/Failsafe build stays green; the reactivation criteria
-//     appear in the annotation's value attribute and in the class-level
-//     Javadoc "Reactivation Checklist" section. The sibling
-//     {@code AccountRepositoryIT}, {@code CustomerRepositoryIT},
-//     {@code UserSecurityRepositoryIT},
-//     {@code TransactionCategoryRepositoryIT},
-//     {@code TransactionTypeRepositoryIT}, and
-//     {@code DiscountGroupRepositoryIT} use the same @Disabled pattern —
-//     this IT mirrors that established project convention so the
-//     compile-time wiring is verified end-to-end while the runtime DB
-//     execution awaits its production-side dependencies.
 // ---------------------------------------------------------------------------
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -362,8 +345,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * method end. This means the synthetic cards persisted by every test
  * in this class are gone before the next test sees the database state.
  * Each test starts from the Flyway-seeded card catalog (50 rows from
- * {@code app/data/ASCII/carddata.txt} once the V3__seed.sql Flyway
- * script lands per the Reactivation Checklist below); test order
+ * {@code app/data/ASCII/carddata.txt} via V3__seed.sql); test order
  * independence is guaranteed.
  *
  * <h2>PCI Sensitivity</h2>
@@ -380,113 +362,29 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * method (which already omits the CVV per the entity's documented
  * security contract).
  *
- * <h2>Why this class is currently {@code @Disabled}</h2>
+ * <h2>Activation State</h2>
  *
- * <p>The suite loads the {@code @DataJpaTest} Spring slice via
+ * <p>This IT is active and executes under {@code mvn verify} (Failsafe).
+ * The suite loads the {@code @DataJpaTest} Spring slice via
  * {@link AbstractRepositoryIT} and exercises the production
  * {@link CardRepository} bean against a real PostgreSQL 16 database.
- * That requires every production-side prerequisite to be in place: the
- * {@link Card} entity must be annotated as a JPA {@code @Entity} (with
- * {@code @Id} on {@code cardNumber}, {@code @Column} annotations on
- * every field, {@code @Version} on {@code version}, etc.) so Hibernate
- * can map the entity onto a database table, and the Flyway scripts
- * under {@code src/main/resources/db/migration/} must exist to create
- * the {@code cards} table and (optionally) seed reference cards. As
- * of this commit those production-side prerequisites are
- * <em>intentionally deferred</em> by the REFACTOR-flavor migration
- * agents.
+ * The {@link Card} entity carries the required JPA annotations
+ * ({@code @Entity}, {@code @Id}, {@code @Column}, {@code @Version}) so
+ * Hibernate maps the entity onto the {@code cards} table created by
+ * Flyway {@code V1__schema.sql}, with {@code card_acct_id} carrying a
+ * FOREIGN KEY constraint to {@code accounts.acct_id} for referential
+ * integrity. The {@code findById}, save, optimistic-locking,
+ * find-by-account-id, and CVV non-exposure paths are all exercised by
+ * the 9 test methods below.
  *
- * <p>This testing-flavor AAP (§0.8.1 "Cross-cutting files that the
- * migration creates and that this Action Plan exercises (but does not
- * own)") <strong>explicitly forbids</strong> modifying any production
- * source under {@code src/main/java/com/aws/carddemo/} for the purpose
- * of <em>testability alone</em>: the testing flavor CREATEs tests
- * against those classes but does NOT redesign them. The suite is
- * therefore registered, compiled, and preserved end-to-end (the
- * production stubs created alongside this IT enable compilation), but
- * the JUnit Jupiter {@code @Disabled} marker below defers
- * <em>runtime</em> execution until the production-side migration
- * agents complete the JPA annotation and Flyway seed work. Once both
- * arrive, removing the {@code @Disabled} annotation (and its
- * companion unused import) activates all 9 tests unchanged. The
- * sibling {@code AccountRepositoryIT}, {@code CustomerRepositoryIT},
- * {@code UserSecurityRepositoryIT},
- * {@code TransactionCategoryRepositoryIT},
- * {@code TransactionTypeRepositoryIT}, and
- * {@code DiscountGroupRepositoryIT} use the same {@code @Disabled}
- * pattern — this IT mirrors that established project convention.
+ * <h3>Operational Prerequisite</h3>
  *
- * <h3>Reactivation Checklist (for the next REFACTOR-flavor agent)</h3>
- *
- * <p>Remove the {@code @Disabled} annotation (and the unused
- * {@code org.junit.jupiter.api.Disabled} import) once <em>all</em> of
- * the following production-side prerequisites are in place:
- *
- * <ol>
- *   <li><strong>{@code @Entity} + {@code @Id} + {@code @Column} +
- *       {@code @Version} on {@link com.aws.carddemo.entity.Card}</strong>
- *       — REFACTOR agents add {@code @Entity},
- *       {@code @Table(name = "cards")},
- *       {@code @Id} on {@code cardNumber},
- *       {@code @Column(name = "card_num", length = 16, nullable = false)}
- *       on {@code cardNumber} (preserving the COBOL {@code CARD-NUM
- *       PIC X(16)} field width),
- *       {@code @Column(name = "card_acct_id", length = 11)} on
- *       {@code accountId} (preserving the COBOL {@code CARD-ACCT-ID
- *       PIC 9(11)} field width),
- *       {@code @Column(name = "card_cvv_cd", length = 3)} on
- *       {@code cvvCode} (preserving the COBOL {@code CARD-CVV-CD
- *       PIC 9(03)} field width — PCI-sensitive column may be
- *       additionally tokenised or vaulted by REFACTOR work, but the
- *       column width is fixed by the AAP §0.10.4 immutable-boundary
- *       constraint),
- *       {@code @Column(name = "card_embossed_name", length = 50)} on
- *       {@code embossedName},
- *       {@code @Column(name = "card_expiration_date", length = 10)}
- *       on {@code expirationDate} (note the Java field name corrects
- *       the COBOL CARD-EXPIRAION-DATE misspelling; the COLUMN name
- *       may retain the misspelling for source-of-truth fidelity or
- *       be corrected — both options preserve the AAP §0.10.4
- *       immutable boundary as long as the {@code length = 10}
- *       matches the COBOL PIC X(10) field width),
- *       {@code @Column(name = "card_active_status", length = 1)} on
- *       {@code activeStatus}, and {@code @Version @Column(name =
- *       "version")} on {@code version}. Without these annotations
- *       Hibernate cannot map the entity onto the PostgreSQL table
- *       and {@code @DataJpaTest} context startup fails.</li>
- *   <li><strong>Flyway {@code V1__schema.sql}</strong> under
- *       {@code src/main/resources/db/migration/} containing a CREATE
- *       TABLE statement for {@code cards} with column types matching
- *       the COBOL {@code PIC} clauses verbatim: {@code card_num CHAR(16)
- *       PRIMARY KEY} for {@code PIC X(16)}, {@code card_acct_id CHAR(11)}
- *       for {@code PIC 9(11)}, {@code card_cvv_cd CHAR(3)} for
- *       {@code PIC 9(03)}, {@code card_embossed_name VARCHAR(50)} for
- *       {@code PIC X(50)}, {@code card_expiration_date CHAR(10)} for
- *       {@code PIC X(10)} ISO date string, {@code card_active_status
- *       CHAR(1)} for {@code PIC X(01)}, and {@code version BIGINT NOT
- *       NULL DEFAULT 0} for JPA optimistic-locking support. The
- *       {@code card_acct_id} column should carry a FOREIGN KEY
- *       constraint to {@code accounts.acct_id} to enforce referential
- *       integrity in PostgreSQL.</li>
- *   <li><strong>Flyway {@code V3__seed.sql}</strong> (optional for this
- *       IT — every test seeds its own cards via the inherited
- *       {@code TestEntityManager}; a project-wide seed of 50 rows from
- *       {@code app/data/ASCII/carddata.txt} is documented in AAP §0.5.1
- *       but is not strictly required to activate this class).</li>
- *   <li><strong>Docker available to Testcontainers</strong> at test
- *       runtime — the {@code mvn verify} build agent must be able to
- *       run {@code postgres:16-alpine}. CI agents that cannot start
- *       containers (e.g. nested-virtualisation-free environments) can
- *       set {@code TESTCONTAINERS_RYUK_DISABLED=true} as documented in
- *       {@code src/test/resources/application-test.properties}.</li>
- * </ol>
- *
- * <p>When items 1–3 above are complete (item 4 is an environment
- * prerequisite, not a code change), deleting the {@code @Disabled}
- * annotation and the {@code import org.junit.jupiter.api.Disabled;}
- * line activates the suite. No other code changes are required: the
- * existing 9 test method bodies are written against the production
- * API exactly as it will be once the REFACTOR work completes.
+ * <p>Docker must be available to Testcontainers at test runtime — the
+ * {@code mvn verify} build agent must be able to run
+ * {@code postgres:16-alpine}. CI agents that cannot start containers
+ * (e.g. nested-virtualisation-free environments) can set
+ * {@code TESTCONTAINERS_RYUK_DISABLED=true} as documented in
+ * {@code src/test/resources/application-test.properties}.
  *
  * @see CardRepository
  * @see Card
@@ -1215,4 +1113,3 @@ class CardRepositoryIT extends AbstractRepositoryIT {
     }
 
 }
-

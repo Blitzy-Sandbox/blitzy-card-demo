@@ -68,19 +68,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     test class and each method so IDE runner output and CI test
 //     reports surface the COBOL-parity intent (rather than the
 //     camelCase method name alone).
-//
-//   * @Disabled defers <em>runtime</em> execution until the
-//     production-side prerequisites (JPA annotations on TransactionCategory
-//     and TransactionCategoryKey + Flyway V1__schema.sql + V3__seed.sql)
-//     are landed by subsequent REFACTOR-flavor migration agents. JUnit
-//     5 reports @Disabled tests as "skipped" (not "failed") so the
-//     Surefire/Failsafe build stays green; the reactivation criteria
-//     appear in the annotation's value attribute and in the class-level
-//     Javadoc "Reactivation Checklist" section. The sibling
-//     TransactionTypeRepositoryIT uses the same @Disabled pattern —
-//     this IT mirrors that project convention so the compile-time
-//     wiring is verified end-to-end while the runtime DB execution
-//     awaits its production-side dependencies.
 // ---------------------------------------------------------------------------
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -257,103 +244,29 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the Flyway-seeded catalog (18 rows) plus zero synthetic additions —
  * test order independence is guaranteed.
  *
- * <h2>Why this class is currently {@code @Disabled}</h2>
+ * <h2>Activation State</h2>
  *
- * <p>The suite loads the {@code @DataJpaTest} Spring slice via
+ * <p>This IT is active and executes under {@code mvn verify} (Failsafe).
+ * The suite loads the {@code @DataJpaTest} Spring slice via
  * {@link AbstractRepositoryIT} and exercises the production
  * {@link TransactionCategoryRepository} bean against a real PostgreSQL
- * 16 database. That requires every production-side prerequisite to be
- * in place: the {@link TransactionCategory} entity must be annotated as
+ * 16 database. The {@link TransactionCategory} entity is annotated as
  * a JPA {@code @Entity} (and {@link TransactionCategoryKey} as
- * {@code @Embeddable}) so Hibernate can map the entity onto a database
- * table, and the Flyway scripts under
- * {@code src/main/resources/db/migration/} must exist to create the
+ * {@code @Embeddable}), and the Flyway scripts under
+ * {@code src/main/resources/db/migration/} create the
  * {@code transaction_categories} table and seed the 18 canonical
- * reference rows. As of this commit those production-side prerequisites
- * are <em>intentionally deferred</em> by the REFACTOR-flavor migration
- * agents.
+ * reference rows. The composite-key {@code findById}, miss-path,
+ * 18-row floor, and INSERT round-trip paths are all exercised by the
+ * test methods below.
  *
- * <p>This testing-flavor AAP (§0.8.1 "Cross-cutting files that the
- * migration creates and that this Action Plan exercises (but does not
- * own)") <strong>explicitly forbids</strong> modifying any production
- * source under {@code src/main/java/com/aws/carddemo/} for the purpose
- * of <em>testability alone</em>: the testing flavor CREATEs tests
- * against those classes but does NOT redesign them. The suite is
- * therefore registered, compiled, and preserved end-to-end (the
- * production stubs created alongside this IT enable compilation), but
- * the JUnit Jupiter {@code @Disabled} marker below defers <em>runtime</em>
- * execution until the production-side migration agents complete the JPA
- * annotation and Flyway seed work. Once both arrive, removing the
- * {@code @Disabled} annotation (and its companion unused import)
- * activates all 8 tests unchanged.
+ * <h3>Operational Prerequisite</h3>
  *
- * <h3>Reactivation Checklist (for the next agent)</h3>
- *
- * <p>Remove the {@code @Disabled} annotation (and the unused
- * {@code org.junit.jupiter.api.Disabled} import) once <em>all</em> of
- * the following production-side prerequisites are in place:
- *
- * <ol>
- *   <li><strong>{@code @Embeddable} on
- *       {@link com.aws.carddemo.entity.TransactionCategoryKey}</strong> —
- *       REFACTOR agents add the {@code @Embeddable} annotation plus
- *       {@code @Column(name = "tran_type_cd", length = 2, nullable =
- *       false)} on {@code tranTypeCd} and
- *       {@code @Column(name = "tran_cat_cd", nullable = false)} on
- *       {@code tranCatCd}. Without these annotations Hibernate cannot
- *       use the composite key as an {@code @EmbeddedId} target.</li>
- *   <li><strong>{@code @Entity} + {@code @EmbeddedId} on
- *       {@link com.aws.carddemo.entity.TransactionCategory}</strong> —
- *       REFACTOR agents add {@code @Entity},
- *       {@code @Table(name = "transaction_categories")},
- *       {@code @EmbeddedId} on the {@code key} field, and
- *       {@code @Column(name = "tran_cat_type_desc", length = 50)} on
- *       {@code tranCatTypeDesc}. Without these annotations Hibernate
- *       cannot map the entity onto the PostgreSQL table and
- *       {@code @DataJpaTest} context startup fails.</li>
- *   <li><strong>Flyway {@code V1__schema.sql}</strong> under
- *       {@code src/main/resources/db/migration/} containing
- *       <pre>
- *       CREATE TABLE transaction_categories (
- *           tran_type_cd       CHAR(2)      NOT NULL,
- *           tran_cat_cd        INTEGER      NOT NULL,
- *           tran_cat_type_desc VARCHAR(50)  NOT NULL,
- *           PRIMARY KEY (tran_type_cd, tran_cat_cd)
- *       );
- *       </pre>
- *       (column widths matching the COBOL {@code PIC X(02)},
- *       {@code PIC 9(04)}, and {@code PIC X(50)} fields verbatim).</li>
- *   <li><strong>Flyway {@code V3__seed.sql}</strong> under
- *       {@code src/main/resources/db/migration/} containing 18
- *       {@code INSERT INTO transaction_categories (tran_type_cd,
- *       tran_cat_cd, tran_cat_type_desc) VALUES (...)} statements
- *       covering the rows in {@code app/data/ASCII/trancatg.txt}:
- *       <pre>
- *       ('01', 1, 'Regular Sales Draft'),       ('01', 2, 'Regular Cash Advance'),
- *       ('01', 3, 'Convenience Check Debit'),   ('01', 4, 'ATM Cash Advance'),
- *       ('01', 5, 'Interest Amount'),           ('02', 1, 'Cash payment'),
- *       ('02', 2, 'Electronic payment'),        ('02', 3, 'Check payment'),
- *       ('03', 1, 'Credit to Account'),         ('03', 2, 'Credit to Purchase balance'),
- *       ('03', 3, 'Credit to Cash balance'),    ('04', 1, 'Zero dollar authorization'),
- *       ('04', 2, 'Online purchase authorization'),
- *       ('04', 3, 'Travel booking authorization'),
- *       ('05', 1, 'Refund credit'),             ('06', 1, 'Fraud reversal'),
- *       ('06', 2, 'Non-fraud reversal'),        ('07', 1, 'Sales draft credit adjustment').
- *       </pre></li>
- *   <li><strong>Docker available to Testcontainers</strong> at test
- *       runtime — the {@code mvn verify} build agent must be able to
- *       run {@code postgres:16-alpine}. CI agents that cannot start
- *       containers (e.g. nested-virtualisation-free environments) can
- *       set {@code TESTCONTAINERS_RYUK_DISABLED=true} as documented in
- *       {@code src/test/resources/application-test.properties}.</li>
- * </ol>
- *
- * <p>When all five items above are complete, deleting the
- * {@code @Disabled} annotation and the {@code import
- * org.junit.jupiter.api.Disabled;} line activates the suite. No other
- * code changes are required: the test method bodies are written against
- * the production API exactly as it will be once the REFACTOR work
- * completes.
+ * <p>Docker must be available to Testcontainers at test runtime — the
+ * {@code mvn verify} build agent must be able to run
+ * {@code postgres:16-alpine}. CI agents that cannot start containers
+ * (e.g. nested-virtualisation-free environments) can set
+ * {@code TESTCONTAINERS_RYUK_DISABLED=true} as documented in
+ * {@code src/test/resources/application-test.properties}.
  *
  * @see TransactionCategoryRepository
  * @see TransactionCategory

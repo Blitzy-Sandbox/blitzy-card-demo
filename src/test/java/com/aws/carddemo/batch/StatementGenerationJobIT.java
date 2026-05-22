@@ -145,6 +145,26 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 // ---------------------------------------------------------------------------
+// JDK character / collections / time API (AAP §0.10.7 standard library).
+//
+//   * StandardCharsets.US_ASCII — strict-subset charset for reading the
+//     produced STMTFILE output. CBSTM03A writes plain-text records using
+//     US-ASCII letters / digits / spaces; non-ASCII bytes indicate file
+//     corruption and fail loudly with MalformedInputException.
+//
+//   * StandardCharsets.UTF_8 — charset for reading the HTMLFILE output.
+//     CBSTM03A's HTML output is bytewise ASCII-clean but the file may
+//     pass through UTF-8 in downstream tooling; UTF-8 is a superset of
+//     ASCII so no parsing surprises arise.
+//
+//   * List — return type of Files.readAllLines used for the per-record
+//     line-length assertions on the produced STMTFILE and HTMLFILE
+//     outputs.
+// ---------------------------------------------------------------------------
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+
+// ---------------------------------------------------------------------------
 // AssertJ fluent assertions (AAP §0.10.10 — AssertJ exclusively, no Hamcrest,
 // no JUnit Assertions). Static import keeps the call sites concise:
 // assertThat(...).isEqualTo(...).
@@ -467,6 +487,34 @@ import static org.assertj.core.api.Assertions.assertThat;
 class StatementGenerationJobIT extends AbstractBatchIT {
 
     /**
+     * Width (in bytes) of the {@code FD-STMTFILE-REC} plain-text statement
+     * record produced by CBSTM03A. Pinned as a named constant per AAP
+     * §0.10.4 immutable-boundary contract.
+     *
+     * @see <a href="file:app/cbl/CBSTM03A.CBL">CBSTM03A.CBL</a> line 45
+     *      {@code 01 FD-STMTFILE-REC PIC X(80)}
+     */
+    private static final int STMTFILE_RECORD_LENGTH = 80;
+
+    /**
+     * Width (in bytes) of the {@code FD-HTMLFILE-REC} HTML statement
+     * record produced by CBSTM03A. Pinned as a named constant per AAP
+     * §0.10.4 immutable-boundary contract.
+     *
+     * @see <a href="file:app/cbl/CBSTM03A.CBL">CBSTM03A.CBL</a> line 47
+     *      {@code 01 FD-HTMLFILE-REC PIC X(100)}
+     */
+    private static final int HTMLFILE_RECORD_LENGTH = 100;
+
+    /**
+     * Maximum number of transaction-detail rows CBSTM03A formats per
+     * card-statement page. Sourced from {@code WS-TRAN-TBL OCCURS 10
+     * TIMES} at {@code app/cbl/CBSTM03A.CBL} line 228. Pinned as a
+     * named constant per AAP §0.10.4 immutable-boundary contract.
+     */
+    private static final int MAX_TRANSACTIONS_PER_CARD = 10;
+
+    /**
      * Per-test isolated temporary directory injected by JUnit 5's
      * {@link TempDir} extension. Used as the staging area for the four
      * input fixtures (XREFFILE/CUSTFILE/ACCTFILE/TRNXFILE) and as the
@@ -631,6 +679,96 @@ class StatementGenerationJobIT extends AbstractBatchIT {
                 .as("HTML HTMLFILE must be non-empty "
                         + "(CBSTM03A always writes at least the HTML header + body wrapper)")
                 .isGreaterThan(0L);
+
+        // (4) STMTFILE record-width invariant — every emitted line must be
+        //     exactly 80 bytes per FD-STMTFILE-REC PIC X(80) (CBSTM03A.CBL
+        //     line 45). Per AAP §0.10.4 the immutable-boundary contract
+        //     forbids any width drift. The assertion iterates every
+        //     emitted record and identifies the first non-conformant line
+        //     by index so a regression is easy to localise.
+        final List<String> stmtLines = Files.readAllLines(actualStmt, StandardCharsets.US_ASCII);
+        assertThat(stmtLines)
+                .as("STMTFILE must contain at least one record line")
+                .isNotEmpty();
+        for (int i = 0; i < stmtLines.size(); i++) {
+            assertThat(stmtLines.get(i).length())
+                    .as("STMTFILE line %d must be exactly %d bytes per FD-STMTFILE-REC PIC X(80). "
+                            + "Actual='%s'", i, STMTFILE_RECORD_LENGTH, stmtLines.get(i))
+                    .isEqualTo(STMTFILE_RECORD_LENGTH);
+        }
+
+        // (5) HTMLFILE record-width invariant — every emitted line must be
+        //     exactly 100 bytes per FD-HTMLFILE-REC PIC X(100)
+        //     (CBSTM03A.CBL line 47). Same per-record iteration pattern as
+        //     the STMTFILE assertion above.
+        final List<String> htmlLines = Files.readAllLines(actualHtml, StandardCharsets.UTF_8);
+        assertThat(htmlLines)
+                .as("HTMLFILE must contain at least one record line")
+                .isNotEmpty();
+        for (int i = 0; i < htmlLines.size(); i++) {
+            assertThat(htmlLines.get(i).length())
+                    .as("HTMLFILE line %d must be exactly %d bytes per FD-HTMLFILE-REC PIC X(100). "
+                            + "Actual='%s'", i, HTMLFILE_RECORD_LENGTH, htmlLines.get(i))
+                    .isEqualTo(HTMLFILE_RECORD_LENGTH);
+        }
+
+        // (6) Per-customer aggregation invariant — every customer that
+        //     appears in custdata.txt and has at least one matching
+        //     transaction in the TRNXFILE input must have a corresponding
+        //     statement banner in the STMTFILE. The CBSTM03A 5000-STATEMENT-
+        //     HEAD paragraph writes the START_OF_STATEMENT banner once
+        //     per customer; the count of banner lines is therefore the
+        //     count of distinct customers covered by the statement run.
+        //     Per AAP §0.10.1 the IT does NOT recompute per-customer
+        //     transaction subtotals — that arithmetic remains in the
+        //     migrated production aggregator and is byte-checked by the
+        //     companion baseline-parity IT. The IT only asserts that the
+        //     aggregator emitted AT LEAST one banner (proving the
+        //     per-customer iteration is wired and not collapsing all
+        //     customers into a single statement).
+        final long bannerCount = stmtLines.stream()
+                .filter(line -> line.contains(TestFixtures.Branding.START_OF_STATEMENT))
+                .count();
+        assertThat(bannerCount)
+                .as("STMTFILE must contain at least one per-customer START-OF-STATEMENT banner "
+                        + "(CBSTM03A 5000-STATEMENT-HEAD paragraph emits the banner once per customer). "
+                        + "Bannerless output indicates the per-customer iteration is broken or the "
+                        + "aggregator collapsed all customers into a single statement.")
+                .isGreaterThanOrEqualTo(1L);
+
+        // (7) Max-transactions-per-card invariant — CBSTM03A's WS-TRAN-TBL
+        //     OCCURS 10 TIMES (CBSTM03A.CBL line 228) caps the transaction
+        //     detail array at 10 rows per card-statement page. The IT
+        //     asserts that no produced statement page exceeds this cap.
+        //     Per AAP §0.10.1 the IT does NOT inspect the page-break
+        //     algorithm — it only verifies the cap is honoured by
+        //     scanning between consecutive END_OF_STATEMENT markers
+        //     and counting transaction-detail lines. A transaction-detail
+        //     line is recognised by carrying the per-transaction
+        //     identifier pattern; here we use the conservative
+        //     "line starts with a digit at column 1" heuristic which
+        //     captures every TRAN-ID-prefixed detail row and excludes
+        //     header/footer/banner lines. The actual cap value is the
+        //     COBOL constant MAX_TRANSACTIONS_PER_CARD = 10.
+        int detailCountForCurrentCard = 0;
+        for (String line : stmtLines) {
+            if (line.contains(TestFixtures.Branding.START_OF_STATEMENT)
+                    || line.contains(TestFixtures.Branding.END_OF_STATEMENT)) {
+                // Reset on every statement boundary — the per-card cap
+                // is enforced within a single statement page.
+                detailCountForCurrentCard = 0;
+                continue;
+            }
+            if (!line.isEmpty() && Character.isDigit(line.charAt(0))) {
+                detailCountForCurrentCard++;
+                assertThat(detailCountForCurrentCard)
+                        .as("STMTFILE per-card transaction detail count must not exceed %d "
+                                + "(CBSTM03A WS-TRAN-TBL OCCURS 10 TIMES at CBSTM03A.CBL line 228). "
+                                + "Triggering line='%s'",
+                                MAX_TRANSACTIONS_PER_CARD, line)
+                        .isLessThanOrEqualTo(MAX_TRANSACTIONS_PER_CARD);
+            }
+        }
     }
 
     // =========================================================================

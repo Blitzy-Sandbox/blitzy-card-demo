@@ -68,20 +68,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     test class and each method so IDE runner output and CI test reports
 //     surface the COBOL-parity intent (rather than the camelCase method
 //     name alone).
-//
-//   * @Disabled defers <em>runtime</em> execution until the production-side
-//     prerequisites (JPA @Entity/@Id/@Column/@Version annotations on
-//     Customer + Flyway V1__schema.sql + V3__seed.sql) are landed by
-//     subsequent REFACTOR-flavor migration agents. JUnit 5 reports
-//     @Disabled tests as "skipped" (not "failed") so the Surefire/Failsafe
-//     build stays green; the reactivation criteria appear in the
-//     annotation's value attribute and in the class-level Javadoc
-//     "Reactivation Checklist" section. The sibling UserSecurityRepositoryIT,
-//     TransactionCategoryRepositoryIT, TransactionTypeRepositoryIT, and
-//     DiscountGroupRepositoryIT use the same @Disabled pattern — this IT
-//     mirrors that project convention so the compile-time wiring is
-//     verified end-to-end while the runtime DB execution awaits its
-//     production-side dependencies.
 // ---------------------------------------------------------------------------
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -314,143 +300,30 @@ import static org.assertj.core.api.Assertions.assertThat;
  * rows from {@code custdata.txt}); test order independence is
  * guaranteed.
  *
- * <h2>Why this class is currently {@code @Disabled}</h2>
+ * <h2>Activation State</h2>
  *
- * <p>The suite loads the {@code @DataJpaTest} Spring slice via
+ * <p>This IT is active and executes under {@code mvn verify} (Failsafe).
+ * The suite loads the {@code @DataJpaTest} Spring slice via
  * {@link AbstractRepositoryIT} and exercises the production
  * {@link CustomerRepository} bean against a real PostgreSQL 16
- * database. That requires every production-side prerequisite to be in
- * place: the {@link Customer} entity must be annotated as a JPA
+ * database. The {@link Customer} entity is annotated as a JPA
  * {@code @Entity} (with {@code @Id} on {@code customerId},
  * {@code @Column} annotations on every field, {@code @Version} on
- * {@code version}, etc.) so Hibernate can map the entity onto a
- * database table, and the Flyway scripts under
- * {@code src/main/resources/db/migration/} must exist to create the
- * {@code customers} table and seed reference customers. As of this
- * commit those production-side prerequisites are <em>intentionally
- * deferred</em> by the REFACTOR-flavor migration agents.
+ * {@code version}), and the Flyway scripts under
+ * {@code src/main/resources/db/migration/} create the
+ * {@code customers} table and seed reference customers. The
+ * {@code findById}, save, optimistic-locking, all-17-field round-trip,
+ * and NANPA-shaped phone-number paths are all exercised by the test
+ * methods below.
  *
- * <p>This testing-flavor AAP (§0.8.1 "Cross-cutting files that the
- * migration creates and that this Action Plan exercises (but does not
- * own)") <strong>explicitly forbids</strong> modifying any production
- * source under {@code src/main/java/com/aws/carddemo/} for the purpose
- * of <em>testability alone</em>: the testing flavor CREATEs tests
- * against those classes but does NOT redesign them. The suite is
- * therefore registered, compiled, and preserved end-to-end (the
- * production stubs created alongside this IT enable compilation), but
- * the JUnit Jupiter {@code @Disabled} marker below defers
- * <em>runtime</em> execution until the production-side migration
- * agents complete the JPA annotation and Flyway seed work. Once both
- * arrive, removing the {@code @Disabled} annotation (and its companion
- * unused import) activates all 8 tests unchanged. The sibling
- * {@code UserSecurityRepositoryIT}, {@code TransactionCategoryRepositoryIT},
- * {@code TransactionTypeRepositoryIT}, and
- * {@code DiscountGroupRepositoryIT} use the same {@code @Disabled}
- * pattern — this IT mirrors that established project convention.
+ * <h3>Operational Prerequisite</h3>
  *
- * <h3>Reactivation Checklist (for the next agent)</h3>
- *
- * <p>Remove the {@code @Disabled} annotation (and the unused
- * {@code org.junit.jupiter.api.Disabled} import) once <em>all</em> of
- * the following production-side prerequisites are in place:
- *
- * <ol>
- *   <li><strong>{@code @Entity} + {@code @Id} + {@code @Column} +
- *       {@code @Version} on {@link com.aws.carddemo.entity.Customer}</strong>
- *       — REFACTOR agents add {@code @Entity},
- *       {@code @Table(name = "customers")},
- *       {@code @Id} on {@code customerId},
- *       {@code @Column(name = "cust_id", length = 9, nullable = false)}
- *       on {@code customerId},
- *       {@code @Column(name = "first_name", length = 25)} on
- *       {@code firstName},
- *       {@code @Column(name = "middle_name", length = 25)} on
- *       {@code middleName},
- *       {@code @Column(name = "last_name", length = 25)} on
- *       {@code lastName},
- *       {@code @Column(name = "addr_line_1", length = 50)} on
- *       {@code addressLine1},
- *       {@code @Column(name = "addr_line_2", length = 50)} on
- *       {@code addressLine2},
- *       {@code @Column(name = "addr_line_3", length = 50)} on
- *       {@code addressLine3},
- *       {@code @Column(name = "addr_state_cd", length = 2)} on
- *       {@code addressStateCode},
- *       {@code @Column(name = "addr_country_cd", length = 3)} on
- *       {@code addressCountryCode},
- *       {@code @Column(name = "addr_zip", length = 10)} on
- *       {@code addressZip},
- *       {@code @Column(name = "phone_num_1", length = 15)} on
- *       {@code phoneNumber1},
- *       {@code @Column(name = "phone_num_2", length = 15)} on
- *       {@code phoneNumber2},
- *       {@code @Column(name = "ssn", length = 9)} on {@code ssn}
- *       (REFACTOR may widen to VARCHAR with an AES-GCM converter per
- *       AAP §0.10.5 PII policy),
- *       {@code @Column(name = "govt_issued_id", length = 20)} on
- *       {@code governmentIssuedId},
- *       {@code @Column(name = "dob_yyyy_mm_dd", length = 10)} on
- *       {@code dateOfBirth} (preserving the COBOL {@code PIC X(10)}
- *       ISO {@code YYYY-MM-DD} string contract),
- *       {@code @Column(name = "eft_account_id", length = 10)} on
- *       {@code eftAccountId},
- *       {@code @Column(name = "pri_card_holder_ind", length = 1)} on
- *       {@code primaryCardHolderIndicator},
- *       {@code @Column(name = "fico_credit_score")} on
- *       {@code ficoCreditScore} (an {@link Integer}-backed column at
- *       least {@code SMALLINT} wide so the 850 boundary round-trips), and
- *       {@code @Version @Column(name = "version")} on {@code version}.
- *       Without these annotations Hibernate cannot map the entity onto
- *       the PostgreSQL table and {@code @DataJpaTest} context startup
- *       fails.</li>
- *   <li><strong>Flyway {@code V1__schema.sql}</strong> under
- *       {@code src/main/resources/db/migration/} containing
- *       <pre>
- *       CREATE TABLE customers (
- *           cust_id              CHAR(9)      PRIMARY KEY,
- *           first_name           VARCHAR(25),
- *           middle_name          VARCHAR(25),
- *           last_name            VARCHAR(25),
- *           addr_line_1          VARCHAR(50),
- *           addr_line_2          VARCHAR(50),
- *           addr_line_3          VARCHAR(50),
- *           addr_state_cd        CHAR(2),
- *           addr_country_cd      CHAR(3),
- *           addr_zip             VARCHAR(10),
- *           phone_num_1          VARCHAR(15),
- *           phone_num_2          VARCHAR(15),
- *           ssn                  CHAR(9),
- *           govt_issued_id       VARCHAR(20),
- *           dob_yyyy_mm_dd       CHAR(10),
- *           eft_account_id       VARCHAR(10),
- *           pri_card_holder_ind  CHAR(1),
- *           fico_credit_score    INTEGER,
- *           version              BIGINT       NOT NULL DEFAULT 0
- *       );
- *       </pre>
- *       (column widths matching the COBOL {@code PIC} clauses verbatim;
- *       {@code fico_credit_score} as {@code INTEGER} rather than
- *       {@code SMALLINT} to guarantee headroom above the 850 upper
- *       bound).</li>
- *   <li><strong>Flyway {@code V3__seed.sql}</strong> (optional for this
- *       IT — every test seeds its own customers via the inherited
- *       {@code TestEntityManager}; a project-wide seed of 50 rows from
- *       {@code app/data/ASCII/custdata.txt} is documented in AAP §0.5.1
- *       but is not required to activate this class).</li>
- *   <li><strong>Docker available to Testcontainers</strong> at test
- *       runtime — the {@code mvn verify} build agent must be able to
- *       run {@code postgres:16-alpine}. CI agents that cannot start
- *       containers (e.g. nested-virtualisation-free environments) can
- *       set {@code TESTCONTAINERS_RYUK_DISABLED=true} as documented in
- *       {@code src/test/resources/application-test.properties}.</li>
- * </ol>
- *
- * <p>When all four items above are complete, deleting the
- * {@code @Disabled} annotation and the
- * {@code import org.junit.jupiter.api.Disabled;} line activates the
- * suite. No other code changes are required: the test method bodies
- * are written against the production API exactly as it will be once
- * the REFACTOR work completes.
+ * <p>Docker must be available to Testcontainers at test runtime — the
+ * {@code mvn verify} build agent must be able to run
+ * {@code postgres:16-alpine}. CI agents that cannot start containers
+ * (e.g. nested-virtualisation-free environments) can set
+ * {@code TESTCONTAINERS_RYUK_DISABLED=true} as documented in
+ * {@code src/test/resources/application-test.properties}.
  *
  * @see CustomerRepository
  * @see Customer

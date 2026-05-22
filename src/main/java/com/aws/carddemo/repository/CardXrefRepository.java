@@ -19,6 +19,7 @@ package com.aws.carddemo.repository;
 import com.aws.carddemo.entity.CardXref;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -67,17 +68,14 @@ import java.util.Optional;
  * a {@link String} (16-character PAN) for the same byte-for-byte
  * VSAM-key-preservation rationale documented on {@link AccountRepository}.
  *
- * <h2>Design Note — Stub Status</h2>
+ * <h2>Customer Alternate-Index Lookup — findByCustomerId</h2>
  *
- * <p>This interface is a <strong>minimum-viable JPA repository</strong>
- * created to satisfy {@link com.aws.carddemo.service.AccountViewService}
- * compilation and the account-view test suite. Subsequent migration agents
- * (REFACTOR flavor) will add the inverse lookup
- * {@code findByCustomerId(String)} once {@code COCRDLIC.cbl} is migrated,
- * an {@code @Index(name = "idx_cardxref_account_id", columnList = "accountId")}
- * on the {@code CardXref} entity to make the alternate-index path efficient,
- * and a {@code @Modifying @Query} for bulk re-mapping when cards are
- * reissued.
+ * <p>{@link #findByCustomerId(String)} replaces the COBOL alternate-index
+ * read by {@code XREF-CUST-ID}, used by COCRDLIC.cbl to list every card
+ * a customer holds. Spring Data derives
+ * {@code SELECT x FROM CardXref x WHERE x.customerId = :customerId} from
+ * the method name. The cardinality is 1-to-many — a customer typically
+ * holds several cards — so the return type is {@link List}.
  *
  * @see com.aws.carddemo.service.AccountViewService
  * @see CardXref
@@ -99,4 +97,30 @@ public interface CardXrefRepository extends JpaRepository<CardXref, String> {
      *         exists (COBOL: {@code DFHRESP(NOTFND)})
      */
     Optional<CardXref> findByAccountId(String accountId);
+
+    /**
+     * Look up every card cross-reference row whose
+     * {@link CardXref#getCustomerId() customerId} matches the supplied
+     * 9-character zero-padded customer identifier.
+     *
+     * <p>Java replacement for the COBOL alternate-index read pattern by
+     * {@code XREF-CUST-ID} used by {@code app/cbl/COCRDLIC.cbl} when
+     * listing all cards held by a single customer. Spring Data derives
+     * the equivalent JPQL {@code SELECT x FROM CardXref x WHERE
+     * x.customerId = :customerId} from the method name.
+     *
+     * <p>The cardinality of the customer→card mapping is 1-to-many in
+     * the CardDemo dataset (one customer may hold several cards across
+     * different account groups), so the return type is {@link List}
+     * rather than {@link Optional}. Spring Data guarantees the returned
+     * list is non-{@code null}; an unknown customer ID yields an empty
+     * list.
+     *
+     * @param customerId 9-character zero-padded numeric customer
+     *                   identifier (e.g. {@code "000000010"})
+     * @return every card cross-reference row whose {@code customerId}
+     *         equals the supplied value; the list may be empty but is
+     *         never {@code null}.
+     */
+    List<CardXref> findByCustomerId(String customerId);
 }

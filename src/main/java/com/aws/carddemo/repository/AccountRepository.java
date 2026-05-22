@@ -19,6 +19,8 @@ package com.aws.carddemo.repository;
 import com.aws.carddemo.entity.Account;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.util.List;
+
 /**
  * Spring Data JPA repository for {@link Account} entities — the Java
  * replacement for COBOL {@code EXEC CICS READ DATASET('ACCTDAT')
@@ -63,26 +65,84 @@ import org.springframework.data.jpa.repository.JpaRepository;
  * stripping during numeric-to-string conversions at the controller
  * boundary.
  *
- * <h2>Design Note — Stub Status</h2>
+ * <h2>Custom Query Methods</h2>
  *
- * <p>This interface is a <strong>minimum-viable JPA repository</strong>
- * created to satisfy {@link com.aws.carddemo.service.AccountViewService}
- * compilation and the account-view test suite. Subsequent migration agents
- * (REFACTOR flavor) will add custom query methods (e.g.,
- * {@code findByCustomerId(String customerId)} for the COCRDLIC card-list
- * query, {@code findAllByActiveStatus(String status)} for reporting), a
- * {@code @Repository} stereotype annotation (if the project policy
- * requires explicit stereotype marking — Spring Data infers the bean
- * from the {@code JpaRepository} extension and a stereotype is not
- * strictly necessary), and a {@code @Modifying @Query} update for the
- * COACTUPC dual-write flow.
+ * <p>This interface declares two Spring Data derived query methods on
+ * top of the inherited {@link JpaRepository} contract:
+ *
+ * <ul>
+ *   <li>{@link #findByCustomerId(String)} — replaces the COCRDLIC.cbl
+ *       account-by-customer-id lookup pattern. Spring Data derives the
+ *       JPQL {@code SELECT a FROM Account a WHERE a.customerId = :customerId}
+ *       from the method name and binds the {@code customer_id CHAR(9)}
+ *       column declared on {@link Account}. Returns a {@link List}
+ *       (never {@code null}, empty when no rows match) ordered by
+ *       insertion (no explicit {@code ORDER BY}).</li>
+ *   <li>{@link #findByActiveStatus(String)} — replaces the reporting
+ *       and batch active/inactive filtering pattern. Spring Data
+ *       derives {@code SELECT a FROM Account a WHERE a.activeStatus =
+ *       :activeStatus} from the method name. The COBOL
+ *       {@code ACCT-ACTIVE-STATUS PIC X(01)} field carries the
+ *       single-character flag {@code 'Y'} (active) or {@code 'N'}
+ *       (inactive); callers pass the literal flag value.</li>
+ * </ul>
+ *
+ * <p>All other operations ({@code findById}, {@code save},
+ * {@code deleteById}, etc.) are inherited from {@link JpaRepository} as
+ * the COBOL CICS READ / WRITE / REWRITE / DELETE primitives map directly
+ * onto them without further customisation.
  *
  * @see com.aws.carddemo.service.AccountViewService
  * @see Account
  */
 public interface AccountRepository extends JpaRepository<Account, String> {
-    // All required methods (findById, save, deleteById, ...) are inherited
-    // from JpaRepository. Custom query methods will be added by subsequent
-    // migration agents as additional COBOL programs (COACTUPC, COCRDLIC,
-    // CBACT01C) are migrated.
+
+    /**
+     * Finds every {@link Account} whose
+     * {@link Account#getCustomerId() customerId} matches the supplied
+     * 9-character customer foreign-key value. The Spring Data derived
+     * query is equivalent to the COBOL {@code STARTBR / READNEXT}
+     * pattern over the {@code ACCTDAT} alternate-index by
+     * {@code CUST-ID} that COCRDLIC.cbl performs when displaying every
+     * account a customer holds.
+     *
+     * <p>The method is intentionally typed {@link List} (not
+     * {@code Page} or {@link java.util.Optional}) because:
+     *
+     * <ul>
+     *   <li>Typical customers hold a small number of accounts
+     *       (single-digit), so paging is unnecessary.</li>
+     *   <li>An unknown customer ID yields an empty list — the
+     *       Spring Data contract for {@code List}-typed derived queries
+     *       guarantees a non-{@code null} return.</li>
+     * </ul>
+     *
+     * @param customerId the 9-character zero-padded customer ID — must
+     *                   match {@code customer_id CHAR(9)} verbatim
+     *                   (callers are responsible for padding short
+     *                   numeric strings; the column comparison is
+     *                   width-sensitive).
+     * @return every {@link Account} whose {@code customerId} equals the
+     *         supplied value; the list may be empty but is never
+     *         {@code null}.
+     */
+    List<Account> findByCustomerId(String customerId);
+
+    /**
+     * Finds every {@link Account} whose
+     * {@link Account#getActiveStatus() activeStatus} matches the
+     * supplied single-character flag. The Spring Data derived query is
+     * equivalent to the COBOL {@code STARTBR / READNEXT WHEN
+     * ACCT-ACTIVE-STATUS = 'Y'} reporting pattern used by the CORPT00C
+     * report-submission program and the batch transaction-validation
+     * cascade in CBTRN02C (reject code 102 fires when the looked-up
+     * account is {@code 'N'}).
+     *
+     * @param activeStatus the single-character flag — {@code "Y"} for
+     *                     active accounts, {@code "N"} for inactive.
+     * @return every {@link Account} whose {@code activeStatus} equals
+     *         the supplied flag; the list may be empty but is never
+     *         {@code null}.
+     */
+    List<Account> findByActiveStatus(String activeStatus);
 }
