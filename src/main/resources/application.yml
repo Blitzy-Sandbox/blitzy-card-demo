@@ -1,0 +1,181 @@
+# ---------------------------------------------------------------------------
+# AWS CardDemo - base application configuration.
+# Per AAP §0.3.1: "application.yml - base Spring profile configuration
+# (non-sensitive)".
+#
+# Sensitive values (DB passwords, JWT signing keys, MSK SASL secrets) are
+# fetched at runtime from AWS Secrets Manager / Parameter Store and are
+# NEVER stored here (per AAP §0.7.1 PCI-DSS rule).
+# ---------------------------------------------------------------------------
+spring:
+  application:
+    name: carddemo
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+  main:
+    banner-mode: log
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:h2:mem:carddemo;MODE=PostgreSQL;DB_CLOSE_DELAY=-1}
+    username: ${SPRING_DATASOURCE_USERNAME:sa}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      idle-timeout: 300000
+      max-lifetime: 600000
+      connection-timeout: 20000
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: false
+        jdbc:
+          lob:
+            non_contextual_creation: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    open-in-view: false
+  flyway:
+    enabled: false
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      timeout: 2000
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 4
+          min-idle: 1
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:${MSK_BOOTSTRAP_SERVERS:localhost:9092}}
+    producer:
+      acks: all
+      retries: 2147483647
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        delivery.timeout.ms: 120000
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    consumer:
+      group-id: carddemo
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      isolation-level: read_committed
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "com.awsm2.carddemo.*"
+    listener:
+      ack-mode: manual_immediate
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      initialize-schema: never
+
+# ---- Spring Cloud AWS ----
+spring.cloud:
+  aws:
+    region:
+      static: ${AWS_REGION:${AWS_DEFAULT_REGION:us-east-1}}
+    credentials:
+      access-key: ${AWS_ACCESS_KEY_ID:test}
+      secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+    secretsmanager:
+      enabled: ${AWS_SECRETSMANAGER_ENABLED:false}
+    parameterstore:
+      enabled: ${AWS_PARAMETERSTORE_ENABLED:false}
+
+# ---- Application-specific settings ----
+carddemo:
+  aws:
+    endpoint-override: ${AWS_ENDPOINT_URL:}
+    region: ${AWS_REGION:${AWS_DEFAULT_REGION:us-east-1}}
+    s3:
+      output-bucket: ${S3_OUTPUT_BUCKET:carddemo-output}
+      statements-bucket: ${S3_STATEMENTS_BUCKET:carddemo-statements}
+      reports-bucket: ${S3_REPORTS_BUCKET:carddemo-reports}
+      rejects-bucket: ${S3_REJECTS_BUCKET:carddemo-rejects}
+      backup-bucket: ${S3_BACKUP_BUCKET:carddemo-backup}
+    kms:
+      key-arn: ${KMS_KEY_ARN:}
+    secrets:
+      rds-secret-arn: ${RDS_SECRET_ARN:}
+    opensearch:
+      endpoint: ${OPENSEARCH_ENDPOINT:}
+    stepfunctions:
+      eod-batch-pipeline-arn: ${STATE_MACHINE_EOD_ARN:}
+  security:
+    jwt:
+      # Default value used only for local dev; production sources from Secrets Manager.
+      signing-key: ${JWT_SIGNING_KEY:DEVELOPMENT_ONLY_JWT_SIGNING_KEY_MIN_256_BITS_FOR_HS256_ALGORITHM}
+      issuer: carddemo
+      access-token-ttl-minutes: 60
+  cache:
+    account-balance-ttl-seconds: 300
+  kafka:
+    topics:
+      transaction-posted: transaction.posted
+      account-updated: account.updated
+      ledger-balanced: ledger.balanced
+      report-requested: report.requested
+  monetary:
+    scale: 2
+    rounding-mode: HALF_EVEN
+
+# ---- Management / observability ----
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    export:
+      cloudwatch:
+        enabled: ${CLOUDWATCH_METRICS_ENABLED:false}
+        namespace: CardDemo
+        step: 1m
+
+# ---- Logging ----
+logging:
+  level:
+    root: INFO
+    com.awsm2.carddemo: INFO
+    org.springframework: INFO
+    org.hibernate.SQL: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+# ---- Server ----
+server:
+  port: ${SERVER_PORT:8080}
+  forward-headers-strategy: framework
+  compression:
+    enabled: true
+  shutdown: graceful
+
+# ---- Springdoc / OpenAPI ----
+springdoc:
+  api-docs:
+    enabled: true
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: ${SPRINGDOC_SWAGGER_UI_ENABLED:true}

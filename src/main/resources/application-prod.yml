@@ -1,0 +1,52 @@
+# ---------------------------------------------------------------------------
+# Production profile - AWS-deployed (ECS Fargate + RDS Multi-AZ + MSK +
+# ElastiCache + Secrets Manager + Parameter Store).
+# Per AAP §0.3.1: "application-prod.yml - AWS-deployed profile".
+# ---------------------------------------------------------------------------
+spring:
+  config:
+    activate:
+      on-profile: prod
+    import:
+      - aws-secretsmanager:carddemo/rds
+      - aws-secretsmanager:carddemo/jwt-signing-key
+      - aws-parameterstore:/carddemo/config/
+  datasource:
+    # JDBC URL resolved from Secrets Manager secret value.
+    url: ${RDS_JDBC_URL}
+    username: ${RDS_USERNAME}
+    password: ${RDS_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  flyway:
+    enabled: true
+
+spring.cloud:
+  aws:
+    secretsmanager:
+      enabled: true
+    parameterstore:
+      enabled: true
+
+carddemo:
+  aws:
+    endpoint-override: ""
+
+management:
+  metrics:
+    export:
+      cloudwatch:
+        enabled: true
+
+logging:
+  level:
+    root: WARN
+    com.awsm2.carddemo: INFO

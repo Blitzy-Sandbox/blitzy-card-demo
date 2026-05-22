@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# Development profile - uses RDS-equivalent PostgreSQL and Spring Cloud AWS
+# import of Secrets Manager / Parameter Store.
+# Per AAP §0.3.1: "application-dev.yml".
+# ---------------------------------------------------------------------------
+spring:
+  config:
+    activate:
+      on-profile: dev
+    import:
+      - optional:aws-secretsmanager:carddemo/rds
+      - optional:aws-secretsmanager:carddemo/jwt-signing-key
+      - optional:aws-parameterstore:/carddemo/config/
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres:5432/carddemo}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    password: ${SPRING_DATASOURCE_PASSWORD:carddemo}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  flyway:
+    enabled: true
+
+spring.cloud:
+  aws:
+    secretsmanager:
+      enabled: true
+    parameterstore:
+      enabled: true
+
+carddemo:
+  aws:
+    endpoint-override: ${AWS_ENDPOINT_URL:}
+
+logging:
+  level:
+    com.awsm2.carddemo: DEBUG

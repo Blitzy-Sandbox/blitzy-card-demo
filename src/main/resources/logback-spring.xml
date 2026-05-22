@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Logback configuration for AWS CardDemo.
+    Per AAP §0.3.1: "logback-spring.xml - Logback configuration with
+    logstash-logback-encoder for structured JSON logging".
+-->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="carddemo"/>
+    <springProperty scope="context" name="activeProfile" source="spring.profiles.active" defaultValue="local"/>
+
+    <!-- Plain-text console appender for local dev -->
+    <appender name="CONSOLE_PLAIN" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Structured JSON appender for AWS CloudWatch ingestion -->
+    <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+            <providers>
+                <timestamp>
+                    <fieldName>timestamp</fieldName>
+                </timestamp>
+                <pattern>
+                    <pattern>
+                        {
+                          "level": "%level",
+                          "thread": "%thread",
+                          "logger": "%logger",
+                          "application": "${appName}",
+                          "profile": "${activeProfile}",
+                          "message": "%message"
+                        }
+                    </pattern>
+                </pattern>
+                <stackTrace>
+                    <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                        <maxDepthPerThrowable>30</maxDepthPerThrowable>
+                        <rootCauseFirst>true</rootCauseFirst>
+                    </throwableConverter>
+                </stackTrace>
+                <mdc/>
+            </providers>
+        </encoder>
+    </appender>
+
+    <springProfile name="local | test">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_PLAIN"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="dev | prod">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_JSON"/>
+        </root>
+    </springProfile>
+
+    <logger name="com.awsm2.carddemo" level="INFO"/>
+    <logger name="software.amazon.awssdk" level="WARN"/>
+    <logger name="org.apache.kafka" level="WARN"/>
+</configuration>
