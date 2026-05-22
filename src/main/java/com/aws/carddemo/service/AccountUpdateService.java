@@ -26,6 +26,7 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.util.Optional;
 import java.util.regex.Pattern;
+import org.springframework.stereotype.Service;
 
 /**
  * Account-update service — the Java migration of the 4,236-line CICS COBOL
@@ -245,6 +246,7 @@ import java.util.regex.Pattern;
  * @see CustomerRepository
  * @see CardXrefRepository
  */
+@Service
 public class AccountUpdateService {
 
     // ---------------------------------------------------------------------

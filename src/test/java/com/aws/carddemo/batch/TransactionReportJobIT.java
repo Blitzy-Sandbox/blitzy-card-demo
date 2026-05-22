@@ -85,7 +85,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     workspace. This is the canonical JUnit 5 mechanism for test-scoped
 //     filesystem isolation per AAP §0.10.9 (test isolation requirements).
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -432,19 +431,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  *      {@code CBTRN03C} report-formatter component whose Job-bean
  *      wiring this IT exercises end-to-end.
  */
-@Disabled("Awaits production-side prerequisites: (1) transactionReportJob @Bean declared in a "
-        + "@Configuration class under com.aws.carddemo.batch.config (or similar) wiring "
-        + "TransactionReportProcessor as the report formatter with FlatFileItemReader/Writer "
-        + "instances bound to the report.start.date / report.end.date / input.transact.path / "
-        + "input.cardxref.path / input.trantype.path / input.trancatg.path / output.reptfile.path "
-        + "JobParameters; (2) @Service annotations on the 17 service classes under "
-        + "com.aws.carddemo.service so the @SpringBootTest full-context load this IT performs does "
-        + "not fail at context refresh on the controller bean graph's NoSuchBeanDefinitionException; "
-        + "(3) SecurityConfig under com.aws.carddemo.config wiring a BCryptPasswordEncoder bean for "
-        + "AuthenticationService's constructor injection. Per AAP §0.8.1 the testing flavor cannot "
-        + "modify those production files; the next REFACTOR-flavor agent removes this annotation "
-        + "when the prerequisites land. See the class Javadoc 'Reactivation Checklist' for the "
-        + "full list and verification command.")
 @DisplayName("TRANREPT.jcl Spring Batch job execution + report-structure verification")
 class TransactionReportJobIT extends AbstractBatchIT {
 

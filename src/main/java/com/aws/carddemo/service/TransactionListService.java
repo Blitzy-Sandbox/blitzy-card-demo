@@ -22,6 +22,7 @@ import com.aws.carddemo.repository.TransactionRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
 
 /**
  * Transaction-list service — the Java migration of the CICS transaction-list
@@ -177,6 +178,7 @@ import org.springframework.data.domain.Pageable;
  * @see TransactionRepository
  * @see Transaction
  */
+@Service
 public class TransactionListService {
 
     // ---------------------------------------------------------------------

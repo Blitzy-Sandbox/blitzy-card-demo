@@ -29,6 +29,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Optional;
+import org.springframework.stereotype.Service;
 
 /**
  * Bill-payment service — the Java migration of the 572-line CICS COBOL program
@@ -160,6 +161,7 @@ import java.util.Optional;
  * @see CardXrefRepository
  * @see TransactionRepository
  */
+@Service
 public class BillPaymentService {
 
     // =========================================================================

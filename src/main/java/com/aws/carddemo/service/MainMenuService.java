@@ -16,6 +16,8 @@
  */
 package com.aws.carddemo.service;
 
+import org.springframework.stereotype.Service;
+
 /**
  * Main-menu dispatcher service — the Java migration of the CICS regular-user
  * main-menu program {@code app/cbl/COMEN01C.cbl} (TRANID {@code CM00}).
@@ -119,6 +121,7 @@ package com.aws.carddemo.service;
  * @see MainMenuRequest
  * @see MainMenuResponse
  */
+@Service
 public class MainMenuService {
 
     // ---------------------------------------------------------------------

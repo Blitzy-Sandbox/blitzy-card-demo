@@ -22,6 +22,7 @@ import com.aws.carddemo.repository.UserSecurityRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
 
 /**
  * User-list service — the Java migration of the CICS user-list dispatcher
@@ -132,6 +133,7 @@ import org.springframework.data.domain.Pageable;
  * @see UserSecurityRepository
  * @see SecurityUser
  */
+@Service
 public class UserListService {
 
     // ---------------------------------------------------------------------

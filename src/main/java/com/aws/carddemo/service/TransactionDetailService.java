@@ -20,6 +20,7 @@ import com.aws.carddemo.entity.Transaction;
 import com.aws.carddemo.repository.TransactionRepository;
 
 import java.util.Optional;
+import org.springframework.stereotype.Service;
 
 /**
  * Transaction-detail service — the Java migration of the CICS
@@ -119,6 +120,7 @@ import java.util.Optional;
  * @see Transaction
  * @see TransactionRepository
  */
+@Service
 public class TransactionDetailService {
 
     /**

@@ -32,6 +32,7 @@ import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.util.Optional;
 import java.util.regex.Pattern;
+import org.springframework.stereotype.Service;
 
 /**
  * Transaction-add service — the Java migration of the 783-line CICS COBOL program
@@ -144,6 +145,7 @@ import java.util.regex.Pattern;
  * @see AccountRepository
  * @see CardXrefRepository
  */
+@Service
 public class TransactionAddService {
 
     // =========================================================================

@@ -27,6 +27,7 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Optional;
+import org.springframework.stereotype.Service;
 
 /**
  * Authentication service — the Java migration of the CICS sign-on program
@@ -103,6 +104,7 @@ import java.util.Optional;
  * @see SecurityUser
  * @see UserSecurityRepository
  */
+@Service
 public class AuthenticationService {
 
     /** COBOL message: {@code 'Please enter User ID ...'} */

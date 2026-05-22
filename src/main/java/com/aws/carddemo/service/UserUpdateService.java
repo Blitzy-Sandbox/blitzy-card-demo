@@ -22,6 +22,7 @@ import com.aws.carddemo.repository.UserSecurityRepository;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.util.Optional;
+import org.springframework.stereotype.Service;
 
 /**
  * User-update service — the Java migration of the 414-line CICS COBOL
@@ -228,6 +229,7 @@ import java.util.Optional;
  * @see SecurityUser
  * @see PasswordEncoder
  */
+@Service
 public class UserUpdateService {
 
     // ---------------------------------------------------------------------

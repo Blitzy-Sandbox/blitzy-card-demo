@@ -26,6 +26,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.Optional;
 import java.util.regex.Pattern;
+import org.springframework.stereotype.Service;
 
 /**
  * Card-update service — the Java migration of the 1,560-line CICS COBOL
@@ -217,6 +218,7 @@ import java.util.regex.Pattern;
  * @see CardRepository
  * @see CardXrefRepository
  */
+@Service
 public class CardUpdateService {
 
     // ---------------------------------------------------------------------

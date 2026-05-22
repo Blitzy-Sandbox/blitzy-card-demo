@@ -22,6 +22,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.util.Locale;
+import org.springframework.stereotype.Service;
 
 /**
  * Report-submission service — the Java migration of the 649-line CICS COBOL
@@ -168,6 +169,7 @@ import java.util.Locale;
  * @see ReportJobDispatcher
  * @see ReportJobParameters
  */
+@Service
 public class ReportSubmissionService {
 
     // ---------------------------------------------------------------------

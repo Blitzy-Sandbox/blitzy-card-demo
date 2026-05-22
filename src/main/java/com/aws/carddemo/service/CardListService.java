@@ -22,6 +22,7 @@ import com.aws.carddemo.repository.CardRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
 
 /**
  * Card-list service — the Java migration of the 1,459-line CICS card-list
@@ -202,6 +203,7 @@ import org.springframework.data.domain.Pageable;
  * @see CardRepository
  * @see Card
  */
+@Service
 public class CardListService {
 
     // ---------------------------------------------------------------------

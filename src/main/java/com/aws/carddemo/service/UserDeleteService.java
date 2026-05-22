@@ -20,6 +20,7 @@ import com.aws.carddemo.entity.SecurityUser;
 import com.aws.carddemo.repository.UserSecurityRepository;
 
 import java.util.Optional;
+import org.springframework.stereotype.Service;
 
 /**
  * User-delete service — the Java migration of the 359-line CICS COBOL
@@ -133,6 +134,7 @@ import java.util.Optional;
  * @see UserSecurityRepository
  * @see SecurityUser
  */
+@Service
 public class UserDeleteService {
 
     // ---------------------------------------------------------------------

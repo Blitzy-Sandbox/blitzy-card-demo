@@ -20,6 +20,7 @@ import com.aws.carddemo.entity.SecurityUser;
 import com.aws.carddemo.repository.UserSecurityRepository;
 
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
 
 /**
  * User-add service — the Java migration of the 299-line CICS COBOL program
@@ -157,6 +158,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
  * @see SecurityUser
  * @see PasswordEncoder
  */
+@Service
 public class UserAddService {
 
     // ---------------------------------------------------------------------

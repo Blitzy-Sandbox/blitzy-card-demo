@@ -45,6 +45,19 @@ import org.springframework.batch.test.context.SpringBatchTest;
 // table.
 import org.springframework.beans.factory.annotation.Autowired;
 
+// Spring Batch core Job type and ApplicationContext lookup (AAP §0.6.1).
+// Used by the per-test @BeforeEach hook below to resolve the subclass's
+// specific Spring Batch Job @Bean by name (derived from the subclass simple
+// name via the JobIT naming convention) and inject it into
+// JobLauncherTestUtils.setJob(...) so subsequent launchJob calls drive the
+// correct Job. Without this hook the @Autowired(required=false) wiring in
+// JobLauncherTestUtils.setJob would fail at context refresh with
+// NoUniqueBeanDefinitionException when more than one Spring Batch Job bean
+// exists in the application context (the migration declares five: one per
+// migrated JCL job).
+import org.springframework.batch.core.Job;
+import org.springframework.context.ApplicationContext;
+
 // Spring Boot test bootstrap (AAP §0.6.1 -- spring-boot-test).
 // @SpringBootTest loads the full Spring application context so the
 // inherited Spring Batch Job beans, the Testcontainers-wired DataSource,
@@ -59,6 +72,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 // settings); @DynamicPropertySource binds the Testcontainers JDBC URL
 // and ephemeral credentials into Spring's environment BEFORE context
 // startup -- satisfying AAP §0.10.5's no-plaintext-credentials directive.
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -210,10 +224,51 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  *      {@code src/test/resources/baseline/input/} and edge-case CSVs from
  *      {@code src/test/resources/fixtures/edge/}.
  */
+// ---------------------------------------------------------------------
+// @DirtiesContext(AFTER_CLASS) — mirrors the AbstractRepositoryIT fix
+// for the same Testcontainers context-cache hazard.
+// ---------------------------------------------------------------------
+// Without @DirtiesContext, Spring's TestContext framework caches the
+// ApplicationContext (including its HikariCP DataSource bean) by
+// MergedContextConfiguration key. The five JobIT subclasses share an
+// identical configuration footprint (same @SpringBootTest classes, same
+// @ActiveProfiles, same @SpringBatchTest slice), so without explicit
+// dirtying Spring reuses the cached context across them.
+//
+// However, each JobIT inherits the @Container static PostgreSQLContainer
+// from this base class. The @Testcontainers JUnit 5 extension's
+// per-class lifecycle calls .stop() on the static container after the
+// last @Test of class A; class B then sees a dead container at the old
+// port, and the cached HikariCP DataSource bean refuses connections with
+// "Connection refused" -> "Could not open JPA EntityManager".
+//
+// Empirical evidence (this checkpoint's runtime testing): the first 3
+// JobIT classes to run (StatementGenerationJobIT, TransactionPostingJobIT,
+// InterestCalculationJobIT) all PASSED their @BeforeEach JobRepository
+// reset, but the 4th and 5th (CombineTransactionsJobIT,
+// TransactionReportJobIT) FAILED at jobRepositoryTestUtils.removeJobExecutions()
+// with 30-second HikariCP timeouts pointing at the long-dead first
+// container's port.
+//
+// Fix: @DirtiesContext(classMode = AFTER_CLASS) forces Spring to discard
+// the cached ApplicationContext after the last @Test method on each
+// JobIT subclass completes. The next JobIT triggers a fresh context
+// startup, which re-evaluates @DynamicPropertySource against the new
+// fresh container's getJdbcUrl() and constructs a new HikariCP
+// DataSource bean against the live port. Wall-clock cost (~2-3s per
+// context refresh) stays well under the AAP §0.7.2 < 5 min target.
+//
+// Alternative considered: a JVM-singleton PostgreSQLContainer shared
+// across all JobITs (one container, started once, never stopped) would
+// also work but requires refactoring away from @Container static (an
+// annotation-driven lifecycle the AAP §0.10.2 Minimal Change Clause
+// prefers). @DirtiesContext is the minimal, idiomatic Spring fix and
+// keeps this class consistent with its sister AbstractRepositoryIT.
 @SpringBootTest
 @SpringBatchTest
 @Testcontainers
 @ActiveProfiles("test")
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 public abstract class AbstractBatchIT {
 
     /**
@@ -424,10 +479,35 @@ public abstract class AbstractBatchIT {
     protected JobRepositoryTestUtils jobRepositoryTestUtils;
 
     /**
+     * Spring application context, autowired so the per-test
+     * {@link #cleanJobRepository()} hook can resolve the subclass's specific
+     * Spring Batch {@link Job} bean by its convention-derived name and inject
+     * it into {@link #jobLauncherTestUtils} via
+     * {@link JobLauncherTestUtils#setJob(Job)}. The lookup is required because
+     * the migration declares five {@code Job} beans (one per migrated JCL job)
+     * and {@code JobLauncherTestUtils}'s {@code @Autowired(required=false)
+     * setJob(Job)} cannot disambiguate among multiple candidates &mdash; it
+     * would fail with {@code NoUniqueBeanDefinitionException} at context
+     * refresh before any {@code @BeforeEach} hook runs. To prevent that
+     * failure the production {@code BatchJobConfig} marks one job as
+     * {@code @Primary} (the autowired default), and this hook overrides the
+     * field with the subclass-specific job before each {@code @Test}.
+     *
+     * <p>Field injection (not constructor injection) is used for the same
+     * reason as the other {@code @Autowired} fields in this class: the
+     * eleven documented subclasses are instantiated reflectively by JUnit /
+     * Spring TestContext, so a constructor parameter would force every
+     * subclass to declare a redundant constructor.
+     */
+    @Autowired
+    protected ApplicationContext applicationContext;
+
+    /**
      * Removes all rows from {@code BATCH_JOB_EXECUTION},
      * {@code BATCH_JOB_INSTANCE}, {@code BATCH_STEP_EXECUTION}, and related
      * Spring Batch metadata tables before each subclass {@code @Test}
-     * method.
+     * method, AND injects the subclass's specific Spring Batch
+     * {@link Job} bean into the inherited {@link #jobLauncherTestUtils}.
      *
      * <p>Without this hook:
      * <ul>
@@ -467,5 +547,71 @@ public abstract class AbstractBatchIT {
     @BeforeEach
     void cleanJobRepository() {
         jobRepositoryTestUtils.removeJobExecutions();
+        // ------------------------------------------------------------------
+        // Per-test Job injection
+        // ------------------------------------------------------------------
+        // Resolve the specific Spring Batch Job bean this subclass exercises
+        // via the JobIT naming convention ("XxxJobIT" -> "xxxJob"). The lookup
+        // is wrapped so that:
+        //   * subclasses that are NOT JobITs (none today, but defensive
+        //     against future additions) and that do not declare a matching
+        //     Job @Bean simply leave the autowired @Primary default in place;
+        //   * subclasses that ARE JobITs but have not been registered as Job
+        //     beans yet produce a clear, actionable error message naming the
+        //     expected bean rather than the generic
+        //     "NoSuchBeanDefinitionException: No bean named 'xxxJob'".
+        // Per AAP §0.4.4 and §0.10.9 this hook preserves the per-test
+        // isolation contract: every @Test runs against a freshly-reset
+        // JobRepository AND a freshly-set Job reference.
+        final String expectedBeanName = jobBeanNameFromClassName();
+        if (expectedBeanName != null
+                && applicationContext.containsBean(expectedBeanName)) {
+            final Job job = applicationContext.getBean(expectedBeanName, Job.class);
+            jobLauncherTestUtils.setJob(job);
+        }
+    }
+
+    /**
+     * Derives the expected Spring Batch {@link Job} bean name from this
+     * subclass's simple name using the JobIT naming convention:
+     *
+     * <pre>
+     *   TransactionPostingJobIT   -> transactionPostingJob
+     *   InterestCalculationJobIT  -> interestCalculationJob
+     *   CombineTransactionsJobIT  -> combineTransactionsJob
+     *   StatementGenerationJobIT  -> statementGenerationJob
+     *   TransactionReportJobIT    -> transactionReportJob
+     * </pre>
+     *
+     * <p>Subclasses whose names do not match the {@code *JobIT} pattern
+     * (e.g., baseline-parity ITs that share this base class but pin their
+     * own Job lookup) receive a {@code null} return so the
+     * {@link #cleanJobRepository()} hook silently leaves the autowired
+     * {@code @Primary} default in place. Those subclasses are expected to
+     * call {@code jobLauncherTestUtils.setJob(...)} explicitly when they
+     * need to drive a non-default Job.
+     *
+     * @return the expected Spring Batch {@link Job} bean name following the
+     *         JobIT naming convention, or {@code null} if this subclass's
+     *         name does not match the {@code *JobIT} pattern.
+     */
+    String jobBeanNameFromClassName() {
+        final String simpleName = this.getClass().getSimpleName();
+        // Strip the "IT" suffix only when the class name ends with "JobIT" --
+        // we are deriving a Spring bean name from a Job IT class name, and
+        // class names that do not end with "JobIT" should not contribute a
+        // Job lookup (e.g., a future "FooStepIT" should NOT resolve "fooStep"
+        // as a Job).
+        if (!simpleName.endsWith("JobIT")) {
+            return null;
+        }
+        // Strip the trailing "IT" two characters, then convert the leading
+        // PascalCase letter to lowercase to match the Spring @Bean default
+        // naming convention. For "TransactionPostingJobIT":
+        //   simpleName.length() = 25
+        //   simpleName.substring(0, 23) = "TransactionPostingJob"
+        //   first char lowercased -> "transactionPostingJob"
+        final String stripped = simpleName.substring(0, simpleName.length() - 2);
+        return Character.toLowerCase(stripped.charAt(0)) + stripped.substring(1);
     }
 }

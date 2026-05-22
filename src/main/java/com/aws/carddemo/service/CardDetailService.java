@@ -23,6 +23,7 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.Optional;
+import org.springframework.stereotype.Service;
 
 /**
  * Card-detail service — the Java migration of the CICS card-detail
@@ -109,6 +110,7 @@ import java.util.Optional;
  * @see Card
  * @see CardRepository
  */
+@Service
 public class CardDetailService {
 
     /**

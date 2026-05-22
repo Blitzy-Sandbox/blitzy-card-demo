@@ -16,6 +16,8 @@
  */
 package com.aws.carddemo.service;
 
+import org.springframework.stereotype.Service;
+
 /**
  * Admin-menu dispatcher service — the Java migration of the CICS admin-only
  * menu program {@code app/cbl/COADM01C.cbl} (TRANID {@code CA00}).
@@ -127,6 +129,7 @@ package com.aws.carddemo.service;
  * @see AdminMenuResponse
  * @see MainMenuService
  */
+@Service
 public class AdminMenuService {
 
     // ---------------------------------------------------------------------

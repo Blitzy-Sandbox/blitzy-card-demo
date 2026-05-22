@@ -84,7 +84,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     the workspace. This is the canonical JUnit 5 mechanism for test-scoped
 //     filesystem isolation per AAP §0.10.9 (test isolation requirements).
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -486,22 +485,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  *      DFSORT-equivalent merge/sort component whose Job-bean wiring this
  *      IT exercises end-to-end.
  */
-@Disabled("Awaits production-side prerequisites: (1) combineTransactionsJob @Bean declared in a "
-        + "@Configuration class under com.aws.carddemo.batch.config (or similar) wiring "
-        + "CombineTransactionsProcessor as the sort/merge component with two FlatFileItemReader "
-        + "instances and one FlatFileItemWriter bound to the input.posted.path / "
-        + "input.systran.path / output.transact.path JobParameters; (2) @Service annotations on "
-        + "the 17 service classes under com.aws.carddemo.service so the @SpringBootTest "
-        + "full-context load this IT performs does not fail at context refresh on the controller "
-        + "bean graph's NoSuchBeanDefinitionException; (3) SecurityConfig under "
-        + "com.aws.carddemo.config wiring a BCryptPasswordEncoder bean for AuthenticationService's "
-        + "constructor injection; (4) Captured COBOL baseline-expected fixtures (posted.txt, "
-        + "tcatbal_after_interest.txt) under src/test/resources/baseline/expected/, currently "
-        + "placeholder stubs awaiting capture from a real mainframe or Micro Focus Enterprise "
-        + "Server run. Per AAP §0.8.1 the testing flavor cannot modify those production files; "
-        + "the next REFACTOR-flavor agent removes this annotation when the prerequisites land. "
-        + "See the class Javadoc 'Reactivation Checklist' for the full list and verification "
-        + "command.")
 @DisplayName("COMBTRAN.jcl Spring Batch job execution + sort-order verification")
 class CombineTransactionsJobIT extends AbstractBatchIT {
 

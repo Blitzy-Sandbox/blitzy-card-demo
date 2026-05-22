@@ -88,7 +88,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     test-scoped filesystem isolation per AAP §0.10.9 (test isolation
 //     requirements).
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -612,19 +611,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @see TransactionValidationProcessor the migrated CBTRN01C
  *      validation cascade composed by the posting processor.
  */
-@Disabled("Awaits production-side prerequisites: (1) transactionPostingJob @Bean declared in a "
-        + "@Configuration class under com.aws.carddemo.batch.config (or similar) wiring "
-        + "TransactionPostingProcessor + TransactionValidationProcessor as the posting / "
-        + "validation components with a FlatFileItemReader bound to input.dailytran.path and a "
-        + "FlatFileItemWriter bound to output.posted.path, wrapped in @Transactional(rollbackFor "
-        + "= Exception.class) for SYNCPOINT-ROLLBACK parity; (2) @Service annotations on the 17 "
-        + "service classes under com.aws.carddemo.service so the @SpringBootTest full-context "
-        + "load this IT performs does not fail at context refresh on the controller bean graph's "
-        + "NoSuchBeanDefinitionException; (3) SecurityConfig under com.aws.carddemo.config wiring "
-        + "a BCryptPasswordEncoder bean for AuthenticationService's constructor injection. Per "
-        + "AAP §0.8.1 the testing flavor cannot modify those production files; the next "
-        + "REFACTOR-flavor agent removes this annotation when the prerequisites land. See the "
-        + "class Javadoc 'Reactivation Checklist' for the full list and verification command.")
 @DisplayName("POSTTRAN.jcl Spring Batch job execution semantics")
 @Import(TransactionPostingJobIT.FixedClockTestConfig.class)
 class TransactionPostingJobIT extends AbstractBatchIT {

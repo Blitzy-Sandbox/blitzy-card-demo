@@ -24,6 +24,7 @@ import com.aws.carddemo.repository.CardXrefRepository;
 import com.aws.carddemo.repository.CustomerRepository;
 
 import java.util.Optional;
+import org.springframework.stereotype.Service;
 
 /**
  * Account-view service — the Java migration of the CICS account-detail
@@ -123,6 +124,7 @@ import java.util.Optional;
  * @see CustomerRepository
  * @see CardXrefRepository
  */
+@Service
 public class AccountViewService {
 
     /**

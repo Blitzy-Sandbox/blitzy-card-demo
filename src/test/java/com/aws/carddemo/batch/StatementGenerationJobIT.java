@@ -89,7 +89,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     test-scoped filesystem isolation per AAP §0.10.9 (test isolation
 //     requirements).
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -468,21 +467,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  *      structural and {@code @Disabled} pattern for the TRANREPT.jcl /
  *      CBTRN03C migration.
  */
-@Disabled("Awaits production-side prerequisites: (1) statementGenerationJob @Bean declared in a "
-        + "@Configuration class under com.aws.carddemo.batch.config (or similar) wiring "
-        + "StatementProcessor + StatementFileProcessor as the step components with "
-        + "FlatFileItemReader/Writer instances bound to the input.cardxref.path / "
-        + "input.custdata.path / input.acctdata.path / input.transact.path / "
-        + "output.stmtfile.path / output.htmlfile.path JobParameters; (2) @Service annotations "
-        + "on the 17 service classes under com.aws.carddemo.service so the @SpringBootTest "
-        + "full-context load this IT performs does not fail at context refresh on the controller "
-        + "bean graph's NoSuchBeanDefinitionException; (3) SecurityConfig under "
-        + "com.aws.carddemo.config wiring a BCryptPasswordEncoder bean for "
-        + "AuthenticationService's constructor injection; (4) Captured baseline-expected "
-        + "fixtures (combined.txt) under src/test/resources/baseline/expected/. Per AAP §0.8.1 "
-        + "the testing flavor cannot modify those production files; the next REFACTOR-flavor "
-        + "agent removes this annotation when the prerequisites land. See the class Javadoc "
-        + "'Reactivation Checklist' for the full list and verification command.")
 @DisplayName("CREASTMT.JCL Spring Batch job execution + dual output verification")
 class StatementGenerationJobIT extends AbstractBatchIT {
 
