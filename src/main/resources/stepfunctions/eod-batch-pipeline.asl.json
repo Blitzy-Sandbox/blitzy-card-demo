@@ -1,0 +1,619 @@
+{
+  "Comment": "CardDemo End-of-Day (EOD) Batch Pipeline state machine. Replaces the z/OS JCL business-processing chain: POSTTRAN -> INTCALC -> TRANBKP -> COMBTRAN -> Parallel { CREASTMT, TRANREPT }. Source JCL artifacts: app/jcl/POSTTRAN.jcl (CBTRN02C), app/jcl/INTCALC.jcl (CBACT04C with PARM='2022071800'), app/jcl/TRANBKP.jcl (REPROC backup to TRANSACT.BKUP(+1)), app/jcl/COMBTRAN.jcl (DFSORT + IDCAMS REPRO), app/jcl/CREASTMT.JCL (CBSTM03A text+HTML statements), app/jcl/TRANREPT.jcl (CBTRN03C date-filtered transaction report). Implements AAP \u00a70.4.1 and \u00a70.6.3 transformations: each Task uses arn:aws:states:::batch:submitJob.sync to invoke a Spring Batch job inside a Fargate container; the COBOL PARM date is passed via the INTEREST_CALC_PARM env var; Retry blocks model JCL COND= retry semantics; Catch blocks model JCL COND=(...,LT) skip-on-failure routing; SNS + CloudWatch metrics emit success/failure signals per AAP \u00a70.6.6 observability requirements. Per AAP \u00a70.7.3 Minimal Change Clause the chain order matches the README \u00a7Running full batch sequence exactly.",
+  "StartAt": "InitializeEodPipeline",
+  "Version": "1.0",
+  "TimeoutSeconds": 14400,
+  "States": {
+    "InitializeEodPipeline": {
+      "Type": "Pass",
+      "Comment": "Initialize EOD pipeline context with execution parameters. Aggregates Step Functions execution input (processingDate, secret ARNs, S3 bucket, KMS key, MSK bootstrap, SNS topic) into a single $.context object that downstream Task states reference via $.context.* JSONPath expressions. Replaces JCL: //POSTTRAN JOB statement, //NOTIFY=&SYSUID, and //JOBLIB JCLLIB ORDER= job-level metadata.",
+      "Parameters": {
+        "executionId.$": "$$.Execution.Name",
+        "startTime.$": "$$.State.EnteredTime",
+        "processingDate.$": "$.processingDate",
+        "rdsSecretArn.$": "$.rdsSecretArn",
+        "s3OutputBucket.$": "$.s3OutputBucket",
+        "kmsKeyArn.$": "$.kmsKeyArn",
+        "kafkaBootstrapServers.$": "$.kafkaBootstrapServers",
+        "snsAlertTopicArn.$": "$.snsAlertTopicArn"
+      },
+      "ResultPath": "$.context",
+      "Next": "PostTransactions"
+    },
+    "PostTransactions": {
+      "Type": "Task",
+      "Comment": "Process daily transaction file and apply postings. Updates TRANSACT (AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS), ACCTDATA (AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS), and TCATBALF (AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS); writes 4-stage rejects (XREF lookup, account lookup, credit limit, card expiration) to the DALYREJS S3 prefix. Replaces JCL: POSTTRAN.jcl STEP15 EXEC PGM=CBTRN02C with DDs STEPLIB, SYSPRINT, SYSOUT, TRANFILE, DALYTRAN, XREFFILE, DALYREJS (GDG +1), ACCTFILE, TCATBALF. COBOL program: CBTRN02C. Reject codes 100-109 preserved per AAP \u00a70.4.1 TransactionPostingService entry.",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "States.Format('carddemo-posttran-{}', $.context.executionId)",
+        "JobQueue": "${BATCH_JOB_QUEUE_ARN}",
+        "JobDefinition": "${POSTTRAN_JOB_DEFINITION_ARN}",
+        "ContainerOverrides": {
+          "Environment": [
+            {
+              "Name": "SPRING_PROFILES_ACTIVE",
+              "Value": "prod"
+            },
+            {
+              "Name": "BATCH_JOB_NAME",
+              "Value": "dailyTransactionPostingJob"
+            },
+            {
+              "Name": "PROCESSING_DATE",
+              "Value.$": "$.context.processingDate"
+            },
+            {
+              "Name": "RDS_SECRET_ARN",
+              "Value.$": "$.context.rdsSecretArn"
+            },
+            {
+              "Name": "S3_OUTPUT_BUCKET",
+              "Value.$": "$.context.s3OutputBucket"
+            },
+            {
+              "Name": "KMS_KEY_ARN",
+              "Value.$": "$.context.kmsKeyArn"
+            },
+            {
+              "Name": "MSK_BOOTSTRAP_SERVERS",
+              "Value.$": "$.context.kafkaBootstrapServers"
+            }
+          ]
+        }
+      },
+      "ResultPath": "$.postTransResult",
+      "TimeoutSeconds": 3600,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "Batch.AWSBatchException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FailureNotification"
+        }
+      ],
+      "Next": "CalculateInterest"
+    },
+    "CalculateInterest": {
+      "Type": "Task",
+      "Comment": "Compute monthly interest and fees per disclosure-group rules with DEFAULT fallback. Writes system-generated interest transactions to the SYSTRAN S3 prefix (was AWS.M2.CARDDEMO.SYSTRAN(+1) GDG). Replaces JCL: INTCALC.jcl STEP15 EXEC PGM=CBACT04C,PARM='2022071800' with DDs STEPLIB, SYSPRINT, SYSOUT, TCATBALF, XREFFILE, XREFFIL1 (CARDXREF AIX PATH), ACCTFILE, DISCGRP, TRANSACT (SYSTRAN +1). COBOL program: CBACT04C. Per AAP \u00a70.6.3 the original PARM='2022071800' literal is preserved as the INTEREST_CALC_PARM environment variable, sourced from $.context.processingDate at execution time.",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "States.Format('carddemo-intcalc-{}', $.context.executionId)",
+        "JobQueue": "${BATCH_JOB_QUEUE_ARN}",
+        "JobDefinition": "${INTCALC_JOB_DEFINITION_ARN}",
+        "ContainerOverrides": {
+          "Environment": [
+            {
+              "Name": "SPRING_PROFILES_ACTIVE",
+              "Value": "prod"
+            },
+            {
+              "Name": "BATCH_JOB_NAME",
+              "Value": "interestCalculationJob"
+            },
+            {
+              "Name": "PROCESSING_DATE",
+              "Value.$": "$.context.processingDate"
+            },
+            {
+              "Name": "INTEREST_CALC_PARM",
+              "Value.$": "$.context.processingDate"
+            },
+            {
+              "Name": "RDS_SECRET_ARN",
+              "Value.$": "$.context.rdsSecretArn"
+            },
+            {
+              "Name": "S3_OUTPUT_BUCKET",
+              "Value.$": "$.context.s3OutputBucket"
+            },
+            {
+              "Name": "KMS_KEY_ARN",
+              "Value.$": "$.context.kmsKeyArn"
+            },
+            {
+              "Name": "MSK_BOOTSTRAP_SERVERS",
+              "Value.$": "$.context.kafkaBootstrapServers"
+            }
+          ]
+        }
+      },
+      "ResultPath": "$.intCalcResult",
+      "TimeoutSeconds": 3600,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "Batch.AWSBatchException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FailureNotification"
+        }
+      ],
+      "Next": "BackupTransactions"
+    },
+    "BackupTransactions": {
+      "Type": "Task",
+      "Comment": "Backup TRANSACT table snapshot to a versioned S3 object before the combine stage. Provides point-in-time reproducibility for the COMBTRAN sort (matches the README EOD chain POSTTRAN -> INTCALC -> TRANBKP -> COMBTRAN). RDS automated backups per AAP \u00a70.6.2 cover disaster recovery; this Task provides the application-level snapshot the original mainframe achieved via TRANSACT.BKUP(+1) GDG generation. Replaces JCL: TRANBKP.jcl STEP05R EXEC PROC=REPROC (PRC001.FILEIN=AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS, PRC001.FILEOUT=AWS.M2.CARDDEMO.TRANSACT.BKUP(+1)) plus the subsequent STEP05/STEP10 IDCAMS DELETE+DEFINE CLUSTER which are obviated by RDS schema management.",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "States.Format('carddemo-tranbkp-{}', $.context.executionId)",
+        "JobQueue": "${BATCH_JOB_QUEUE_ARN}",
+        "JobDefinition": "${TRANBKP_JOB_DEFINITION_ARN}",
+        "ContainerOverrides": {
+          "Environment": [
+            {
+              "Name": "SPRING_PROFILES_ACTIVE",
+              "Value": "prod"
+            },
+            {
+              "Name": "BATCH_JOB_NAME",
+              "Value": "transactionBackupJob"
+            },
+            {
+              "Name": "PROCESSING_DATE",
+              "Value.$": "$.context.processingDate"
+            },
+            {
+              "Name": "RDS_SECRET_ARN",
+              "Value.$": "$.context.rdsSecretArn"
+            },
+            {
+              "Name": "S3_OUTPUT_BUCKET",
+              "Value.$": "$.context.s3OutputBucket"
+            },
+            {
+              "Name": "KMS_KEY_ARN",
+              "Value.$": "$.context.kmsKeyArn"
+            }
+          ]
+        }
+      },
+      "ResultPath": "$.tranBkpResult",
+      "TimeoutSeconds": 1800,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "Batch.AWSBatchException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FailureNotification"
+        }
+      ],
+      "Next": "CombineTransactions"
+    },
+    "CombineTransactions": {
+      "Type": "Task",
+      "Comment": "Sort and combine TRANSACT.BKUP(0) and SYSTRAN(0) generations by transaction ID, then bulk-load the combined dataset back into TRANSACT. Pure utility job with no source COBOL program; Java target uses java.util.Comparator + bulk JPA insert per AAP \u00a70.4.1 CombineTransactionsJob entry. Replaces JCL: COMBTRAN.jcl STEP05R EXEC PGM=SORT (DFSORT with SYMNAMES TRAN-ID,1,16,CH and SORT FIELDS=(TRAN-ID,A), concatenated SORTIN of TRANSACT.BKUP(0)+SYSTRAN(0), SORTOUT=TRANSACT.COMBINED(+1)) + STEP10 EXEC PGM=IDCAMS REPRO INFILE(TRANSACT.COMBINED) OUTFILE(TRANSACT.VSAM.KSDS).",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "States.Format('carddemo-combtran-{}', $.context.executionId)",
+        "JobQueue": "${BATCH_JOB_QUEUE_ARN}",
+        "JobDefinition": "${COMBTRAN_JOB_DEFINITION_ARN}",
+        "ContainerOverrides": {
+          "Environment": [
+            {
+              "Name": "SPRING_PROFILES_ACTIVE",
+              "Value": "prod"
+            },
+            {
+              "Name": "BATCH_JOB_NAME",
+              "Value": "combineTransactionsJob"
+            },
+            {
+              "Name": "PROCESSING_DATE",
+              "Value.$": "$.context.processingDate"
+            },
+            {
+              "Name": "RDS_SECRET_ARN",
+              "Value.$": "$.context.rdsSecretArn"
+            },
+            {
+              "Name": "S3_OUTPUT_BUCKET",
+              "Value.$": "$.context.s3OutputBucket"
+            },
+            {
+              "Name": "KMS_KEY_ARN",
+              "Value.$": "$.context.kmsKeyArn"
+            }
+          ]
+        }
+      },
+      "ResultPath": "$.combTranResult",
+      "TimeoutSeconds": 3600,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "Batch.AWSBatchException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FailureNotification"
+        }
+      ],
+      "Next": "RunDownstreamReports"
+    },
+    "RunDownstreamReports": {
+      "Type": "Parallel",
+      "Comment": "Fan out to CreateStatements (CBSTM03A text+HTML statements) and RunTransactionReports (CBTRN03C transaction report) in parallel branches. Both consume the post-COMBTRAN TRANSACT table independently \u2014 neither produces input for the other \u2014 so parallel execution is safe and matches AAP \u00a70.6.3 Stage 4a/4b explicit guidance. Replaces JCL: independent execution of CREASTMT.JCL and TRANREPT.jcl after COMBTRAN in the original mainframe schedule.",
+      "Branches": [
+        {
+          "StartAt": "CreateStatements",
+          "States": {
+            "CreateStatements": {
+              "Type": "Task",
+              "Comment": "Generate text and HTML statements for every card in CARDXREF. Java target uses Template Method pattern for text/HTML variants per AAP \u00a70.3.3. Output flows to S3 STMTFILE and HTMLFILE prefixes via S3OutputService per AAP \u00a70.6.6 (was AWS.M2.CARDDEMO.STATEMNT.PS and AWS.M2.CARDDEMO.STATEMNT.HTML). Replaces JCL: CREASTMT.JCL DELDEF01 (IDCAMS DELETE/DEFINE CLUSTER prep \u2014 obviated by RDS schema management) + STEP010 EXEC PGM=SORT (re-key TRANSACT by TRAN-CARD-NUM,TRAN-ID to TRXFL.SEQ) + STEP020 EXEC PGM=IDCAMS,COND=(0,NE) (REPRO TRXFL.SEQ to TRXFL.VSAM.KSDS) + STEP030 EXEC PGM=IEFBR14,COND=(0,NE) (clean prior STMTFILE/HTMLFILE) + STEP040 EXEC PGM=CBSTM03A,COND=(0,NE) with DDs TRNXFILE, XREFFILE, ACCTFILE, CUSTFILE, STMTFILE, HTMLFILE. COBOL programs: CBSTM03A + CBSTM03B subroutine. The COND=(0,NE) skip-on-failure semantics are preserved via Step Functions Catch routing to the parent Parallel state.",
+              "Resource": "arn:aws:states:::batch:submitJob.sync",
+              "Parameters": {
+                "JobName.$": "States.Format('carddemo-creastmt-{}', $.context.executionId)",
+                "JobQueue": "${BATCH_JOB_QUEUE_ARN}",
+                "JobDefinition": "${CREASTMT_JOB_DEFINITION_ARN}",
+                "ContainerOverrides": {
+                  "Environment": [
+                    {
+                      "Name": "SPRING_PROFILES_ACTIVE",
+                      "Value": "prod"
+                    },
+                    {
+                      "Name": "BATCH_JOB_NAME",
+                      "Value": "statementGenerationJob"
+                    },
+                    {
+                      "Name": "PROCESSING_DATE",
+                      "Value.$": "$.context.processingDate"
+                    },
+                    {
+                      "Name": "RDS_SECRET_ARN",
+                      "Value.$": "$.context.rdsSecretArn"
+                    },
+                    {
+                      "Name": "S3_OUTPUT_BUCKET",
+                      "Value.$": "$.context.s3OutputBucket"
+                    },
+                    {
+                      "Name": "KMS_KEY_ARN",
+                      "Value.$": "$.context.kmsKeyArn"
+                    }
+                  ]
+                }
+              },
+              "TimeoutSeconds": 5400,
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.Timeout"
+                  ],
+                  "IntervalSeconds": 60,
+                  "MaxAttempts": 1,
+                  "BackoffRate": 2.0
+                },
+                {
+                  "ErrorEquals": [
+                    "Batch.AWSBatchException",
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "RunTransactionReports",
+          "States": {
+            "RunTransactionReports": {
+              "Type": "Task",
+              "Comment": "Generate the transaction report (date-window filter, sorted by card number) for the configured reporting window. Output written to S3 TRANREPT prefix (was AWS.M2.CARDDEMO.TRANREPT(+1) GDG). Replaces JCL: TRANREPT.jcl STEP05R EXEC PROC=REPROC (FILEIN=AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS, FILEOUT=AWS.M2.CARDDEMO.TRANSACT.BKUP(+1)) + STEP05R EXEC PGM=SORT (SYMNAMES TRAN-CARD-NUM, TRAN-PROC-DT, PARM-START-DATE, PARM-END-DATE with SORT FIELDS=(TRAN-CARD-NUM,A) and INCLUDE COND=(TRAN-PROC-DT GE PARM-START-DATE AND TRAN-PROC-DT LE PARM-END-DATE)) + STEP10R EXEC PGM=CBTRN03C with DDs TRANFILE, CARDXREF, TRANTYPE, TRANCATG, DATEPARM, TRANREPT. COBOL program: CBTRN03C. The original inline SYMNAMES literals PARM-START-DATE,C'2022-01-01' and PARM-END-DATE,C'2022-07-06' are preserved as REPORT_START_DATE and REPORT_END_DATE env vars sourced from Step Functions execution input.",
+              "Resource": "arn:aws:states:::batch:submitJob.sync",
+              "Parameters": {
+                "JobName.$": "States.Format('carddemo-tranrept-{}', $.context.executionId)",
+                "JobQueue": "${BATCH_JOB_QUEUE_ARN}",
+                "JobDefinition": "${TRANREPT_JOB_DEFINITION_ARN}",
+                "ContainerOverrides": {
+                  "Environment": [
+                    {
+                      "Name": "SPRING_PROFILES_ACTIVE",
+                      "Value": "prod"
+                    },
+                    {
+                      "Name": "BATCH_JOB_NAME",
+                      "Value": "transactionReportJob"
+                    },
+                    {
+                      "Name": "PROCESSING_DATE",
+                      "Value.$": "$.context.processingDate"
+                    },
+                    {
+                      "Name": "REPORT_START_DATE",
+                      "Value.$": "$.reportStartDate"
+                    },
+                    {
+                      "Name": "REPORT_END_DATE",
+                      "Value.$": "$.reportEndDate"
+                    },
+                    {
+                      "Name": "RDS_SECRET_ARN",
+                      "Value.$": "$.context.rdsSecretArn"
+                    },
+                    {
+                      "Name": "S3_OUTPUT_BUCKET",
+                      "Value.$": "$.context.s3OutputBucket"
+                    },
+                    {
+                      "Name": "KMS_KEY_ARN",
+                      "Value.$": "$.context.kmsKeyArn"
+                    }
+                  ]
+                }
+              },
+              "TimeoutSeconds": 5400,
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "States.Timeout"
+                  ],
+                  "IntervalSeconds": 60,
+                  "MaxAttempts": 1,
+                  "BackoffRate": 2.0
+                },
+                {
+                  "ErrorEquals": [
+                    "Batch.AWSBatchException",
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 30,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultPath": "$.parallelResults",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FailureNotification"
+        }
+      ],
+      "Next": "EmitSuccessMetric"
+    },
+    "EmitSuccessMetric": {
+      "Type": "Task",
+      "Comment": "Emit CloudWatch success metric on EOD pipeline completion under namespace CardDemo/EOD with dimensions StateMachine, ExecutionId, and ProcessingDate. Per AAP \u00a70.6.6 observability requirements (CloudWatch + Container Insights + Micrometer bridge). Equivalent to the JCL job-end COND=0 signal that the mainframe operator console would display.",
+      "Resource": "arn:aws:states:::aws-sdk:cloudwatch:putMetricData",
+      "Parameters": {
+        "Namespace": "CardDemo/EOD",
+        "MetricData": [
+          {
+            "MetricName": "EodPipelineSucceeded",
+            "Value": 1,
+            "Unit": "Count",
+            "Dimensions": [
+              {
+                "Name": "StateMachine",
+                "Value": "eod-batch-pipeline"
+              },
+              {
+                "Name": "ExecutionId",
+                "Value.$": "$.context.executionId"
+              },
+              {
+                "Name": "ProcessingDate",
+                "Value.$": "$.context.processingDate"
+              }
+            ]
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "CloudWatch.CloudWatchException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.metricError",
+          "Next": "EodPipelineSucceeded"
+        }
+      ],
+      "Next": "EodPipelineSucceeded"
+    },
+    "EodPipelineSucceeded": {
+      "Type": "Succeed",
+      "Comment": "Terminal success state for the EOD pipeline. Equivalent to JCL job-end COND=0. CloudTrail records the execution for audit per AAP \u00a70.6.6."
+    },
+    "FailureNotification": {
+      "Type": "Task",
+      "Comment": "Publish failure to SNS for operations team alerting. Subject and message include execution id, processing date, error type, and cause for triage. Replaces JCL: MSGCLASS=H + NOTIFY=&SYSUID job-end notification on abend, plus the implicit mainframe operator console abend message. Per AAP \u00a70.6.3.",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn.$": "$.context.snsAlertTopicArn",
+        "Subject": "CardDemo eod-batch-pipeline state machine FAILED",
+        "Message.$": "States.Format('Execution {} for processingDate {} failed. Error: {}. Cause: {}', $.context.executionId, $.context.processingDate, $.error.Error, $.error.Cause)",
+        "MessageAttributes": {
+          "stateMachine": {
+            "DataType": "String",
+            "StringValue": "eod-batch-pipeline"
+          },
+          "severity": {
+            "DataType": "String",
+            "StringValue": "ERROR"
+          },
+          "processingDate": {
+            "DataType": "String",
+            "StringValue.$": "$.context.processingDate"
+          }
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Sns.SnsException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.notifyError",
+          "Next": "EmitFailureMetric"
+        }
+      ],
+      "Next": "EmitFailureMetric"
+    },
+    "EmitFailureMetric": {
+      "Type": "Task",
+      "Comment": "Emit CloudWatch failure metric under namespace CardDemo/EOD with dimensions StateMachine and ExecutionId, then transition to the terminal Fail state. Per AAP \u00a70.6.6 observability requirements.",
+      "Resource": "arn:aws:states:::aws-sdk:cloudwatch:putMetricData",
+      "Parameters": {
+        "Namespace": "CardDemo/EOD",
+        "MetricData": [
+          {
+            "MetricName": "EodPipelineFailed",
+            "Value": 1,
+            "Unit": "Count",
+            "Dimensions": [
+              {
+                "Name": "StateMachine",
+                "Value": "eod-batch-pipeline"
+              },
+              {
+                "Name": "ExecutionId",
+                "Value.$": "$.context.executionId"
+              }
+            ]
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "CloudWatch.CloudWatchException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.metricError",
+          "Next": "EodPipelineFailed"
+        }
+      ],
+      "Next": "EodPipelineFailed"
+    },
+    "EodPipelineFailed": {
+      "Type": "Fail",
+      "Comment": "Terminal failure state. CloudTrail records the execution for audit per AAP \u00a70.6.6. Operations team is alerted via the preceding FailureNotification SNS publish; CloudWatch records the EodPipelineFailed metric for dashboards and alarms.",
+      "Error": "EodPipelineFailed",
+      "Cause": "One or more EOD pipeline steps failed. See execution history and SNS notification."
+    }
+  }
+}
