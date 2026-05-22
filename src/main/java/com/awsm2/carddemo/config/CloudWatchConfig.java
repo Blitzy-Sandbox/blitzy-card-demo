@@ -20,223 +20,265 @@ import io.micrometer.cloudwatch2.CloudWatchMeterRegistry;
 import io.micrometer.core.instrument.Clock;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
-import io.micrometer.core.instrument.config.MeterFilter;
-import io.micrometer.core.instrument.config.MeterRegistryConfig;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.actuate.autoconfigure.metrics.MeterRegistryCustomizer;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import software.amazon.awssdk.services.cloudwatch.CloudWatchAsyncClient;
 
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Objects;
+import java.util.Map;
 
 /**
- * Wires the Micrometer &rarr; Amazon CloudWatch metrics bridge required by
- * AAP &sect;0.6.6 ("CloudWatch + Container Insights captures ECS
- * task-level&hellip; Spring Actuator metrics are exported via Micrometer
- * &rarr; CloudWatch under namespace {@code CardDemo}").
+ * Spring {@code @Configuration} that wires Micrometer to publish application
+ * metrics to Amazon CloudWatch under the namespace {@code CardDemo}
+ * (AAP &sect;0.6.6).
  *
- * <p>Configuration constants per the CP3 checkpoint:</p>
+ * <p>This configuration is enabled when
+ * {@code management.metrics.export.cloudwatch.enabled=true} (the default in
+ * the {@code dev} and {@code prod} profiles via the
+ * {@code CLOUDWATCH_METRICS_ENABLED} environment variable); the {@code local}
+ * and {@code test} profiles leave it {@code false} so Spring Boot's
+ * auto-configured {@code SimpleMeterRegistry} is used instead. This keeps
+ * local development free of AWS API calls.</p>
+ *
+ * <p>Replaces: SDSF / RMF (Resource Measurement Facility) mainframe
+ * observability &mdash; the source CardDemo COBOL application had no
+ * application-level metrics. CloudWatch + Container Insights provides ECS
+ * task-level CPU, memory, network, and Docker metrics; Micrometer adds
+ * application-level metrics (HTTP request counts, JPA query latencies,
+ * Kafka producer/consumer lag, BigDecimal arithmetic operation counts)
+ * shipped via the Spring Boot {@code spring-boot-starter-actuator} hook.</p>
+ *
+ * <p>Per AAP &sect;0.6.6, the registry adds the following dimensions to every
+ * metric:</p>
  * <ul>
- *   <li>Namespace: {@code CardDemo} (constant; overridable via
- *       {@code carddemo.metrics.cloudwatch.namespace}).</li>
- *   <li>Step interval: 60 seconds &mdash; CloudWatch's free-tier
- *       resolution.</li>
- *   <li>Batch size: 20 &mdash; CloudWatch's per-request hard limit on
- *       {@code MetricDatum} entries (the constant
- *       {@code CloudWatchConfig.MAX_BATCH_SIZE} from Micrometer matches
- *       this value at 20).</li>
- *   <li>Common tags: {@code service}, {@code environment}, {@code instance}.
- *       <strong>Sensitive tag names are deliberately filtered out</strong>
- *       so that an inadvertent tag containing PII / card data is never
- *       shipped to CloudWatch.</li>
+ *   <li>{@code service} &mdash; the application name (default {@code carddemo})</li>
+ *   <li>{@code environment} &mdash; the active Spring profile (e.g.,
+ *       {@code dev}, {@code prod})</li>
+ *   <li>{@code instance} &mdash; the ECS task ID / host name</li>
  * </ul>
  *
- * <h2>Replaces (AAP &sect;0.1.1)</h2>
- * <p>Replaces: implicit JES2 batch job statistics + CICS RMF II metrics.
- * The mainframe surfaced these via SDSF and RMF reports; the Java target
- * surfaces them in CloudWatch Metrics / Dashboards / Alarms.</p>
+ * <p>Per AAP &sect;0.7.1 &mdash; no business logic; no AWS SDK calls inline.
+ * The {@link CloudWatchAsyncClient} bean is provided by {@link AwsSdkConfig}.
+ * Per AAP &sect;0.5.1 &mdash; AWS SDK v2 only ({@code software.amazon.awssdk.*});
+ * the deprecated v1 ({@code com.amazonaws.*}) is NEVER referenced.</p>
  *
- * <h2>Tag-safety filter</h2>
- * <p>A {@link MeterFilter} strips any tag whose key contains a known
- * sensitive substring (password, card, account, pan, cvv, ssn, secret,
- * token, key). This protects against accidental tag pollution from
- * instrumentation libraries or future contributors that might add
- * dynamic tag values containing customer data.</p>
+ * <p><b>Naming-collision note:</b> The Micrometer-provided configuration
+ * interface is also named {@code CloudWatchConfig} (in package
+ * {@code io.micrometer.cloudwatch2}). To prevent confusion with this class,
+ * the Micrometer interface is referenced via its fully qualified name
+ * ({@code io.micrometer.cloudwatch2.CloudWatchConfig}) rather than imported.</p>
  *
+ * @see AwsSdkConfig
+ * @see com.awsm2.carddemo.adapter.AuditLogService
  * @see io.micrometer.cloudwatch2.CloudWatchMeterRegistry
- * @see com.awsm2.carddemo.config.AwsSdkConfig#cloudWatchAsyncClient()
  */
 @Configuration
 public class CloudWatchConfig {
 
-    private static final Logger LOG = LoggerFactory.getLogger(CloudWatchConfig.class);
-
-    /** CloudWatch metrics namespace per AAP &sect;0.6.6. */
-    private static final String DEFAULT_NAMESPACE = "CardDemo";
-    /** CloudWatch step interval &mdash; lowest free-tier publish rate. */
-    private static final Duration STEP = Duration.ofSeconds(60);
-    /** CloudWatch hard cap on {@code MetricDatum} entries per request. */
-    private static final int BATCH_SIZE = 20;
+    /**
+     * CloudWatch metrics namespace per AAP &sect;0.6.6. Default {@code CardDemo};
+     * the {@code dev} overlay may set {@code CardDemo/dev}.
+     */
+    @Value("${management.metrics.export.cloudwatch.namespace:CardDemo}")
+    private String namespace;
 
     /**
-     * Lower-case substrings of tag keys we will scrub from every metric
-     * before publishing to CloudWatch. AAP rule: "No plaintext card/account
-     * data in logs &mdash; enforced via CloudWatch log filters + Macie".
-     * The same principle applies to metric tag values: if the key suggests
-     * the value might contain sensitive data, drop it.
+     * Publish interval (Micrometer step). Default {@code 60s} &mdash; matches
+     * CloudWatch's free-tier resolution. Shorter intervals (e.g., {@code 10s})
+     * raise CloudWatch costs; longer (e.g., {@code 5m}) reduce real-time
+     * visibility.
      */
-    private static final List<String> SENSITIVE_TAG_SUBSTRINGS = List.of(
-            "password", "passwd", "pwd",
-            "card", "pan",
-            "account", "acct",
-            "cvv", "cvc", "pin",
-            "ssn",
-            "secret", "token", "apikey", "api_key",
-            "authorization", "auth",
-            "privatekey", "private_key");
+    @Value("${management.metrics.export.cloudwatch.step:60s}")
+    private Duration step;
 
-    private final String namespace;
-    private final String serviceName;
-    private final String environment;
-    private final String instance;
+    /**
+     * Maximum {@code MetricDatum} entries per {@code PutMetricData} request.
+     * CloudWatch hard limit is 20.
+     */
+    @Value("${management.metrics.export.cloudwatch.batch-size:20}")
+    private int batchSize;
 
-    public CloudWatchConfig(
-            @Value("${carddemo.metrics.cloudwatch.namespace:CardDemo}") String namespace,
-            @Value("${spring.application.name:carddemo}") String serviceName,
-            @Value("${spring.profiles.active:local}") String environment,
-            @Value("${HOSTNAME:${INSTANCE_ID:local}}") String instance) {
-        this.namespace = (namespace == null || namespace.isBlank())
-                ? DEFAULT_NAMESPACE : namespace;
-        this.serviceName = (serviceName == null || serviceName.isBlank())
-                ? "carddemo" : serviceName;
-        this.environment = (environment == null || environment.isBlank())
-                ? "local" : environment;
-        this.instance = (instance == null || instance.isBlank())
-                ? "local" : instance;
+    /**
+     * Mirror of the {@code @ConditionalOnProperty} value &mdash; exposed as a
+     * field for logging / diagnostics, not consulted at bean-creation time
+     * (the {@code @ConditionalOnProperty} on
+     * {@link #cloudWatchMeterRegistry(CloudWatchAsyncClient, Clock)} handles
+     * gating).
+     */
+    @Value("${management.metrics.export.cloudwatch.enabled:false}")
+    private boolean enabled;
+
+    /**
+     * Service name dimension applied to every metric. Mirrors
+     * {@code spring.application.name} (default {@code carddemo}).
+     */
+    @Value("${spring.application.name:carddemo}")
+    private String serviceName;
+
+    /**
+     * Environment dimension applied to every metric. Mirrors the active
+     * Spring profile (set via the {@code SPRING_PROFILES_ACTIVE} env var by
+     * ECS). Defaults to {@code unknown} when no profile is active.
+     */
+    @Value("${spring.profiles.active:unknown}")
+    private String environment;
+
+    /**
+     * Instance dimension applied to every metric. ECS task ID or host name.
+     * Resolved from the {@code HOSTNAME} env var first (ECS sets this to the
+     * task ID for awsvpc-mode tasks), falling back to {@code INSTANCE_ID},
+     * then to {@code unknown}.
+     */
+    @Value("${HOSTNAME:${INSTANCE_ID:unknown}}")
+    private String instance;
+
+    /**
+     * Default no-arg constructor; {@code @Value}-injected fields are populated
+     * by Spring after instantiation, and bean methods are invoked with
+     * runtime-injected dependencies ({@link CloudWatchAsyncClient},
+     * {@link Clock}) provided by the Spring container.
+     */
+    public CloudWatchConfig() {
+        // no-op — Spring populates @Value fields via reflection after
+        // construction; bean methods receive their args from the container.
     }
 
     /**
-     * Provides the immutable Micrometer-side configuration for the
-     * CloudWatch registry &mdash; namespace, step, and batch size.
-     * Declared as a {@link MeterRegistryConfig} sub-type
-     * ({@code io.micrometer.cloudwatch2.CloudWatchConfig}) so Spring
-     * Boot's {@code MetricsAutoConfiguration} integrates it normally.
+     * Creates a {@link CloudWatchMeterRegistry} that publishes Micrometer
+     * metrics to Amazon CloudWatch via the AWS SDK v2
+     * {@link CloudWatchAsyncClient} bean provided by {@link AwsSdkConfig}.
      *
-     * @return the Micrometer CloudWatch config
+     * <p>Replaces: SDSF / RMF mainframe observability &mdash; application-level
+     * metrics are emitted by Micrometer {@code @Timed} / {@code @Counted}
+     * instrumentation (and by Spring Actuator's HTTP, JPA, JVM, and Kafka
+     * meter bindings) and shipped to CloudWatch under namespace
+     * {@code CardDemo} per AAP &sect;0.6.6.</p>
+     *
+     * <p>Gated by
+     * {@code management.metrics.export.cloudwatch.enabled=true}; the
+     * {@code local} and {@code test} profiles leave this {@code false} so
+     * Spring Boot's auto-configured {@code SimpleMeterRegistry} is used
+     * instead. This keeps local development free of AWS API calls.</p>
+     *
+     * <p>The async client variant is chosen because metric publication is
+     * inherently non-blocking and Micrometer's CloudWatch registry batches
+     * data points asynchronously on the scheduled flush interval defined
+     * by {@link #step}.</p>
+     *
+     * @param cloudWatchAsyncClient the AWS SDK v2 CloudWatch async client
+     *                              (injected from
+     *                              {@link AwsSdkConfig#cloudWatchAsyncClient()})
+     * @param clock                 the Micrometer {@link Clock} used for
+     *                              metric timestamping (Spring Boot
+     *                              auto-configures {@code Clock.SYSTEM})
+     * @return a configured {@link CloudWatchMeterRegistry}
      */
     @Bean
-    public io.micrometer.cloudwatch2.CloudWatchConfig cloudWatchMicrometerConfig() {
-        // Replaces: RMF / SDSF batch statistics — now native CloudWatch metrics.
-        return new io.micrometer.cloudwatch2.CloudWatchConfig() {
-            @Override
-            public String namespace() {
-                return namespace;
-            }
-
-            @Override
-            public Duration step() {
-                return STEP;
-            }
-
-            @Override
-            public int batchSize() {
-                return BATCH_SIZE;
-            }
-
-            @Override
-            public String get(String k) {
-                // Defer to the StepRegistryConfig defaults for any
-                // property not explicitly overridden above.
-                return null;
-            }
-        };
-    }
-
-    /**
-     * The CloudWatch {@link MeterRegistry} itself. Publishes metrics via
-     * the shared {@link CloudWatchAsyncClient} produced by
-     * {@link AwsSdkConfig#cloudWatchAsyncClient()}, on every {@link #STEP}
-     * interval.
-     *
-     * @param config              the Micrometer-side config (above)
-     * @param clock               the Micrometer clock (auto-configured)
-     * @param cloudWatchAsyncClient  shared async CW client
-     * @return the registry
-     */
-    @Bean(destroyMethod = "close")
+    @ConditionalOnProperty(
+            name = "management.metrics.export.cloudwatch.enabled",
+            havingValue = "true")
     public CloudWatchMeterRegistry cloudWatchMeterRegistry(
-            io.micrometer.cloudwatch2.CloudWatchConfig config,
-            Clock clock,
-            CloudWatchAsyncClient cloudWatchAsyncClient) {
-        Objects.requireNonNull(cloudWatchAsyncClient,
-                "cloudWatchAsyncClient must not be null");
-        LOG.info("CloudWatchMeterRegistry configured namespace={} step={} batchSize={}",
-                namespace, STEP, BATCH_SIZE);
-        return new CloudWatchMeterRegistry(config, clock, cloudWatchAsyncClient);
+            CloudWatchAsyncClient cloudWatchAsyncClient,
+            Clock clock) {
+        // Replaces: SDSF / RMF mainframe observability — application-level
+        // metrics are shipped to CloudWatch under namespace `CardDemo` per
+        // AAP §0.6.6. The async client is supplied by AwsSdkConfig so this
+        // configuration contains no AWS SDK builder calls itself
+        // (AAP §0.7.1: never inline AWS SDK calls in business logic / config).
+        io.micrometer.cloudwatch2.CloudWatchConfig micrometerCloudWatchConfig =
+                cloudWatchConfig();
+        return new CloudWatchMeterRegistry(
+                micrometerCloudWatchConfig, clock, cloudWatchAsyncClient);
     }
 
     /**
-     * Adds the constant {@code service}/{@code environment}/{@code instance}
-     * tags to <em>every</em> meter so CloudWatch dashboards can slice by
-     * these dimensions without each instrumented call having to set them.
+     * Adds common dimensions (tags) to every metric emitted by any
+     * {@link MeterRegistry} bean &mdash; including the CloudWatch registry
+     * and the fallback {@code SimpleMeterRegistry} used in the {@code local}
+     * profile.
      *
-     * @return the customizer applied during registry assembly
+     * <p>Per AAP &sect;0.6.6, every CloudWatch metric must include:</p>
+     * <ul>
+     *   <li>{@code service} &mdash; the application name (default
+     *       {@code carddemo})</li>
+     *   <li>{@code environment} &mdash; the active Spring profile</li>
+     *   <li>{@code instance} &mdash; the ECS task ID or host name</li>
+     * </ul>
+     *
+     * <p>This {@link MeterRegistryCustomizer} is applied at registry-init
+     * time and decorates the registry's {@code config().commonTags(...)}.
+     * Because it operates on {@code MeterRegistry} (the generic type), it
+     * is applied to every registry bean in the Spring context, including
+     * composite registries assembled by Spring Boot
+     * {@code MetricsAutoConfiguration}.</p>
+     *
+     * <p>Replaces: implicit job/transaction identification fields embedded
+     * in COBOL audit-trail records (e.g., {@code JOB-NAME},
+     * {@code STEP-NAME}, {@code OPERATOR-ID}) &mdash; these are now metric
+     * dimensions in CloudWatch so dashboards can slice metrics by service,
+     * environment, and instance without each instrumentation site having
+     * to attach tags manually.</p>
+     *
+     * @return a customizer that attaches the common service/environment/
+     *         instance tags to every metric
      */
     @Bean
-    public MeterRegistryCustomizer<MeterRegistry> commonTagsCustomizer() {
+    public MeterRegistryCustomizer<MeterRegistry> meterRegistryCustomizer() {
+        // Replaces: COBOL audit-trail JOB-NAME / STEP-NAME / OPERATOR-ID
+        // record fields — these are now CloudWatch metric dimensions.
+        // NB: MeterRegistry.Config#commonTags has two overloads —
+        // (String... keyValues) and (Iterable<Tag>). We construct a List of
+        // Tag instances and rely on the Iterable<Tag> overload so we can
+        // pass strongly typed Tag instances rather than untyped strings.
         return registry -> registry.config().commonTags(List.of(
-                Tag.of("service", serviceName),
-                Tag.of("environment", environment),
-                Tag.of("instance", instance)));
+                Tag.of("service", resolveTag(serviceName, "carddemo")),
+                Tag.of("environment", resolveTag(environment, "unknown")),
+                Tag.of("instance", resolveTag(instance, "unknown"))));
     }
 
     /**
-     * Adds a {@link MeterFilter} that strips tags whose keys look
-     * sensitive. Acts as a defence-in-depth against accidental metric
-     * tag pollution &mdash; the Macie / log-filter rules cover free-form
-     * log content; this filter covers structured metric tags.
+     * Builds the Micrometer {@link io.micrometer.cloudwatch2.CloudWatchConfig}
+     * key-value source from this class's {@code @Value}-injected fields.
      *
-     * @return the customizer
+     * <p>The Micrometer {@code CloudWatchConfig} is an interface whose
+     * essential contract is {@code String get(String key)}. The interface
+     * supplies default implementations for {@code namespace()},
+     * {@code step()}, and {@code batchSize()} that read keys
+     * {@code cloudwatch.namespace}, {@code cloudwatch.step}, and
+     * {@code cloudwatch.batchSize} from the underlying key-value source.
+     * We therefore populate an in-memory {@link Map} with those three keys
+     * and return {@code properties::get} as the lambda implementing
+     * {@code CloudWatchConfig#get(String)}.</p>
+     *
+     * @return the Micrometer CloudWatch configuration adapter
      */
-    @Bean
-    public MeterRegistryCustomizer<MeterRegistry> sensitiveTagFilterCustomizer() {
-        return registry -> registry.config().meterFilter(new MeterFilter() {
-            @Override
-            public io.micrometer.core.instrument.Meter.Id map(
-                    io.micrometer.core.instrument.Meter.Id id) {
-                List<Tag> filtered = new java.util.ArrayList<>();
-                boolean changed = false;
-                for (Tag tag : id.getTagsAsIterable()) {
-                    if (isSensitive(tag.getKey())) {
-                        changed = true;
-                        continue;
-                    }
-                    filtered.add(tag);
-                }
-                return changed ? id.replaceTags(filtered) : id;
-            }
-        });
+    private io.micrometer.cloudwatch2.CloudWatchConfig cloudWatchConfig() {
+        final Map<String, String> properties = new HashMap<>();
+        properties.put("cloudwatch.namespace", resolveTag(namespace, "CardDemo"));
+        properties.put("cloudwatch.step", step != null ? step.toString() : "PT1M");
+        properties.put("cloudwatch.batchSize", String.valueOf(batchSize));
+        // Lambda implementing CloudWatchConfig#get(String). Returning null
+        // for unknown keys triggers the StepRegistryConfig defaults
+        // (everything not in our explicit list defers to Micrometer defaults).
+        return properties::get;
     }
 
     /**
-     * Returns true when the given tag key contains any substring listed
-     * in {@link #SENSITIVE_TAG_SUBSTRINGS}. Case-insensitive.
+     * Returns {@code value} if non-null and non-blank, otherwise
+     * {@code fallback}. Used to harden tag values against accidental blank
+     * properties so CloudWatch never receives an empty dimension value
+     * (CloudWatch rejects {@code MetricDatum} entries with empty tag values).
+     *
+     * @param value    the candidate value
+     * @param fallback the value to use when {@code value} is null or blank
+     * @return a non-null, non-blank tag value
      */
-    static boolean isSensitive(String key) {
-        if (key == null) {
-            return false;
-        }
-        String lower = key.toLowerCase(java.util.Locale.US);
-        for (String s : SENSITIVE_TAG_SUBSTRINGS) {
-            if (lower.contains(s)) {
-                return true;
-            }
-        }
-        return false;
+    private static String resolveTag(String value, String fallback) {
+        return (value == null || value.isBlank()) ? fallback : value;
     }
 }
