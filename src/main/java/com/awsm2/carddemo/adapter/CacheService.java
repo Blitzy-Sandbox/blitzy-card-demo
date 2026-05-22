@@ -20,278 +20,461 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.stereotype.Component;
+import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.stereotype.Service;
 
 import java.time.Duration;
-import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Supplier;
+import java.util.Set;
 
 /**
- * ElastiCache (Redis) cache-aside adapter — the sole entry point for every
- * cache read/write in the CardDemo Java target.
+ * ElastiCache (Redis) cache-aside adapter for CardDemo — the sole entry
+ * point in {@code src/main/java/com/awsm2/carddemo/} that interacts with
+ * the Spring Data Redis {@link RedisTemplate} API directly.
  *
- * <p>Per AAP &sect;0.7.1 ("ElastiCache (Redis) used for account balance
- * caching &mdash; cache-aside pattern with TTL aligned to transaction
- * frequency") and AAP &sect;0.3.3 (Cache-Aside design pattern), this adapter
- * implements the classic <em>read-through / write-around</em> cache-aside
- * topology against Amazon ElastiCache Redis (or a local Redis 7 instance
- * under {@code docker-compose up} in the local profile):</p>
+ * <p><b>Replaces:</b> No direct COBOL source — this is a <em>net-new</em>
+ * capability introduced by the AWS-native target. The reference COBOL
+ * programs ({@code app/cbl/COACTVWC.cbl}, {@code app/cbl/COCRDSLC.cbl},
+ * {@code app/cbl/CBACT04C.cbl}) all issue high-frequency, read-only
+ * lookups against {@code ACCTDAT}/{@code CARDDAT} VSAM KSDS clusters
+ * with no caching whatsoever. This adapter introduces an Amazon
+ * ElastiCache Redis cache-aside layer in front of the equivalent RDS
+ * PostgreSQL tables ({@code Account}, {@code Card}) to absorb hot-account
+ * read load on the AWS target. New capability — no source COBOL
+ * equivalent. ElastiCache Redis introduces cache-aside per AAP &sect;0.7.1.</p>
  *
+ * <h2>AAP authority sections</h2>
+ * <ul>
+ *   <li><b>AAP &sect;0.7.1</b> &mdash; "ElastiCache (Redis) used for account
+ *       balance caching &mdash; cache-aside pattern with TTL aligned to
+ *       transaction frequency".</li>
+ *   <li><b>AAP &sect;0.6.6</b> &mdash; "ElastiCache Redis reduces RDS read
+ *       load by caching high-frequency account balance lookups";
+ *       encryption-in-transit via TLS 1.2+ is configured in
+ *       {@link com.awsm2.carddemo.config.RedisConfig} ({@code spring.data.redis.ssl.enabled}
+ *       in {@code dev}/{@code prod} overlays). Encryption-at-rest is
+ *       configured at the ElastiCache cluster level via the Terraform
+ *       module ({@code infrastructure/terraform/elasticache.tf}) using
+ *       a KMS customer-managed key (CMK).</li>
+ *   <li><b>AAP &sect;0.3.3</b> &mdash; design pattern "Cache-Aside:
+ *       ElastiCache Redis with TTL aligned to transaction frequency;
+ *       {@code allkeys-lru} eviction policy" (eviction policy is set on
+ *       the cluster, not the client).</li>
+ *   <li><b>AAP &sect;0.7.2</b> &mdash; PCI-DSS: NO plaintext PAN, CVV,
+ *       password hash, or unmasked SSN may be cached. Callers are
+ *       responsible for sanitisation; this adapter does NOT enforce it
+ *       (see the {@code put(...)} JavaDoc warning).</li>
+ *   <li><b>AAP &sect;0.7.3</b> &mdash; adapter-isolation rule: AWS service
+ *       integrations live in {@code adapter/} classes; business logic
+ *       must never call {@code RedisTemplate} directly.</li>
+ * </ul>
+ *
+ * <h2>Cache-aside protocol</h2>
+ * <p>The cache-aside (lazy-loading) protocol implemented by this adapter
+ * is the standard:</p>
  * <ol>
- *   <li><b>Read:</b> the service calls {@link #getAccount(long, Supplier)}
- *       with a {@link Supplier} that knows how to load the account from RDS
- *       on miss. If the key is present in Redis, the cached value is
- *       returned directly. If absent (cache miss), the {@code Supplier} is
- *       invoked, its result is stored in Redis with the configured TTL,
- *       and returned.</li>
- *   <li><b>Write (eviction):</b> on every successful account write in the
- *       service layer (account update, balance debit/credit), the caller
- *       invokes {@link #evictAccount(long)} so the next read repopulates
- *       from the database-of-record. This is the canonical
- *       <em>write-around</em> variant of cache-aside &mdash; the database
- *       is the source of truth, the cache only mirrors it.</li>
+ *   <li><b>Read path</b> &mdash; caller invokes {@link #get(String, String, Class)};
+ *       on hit, the cached value is returned wrapped in {@link Optional};
+ *       on miss (or any Redis failure), {@link Optional#empty()} is returned
+ *       and the caller is expected to load from the source-of-truth (RDS)
+ *       and then call {@link #put(String, String, Object, Duration)} to
+ *       populate the cache.</li>
+ *   <li><b>Write path</b> &mdash; on every successful write to the
+ *       source-of-truth, the caller invokes {@link #evict(String, String)}
+ *       to remove the now-stale cache entry. The <em>next</em> read
+ *       repopulates from the database. Write-through (writer also writes
+ *       the cache) is intentionally NOT used: it can leave the cache and
+ *       database inconsistent if the cache write fails after the DB
+ *       commit, and it is not part of the AAP &sect;0.7.1 cache-aside
+ *       specification.</li>
  * </ol>
  *
- * <h2>Replaces (AAP &sect;0.6.5 cache wiring)</h2>
- * <p>Net-new capability &mdash; the COBOL source had no caching layer
- * (every VSAM read traversed the file directly). High-frequency account
- * balance reads on the AWS target would saturate RDS Multi-AZ read I/O
- * without a near-cache; ElastiCache absorbs those reads.</p>
+ * <h2>Fail-open semantics (AAP &sect;0.7.1)</h2>
+ * <p>Cache failures MUST NOT propagate to the calling business flow. The
+ * adapter wraps every Redis call in a try/catch and on any
+ * {@link RuntimeException}:</p>
+ * <ul>
+ *   <li>{@link #get} returns {@link Optional#empty()}, so the caller
+ *       falls back to the database-of-record on what appears to be a
+ *       cache miss.</li>
+ *   <li>{@link #put} logs the failure and returns normally — a cache
+ *       write failure must never block a successful business flow.</li>
+ *   <li>{@link #evict} logs the failure and returns normally — the entry
+ *       will eventually expire via TTL.</li>
+ *   <li>{@link #evictAll} logs the failure and returns normally — same
+ *       rationale as {@link #evict}.</li>
+ * </ul>
  *
  * <h2>Key format</h2>
- * <p>Deterministic key format: {@link #ACCOUNT_KEY_FORMAT} =
- * {@code "acct:%011d"}. Account IDs are zero-padded to 11 digits to match
- * the COBOL {@code PIC 9(11)} {@code ACCT-ID} format defined in
- * {@code app/cpy/CVACT01Y.cpy:L6} and the Kafka partition key produced by
- * {@link KafkaEventPublisher}, ensuring a single canonical representation
- * across the entire stack.</p>
+ * <p>Every public method delegates key construction to
+ * {@link #buildKey(String, String)}, which produces
+ * {@code "carddemo:<namespace>:<key>"}. The {@code carddemo:} prefix
+ * isolates this application from any other tenant on a shared Redis
+ * cluster.</p>
  *
- * <h2>Fail-open behavior (AAP &sect;0.7.1)</h2>
- * <p>Redis outages MUST NOT block business flows. The adapter wraps every
- * Redis call in a try/catch and on {@link RuntimeException}:</p>
+ * <h2>Conventional namespaces (documentation, NOT enforced as enum)</h2>
+ * <p>Per AAP-aligned conventions, services pass these namespace strings:</p>
  * <ul>
- *   <li>Logs the failure at {@code WARN} (never {@code ERROR}) with cause
- *       and key metadata.</li>
- *   <li>For reads: returns {@code null} (or the {@link Supplier} fallback
- *       in the cache-aside method) so the caller can fall through to the
- *       database-of-record.</li>
- *   <li>For evictions: silently absorbs the exception &mdash; the next
- *       read will still see fresh data because the TTL eventually expires
- *       the stale entry, and the service that wrote the new value already
- *       updated the database-of-record.</li>
+ *   <li>{@code account} &mdash; {@code Account} entity by zero-padded ID
+ *       ({@code %011d}); TTL 5 min (high-frequency balance reads).</li>
+ *   <li>{@code card} &mdash; {@code Card} entity by masked PAN; TTL 5 min.</li>
+ *   <li>{@code discgrp} &mdash; {@code DisclosureGroup} lookup by
+ *       composite key; TTL 1 hr (mostly static reference data).</li>
+ *   <li>{@code tranType} &mdash; {@code TransactionType} (7 rows); TTL 1 hr.</li>
+ *   <li>{@code tranCatg} &mdash; {@code TransactionCategory} (18 rows); TTL 1 hr.</li>
+ *   <li>{@code xref} &mdash; {@code CardCrossReference} by card number;
+ *       TTL 15 min.</li>
  * </ul>
- * <p>This fail-open posture is mandatory: a degraded cache is preferable
- * to a cascading failure that takes down account services.</p>
  *
  * <h2>Thread safety</h2>
  * <p>{@link RedisTemplate} is thread-safe and intended to be shared. The
  * adapter holds a single template reference and exposes only stateless
- * methods.</p>
+ * methods. The injected {@code defaultTtlSeconds} field is set once at
+ * Spring startup and never mutated.</p>
+ *
+ * <h2>PCI-DSS compliance reminder (AAP &sect;0.6.6, &sect;0.7.2)</h2>
+ * <p>Callers of this adapter MUST sanitise values BEFORE invoking
+ * {@link #put}:</p>
+ * <ul>
+ *   <li><b>NEVER</b> cache the full Primary Account Number (PAN) — always
+ *       cache a masked form ({@code ************XXXX}) or omit the field.</li>
+ *   <li><b>NEVER</b> cache the Card Verification Value (CVV).</li>
+ *   <li><b>NEVER</b> cache plaintext passwords or BCrypt hashes.</li>
+ *   <li><b>NEVER</b> cache unmasked Social Security Numbers (SSNs).</li>
+ * </ul>
+ * <p>This adapter does NOT enforce sanitisation; code review is responsible
+ * for catching violations. The {@link #put} JavaDoc carries an explicit
+ * warning.</p>
  *
  * @see com.awsm2.carddemo.config.RedisConfig
  */
-@Component
+@Service
 public class CacheService {
 
+    /**
+     * SLF4J logger for trace-level cache hit/miss tracking and WARN-level
+     * cache-failure logging. Per AAP &sect;0.7.1 the cache-aside contract
+     * degrades to a database miss on any Redis failure; those failures are
+     * logged at {@code WARN} (never propagated and never escalated to
+     * {@code ERROR} because they do not represent a business failure).
+     */
     private static final Logger LOG = LoggerFactory.getLogger(CacheService.class);
 
     /**
-     * Deterministic Redis key format for account aggregates. {@code "acct:"}
-     * is the namespace prefix; {@code %011d} matches the COBOL {@code PIC
-     * 9(11)} {@code ACCT-ID} format ({@code app/cpy/CVACT01Y.cpy:L6}) and the
-     * 11-digit zero-padded account ID used as the Kafka partition key.
+     * The Redis key prefix that namespaces every entry produced by this
+     * adapter. Format: {@code "carddemo:<namespace>:<key>"}. The prefix
+     * is hard-coded (NOT externalised) so the on-the-wire key shape is a
+     * stable invariant that operations can rely on for Redis CLI debugging.
      */
-    static final String ACCOUNT_KEY_FORMAT = "acct:%011d";
+    private static final String KEY_PREFIX = "carddemo:";
 
     /**
-     * Spring's high-level Redis abstraction. The bean is produced by
-     * {@code com.awsm2.carddemo.config.RedisConfig} and configured with
-     * Lettuce as the underlying connection factory, Jackson polymorphic
-     * JSON serialization for values, and conditional SSL (production +
-     * staging) / plaintext (local) transport.
+     * The Spring Data Redis high-level template injected via constructor.
+     * Provided by {@link com.awsm2.carddemo.config.RedisConfig#redisTemplate(org.springframework.data.redis.connection.RedisConnectionFactory)}
+     * &mdash; Lettuce connection factory + Jackson JSON value serializer +
+     * UTF-8 String key serializer.
+     *
+     * <p>The generic type {@code <String, Object>} matches the RedisConfig
+     * bean exactly; callers supply a {@link Class} on read so the adapter
+     * can verify the deserialised type at runtime.</p>
      */
     private final RedisTemplate<String, Object> redisTemplate;
 
     /**
-     * Default TTL for account-balance cache entries. Sourced from
-     * {@code carddemo.cache.account-balance-ttl-seconds} (with a fallback
-     * to {@code carddemo.cache.ttl-seconds}); 300 seconds (5 minutes)
-     * matches the transaction-frequency window per AAP &sect;0.7.1 ("TTL
-     * aligned to transaction frequency").
+     * Default cache entry TTL (in seconds), externalised via {@code @Value}.
+     * Sourced from {@code carddemo.cache.default-ttl-seconds} with a
+     * default of 300 (5 minutes) per AAP &sect;0.7.1 ("TTL aligned to
+     * transaction frequency" &mdash; short for high-frequency balances).
+     *
+     * <p>Applied by {@link #put} when the caller passes {@code null}, a
+     * zero, or a negative {@link Duration}. A non-positive value would
+     * otherwise produce a non-expiring cache entry, which would silently
+     * drift from the database-of-record &mdash; an unacceptable failure
+     * mode for a financial system.</p>
      */
-    private final Duration accountTtl;
+    private final long defaultTtlSeconds;
 
     /**
-     * Constructor injection only &mdash; Spring sets {@code redisTemplate}
-     * once at startup; the bean is then immutable.
+     * Constructor injection — Spring sets the {@link RedisTemplate} once
+     * at startup; the bean is immutable thereafter.
      *
-     * @param redisTemplate      shared {@link RedisTemplate} bean from
-     *                           {@code RedisConfig}; never {@code null}
-     * @param accountTtlSeconds  TTL in seconds for account entries
+     * <p>This adapter is registered as {@code @Service} per AAP &sect;0.7.3
+     * adapter-isolation rule (AWS service integrations live in {@code adapter/}
+     * classes). The {@code @Service} stereotype is a Spring-managed singleton
+     * bean equivalent to {@code @Component} but semantically marks this as
+     * an infrastructure-service component.</p>
+     *
+     * @param redisTemplate      the shared {@link RedisTemplate} bean
+     *                           produced by
+     *                           {@link com.awsm2.carddemo.config.RedisConfig};
+     *                           never {@code null}.
+     * @param defaultTtlSeconds  default cache TTL (seconds); externalised
+     *                           via {@code carddemo.cache.default-ttl-seconds};
+     *                           default {@code 300}.
      */
-    public CacheService(RedisTemplate<String, Object> redisTemplate,
-                        @Value("${carddemo.cache.account-balance-ttl-seconds:300}")
-                        long accountTtlSeconds) {
-        // Replaces: nothing — net-new capability per AAP §0.7.1.
-        this.redisTemplate = Objects.requireNonNull(redisTemplate,
-                "redisTemplate must not be null");
-        // A non-positive TTL is treated as 300s (the AAP default) to prevent
-        // a misconfiguration from creating non-expiring cache entries that
-        // would silently drift from the database-of-record indefinitely.
-        long ttl = (accountTtlSeconds > 0) ? accountTtlSeconds : 300L;
-        this.accountTtl = Duration.ofSeconds(ttl);
+    public CacheService(
+            RedisTemplate<String, Object> redisTemplate,
+            @Value("${carddemo.cache.default-ttl-seconds:300}") long defaultTtlSeconds) {
+        // Constructor injection only (AAP §0.7.3 — adapter isolation rule).
+        // Net-new capability — no source COBOL equivalent. ElastiCache Redis
+        // introduces cache-aside per AAP §0.7.1.
+        this.redisTemplate = redisTemplate;
+        // Guard against misconfiguration: a non-positive default would yield
+        // non-expiring entries and silent drift from the database-of-record.
+        this.defaultTtlSeconds = (defaultTtlSeconds > 0L) ? defaultTtlSeconds : 300L;
     }
 
     // ---------------------------------------------------------------------
-    // Public API
+    // Public API — cache-aside operations
+    //
+    // Cache-aside (AAP §0.3.3): write path = evict; read path = get (miss)
+    //                          → db → put
     // ---------------------------------------------------------------------
 
     /**
-     * Reads the cached account aggregate for the supplied {@code accountId},
-     * loading and populating from the supplied {@link Supplier} on miss.
+     * Retrieve a value from the cache.
      *
-     * <p>This is the canonical cache-aside read entry point. The behavior is:</p>
+     * <p>Returns {@link Optional#empty()} on miss, on cached {@code null},
+     * on type mismatch, or on any Redis driver failure (cache-aside
+     * pattern: failures degrade gracefully to a database miss).</p>
+     *
+     * <p><b>Cache-aside contract (AAP &sect;0.3.3):</b> on
+     * {@link Optional#empty()} the caller is expected to load from the
+     * database-of-record and then invoke
+     * {@link #put(String, String, Object, Duration)} to populate the
+     * cache for subsequent reads.</p>
+     *
+     * <p>The {@code type} argument supplies the expected runtime type and
+     * enables both compile-time generic inference and runtime
+     * {@code instanceof} verification — a cache entry whose
+     * deserialised type does not match {@code type} returns
+     * {@link Optional#empty()} rather than throwing
+     * {@link ClassCastException}.</p>
+     *
+     * @param namespace logical scope (e.g., {@code "account"},
+     *                  {@code "card"}, {@code "discgrp"}). Must not be
+     *                  {@code null} or blank.
+     * @param key       business key (e.g., zero-padded account ID). Must
+     *                  not be {@code null} or blank.
+     * @param type      expected runtime type for safe casting; must not be
+     *                  {@code null}.
+     * @param <T>       value type
+     * @return {@link Optional} containing the cached value, or
+     *         {@link Optional#empty()} on miss, type mismatch, or error.
+     * @throws IllegalArgumentException if {@code namespace}, {@code key},
+     *         or {@code type} is null/blank.
+     */
+    public <T> Optional<T> get(String namespace, String key, Class<T> type) {
+        // Cache-aside (AAP §0.3.3): write path = evict; read path = get (miss)
+        //                          → db → put
+        if (type == null) {
+            throw new IllegalArgumentException("type must not be null");
+        }
+        String redisKey = buildKey(namespace, key);
+        try {
+            ValueOperations<String, Object> ops = redisTemplate.opsForValue();
+            Object cached = ops.get(redisKey);
+            if (cached == null) {
+                LOG.trace("Cache miss key={}", redisKey);
+                return Optional.empty();
+            }
+            if (!type.isInstance(cached)) {
+                // Defensive: a type mismatch suggests a serializer or schema
+                // change. Treat as miss so the caller refreshes from the DB,
+                // and surface a WARN for ops investigation.
+                LOG.warn("Cache hit with type mismatch key={} expected={} actual={}",
+                        redisKey, type.getSimpleName(), cached.getClass().getSimpleName());
+                return Optional.empty();
+            }
+            LOG.trace("Cache hit key={}", redisKey);
+            return Optional.of(type.cast(cached));
+        } catch (RuntimeException e) {
+            // AAP §0.7.1: cache failures degrade to database miss; never
+            // propagate Redis exceptions to the business flow.
+            LOG.warn("Cache get failed key={} cause={} — degrading to database miss",
+                    redisKey, e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Store a value in the cache with a TTL.
+     *
+     * <p>Failures are logged at {@code WARN} but do NOT propagate
+     * (cache-aside fail-open per AAP &sect;0.7.1: cache-write failures
+     * must never block the calling business flow).</p>
+     *
+     * <p><b>PCI-DSS warning (AAP &sect;0.7.2):</b> callers MUST sanitise
+     * {@code value} before invocation. NEVER cache:</p>
+     * <ul>
+     *   <li>The full Primary Account Number (PAN) — cache only a masked
+     *       form ({@code ************XXXX}) or omit the field entirely.</li>
+     *   <li>The Card Verification Value (CVV / {@code Integer cardCvvCd}
+     *       on {@link com.awsm2.carddemo.domain.Card}).</li>
+     *   <li>Plaintext passwords or BCrypt password hashes.</li>
+     *   <li>Unmasked Social Security Numbers (SSNs).</li>
+     * </ul>
+     * <p>This adapter does NOT enforce sanitisation. Code review is
+     * responsible for catching violations.</p>
+     *
+     * <p>If {@code ttl} is {@code null}, zero, or negative, the configured
+     * default ({@code carddemo.cache.default-ttl-seconds:300}) is applied.
+     * The fallback prevents a misconfiguration from producing non-expiring
+     * cache entries that would silently drift from the database-of-record.</p>
+     *
+     * @param namespace logical scope. Must not be {@code null} or blank.
+     * @param key       business key. Must not be {@code null} or blank.
+     * @param value     value to cache. MUST NOT contain full PAN, CVV, or
+     *                  unmasked SSN per AAP &sect;0.7.2 (PCI-DSS).
+     * @param ttl       time-to-live; if {@code null}, zero, or negative,
+     *                  the default TTL is applied.
+     * @param <T>       value type
+     * @throws IllegalArgumentException if {@code namespace} or {@code key}
+     *         is null/blank.
+     */
+    public <T> void put(String namespace, String key, T value, Duration ttl) {
+        // Cache-aside (AAP §0.3.3): write path = evict; read path = get (miss)
+        //                          → db → put
+        // AAP §0.7.2: callers MUST NOT cache full PAN, CVV, or unmasked
+        //              SSN (PCI-DSS). This adapter does not enforce
+        //              sanitisation — code review is responsible.
+        String redisKey = buildKey(namespace, key);
+        Duration effectiveTtl = (ttl == null || ttl.isZero() || ttl.isNegative())
+                ? Duration.ofSeconds(defaultTtlSeconds)
+                : ttl;
+        try {
+            ValueOperations<String, Object> ops = redisTemplate.opsForValue();
+            ops.set(redisKey, value, effectiveTtl);
+            LOG.trace("Cache put key={} ttl={}", redisKey, effectiveTtl);
+        } catch (RuntimeException e) {
+            // Fail-open: never propagate Redis exceptions per AAP §0.7.1.
+            // A cache write failure does not invalidate a successful DB write.
+            LOG.warn("Cache put failed key={} cause={} — request continues without caching",
+                    redisKey, e.getMessage());
+            // do NOT throw — cache failures must not break the calling flow.
+        }
+    }
+
+    /**
+     * Remove a cached entry.
+     *
+     * <p>Used by writers (e.g., {@code AccountUpdateService},
+     * {@code CardUpdateService}, {@code BillPaymentService}) to invalidate
+     * stale cached values immediately after a successful database write —
+     * see AAP &sect;0.3.3 cache-aside pattern: writer evicts, next reader
+     * re-populates.</p>
+     *
+     * <p>Failures are logged at {@code WARN} but do NOT propagate. A
+     * failed eviction is non-fatal because:</p>
      * <ol>
-     *   <li>Attempt {@code GET acct:%011d}; on hit, return the cached value.</li>
-     *   <li>On miss, invoke {@code loader.get()} (which typically issues an
-     *       RDS lookup via {@code AccountRepository.findById}).</li>
-     *   <li>If the loader returns a non-null value, {@code SET acct:%011d}
-     *       with the configured TTL.</li>
-     *   <li>Return the loader's result regardless of cache-store success
-     *       (a Redis write failure does not invalidate a successful DB read).</li>
+     *   <li>The caller has already successfully written the
+     *       database-of-record (which is the authoritative store).</li>
+     *   <li>The cache entry will eventually expire via its TTL.</li>
      * </ol>
      *
-     * <p>On any Redis transport failure, the method logs at {@code WARN} and
-     * falls through to the loader; the caller cannot distinguish a cache
-     * miss from a cache failure, which is the desired fail-open semantics.</p>
-     *
-     * @param accountId 11-digit COBOL {@code ACCT-ID}
-     * @param loader    function that loads the account from the source of
-     *                  truth on miss; must not be {@code null}; may return
-     *                  {@code null} if the account does not exist (in which
-     *                  case nothing is cached)
-     * @return the account aggregate, or {@code null} if the loader returns
-     *         {@code null} (account not found)
-     * @throws NullPointerException if {@code loader} is {@code null}
+     * @param namespace logical scope. Must not be {@code null} or blank.
+     * @param key       business key. Must not be {@code null} or blank.
+     * @throws IllegalArgumentException if {@code namespace} or {@code key}
+     *         is null/blank.
      */
-    public Object getAccount(long accountId, Supplier<Object> loader) {
-        Objects.requireNonNull(loader, "loader must not be null");
-        String key = accountKey(accountId);
-
-        // Step 1 — try the cache. Any failure here falls through to the loader.
-        Object cached = null;
+    public void evict(String namespace, String key) {
+        // Cache-aside (AAP §0.3.3): write path = evict; read path = get (miss)
+        //                          → db → put
+        String redisKey = buildKey(namespace, key);
         try {
-            cached = redisTemplate.opsForValue().get(key);
-        } catch (RuntimeException e) {
-            // Fail-open: log + fall through. Never propagate Redis exceptions
-            // up to the business flow per AAP §0.7.1.
-            LOG.warn("Redis GET failed; falling back to source of truth key={} cause={}",
-                    key, e.getMessage());
-        }
-        if (cached != null) {
-            LOG.debug("Redis GET HIT key={}", key);
-            return cached;
-        }
-
-        // Step 2 — cache miss (or failure): invoke the loader.
-        LOG.debug("Redis GET MISS key={} — invoking loader", key);
-        Object loaded = loader.get();
-
-        // Step 3 — populate on hit-from-source. Loader-null (record not
-        // found) is deliberately NOT cached: caching null values would
-        // require negative-cache semantics and TTL tuning that the COBOL
-        // source did not have, and is outside the Minimal Change Clause.
-        if (loaded != null) {
-            try {
-                redisTemplate.opsForValue().set(key, loaded, accountTtl);
-                LOG.debug("Redis SET key={} ttlSeconds={}",
-                        key, accountTtl.getSeconds());
-            } catch (RuntimeException e) {
-                // Fail-open on writes too — a cache-write failure does not
-                // invalidate a successful DB read.
-                LOG.warn("Redis SET failed; cache will repopulate on next read key={} cause={}",
-                        key, e.getMessage());
-            }
-        }
-        return loaded;
-    }
-
-    /**
-     * Variant of {@link #getAccount(long, Supplier)} that returns
-     * {@link Optional}, for callers preferring fluent null-handling.
-     *
-     * @param accountId 11-digit COBOL {@code ACCT-ID}
-     * @param loader    function that loads the account on miss
-     * @return {@link Optional} wrapping the value, or empty if the loader
-     *         returned {@code null}
-     */
-    public Optional<Object> findAccount(long accountId, Supplier<Object> loader) {
-        return Optional.ofNullable(getAccount(accountId, loader));
-    }
-
-    /**
-     * Evicts the cached account aggregate for {@code accountId}.
-     *
-     * <p>Callers MUST invoke this method after every successful account
-     * mutation (balance debit/credit, account update, optimistic lock
-     * resolution) so the next read repopulates from the database-of-record.
-     * Failure to call {@code evictAccount} after a write produces stale
-     * reads up to {@code accountTtl}.</p>
-     *
-     * <p>A Redis transport failure during eviction is logged at {@code WARN}
-     * and silently absorbed &mdash; per the fail-open contract, a degraded
-     * cache must never block the calling service from acknowledging the
-     * successful write.</p>
-     *
-     * @param accountId 11-digit COBOL {@code ACCT-ID}
-     */
-    public void evictAccount(long accountId) {
-        String key = accountKey(accountId);
-        try {
-            Boolean deleted = redisTemplate.delete(key);
-            LOG.debug("Redis DEL key={} existed={}", key, deleted);
+            Boolean deleted = redisTemplate.delete(redisKey);
+            LOG.trace("Cache evict key={} deleted={}", redisKey, deleted);
         } catch (RuntimeException e) {
             // Fail-open: an eviction failure is non-fatal because the entry
-            // will eventually expire via TTL and the caller has already
-            // successfully updated the database-of-record.
-            LOG.warn("Redis DEL failed; entry will expire via TTL key={} cause={}",
-                    key, e.getMessage());
+            // will eventually expire via TTL and the database-of-record is
+            // already updated by the caller.
+            LOG.warn("Cache evict failed key={} cause={}", redisKey, e.getMessage());
         }
     }
 
     /**
-     * Direct {@code SET} for callers that already hold the canonical value
-     * (e.g., immediately after a successful database write).
+     * Evict <em>every</em> key in a namespace. Implemented via the
+     * Spring Data Redis {@code keys(pattern)} API for simplicity.
      *
-     * @param accountId 11-digit COBOL {@code ACCT-ID}
-     * @param value     value to cache; must not be {@code null}
+     * <p><b>NOT for high-frequency use:</b> the primary use case is admin
+     * or test reset. Production code paths should use {@link #evict} on
+     * specific keys rather than wholesale namespace eviction. The
+     * implementation calls {@code redisTemplate.keys("<namespace>:*")} —
+     * which on large Redis databases can be expensive — followed by
+     * {@code delete(keys)}.</p>
+     *
+     * <p>For a future hardening pass, this method may be enhanced to use
+     * a {@code SCAN}-based cursor via {@code redisTemplate.execute(...)};
+     * the AAP &sect;0.7.3 Minimal Change Clause permits the simpler
+     * {@code keys()} here because the method is admin-only and not in
+     * the hot path.</p>
+     *
+     * <p>Failures are logged at {@code WARN} but do NOT propagate
+     * (cache-aside fail-open per AAP &sect;0.7.1).</p>
+     *
+     * @param namespace logical scope to evict (e.g., {@code "account"}).
+     *                  Must not be {@code null} or blank.
+     * @throws IllegalArgumentException if {@code namespace} is null/blank.
      */
-    public void putAccount(long accountId, Object value) {
-        Objects.requireNonNull(value, "value must not be null");
-        String key = accountKey(accountId);
+    public void evictAll(String namespace) {
+        // Cache-aside (AAP §0.3.3): admin-only convenience for namespace-wide
+        // invalidation (e.g., reference-data reload after Flyway migration).
+        if (namespace == null || namespace.isBlank()) {
+            throw new IllegalArgumentException("namespace must not be null/blank");
+        }
+        String pattern = KEY_PREFIX + namespace + ":*";
         try {
-            redisTemplate.opsForValue().set(key, value, accountTtl);
-            LOG.debug("Redis SET (explicit) key={} ttlSeconds={}",
-                    key, accountTtl.getSeconds());
+            // SCAN-based deletion would be preferable in production but the
+            // Minimal Change Clause permits the simpler keys() here since
+            // this method is admin/test-only and not in the hot read path.
+            Set<String> keys = redisTemplate.keys(pattern);
+            if (keys != null && !keys.isEmpty()) {
+                redisTemplate.delete(keys);
+                LOG.info("Cache namespace-wide evict namespace={} count={}",
+                        namespace, keys.size());
+            } else {
+                LOG.trace("Cache namespace-wide evict namespace={} count=0", namespace);
+            }
         } catch (RuntimeException e) {
-            // Fail-open on writes: never block the caller for a cache write.
-            LOG.warn("Redis SET (explicit) failed key={} cause={}",
-                    key, e.getMessage());
+            // Fail-open: never propagate Redis exceptions per AAP §0.7.1.
+            LOG.warn("Cache evictAll failed namespace={} cause={}",
+                    namespace, e.getMessage());
         }
     }
 
+    // ---------------------------------------------------------------------
+    // Private helpers
+    // ---------------------------------------------------------------------
+
     /**
-     * Builds the deterministic Redis key for the supplied account ID. The
-     * key shape matches {@link #ACCOUNT_KEY_FORMAT} and is consistent with
-     * the partition key generated by {@link KafkaEventPublisher}, ensuring
-     * the same canonical 11-digit zero-padded representation is used across
-     * the cache, the Kafka topic, and the application logs.
+     * Construct a namespaced Redis key.
      *
-     * @param accountId 11-digit COBOL {@code ACCT-ID}
-     * @return the formatted Redis key (e.g., {@code "acct:00000012345"})
+     * <p>Format: {@code "carddemo:<namespace>:<key>"}. The
+     * {@code "carddemo:"} prefix isolates this application from any other
+     * tenant on a shared Redis cluster. The namespace separates logical
+     * scopes (e.g., {@code account}, {@code card}, {@code discgrp}); the
+     * business key uniquely identifies the entry within that scope.</p>
+     *
+     * <p>Both {@code namespace} and {@code key} are validated for
+     * null/blank — a blank value would produce an ambiguous key
+     * ({@code "carddemo::<key>"} or {@code "carddemo:<namespace>:"}) that
+     * could collide with other entries.</p>
+     *
+     * @param namespace logical scope
+     * @param key       business key
+     * @return the formatted Redis key
+     * @throws IllegalArgumentException if {@code namespace} or {@code key}
+     *         is null/blank.
      */
-    public static String accountKey(long accountId) {
-        return String.format(ACCOUNT_KEY_FORMAT, accountId);
+    private String buildKey(String namespace, String key) {
+        if (namespace == null || namespace.isBlank()) {
+            throw new IllegalArgumentException("namespace must not be null/blank");
+        }
+        if (key == null || key.isBlank()) {
+            throw new IllegalArgumentException("key must not be null/blank");
+        }
+        // KEY_PREFIX = "carddemo:" — namespaces CardDemo cache entries
+        // within a shared Redis cluster (AAP §0.7.1).
+        return KEY_PREFIX + namespace + ":" + key;
     }
 }
