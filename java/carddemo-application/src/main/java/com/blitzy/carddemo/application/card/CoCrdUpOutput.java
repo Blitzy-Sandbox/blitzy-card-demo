@@ -19,9 +19,12 @@ package com.blitzy.carddemo.application.card;
 // java.base module (and the modules it reads). This gives access to java.lang.String — the
 // type of every BMS output-field component on this record — and to java.util.Objects for
 // the compact-constructor null check on the nested FieldAttributes component, plus enum
-// support required by the nested AttributeMode taxonomy. No other imports are required or
-// permitted on this file (per the file-level agent prompt).
+// support required by the nested AttributeMode taxonomy.
 import module java.base;
+
+// Module-import declarations may not import application-defined types; the COBOL traceability
+// annotation lives in carddemo-domain and must be brought in by a conventional import.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
 
 /**
  * BMS output DTO record carrying all fields sent to the 3270 terminal for the
@@ -197,6 +200,15 @@ import module java.base;
  * @see CoCrdUpOutput.AttributeMode
  * @since 1.0.0
  */
+@CobolProgram(
+        value = "COCRDUP",
+        sourcePath = "app/bms/COCRDUP.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (output side); symbolic copybook CCRDUPAO "
+                + "REDEFINES CCRDUPAI in app/cpy-bms/COCRDUP.CPY lines 122-225. "
+                + "Field-for-field translation of all 17 PIC X output leaves; "
+                + "PIC X(n) widths enforced at construction time."
+)
 public record CoCrdUpOutput(
 
         // ============================================================================
@@ -306,6 +318,54 @@ public record CoCrdUpOutput(
         fKeysC   = orEmpty(fKeysC);
         // Attributes — required, never null
         Objects.requireNonNull(attributes, "attributes must not be null");
+
+        // PIC X(n) fixed-length validation per app/cpy-bms/COCRDUP.CPY lines 122-225.
+        // BMS SEND-MAP pads with SPACES if the value is shorter and truncates if it is
+        // longer; the DTO rejects over-length values at construction time so any
+        // screen-contract violation is caught here rather than silently propagating
+        // (CWE-20 input validation).
+        checkPicLength("trnName",  trnName,   4);  // TRNNAMEO  PIC X(4)
+        checkPicLength("title01",  title01,  40);  // TITLE01O  PIC X(40)
+        checkPicLength("curDate",  curDate,   8);  // CURDATEO  PIC X(8)
+        checkPicLength("pgmName",  pgmName,   8);  // PGMNAMEO  PIC X(8)
+        checkPicLength("title02",  title02,  40);  // TITLE02O  PIC X(40)
+        checkPicLength("curTime",  curTime,   8);  // CURTIMEO  PIC X(8)
+        checkPicLength("acctSid",  acctSid,  11);  // ACCTSIDO  PIC X(11)
+        checkPicLength("cardSid",  cardSid,  16);  // CARDSIDO  PIC X(16)
+        checkPicLength("crdName",  crdName,  50);  // CRDNAMEO  PIC X(50)
+        checkPicLength("crdStsCd", crdStsCd,  1);  // CRDSTCDO  PIC X(1)
+        checkPicLength("expMon",   expMon,    2);  // EXPMONO   PIC X(2)
+        checkPicLength("expYear",  expYear,   4);  // EXPYEARO  PIC X(4)
+        checkPicLength("expDay",   expDay,    2);  // EXPDAYO   PIC X(2)
+        checkPicLength("infoMsg",  infoMsg,  40);  // INFOMSGO  PIC X(40)
+        checkPicLength("errMsg",   errMsg,   80);  // ERRMSGO   PIC X(80)
+        checkPicLength("fKeys",    fKeys,    21);  // FKEYSO    PIC X(21)
+        checkPicLength("fKeysC",   fKeysC,   18);  // FKEYSCO   PIC X(18)
+    }
+
+    /**
+     * Validates that a {@link String} component does not exceed its declared BMS
+     * {@code PIC X(n)} on-screen width.
+     *
+     * <p>Enforces the AAP &sect;0.7.1 Preserve-As-Is contract at the DTO boundary
+     * (CWE-20 input validation): values longer than the declared BMS width would
+     * cause silent truncation in the BMS SEND-MAP layer. Shorter values are
+     * accepted unchanged (BMS pads with SPACES); empty strings are accepted as the
+     * COBOL SPACES idiom.
+     *
+     * @param name      the component name (used in the exception message)
+     * @param value     the component value (never {@code null}: the caller
+     *                  guarantees normalization via {@link #orEmpty(String)})
+     * @param maxLength the declared BMS {@code PIC X(n)} width
+     * @throws IllegalArgumentException if {@code value.length() > maxLength}
+     */
+    private static void checkPicLength(String name, String value, int maxLength) {
+        if (value.length() > maxLength) {
+            throw new IllegalArgumentException(
+                    name + " exceeds BMS PIC X(" + maxLength
+                            + ") declared length; received length="
+                            + value.length() + " value=\"" + value + "\"");
+        }
     }
 
     /**

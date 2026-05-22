@@ -21,6 +21,10 @@ package com.blitzy.carddemo.application.account;
 // wrappers that may be referenced by the compact constructor's null-coalescing logic.
 import module java.base;
 
+// Module-import declarations may not import application-defined types; the COBOL traceability
+// annotation lives in carddemo-domain and must be brought in by a conventional import.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
+
 /**
  * BMS input DTO record carrying all fields received from the 3270 terminal for the
  * <strong>COACTUP</strong> (Account Update) screen.
@@ -265,6 +269,15 @@ import module java.base;
  * @see CoActVwInput
  * @since 1.0.0
  */
+@CobolProgram(
+        value = "COACTUP",
+        sourcePath = "app/bms/COACTUP.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (input side); symbolic copybook CACTUPAI "
+                + "in app/cpy-bms/COACTUP.CPY lines 17-342. Field-for-field translation "
+                + "of all 54 PIC X leaves; date/SSN/phone groups are kept as separate "
+                + "components matching the on-screen layout."
+)
 public record CoActUpInput(
 
         // ============================================================================
@@ -454,6 +467,95 @@ public record CoActUpInput(
         fKey05           = orEmpty(fKey05);
         fKey12           = orEmpty(fKey12);
         aidKey           = (aidKey == null) ? AidKey.ENTER : aidKey;
+
+        // PIC X(n) fixed-length validation per app/cpy-bms/COACTUP.CPY lines 17-342.
+        // BMS RECEIVE-MAP at the CICS boundary hardware-truncates input strings at the
+        // declared PIC X(n) width, so any value longer than that width indicates an
+        // upstream adapter defect (CWE-20). Shorter values are accepted unchanged
+        // (representing an unfilled BMS field, which arrives as SPACES). The check runs
+        // AFTER the null→empty normalization above so that "" is treated as zero-length
+        // (always valid).
+        checkPicLength("trnName",         trnName,          4);  // TRNNAMEI  PIC X(4)
+        checkPicLength("title01",         title01,         40);  // TITLE01I  PIC X(40)
+        checkPicLength("curDate",         curDate,          8);  // CURDATEI  PIC X(8)
+        checkPicLength("pgmName",         pgmName,          8);  // PGMNAMEI  PIC X(8)
+        checkPicLength("title02",         title02,         40);  // TITLE02I  PIC X(40)
+        checkPicLength("curTime",         curTime,          8);  // CURTIMEI  PIC X(8)
+        checkPicLength("acctSid",         acctSid,         11);  // ACCTSIDI  PIC X(11)
+        checkPicLength("acStatus",        acStatus,         1);  // ACSTTUSI  PIC X(1)
+        checkPicLength("openYear",        openYear,         4);  // OPNYEARI  PIC X(4)
+        checkPicLength("openMonth",       openMonth,        2);  // OPNMONI   PIC X(2)
+        checkPicLength("openDay",         openDay,          2);  // OPNDAYI   PIC X(2)
+        checkPicLength("creditLimit",     creditLimit,     15);  // ACRDLIMI  PIC X(15)
+        checkPicLength("expirationYear",  expirationYear,   4);  // EXPYEARI  PIC X(4)
+        checkPicLength("expirationMonth", expirationMonth,  2);  // EXPMONI   PIC X(2)
+        checkPicLength("expirationDay",   expirationDay,    2);  // EXPDAYI   PIC X(2)
+        checkPicLength("cashCreditLimit", cashCreditLimit, 15);  // ACSHLIMI  PIC X(15)
+        checkPicLength("reissueYear",     reissueYear,      4);  // RISYEARI  PIC X(4)
+        checkPicLength("reissueMonth",    reissueMonth,     2);  // RISMONI   PIC X(2)
+        checkPicLength("reissueDay",      reissueDay,       2);  // RISDAYI   PIC X(2)
+        checkPicLength("currentBalance",  currentBalance,  15);  // ACURBALI  PIC X(15)
+        checkPicLength("currCycCredit",   currCycCredit,   15);  // ACRCYCRI  PIC X(15)
+        checkPicLength("accountGroup",    accountGroup,    10);  // AADDGRPI  PIC X(10)
+        checkPicLength("currCycDebit",    currCycDebit,    15);  // ACRCYDBI  PIC X(15)
+        checkPicLength("custNumber",      custNumber,       9);  // ACSTNUMI  PIC X(9)
+        checkPicLength("ssn1",            ssn1,             3);  // ACTSSN1I  PIC X(3)
+        checkPicLength("ssn2",            ssn2,             2);  // ACTSSN2I  PIC X(2)
+        checkPicLength("ssn3",            ssn3,             4);  // ACTSSN3I  PIC X(4)
+        checkPicLength("dobYear",         dobYear,          4);  // DOBYEARI  PIC X(4)
+        checkPicLength("dobMonth",        dobMonth,         2);  // DOBMONI   PIC X(2)
+        checkPicLength("dobDay",          dobDay,           2);  // DOBDAYI   PIC X(2)
+        checkPicLength("ficoScore",       ficoScore,        3);  // ACSTFCOI  PIC X(3)
+        checkPicLength("firstName",       firstName,       25);  // ACSFNAMI  PIC X(25)
+        checkPicLength("middleName",      middleName,      25);  // ACSMNAMI  PIC X(25)
+        checkPicLength("lastName",        lastName,        25);  // ACSLNAMI  PIC X(25)
+        checkPicLength("addressLine1",    addressLine1,    50);  // ACSADL1I  PIC X(50)
+        checkPicLength("state",           state,            2);  // ACSSTTEI  PIC X(2)
+        checkPicLength("addressLine2",    addressLine2,    50);  // ACSADL2I  PIC X(50)
+        checkPicLength("zip",             zip,              5);  // ACSZIPCI  PIC X(5)
+        checkPicLength("city",            city,            50);  // ACSCITYI  PIC X(50)
+        checkPicLength("country",         country,          3);  // ACSCTRYI  PIC X(3)
+        checkPicLength("phone1Area",      phone1Area,       3);  // ACSPH1AI  PIC X(3)
+        checkPicLength("phone1Mid",       phone1Mid,        3);  // ACSPH1BI  PIC X(3)
+        checkPicLength("phone1End",       phone1End,        4);  // ACSPH1CI  PIC X(4)
+        checkPicLength("govtIssuedId",    govtIssuedId,    20);  // ACSGOVTI  PIC X(20)
+        checkPicLength("phone2Area",      phone2Area,       3);  // ACSPH2AI  PIC X(3)
+        checkPicLength("phone2Mid",       phone2Mid,        3);  // ACSPH2BI  PIC X(3)
+        checkPicLength("phone2End",       phone2End,        4);  // ACSPH2CI  PIC X(4)
+        checkPicLength("eftAccountId",    eftAccountId,    10);  // ACSEFTCI  PIC X(10)
+        checkPicLength("primaryFlag",     primaryFlag,      1);  // ACSPFLGI  PIC X(1)
+        checkPicLength("infoMsg",         infoMsg,         45);  // INFOMSGI  PIC X(45)
+        checkPicLength("errMsg",          errMsg,          78);  // ERRMSGI   PIC X(78)
+        checkPicLength("fKeys",           fKeys,           21);  // FKEYSI    PIC X(21)
+        checkPicLength("fKey05",          fKey05,           7);  // FKEY05I   PIC X(7)
+        checkPicLength("fKey12",          fKey12,          10);  // FKEY12I   PIC X(10)
+    }
+
+    /**
+     * Validates that a {@link String} component does not exceed its declared BMS
+     * {@code PIC X(n)} on-screen width.
+     *
+     * <p>Enforces the AAP &sect;0.7.1 Preserve-As-Is contract at the DTO boundary
+     * (CWE-20 input validation): values longer than the declared BMS width would
+     * cause silent hardware truncation in the COBOL RECEIVE-MAP layer; the Java
+     * adapter must reject them at construction time so the screen contract cannot
+     * be corrupted by an upstream defect. Shorter values are accepted unchanged
+     * (BMS pads with SPACES when filling the panel); empty strings are accepted
+     * as the COBOL SPACES idiom. Only over-length strings raise an exception.
+     *
+     * @param name      the component name (used in the exception message)
+     * @param value     the component value (never {@code null}: the caller
+     *                  guarantees normalization via {@link #orEmpty(String)})
+     * @param maxLength the declared BMS {@code PIC X(n)} width
+     * @throws IllegalArgumentException if {@code value.length() > maxLength}
+     */
+    private static void checkPicLength(String name, String value, int maxLength) {
+        if (value.length() > maxLength) {
+            throw new IllegalArgumentException(
+                    name + " exceeds BMS PIC X(" + maxLength
+                            + ") declared length; received length="
+                            + value.length() + " value=\"" + value + "\"");
+        }
     }
 
     /**

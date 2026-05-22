@@ -21,6 +21,13 @@ package com.blitzy.carddemo.application.account;
 // that may be used by the compact constructor's null-coalescing logic.
 import module java.base;
 
+// AAP §0.7.1 traceability requirement: every translated artefact must declare its COBOL /
+// BMS origin via the @CobolProgram annotation so that downstream code searches starting
+// from a COBOL identifier reach the Java translation in one hop. The annotation has
+// RetentionPolicy.SOURCE; it disappears from the compiled .class file and adds no runtime
+// cost.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
+
 /**
  * BMS input DTO record carrying all fields received from the 3270 terminal for the
  * <strong>COACTVW</strong> (Account View) screen.
@@ -204,6 +211,13 @@ import module java.base;
  * @see CoActVwInput.AidKey
  * @since 1.0.0
  */
+@CobolProgram(
+        value = "COACTVW",
+        sourcePath = "app/bms/COACTVW.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (input side); symbolic copybook CACTVWAI "
+                + "in app/cpy-bms/COACTVW.CPY"
+)
 public record CoActVwInput(
 
         // ============================================================================
@@ -328,6 +342,82 @@ public record CoActVwInput(
         infoMsg         = orEmpty(infoMsg);
         errMsg          = orEmpty(errMsg);
         aidKey          = (aidKey == null) ? AidKey.ENTER : aidKey;
+
+        // PIC X(n) fixed-length validation per app/cpy-bms/COACTVW.CPY lines 24-240.
+        // Each BMS leaf is declared with an explicit picture width; the 3270 terminal
+        // cannot deliver a longer value (BMS truncates at the on-screen length), so any
+        // string exceeding the declared width must originate from a defect upstream of
+        // this DTO and is rejected. Shorter values are accepted: BMS pads with SPACES
+        // to the declared width on SEND-MAP, but RECEIVE-MAP may legitimately return
+        // a shorter trimmed value when the adapter strips trailing spaces.
+        checkPicLength("trnName",         trnName,          4);  // TRNNAMEI  PIC X(4)
+        checkPicLength("title01",         title01,         40);  // TITLE01I  PIC X(40)
+        checkPicLength("curDate",         curDate,          8);  // CURDATEI  PIC X(8)
+        checkPicLength("pgmName",         pgmName,          8);  // PGMNAMEI  PIC X(8)
+        checkPicLength("title02",         title02,         40);  // TITLE02I  PIC X(40)
+        checkPicLength("curTime",         curTime,          8);  // CURTIMEI  PIC X(8)
+        checkPicLength("acctSid",         acctSid,         11);  // ACCTSIDI  PIC 99999999999 (11 digits)
+        checkPicLength("acStatus",        acStatus,         1);  // ACSTTUSI  PIC X(1)
+        checkPicLength("openDate",        openDate,        10);  // ADTOPENI  PIC X(10)
+        checkPicLength("creditLimit",     creditLimit,     15);  // ACRDLIMI  PIC X(15)
+        checkPicLength("expirationDate",  expirationDate,  10);  // AEXPDTI   PIC X(10)
+        checkPicLength("cashCreditLimit", cashCreditLimit, 15);  // ACSHLIMI  PIC X(15)
+        checkPicLength("reissueDate",     reissueDate,     10);  // AREISDTI  PIC X(10)
+        checkPicLength("currentBalance",  currentBalance,  15);  // ACURBALI  PIC X(15)
+        checkPicLength("currCycCredit",   currCycCredit,   15);  // ACRCYCRI  PIC X(15)
+        checkPicLength("accountGroup",    accountGroup,    10);  // AADDGRPI  PIC X(10)
+        checkPicLength("currCycDebit",    currCycDebit,    15);  // ACRCYDBI  PIC X(15)
+        checkPicLength("custNumber",      custNumber,       9);  // ACSTNUMI  PIC X(9)
+        checkPicLength("ssn",             ssn,             12);  // ACSTSSNI  PIC X(12)
+        checkPicLength("dob",             dob,             10);  // ACSTDOBI  PIC X(10)
+        checkPicLength("ficoScore",       ficoScore,        3);  // ACSTFCOI  PIC X(3)
+        checkPicLength("firstName",       firstName,       25);  // ACSFNAMI  PIC X(25)
+        checkPicLength("middleName",      middleName,      25);  // ACSMNAMI  PIC X(25)
+        checkPicLength("lastName",        lastName,        25);  // ACSLNAMI  PIC X(25)
+        checkPicLength("addressLine1",    addressLine1,    50);  // ACSADL1I  PIC X(50)
+        checkPicLength("state",           state,            2);  // ACSSTTEI  PIC X(2)
+        checkPicLength("addressLine2",    addressLine2,    50);  // ACSADL2I  PIC X(50)
+        checkPicLength("zip",             zip,              5);  // ACSZIPCI  PIC X(5)
+        checkPicLength("city",            city,            50);  // ACSCITYI  PIC X(50)
+        checkPicLength("country",         country,          3);  // ACSCTRYI  PIC X(3)
+        checkPicLength("phone1",          phone1,          13);  // ACSPHN1I  PIC X(13)
+        checkPicLength("govtIssuedId",    govtIssuedId,    20);  // ACSGOVTI  PIC X(20)
+        checkPicLength("phone2",          phone2,          13);  // ACSPHN2I  PIC X(13)
+        checkPicLength("eftAccountId",    eftAccountId,    10);  // ACSEFTCI  PIC X(10)
+        checkPicLength("primaryFlag",     primaryFlag,      1);  // ACSPFLGI  PIC X(1)
+        checkPicLength("infoMsg",         infoMsg,         45);  // INFOMSGI  PIC X(45)
+        checkPicLength("errMsg",          errMsg,          78);  // ERRMSGI   PIC X(78)
+    }
+
+    /**
+     * Validates that a {@link String} component does not exceed its declared BMS
+     * {@code PIC X(n)} on-screen width.
+     *
+     * <p>This enforces the AAP &sect;0.7.1 Preserve-As-Is mandate at the DTO
+     * boundary (CWE-20 input validation): a longer-than-declared string cannot
+     * originate from a well-behaved 3270 RECEIVE-MAP (the BMS hardware truncates
+     * at the field width), so its appearance here indicates a defect in the
+     * upstream adapter that must be caught before the value silently propagates
+     * downstream and produces a record/screen contract violation.
+     *
+     * <p>Shorter values are accepted unchanged: BMS pads with SPACES on
+     * SEND-MAP, but RECEIVE-MAP adapters may legitimately deliver a trimmed
+     * (shorter than declared) value. Empty strings are accepted as the COBOL
+     * SPACES idiom. Only over-length strings raise an exception.
+     *
+     * @param name      the component name (used in the exception message)
+     * @param value     the component value (never {@code null}: the caller
+     *                  guarantees normalization via {@link #orEmpty(String)})
+     * @param maxLength the declared BMS {@code PIC X(n)} width
+     * @throws IllegalArgumentException if {@code value.length() > maxLength}
+     */
+    private static void checkPicLength(String name, String value, int maxLength) {
+        if (value.length() > maxLength) {
+            throw new IllegalArgumentException(
+                    name + " exceeds BMS PIC X(" + maxLength
+                            + ") declared length; received length="
+                            + value.length() + " value=\"" + value + "\"");
+        }
     }
 
     /**

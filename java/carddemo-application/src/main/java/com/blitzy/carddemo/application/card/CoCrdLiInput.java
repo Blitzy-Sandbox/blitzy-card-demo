@@ -18,9 +18,12 @@ package com.blitzy.carddemo.application.card;
 // JEP 511 (finalized in Java 25): a single declaration imports all packages exported by the
 // java.base module (and the modules it reads). This gives access to java.lang.String — the
 // type of every BMS field component on this record — and to java.util.Objects, used by the
-// compact constructor's Objects.requireNonNull invocation on the aidKey field. No other
-// imports are required or permitted on this file (per the file-level agent prompt).
+// compact constructor's Objects.requireNonNull invocation on the aidKey field.
 import module java.base;
+
+// Module-import declarations may not import application-defined types; the COBOL traceability
+// annotation lives in carddemo-domain and must be brought in by a conventional import.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
 
 /**
  * BMS input record for the {@code COCRDLI / CCRDLIA} card-list map
@@ -164,6 +167,15 @@ import module java.base;
  * @see CoCrdLiInput.AidKey
  * @since 1.0.0
  */
+@CobolProgram(
+        value = "COCRDLI",
+        sourcePath = "app/bms/COCRDLI.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (input side); symbolic copybook CCRDLIAI "
+                + "in app/cpy-bms/COCRDLI.CPY lines 16-289. Field-for-field "
+                + "translation of header (9 leaves), 7 row clusters (selector + "
+                + "type + account + card + status), and message lines (2)."
+)
 public record CoCrdLiInput(
 
         // ============================================================================
@@ -327,6 +339,59 @@ public record CoCrdLiInput(
         infoMsg       = orEmpty(infoMsg);
         errMsg        = orEmpty(errMsg);
         Objects.requireNonNull(aidKey, "aidKey must not be null");
+
+        // PIC X(n) fixed-length validation per app/cpy-bms/COCRDLI.CPY lines 16-289.
+        // CICS RECEIVE-MAP hardware-truncates BMS input strings at the declared PIC
+        // X(n) width; any value longer than that width indicates an upstream adapter
+        // defect (CWE-20 input validation). Shorter values are accepted unchanged
+        // (representing an unfilled BMS field, which arrives as SPACES); empty
+        // strings are accepted as the COBOL SPACES idiom.
+        checkPicLength("trnName",       trnName,        4);  // TRNNAMEI  PIC X(4)
+        checkPicLength("title01",       title01,       40);  // TITLE01I  PIC X(40)
+        checkPicLength("curDate",       curDate,        8);  // CURDATEI  PIC X(8)
+        checkPicLength("pgmName",       pgmName,        8);  // PGMNAMEI  PIC X(8)
+        checkPicLength("title02",       title02,       40);  // TITLE02I  PIC X(40)
+        checkPicLength("curTime",       curTime,        8);  // CURTIMEI  PIC X(8)
+        checkPicLength("pageNo",        pageNo,         3);  // PAGENOI   PIC X(3)
+        checkPicLength("acctSidFilter", acctSidFilter, 11);  // ACCTSIDI  PIC X(11)
+        checkPicLength("cardSidFilter", cardSidFilter, 16);  // CARDSIDI  PIC X(16)
+        // Row 1 has no CRDSTPnI selector-type field; it begins with CRDSEL1I.
+        checkPicLength("crdSel1",       crdSel1,        1);  // CRDSEL1I  PIC X(1)
+        checkPicLength("acctNo1",       acctNo1,       11);  // ACCTNO1I  PIC X(11)
+        checkPicLength("crdNum1",       crdNum1,       16);  // CRDNUM1I  PIC X(16)
+        checkPicLength("crdSts1",       crdSts1,        1);  // CRDSTS1I  PIC X(1)
+        checkPicLength("crdSel2",       crdSel2,        1);  // CRDSEL2I  PIC X(1)
+        checkPicLength("crdStp2",       crdStp2,        1);  // CRDSTP2I  PIC X(1)
+        checkPicLength("acctNo2",       acctNo2,       11);  // ACCTNO2I  PIC X(11)
+        checkPicLength("crdNum2",       crdNum2,       16);  // CRDNUM2I  PIC X(16)
+        checkPicLength("crdSts2",       crdSts2,        1);  // CRDSTS2I  PIC X(1)
+        checkPicLength("crdSel3",       crdSel3,        1);  // CRDSEL3I  PIC X(1)
+        checkPicLength("crdStp3",       crdStp3,        1);  // CRDSTP3I  PIC X(1)
+        checkPicLength("acctNo3",       acctNo3,       11);  // ACCTNO3I  PIC X(11)
+        checkPicLength("crdNum3",       crdNum3,       16);  // CRDNUM3I  PIC X(16)
+        checkPicLength("crdSts3",       crdSts3,        1);  // CRDSTS3I  PIC X(1)
+        checkPicLength("crdSel4",       crdSel4,        1);  // CRDSEL4I  PIC X(1)
+        checkPicLength("crdStp4",       crdStp4,        1);  // CRDSTP4I  PIC X(1)
+        checkPicLength("acctNo4",       acctNo4,       11);  // ACCTNO4I  PIC X(11)
+        checkPicLength("crdNum4",       crdNum4,       16);  // CRDNUM4I  PIC X(16)
+        checkPicLength("crdSts4",       crdSts4,        1);  // CRDSTS4I  PIC X(1)
+        checkPicLength("crdSel5",       crdSel5,        1);  // CRDSEL5I  PIC X(1)
+        checkPicLength("crdStp5",       crdStp5,        1);  // CRDSTP5I  PIC X(1)
+        checkPicLength("acctNo5",       acctNo5,       11);  // ACCTNO5I  PIC X(11)
+        checkPicLength("crdNum5",       crdNum5,       16);  // CRDNUM5I  PIC X(16)
+        checkPicLength("crdSts5",       crdSts5,        1);  // CRDSTS5I  PIC X(1)
+        checkPicLength("crdSel6",       crdSel6,        1);  // CRDSEL6I  PIC X(1)
+        checkPicLength("crdStp6",       crdStp6,        1);  // CRDSTP6I  PIC X(1)
+        checkPicLength("acctNo6",       acctNo6,       11);  // ACCTNO6I  PIC X(11)
+        checkPicLength("crdNum6",       crdNum6,       16);  // CRDNUM6I  PIC X(16)
+        checkPicLength("crdSts6",       crdSts6,        1);  // CRDSTS6I  PIC X(1)
+        checkPicLength("crdSel7",       crdSel7,        1);  // CRDSEL7I  PIC X(1)
+        checkPicLength("crdStp7",       crdStp7,        1);  // CRDSTP7I  PIC X(1)
+        checkPicLength("acctNo7",       acctNo7,       11);  // ACCTNO7I  PIC X(11)
+        checkPicLength("crdNum7",       crdNum7,       16);  // CRDNUM7I  PIC X(16)
+        checkPicLength("crdSts7",       crdSts7,        1);  // CRDSTS7I  PIC X(1)
+        checkPicLength("infoMsg",       infoMsg,       45);  // INFOMSGI  PIC X(45)
+        checkPicLength("errMsg",        errMsg,        78);  // ERRMSGI   PIC X(78)
     }
 
     /**
@@ -341,6 +406,33 @@ public record CoCrdLiInput(
      */
     private static String orEmpty(String s) {
         return (s == null) ? "" : s;
+    }
+
+    /**
+     * Validates that a {@link String} component does not exceed its declared BMS
+     * {@code PIC X(n)} on-screen width.
+     *
+     * <p>Enforces the AAP &sect;0.7.1 Preserve-As-Is contract at the DTO boundary
+     * (CWE-20 input validation): values longer than the declared BMS width would
+     * cause silent hardware truncation in the CICS RECEIVE-MAP layer; the Java
+     * adapter must reject them at construction time so the screen contract cannot
+     * be corrupted by an upstream defect. Shorter values are accepted unchanged
+     * (BMS pads with SPACES when filling the panel); empty strings are accepted
+     * as the COBOL SPACES idiom. Only over-length strings raise an exception.
+     *
+     * @param name      the component name (used in the exception message)
+     * @param value     the component value (never {@code null}: the caller
+     *                  guarantees normalization via {@link #orEmpty(String)})
+     * @param maxLength the declared BMS {@code PIC X(n)} width
+     * @throws IllegalArgumentException if {@code value.length() > maxLength}
+     */
+    private static void checkPicLength(String name, String value, int maxLength) {
+        if (value.length() > maxLength) {
+            throw new IllegalArgumentException(
+                    name + " exceeds BMS PIC X(" + maxLength
+                            + ") declared length; received length="
+                            + value.length() + " value=\"" + value + "\"");
+        }
     }
 
     /**

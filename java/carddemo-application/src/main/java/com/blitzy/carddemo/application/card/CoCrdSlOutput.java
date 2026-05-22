@@ -17,9 +17,12 @@ package com.blitzy.carddemo.application.card;
 
 // JEP 511 (finalized in Java 25): a single declaration imports all packages exported by the
 // java.base module (and the modules it reads). This gives access to java.lang.String — the
-// type of every BMS output-field component on this record. No other imports are required
-// or permitted on this file (per the file-level agent prompt).
+// type of every BMS output-field component on this record.
 import module java.base;
+
+// Module-import declarations may not import application-defined types; the COBOL traceability
+// annotation lives in carddemo-domain and must be brought in by a conventional import.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
 
 /**
  * BMS output record for the {@code COCRDSL / CCRDSLA} card-view map
@@ -140,6 +143,15 @@ import module java.base;
  * @see com.blitzy.carddemo.application.card.CoCrdSlC
  * @see com.blitzy.carddemo.application.card.CoCrdSlInput
  */
+@CobolProgram(
+        value = "COCRDSL",
+        sourcePath = "app/bms/COCRDSL.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (output side); symbolic copybook CCRDSLAO "
+                + "REDEFINES CCRDSLAI in app/cpy-bms/COCRDSL.CPY lines 110-203. "
+                + "Field-for-field translation of all 15 PIC X output leaves; "
+                + "PIC X(n) widths enforced at construction time."
+)
 public record CoCrdSlOutput(
         String trnName,
         String title01,
@@ -183,6 +195,25 @@ public record CoCrdSlOutput(
         infoMsg = orEmpty(infoMsg);
         errMsg = orEmpty(errMsg);
         fKeys = orEmpty(fKeys);
+
+        // PIC X(n) fixed-length validation per app/cpy-bms/COCRDSL.CPY lines 110-203.
+        // BMS SEND-MAP pads with SPACES if the value is shorter and truncates if it is
+        // longer; the DTO rejects over-length values at construction time (CWE-20).
+        checkPicLength("trnName",  trnName,   4);  // TRNNAMEO  PIC X(4)
+        checkPicLength("title01",  title01,  40);  // TITLE01O  PIC X(40)
+        checkPicLength("curDate",  curDate,   8);  // CURDATEO  PIC X(8)
+        checkPicLength("pgmName",  pgmName,   8);  // PGMNAMEO  PIC X(8)
+        checkPicLength("title02",  title02,  40);  // TITLE02O  PIC X(40)
+        checkPicLength("curTime",  curTime,   8);  // CURTIMEO  PIC X(8)
+        checkPicLength("acctSid",  acctSid,  11);  // ACCTSIDO  PIC X(11)
+        checkPicLength("cardSid",  cardSid,  16);  // CARDSIDO  PIC X(16)
+        checkPicLength("crdName",  crdName,  50);  // CRDNAMEO  PIC X(50)
+        checkPicLength("crdStsCd", crdStsCd,  1);  // CRDSTCDO  PIC X(1)
+        checkPicLength("expMon",   expMon,    2);  // EXPMONO   PIC X(2)
+        checkPicLength("expYear",  expYear,   4);  // EXPYEARO  PIC X(4)
+        checkPicLength("infoMsg",  infoMsg,  40);  // INFOMSGO  PIC X(40)
+        checkPicLength("errMsg",   errMsg,   80);  // ERRMSGO   PIC X(80)
+        checkPicLength("fKeys",    fKeys,    75);  // FKEYSO    PIC X(75)
     }
 
     /**
@@ -196,6 +227,30 @@ public record CoCrdSlOutput(
      */
     private static String orEmpty(String s) {
         return s == null ? "" : s;
+    }
+
+    /**
+     * Validates that a {@link String} component does not exceed its declared BMS
+     * {@code PIC X(n)} on-screen width.
+     *
+     * <p>Enforces the AAP &sect;0.7.1 Preserve-As-Is contract at the DTO boundary
+     * (CWE-20 input validation): values longer than the declared BMS width would
+     * cause silent truncation in the BMS SEND-MAP layer. Shorter values are accepted
+     * unchanged (BMS pads with SPACES).
+     *
+     * @param name      the component name (used in the exception message)
+     * @param value     the component value (never {@code null}: the caller
+     *                  guarantees normalization via {@link #orEmpty(String)})
+     * @param maxLength the declared BMS {@code PIC X(n)} width
+     * @throws IllegalArgumentException if {@code value.length() > maxLength}
+     */
+    private static void checkPicLength(String name, String value, int maxLength) {
+        if (value.length() > maxLength) {
+            throw new IllegalArgumentException(
+                    name + " exceeds BMS PIC X(" + maxLength
+                            + ") declared length; received length="
+                            + value.length() + " value=\"" + value + "\"");
+        }
     }
 
     /**

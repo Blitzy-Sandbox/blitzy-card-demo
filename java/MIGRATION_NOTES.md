@@ -268,6 +268,129 @@ the 1-to-1 paragraph-to-method mapping mandated by AAP §0.1.2.
 method names would all silently shift). A Javadoc note on the Java
 method records the intended spelling.
 
+### 1.4.5 CBACT01C / CBACT03C `DOUBLE-DISPLAY` anomaly (RESERVED — translation pending)
+
+**Status**: RESERVED — placeholder section for an anomaly that will be
+documented in full once the affected programs are translated. This entry
+is added now (pre-translation) so that future translation agents have a
+single, stable place to attach the analysis when the actual COBOL
+inspection is performed.
+
+**Anticipated COBOL source**: `app/cbl/CBACT01C.cbl` and
+`app/cbl/CBACT03C.cbl`. The "DOUBLE-DISPLAY" anomaly refers to a
+sequential-reader idiom in which each fetched record is emitted to
+`SYSOUT` via a pair of `DISPLAY` statements — typically one that prints
+a labelled field summary and a second that prints the raw record image.
+Whether this is intentional (an audit trail useful in mainframe
+operations) or a vestigial duplicate left over from earlier development
+will be confirmed during the actual translation pass. The user mandate
+in AAP §0.7.1 ("If a COBOL paragraph contains dead code or obvious bugs,
+translate it faithfully and flag it in a `MIGRATION_NOTES.md`; do not
+'fix' it in this refactor.") applies either way.
+
+**Anticipated Java translation**: the Java port in
+`com.blitzy.carddemo.application.account.CbAct01C` and
+`com.blitzy.carddemo.application.account.CbAct03C` will preserve the
+double output verbatim. Two `System.out.println(...)` (or, equivalently,
+two SLF4J `logger.info(...)` calls) will be emitted at each record
+boundary, in the same order and with the same content as the COBOL
+DISPLAY pair. Byte-for-byte parity of the `SYSOUT`-equivalent stream is
+required by the golden-record harness (AAP §0.6.11).
+
+**Action items for the CBACT01C / CBACT03C translation pass**:
+
+1. Re-read both program sources end-to-end and confirm the exact
+   DISPLAY locations, formats, and surrounding paragraph context.
+2. Replace this RESERVED placeholder with the concrete analysis: cite
+   the line numbers (`[app/cbl/CBACT01C.cbl:L###-L###]` /
+   `[app/cbl/CBACT03C.cbl:L###-L###]`), record the verbatim DISPLAY
+   statements, and document the Java methods that translate them.
+3. Add a regression assertion to the golden-record harness that
+   compares the captured COBOL `SYSOUT` against the Java
+   `System.out` / log output for both programs.
+4. If the anomaly turns out to be absent in the actual source (only
+   anticipated, not confirmed), update this section to record the
+   investigation outcome rather than deleting it — so the audit trail
+   stays intact.
+
+**Why this section exists now (pre-translation)**: per the checkpoint
+review feedback, the migration notes must reserve a placeholder for
+every known or anticipated translation peculiarity before the
+corresponding code is produced, so that downstream agents do not have to
+re-discover the concern. Sections 1.4.1 through 1.4.4 already follow
+this convention.
+
+### 1.4.6 `ACCT-EXPIRAION-DATE` typo preservation in `CVACT01Y.cpy` (RESERVED — translation pending)
+
+**Status**: RESERVED — placeholder section for a known field-name typo
+that will be preserved verbatim in the Java translation. This entry is
+added now (pre-translation of the `AccountRecord` Java class) so that
+future translation agents have a single, stable place to attach the
+analysis when the copybook is parsed into a record.
+
+**COBOL source**: `app/cpy/CVACT01Y.cpy`. The 300-byte `ACCOUNT-RECORD`
+01-level group contains a field named `ACCT-EXPIRAION-DATE PIC X(10)`
+(the standard English spelling is `EXPIRATION`; the COBOL source
+contains a typo — letters `TI` transposed to `AI` to yield
+`EXPIRAION`). The misspelling propagates wherever the copybook is
+COPY'd (every program that reads or updates the ACCOUNT record) and
+appears in MOVE statements, IF tests, and INITIALIZE clauses across the
+codebase. AAP §0.4.1 explicitly notes "ACCT-OPEN-DATE/EXPIRAION-DATE/
+REISSUE-DATE (PIC X(10)→LocalDate)" — the typo is documented in the
+AAP because it must survive translation.
+
+**Anticipated Java translation**: when
+`com.blitzy.carddemo.domain.record.AccountRecord` is produced, the field
+name will be `expiraionDate` (camelCase preserving the typo), not
+`expirationDate`. The choice is justified by:
+
+1. **AAP §0.1.1 mandate** — "byte-for-byte identical file outputs and
+   field-for-field identical record outputs versus the COBOL baseline".
+   Field name divergence between COBOL and Java would surface
+   immediately in any introspection-based diagnostic (e.g., a generic
+   record-formatting helper that walks accessors and labels each value
+   with the accessor name), making it harder to verify parity.
+2. **AAP §0.7.1 Refactor Discipline** — "If a COBOL paragraph contains
+   dead code or obvious bugs, translate it faithfully and flag it in a
+   `MIGRATION_NOTES.md`; do not 'fix' it in this refactor." A field
+   spelling defect is the canonical example of the kind of "obvious bug"
+   the user explicitly forbids correcting.
+3. **AAP §0.1.2 transformation rule** — "COBOL `COPY` directive →
+   Java `import` of a domain record"; copybook field names are the
+   contract between COBOL and Java, and silent renaming would break
+   any downstream code search that pivots on the COBOL name.
+
+**Required Javadoc decoration**: the typo'd field's accessor and any
+related helper will carry a Javadoc note that records the intended
+spelling (`expirationDate`), so a developer reading the Java code is not
+left wondering whether the typo is intentional. The Javadoc note
+follows the same pattern as the `WIRTE-JOBSUB-TDQ` paragraph note in
+Section 1.4.4: the COBOL spelling is preserved in code; the intended
+spelling is preserved in comments.
+
+**Action items for the `AccountRecord` translation pass**:
+
+1. Re-read `app/cpy/CVACT01Y.cpy` end-to-end and confirm the typo's
+   exact spelling and byte offset within the 300-byte fixed-width
+   layout.
+2. Replace this RESERVED placeholder with the concrete analysis: cite
+   the line number (`[app/cpy/CVACT01Y.cpy:L###]`), the verbatim COBOL
+   declaration, and the resulting Java record component.
+3. Document any sister fields in other copybooks that share the same
+   typo (e.g., card expiration date in `CVACT02Y.cpy` — the spelling
+   may or may not also be typo'd; verify case-by-case).
+4. Add an assertion to the property-based test suite confirming that
+   the Java accessor name matches the COBOL field name modulo the
+   hyphen-to-camelCase conversion (i.e., that the typo survived
+   translation).
+
+**Why this section exists now (pre-translation)**: per the checkpoint
+review feedback, the migration notes must reserve a placeholder for
+every known typo or spelling anomaly before the corresponding code is
+produced, so that downstream agents do not "helpfully" correct the
+spelling and break parity. Sections 1.4.1 through 1.4.5 already follow
+this convention.
+
 ---
 
 ## Section 1.5: BEHAVIORAL PARITY PRESERVATIONS

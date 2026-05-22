@@ -17,9 +17,12 @@ package com.blitzy.carddemo.application.card;
 
 // JEP 511 (finalized in Java 25): a single declaration imports all packages exported by the
 // java.base module (and the modules it reads). This gives access to java.lang.String — the
-// type of every BMS output-field component on this record. No other imports are required
-// or permitted on this file (per the file-level agent prompt).
+// type of every BMS output-field component on this record.
 import module java.base;
+
+// Module-import declarations may not import application-defined types; the COBOL traceability
+// annotation lives in carddemo-domain and must be brought in by a conventional import.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
 
 /**
  * BMS output record for the {@code COCRDLI / CCRDLIA} card-list map
@@ -215,6 +218,15 @@ import module java.base;
  * @see com.blitzy.carddemo.application.card.CoCrdLiC
  * @see com.blitzy.carddemo.application.card.CoCrdLiInput
  */
+@CobolProgram(
+        value = "COCRDLI",
+        sourcePath = "app/bms/COCRDLI.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (output side); symbolic copybook CCRDLIAO "
+                + "REDEFINES CCRDLIAI in app/cpy-bms/COCRDLI.CPY lines 290-563. "
+                + "Field-for-field translation of header (9), 7 row clusters, "
+                + "and message lines (2). PIC X(n) widths enforced at construction."
+)
 public record CoCrdLiOutput(
         String trnName,
         String title01,
@@ -329,6 +341,57 @@ public record CoCrdLiOutput(
         // Footer
         infoMsg = orEmpty(infoMsg);
         errMsg = orEmpty(errMsg);
+
+        // PIC X(n) fixed-length validation per app/cpy-bms/COCRDLI.CPY lines 290-563.
+        // BMS SEND-MAP pads with SPACES if the value is shorter and truncates if it is
+        // longer; the DTO rejects over-length values at construction time so that any
+        // truncation/padding defect is caught here rather than silently propagating
+        // into a screen-contract violation (CWE-20 input validation).
+        checkPicLength("trnName",       trnName,        4);  // TRNNAMEO  PIC X(4)
+        checkPicLength("title01",       title01,       40);  // TITLE01O  PIC X(40)
+        checkPicLength("curDate",       curDate,        8);  // CURDATEO  PIC X(8)
+        checkPicLength("pgmName",       pgmName,        8);  // PGMNAMEO  PIC X(8)
+        checkPicLength("title02",       title02,       40);  // TITLE02O  PIC X(40)
+        checkPicLength("curTime",       curTime,        8);  // CURTIMEO  PIC X(8)
+        checkPicLength("pageNo",        pageNo,         3);  // PAGENOO   PIC X(3)
+        checkPicLength("acctSidFilter", acctSidFilter, 11);  // ACCTSIDO  PIC X(11)
+        checkPicLength("cardSidFilter", cardSidFilter, 16);  // CARDSIDO  PIC X(16)
+        checkPicLength("crdSel1",       crdSel1,        1);  // CRDSEL1O  PIC X(1)
+        checkPicLength("acctNo1",       acctNo1,       11);  // ACCTNO1O  PIC X(11)
+        checkPicLength("crdNum1",       crdNum1,       16);  // CRDNUM1O  PIC X(16)
+        checkPicLength("crdSts1",       crdSts1,        1);  // CRDSTS1O  PIC X(1)
+        checkPicLength("crdSel2",       crdSel2,        1);  // CRDSEL2O  PIC X(1)
+        checkPicLength("crdStp2",       crdStp2,        1);  // CRDSTP2O  PIC X(1)
+        checkPicLength("acctNo2",       acctNo2,       11);  // ACCTNO2O  PIC X(11)
+        checkPicLength("crdNum2",       crdNum2,       16);  // CRDNUM2O  PIC X(16)
+        checkPicLength("crdSts2",       crdSts2,        1);  // CRDSTS2O  PIC X(1)
+        checkPicLength("crdSel3",       crdSel3,        1);  // CRDSEL3O  PIC X(1)
+        checkPicLength("crdStp3",       crdStp3,        1);  // CRDSTP3O  PIC X(1)
+        checkPicLength("acctNo3",       acctNo3,       11);  // ACCTNO3O  PIC X(11)
+        checkPicLength("crdNum3",       crdNum3,       16);  // CRDNUM3O  PIC X(16)
+        checkPicLength("crdSts3",       crdSts3,        1);  // CRDSTS3O  PIC X(1)
+        checkPicLength("crdSel4",       crdSel4,        1);  // CRDSEL4O  PIC X(1)
+        checkPicLength("crdStp4",       crdStp4,        1);  // CRDSTP4O  PIC X(1)
+        checkPicLength("acctNo4",       acctNo4,       11);  // ACCTNO4O  PIC X(11)
+        checkPicLength("crdNum4",       crdNum4,       16);  // CRDNUM4O  PIC X(16)
+        checkPicLength("crdSts4",       crdSts4,        1);  // CRDSTS4O  PIC X(1)
+        checkPicLength("crdSel5",       crdSel5,        1);  // CRDSEL5O  PIC X(1)
+        checkPicLength("crdStp5",       crdStp5,        1);  // CRDSTP5O  PIC X(1)
+        checkPicLength("acctNo5",       acctNo5,       11);  // ACCTNO5O  PIC X(11)
+        checkPicLength("crdNum5",       crdNum5,       16);  // CRDNUM5O  PIC X(16)
+        checkPicLength("crdSts5",       crdSts5,        1);  // CRDSTS5O  PIC X(1)
+        checkPicLength("crdSel6",       crdSel6,        1);  // CRDSEL6O  PIC X(1)
+        checkPicLength("crdStp6",       crdStp6,        1);  // CRDSTP6O  PIC X(1)
+        checkPicLength("acctNo6",       acctNo6,       11);  // ACCTNO6O  PIC X(11)
+        checkPicLength("crdNum6",       crdNum6,       16);  // CRDNUM6O  PIC X(16)
+        checkPicLength("crdSts6",       crdSts6,        1);  // CRDSTS6O  PIC X(1)
+        checkPicLength("crdSel7",       crdSel7,        1);  // CRDSEL7O  PIC X(1)
+        checkPicLength("crdStp7",       crdStp7,        1);  // CRDSTP7O  PIC X(1)
+        checkPicLength("acctNo7",       acctNo7,       11);  // ACCTNO7O  PIC X(11)
+        checkPicLength("crdNum7",       crdNum7,       16);  // CRDNUM7O  PIC X(16)
+        checkPicLength("crdSts7",       crdSts7,        1);  // CRDSTS7O  PIC X(1)
+        checkPicLength("infoMsg",       infoMsg,       45);  // INFOMSGO  PIC X(45)
+        checkPicLength("errMsg",        errMsg,        78);  // ERRMSGO   PIC X(78)
     }
 
     /**
@@ -342,6 +405,32 @@ public record CoCrdLiOutput(
      */
     private static String orEmpty(String s) {
         return s == null ? "" : s;
+    }
+
+    /**
+     * Validates that a {@link String} component does not exceed its declared BMS
+     * {@code PIC X(n)} on-screen width.
+     *
+     * <p>Enforces the AAP &sect;0.7.1 Preserve-As-Is contract at the DTO boundary
+     * (CWE-20 input validation): values longer than the declared BMS width would
+     * cause silent truncation in the BMS SEND-MAP layer, producing a screen-contract
+     * violation. Shorter values are accepted unchanged (BMS pads with SPACES);
+     * empty strings are accepted as the COBOL SPACES idiom. Only over-length
+     * strings raise an exception.
+     *
+     * @param name      the component name (used in the exception message)
+     * @param value     the component value (never {@code null}: the caller
+     *                  guarantees normalization via {@link #orEmpty(String)})
+     * @param maxLength the declared BMS {@code PIC X(n)} width
+     * @throws IllegalArgumentException if {@code value.length() > maxLength}
+     */
+    private static void checkPicLength(String name, String value, int maxLength) {
+        if (value.length() > maxLength) {
+            throw new IllegalArgumentException(
+                    name + " exceeds BMS PIC X(" + maxLength
+                            + ") declared length; received length="
+                            + value.length() + " value=\"" + value + "\"");
+        }
     }
 
     /**

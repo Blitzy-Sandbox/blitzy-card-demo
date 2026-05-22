@@ -179,22 +179,103 @@ carddemo.file.usrsec.charset=IBM-1047
 #
 # These three properties are read once at process entry, bound into the
 # ScopedValue, and remain immutable for the lifetime of the run.
+#
+# Environment-variable equivalents (per AAP §0.7.5 / §0.4.4): each property
+# below has a canonical UPPER_SNAKE_CASE environment-variable form. The
+# precedence order is, from highest to lowest:
+#   1. JVM system property (-Dcarddemo.batch.run-id=...)
+#   2. Environment variable (CARDDEMO_RUN_ID=...)
+#   3. application.properties value (this file)
+#   4. Compiled-in default (documented per key)
+#
+# The shaded-jar main class (carddemo-app) is responsible for performing
+# this lookup once at process entry and binding the resulting BatchRunContext
+# into the ScopedValue. The mapping from property name to environment
+# variable is direct: dots and hyphens become underscores, and the whole
+# name is upper-cased. So `carddemo.batch.run-id` <-> `CARDDEMO_RUN_ID`.
 
-# carddemo.batch.run-id — uniquely identifies this batch run. If blank, an
-# auto-generated UUID is used. Allowed: any non-empty string. Default: blank.
+# Property:           carddemo.batch.run-id
+# Environment var:    CARDDEMO_RUN_ID
+# Purpose:            uniquely identifies this batch run; appears in log
+#                     correlation IDs, JFR event labels, and the
+#                     golden-record output file name when the harness
+#                     captures expected outputs.
+# Type:               string
+# Allowed values:     any non-empty string, recommended UUID-style or
+#                     ISO-timestamp-style for uniqueness
+# Default:            blank — when blank, an auto-generated UUID (via
+#                     java.util.UUID.randomUUID()) is substituted at
+#                     process entry so the BatchRunContext is never null.
+# Required:           no
 carddemo.batch.run-id=
 
-# carddemo.batch.processing-date — overrides the system date for posting
-# (format: yyyy-MM-dd). If blank, java.time.LocalDate.now() is used.
-# COBOL CBACT04C accepts an equivalent date as a JCL PARM, e.g.
-# PARM='2022071800' in app/jcl/INTCALC.jcl (STEP15).
-# Allowed: ISO_LOCAL_DATE (yyyy-MM-dd). Default: blank.
+# Property:           carddemo.batch.processing-date
+# Environment var:    CARDDEMO_PROCESSING_DATE
+# Purpose:            overrides the system date for posting, interest
+#                     calculation, statement generation, and any other
+#                     date-sensitive batch logic. Mirrors the COBOL JCL
+#                     PARM convention used to inject "as-of" dates into
+#                     batch programs.
+# Type:               java.time.LocalDate (ISO_LOCAL_DATE format)
+# Allowed values:     ISO_LOCAL_DATE (yyyy-MM-dd)
+# Default:            blank — when blank, java.time.LocalDate.now() is
+#                     used (the JVM-default zone clock).
+# Required:           no
+# Notes:              the COBOL CBACT04C (interest calculation) program
+#                     accepts an equivalent date as a JCL PARM in the
+#                     format yyyyMMddhh (10 digits). See the dedicated
+#                     `carddemo.intcalc.parm` property below for the
+#                     exact COBOL PARM passthrough.
 carddemo.batch.processing-date=
 
-# carddemo.batch.tenant — multi-tenant key for downstream extensions. Single
-# tenant deployments leave this at DEFAULT.
-# Allowed: any non-empty string. Default: DEFAULT.
+# Property:           carddemo.batch.tenant
+# Environment var:    CARDDEMO_TENANT
+# Purpose:            multi-tenant key for downstream extensions. Single
+#                     tenant deployments leave this at DEFAULT. Tenanted
+#                     deployments use the tenant key in directory paths
+#                     (e.g., var/data/${CARDDEMO_TENANT}/...), in
+#                     structured-log MDC fields, and in any future JDBC
+#                     adapter (as a schema name or a row filter).
+# Type:               string
+# Allowed values:     any non-empty string
+# Default:            DEFAULT
+# Required:           no
 carddemo.batch.tenant=DEFAULT
+
+
+# =============================================================================
+# 5.1 COBOL JCL PARM passthrough (program-specific runtime parameters)
+# =============================================================================
+# Per AAP §0.7.5 / §0.4.1 each Java main class translates a JCL EXEC PGM= step
+# and must accept the same PARM string that the COBOL step accepts. Where a
+# specific COBOL program reads a PARM in DATA DIVISION LINKAGE SECTION and
+# uses it as a runtime parameter, the Java equivalent reads the corresponding
+# property below (or its environment-variable form) and treats it as the same
+# 10-character string the COBOL program would have received.
+
+# Property:           carddemo.intcalc.parm
+# Environment var:    CARDDEMO_INTCALC_PARM
+# Purpose:            COBOL CBACT04C / Java InterestCalculationApp PARM
+#                     passthrough. The interest-calculation engine takes a
+#                     ten-character JCL PARM in the form yyyyMMddhh (date
+#                     plus a 2-digit hour, where the hour is currently
+#                     unused but kept for layout parity). The default
+#                     value 2022071800 matches the literal in
+#                     app/jcl/INTCALC.jcl STEP15 EXEC PGM=CBACT04C,
+#                     PARM='2022071800' — this is the "as-of" date used
+#                     by the original CBACT04C reference batch run.
+# Type:               string (10 digits, format yyyyMMddhh)
+# Allowed values:     ten ASCII digits parseable as a date + hour
+# Default:            2022071800
+# Required:           no (default is functionally equivalent to the
+#                     reference COBOL JCL)
+# Notes:              when both this property and
+#                     `carddemo.batch.processing-date` are supplied, the
+#                     more specific (`carddemo.intcalc.parm`) wins for
+#                     CBACT04C invocations; the broader processing-date
+#                     wins for every other program. This preserves the
+#                     COBOL precedence: JCL PARM beats system date.
+carddemo.intcalc.parm=2022071800
 
 
 # =============================================================================

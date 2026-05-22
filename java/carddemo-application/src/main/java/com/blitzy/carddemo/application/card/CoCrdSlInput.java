@@ -18,9 +18,12 @@ package com.blitzy.carddemo.application.card;
 // JEP 511 (finalized in Java 25): a single declaration imports all packages exported by the
 // java.base module (and the modules it reads). This gives access to java.lang.String -- the
 // type of every BMS input-field component on this record -- and to java.util.Objects for
-// the compact-constructor null check on the nested AidKey component. No other imports are
-// required or permitted on this file (per the file-level agent prompt).
+// the compact-constructor null check on the nested AidKey component.
 import module java.base;
+
+// Module-import declarations may not import application-defined types; the COBOL traceability
+// annotation lives in carddemo-domain and must be brought in by a conventional import.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
 
 /**
  * BMS input record for the {@code COCRDSL / CCRDSLA} card-view map
@@ -111,6 +114,14 @@ import module java.base;
  * @see com.blitzy.carddemo.application.card.CoCrdSlC
  * @see com.blitzy.carddemo.application.card.CoCrdSlOutput
  */
+@CobolProgram(
+        value = "COCRDSL",
+        sourcePath = "app/bms/COCRDSL.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (input side); symbolic copybook CCRDSLAI "
+                + "in app/cpy-bms/COCRDSL.CPY lines 16-109. Field-for-field "
+                + "translation of all 15 PIC X leaves plus decoded AidKey."
+)
 public record CoCrdSlInput(
         String trnName,
         String title01,
@@ -188,6 +199,26 @@ public record CoCrdSlInput(
         errMsg = orEmpty(errMsg);
         fKeys = orEmpty(fKeys);
         Objects.requireNonNull(aidKey, "aidKey must not be null");
+
+        // PIC X(n) fixed-length validation per app/cpy-bms/COCRDSL.CPY lines 16-109.
+        // CICS RECEIVE-MAP hardware-truncates BMS input strings at the declared PIC
+        // X(n) width; any value longer than that width indicates an upstream adapter
+        // defect (CWE-20 input validation). Shorter values are accepted unchanged.
+        checkPicLength("trnName",  trnName,   4);  // TRNNAMEI  PIC X(4)
+        checkPicLength("title01",  title01,  40);  // TITLE01I  PIC X(40)
+        checkPicLength("curDate",  curDate,   8);  // CURDATEI  PIC X(8)
+        checkPicLength("pgmName",  pgmName,   8);  // PGMNAMEI  PIC X(8)
+        checkPicLength("title02",  title02,  40);  // TITLE02I  PIC X(40)
+        checkPicLength("curTime",  curTime,   8);  // CURTIMEI  PIC X(8)
+        checkPicLength("acctSid",  acctSid,  11);  // ACCTSIDI  PIC X(11)
+        checkPicLength("cardSid",  cardSid,  16);  // CARDSIDI  PIC X(16)
+        checkPicLength("crdName",  crdName,  50);  // CRDNAMEI  PIC X(50)
+        checkPicLength("crdStsCd", crdStsCd,  1);  // CRDSTCDI  PIC X(1)
+        checkPicLength("expMon",   expMon,    2);  // EXPMONI   PIC X(2)
+        checkPicLength("expYear",  expYear,   4);  // EXPYEARI  PIC X(4)
+        checkPicLength("infoMsg",  infoMsg,  40);  // INFOMSGI  PIC X(40)
+        checkPicLength("errMsg",   errMsg,   80);  // ERRMSGI   PIC X(80)
+        checkPicLength("fKeys",    fKeys,    75);  // FKEYSI    PIC X(75)
     }
 
     /**
@@ -203,6 +234,30 @@ public record CoCrdSlInput(
      */
     private static String orEmpty(String s) {
         return s == null ? "" : s;
+    }
+
+    /**
+     * Validates that a {@link String} component does not exceed its declared BMS
+     * {@code PIC X(n)} on-screen width.
+     *
+     * <p>Enforces the AAP &sect;0.7.1 Preserve-As-Is contract at the DTO boundary
+     * (CWE-20 input validation): values longer than the declared BMS width would
+     * cause silent hardware truncation in the CICS RECEIVE-MAP layer. Shorter
+     * values are accepted unchanged.
+     *
+     * @param name      the component name (used in the exception message)
+     * @param value     the component value (never {@code null}: the caller
+     *                  guarantees normalization via {@link #orEmpty(String)})
+     * @param maxLength the declared BMS {@code PIC X(n)} width
+     * @throws IllegalArgumentException if {@code value.length() > maxLength}
+     */
+    private static void checkPicLength(String name, String value, int maxLength) {
+        if (value.length() > maxLength) {
+            throw new IllegalArgumentException(
+                    name + " exceeds BMS PIC X(" + maxLength
+                            + ") declared length; received length="
+                            + value.length() + " value=\"" + value + "\"");
+        }
     }
 
     /**
