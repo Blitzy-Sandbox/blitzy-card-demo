@@ -101,15 +101,37 @@
 --
 -- Foreign-key design note:
 --   The logical parent of (tran_type_cd) is tran_type.tran_type (created by
---   V008). Per the same refactor-discipline approach used by V008's reverse
---   reference (V008 line 105-108), a FOREIGN KEY constraint from
---   tran_category.tran_type_cd to tran_type.tran_type is NOT declared at
---   this checkpoint -- the current AAP scope keeps cross-table FKs out of
---   schema-create migrations to permit independent reseeding of reference
---   tables during integration testing. Application-layer validation in
---   TransactionPostingService / TransactionAddService enforces tran_type_cd
---   existence (preserves COBOL CBTRN02C / COTRN02C validation cascade
---   behavior).
+--   V008). Per AAP §0.6.2 and the V009 agent prompt ("FK constraint declared
+--   with ON DELETE NO ACTION"), a FOREIGN KEY constraint from
+--   tran_category.tran_type_cd to tran_type.tran_type IS DECLARED at this
+--   schema-create checkpoint. The constraint enforces defensive referential
+--   integrity at the database tier so that no tran_category row can be
+--   created whose tran_type_cd is not already present in tran_type.
+--
+--   Migration ordering: V008 (CREATE TABLE tran_type) -> V009 (CREATE TABLE
+--   tran_category with FK to tran_type) -> V013 (INSERT tran_type rows) ->
+--   V014 (INSERT tran_category rows). When V014 runs, V013 has already
+--   populated all seven tran_type rows ('01'..'07'), so all 18 V014 INSERTs
+--   pass FK validation. Flyway's lexicographic ordering guarantees this
+--   sequence.
+--
+--   ON DELETE NO ACTION semantics: the AAP-mandated referential action.
+--   PostgreSQL's NO ACTION (the default) raises a constraint-violation error
+--   at the end of the statement (after any deferred trigger fires) if a
+--   delete on the parent would leave orphan rows in the child. This matches
+--   the behavior of "no implicit cascade" -- the strictest available
+--   referential action -- and reflects that tran_type rows are immutable
+--   reference data managed exclusively by Flyway migrations, not by
+--   application code. Operators wanting to remove a tran_type code must
+--   first remove all tran_category rows referencing it via an explicit
+--   migration. This preserves the COBOL VSAM semantics where the lookup
+--   tables (TRANTYPE.KSDS, TRANCATG.KSDS) were never deleted at runtime --
+--   any delete was performed offline via IDCAMS DELETE + reseed.
+--
+--   The FK constraint complements (it does not replace) the application-
+--   layer validation in TransactionPostingService / TransactionAddService,
+--   which enforces tran_type_cd existence at API ingress and preserves the
+--   COBOL CBTRN02C / COTRN02C validation cascade behavior (per AAP §0.7.1).
 -- =============================================================================
 
 create table tran_category (
@@ -120,9 +142,14 @@ create table tran_category (
     -- Leading zeros are SIGNIFICANT and MUST be preserved -- the code is
     -- always exactly 2 characters, always quoted as a string. CHAR(2) is
     -- space-padded on read by PostgreSQL, but since every value is exactly
-    -- 2 characters there is no padding to trim. The same logical value
-    -- appears as tran_type.tran_type (PK of V008); see the foreign-key
-    -- design note in the header comment.
+    -- 2 characters there is no padding to trim. CHAR(2) matches the type
+    -- of the FK target (tran_type.tran_type CHAR(2) per V008) exactly --
+    -- this is required by PostgreSQL FK semantics, which compare column
+    -- values using the underlying type, and any narrowing or widening (e.g.,
+    -- VARCHAR(2)) would prevent the constraint from being created. The FK
+    -- to tran_type is declared as a named table-level constraint at the
+    -- bottom of this CREATE TABLE statement (see fk_tran_category_tran_type)
+    -- with ON DELETE NO ACTION per AAP §0.6.2.
     tran_type_cd          char(2)      not null,
 
     -- TRAN-CAT-CD PIC 9(04); the next 4 bytes of the 6-byte composite VSAM
@@ -170,8 +197,39 @@ create table tran_category (
     -- created implicitly by this constraint and provides O(log n) lookup
     -- for all consumer services (TransactionPostingService validation,
     -- TransactionReportService joins, InterestCalculationService composite
-    -- lookups, etc.).
-    constraint pk_tran_category primary key (tran_type_cd, tran_cat_cd)
+    -- lookups, etc.). The leading-column index (tran_type_cd alone) is
+    -- also available for free via the same B-tree, so no separate index
+    -- on tran_type_cd is needed for the FK-validation lookup or for
+    -- WHERE tran_type_cd = ? queries that JOIN against tran_type.
+    constraint pk_tran_category primary key (tran_type_cd, tran_cat_cd),
+
+    -- Foreign-key constraint to tran_type (V008). Enforces defensive
+    -- referential integrity at the database tier: no tran_category row
+    -- can be created whose tran_type_cd is not already present in
+    -- tran_type. The CHAR(2) types on both sides match exactly, which
+    -- is required by PostgreSQL FK semantics. ON DELETE NO ACTION is
+    -- the AAP-mandated referential action (§0.6.2) -- the strictest
+    -- available: any attempt to DELETE a tran_type row that still has
+    -- dependent tran_category rows raises a constraint-violation error,
+    -- forcing the operator to remove the child rows first via an
+    -- explicit migration. This matches the COBOL VSAM semantics where
+    -- TRANTYPE.KSDS rows were treated as immutable reference data
+    -- (deletion required offline IDCAMS DELETE + reseed).
+    --
+    -- ON UPDATE is omitted because PostgreSQL defaults to NO ACTION,
+    -- which is what we want -- tran_type primary-key values are
+    -- immutable reference data and never updated at runtime; any
+    -- value change would require a coordinated migration anyway.
+    --
+    -- Flyway ordering guarantees V008 (parent table) runs before V009
+    -- (this child table), so this REFERENCES clause resolves at
+    -- migration time. V013 (parent seed, 7 rows) runs before V014
+    -- (child seed, 18 rows), so all 18 V014 INSERTs satisfy the FK
+    -- at insert time.
+    constraint fk_tran_category_tran_type
+        foreign key (tran_type_cd)
+        references tran_type (tran_type)
+        on delete no action
 );
 
 -- =============================================================================
@@ -193,7 +251,9 @@ comment on table tran_category is
     '(tran_type_cd, tran_cat_cd) pairs seeded by V014 from '
     'app/data/ASCII/trancatg.txt. Read-mostly reference data; consumed by '
     'TransactionPostingService, TransactionReportService, '
-    'TransactionAddService, and InterestCalculationService.';
+    'TransactionAddService, and InterestCalculationService. Foreign key '
+    'tran_type_cd -> tran_type.tran_type (V008) is declared with ON DELETE '
+    'NO ACTION per AAP §0.6.2 to enforce defensive referential integrity.';
 
 comment on column tran_category.tran_type_cd is
     'COBOL: TRAN-TYPE-CD PIC X(02). First 2 bytes of the 6-byte composite '
@@ -201,10 +261,14 @@ comment on column tran_category.tran_type_cd is
     '2-character transaction-type code: ''01''=Purchase, ''02''=Payment, '
     '''03''=Credit, ''04''=Authorization, ''05''=Refund, ''06''=Reversal, '
     '''07''=Adjustment. Leading zeros are significant -- always exactly 2 '
-    'characters, never normalized to integer. Logical reference to '
-    'tran_type.tran_type (V008); FK not declared at schema level (see '
-    'V009 header comment) -- application-layer validation enforces '
-    'referential integrity. Maps to TransactionCategoryId.tranTypeCd in JPA.';
+    'characters, never normalized to integer. Foreign key to '
+    'tran_type.tran_type (V008) via constraint fk_tran_category_tran_type '
+    'with ON DELETE NO ACTION (AAP §0.6.2) -- enforces defensive referential '
+    'integrity at the database tier; complements (does not replace) the '
+    'application-layer validation in TransactionPostingService / '
+    'TransactionAddService that preserves COBOL CBTRN02C / COTRN02C '
+    'validation cascade behavior. Maps to TransactionCategoryId.tranTypeCd '
+    'in JPA (@Embeddable composite key).';
 
 comment on column tran_category.tran_cat_cd is
     'COBOL: TRAN-CAT-CD PIC 9(04). Last 4 bytes of the 6-byte composite '
