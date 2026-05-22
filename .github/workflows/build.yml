@@ -1,0 +1,366 @@
+# =============================================================================
+# CardDemo CI Build Workflow
+# =============================================================================
+#
+# Purpose:
+#   Compile, test, package, and verify the CardDemo Spring Boot Java 17
+#   application via the Maven Wrapper (./mvnw). This workflow is the
+#   FOUNDATIONAL link in the CI/CD pipeline trio:
+#
+#     1. build.yml         (THIS FILE) — ./mvnw -B clean verify
+#        - Compiles Java source (maven-compiler-plugin, Java 17 target)
+#        - Runs unit tests (maven-surefire-plugin: *Test.java)
+#        - Packages executable JAR (spring-boot-maven-plugin)
+#        - Runs integration tests (maven-failsafe-plugin:
+#          *IT.java / *IntegrationTest.java)
+#        - Generates JaCoCo coverage report
+#        - Runs OWASP dependency-check vulnerability scan
+#     2. docker-build.yml  — builds the Docker image, pushes to ECR
+#     3. deploy.yml        — rolls out the new image to ECS Fargate
+#
+# Triggers:
+#   - push to main, feature/**, release/**, hotfix/**
+#   - pull_request targeting main
+#   - workflow_dispatch (manual trigger)
+#
+# Outputs (artifacts uploaded on every run):
+#   - surefire-reports      — JUnit unit-test XML/TXT reports
+#   - failsafe-reports      — JUnit integration-test XML/TXT reports
+#   - jacoco-coverage       — JaCoCo HTML + jacoco.xml coverage report
+#   - owasp-dependency-check — OWASP HTML/JSON/XML vulnerability report
+#   - spring-boot-jar       — packaged executable JAR (on success only)
+#
+# Operational guardrails:
+#   - Maven Wrapper is invoked (./mvnw) for reproducible Maven version pinning
+#     per .mvn/wrapper/maven-wrapper.properties (NEVER `mvn`).
+#   - Java 17 Eclipse Temurin distribution (matches pom.xml <java.version>17
+#     and Dockerfile runtime image eclipse-temurin:17-jre-alpine).
+#   - All third-party action versions are pinned to major tags (@v4) — NEVER
+#     @latest or @main.
+#   - Ubuntu 24.04 LTS runner (not ubuntu-latest) for deterministic builds.
+#   - This workflow does NOT interact with AWS — no AWS credentials, no OIDC
+#     federation, no aws-actions/configure-aws-credentials step.
+#   - All quality gates (JaCoCo coverage threshold, OWASP CVSS threshold) are
+#     enforced by plugin bindings in pom.xml; the workflow does not duplicate
+#     them — pom.xml is the single source of truth.
+#
+# References:
+#   - AAP §0.4.1 (.github/workflows/build.yml listed as CREATE)
+#   - AAP §0.5.1 (Java 17, Maven 3.8+, JUnit 5, Mockito, Testcontainers,
+#     JaCoCo, OWASP)
+#   - AAP §0.7.2 (build instructions: Java 17+, Maven 3.8+, AWS CLI v2, Docker)
+#   - .github/workflows/ folder summary (verbatim mandatory steps and pins)
+#
+# Replaces (legacy COBOL build artifact):
+#   - samples/jcl/BATCMP.jcl — sample mainframe JCL that compiled COBOL via
+#     the BUILDBAT proc + BMSCMP step. Operationally replaced by this Maven
+#     build workflow that compiles Java code, runs all tests, and packages
+#     the executable JAR.
+# =============================================================================
+---
+name: CI Build
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+      - 'release/**'
+      - 'hotfix/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+# -----------------------------------------------------------------------------
+# Top-level permissions — minimum required for the CI build.
+# This workflow does NOT call any AWS API, so it does NOT request `id-token`
+# or any AWS-scoped permission. Only the GitHub-native scopes are granted.
+# -----------------------------------------------------------------------------
+permissions:
+  contents: read           # actions/checkout: read repository contents
+  pull-requests: write     # optional: post coverage comment on PRs
+  checks: write            # optional: write check-run annotations from tests
+
+# -----------------------------------------------------------------------------
+# Cancel stale runs when new commits land on the same branch / PR ref.
+# Saves CI minutes and shortens feedback latency for developers.
+# -----------------------------------------------------------------------------
+concurrency:
+  group: ci-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build, Test, Verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    # -------------------------------------------------------------------------
+    # Job-level environment variables shared across all steps.
+    #   MAVEN_OPTS: cap JVM heap at 2 GiB and silence the verbose Maven
+    #               transfer-progress noise from the SLF4J transfer listener.
+    #   JAVA_TOOL_OPTIONS: honor container memory limits when the runner is
+    #               itself containerized (defensive — harmless on bare VMs).
+    # -------------------------------------------------------------------------
+    env:
+      MAVEN_OPTS: >-
+        -Xmx2g
+        -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn
+      JAVA_TOOL_OPTIONS: '-XX:+UseContainerSupport'
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Checkout repository.
+      #   fetch-depth: 0 retrieves the full git history. Required for Maven
+      #   plugins that derive build metadata from git tags (e.g., versioning
+      #   plugins) and for release-publishing flows.
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # -----------------------------------------------------------------------
+      # Step 2: Set up Java 17 (Eclipse Temurin) with built-in Maven cache.
+      #   `cache: maven` auto-configures actions/cache@v4 keyed by pom.xml
+      #   content hashes, caching ~/.m2/repository. This satisfies the
+      #   workflow-folder mandate to "Cache Maven dependencies" without
+      #   adding a separate actions/cache@v4 step.
+      # -----------------------------------------------------------------------
+      - name: Set up JDK 17 (Eclipse Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # -----------------------------------------------------------------------
+      # Step 3: Ensure the Maven Wrapper script is executable.
+      #   Defensive: some Windows checkouts strip POSIX permission bits, so
+      #   re-apply +x to guarantee ./mvnw is invokable on the Linux runner.
+      # -----------------------------------------------------------------------
+      - name: Ensure Maven Wrapper is executable
+        run: chmod +x ./mvnw
+
+      # -----------------------------------------------------------------------
+      # Step 4: Build, test, and verify with Maven.
+      #   `./mvnw -B -ntp clean verify` runs the full lifecycle:
+      #     - clean              — remove target/
+      #     - compile            — javac via maven-compiler-plugin (Java 17)
+      #     - test               — Surefire (*Test.java) — unit tests
+      #     - package            — spring-boot-maven-plugin (executable JAR)
+      #     - verify             — Failsafe (*IT.java) — integration tests,
+      #                            jacoco-maven-plugin:report (coverage),
+      #                            dependency-check-maven:check (OWASP scan)
+      #
+      #   Flags:
+      #     -B    batch mode — non-interactive, CI-friendly output
+      #     -ntp  --no-transfer-progress — suppress dependency-download noise
+      #
+      #   Note: pom.xml is the single source of truth for all quality gates
+      #   (JaCoCo coverage threshold, OWASP CVSS threshold). The workflow
+      #   does NOT redundantly enforce them here.
+      # -----------------------------------------------------------------------
+      - name: Build, test, and verify (Maven)
+        run: ./mvnw -B -ntp clean verify
+
+      # -----------------------------------------------------------------------
+      # Step 5: Upload Surefire (unit-test) reports.
+      #   `if: always()` ensures reports are uploaded even when Maven fails,
+      #   which is precisely when these reports are needed for diagnosis.
+      # -----------------------------------------------------------------------
+      - name: Upload Surefire reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: |
+            **/target/surefire-reports/**
+          retention-days: 14
+          if-no-files-found: warn
+
+      # -----------------------------------------------------------------------
+      # Step 6: Upload Failsafe (integration-test) reports.
+      # -----------------------------------------------------------------------
+      - name: Upload Failsafe reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failsafe-reports
+          path: |
+            **/target/failsafe-reports/**
+          retention-days: 14
+          if-no-files-found: warn
+
+      # -----------------------------------------------------------------------
+      # Step 7: Upload JaCoCo coverage report.
+      #   Includes both the HTML site (for human inspection) and the
+      #   jacoco.xml machine-readable report (consumable by Codecov,
+      #   SonarCloud, or any other coverage aggregator if wired later).
+      # -----------------------------------------------------------------------
+      - name: Upload JaCoCo coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-coverage
+          path: |
+            **/target/site/jacoco/**
+            **/target/site/jacoco/jacoco.xml
+          retention-days: 14
+          if-no-files-found: warn
+
+      # -----------------------------------------------------------------------
+      # Step 8: Upload OWASP dependency-check report.
+      #   The HTML report is human-readable; the JSON/XML reports feed
+      #   automated security dashboards.
+      # -----------------------------------------------------------------------
+      - name: Upload OWASP dependency-check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owasp-dependency-check
+          path: |
+            **/target/dependency-check-report.html
+            **/target/dependency-check-report.json
+            **/target/dependency-check-report.xml
+          retention-days: 14
+          if-no-files-found: warn
+
+      # -----------------------------------------------------------------------
+      # Step 9: Upload the packaged Spring Boot JAR.
+      #   `if: success()` — only on successful builds. Useful as a debug aid
+      #   when a downstream deploy fails — the exact JAR built by CI is
+      #   recoverable from the run artifacts.
+      # -----------------------------------------------------------------------
+      - name: Upload Spring Boot JAR
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spring-boot-jar
+          path: target/*.jar
+          retention-days: 7
+          if-no-files-found: warn
+
+      # -----------------------------------------------------------------------
+      # Step 10: Install yamllint (pinned version) for YAML linting.
+      # -----------------------------------------------------------------------
+      - name: Install yamllint
+        if: always()
+        run: pip install --quiet 'yamllint==1.35.1'
+
+      # -----------------------------------------------------------------------
+      # Step 11: Lint YAML files across the repository.
+      #   Targets workflows, Spring profiles, Backstage catalog, mkdocs,
+      #   and docker-compose. The yamllint config is materialized to a
+      #   short-lived temp file to avoid a 250+ character inline `-d`
+      #   argument (which would itself trip the line-length rule).
+      #   Failures are emitted as warnings (not build-breaking) so
+      #   cosmetic issues do not block deploys. Operators may convert
+      #   to fail-on-warning later by removing the `|| echo ...` clause.
+      # -----------------------------------------------------------------------
+      - name: Lint YAML files
+        if: always()
+        run: |
+          cat > /tmp/yamllint-config.yml <<'YAMLLINT_EOF'
+          extends: default
+          rules:
+            line-length:
+              max: 200
+              allow-non-breakable-words: true
+            document-start: disable
+            truthy:
+              check-keys: false
+            comments:
+              min-spaces-from-content: 1
+            comments-indentation: disable
+            indentation:
+              spaces: 2
+              indent-sequences: consistent
+          YAMLLINT_EOF
+          yamllint \
+            -c /tmp/yamllint-config.yml \
+            .github/workflows/ \
+            src/main/resources/application.yml \
+            src/main/resources/application-local.yml \
+            src/main/resources/application-dev.yml \
+            src/main/resources/application-prod.yml \
+            catalog-info.yaml \
+            docker-compose.yml \
+            mkdocs.yml || echo "::warning::yamllint reported issues — see log"
+
+      # -----------------------------------------------------------------------
+      # Step 12: Set up Node.js for markdownlint.
+      # -----------------------------------------------------------------------
+      - name: Set up Node.js for markdownlint
+        if: always()
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # -----------------------------------------------------------------------
+      # Step 13: Install markdownlint-cli (pinned version).
+      # -----------------------------------------------------------------------
+      - name: Install markdownlint-cli
+        if: always()
+        run: npm install --global markdownlint-cli@0.41.0
+
+      # -----------------------------------------------------------------------
+      # Step 14: Lint Markdown documentation.
+      #   Disabled rules:
+      #     MD013 — line-length (CardDemo docs intentionally use long
+      #             technical lines)
+      #     MD033 — inline HTML (embedded diagrams use HTML)
+      #     MD041 — first-line-heading (front-matter-style preludes)
+      # -----------------------------------------------------------------------
+      - name: Lint Markdown files
+        if: always()
+        run: |
+          markdownlint \
+            --disable MD013 MD033 MD041 -- \
+            'docs/**/*.md' \
+            'README.md' \
+            'CONTRIBUTING.md' \
+            'CODE_OF_CONDUCT.md' \
+            'infrastructure/README.md' || echo "::warning::markdownlint reported issues — see log"
+
+      # -----------------------------------------------------------------------
+      # Step 15: Emit a build summary visible in the GitHub Actions UI.
+      #   Provides a quick-glance status panel at the top of the run summary
+      #   page — version, trigger, ref, commit SHA, and pointers to the
+      #   uploaded coverage / security artifacts.
+      # -----------------------------------------------------------------------
+      - name: Write build summary
+        if: always()
+        run: |
+          {
+            echo "## CI Build Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Java version | 17 (Temurin) |"
+            echo "| Maven phases | clean verify |"
+            echo "| Triggered by | ${{ github.actor }} |"
+            echo "| Trigger | ${{ github.event_name }} |"
+            echo "| Ref | ${{ github.ref }} |"
+            echo "| Commit | ${{ github.sha }} |"
+            echo ""
+            if [ -d target/site/jacoco ]; then
+              echo "### Coverage"
+              echo ""
+              echo "JaCoCo HTML report uploaded as artifact \`jacoco-coverage\`."
+              echo ""
+            fi
+            if [ -f target/dependency-check-report.html ]; then
+              echo "### Security"
+              echo ""
+              echo "OWASP dependency-check report uploaded as artifact \`owasp-dependency-check\`."
+              echo ""
+            fi
+            if ls target/*.jar >/dev/null 2>&1; then
+              echo "### Artifact"
+              echo ""
+              echo "Spring Boot executable JAR uploaded as artifact \`spring-boot-jar\`."
+              echo ""
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
