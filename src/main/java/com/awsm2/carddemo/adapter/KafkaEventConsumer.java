@@ -16,6 +16,8 @@
  */
 package com.awsm2.carddemo.adapter;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -109,27 +111,40 @@ public class KafkaEventConsumer {
 
     private final StepFunctionsOrchestrator stepFunctionsOrchestrator;
     private final AuditLogService auditLogService;
+    private final ObjectMapper objectMapper;
     private final String eodStateMachineArn;
 
     /**
      * Constructor injection — Spring supplies the orchestrator, audit
-     * adapter, and resolves the EOD state machine ARN at startup.
+     * adapter, Jackson mapper, and resolves the EOD state machine ARN at
+     * startup.
+     *
+     * <p>The {@link ObjectMapper} is the Spring Boot auto-configured Jackson
+     * mapper bean; it is required because the schema-mandated
+     * {@code StepFunctionsOrchestrator.startExecution(String, String)}
+     * API (AAP §0.4.1) accepts a pre-serialized JSON {@link String}
+     * input, so any non-string Kafka payload must be serialised here
+     * before the orchestrator call.</p>
      *
      * @param stepFunctionsOrchestrator  the Step Functions adapter; never
      *                                   {@code null}
      * @param auditLogService            the async audit adapter; never
      *                                   {@code null}
+     * @param objectMapper               Jackson mapper for serialising the
+     *                                   Kafka payload to JSON before the
+     *                                   orchestrator call; never {@code null}
      * @param eodStateMachineArn         ARN of the EOD batch state machine
      *                                   ({@code carddemo.aws.stepfunctions.eod-batch-pipeline-arn});
      *                                   may be blank in local profile, in
      *                                   which case
-     *                                   {@link #onReportRequested(...)}
+     *                                   {@link #onReportRequested(Object, String, Acknowledgment)}
      *                                   logs and rejects rather than calling
      *                                   the orchestrator
      */
     public KafkaEventConsumer(
             StepFunctionsOrchestrator stepFunctionsOrchestrator,
             AuditLogService auditLogService,
+            ObjectMapper objectMapper,
             @Value("${carddemo.aws.stepfunctions.eod-batch-pipeline-arn:}")
             String eodStateMachineArn) {
         // Replaces: CICS TDQ JOBS dispatcher loop + JES initiator polling
@@ -138,6 +153,8 @@ public class KafkaEventConsumer {
                 "stepFunctionsOrchestrator must not be null");
         this.auditLogService = Objects.requireNonNull(auditLogService,
                 "auditLogService must not be null");
+        this.objectMapper = Objects.requireNonNull(objectMapper,
+                "objectMapper must not be null");
         this.eodStateMachineArn = (eodStateMachineArn == null) ? "" : eodStateMachineArn.trim();
     }
 
@@ -204,17 +221,23 @@ public class KafkaEventConsumer {
         }
 
         try {
+            // Serialise the Kafka payload to a JSON string per the
+            // schema-mandated StepFunctionsOrchestrator.startExecution
+            // (String, String) signature (AAP §0.4.1). Strings pass
+            // through unchanged so callers may supply a pre-serialised
+            // payload (e.g., a CORPT00C-shaped JCL-symbolic payload);
+            // any other type is Jackson-serialised here.
+            String inputJson = serializePayload(payload);
             // Start the Step Functions execution and ONLY THEN acknowledge.
             // A failure here propagates to the DefaultErrorHandler which
             // retries 3x and then routes to report.requested.DLT.
-            var response = stepFunctionsOrchestrator.startExecution(
+            String executionArn = stepFunctionsOrchestrator.startExecution(
                     eodStateMachineArn,
-                    EOD_STATE_MACHINE_ID,
-                    payload);
-            LOG.info("Started Step Functions execution executionArn={} for report key={}",
-                    response.executionArn(), key);
+                    inputJson);
+            LOG.info("Started Step Functions execution executionArn={} stateMachineId={} for report key={}",
+                    executionArn, EOD_STATE_MACHINE_ID, key);
             auditLogService.auditEvent(EVENT_REPORT_REQUESTED_STARTED, key,
-                    java.util.Map.of("executionArn", response.executionArn()));
+                    java.util.Map.of("executionArn", executionArn));
             // Successful processing — commit the offset so the broker
             // moves past this record on the next consumer poll.
             acknowledgment.acknowledge();
@@ -340,5 +363,47 @@ public class KafkaEventConsumer {
             return (java.util.Map<String, Object>) map;
         }
         return java.util.Map.of("value", payload);
+    }
+
+    /**
+     * Serialises the Kafka payload into a JSON string suitable for the
+     * Step Functions state-machine input.
+     *
+     * <p>Per AAP §0.4.1 the
+     * {@code StepFunctionsOrchestrator.startExecution(String, String)}
+     * API accepts a pre-serialised JSON input string. This helper:</p>
+     * <ul>
+     *   <li>passes a {@code null} payload through as
+     *       {@code "{}"} (Step Functions accepts an empty object input);</li>
+     *   <li>treats an existing {@link String} as already-serialised JSON
+     *       (caller responsibility — typical for pre-formed CORPT00C
+     *       JCL-symbolic payloads);</li>
+     *   <li>otherwise serialises the object via the injected Jackson
+     *       {@link ObjectMapper}, surfacing serialisation failures as
+     *       unchecked {@link IllegalStateException} so the Spring Kafka
+     *       error handler routes the poison record to the DLT.</li>
+     * </ul>
+     *
+     * @param payload the Kafka record value; may be {@code null}
+     * @return a JSON-serialised string ready for the orchestrator
+     */
+    private String serializePayload(Object payload) {
+        if (payload == null) {
+            return "{}";
+        }
+        if (payload instanceof String s) {
+            return s;
+        }
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException e) {
+            // Surface as unchecked so the DefaultErrorHandler routes the
+            // poison record to the .DLT topic rather than retrying it
+            // (this is a deterministic serialisation failure, not a
+            // transient infrastructure error).
+            throw new IllegalStateException(
+                    "Failed to serialise Kafka payload for Step Functions input: "
+                            + e.getMessage(), e);
+        }
     }
 }
