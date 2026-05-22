@@ -191,6 +191,37 @@ public record ApiResponse<T>(
     // =====================================================================
 
     /**
+     * Builds an error envelope without a distributed-tracing correlation
+     * identifier. This is a convenience overload that delegates to
+     * {@link #error(String, String, String)} with {@code correlationId = null};
+     * use it from contexts where a correlation identifier is not yet available
+     * (e.g., very early request-processing failures or test fixtures).
+     *
+     * <p>Per AAP &sect;0.7.1, the {@code code} parameter must preserve the COBOL
+     * {@code RETURN-CODE} / {@code FILE STATUS} / {@code WS-VALIDATION-FAIL-REASON}
+     * value where applicable (e.g., {@code "22"} for DUPKEY, {@code "23"} for
+     * NOTFND, {@code "102"} for credit-limit exceeded, {@code "103"} for card
+     * expired). When a correlation identifier becomes available downstream
+     * &mdash; for example, after the {@code X-Correlation-Id} request header
+     * has been parsed or a server-side identifier has been generated &mdash;
+     * prefer the 3-argument overload so CloudWatch, OpenSearch, and CloudTrail
+     * entries can be stitched together (AAP &sect;0.6.6).
+     *
+     * @param <T>     the payload type (always {@code null} on error, but the
+     *                generic preserves signature symmetry with {@code success(T)}
+     *                so controllers can declare
+     *                {@code ResponseEntity<ApiResponse<MyDto>>} and use a single
+     *                return type in both branches)
+     * @param code    COBOL-aligned error code (e.g., {@code "RECORD_NOT_FOUND"})
+     * @param message human-readable message; must not be {@code null}
+     * @return error envelope with {@code data}, {@code fieldErrors}, and
+     *         {@code correlationId} set to {@code null}
+     */
+    public static <T> ApiResponse<T> error(String code, String message) {
+        return error(code, message, null);
+    }
+
+    /**
      * Builds an error envelope. Used by
      * {@code com.awsm2.carddemo.exception.GlobalExceptionHandler}.
      *

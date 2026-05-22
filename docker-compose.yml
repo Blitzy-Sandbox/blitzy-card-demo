@@ -96,17 +96,28 @@ services:
 
   # ---------------------------------------------------------------------------
   # LocalStack Pro 4.14.0 — emulates the AWS services required for local dev
-  # and integration testing (AAP §0.5.1 / §0.7.2 / §0.6.6). The init scripts
-  # under ./localstack/init are auto-executed when the container reaches
-  # the "ready" state and provision: KMS CMKs, S3 buckets (with versioning),
-  # Secrets Manager entries, SQS queues, SNS topics, SSM parameters.
+  # and integration testing (AAP §0.5.1 / §0.7.2 / §0.6.6). The init-scripts
+  # bind mount under ./localstack/init is configured below; the init script
+  # (provisioning KMS CMKs, S3 buckets, Secrets Manager entries, SQS queues,
+  # SNS topics, and SSM parameters) is added by a future scoped checkpoint
+  # — when present, it is auto-executed when the container reaches the
+  # "ready" state. Until then, the bind mount silently uses an empty
+  # directory (Docker Compose creates the host-side bind source if absent)
+  # so no AWS resources are seeded at container start.
   # ---------------------------------------------------------------------------
   localstack:
-    # Per AAP §0.5.1: localstack/localstack-pro:latest (4.14.0 per user env
-    # instructions). The Pro tag is required because the AAP-mandated service
-    # set includes Glue, Batch, OpenSearch, StepFunctions, and CloudTrail —
+    # Per AAP §0.5.1 and the user environment instructions, the LocalStack
+    # Pro 4.14.0 image is pinned explicitly (NOT `latest`) for build
+    # reproducibility and to avoid drift between developer machines and
+    # CI. The Pro tag is required because the AAP-mandated service set
+    # includes Glue, Batch, OpenSearch, StepFunctions, and CloudTrail —
     # several of which need the Pro edition for full emulation fidelity.
-    image: localstack/localstack-pro:latest
+    # If the runtime environment falls back to the community edition
+    # (e.g., when LOCALSTACK_AUTH_TOKEN is absent or expired), operators
+    # should replace the image tag below with `localstack/localstack:3.8`
+    # (the community-edition equivalent currently used by the setup logs)
+    # and accept the reduced service coverage.
+    image: localstack/localstack-pro:4.14.0
     container_name: carddemo-localstack
     ports:
       - "4566:4566"
@@ -134,9 +145,12 @@ services:
       # to launch sibling Docker containers via the host Docker daemon.
       DOCKER_HOST: "unix:///var/run/docker.sock"
     volumes:
-      # Auto-executed when LocalStack reaches the ready state (provisions
-      # S3 buckets, Secrets Manager entries, KMS keys, etc.) — see
-      # localstack/init/init-aws.sh.
+      # AAP §0.3.1 mandates LocalStack init scripts under
+      # localstack/init/*.sh that provision S3 buckets, Secrets Manager
+      # entries, KMS keys, etc. when the container reaches the "ready"
+      # state. The init scripts are added by a future scoped checkpoint;
+      # the bind mount remains so they take effect automatically once
+      # committed without requiring a docker-compose.yml change.
       - "./localstack/init:/etc/localstack/init/ready.d:ro"
       # State persistence across restarts.
       - localstack-data:/var/lib/localstack

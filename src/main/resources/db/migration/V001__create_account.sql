@@ -82,7 +82,9 @@
 --                     because PostgreSQL NUMERIC arithmetic is exact and
 --                     rounding only applies at explicit scale changes),
 --             §0.6.2 (VSAM-to-RDS migration strategy -- KEYS(11 0) maps to
---                     NUMERIC(11) PRIMARY KEY on acct_id; B-tree on the
+--                     BIGINT PRIMARY KEY on acct_id (8-byte signed integer
+--                     that fully contains the COBOL PIC 9(11) range and
+--                     maps directly to Java Long); B-tree on the
 --                     PK satisfies the COBOL VSAM random-read pattern;
 --                     ACCTDATA.VSAM.KSDS has NO alternate index (AIX)
 --                     per LISTCAT.txt, so no secondary index is required;
@@ -125,7 +127,7 @@
 -- -----------------------------------------------------------------------------
 --   COBOL field              PIC clause       PostgreSQL column         Type
 --   ------------------------ ---------------- ------------------------- -----------------
---   ACCT-ID                  PIC 9(11)        acct_id                   NUMERIC(11)  (PK)
+--   ACCT-ID                  PIC 9(11)        acct_id                   BIGINT       (PK)
 --   ACCT-ACTIVE-STATUS       PIC X(01)        acct_active_status        CHAR(1)      NN
 --   ACCT-CURR-BAL            PIC S9(10)V99    acct_curr_bal             NUMERIC(12,2) NN
 --   ACCT-CREDIT-LIMIT        PIC S9(10)V99    acct_credit_limit         NUMERIC(12,2) NN
@@ -149,9 +151,10 @@
 --                           version column for JPA @Version).
 --
 -- VSAM key position (RKP=0) and key length (KEYLEN=11) map to a
--- NUMERIC(11) PRIMARY KEY on acct_id. The 11-digit unsigned numeric
--- range (0..99,999,999,999) maps cleanly to a Java Long inside the
--- Account JPA entity.
+-- BIGINT PRIMARY KEY on acct_id. The 11-digit unsigned numeric
+-- range (0..99,999,999,999) maps cleanly to a Java Long (PostgreSQL
+-- BIGINT is an 8-byte signed integer with range -2^63..2^63-1, which
+-- fully contains the COBOL PIC 9(11) value range).
 --
 -- Storage-tier attributes from ACCTFILE.jcl that have NO PostgreSQL
 -- equivalent (PostgreSQL handles storage layout automatically and the
@@ -195,11 +198,16 @@ create table accounts (
     -- per app/catlg/LISTCAT.txt). 11-digit unsigned account identifier
     -- (range 0..99,999,999,999). Spring Data JPA's AccountRepository
     -- uses this as the @Id (entity class: Account, mapping field
-    -- acctId : Long). Referenced as a foreign key by:
+    -- acctId : Long). Stored as BIGINT (PostgreSQL 8-byte signed
+    -- integer, range -2^63..2^63-1) which fully contains the COBOL
+    -- PIC 9(11) range and maps directly to the Java primitive `long`
+    -- / wrapper `Long` without conversion overhead, satisfying the
+    -- checkpoint contract that JPA @Id fields use BIGINT for `Long`
+    -- IDs. Referenced as a foreign key by:
     --   - cards.acct_id      (V002 -- account-to-card relationship)
     --   - card_xref.acct_id  (V004 -- 3-way cross-reference)
     --   - tran_cat_bal.acct_id (V006 -- category balance accumulator)
-    acct_id                    numeric(11)   not null,
+    acct_id                    bigint        not null,
 
     -- ACCT-ACTIVE-STATUS PIC X(01); 1-character account status flag.
     -- COBOL business rule: 'Y' = active (transactions may be posted),
@@ -409,9 +417,10 @@ comment on table accounts is
 comment on column accounts.acct_id is
     'COBOL: ACCT-ID PIC 9(11). VSAM KSDS primary key (RKP=0, KEYLEN=11 '
     'per app/catlg/LISTCAT.txt). 11-digit unsigned account identifier '
-    '(range 0..99,999,999,999). Maps to Account.@Id (Long) in JPA. '
-    'Referenced by cards.acct_id (V002), card_xref.xref_acct_id (V004), '
-    'tran_cat_bal.acct_id (V006).';
+    '(range 0..99,999,999,999). Stored as BIGINT (8-byte signed integer) '
+    'which fully contains the COBOL value range. Maps to Account.@Id '
+    '(Long) in JPA. Referenced by cards.acct_id (V002), '
+    'card_xref.xref_acct_id (V004), tran_cat_bal.acct_id (V006).';
 
 comment on column accounts.acct_active_status is
     'COBOL: ACCT-ACTIVE-STATUS PIC X(01). 1-character account status '

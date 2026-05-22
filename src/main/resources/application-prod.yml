@@ -69,18 +69,28 @@
 #   S3_OUTPUT_BUCKET            carddemo-prod-output
 #   OPENSEARCH_ENDPOINT         https://search-carddemo-prod-…amazonaws.com
 #
-# Additional vars consumed below (Terraform-managed):
+# Additional vars consumed below (Terraform-managed — NON-SENSITIVE only):
 #   RDS_HOST, RDS_PORT, RDS_DATABASE
-#   RDS_USERNAME, RDS_PASSWORD               (injected by ECS `secrets:`
-#                                             from the JSON keys of
-#                                             `${RDS_SECRET_ARN}`)
 #   ELASTICACHE_HOST, ELASTICACHE_PORT
 #   STATE_MACHINE_EOD_ARN, STATE_MACHINE_PROVISIONING_ARN
 #   CLOUDTRAIL_TRAIL_ARN
-#   JWT_SIGNING_KEY                          (injected from the
-#                                             `carddemo/prod/jwt-signing-key`
-#                                             secret value)
 #   SERVICE_VERSION                          set by CI to the Git SHA / tag
+#
+# Secret VALUES (NEVER exposed as environment variables — AAP §0.7.1):
+#   `username`, `password`                   sourced from the JSON keys of
+#                                            `${RDS_SECRET_ARN}` via the
+#                                            `spring.config.import:
+#                                            aws-secretsmanager:${RDS_SECRET_ARN}`
+#                                            config-data source. The
+#                                            DataSource bean is rebuilt
+#                                            after a Secrets Manager
+#                                            rotation via the
+#                                            @RefreshScope wiring in
+#                                            SecretsManagerConfig.java
+#                                            (AAP §0.6.4).
+#   `jwt.signing-key`                        sourced from the
+#                                            `carddemo/prod/jwt-signing-key`
+#                                            secret value (NOT an env var).
 #
 # Coordinating files
 # ------------------
@@ -179,23 +189,37 @@ spring:
   # ---------------------------------------------------------------------------
   # DataSource — RDS PostgreSQL Multi-AZ with TLS 1.2+ verify-full
   # ---------------------------------------------------------------------------
-  # SECURITY:
+  # SECURITY (PCI-DSS / AAP §0.7.1 / §0.7.2 — "All credentials fetched at
+  # runtime from AWS Secrets Manager — never hardcoded or in
+  # application.yml" and "No plaintext secrets in environment variables or
+  # config files"):
   #   * `sslmode=verify-full` — strict TLS 1.2+ with full hostname
   #     verification against the AWS RDS root CA bundle baked into the
   #     container image at `/etc/ssl/certs/rds-ca-2019-root.pem` (PCI-DSS
   #     requirement per AAP §0.6.6 — "TLS 1.2+ in transit … RDS").
-  #   * `username` / `password` are injected by the ECS task definition's
-  #     `secrets:` block from the JSON values inside `${RDS_SECRET_ARN}`
-  #     (keys: `username`, `password`). No credential ever appears in this
-  #     YAML or in `application.yml`.
-  #   * If the `RDS_USERNAME` / `RDS_PASSWORD` env vars are absent, Spring
-  #     Cloud AWS Secrets Manager (via `spring.config.import` above) will
-  #     provide them from the secret's `username` / `password` JSON keys
-  #     as a fallback.
+  #   * `username` / `password` resolve EXCLUSIVELY against the property
+  #     keys imported from `${RDS_SECRET_ARN}` by the
+  #     `aws-secretsmanager:${RDS_SECRET_ARN}` config-data source declared
+  #     in the `spring.config.import` block above. The secret JSON shape
+  #     is `{"username":"...","password":"...","host":"...","port":5432,
+  #     "database":"..."}`; Spring Cloud AWS 3.x flattens these keys into
+  #     the Spring Environment so the placeholders `${username}` and
+  #     `${password}` resolve directly from the rotated secret.
+  #   * AAP §0.7.1 forbids environment-variable fallbacks for secret
+  #     values (`RDS_USERNAME` / `RDS_PASSWORD` env vars were previously
+  #     referenced here and have been REMOVED). Only non-sensitive
+  #     identifiers (`RDS_HOST`, `RDS_PORT`, `RDS_DATABASE`,
+  #     `RDS_SECRET_ARN` itself) remain as environment variables — these
+  #     are not secrets per AAP §0.7.2.
+  #   * Dynamic rotation: the @RefreshScope-wrapped HikariCP DataSource
+  #     bean (configured in `SecretsManagerConfig.java` per AAP §0.6.4)
+  #     re-reads these `${username}` / `${password}` placeholders when a
+  #     `RefreshEvent` is published after a Secrets Manager rotation —
+  #     no Spring Boot restart required.
   datasource:
     url: jdbc:postgresql://${RDS_HOST}:${RDS_PORT:5432}/${RDS_DATABASE}?ssl=true&sslmode=verify-full&sslrootcert=/etc/ssl/certs/rds-ca-2019-root.pem&ApplicationName=carddemo
-    username: ${RDS_USERNAME:${username:}}
-    password: ${RDS_PASSWORD:${password:}}
+    username: ${username}
+    password: ${password}
     driver-class-name: org.postgresql.Driver
     hikari:
       pool-name: CardDemoHikariCP
@@ -519,17 +543,25 @@ carddemo:
   # ---------------------------------------------------------------------------
   # Security — JWT signing key from Secrets Manager; BCrypt strength 12
   # ---------------------------------------------------------------------------
-  # `JWT_SIGNING_KEY` is injected by the ECS task definition's `secrets:`
-  # block from the value of `carddemo/prod/jwt-signing-key` (imported via
-  # `spring.config.import` above as a fallback source). The key must be at
-  # least 256 bits (32 bytes) for HS256 — secret rotation regenerates it
-  # via the Secrets Manager rotation Lambda configured in
-  # `infrastructure/terraform/secrets.tf`.
+  # Per AAP §0.7.1 ("All credentials fetched at runtime from AWS Secrets
+  # Manager — never hardcoded or in application.yml"), the JWT HMAC signing
+  # key is resolved EXCLUSIVELY via Spring Cloud AWS Secrets Manager from
+  # the `carddemo/prod/jwt-signing-key` secret imported in the
+  # `spring.config.import` block above (line 142). The secret JSON shape
+  # is `{"key":"<256-bit-or-longer-value>"}` so the placeholder `${key}`
+  # below resolves to the imported `key` property of that secret. The key
+  # must be at least 256 bits (32 bytes) for HS256 — secret rotation
+  # regenerates it via the Secrets Manager rotation Lambda configured in
+  # `infrastructure/terraform/secrets.tf` and propagates through the
+  # @RefreshScope wiring (AAP §0.6.4) without restarting Spring Boot.
+  # An environment-variable fallback (`JWT_SIGNING_KEY`) was previously
+  # defined here and has been REMOVED to comply with the no-secret-env-var
+  # rule.
   security:
     bcrypt:
       strength: 12                      # 2^12 rounds — production-grade
     jwt:
-      signing-key: ${JWT_SIGNING_KEY}
+      signing-key: ${key}
       issuer: carddemo-prod
       # 30-minute access token — short window to limit replay if a token
       # leaks. Refresh token rotation is handled by the auth controller.

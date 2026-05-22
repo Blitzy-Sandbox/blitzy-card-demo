@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OWASP Dependency-Check suppressions file for the AWS CardDemo project.
+
+  This file is consumed by the `owasp` Maven profile declared in pom.xml.
+  It contains explicit suppressions for known false positives or risks that
+  have been accepted by the security review (with clear notes/justifications
+  per suppression). Run the scan with `./mvnw verify -Powasp`.
+
+  Schema reference:
+    https://jeremylong.github.io/DependencyCheck/general/suppression.html
+
+  Discipline (per AAP §0.7.1 and §0.7.3):
+    - Every <suppress> element MUST include a <notes> child explaining the
+      justification, who approved the suppression, and a target review date.
+    - Suppressions are time-bounded: a suppression should be revisited every
+      90 days or when the affected dependency is upgraded, whichever is
+      first. Stale suppressions are removed by the security review board.
+    - Suppressions are NEVER used to silence the build for unaddressed
+      genuine vulnerabilities — the project's `failBuildOnCVSS` threshold
+      (7.0) intentionally fails on HIGH/CRITICAL CVEs that have no
+      legitimate suppression.
+    - This file is committed to source control so suppressions are
+      auditable, version-controlled, and visible to all reviewers.
+
+  Current state:
+    No suppressions are currently active. The empty <suppressions> root
+    element is intentional — it provides a valid configuration target for
+    the OWASP `dependency-check-maven` plugin so the `owasp` Maven profile
+    can be activated without configuration errors. Suppressions are added
+    here only when an explicit acceptance decision is made by the security
+    review.
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+</suppressions>

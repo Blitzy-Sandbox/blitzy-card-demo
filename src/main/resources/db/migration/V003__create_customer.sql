@@ -326,18 +326,25 @@ create table customers (
     -- validation lives in the Customer JPA entity / DTO.
     cust_pri_card_holder_ind    char(1)      not null,
 
-    -- CUST-FICO-CREDIT-SCORE PIC 9(03); 3-digit FICO credit score
-    -- (range 000-999 per COBOL semantics, though real FICO scores
-    -- are 300-850). Stored as NUMERIC(3). NOT NULL -- required for
-    -- account credit-limit decisions and disclosure-group lookup.
+    -- CUST-FICO-CREDIT-SCORE PIC 9(03); 3-digit FICO credit score.
+    -- Stored as NUMERIC(3). NOT NULL -- required for account credit-
+    -- limit decisions and disclosure-group lookup.
     --
-    -- Per the Minimal Change Clause (AAP §0.7.3), a CHECK constraint
-    -- restricting the value to 300..850 is intentionally OMITTED --
-    -- the COBOL PIC 9(03) accepts 000-999, and the Java target
-    -- preserves that exact range. Any business-rule validation
-    -- (e.g., rejecting scores below 300 at write time) is an
-    -- application-layer concern, not a schema concern.
+    -- The CHECK constraint `cust_fico_credit_score BETWEEN 300 AND 850`
+    -- restricts the value to the canonical FICO credit-score range as
+    -- mandated by the checkpoint contract and AAP §0.7.1 data-integrity
+    -- discipline. Although the underlying COBOL PIC 9(03) accepts the
+    -- full 000-999 range, the Java target enforces the real-world FICO
+    -- range at the schema layer for defense-in-depth: any out-of-range
+    -- score would corrupt downstream credit-limit calculations and
+    -- disclosure-group lookups (the COBOL source relied on operational
+    -- discipline to keep loaded values in range; the relational layer
+    -- now enforces this invariant deterministically). The same Java
+    -- application-layer validation in the Customer JPA entity / DTO
+    -- still applies as a first line of defense before INSERT/UPDATE.
     cust_fico_credit_score      numeric(3)   not null,
+    constraint ck_customers_cust_fico_credit_score
+        check (cust_fico_credit_score between 300 and 850),
 
     -- The trailing FILLER PIC X(168) in the COBOL record is OMITTED
     -- here. It is unused padding that brings the COBOL record to its
@@ -471,7 +478,12 @@ comment on column customers.cust_pri_card_holder_ind is
     'Minimal Change Clause.';
 
 comment on column customers.cust_fico_credit_score is
-    'COBOL: CUST-FICO-CREDIT-SCORE PIC 9(03). 3-digit FICO credit score '
-    '(COBOL range 000-999; real-world FICO is 300-850). No CHECK '
-    'constraint per AAP §0.7.3 Minimal Change Clause -- the COBOL field '
-    'accepts the full 0-999 range and the Java target preserves that.';
+    'COBOL: CUST-FICO-CREDIT-SCORE PIC 9(03). 3-digit FICO credit score. '
+    'CHECK constraint (ck_customers_cust_fico_credit_score) restricts '
+    'the value to the canonical real-world FICO range 300..850 per the '
+    'checkpoint data-integrity contract -- although the underlying COBOL '
+    'PIC 9(03) accepts the broader 000-999 range, the Java target '
+    'enforces the operational invariant deterministically at the schema '
+    'layer to protect downstream credit-limit calculations and '
+    'disclosure-group lookups. Used by AccountUpdateService and '
+    'InterestCalculationService.';

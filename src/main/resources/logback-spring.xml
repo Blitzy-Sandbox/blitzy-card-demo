@@ -21,7 +21,7 @@
     ====================
       Section 0.5.1   net.logstash.logback:logstash-logback-encoder dep
                       (declared in pom.xml at version ${logstash-logback.version})
-      Section 0.6.6   Audit trail content + OpenSearch indexing 
+      Section 0.6.6   Audit trail content + OpenSearch indexing
                       transaction IDs, timestamps, operator codes preserved
                       verbatim from the original COBOL audit trail writes
                       (CBSTM03A, CBTRN02C, COACTUPC, COBIL00C, etc.).
@@ -380,7 +380,7 @@
 
     <!-- ====================================================================
          Profile specific configuration.
-         Each springProfile block is mutually exclusive at runtime 
+         Each springProfile block is mutually exclusive at runtime
          exactly one block is activated per Spring Boot launch (based on
          SPRING_PROFILES_ACTIVE / spring.profiles.default), so root and
          audit logger appender references do not double up.

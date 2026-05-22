@@ -96,18 +96,18 @@ the layering used throughout the new implementation tree under `src/`, `pom.xml`
 
 <br/>
 
-## Installation on the mainframe 
+## Installation on the mainframe
 
 To install this repository on the mainframe please follow the following steps
 
 1. Clone this repository to your local development environment
 
 2. Create datasets on the mainframe  hold the code
-   * It is recommended to group them under a High Level Qualifier (HLQ)for all your datasets. 
+   * It is recommended to group them under a High Level Qualifier (HLQ)for all your datasets.
    * Upload the following application source folders from the main branch of git repository on to your mainframe
       using $INDFILE or your preferred upload tool.
    * If you have used AWS.M2 as your HLQ, you should end up with the below code structure on the mainframe
-   
+
       | HLQ    | Name          | Format | Length |
       | :----- | :------------ | :----- | -----: |
       | AWS.M2 | CARDDEMO.JCL  | FB     |     80 |
@@ -115,11 +115,11 @@ To install this repository on the mainframe please follow the following steps
       | AWS.M2 | CARDDEMO.CBL  | FB     |     80 |
       | AWS.M2 | CARDDEMO.CPY  | FB     |     80 |
       | AWS.M2 | CARDDEMO.BMS  | FB     |     80 |
-      
+
 3. Use data for testing using either of the below approaches
 
    ** Use the supplied sample data**
-   
+
       * Upload the sample data provided in the main/-/data/EBCDIC/ folder to the mainframe. Ensure that you use transfer mode binary
 
          | Dataset name                      | Name                                             | Copybook (Layout) | Format | Length | Name of equivalent ascii file |
@@ -156,38 +156,38 @@ To install this repository on the mainframe please follow the following steps
          | DEFGDGB  | Defines GDG Base                                    |
 
 
-4. Compile the Programs. 
-   
+4. Compile the Programs.
+
    You should use the compile process followed by your mainframe shopfloor
-   
-   We have however provided some sample JCLs in the samples folder in git to help you craft the JCL   
+
+   We have however provided some sample JCLs in the samples folder in git to help you craft the JCL
 
 5. Create resources in the CARDDEMO group in CICS
-   
+
    You have 2 options
-   
+
    Be sure to edit the HLQs in the below documents as required before you do the definition
-   
+
    * (Preferred) . Use the DFHCSDUP JCL that the resources required by the application
 
       The resources required are in the CSD file provided in the CSD folder
-       
+
       * Group CARDDEMO
       * Mapsets
       * Transactions
       * Maps
       * Files
-      
+
    * Use the CEDA transaction to execute the commands in the above listing
-   
-      * Define group 
+
+      * Define group
          ```shell
          DEFINE LIBRARY(COM2DOLL) GROUP(CARDDEMO) DSNAME01(&HLQ..LOADLIB)
          ```
       * Define Mapsets, Maps , Programs and Files
-      
+
          Sample CEDA commands
-         
+
          ```shell
          DEF PROGRAM(COCRDLIC) GROUP(CARDDEMO)
          DEF MAPSET(COCRDLI) GROUP(CARDDEMO)
@@ -207,7 +207,7 @@ To install this repository on the mainframe please follow the following steps
    * Execute a NEWCOPY of mapsets and maps
       ```shell
       CEMT SET PROG(COCRDUP) NEWCOPY
-      CEMT SET PROG(COCRDUPC) NEWCOPY  
+      CEMT SET PROG(COCRDUPC) NEWCOPY
       ```
 6. Enjoy the demo
 
@@ -216,8 +216,8 @@ To install this repository on the mainframe please follow the following steps
      - Enter userid USER0001 and the initially configured password PASSWORD to access back office functions
    * For batch            : See the instructions for running full batch below.
 
-## Running full batch 
-   
+## Running full batch
+
   * Execute the following JCLs in order
 
     | Jobname  | What it does                                        |
@@ -236,7 +236,7 @@ To install this repository on the mainframe please follow the following steps
     | INTCALC  | Run interest calculations                           |
     | TRANBKP  | Backup Transaction database                         |
     | COMBTRAN | Combine system transactions with daily ones         |
-    | CREASTMT | Produce transaction statement                       | 	
+    | CREASTMT | Produce transaction statement                       |
     | TRANIDX  | Define alternate index on transaction file          |
     | OPENFIL  | Makes files available to CICS                       |
 <br/>
@@ -613,8 +613,8 @@ the static site) using the configuration in `mkdocs.yml`.
 
 <br/>
 
-## Application Details 
-The CardDemo is a Credit Card management application, built primarily using COBOL programming language. The application has various functions that allows users to manage Account, Credit card, Transaction and Bill payment. 
+## Application Details
+The CardDemo is a Credit Card management application, built primarily using COBOL programming language. The application has various functions that allows users to manage Account, Credit card, Transaction and Bill payment.
 
 There are 2 types of users:
 * Regular User
@@ -665,7 +665,7 @@ The Regular user can perform the user functions and the Admin users can only per
 | Job      | Program  | Function                                   |
 | :------- | :------- | :----------------------------------------- |
 | DUSRSECJ | IEBGENER | Initial Load of User security file         |
-| DEFGDGB  | IDCAMS   | Setup GDG Bases                            | 
+| DEFGDGB  | IDCAMS   | Setup GDG Bases                            |
 | ACCTFILE | IDCAMS   | Refresh Account Master                     |
 | CARDFILE | IDCAMS   | Refresh Card Master                        |
 | CUSTFILE | IDCAMS   | Refresh Customer Master                    |
@@ -715,16 +715,16 @@ The following features are planned for upcoming releases
 
 1. More database types
 
-   1. Relational Database usage : Db2 
-   
+   1. Relational Database usage : Db2
+
    2. Hierachical database calls : IMS
 
 2. Integration
 
    * ftp, sftp
-   
+
    * Message queue integration
-   
+
    * Exposure of transactions for distributed application integration
 
 <br/>

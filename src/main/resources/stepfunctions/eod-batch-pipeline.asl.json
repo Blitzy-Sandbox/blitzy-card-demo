@@ -1,5 +1,5 @@
 {
-  "Comment": "CardDemo End-of-Day (EOD) Batch Pipeline state machine. Replaces the z/OS JCL business-processing chain: POSTTRAN -> INTCALC -> TRANBKP -> COMBTRAN -> Parallel { CREASTMT, TRANREPT }. Source JCL artifacts: app/jcl/POSTTRAN.jcl (CBTRN02C), app/jcl/INTCALC.jcl (CBACT04C with PARM='2022071800'), app/jcl/TRANBKP.jcl (REPROC backup to TRANSACT.BKUP(+1)), app/jcl/COMBTRAN.jcl (DFSORT + IDCAMS REPRO), app/jcl/CREASTMT.JCL (CBSTM03A text+HTML statements), app/jcl/TRANREPT.jcl (CBTRN03C date-filtered transaction report). Implements AAP \u00a70.4.1 and \u00a70.6.3 transformations: each Task uses arn:aws:states:::batch:submitJob.sync to invoke a Spring Batch job inside a Fargate container; the COBOL PARM date is passed via the INTEREST_CALC_PARM env var; Retry blocks model JCL COND= retry semantics; Catch blocks model JCL COND=(...,LT) skip-on-failure routing; SNS + CloudWatch metrics emit success/failure signals per AAP \u00a70.6.6 observability requirements. Per AAP \u00a70.7.3 Minimal Change Clause the chain order matches the README \u00a7Running full batch sequence exactly.",
+  "Comment": "CardDemo End-of-Day (EOD) Batch Pipeline state machine. Replaces the z/OS JCL business-processing chain per the AAP-mandated checkpoint contract (AAP \u00a70.4.1 / \u00a70.6.3): POSTTRAN -> INTCALC -> COMBTRAN -> Parallel { CREASTMT, TRANREPT }. Source JCL artifacts: app/jcl/POSTTRAN.jcl (CBTRN02C), app/jcl/INTCALC.jcl (CBACT04C with PARM='2022071800'), app/jcl/COMBTRAN.jcl (DFSORT + IDCAMS REPRO), app/jcl/CREASTMT.JCL (CBSTM03A text+HTML statements), app/jcl/TRANREPT.jcl (CBTRN03C date-filtered transaction report). The README legacy batch sequence references app/jcl/TRANBKP.jcl (REPROC backup to TRANSACT.BKUP(+1)) between INTCALC and COMBTRAN, but the foundation-checkpoint scope explicitly excludes the TRANBKP Batch job definition and the corresponding ${TRANBKP_JOB_DEFINITION_ARN} substitution variable -- application-level transaction snapshots are now provided by RDS automated backups + point-in-time recovery (AAP \u00a70.6.2) rather than an explicit application backup step; if a parallel-run snapshot capability is required at a later checkpoint it will be added as a separate state machine. Implements AAP \u00a70.4.1 and \u00a70.6.3 transformations: each Task uses arn:aws:states:::batch:submitJob.sync to invoke a Spring Batch job inside a Fargate container; the COBOL PARM date is passed via the INTEREST_CALC_PARM env var; Retry blocks model JCL COND= retry semantics; Catch blocks model JCL COND=(...,LT) skip-on-failure routing; SNS + CloudWatch metrics emit success/failure signals per AAP \u00a70.6.6 observability requirements.",
   "StartAt": "InitializeEodPipeline",
   "Version": "1.0",
   "TimeoutSeconds": 14400,
@@ -140,75 +140,6 @@
       },
       "ResultPath": "$.intCalcResult",
       "TimeoutSeconds": 3600,
-      "Retry": [
-        {
-          "ErrorEquals": [
-            "States.Timeout"
-          ],
-          "IntervalSeconds": 60,
-          "MaxAttempts": 1,
-          "BackoffRate": 2.0
-        },
-        {
-          "ErrorEquals": [
-            "Batch.AWSBatchException",
-            "States.TaskFailed"
-          ],
-          "IntervalSeconds": 30,
-          "MaxAttempts": 3,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "ResultPath": "$.error",
-          "Next": "FailureNotification"
-        }
-      ],
-      "Next": "BackupTransactions"
-    },
-    "BackupTransactions": {
-      "Type": "Task",
-      "Comment": "Backup TRANSACT table snapshot to a versioned S3 object before the combine stage. Provides point-in-time reproducibility for the COMBTRAN sort (matches the README EOD chain POSTTRAN -> INTCALC -> TRANBKP -> COMBTRAN). RDS automated backups per AAP \u00a70.6.2 cover disaster recovery; this Task provides the application-level snapshot the original mainframe achieved via TRANSACT.BKUP(+1) GDG generation. Replaces JCL: TRANBKP.jcl STEP05R EXEC PROC=REPROC (PRC001.FILEIN=AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS, PRC001.FILEOUT=AWS.M2.CARDDEMO.TRANSACT.BKUP(+1)) plus the subsequent STEP05/STEP10 IDCAMS DELETE+DEFINE CLUSTER which are obviated by RDS schema management.",
-      "Resource": "arn:aws:states:::batch:submitJob.sync",
-      "Parameters": {
-        "JobName.$": "States.Format('carddemo-tranbkp-{}', $.context.executionId)",
-        "JobQueue": "${BATCH_JOB_QUEUE_ARN}",
-        "JobDefinition": "${TRANBKP_JOB_DEFINITION_ARN}",
-        "ContainerOverrides": {
-          "Environment": [
-            {
-              "Name": "SPRING_PROFILES_ACTIVE",
-              "Value": "prod"
-            },
-            {
-              "Name": "BATCH_JOB_NAME",
-              "Value": "transactionBackupJob"
-            },
-            {
-              "Name": "PROCESSING_DATE",
-              "Value.$": "$.context.processingDate"
-            },
-            {
-              "Name": "RDS_SECRET_ARN",
-              "Value.$": "$.context.rdsSecretArn"
-            },
-            {
-              "Name": "S3_OUTPUT_BUCKET",
-              "Value.$": "$.context.s3OutputBucket"
-            },
-            {
-              "Name": "KMS_KEY_ARN",
-              "Value.$": "$.context.kmsKeyArn"
-            }
-          ]
-        }
-      },
-      "ResultPath": "$.tranBkpResult",
-      "TimeoutSeconds": 1800,
       "Retry": [
         {
           "ErrorEquals": [

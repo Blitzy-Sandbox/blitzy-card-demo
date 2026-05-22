@@ -22,7 +22,7 @@
     },
     "ApplyFlywayMigrations": {
       "Type": "Task",
-      "Comment": "Apply Flyway V001-V015 migrations to create the RDS PostgreSQL schema and seed all reference data. This single Task collapses the schema-create + reference-data-seed responsibilities of every provisioning JCL member into one idempotent Flyway run: ACCTFILE.jcl STEP05/STEP10 (IDCAMS DELETE/DEFINE CLUSTER) -> V001__create_account.sql; CARDFILE.jcl STEP05/STEP10/STEP40/STEP50 (DELETE + DEFINE CLUSTER + DEFINE ALTERNATEINDEX + DEFINE PATH) -> V002__create_card.sql; CUSTFILE.jcl STEP05/STEP10 -> V003__create_customer.sql (incorporating the correct KEYS(9) RECORDSIZE(500) layout from CVCUS01Y.cpy and ignoring the DEFCUST.jcl mismatched-dataset bug); XREFFILE.jcl STEP05/STEP10/STEP20/STEP25/STEP30 (DELETE + DEFINE + DEFINE AIX KEYS(11,25) NONUNIQUEKEY + PATH + BLDINDEX) -> V004__create_cardxref.sql with index on xref_acct_id replacing the CXACAIX AIX; TRANFILE.jcl STEP05/STEP10/STEP20/STEP25/STEP30 (DELETE + DEFINE + DEFINE AIX KEYS(26,304) on TRAN-CARD-NUM + TRAN-PROC-TS + PATH + BLDINDEX) -> V005__create_transaction.sql with composite index; TCATBALF.jcl STEP05/STEP10 -> V006__create_tcatbal.sql; DISCGRP.jcl STEP05/STEP10 + STEP15 REPRO -> V007__create_disclosure_group.sql + V012__seed_disclosure_group.sql (51 rows including DEFAULT and ZEROAPR); TRANTYPE.jcl STEP05/STEP10 + STEP15 REPRO -> V008__create_transaction_type.sql + V013__seed_transaction_type.sql (7 rows); TRANCATG.jcl STEP05/STEP10 + STEP15 REPRO -> V009__create_transaction_category.sql + V014__seed_transaction_category.sql (18 rows); DUSRSECJ.jcl PREDEL/STEP01/STEP02/STEP03 (IEBGENER inline ADMIN/USER seed + IDCAMS DELETE/DEFINE/REPRO) -> V010__create_user_security.sql + V015__seed_default_users.sql with BCrypt-hashed passwords per AAP \u00a70.7.1 security improvement (plaintext PASSWORDA/PASSWORDU from DUSRSECJ.jcl L35-L44 SYSUT1 are NOT propagated verbatim).",
+      "Comment": "Apply Flyway V001-V015 migrations to create the RDS PostgreSQL schema and seed all reference data. This single Task collapses the schema-create + reference-data-seed responsibilities of every provisioning JCL member into one idempotent Flyway run: ACCTFILE.jcl STEP05/STEP10 (IDCAMS DELETE/DEFINE CLUSTER) -> V001__create_account.sql; CARDFILE.jcl STEP05/STEP10/STEP40/STEP50 (DELETE + DEFINE CLUSTER + DEFINE ALTERNATEINDEX + DEFINE PATH) -> V002__create_card.sql; CUSTFILE.jcl STEP05/STEP10 -> V003__create_customer.sql (incorporating the correct KEYS(9) RECORDSIZE(500) layout from CVCUS01Y.cpy and ignoring the DEFCUST.jcl mismatched-dataset bug); XREFFILE.jcl STEP05/STEP10/STEP20/STEP25/STEP30 (DELETE + DEFINE + DEFINE AIX KEYS(11,25) NONUNIQUEKEY + PATH + BLDINDEX) -> V004__create_cardxref.sql with index on xref_acct_id replacing the CXACAIX AIX; TRANFILE.jcl STEP05/STEP10/STEP20/STEP25/STEP30 (DELETE + DEFINE + DEFINE AIX KEYS(26,304) on TRAN-CARD-NUM + TRAN-PROC-TS + PATH + BLDINDEX) -> V005__create_transaction.sql with composite index; TCATBALF.jcl STEP05/STEP10 -> V006__create_tcatbal.sql; DISCGRP.jcl STEP05/STEP10 + STEP15 REPRO -> V007__create_disclosure_group.sql + V012__seed_disclosure_group.sql (51 rows including DEFAULT and ZEROAPR); TRANTYPE.jcl STEP05/STEP10 + STEP15 REPRO -> V008__create_transaction_type.sql + V013__seed_transaction_type.sql (7 rows); TRANCATG.jcl STEP05/STEP10 + STEP15 REPRO -> V009__create_transaction_category.sql + V014__seed_transaction_category.sql (18 rows); DUSRSECJ.jcl PREDEL/STEP01/STEP02/STEP03 (IEBGENER inline ADMIN/USER seed + IDCAMS DELETE/DEFINE/REPRO) -> V010__create_user_security.sql + V015__seed_default_users.sql with BCrypt-hashed passwords per AAP \u00a70.7.1 security improvement (plaintext PASSWORDA/PASSWORDU from DUSRSECJ.jcl L35-L44 SYSUT1 are NOT propagated verbatim). The FLYWAY_TARGET environment variable is pinned to the explicit version number '15' (the highest current foundation-checkpoint migration; V002/V004/V005/V006 are deferred to subsequent checkpoints) rather than 'latest' so that provisioning is deterministic and reproducible across LocalStack, dev, and prod -- a 'latest' default would silently include any future-checkpoint migration committed to source control, defeating the controlled-provisioning intent.",
       "Resource": "arn:aws:states:::batch:submitJob.sync",
       "Parameters": {
         "JobName.$": "States.Format('carddemo-flyway-migrate-{}', $.context.executionId)",
@@ -36,7 +36,7 @@
             },
             {
               "Name": "FLYWAY_TARGET",
-              "Value": "latest"
+              "Value": "15"
             },
             {
               "Name": "RDS_SECRET_ARN",
@@ -83,7 +83,7 @@
     },
     "BulkLoadFactData": {
       "Type": "Map",
-      "Comment": "Bulk load fact data (Account, Customer, Card, CardCrossReference, TransactionCategoryBalance) from S3 ASCII fixtures to RDS PostgreSQL via parallel AWS Glue Spark jobs. Replaces JCL IDCAMS REPRO from PS to VSAM steps: ACCTFILE.jcl STEP15 (REPRO INFILE(ACCTDATA AWS.M2.CARDDEMO.ACCTDATA.PS) OUTFILE(ACCTVSAM AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS)), CARDFILE.jcl STEP15 (REPRO from AWS.M2.CARDDEMO.CARDDATA.PS), CUSTFILE.jcl STEP15 (REPRO from AWS.M2.CARDDEMO.CUSTDATA.PS), XREFFILE.jcl STEP15 (REPRO from AWS.M2.CARDDEMO.CARDXREF.PS), TCATBALF.jcl STEP15 (REPRO from AWS.M2.CARDDEMO.TCATBALF.PS). Note: TRANFILE.jcl STEP15 REPROs from DALYTRAN.PS.INIT into TRANSACT VSAM which is the daily transaction staging file, not bulk fact data; transactions are loaded by the EOD batch pipeline (eod-batch-pipeline.asl.json), not here. Per AAP \u00a70.6.3 the original JCL chain ran sequentially as IDCAMS REPRO steps; the Map state parallelizes them with MaxConcurrency=5 since there are no foreign-key constraints between the bulk-loaded tables enforced at load time (cross-references resolved at query time). The ItemsPath $.bulkLoadJobs is supplied at execution start by StepFunctionsOrchestrator.startFileProvisioning() with entries describing each table's Glue job name, source S3 URI (for the corresponding *.PS ASCII fixture from app/data/ASCII/ staged in s3://${S3_SEED_DATA_BUCKET}), and target RDS table name.",
+      "Comment": "Bulk load fact data (Account, Customer, Card, CardCrossReference, TransactionCategoryBalance) from S3 ASCII fixtures to RDS PostgreSQL via parallel AWS Glue Spark jobs. Replaces JCL IDCAMS REPRO from PS to VSAM steps: ACCTFILE.jcl STEP15 (REPRO INFILE(ACCTDATA AWS.M2.CARDDEMO.ACCTDATA.PS) OUTFILE(ACCTVSAM AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS)), CARDFILE.jcl STEP15 (REPRO from AWS.M2.CARDDEMO.CARDDATA.PS), CUSTFILE.jcl STEP15 (REPRO from AWS.M2.CARDDEMO.CUSTDATA.PS), XREFFILE.jcl STEP15 (REPRO from AWS.M2.CARDDEMO.CARDXREF.PS), TCATBALF.jcl STEP15 (REPRO from AWS.M2.CARDDEMO.TCATBALF.PS). Note: TRANFILE.jcl STEP15 REPROs from DALYTRAN.PS.INIT into TRANSACT VSAM which is the daily transaction staging file, not bulk fact data; transactions are loaded by the EOD batch pipeline (eod-batch-pipeline.asl.json), not here. Per AAP \u00a70.6.3 the original JCL chain ran sequentially as IDCAMS REPRO steps; the Map state parallelizes them with MaxConcurrency=5 since there are no foreign-key constraints between the bulk-loaded tables enforced at load time (cross-references resolved at query time). The ItemsPath $.bulkLoadJobs is supplied at execution start by StepFunctionsOrchestrator.startFileProvisioning() with entries describing each table's Glue job name, source S3 URI (for the corresponding *.PS ASCII fixture from app/data/ASCII/ staged in s3://${S3_SEED_DATA_BUCKET}), and target RDS table name. Per-item Glue failures (after the iterator's Retry policy is exhausted) intentionally propagate up: the iterator's InvokeGlueLoadJob state has NO inner Catch, so any unrecoverable failure terminates the Map iteration with a States.TaskFailed / Glue.AWSGlueException error which is caught by the outer Map state's Catch block and routed to FailureNotification. This ensures the downstream ValidateRowCounts and EOD batch pipeline are NOT started against a partially-provisioned data store. Previously an inner ReportLoadFailure Pass state with End:true swallowed per-item failures and allowed the workflow to proceed; that pattern has been removed per the failure-propagation contract.",
       "ItemsPath": "$.bulkLoadJobs",
       "MaxConcurrency": 5,
       "Parameters": {
@@ -136,26 +136,6 @@
                 "BackoffRate": 2.0
               }
             ],
-            "Catch": [
-              {
-                "ErrorEquals": [
-                  "States.ALL"
-                ],
-                "ResultPath": "$.error",
-                "Next": "ReportLoadFailure"
-              }
-            ],
-            "End": true
-          },
-          "ReportLoadFailure": {
-            "Type": "Pass",
-            "Comment": "Capture per-table load failure context for the Map ResultPath. The outer Catch on BulkLoadFactData propagates aggregated failure to FailureNotification.",
-            "Parameters": {
-              "targetTable.$": "$.loadJob.targetTable",
-              "glueJobName.$": "$.loadJob.glueJobName",
-              "errorCause.$": "$.error.Cause",
-              "errorMessage.$": "$.error.Error"
-            },
             "End": true
           }
         }
