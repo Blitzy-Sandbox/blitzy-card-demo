@@ -4,10 +4,38 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
+    <!--
+        carddemo-domain — innermost ring of the hexagonal architecture (AAP §0.3.6).
+
+        Contents:
+          * Java records translated from COBOL copybook 01-level groups (AAP §0.4.1)
+          * Sealed interfaces for REDEFINES and 88-level value-space taxonomies (AAP §0.6.10)
+          * Repository port interfaces (AAP §0.3.1 → port/)
+          * Decimals utility — BigDecimal facade with MathContext.DECIMAL128 and explicit
+            RoundingMode selection (AAP §0.3.3, §0.6.1)
+          * @CobolProgram traceability annotation (AAP §0.2.1)
+
+        Architectural rule (AAP §0.3.6): this module depends on NO other internal module.
+        It is depended on by carddemo-application, carddemo-adapter-file, carddemo-adapter-db,
+        carddemo-batch, carddemo-app, and carddemo-tests — but never the reverse.
+
+        Forbidden here (AAP §0.1.1, §0.6.12, §0.7.4):
+          * Spring / Spring Boot / Spring Data / Spring Batch / Spring Security / Spring MVC
+          * Hibernate / JPA / jakarta.persistence
+          * Lombok (Java 25 records replace it)
+          * JDBC drivers (PostgreSQL, MySQL, DB2, H2) — those belong to carddemo-adapter-db
+          * Flyway, Liquibase, Testcontainers, LocalStack
+          * Micrometer, Prometheus, OpenTelemetry, Jaeger
+          * jqwik (property tests for Decimals live in carddemo-tests per AAP §0.3.1)
+          * The enable-preview JVM flag (AAP §0.7.4 — finalized JEPs only)
+          * &lt;source&gt;/&lt;target&gt; tags — parent's &lt;release&gt;25&lt;/release&gt; is the single source of truth
+    -->
+
     <parent>
         <groupId>com.blitzy.carddemo</groupId>
         <artifactId>carddemo-parent</artifactId>
         <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
     </parent>
 
     <artifactId>carddemo-domain</artifactId>
@@ -15,18 +43,46 @@
 
     <name>CardDemo Domain</name>
     <description>
-        Pure domain layer: records translated from COBOL copybooks (01-level groups),
-        sealed-interface taxonomies (REDEFINES and 88-level value spaces),
-        repository ports, and the Decimals/BigDecimal facade.
-        No production-runtime dependencies allowed — this is the hexagonal core.
+        Pure domain layer: Java records (one per COBOL copybook 01-level group), sealed types
+        (one per REDEFINES and 88-level taxonomy partitioning a value space), repository port
+        interfaces, Decimals utility for BigDecimal arithmetic with MathContext.DECIMAL128 and
+        RoundingMode selection, and CobolProgram traceability annotation. NO external
+        dependencies beyond SLF4J. Innermost ring of the hexagonal architecture per AAP §0.3.6.
     </description>
 
     <dependencies>
-        <!-- No production dependencies — pure domain layer (hexagonal core) -->
+        <!--
+            Production dependency: SLF4J API only.
+            Used by record parsers (e.g., AccountRecord.parse, TranRecord.parse) and the
+            Decimals utility to log decode/validation warnings such as truncation events and
+            sign-nybble anomalies. The implementation (logback-classic) is supplied at runtime
+            by the composition root (carddemo-app); the domain layer depends only on the API
+            per AAP §0.5.1 and the strict hexagonal "domain has no implementation dependencies"
+            rule per AAP §0.3.6.
+            Version is inherited from the parent POM's dependencyManagement (2.0.16).
+        -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
 
+        <!--
+            Test dependencies (test scope only).
+            Versions are inherited from the parent POM's dependencyManagement:
+              * junit-jupiter            via junit-bom 5.13.1
+              * junit-platform-launcher  1.13.1 (required minimum for jqwik 1.9.3 per AAP §0.5.1
+                                                  and for JUnit Platform native discovery by
+                                                  maven-surefire-plugin 3.5.2)
+              * assertj-core             3.26.3
+        -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -35,4 +91,28 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+                maven-compiler-plugin — activated for this module so the parent's
+                pluginManagement (version 3.13.0, &lt;release&gt;25&lt;/release&gt;, no preview flag
+                per AAP §0.7.4) applies during the compile phase.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+
+            <!--
+                maven-surefire-plugin — activated for this module so the parent's
+                pluginManagement (version 3.5.2, JUnit Platform native discovery, no
+                preview argLine per AAP §0.7.4) applies during the test phase.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
 </project>
