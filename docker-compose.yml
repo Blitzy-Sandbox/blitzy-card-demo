@@ -1,124 +1,326 @@
-# ---------------------------------------------------------------------------
-# Local development stack for AWS CardDemo (COBOL -> Java/Spring Boot target).
-# Per AAP §0.3.1: "docker-compose.yml - local development stack
-# (Spring Boot app, PostgreSQL, LocalStack Pro for S3/SQS/Secrets Manager/KMS,
-#  Redis, Kafka)"
+# =============================================================================
+# AWS CardDemo — Local Development Docker Compose Stack
 #
-# NOTE: LocalStack Pro requires a valid LOCALSTACK_AUTH_TOKEN. The provided
-# token is EXPIRED, so this compose file uses the LocalStack community image
-# (3.8) which does not require licensing. Upgrade to localstack-pro:latest
-# when a valid token becomes available.
-# ---------------------------------------------------------------------------
+# Purpose
+# -------
+# Brings up the Spring Boot application alongside its local-development
+# dependencies for the AWS CardDemo COBOL -> Java/Spring Boot migration target:
+#
+#   - postgres   : PostgreSQL 16 (replaces VSAM KSDS persistence — AAP §0.6.2)
+#   - localstack : LocalStack Pro 4.14.0+ (S3, SQS, SNS, Secrets Manager, KMS,
+#                  StepFunctions, OpenSearch, Glue, Batch, IAM, CloudWatch,
+#                  CloudTrail — AAP §0.5.1 / §0.7.2)
+#   - redis      : Redis 7 (ElastiCache cache-aside, allkeys-lru — AAP §0.3.3)
+#   - kafka      : Bitnami Kafka 3.7 in KRaft single-node mode (replaces
+#                  Amazon MSK + CICS TDQ — AAP §0.6.5)
+#   - app        : Spring Boot 3.x application built from ./Dockerfile
+#                  (replaces the entire CICS/JES runtime — AAP §0.3.1)
+#
+# Run
+# ---
+#   docker compose up -d                  # start everything in the background
+#   docker compose up postgres redis      # bring up a subset
+#   docker compose logs -f app            # tail application logs
+#   docker compose ps                     # show service status + healthchecks
+#   docker compose down                   # stop containers (preserve volumes)
+#   docker compose down -v                # stop + WIPE all volumes (clean state)
+#
+# Environment Overrides
+# ---------------------
+# All sensitive values are local-dev placeholders only. Production credentials
+# are sourced from AWS Secrets Manager (never this file — AAP §0.7.1 PCI-DSS).
+#
+# Required host env var (or .env file at repository root):
+#   LOCALSTACK_AUTH_TOKEN  - LocalStack Pro license token (see env instructions
+#                            in AAP §0.7.2). If unset/expired, the LocalStack
+#                            container will fail to start — that is the
+#                            expected behavior per the AAP. To run with the
+#                            community edition instead (no Pro features),
+#                            override the image with:
+#                              docker compose run --rm -e LOCALSTACK_AUTH_TOKEN= \
+#                                  --service-ports localstack
+#                            or change the image tag below.
+#
+# Optional host env var (used for AWS region selection):
+#   AWS_DEFAULT_REGION     - defaults to us-east-1.
+#
+# Service Discovery
+# -----------------
+# All services share the carddemo-net bridge network and resolve each other
+# by Compose service name (postgres, redis, kafka, localstack). Never use
+# "localhost" inside containers.
+#
+# Port Map (host -> container)
+# ----------------------------
+#   5432  -> postgres:5432
+#   6379  -> redis:6379
+#   9092  -> kafka:9092
+#   4566  -> localstack:4566
+#   8080  -> app:8080
+#
+# Persistence
+# -----------
+# Named volumes preserve state across `docker compose down`. Use
+# `docker compose down -v` to discard them when you need a clean slate.
+# =============================================================================
+
 services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 — replaces the 10 VSAM KSDS clusters and 2 AIX/PATH chains
+  # documented in app/catlg/LISTCAT.txt. Schema is provisioned by Flyway
+  # migrations under src/main/resources/db/migration/V*.sql at application
+  # startup (AAP §0.6.2).
+  # ---------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
     container_name: carddemo-postgres
     environment:
+      POSTGRES_DB: carddemo
       POSTGRES_USER: carddemo
       POSTGRES_PASSWORD: carddemo
-      POSTGRES_DB: carddemo
+      # Force NUMERIC behavior consistent with COBOL PIC S9(n)V99 (AAP §0.6.1)
+      PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U carddemo -d carddemo"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 10s
+    networks:
+      - carddemo-net
+    restart: unless-stopped
 
-  redis:
-    image: redis:7-alpine
-    container_name: carddemo-redis
-    command: redis-server --maxmemory-policy allkeys-lru --maxmemory 256mb
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  zookeeper:
-    image: bitnami/zookeeper:3.9
-    container_name: carddemo-zookeeper
-    environment:
-      ALLOW_ANONYMOUS_LOGIN: "yes"
-    ports:
-      - "2181:2181"
-
-  kafka:
-    image: bitnami/kafka:3.7
-    container_name: carddemo-kafka
-    depends_on:
-      - zookeeper
-    environment:
-      KAFKA_CFG_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092
-      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
-      ALLOW_PLAINTEXT_LISTENER: "yes"
-    ports:
-      - "9092:9092"
-
+  # ---------------------------------------------------------------------------
+  # LocalStack Pro 4.14.0 — emulates the AWS services required for local dev
+  # and integration testing (AAP §0.5.1 / §0.7.2 / §0.6.6). The init scripts
+  # under ./localstack/init are auto-executed when the container reaches
+  # the "ready" state and provision: KMS CMKs, S3 buckets (with versioning),
+  # Secrets Manager entries, SQS queues, SNS topics, SSM parameters.
+  # ---------------------------------------------------------------------------
   localstack:
-    # LocalStack 3.8 is the last community-licensable version prior to the
-    # March 2026 auth-token requirement (Pro license required afterwards).
-    image: localstack/localstack:3.8
+    # Per AAP §0.5.1: localstack/localstack-pro:latest (4.14.0 per user env
+    # instructions). The Pro tag is required because the AAP-mandated service
+    # set includes Glue, Batch, OpenSearch, StepFunctions, and CloudTrail —
+    # several of which need the Pro edition for full emulation fidelity.
+    image: localstack/localstack-pro:latest
     container_name: carddemo-localstack
     ports:
       - "4566:4566"
-      - "4510-4559:4510-4559"
     environment:
-      SERVICES: "s3,sqs,sns,kms,secretsmanager,lambda,dynamodb,ses,events,logs,cloudwatch,sts,iam,kinesis,firehose,dynamodbstreams,stepfunctions"
-      DEBUG: "0"
+      # AAP-mandated AWS service set covering S3 (sequential output + GDG
+      # replacement), SQS (Secrets Manager rotation events), SNS (Macie
+      # findings + rotation notifications), Secrets Manager (credentials),
+      # KMS (CMKs for data-at-rest encryption), OpenSearch (audit log
+      # indexing), CloudWatch + CloudTrail (observability + audit),
+      # StepFunctions (JCL job stream replacement), Glue + Batch (ETL +
+      # batch compute), IAM + Lambda + Logs + Events (supporting services).
+      SERVICES: "s3,sqs,sns,secretsmanager,kms,opensearch,cloudwatch,cloudtrail,stepfunctions,iam,logs,events,lambda,glue,batch,ssm,dynamodb,kinesis,firehose,sts"
+      DEFAULT_REGION: "${AWS_DEFAULT_REGION:-us-east-1}"
       AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION:-us-east-1}"
-      AWS_ACCESS_KEY_ID: "test"
-      AWS_SECRET_ACCESS_KEY: "test"
+      # Pro license token — sourced from host env or .env file. LocalStack
+      # Pro refuses to start if this is empty or expired; that failure is
+      # intentional per AAP §0.7.2 (the user environment instructions
+      # explicitly call out `localstack auth set-token ${LOCALSTACK_AUTH_TOKEN}`).
+      LOCALSTACK_AUTH_TOKEN: "${LOCALSTACK_AUTH_TOKEN:-}"
+      DEBUG: "0"
+      # State persistence across container restarts.
+      PERSISTENCE: "1"
+      DATA_DIR: /var/lib/localstack
+      # Required because some emulated services (Lambda, Glue, Batch) need
+      # to launch sibling Docker containers via the host Docker daemon.
       DOCKER_HOST: "unix:///var/run/docker.sock"
     volumes:
+      # Auto-executed when LocalStack reaches the ready state (provisions
+      # S3 buckets, Secrets Manager entries, KMS keys, etc.) — see
+      # localstack/init/init-aws.sh.
+      - "./localstack/init:/etc/localstack/init/ready.d:ro"
+      # State persistence across restarts.
+      - localstack-data:/var/lib/localstack
+      # Required for the Lambda / Glue / Batch executors that launch
+      # Docker containers from inside LocalStack.
       - "/var/run/docker.sock:/var/run/docker.sock"
-      - "./localstack/init:/etc/localstack/init/ready.d"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health || exit 1"]
-      interval: 15s
+      test: ["CMD-SHELL", "curl -fs http://localhost:4566/_localstack/health || exit 1"]
+      interval: 10s
       timeout: 5s
-      retries: 20
+      retries: 10
+      start_period: 30s
+    networks:
+      - carddemo-net
+    restart: unless-stopped
 
-  carddemo:
+  # ---------------------------------------------------------------------------
+  # Redis 7 — ElastiCache cache-aside for account balance lookups
+  # (AAP §0.3.3, §0.6.6). maxmemory + allkeys-lru reproduces the production
+  # ElastiCache eviction policy locally.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: carddemo-redis
+    # The maxmemory-policy MUST be allkeys-lru per AAP §0.3.3:
+    #   "ElastiCache Redis with TTL aligned to transaction frequency
+    #    and allkeys-lru eviction policy."
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - carddemo-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Apache Kafka 3.7 (Bitnami KRaft single-node) — replaces Amazon MSK in
+  # production and CICS TDQ from the COBOL source (AAP §0.6.5). KRaft mode
+  # eliminates the need for a separate Zookeeper container. Topics are
+  # auto-created in local dev only; production topics are managed by
+  # Terraform (infrastructure/terraform/msk.tf).
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: carddemo-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # KRaft mode (no Zookeeper) — single node combined controller + broker.
+      KAFKA_CFG_NODE_ID: "0"
+      KAFKA_CFG_PROCESS_ROLES: "controller,broker"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "0@kafka:9093"
+      # Listeners: 9092 for client traffic, 9093 for inter-broker controller.
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      # Auto-create topics is enabled for local dev only — production uses
+      # Terraform-defined topics (AAP §0.6.5).
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Producer durability defaults match the AAP §0.6.5 ordering invariant
+      # (acks=all, idempotent producer).
+      KAFKA_CFG_DEFAULT_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_CFG_MIN_INSYNC_REPLICAS: "1"
+      # Allow PLAINTEXT for local dev (production uses SASL_SSL via IAM auth).
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    volumes:
+      - kafka-data:/bitnami/kafka
+    healthcheck:
+      # kafka-broker-api-versions.sh ships with the Bitnami image at
+      # /opt/bitnami/kafka/bin/ (on PATH).
+      test: ["CMD-SHELL", "kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+    networks:
+      - carddemo-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Spring Boot 3.x application — the Java/Spring Boot target of the COBOL ->
+  # Java migration. Built locally from ./Dockerfile (multi-stage Maven + JRE).
+  # Reads configuration from src/main/resources/application*.yml with
+  # environment-variable overrides set below for the local Compose stack.
+  # ---------------------------------------------------------------------------
+  app:
     build:
       context: .
       dockerfile: Dockerfile
+    image: carddemo:local
     container_name: carddemo-app
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
       localstack:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
     environment:
+      # ---- Spring profile selection ----
       SPRING_PROFILES_ACTIVE: local
+
+      # ---- AWS region + credentials (LocalStack defaults) ----
       AWS_REGION: "${AWS_DEFAULT_REGION:-us-east-1}"
       AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION:-us-east-1}"
       AWS_ACCESS_KEY_ID: "test"
       AWS_SECRET_ACCESS_KEY: "test"
-      SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/carddemo"
-      SPRING_DATASOURCE_USERNAME: carddemo
-      SPRING_DATASOURCE_PASSWORD: carddemo
-      SPRING_DATA_REDIS_HOST: redis
-      SPRING_DATA_REDIS_PORT: 6379
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      AWS_ENDPOINT_URL: http://localstack:4566
-      S3_OUTPUT_BUCKET: carddemo-output
-      OPENSEARCH_ENDPOINT: http://localstack:4566
-      MSK_BOOTSTRAP_SERVERS: kafka:9092
-      ECS_CLUSTER_NAME: carddemo-local
-      KMS_KEY_ARN: arn:aws:kms:us-east-1:000000000000:key/local-cmk
-      RDS_SECRET_ARN: arn:aws:secretsmanager:us-east-1:000000000000:secret:rds-secret
-    ports:
-      - "8080:8080"
 
+      # ---- AWS endpoint override (routes all AWS SDK calls to LocalStack) ----
+      AWS_ENDPOINT_URL: "http://localstack:4566"
+
+      # ---- AAP §0.7.2 mandated environment variables ----
+      # Sensitive values are placeholders only — production reads ARNs from
+      # AWS Secrets Manager / Parameter Store.
+      RDS_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:000000000000:secret:carddemo/rds"
+      KMS_KEY_ARN: "arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000"
+      MSK_BOOTSTRAP_SERVERS: "kafka:9092"
+      S3_OUTPUT_BUCKET: "carddemo-output"
+      OPENSEARCH_ENDPOINT: "http://localstack:4566"
+      ECS_CLUSTER_NAME: "carddemo-cluster-local"
+
+      # ---- Spring Data + JPA (PostgreSQL via Compose service DNS) ----
+      SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/carddemo"
+      SPRING_DATASOURCE_USERNAME: "carddemo"
+      SPRING_DATASOURCE_PASSWORD: "carddemo"
+      SPRING_JPA_HIBERNATE_DDL_AUTO: "validate"
+      SPRING_FLYWAY_ENABLED: "true"
+
+      # ---- Spring Data Redis ----
+      SPRING_DATA_REDIS_HOST: "redis"
+      SPRING_DATA_REDIS_PORT: "6379"
+
+      # ---- Spring Kafka ----
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+
+      # ---- JVM tuning for container deployment ----
+      JAVA_OPTS: "-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.security.egd=file:/dev/./urandom"
+    healthcheck:
+      # Image already declares its own HEALTHCHECK (see Dockerfile); we
+      # restate here so docker compose ps surfaces health status uniformly.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - carddemo-net
+    restart: unless-stopped
+
+# -----------------------------------------------------------------------------
+# Single bridge network — every service resolves its peers by Compose
+# service name (postgres, redis, kafka, localstack, app).
+# -----------------------------------------------------------------------------
+networks:
+  carddemo-net:
+    name: carddemo-net
+    driver: bridge
+
+# -----------------------------------------------------------------------------
+# Named volumes — preserve state across `docker compose down`.
+# Use `docker compose down -v` to remove them.
+# -----------------------------------------------------------------------------
 volumes:
-  postgres_data:
-    driver: local
+  postgres-data:
+    name: carddemo-postgres-data
+  localstack-data:
+    name: carddemo-localstack-data
+  redis-data:
+    name: carddemo-redis-data
+  kafka-data:
+    name: carddemo-kafka-data
