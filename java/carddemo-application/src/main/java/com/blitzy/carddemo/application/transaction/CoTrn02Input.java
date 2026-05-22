@@ -5,25 +5,23 @@
  */
 package com.blitzy.carddemo.application.transaction;
 
-// JEP 511 (finalized in Java 25): a single declaration imports all packages exported by
-// the java.base module (and the modules it reads). This brings in java.lang.String --
-// the type of the fourteen operator-editable text components and the source of the
-// isBlank() utility invoked by isAllBlank() -- and java.util.Objects (the source of the
-// requireNonNull() null-safety guard inside the compact constructor). It also brings in
-// the exception classes (java.lang.NullPointerException raised by requireNonNull).
-//
-// No additional imports are required or permitted on this file. The internal_imports
-// list in the file schema is empty (this record carries no domain references), and the
-// only external import allowed by the schema is java.base itself. The single
-// "import module java.base;" line replaces the verbose pair of
-// "import java.lang.String;" (implicit in every compilation unit) and
-// "import java.util.Objects;", and aligns the file with the AAP §0.6.7 / §0.7.3
-// mandate to use Module Import Declarations finalized in Java 25.
+// JEP 511 (finalized in Java 25): a single declaration imports all packages
+// exported by the java.base module (and the modules it reads). This brings in
+// java.lang.String — the type of every BMS input-field component on this
+// record — and java.util.Objects (used by requireNonNull for the AidKey
+// check). It also brings in the exception classes IllegalArgumentException
+// and NullPointerException raised by the compact constructor's invariant
+// checks.
 import module java.base;
 
+// Module-import declarations may not import application-defined types; the
+// COBOL traceability annotation lives in carddemo-domain and must be brought
+// in by a conventional import.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
+
 /**
- * BMS input record carrying every operator-typed value received from the 3270
- * terminal for the <strong>COTRN02</strong> (Add Transaction) screen.
+ * BMS input record carrying every value received from the 3270 terminal for the
+ * <strong>COTRN02</strong> (Add Transaction) screen.
  *
  * <h2>Source artifacts</h2>
  * <ul>
@@ -32,15 +30,7 @@ import module java.base;
  *       {@code EXTATT=YES}, {@code LANG=COBOL}, {@code MODE=INOUT},
  *       {@code STORAGE=AUTO}, {@code TIOAPFX=YES}).</li>
  *   <li>Symbolic map copybook: {@code app/cpy-bms/COTRN02.CPY} (input group
- *       {@code 01 COTRN2AI}). The copybook declares twenty-one
- *       length/flag/attribute/value clusters &mdash; six header echoes
- *       ({@code TRNNAME}, {@code TITLE01}, {@code CURDATE}, {@code PGMNAME},
- *       {@code TITLE02}, {@code CURTIME}) which are populated by
- *       {@code SEND MAP} and never typed by the operator, fourteen
- *       operator-editable data fields enumerated below, and one error-message
- *       field ({@code ERRMSG}) which is also output-only ({@code ATTRB=ASKIP}).
- *       Only the fourteen operator-editable fields are carried by this record;
- *       the seven output-only fields belong to {@code CoTrn02Output}.</li>
+ *       {@code 01 COTRN2AI}, lines 17-144, with 21 PIC X input leaves).</li>
  *   <li>Translated COBOL program: {@code app/cbl/COTRN02C.cbl} (transaction
  *       {@code CT02}).</li>
  * </ul>
@@ -52,287 +42,149 @@ import module java.base;
  * structure {@code COTRN2AI}: it carries the field values returned from
  * {@code EXEC CICS RECEIVE MAP} to {@code CoTrn02C.run(...)}. There is no web
  * framework, no Spring binding, no Jakarta Bean Validation; the record is a
- * plain Java carrier built around finalized Java 25 language features only
- * (records, sealed types, pattern matching, JEP 511 module imports, JEP 513
- * flexible constructor bodies).
+ * plain Java carrier built around finalized Java 25 language features only.
  *
- * <h2>Add Transaction semantics</h2>
- * <p>COTRN02 is the <em>add / data entry</em> screen for a single new
- * transaction. The operator types into <strong>fourteen</strong> input fields
- * (BMS {@code ATTRB=(FSET,NORM,UNPROT)}, colour {@code GREEN}, highlight
- * {@code UNDERLINE}); every other BMS field on this screen is
- * {@code ATTRB=(ASKIP,...)} &mdash; read-only, populated by {@code SEND MAP}
- * and ignored by {@code RECEIVE MAP}.
+ * <h2>Field-for-field translation</h2>
+ * <p>The DTO carries <strong>all 21 PIC X input leaves</strong> declared by
+ * {@code COTRN2AI} (6 header echoes, 13 transaction-detail operator-editable
+ * data fields, 1 confirmation field, and the error-message echo). This is the
+ * raw entry-contract DTO mandated by AAP &sect;0.4.1: every symbolic-map leaf
+ * becomes a record component so that the Java code can prove byte-for-byte
+ * parity against the COBOL BMS-mapped layout. Convenience helpers
+ * ({@link #isAllBlank()}) are exposed as instance methods on top of the raw
+ * fields; a derived projection record (if needed by future consumers) would
+ * be a separate type.
  *
- * <h2>Field inventory</h2>
- * <p>The fourteen operator-editable BMS fields, in screen order (top-to-bottom,
- * left-to-right), with the BMS positions and lengths verified against
- * {@code app/bms/COTRN02.bms} lines 85 through 285:
- * <table border="1" style="border-collapse:collapse">
- *   <caption>COTRN02 input-field inventory</caption>
- *   <tr><th>BMS name</th><th>Java component</th><th>Row,Col</th>
- *       <th>Length</th><th>Format hint</th></tr>
- *   <tr><td>{@code ACTIDIN}</td><td>{@link #accountId()}</td>
- *       <td>6,21</td><td>11</td><td>numeric</td></tr>
- *   <tr><td>{@code CARDNIN}</td><td>{@link #cardNumber()}</td>
- *       <td>6,55</td><td>16</td><td>numeric</td></tr>
- *   <tr><td>{@code TTYPCD}</td><td>{@link #typeCode()}</td>
- *       <td>10,15</td><td>2</td><td>alpha</td></tr>
- *   <tr><td>{@code TCATCD}</td><td>{@link #categoryCode()}</td>
- *       <td>10,36</td><td>4</td><td>numeric</td></tr>
- *   <tr><td>{@code TRNSRC}</td><td>{@link #source()}</td>
- *       <td>10,54</td><td>10</td><td>alpha</td></tr>
- *   <tr><td>{@code TDESC}</td><td>{@link #description()}</td>
- *       <td>12,19</td><td>60</td><td>free text</td></tr>
- *   <tr><td>{@code TRNAMT}</td><td>{@link #amount()}</td>
- *       <td>14,14</td><td>12</td><td>-99999999.99</td></tr>
- *   <tr><td>{@code TORIGDT}</td><td>{@link #origDate()}</td>
- *       <td>14,42</td><td>10</td><td>YYYY-MM-DD</td></tr>
- *   <tr><td>{@code TPROCDT}</td><td>{@link #procDate()}</td>
- *       <td>14,68</td><td>10</td><td>YYYY-MM-DD</td></tr>
- *   <tr><td>{@code MID}</td><td>{@link #merchantId()}</td>
- *       <td>16,19</td><td>9</td><td>numeric</td></tr>
- *   <tr><td>{@code MNAME}</td><td>{@link #merchantName()}</td>
- *       <td>16,48</td><td>30</td><td>free text</td></tr>
- *   <tr><td>{@code MCITY}</td><td>{@link #merchantCity()}</td>
- *       <td>18,21</td><td>25</td><td>free text</td></tr>
- *   <tr><td>{@code MZIP}</td><td>{@link #merchantZip()}</td>
- *       <td>18,67</td><td>10</td><td>numeric</td></tr>
- *   <tr><td>{@code CONFIRM}</td><td>{@link #confirmation()}</td>
- *       <td>21,63</td><td>1</td><td>Y / N / blank</td></tr>
- * </table>
+ * <h2>Add-transaction semantics</h2>
+ * <p>COTRN02 is the <em>add</em> form for transactions. On entry the operator
+ * may:
+ * <ol>
+ *   <li>Type either {@link #accountId()} (ACTIDINI, 11 chars) <em>or</em>
+ *       {@link #cardNumber()} (CARDNINI, 16 chars) &mdash; mutually exclusive,
+ *       at least one required &mdash; to identify the target account.</li>
+ *   <li>Type the transaction details into {@link #typeCode()},
+ *       {@link #categoryCode()}, {@link #source()}, {@link #description()},
+ *       {@link #amount()}, {@link #origDate()}, {@link #procDate()}, and
+ *       merchant fields ({@link #merchantId()}, {@link #merchantName()},
+ *       {@link #merchantCity()}, {@link #merchantZip()}).</li>
+ *   <li>Type {@code 'Y'} into {@link #confirmation()} (CONFIRMI, 1 char) and
+ *       press ENTER to commit the add operation, or {@code 'N'} to abort.</li>
+ *   <li>Press <strong>PF3</strong> to return to the calling program (typically
+ *       {@code COMEN01C}, the main menu).</li>
+ *   <li>Press <strong>PF4</strong> to clear all input fields.</li>
+ *   <li>Press <strong>PF5</strong> to copy the last transaction's fields into
+ *       the input area.</li>
+ * </ol>
+ * Any other AID key produces an invalid-key error in the controller.
  *
- * <h2>Two competing identifier inputs (ACTIDIN <em>or</em> CARDNIN)</h2>
- * <p>The COTRN02 screen presents two side-by-side identifiers separated by the
- * BMS literal {@code '(or)'} at row 6, column 37. The operator types into
- * exactly one of them &mdash; either {@code ACTIDIN} (an 11-character account
- * identifier) or {@code CARDNIN} (a 16-character card number) &mdash; or
- * leaves both blank to trigger a missing-key error. This DTO accepts both as
- * independent string components; the COBOL paragraph
- * {@code VALIDATE-INPUT-KEY-FIELDS} (whose translation lives in
- * {@code CoTrn02C}) is responsible for enforcing the mutual-exclusion
- * invariant. Per Agent Action Plan &sect;0.4.1 the DTO is purely a structural
- * carrier &mdash; field-content validation is the application class's
- * responsibility, not the DTO's.
+ * <h2>Null and emptiness semantics</h2>
+ * <p>The compact constructor coerces every {@code null} {@link String}
+ * component to the empty {@link String} {@code ""}, matching the COBOL
+ * RECEIVE-MAP idiom where unfilled BMS {@code PIC X(n)} fields are SPACES,
+ * never undefined. The {@link AidKey} component is required (rejected as
+ * {@code null} with a {@link NullPointerException} via
+ * {@link java.util.Objects#requireNonNull(Object, String)}); the controller
+ * always supplies a decoded AID key.
  *
- * <h2>Three-state confirmation</h2>
- * <p>{@link #confirmation()} is a one-character tri-state: blank (initial,
- * shown before the operator has reviewed the entered values), {@code 'Y'}
- * (confirm and commit), or {@code 'N'} (cancel and clear). The
- * {@code processEnterKey()} method on {@code CoTrn02C} switches on this value
- * via a Java pattern-matching {@code switch} with exhaustive coverage.
+ * <h2>PIC X(n) length validation (CWE-20)</h2>
+ * <p>Each {@link String} component is validated against its declared BMS
+ * {@code PIC X(n)} on-screen width. Values longer than the declared width are
+ * rejected with an {@link IllegalArgumentException} at construction time. This
+ * prevents silent hardware truncation in the CICS RECEIVE-MAP layer and
+ * satisfies the AAP &sect;0.7.1 Preserve-As-Is contract at the DTO boundary.
  *
- * <h2>What this record does <em>not</em> carry</h2>
+ * <h2>Immutability and concurrency</h2>
+ * <p>Because this is a {@code record}, all components are {@code final} and
+ * accessors are auto-generated; there are no setters and no mutable internal
+ * state. The record is therefore safe to share across threads without
+ * synchronisation.
+ *
+ * <h2>Forbidden idioms (per AAP)</h2>
  * <ul>
- *   <li>The six header echoes ({@code TRNNAMEI}, {@code TITLE01I},
- *       {@code CURDATEI}, {@code PGMNAMEI}, {@code TITLE02I},
- *       {@code CURTIMEI}) &mdash; the BMS structure declares input slots for
- *       them because every BMS named field has both an input and an output
- *       leaf, but every header field is {@code ATTRB=(ASKIP,FSET,NORM)} so the
- *       operator cannot edit it; the values are sent down by {@code SEND MAP}
- *       and the COBOL program ignores their input copies after
- *       {@code RECEIVE MAP}. They belong to {@code CoTrn02Output}.</li>
- *   <li>The error-message field ({@code ERRMSGI}) &mdash; output-only,
- *       {@code ATTRB=(ASKIP,BRT,FSET)} in red at row 23, column 1; populated by
- *       {@code SEND MAP} when a validation error must be reported back to the
- *       operator. Belongs to {@code CoTrn02Output}.</li>
- *   <li>Per-field length/attribute/colour echo flags ({@code *L}, {@code *F},
- *       {@code *A}, {@code *C}, {@code *P}, {@code *H}, {@code *V} suffix
- *       sub-fields generated by the BMS preprocessor). These are mainframe
- *       implementation details &mdash; on z/OS they convey whether the operator
- *       actually typed into the field, what colour to display the field on the
- *       next {@code SEND MAP}, etc. They have no analog in this Java DTO
- *       because the Java translation does not emulate the 3270 protocol; the
- *       only operator intent surface is the value string itself plus the
- *       single AID byte.</li>
+ *   <li>No Spring annotations &mdash; this record is plain Java.</li>
+ *   <li>No Lombok &mdash; record components and accessors are explicit.</li>
+ *   <li>No Jakarta Bean Validation &mdash; validation is hand-written in the
+ *       compact constructor (see AAP &sect;0.6.3 / JEP 513).</li>
+ *   <li>No {@code java.util.Date} or {@code java.util.Calendar} &mdash; date
+ *       fields ({@code origDate}, {@code procDate}) are the raw BMS strings;
+ *       any date parsing happens inside the application logic via
+ *       {@code java.time}.</li>
+ *   <li>No {@code double} or {@code float} &mdash; the {@code amount} field
+ *       is carried as a raw BMS string (the upstream code converts from
+ *       {@link java.math.BigDecimal} via the {@code Decimals} utility).</li>
+ *   <li>No preview Java features &mdash; only finalized Java 25 features
+ *       (records, JEP 511 module import, JEP 513 flexible constructor bodies).</li>
  * </ul>
  *
- * <h2>3270 Attention Identifier handling</h2>
- * <p>The {@link #aidKey()} component carries the 3270 AID byte decoded from
- * {@code EIBAID} into one of the seventeen {@link AidKey} enum values.
- * The COTRN02 BMS map's PF-key footer at row 24 documents the four
- * keys the operator may press on this screen:
- * <blockquote>
- *   {@code ENTER=Continue  F3=Back  F4=Clear  F5=Copy Last Tran.}
- * </blockquote>
- * The Java translation does not narrow the {@link AidKey} type to those four
- * values &mdash; the operator may press any of the seventeen 3270 AID keys at
- * any time, and the controller in {@code CoTrn02C} is responsible for
- * dispatching valid keys and producing an invalid-key error message for the
- * rest. Pattern-matching switches in {@code CoTrn02C} can branch on this enum
- * exhaustively (per Agent Action Plan &sect;0.6.10 the
- * compiler enforces exhaustiveness on every {@code switch} expression that
- * consumes an {@link AidKey}, so adding a new AID never silently slips past a
- * dispatcher).
- *
- * <h2>Immutability</h2>
- * <p>This is a Java {@code record}: every component is implicitly
- * {@code private final}, the accessor methods are auto-generated, the
- * {@code equals()} / {@code hashCode()} / {@code toString()} contracts are
- * derived component-wise, and the canonical constructor is the only mutation
- * surface. Once constructed, an instance is immutable; the {@link #empty()}
- * factory returns a fresh instance each call (records are not cached).
- *
- * <h2>Null safety</h2>
- * <p>The compact (canonical) constructor invokes
- * {@link java.util.Objects#requireNonNull(Object, String)} on every reference
- * component before binding any field, leveraging the JEP 513 Flexible
- * Constructor Bodies finalized in Java 25. A {@code null} for any component
- * raises {@link NullPointerException} with the component name as the message
- * &mdash; the same shape as the legacy COBOL {@code 0000-PERFORM-INITIAL-CHECK}
- * paragraph that rejects an uninitialised field on the receive side. <em>Empty
- * strings are permitted</em>: BMS sends spaces for any field the operator did
- * not type into, and the Java translation honours that contract by allowing
- * (but not requiring) the empty string. Numeric / date / Y-N validation lives
- * in {@code CoTrn02C.validateInputDataFields()} per the COBOL paragraph of the
- * same name, not in this DTO.
- *
- * <h2>Thread-safety</h2>
- * <p>Records with only immutable reference components (the fourteen
- * {@link String}s and one {@link AidKey}) are inherently thread-safe.
- * Concurrent reads from multiple virtual threads are safe and free of any
- * synchronisation requirement; this is essential for the virtual-thread
- * fan-out documented in Agent Action Plan &sect;0.6.6.
- *
- * <h2>External imports</h2>
- * <p>This file declares a <strong>single</strong> external import:
- * {@code import module java.base;} per the schema's {@code external_imports}
- * (Agent Action Plan &sect;0.6.7 / &sect;0.7.3, JEP 511 finalized in Java 25).
- * No internal modules are imported; the record carries no domain references.
- *
- * @param accountId      {@code ACTIDIN} value typed at BMS row 6 column 21
- *                       (length 11, attributes {@code FSET,IC,NORM,UNPROT},
- *                       colour {@code GREEN}, highlight {@code UNDERLINE}).
- *                       Mutually exclusive with {@code cardNumber}: at runtime
- *                       exactly one of the two is filled (or both are blank to
- *                       trigger a missing-key error reported back via
- *                       {@code ERRMSG}). Must not be {@code null}; the empty
- *                       string is permitted and denotes "the operator did not
- *                       type into this field". Numeric-content validation is
- *                       performed by {@code CoTrn02C}, not by this DTO.
- * @param cardNumber     {@code CARDNIN} value typed at BMS row 6 column 55
- *                       (length 16, attributes {@code FSET,NORM,UNPROT},
- *                       colour {@code GREEN}, highlight {@code UNDERLINE}).
- *                       Mutually exclusive with {@code accountId} (see above).
- *                       Must not be {@code null}; the empty string is
- *                       permitted.
- * @param typeCode       {@code TTYPCD} value typed at BMS row 10 column 15
- *                       (length 2, attributes {@code FSET,NORM,UNPROT},
- *                       colour {@code GREEN}, highlight {@code UNDERLINE}).
- *                       Two-character transaction-type code; the operator
- *                       picks from the codes loaded into the TRANTYPE
- *                       reference dataset. Must not be {@code null}; the empty
- *                       string is permitted.
- * @param categoryCode   {@code TCATCD} value typed at BMS row 10 column 36
- *                       (length 4, attributes {@code FSET,NORM,UNPROT},
- *                       colour {@code GREEN}, highlight {@code UNDERLINE}).
- *                       Four-character transaction-category code; the operator
- *                       picks from the codes loaded into the TRANCATG
- *                       reference dataset. Must not be {@code null}; the empty
- *                       string is permitted.
- * @param source         {@code TRNSRC} value typed at BMS row 10 column 54
- *                       (length 10, attributes {@code FSET,NORM,UNPROT},
- *                       colour {@code GREEN}, highlight {@code UNDERLINE}).
- *                       Free-form transaction source token (e.g.
- *                       {@code POS}, {@code WEB}, {@code MAIL}). Must not be
- *                       {@code null}; the empty string is permitted.
- * @param description    {@code TDESC} value typed at BMS row 12 column 19
- *                       (length 60, attributes {@code FSET,NORM,UNPROT},
- *                       colour {@code GREEN}, highlight {@code UNDERLINE}).
- *                       Free-form transaction description. Must not be
- *                       {@code null}; the empty string is permitted.
- * @param amount         {@code TRNAMT} value typed at BMS row 14 column 14
- *                       (length 12, attributes {@code FSET,NORM,UNPROT},
- *                       colour {@code GREEN}, highlight {@code UNDERLINE}).
- *                       Signed-decimal transaction amount in the operator's
- *                       raw typed form &mdash; the BMS literal at row 15 column
- *                       13 documents the format hint {@code (-99999999.99)}.
- *                       Held as a {@link String} because the DTO is purely a
- *                       structural carrier; {@code CoTrn02C} performs the
- *                       parse via {@code Decimals.parsePicS9V99} (see Agent
- *                       Action Plan &sect;0.3.3) to produce a
- *                       {@link java.math.BigDecimal} with scale 2 and
- *                       {@code MathContext.DECIMAL128}. Must not be
- *                       {@code null}; the empty string is permitted.
- * @param origDate       {@code TORIGDT} value typed at BMS row 14 column 42
- *                       (length 10, attributes {@code FSET,NORM,UNPROT},
- *                       colour {@code GREEN}, highlight {@code UNDERLINE}).
- *                       Origination date in the operator's raw typed form; the
- *                       BMS literal at row 15 column 41 documents the format
- *                       hint {@code (YYYY-MM-DD)}. Held as a {@link String}
- *                       because the DTO is purely a structural carrier;
- *                       {@code CoTrn02C} performs the parse via
- *                       {@link java.time.LocalDate#parse(CharSequence)}
- *                       (Agent Action Plan &sect;0.6.4) using a strict
- *                       resolver. Must not be {@code null}; the empty string
- *                       is permitted.
- * @param procDate       {@code TPROCDT} value typed at BMS row 14 column 68
- *                       (length 10, attributes {@code FSET,NORM,UNPROT},
- *                       colour {@code GREEN}, highlight {@code UNDERLINE}).
- *                       Processing date in the operator's raw typed form; the
- *                       BMS literal at row 15 column 67 documents the format
- *                       hint {@code (YYYY-MM-DD)}. Held as a {@link String}
- *                       (see {@link #origDate} for parsing notes). Must not be
- *                       {@code null}; the empty string is permitted.
- * @param merchantId     {@code MID} value typed at BMS row 16 column 19
- *                       (length 9, attributes {@code FSET,NORM,UNPROT},
- *                       colour {@code GREEN}, highlight {@code UNDERLINE}).
- *                       Nine-character merchant identifier. Must not be
- *                       {@code null}; the empty string is permitted.
- * @param merchantName   {@code MNAME} value typed at BMS row 16 column 48
- *                       (length 30, attributes {@code FSET,NORM,UNPROT},
- *                       colour {@code GREEN}, highlight {@code UNDERLINE}).
- *                       Free-form merchant name. Must not be {@code null};
- *                       the empty string is permitted.
- * @param merchantCity   {@code MCITY} value typed at BMS row 18 column 21
- *                       (length 25, attributes {@code FSET,NORM,UNPROT},
- *                       colour {@code GREEN}, highlight {@code UNDERLINE}).
- *                       Free-form merchant city. Must not be {@code null};
- *                       the empty string is permitted.
- * @param merchantZip    {@code MZIP} value typed at BMS row 18 column 67
- *                       (length 10, attributes {@code FSET,NORM,UNPROT},
- *                       colour {@code GREEN}, highlight {@code UNDERLINE}).
- *                       Merchant ZIP code (typically a US 5-digit ZIP or
- *                       9-digit ZIP+4 in {@code 99999-9999} form, but the DTO
- *                       does not enforce a format). Must not be {@code null};
- *                       the empty string is permitted.
- * @param confirmation   {@code CONFIRM} value typed at BMS row 21 column 63
- *                       (length 1, attributes {@code FSET,NORM,UNPROT},
- *                       colour {@code GREEN}, highlight {@code UNDERLINE}).
- *                       Tri-state confirmation: blank means "operator has not
- *                       yet reviewed", {@code 'Y'} means "commit the
- *                       transaction", {@code 'N'} means "cancel and clear".
- *                       Must not be {@code null}; the empty string is
- *                       permitted.
- * @param aidKey         The 3270 Attention Identifier (AID byte) decoded from
- *                       {@code EIBAID} into one of the seventeen
- *                       {@link AidKey} values; must not be {@code null}.
  * @see com.blitzy.carddemo.application.transaction.CoTrn02Input.AidKey
+ * @see com.blitzy.carddemo.application.transaction.CoTrn02Output
  * @since 1.0.0
  */
+@CobolProgram(
+        value = "COTRN02",
+        sourcePath = "app/bms/COTRN02.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (input side); symbolic copybook COTRN2AI "
+                + "in app/cpy-bms/COTRN02.CPY lines 17-144. Field-for-field "
+                + "translation of all 21 PIC X input leaves: 6 header echoes "
+                + "(trnName/title01/curDate/pgmName/title02/curTime), accountId, "
+                + "cardNumber, 11 detail (typeCode/categoryCode/source/"
+                + "description/amount/origDate/procDate/merchantId/merchantName/"
+                + "merchantCity/merchantZip), confirmation, and errMsg. "
+                + "PIC X(n) widths enforced at construction time."
+)
 public record CoTrn02Input(
-        String accountId,
-        String cardNumber,
-        String typeCode,
-        String categoryCode,
-        String source,
-        String description,
-        String amount,
-        String origDate,
-        String procDate,
-        String merchantId,
-        String merchantName,
-        String merchantCity,
-        String merchantZip,
-        String confirmation,
-        AidKey aidKey) {
+
+        // ============================================================================
+        // Header echo fields. The application class populates these on SEND-MAP;
+        // they are echoed back on RECEIVE-MAP. The user does not edit any of
+        // these fields directly. Retained verbatim per the field-for-field DTO
+        // mandate (AAP §0.4.1).
+        // ============================================================================
+        String trnName,        // TRNNAMEI  PIC X(4)
+        String title01,        // TITLE01I  PIC X(40)
+        String curDate,        // CURDATEI  PIC X(8)
+        String pgmName,        // PGMNAMEI  PIC X(8)
+        String title02,        // TITLE02I  PIC X(40)
+        String curTime,        // CURTIMEI  PIC X(8)
+
+        // ============================================================================
+        // Operator-editable data fields. The user types these in the COTRN02
+        // (Add Transaction) screen.
+        // ============================================================================
+        String accountId,      // ACTIDINI  PIC X(11)
+        String cardNumber,     // CARDNINI  PIC X(16)
+        String typeCode,       // TTYPCDI   PIC X(2)
+        String categoryCode,   // TCATCDI   PIC X(4)
+        String source,         // TRNSRCI   PIC X(10)
+        String description,    // TDESCI    PIC X(60)
+        String amount,         // TRNAMTI   PIC X(12)
+        String origDate,       // TORIGDTI  PIC X(10)
+        String procDate,       // TPROCDTI  PIC X(10)
+        String merchantId,     // MIDI      PIC X(9)
+        String merchantName,   // MNAMEI    PIC X(30)
+        String merchantCity,   // MCITYI    PIC X(25)
+        String merchantZip,    // MZIPI     PIC X(10)
+        String confirmation,   // CONFIRMI  PIC X(1)
+
+        // ============================================================================
+        // Error-message echo (row 24).
+        // ============================================================================
+        String errMsg,         // ERRMSGI   PIC X(78)
+
+        // ============================================================================
+        // AID-key dispatch — how the user submitted the screen.
+        // ============================================================================
+        AidKey aidKey
+
+) {
 
     /**
      * The 3270 Attention Identifier (AID) byte decoded into a Java enum.
      *
      * <p>The 3270 protocol identifies which "attention" key the operator
-     * pressed to dispatch the screen back to the host via a one-byte AID
-     * code carried in the {@code EIBAID} field of the CICS Execute Interface
+     * pressed to dispatch the screen back to the host via a one-byte AID code
+     * carried in the {@code EIBAID} field of the CICS Execute Interface
      * Block. The COTRN02 BMS map's PF-key footer at row 24 documents the
      * four keys actively used by the Add Transaction screen:
      * <blockquote>
@@ -346,9 +198,9 @@ public record CoTrn02Input(
      * hierarchy described by Agent Action Plan &sect;0.6.10, which catalogs
      * the seventeen AID-key 88-level conditions defined in
      * {@code app/cpy/CVCRD01Y.cpy:§CCARD-AID}: ENTER, CLEAR, PA1, PA2, and
-     * twelve programmed-function keys (PF1 through PF12). The
-     * {@link #OTHER} member is a safety bucket for AID bytes that do not
-     * decode to any of the sixteen named keys.
+     * twelve programmed-function keys (PF1 through PF12). The {@link #OTHER}
+     * member is a safety bucket for AID bytes that do not decode to any of
+     * the sixteen named keys.
      *
      * <p>Per Agent Action Plan &sect;0.6.10, an enum (as opposed to a sealed
      * interface) is the appropriate representation here because the value
@@ -411,130 +263,178 @@ public record CoTrn02Input(
     }
 
     /**
-     * Canonical (compact) constructor enforcing null-safety on every
-     * reference component.
+     * Compact (canonical) constructor.
      *
-     * <p>Per JEP 513 (Flexible Constructor Bodies, finalized in Java 25),
-     * statements that precede the implicit canonical assignment may freely
-     * validate or normalise the formal parameters before they bind to
-     * record components. This is the appropriate place for COBOL-style
-     * input validation: the legacy {@code 0000-PERFORM-INITIAL-CHECK}
-     * paragraph in {@code COTRN02C} performs the same fixed-order
-     * null-equivalent check ({@code MOVE LOW-VALUES} test) on every
-     * incoming field before the program proceeds.
+     * <p>Normalizes every {@link String} component so that a {@code null}
+     * reference is converted to the empty {@link String} {@code ""}. This
+     * mirrors COBOL RECEIVE-MAP semantics where unfilled BMS {@code PIC X(n)}
+     * fields are SPACES, never undefined. The {@link AidKey} component is
+     * required: a {@code null} argument throws {@link NullPointerException}
+     * via {@link java.util.Objects#requireNonNull(Object, String)} because
+     * the legacy COBOL controller always supplies a decoded AID key.
      *
-     * <p>Each component is asserted non-null via
-     * {@link java.util.Objects#requireNonNull(Object, String)}. The second
-     * argument is the parameter name, which appears as the
-     * {@link NullPointerException} message &mdash; this makes "which field
-     * was null" diagnosable directly from the stack trace without
-     * additional logging.
+     * <p>Subsequently validates that each {@link String} component does not
+     * exceed its declared BMS {@code PIC X(n)} on-screen width: values longer
+     * than the declared width raise an {@link IllegalArgumentException}
+     * (CWE-20 input validation). Shorter values are accepted unchanged.
      *
-     * <p><strong>Empty strings are permitted</strong>: BMS sends a string
-     * of spaces for any field the operator did not type into, and the Java
-     * translation honours that contract by accepting (but not requiring)
-     * the empty {@link String}. Field-content validation &mdash; numeric
-     * format check on {@link #amount}, ISO date parse on {@link #origDate}
-     * and {@link #procDate}, Y / N tri-state check on
-     * {@link #confirmation}, mutual-exclusion check on
-     * {@link #accountId} vs {@link #cardNumber} &mdash; is performed by
-     * {@code CoTrn02C.validateInputDataFields()} (the Java translation of
-     * the COBOL paragraph of the same name), NOT by this DTO. The DTO is
-     * purely a structural carrier per Agent Action Plan &sect;0.4.1.
+     * <p>Uses <strong>JEP 513 Flexible Constructor Bodies</strong>
+     * (finalized in Java 25): normalization and validation statements run
+     * before the implicit canonical field-assignment, which is exactly the
+     * location for COBOL-style "default to SPACES then validate length"
+     * cleansing.
      *
-     * @throws NullPointerException if any of the fifteen components
-     *                              is {@code null}; the exception message
-     *                              identifies which component
+     * <p><strong>Field-content validation</strong> &mdash; numeric format
+     * check on {@code amount}, ISO date parse on {@code origDate} and
+     * {@code procDate}, Y/N tri-state check on {@code confirmation},
+     * mutual-exclusion check on {@code accountId} vs {@code cardNumber}
+     * &mdash; is performed by {@code CoTrn02C.validateInputDataFields()}
+     * (the Java translation of the COBOL paragraph of the same name), NOT
+     * by this DTO. The DTO is purely a structural carrier per AAP &sect;0.4.1.
+     *
+     * @throws NullPointerException     if {@code aidKey} is {@code null}
+     * @throws IllegalArgumentException if any {@link String} component
+     *                                  exceeds its declared BMS
+     *                                  {@code PIC X(n)} width
      */
     public CoTrn02Input {
-        Objects.requireNonNull(accountId, "accountId");
-        Objects.requireNonNull(cardNumber, "cardNumber");
-        Objects.requireNonNull(typeCode, "typeCode");
-        Objects.requireNonNull(categoryCode, "categoryCode");
-        Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(description, "description");
-        Objects.requireNonNull(amount, "amount");
-        Objects.requireNonNull(origDate, "origDate");
-        Objects.requireNonNull(procDate, "procDate");
-        Objects.requireNonNull(merchantId, "merchantId");
-        Objects.requireNonNull(merchantName, "merchantName");
-        Objects.requireNonNull(merchantCity, "merchantCity");
-        Objects.requireNonNull(merchantZip, "merchantZip");
-        Objects.requireNonNull(confirmation, "confirmation");
+        // Header (6)
+        trnName       = orEmpty(trnName);
+        title01       = orEmpty(title01);
+        curDate       = orEmpty(curDate);
+        pgmName       = orEmpty(pgmName);
+        title02       = orEmpty(title02);
+        curTime       = orEmpty(curTime);
+        // Operator-editable detail (13)
+        accountId     = orEmpty(accountId);
+        cardNumber    = orEmpty(cardNumber);
+        typeCode      = orEmpty(typeCode);
+        categoryCode  = orEmpty(categoryCode);
+        source        = orEmpty(source);
+        description   = orEmpty(description);
+        amount        = orEmpty(amount);
+        origDate      = orEmpty(origDate);
+        procDate      = orEmpty(procDate);
+        merchantId    = orEmpty(merchantId);
+        merchantName  = orEmpty(merchantName);
+        merchantCity  = orEmpty(merchantCity);
+        merchantZip   = orEmpty(merchantZip);
+        // Confirmation (1)
+        confirmation  = orEmpty(confirmation);
+        // Footer (1)
+        errMsg        = orEmpty(errMsg);
+        // AID key — required, never null
         Objects.requireNonNull(aidKey, "aidKey");
+
+        // PIC X(n) fixed-length validation per app/cpy-bms/COTRN02.CPY lines 17-144.
+        checkPicLength("trnName",      trnName,       4);  // TRNNAMEI PIC X(4)
+        checkPicLength("title01",      title01,      40);  // TITLE01I PIC X(40)
+        checkPicLength("curDate",      curDate,       8);  // CURDATEI PIC X(8)
+        checkPicLength("pgmName",      pgmName,       8);  // PGMNAMEI PIC X(8)
+        checkPicLength("title02",      title02,      40);  // TITLE02I PIC X(40)
+        checkPicLength("curTime",      curTime,       8);  // CURTIMEI PIC X(8)
+        checkPicLength("accountId",    accountId,    11);  // ACTIDINI PIC X(11)
+        checkPicLength("cardNumber",   cardNumber,   16);  // CARDNINI PIC X(16)
+        checkPicLength("typeCode",     typeCode,      2);  // TTYPCDI  PIC X(2)
+        checkPicLength("categoryCode", categoryCode,  4);  // TCATCDI  PIC X(4)
+        checkPicLength("source",       source,       10);  // TRNSRCI  PIC X(10)
+        checkPicLength("description",  description,  60);  // TDESCI   PIC X(60)
+        checkPicLength("amount",       amount,       12);  // TRNAMTI  PIC X(12)
+        checkPicLength("origDate",     origDate,     10);  // TORIGDTI PIC X(10)
+        checkPicLength("procDate",     procDate,     10);  // TPROCDTI PIC X(10)
+        checkPicLength("merchantId",   merchantId,    9);  // MIDI     PIC X(9)
+        checkPicLength("merchantName", merchantName, 30);  // MNAMEI   PIC X(30)
+        checkPicLength("merchantCity", merchantCity, 25);  // MCITYI   PIC X(25)
+        checkPicLength("merchantZip",  merchantZip,  10);  // MZIPI    PIC X(10)
+        checkPicLength("confirmation", confirmation,  1);  // CONFIRMI PIC X(1)
+        checkPicLength("errMsg",       errMsg,       78);  // ERRMSGI  PIC X(78)
+    }
+
+    /**
+     * Returns the argument if non-null, or the empty string {@code ""}
+     * otherwise.
+     *
+     * @param s the candidate string (may be {@code null})
+     * @return {@code s} if non-null, otherwise {@code ""}
+     */
+    private static String orEmpty(String s) {
+        return (s == null) ? "" : s;
+    }
+
+    /**
+     * Validates that a {@link String} component does not exceed its declared
+     * BMS {@code PIC X(n)} on-screen width.
+     *
+     * <p>Enforces the AAP &sect;0.7.1 Preserve-As-Is contract at the DTO
+     * boundary (CWE-20 input validation): values longer than the declared
+     * BMS width would cause silent hardware truncation in the CICS
+     * RECEIVE-MAP layer. Shorter values are accepted unchanged.
+     *
+     * @param name      the component name (used in the exception message)
+     * @param value     the component value (never {@code null}: the caller
+     *                  guarantees normalization via {@link #orEmpty(String)})
+     * @param maxLength the declared BMS {@code PIC X(n)} width
+     * @throws IllegalArgumentException if {@code value.length() > maxLength}
+     */
+    private static void checkPicLength(String name, String value, int maxLength) {
+        if (value.length() > maxLength) {
+            throw new IllegalArgumentException(
+                    name + " exceeds BMS PIC X(" + maxLength
+                            + ") declared length; received length="
+                            + value.length() + " value=\"" + value + "\"");
+        }
     }
 
     /**
      * Returns an "empty" input record suitable for the first dispatch into
-     * the COTRN02 screen: every operator-editable field is the empty
+     * the COTRN02 screen: every {@link String} component is the empty
      * {@link String} and the {@link AidKey} is {@link AidKey#ENTER}.
      *
      * <p>This matches the legacy COBOL idiom for the first program
      * invocation: {@code DFHCOMMAREA} has zero length (no inbound state) or
      * carries no Add-Transaction payload, and the controller treats the
-     * screen as a fresh add form with no values yet entered. The AID key
-     * defaults to {@link AidKey#ENTER} rather than {@link AidKey#OTHER}
-     * because the controller's first-invocation path is functionally
-     * identical to an explicit ENTER press with all fields blank: validate
-     * (everything is blank so report missing-key error via {@code ERRMSG}),
-     * re-display the empty screen.
-     *
-     * <p>This factory is primarily a convenience for unit tests and for
-     * synthetic boot-up dispatches; it allocates a fresh instance each
-     * call (records are not cached). Production code receiving a real
-     * {@code RECEIVE MAP} payload populates the record directly via the
-     * canonical constructor.
+     * screen as a fresh add form with no values yet entered.
      *
      * @return a fully-blank {@code CoTrn02Input} (never {@code null}) with
      *         {@link AidKey#ENTER}
      */
     public static CoTrn02Input empty() {
         return new CoTrn02Input(
+                // Header (6)
                 "", "", "", "", "", "",
-                "", "", "", "", "", "",
-                "", "", AidKey.ENTER);
+                // Detail (13)
+                "", "", "", "", "", "", "", "", "", "", "", "", "",
+                // Confirmation (1)
+                "",
+                // Footer (1)
+                "",
+                // AID key
+                AidKey.ENTER);
     }
 
     /**
-     * Returns {@code true} when every operator-editable string component
-     * is blank &mdash; either the empty {@link String} or a string
-     * consisting only of whitespace characters as defined by
-     * {@link String#isBlank()}.
+     * Returns {@code true} when every operator-editable string component is
+     * blank &mdash; either the empty {@link String} or a string consisting
+     * only of whitespace characters as defined by {@link String#isBlank()}.
      *
      * <p>This mirrors the legacy COBOL idiom in {@code COTRN02C}'s
      * {@code INITIALIZE-ALL-FIELDS} (or equivalently
-     * {@code RECEIVE-INPUT-SCREEN}) paragraph, which tests every input
-     * field for {@code SPACES} or {@code LOW-VALUES} to detect a
-     * freshly-cleared screen. The COBOL test {@code IF field = SPACES OR
-     * LOW-VALUES} is preserved here as {@code field.isBlank()}, which
-     * matches both idioms:
-     * <ul>
-     *   <li>treating any whitespace-only string as blank
-     *       (via {@link String#isBlank()}), matching the
-     *       {@code SPACES} idiom; and</li>
-     *   <li>treating the empty {@link String} as blank, matching the
-     *       {@code LOW-VALUES} idiom (the COBOL {@code LOW-VALUES}
-     *       figurative constant fills a {@code PIC X(n)} field with
-     *       binary zeros, which the Java translation represents as the
-     *       empty {@link String} after the upstream BMS adapter trims
-     *       trailing spaces and converts {@code LOW-VALUES} to nulls /
-     *       empties).</li>
-     * </ul>
+     * {@code RECEIVE-INPUT-SCREEN}) paragraph, which tests every input field
+     * for {@code SPACES} or {@code LOW-VALUES} to detect a freshly-cleared
+     * screen. The COBOL test {@code IF field = SPACES OR LOW-VALUES} is
+     * preserved here as {@code field.isBlank()}, which matches both idioms
+     * (whitespace-only or empty).
      *
-     * <p>The helper deliberately does <em>not</em> consider the
-     * {@link #aidKey} component &mdash; an {@link AidKey} is always present
-     * (the canonical constructor enforces non-null), and the "is screen
-     * blank?" check is by definition about the operator's typed text
-     * values, not about which dispatch key was pressed.
-     *
-     * <p>The helper is short-circuit: it stops at the first non-blank
-     * field, so the cost in the common case ({@code accountId} or
-     * {@code cardNumber} populated) is one or two
-     * {@link String#isBlank()} calls.
+     * <p>The helper deliberately checks only the fourteen operator-editable
+     * fields (accountId, cardNumber, typeCode, categoryCode, source,
+     * description, amount, origDate, procDate, merchantId, merchantName,
+     * merchantCity, merchantZip, confirmation); the six header echo fields
+     * and the errMsg echo are populated by the controller on SEND-MAP and
+     * are not part of the "is the screen blank?" check.
      *
      * @return {@code true} when all fourteen operator-editable string
-     *         components are null-blank or whitespace-only; {@code false}
-     *         when at least one carries non-whitespace content
+     *         components are blank or whitespace-only; {@code false}
+     *         otherwise
      */
     public boolean isAllBlank() {
         return accountId.isBlank()

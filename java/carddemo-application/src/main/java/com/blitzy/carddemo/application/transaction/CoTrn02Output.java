@@ -36,6 +36,11 @@ package com.blitzy.carddemo.application.transaction;
 // to use Module Import Declarations finalized in Java 25.
 import module java.base;
 
+// Module-import declarations may not import application-defined types; the COBOL
+// traceability annotation lives in carddemo-domain and must be brought in by a
+// conventional import.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
+
 /**
  * BMS output record carrying every value sent to the 3270 terminal for the
  * <strong>COTRN02</strong> (Add Transaction) screen.
@@ -358,6 +363,22 @@ import module java.base;
  * @see com.blitzy.carddemo.application.transaction.CoTrn02Output.FieldColor
  * @since 1.0.0
  */
+@CobolProgram(
+        value = "COTRN02",
+        sourcePath = "app/bms/COTRN02.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (output side); symbolic copybook "
+                + "COTRN2AO REDEFINES COTRN2AI in app/cpy-bms/COTRN02.CPY "
+                + "lines 152-272. Field-for-field translation of all 21 PIC "
+                + "X output leaves: 6 header echoes (TRNNAMEO/TITLE01O/"
+                + "CURDATEO/PGMNAMEO/TITLE02O/CURTIMEO), ACTIDINO, CARDNINO, "
+                + "13 detail (TTYPCDO/TCATCDO/TRNSRCO/TDESCO/TRNAMTO/"
+                + "TORIGDTO/TPROCDTO/MIDO/MNAMEO/MCITYO/MZIPO), CONFIRMO, "
+                + "and ERRMSGO. Semantic component names retained from "
+                + "initial creation; each component is documented with its "
+                + "BMS source field. PIC X(n) widths enforced at "
+                + "construction time."
+)
 public record CoTrn02Output(
         String title1,
         String title2,
@@ -509,6 +530,55 @@ public record CoTrn02Output(
         Objects.requireNonNull(confirmation, "confirmation");
         Objects.requireNonNull(errMsg, "errMsg");
         Objects.requireNonNull(errMsgColor, "errMsgColor");
+
+        // PIC X(n) fixed-length validation per app/cpy-bms/COTRN02.CPY lines 152-272
+        // (output side). Values longer than the declared BMS width would cause
+        // silent hardware truncation in the CICS SEND-MAP layer (CWE-20).
+        checkPicLength("transactionName", transactionName,  4);  // TRNNAMEO PIC X(4)
+        checkPicLength("title1",          title1,          40);  // TITLE01O PIC X(40)
+        checkPicLength("currentDate",     currentDate,      8);  // CURDATEO PIC X(8)
+        checkPicLength("programName",     programName,      8);  // PGMNAMEO PIC X(8)
+        checkPicLength("title2",          title2,          40);  // TITLE02O PIC X(40)
+        checkPicLength("currentTime",     currentTime,      8);  // CURTIMEO PIC X(8)
+        checkPicLength("accountId",       accountId,       11);  // ACTIDINO PIC X(11)
+        checkPicLength("cardNumber",      cardNumber,      16);  // CARDNINO PIC X(16)
+        checkPicLength("typeCode",        typeCode,         2);  // TTYPCDO  PIC X(2)
+        checkPicLength("categoryCode",    categoryCode,     4);  // TCATCDO  PIC X(4)
+        checkPicLength("source",          source,          10);  // TRNSRCO  PIC X(10)
+        checkPicLength("description",     description,     60);  // TDESCO   PIC X(60)
+        checkPicLength("amount",          amount,          12);  // TRNAMTO  PIC X(12)
+        checkPicLength("origDate",        origDate,        10);  // TORIGDTO PIC X(10)
+        checkPicLength("procDate",        procDate,        10);  // TPROCDTO PIC X(10)
+        checkPicLength("merchantId",      merchantId,       9);  // MIDO     PIC X(9)
+        checkPicLength("merchantName",    merchantName,    30);  // MNAMEO   PIC X(30)
+        checkPicLength("merchantCity",    merchantCity,    25);  // MCITYO   PIC X(25)
+        checkPicLength("merchantZip",     merchantZip,     10);  // MZIPO    PIC X(10)
+        checkPicLength("confirmation",    confirmation,     1);  // CONFIRMO PIC X(1)
+        checkPicLength("errMsg",          errMsg,          78);  // ERRMSGO  PIC X(78)
+    }
+
+    /**
+     * Validates that a {@link String} component does not exceed its declared
+     * BMS {@code PIC X(n)} on-screen width.
+     *
+     * <p>Enforces the AAP &sect;0.7.1 Preserve-As-Is contract at the DTO
+     * boundary (CWE-20 input validation): values longer than the declared
+     * BMS width would cause silent hardware truncation in the CICS
+     * SEND-MAP layer. Shorter values are accepted unchanged.
+     *
+     * @param name      the component name (used in the exception message)
+     * @param value     the component value (never {@code null}: the caller
+     *                  guarantees non-null via {@code Objects.requireNonNull})
+     * @param maxLength the declared BMS {@code PIC X(n)} width
+     * @throws IllegalArgumentException if {@code value.length() > maxLength}
+     */
+    private static void checkPicLength(String name, String value, int maxLength) {
+        if (value.length() > maxLength) {
+            throw new IllegalArgumentException(
+                    name + " exceeds BMS PIC X(" + maxLength
+                            + ") declared length; received length="
+                            + value.length() + " value=\"" + value + "\"");
+        }
     }
 
     /**

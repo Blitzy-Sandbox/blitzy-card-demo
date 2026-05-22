@@ -5,37 +5,17 @@
  */
 package com.blitzy.carddemo.application.transaction;
 
-// JEP 511 (finalized in Java 25): a single declaration imports every package exported
-// by the java.base module (and by the modules it reads). This brings in:
-//   * java.lang.String         — used by every text-bearing record component (title1,
-//                                title2, transactionName, programName, currentDate,
-//                                currentTime, searchTransactionId, pageNum, errMsg,
-//                                and every field of the nested TransactionRow record);
-//   * java.util.List           — the row container type for the 10 TransactionRow
-//                                entries (modeling the COBOL OCCURS 10 TIMES idiom per
-//                                AAP §0.6.3);
-//   * java.util.List#copyOf    — invoked inside the compact constructor to defensively
-//                                snapshot the inbound row list into an unmodifiable
-//                                List, guaranteeing record immutability even when the
-//                                caller retains a reference to the original list;
-//   * java.util.ArrayList      — the mutable builder type used by empty() to allocate
-//                                a 10-element list before passing it to the canonical
-//                                constructor (the constructor then defensively copies
-//                                it, so the ArrayList does not escape);
-//   * java.util.Objects        — Objects.requireNonNull(...) for per-component null
-//                                checks in both the outer record's compact constructor
-//                                and the nested TransactionRow's compact constructor
-//                                (per AAP §0.6.3 / JEP 513 "validate before bind");
-//   * java.lang.IllegalArgumentException — raised when rows.size() != ROWS_PER_PAGE,
-//                                enforcing the COBOL fixed-cardinality OCCURS 10 TIMES
-//                                contract at construction time;
-//   * java.lang.NullPointerException     — raised (via Objects.requireNonNull) on any
-//                                null component, with the component name as the
-//                                exception detail message for fast diagnosis.
-// The file schema's external_imports list specifies exactly one entry — the java.base
-// module — and the internal_imports list is empty; no other import is permitted or
-// required on this file.
+// JEP 511 (finalized in Java 25): a single declaration imports every package exported by
+// the java.base module (and the modules it reads). This brings in java.lang.String — the
+// type of every BMS output-field component on this record. It also brings in the
+// exception classes IllegalArgumentException raised by checkPicLength when a component
+// value exceeds its declared BMS PIC X(n) width.
 import module java.base;
+
+// Module-import declarations may not import application-defined types; the COBOL
+// traceability annotation lives in carddemo-domain and must be brought in by a
+// conventional import.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
 
 /**
  * BMS output record carrying every value sent to the 3270 terminal for the
@@ -46,9 +26,8 @@ import module java.base;
  *   <li>BMS map definition: {@code app/bms/COTRN00.bms} (mapset {@code COTRN00},
  *       map {@code COTRN0A}, size 24x80, FREEKB, ALARM).</li>
  *   <li>Symbolic map copybook: {@code app/cpy-bms/COTRN00.CPY} (output group
- *       {@code 01 COTRN0AO REDEFINES COTRN0AI} containing 8 header echoes, 10
- *       SEL/TRNID/TDATE/TDESC/TAMT row clusters, and ERRMSG with its color
- *       attribute byte {@code ERRMSGC}).</li>
+ *       {@code 01 COTRN0AO REDEFINES COTRN0AI}, lines 374-728, with 59 PIC X
+ *       output leaves).</li>
  *   <li>Translated COBOL program: {@code app/cbl/COTRN00C.cbl} (transaction
  *       {@code CT00}).</li>
  * </ul>
@@ -63,41 +42,42 @@ import module java.base;
  * framework, no Spring binding, no Jakarta Bean Validation; the record is a plain
  * Java carrier built around finalized Java 25 language features only.
  *
+ * <h2>Field-for-field translation</h2>
+ * <p>The DTO carries <strong>all 59 PIC X output leaves</strong> declared by
+ * {@code COTRN0AO} (8 header echoes, 10 row clusters of 5 fields, and the
+ * error-message field). This is the raw entry-contract DTO mandated by AAP
+ * &sect;0.4.1: every symbolic-map leaf becomes a record component so that the
+ * Java code can prove byte-for-byte parity against the COBOL BMS-mapped layout.
+ * The {@code *C}, {@code *P}, {@code *H}, {@code *V} suffix fields are BMS
+ * attribute bytes (color, programmed symbol, highlight, validation) and are NOT
+ * primary leaves; they are not represented on this record and, if needed, will
+ * be modeled separately as a parallel attribute carrier.
+ *
  * <h2>Transaction-list semantics</h2>
  * <p>COTRN00 is the paginated <em>list / browse</em> screen for transactions. The
  * output side displays:
  * <ol>
  *   <li>A two-line title bar populated from the {@link com.blitzy.carddemo.domain.text.ScreenTitle}
- *       constants (mapped to {@link #title1()} and {@link #title2()}, both YELLOW).</li>
+ *       constants (mapped to {@link #title01()} and {@link #title02()}, both
+ *       YELLOW).</li>
  *   <li>Static header chrome &mdash; the transaction id, the program name, the
  *       current date in MM/DD/YY format, and the current time in HH:MM:SS format
- *       (mapped to {@link #transactionName()}, {@link #programName()},
- *       {@link #currentDate()}, {@link #currentTime()}).</li>
+ *       (mapped to {@link #trnName()}, {@link #pgmName()}, {@link #curDate()},
+ *       {@link #curTime()}).</li>
  *   <li>The pagination state &mdash; the current page number, typically formatted
- *       right-justified inside the {@code PAGENUM} field (mapped to {@link #pageNum()}).</li>
+ *       right-justified inside the {@code PAGENUM} field (mapped to
+ *       {@link #pageNum()}).</li>
  *   <li>The echoed transaction-id search filter, which on entry is the operator's
  *       typed value and on re-display is preserved across PF7/PF8 paging cycles
- *       (mapped to {@link #searchTransactionId()}, GREEN UNDERLINE).</li>
+ *       (mapped to {@link #trnIdIn()}, GREEN UNDERLINE).</li>
  *   <li>Ten rows of transaction data &mdash; one row per visible page entry &mdash;
  *       each composed of a selection cell, transaction id, formatted date,
- *       description, and signed-decimal amount (mapped to {@link #rows()}).</li>
+ *       description, and signed-decimal amount (mapped to {@link #sel0001()}
+ *       through {@link #tAmt010()}).</li>
  *   <li>A single-line error/info message field at row 23, 78 characters wide, BRT
- *       RED on error (mapped to {@link #errMsg()} and {@link #errMsgColor()}). The
- *       message is empty when no error has occurred.</li>
+ *       RED on error (mapped to {@link #errMsg()}). The message is empty when no
+ *       error has occurred.</li>
  * </ol>
- *
- * <h2>OCCURS 10 TIMES &rArr; {@code List<TransactionRow>}</h2>
- * <p>The COBOL symbolic copybook {@code COTRN0AO} declares ten parallel record
- * clusters &mdash; {@code SEL0001O/TRNID01O/TDATE01O/TDESC01O/TAMT001O} through
- * {@code SEL0010O/TRNID10O/TDATE10O/TDESC10O/TAMT010O}. Per AAP &sect;0.6.3 the
- * Java translation collapses those ten parallel-named leaves into a single
- * {@link java.util.List List&lt;TransactionRow&gt;}; the COBOL fixed cardinality of
- * ten is enforced by the compact constructor's size invariant
- * ({@link #ROWS_PER_PAGE} entries exactly). This is the same OCCURS-style
- * translation pattern documented for the sibling input DTO
- * {@link CoTrn00Input}; the only difference is that the output record carries five
- * fields per row (selection echo, transaction id, date, description, amount) while
- * the input record carries one field per row (the operator-entered selection).
  *
  * <h2>Date display format &mdash; MM/DD/YY (8 characters)</h2>
  * <p>The COTRN00 list displays dates in the short MM/DD/YY format (8 characters),
@@ -119,34 +99,33 @@ import module java.base;
  * carries only the pre-formatted string &mdash; no {@code BigDecimal}, no
  * {@code double}, no {@code float}, in compliance with AAP &sect;0.7.4.
  *
- * <h2>Null-handling discipline</h2>
- * <p>This record is <em>strict</em> about nulls. The compact constructor rejects any
- * {@code null} component with a {@link NullPointerException} via
- * {@link java.util.Objects#requireNonNull(Object, String)}; empty strings are
- * always accepted (they represent "no value" / SPACES in the COBOL idiom). The same
- * discipline applies to the nested {@link TransactionRow} record: every one of its
- * five components must be non-null, but the empty {@link String} {@code ""} is
- * accepted everywhere. This contract matches that of the sibling DTO
- * {@link CoTrn00Input}.
+ * <h2>Null and emptiness semantics</h2>
+ * <p>The compact constructor coerces every {@code null} {@link String} component
+ * to the empty {@link String} {@code ""}, matching the COBOL SEND-MAP idiom where
+ * unfilled BMS {@code PIC X(n)} fields are SPACES, never undefined. This contract
+ * matches that of the sibling DTO {@link CoTrn00Input}.
+ *
+ * <h2>PIC X(n) length validation (CWE-20)</h2>
+ * <p>Each {@link String} component is validated against its declared BMS
+ * {@code PIC X(n)} on-screen width. Values longer than the declared width are
+ * rejected with an {@link IllegalArgumentException} at construction time. This
+ * prevents silent hardware truncation in the CICS SEND-MAP layer and satisfies
+ * the AAP &sect;0.7.1 Preserve-As-Is contract at the DTO boundary.
  *
  * <h2>Immutability and concurrency</h2>
- * <p>Because this is a {@code record}, all components are {@code final} and accessors
- * are auto-generated; there are no setters and no mutable internal state. The
- * {@code rows} list is defensively copied via {@link java.util.List#copyOf} in the
- * compact constructor, yielding a fully immutable {@link java.util.List} whose
- * mutator methods throw {@link UnsupportedOperationException}. Each
- * {@link TransactionRow} is itself a record (immutable). The resulting instance is
- * safe to publish across virtual threads (per AAP &sect;0.6.6) without
- * synchronization.
+ * <p>Because this is a {@code record}, all components are {@code final} and
+ * accessors are auto-generated; there are no setters and no mutable internal
+ * state. The resulting instance is safe to publish across virtual threads (per
+ * AAP &sect;0.6.6) without synchronization.
  *
  * <h2>Forbidden idioms (per AAP)</h2>
  * <ul>
  *   <li>No Spring annotations &mdash; this record is plain Java.</li>
  *   <li>No Lombok &mdash; record components and accessors are explicit.</li>
- *   <li>No Jakarta Bean Validation &mdash; validation is hand-written in the compact
- *       constructor (see AAP &sect;0.6.3 / JEP 513).</li>
- *   <li>No {@code java.util.Date} or {@code java.util.Calendar} &mdash; date and time
- *       values are carried as preformatted {@link String} fields.</li>
+ *   <li>No Jakarta Bean Validation &mdash; validation is hand-written in the
+ *       compact constructor (see AAP &sect;0.6.3 / JEP 513).</li>
+ *   <li>No {@code java.util.Date} or {@code java.util.Calendar} &mdash; date and
+ *       time values are carried as preformatted {@link String} fields.</li>
  *   <li>No {@code double} or {@code float} &mdash; the amount field per row is
  *       carried as a preformatted {@link String} (the upstream code converts from
  *       {@link java.math.BigDecimal} via the {@code Decimals} utility).</li>
@@ -154,447 +133,407 @@ import module java.base;
  *       JEP 511 module import, JEP 513 flexible constructor bodies).</li>
  * </ul>
  *
- * <h2>Field-by-field mapping</h2>
- * <p>Mapping from BMS symbolic copybook {@code COTRN0AO} (output view, the
- * REDEFINES of {@code COTRN0AI}) to Java record components. The PIC column shows
- * the COBOL PICTURE clause; lengths are fixed and preserved by the runtime that
- * converts this Java record into the 3270 SEND-MAP wire format.
- * <ul>
- *   <li>{@code TRNNAMEO} &mdash; X(4)  &mdash; {@link #transactionName()}</li>
- *   <li>{@code TITLE01O} &mdash; X(40) &mdash; {@link #title1()}</li>
- *   <li>{@code CURDATEO} &mdash; X(8)  &mdash; {@link #currentDate()} (MM/DD/YY)</li>
- *   <li>{@code PGMNAMEO} &mdash; X(8)  &mdash; {@link #programName()}</li>
- *   <li>{@code TITLE02O} &mdash; X(40) &mdash; {@link #title2()}</li>
- *   <li>{@code CURTIMEO} &mdash; X(8)  &mdash; {@link #currentTime()} (HH:MM:SS)</li>
- *   <li>{@code PAGENUMO} &mdash; X(8)  &mdash; {@link #pageNum()}</li>
- *   <li>{@code TRNIDINO} &mdash; X(16) &mdash; {@link #searchTransactionId()}</li>
- *   <li>{@code SEL{NN}O / TRNID{NN}O / TDATE{NN}O / TDESC{NN}O / TAMT{NN}O} for NN =
- *       01..10 &mdash; {@link #rows()} entries 0..9, each a {@link TransactionRow}
- *       with components {@code selection}, {@code transactionId}, {@code date},
- *       {@code description}, {@code amount}</li>
- *   <li>{@code ERRMSGO} &mdash; X(78) &mdash; {@link #errMsg()}</li>
- *   <li>{@code ERRMSGC} &mdash; PIC X (BMS color attribute byte) &mdash;
- *       {@link #errMsgColor()} (a typed {@link FieldColor} value)</li>
- * </ul>
- *
- * @param title1               TITLE01O echo &mdash; line 1 of the screen title
- *                             (40 chars, YELLOW). Populated by the controller from
- *                             {@code ScreenTitle.TITLE_01}. Must not be
- *                             {@code null}; empty string is accepted.
- * @param title2               TITLE02O echo &mdash; line 2 of the screen title
- *                             (40 chars, YELLOW). Populated by the controller from
- *                             {@code ScreenTitle.TITLE_02}. Must not be
- *                             {@code null}; empty string is accepted.
- * @param transactionName      TRNNAMEO echo &mdash; the four-character transaction
- *                             id ({@code "CT00"} for this screen), header bar.
- *                             Must not be {@code null}; empty string is accepted.
- * @param programName          PGMNAMEO echo &mdash; the eight-character program
- *                             name ({@code "COTRN00C"} for this screen), header
- *                             bar. Must not be {@code null}; empty string is
- *                             accepted.
- * @param currentDate          CURDATEO echo &mdash; the current date formatted as
- *                             MM/DD/YY (8 chars). Must not be {@code null}; empty
- *                             string is accepted.
- * @param currentTime          CURTIMEO echo &mdash; the current time formatted as
- *                             HH:MM:SS (8 chars). Must not be {@code null}; empty
- *                             string is accepted.
- * @param searchTransactionId  TRNIDINO echo &mdash; the operator's most recently
- *                             entered search filter (16 chars). Re-displayed across
- *                             PF7/PF8 paging cycles. Must not be {@code null};
- *                             empty string is accepted.
- * @param pageNum              PAGENUMO display &mdash; the current page number
- *                             string (8 chars, typically right-justified
- *                             {@code "      1"}, {@code "      2"}, ...). Must not
- *                             be {@code null}; empty string is accepted.
- * @param rows                 Exactly {@link #ROWS_PER_PAGE} {@link TransactionRow}
- *                             entries, one per page row. Must not be {@code null};
- *                             list is defensively copied to an unmodifiable
- *                             snapshot in the compact constructor.
- * @param errMsg               ERRMSGO display &mdash; the single-line error or
- *                             informational message (78 chars, BRT RED on error).
- *                             Must not be {@code null}; empty string means
- *                             no error.
- * @param errMsgColor          ERRMSGC display &mdash; the BMS color attribute byte
- *                             for the {@link #errMsg()} field. Set to
- *                             {@link FieldColor#RED} when the controller emits an
- *                             error condition; {@link FieldColor#DEFAULT} otherwise.
- *                             Must not be {@code null}.
- *
  * @see com.blitzy.carddemo.application.transaction.CoTrn00Input
- * @see com.blitzy.carddemo.application.transaction.CoTrn00Output.TransactionRow
- * @see com.blitzy.carddemo.application.transaction.CoTrn00Output.FieldColor
  * @since 1.0.0
  */
+@CobolProgram(
+        value = "COTRN00",
+        sourcePath = "app/bms/COTRN00.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (output side); symbolic copybook COTRN0AO "
+                + "REDEFINES COTRN0AI in app/cpy-bms/COTRN00.CPY lines 374-728. "
+                + "Field-for-field translation of all 59 PIC X output leaves: 8 "
+                + "header echoes, 10 row clusters of 5 fields "
+                + "(sel/trnId/tDate/tDesc/tAmt), and the error-message field. "
+                + "PIC X(n) widths enforced at construction time. The *C, *P, "
+                + "*H, *V suffix fields are BMS attribute bytes and are not "
+                + "primary leaves; they are not represented on this DTO."
+)
 public record CoTrn00Output(
-        String title1,
-        String title2,
-        String transactionName,
-        String programName,
-        String currentDate,
-        String currentTime,
-        String searchTransactionId,
-        String pageNum,
-        List<TransactionRow> rows,
-        String errMsg,
-        FieldColor errMsgColor) {
+
+        // ============================================================================
+        // Header fields (rows 1-2 of the 24x80 BMS map, plus PAGENUM on row 3).
+        // ============================================================================
+        String trnName,    // TRNNAMEO  PIC X(4)
+        String title01,    // TITLE01O  PIC X(40)
+        String curDate,    // CURDATEO  PIC X(8)   — MM/DD/YY
+        String pgmName,    // PGMNAMEO  PIC X(8)
+        String title02,    // TITLE02O  PIC X(40)
+        String curTime,    // CURTIMEO  PIC X(8)   — HH:MM:SS
+        String pageNum,    // PAGENUMO  PIC X(8)
+
+        // ============================================================================
+        // Transaction-id positioning key — echoed from the input side and
+        // re-displayed across PF7/PF8 paging cycles.
+        // ============================================================================
+        String trnIdIn,    // TRNIDINO  PIC X(16)
+
+        // ============================================================================
+        // Row 1 — selection echo + display fields.
+        // ============================================================================
+        String sel0001,    // SEL0001O  PIC X(1)
+        String trnId01,    // TRNID01O  PIC X(16)
+        String tDate01,    // TDATE01O  PIC X(8)
+        String tDesc01,    // TDESC01O  PIC X(26)
+        String tAmt001,    // TAMT001O  PIC X(12)
+
+        // Row 2
+        String sel0002,    // SEL0002O  PIC X(1)
+        String trnId02,    // TRNID02O  PIC X(16)
+        String tDate02,    // TDATE02O  PIC X(8)
+        String tDesc02,    // TDESC02O  PIC X(26)
+        String tAmt002,    // TAMT002O  PIC X(12)
+
+        // Row 3
+        String sel0003,    // SEL0003O  PIC X(1)
+        String trnId03,    // TRNID03O  PIC X(16)
+        String tDate03,    // TDATE03O  PIC X(8)
+        String tDesc03,    // TDESC03O  PIC X(26)
+        String tAmt003,    // TAMT003O  PIC X(12)
+
+        // Row 4
+        String sel0004,    // SEL0004O  PIC X(1)
+        String trnId04,    // TRNID04O  PIC X(16)
+        String tDate04,    // TDATE04O  PIC X(8)
+        String tDesc04,    // TDESC04O  PIC X(26)
+        String tAmt004,    // TAMT004O  PIC X(12)
+
+        // Row 5
+        String sel0005,    // SEL0005O  PIC X(1)
+        String trnId05,    // TRNID05O  PIC X(16)
+        String tDate05,    // TDATE05O  PIC X(8)
+        String tDesc05,    // TDESC05O  PIC X(26)
+        String tAmt005,    // TAMT005O  PIC X(12)
+
+        // Row 6
+        String sel0006,    // SEL0006O  PIC X(1)
+        String trnId06,    // TRNID06O  PIC X(16)
+        String tDate06,    // TDATE06O  PIC X(8)
+        String tDesc06,    // TDESC06O  PIC X(26)
+        String tAmt006,    // TAMT006O  PIC X(12)
+
+        // Row 7
+        String sel0007,    // SEL0007O  PIC X(1)
+        String trnId07,    // TRNID07O  PIC X(16)
+        String tDate07,    // TDATE07O  PIC X(8)
+        String tDesc07,    // TDESC07O  PIC X(26)
+        String tAmt007,    // TAMT007O  PIC X(12)
+
+        // Row 8
+        String sel0008,    // SEL0008O  PIC X(1)
+        String trnId08,    // TRNID08O  PIC X(16)
+        String tDate08,    // TDATE08O  PIC X(8)
+        String tDesc08,    // TDESC08O  PIC X(26)
+        String tAmt008,    // TAMT008O  PIC X(12)
+
+        // Row 9
+        String sel0009,    // SEL0009O  PIC X(1)
+        String trnId09,    // TRNID09O  PIC X(16)
+        String tDate09,    // TDATE09O  PIC X(8)
+        String tDesc09,    // TDESC09O  PIC X(26)
+        String tAmt009,    // TAMT009O  PIC X(12)
+
+        // Row 10
+        String sel0010,    // SEL0010O  PIC X(1)
+        String trnId10,    // TRNID10O  PIC X(16)
+        String tDate10,    // TDATE10O  PIC X(8)
+        String tDesc10,    // TDESC10O  PIC X(26)
+        String tAmt010,    // TAMT010O  PIC X(12)
+
+        // ============================================================================
+        // Error-message display (row 23).
+        // ============================================================================
+        String errMsg      // ERRMSGO   PIC X(78)
+
+) {
 
     /**
      * The number of selectable rows per COTRN00 page.
      *
-     * <p>Mirrors the fixed COBOL constant in {@code COTRN00C} and the static layout
-     * of {@code COTRN00.bms}: ten {@code SEL{NN}O / TRNID{NN}O / TDATE{NN}O /
-     * TDESC{NN}O / TAMT{NN}O} field clusters in the symbolic copybook
-     * {@code COTRN0AO}. The value is also used by the sibling input DTO
-     * {@link CoTrn00Input#ROWS_PER_PAGE} so that the two sides of the BMS contract
-     * remain in lock-step. Used by:
-     * <ul>
-     *   <li>The compact constructor's size invariant (rejects any list whose size
-     *       differs from this constant).</li>
-     *   <li>{@link #empty()} as the loop count for pre-populating ten blank
-     *       {@link TransactionRow} entries.</li>
-     *   <li>External callers (the {@code CoTrn00C} controller) when they iterate
-     *       the row list to populate per-row fields or compute page offsets.</li>
-     * </ul>
+     * <p>Mirrors the fixed COBOL constant in {@code COTRN00C} and the static
+     * layout of {@code COTRN00.bms}: ten {@code SEL{NN}O / TRNID{NN}O /
+     * TDATE{NN}O / TDESC{NN}O / TAMT{NN}O} field clusters in the symbolic
+     * copybook {@code COTRN0AO}. The value matches the sibling input DTO's
+     * {@link CoTrn00Input#ROWS_PER_PAGE} so that the two sides of the BMS
+     * contract remain in lock-step.
      */
     public static final int ROWS_PER_PAGE = 10;
 
     /**
-     * A single row in the transaction list, mapping to one of the ten
-     * {@code SEL{NN}O / TRNID{NN}O / TDATE{NN}O / TDESC{NN}O / TAMT{NN}O} clusters
-     * in the BMS symbolic copybook {@code COTRN0AO}.
-     *
-     * <h2>BMS field origin</h2>
-     * <p>Each cluster contributes five output fields to the 3270 SEND-MAP payload:
-     * <ul>
-     *   <li>{@code SEL{NN}O}   &mdash; PIC X(1)  &mdash; {@link #selection()}</li>
-     *   <li>{@code TRNID{NN}O} &mdash; PIC X(16) &mdash; {@link #transactionId()}</li>
-     *   <li>{@code TDATE{NN}O} &mdash; PIC X(8)  &mdash; {@link #date()}</li>
-     *   <li>{@code TDESC{NN}O} &mdash; PIC X(26) &mdash; {@link #description()}</li>
-     *   <li>{@code TAMT{NN}O}  &mdash; PIC X(12) &mdash; {@link #amount()}</li>
-     * </ul>
-     * The numbering {@code NN} ranges over {@code 01}..{@code 10} for the five
-     * non-amount fields; the amount field is numbered {@code TAMT001O}..{@code TAMT010O}
-     * (three digits) in the COBOL source. The Java translation flattens both
-     * numbering schemes into the index of the enclosing {@link CoTrn00Output#rows()}
-     * list.
-     *
-     * <h2>Selection semantics</h2>
-     * <p>The {@code selection} field carries an echo of the operator-entered SEL
-     * value from the input side ({@code SEL{NN}I} in {@code COTRN0AI}). On output
-     * it is typically the empty {@link String} (blank cell) or a single space (the
-     * COBOL SPACES idiom). The controller may also set it to {@code "S"} or
-     * {@code "s"} to preserve the operator's pick across screen redraws when the
-     * controller chooses not to clear the field before sending the map back.
-     *
-     * <h2>Display formats</h2>
-     * <p>The {@code date} field is the MM/DD/YY-formatted display string (8 chars)
-     * derived in the COBOL {@code POPULATE-TRAN-DATA} paragraph from
-     * {@code TRAN-ORIG-TS PIC X(26)} (format {@code YYYY-MM-DD HH:MM:SS.SSSSSS}).
-     * The {@code amount} field is the signed-decimal 12-character display
-     * ({@code PIC +99999999.99}) derived from the {@code BigDecimal} transaction
-     * amount via the {@code Decimals} utility. Per AAP &sect;0.7.4, no
-     * {@code double} / {@code float} types are used at any point in the pipeline.
-     *
-     * <h2>Null-handling discipline</h2>
-     * <p>Every component must be non-null. The compact constructor enforces this
-     * via {@link java.util.Objects#requireNonNull(Object, String)} with the
-     * component name as the diagnostic message. Empty strings are accepted and
-     * represent SPACES in the COBOL idiom.
-     *
-     * @param selection      SEL value echo (1 char) &mdash; usually empty,
-     *                       {@code " "}, {@code "S"}, or {@code "s"}. Must not be
-     *                       {@code null}.
-     * @param transactionId  TRNID display (16 chars). Must not be {@code null};
-     *                       empty string represents a blank row.
-     * @param date           TDATE display (8 chars, MM/DD/YY). Must not be
-     *                       {@code null}; empty string represents a blank row.
-     * @param description    TDESC display (26 chars) &mdash; derived from
-     *                       {@code TRAN-DESC} in the underlying transaction record.
-     *                       Must not be {@code null}; empty string represents a
-     *                       blank row.
-     * @param amount         TAMT display (12 chars, +99999999.99 format). Must not
-     *                       be {@code null}; empty string represents a blank row.
-     *
-     * @since 1.0.0
-     */
-    public record TransactionRow(
-            String selection,
-            String transactionId,
-            String date,
-            String description,
-            String amount) {
-
-        /**
-         * Compact (canonical) constructor for {@link TransactionRow}.
-         *
-         * <p>Per AAP &sect;0.6.3 / JEP 513 (Flexible Constructor Bodies, finalized
-         * in Java 25), the validation logic runs before the implicit canonical
-         * field-assignment. Each component is null-checked via
-         * {@link java.util.Objects#requireNonNull(Object, String)}; empty strings
-         * are accepted everywhere.
-         *
-         * @throws NullPointerException if any component is {@code null}, with the
-         *                              component name as the exception message
-         */
-        public TransactionRow {
-            Objects.requireNonNull(selection, "selection");
-            Objects.requireNonNull(transactionId, "transactionId");
-            Objects.requireNonNull(date, "date");
-            Objects.requireNonNull(description, "description");
-            Objects.requireNonNull(amount, "amount");
-        }
-
-        /**
-         * Returns a fully-blank {@link TransactionRow}: every component is the
-         * empty {@link String} {@code ""}. Used by {@link CoTrn00Output#empty()} to
-         * pre-populate the ten-row list, and by the controller when it needs to
-         * blank-out a row beyond the last data row on the current page.
-         *
-         * <p>This mirrors the COBOL idiom of {@code MOVE LOW-VALUES} (or
-         * equivalently {@code MOVE SPACES}) to every output field of a row cluster
-         * when the row has no data to display.
-         *
-         * @return a {@code TransactionRow} with all five components set to
-         *         {@code ""} (never {@code null})
-         */
-        public static TransactionRow empty() {
-            return new TransactionRow("", "", "", "", "");
-        }
-    }
-
-    /**
-     * BMS field-color attribute, modeling the discrete set of color values
-     * supported by the 3270 protocol's {@code COLOR=} clause and the symbolic
-     * copybook's per-field color byte (e.g., {@code ERRMSGC PIC X}).
-     *
-     * <p>This enum is the typed Java equivalent of the COBOL color attribute byte:
-     * <ul>
-     *   <li>{@link #DEFAULT}   &mdash; "no override" (the BMS field's compile-time
-     *       COLOR= setting is used). Emitted as a low-value byte in the COBOL
-     *       attribute character per CICS convention.</li>
-     *   <li>{@link #NEUTRAL}   &mdash; CICS-default white/cream tone (COLOR=NEUTRAL
-     *       in BMS).</li>
-     *   <li>{@link #BLUE}      &mdash; COLOR=BLUE.</li>
-     *   <li>{@link #GREEN}     &mdash; COLOR=GREEN.</li>
-     *   <li>{@link #YELLOW}    &mdash; COLOR=YELLOW.</li>
-     *   <li>{@link #RED}       &mdash; COLOR=RED; used for the
-     *       {@link CoTrn00Output#errMsgColor() error-message field} on error.</li>
-     *   <li>{@link #TURQUOISE} &mdash; COLOR=TURQUOISE.</li>
-     *   <li>{@link #PINK}      &mdash; COLOR=PINK.</li>
-     *   <li>{@link #WHITE}     &mdash; COLOR=WHITE.</li>
-     * </ul>
-     *
-     * <p>The enum is used by {@link CoTrn00Output#errMsgColor()} to map the
-     * symbolic copybook field {@code ERRMSGC} (the BMS attribute character byte
-     * for the ERRMSG field) into a typed Java value. Per AAP &sect;0.6.10 the
-     * AID-key dispatch uses a sealed-interface hierarchy (because AID keys
-     * partition a value space with no payload), but the field-color attribute is a
-     * closed set of opaque dispatch tokens with no payload, which makes a plain
-     * {@code enum} the idiomatic Java representation.
-     *
-     * @since 1.0.0
-     */
-    public enum FieldColor {
-
-        /**
-         * No color override &mdash; the BMS map's compile-time {@code COLOR=}
-         * setting is used. The default value for fields that do not need dynamic
-         * coloring.
-         */
-        DEFAULT,
-
-        /** CICS-default white/cream tone (BMS {@code COLOR=NEUTRAL}). */
-        NEUTRAL,
-
-        /** Blue (BMS {@code COLOR=BLUE}). */
-        BLUE,
-
-        /** Green (BMS {@code COLOR=GREEN}). */
-        GREEN,
-
-        /** Yellow (BMS {@code COLOR=YELLOW}). */
-        YELLOW,
-
-        /**
-         * Red (BMS {@code COLOR=RED}) &mdash; used for the
-         * {@link CoTrn00Output#errMsgColor() error-message field} on error
-         * conditions per the BMS map's {@code ERRMSG ATTRB=(ASKIP,BRT,FSET)
-         * COLOR=RED} declaration.
-         */
-        RED,
-
-        /** Turquoise (BMS {@code COLOR=TURQUOISE}). */
-        TURQUOISE,
-
-        /** Pink (BMS {@code COLOR=PINK}). */
-        PINK,
-
-        /** White (BMS {@code COLOR=WHITE}). */
-        WHITE
-    }
-
-    /**
      * Compact (canonical) constructor.
      *
-     * <p>Enforces three invariants on every constructed instance:
-     * <ol>
-     *   <li><strong>Non-null components.</strong> Each of the eleven components must
-     *       be non-null. A {@code null} argument is rejected with a
-     *       {@link NullPointerException} carrying the offending component name. The
-     *       COBOL idiom (SEND-MAP fields are always SPACES, never undefined)
-     *       translates to the Java discipline of carrying the empty {@link String}
-     *       for "no value" rather than {@code null}. The {@link FieldColor}
-     *       sentinel {@link FieldColor#DEFAULT} plays the same role for the
-     *       attribute-byte component.</li>
-     *   <li><strong>Fixed row count.</strong> {@code rows} must contain exactly
-     *       {@link #ROWS_PER_PAGE} entries. The COBOL symbolic copybook
-     *       {@code COTRN0AO} declares ten parallel row clusters, so any other list
-     *       length would silently misalign the Java-to-COBOL row mapping.</li>
-     *   <li><strong>No null row entries.</strong> The defensive copy via
-     *       {@link java.util.List#copyOf(java.util.Collection)} additionally
-     *       enforces that no entry in {@code rows} is {@code null}; {@code copyOf}
-     *       throws {@link NullPointerException} on any {@code null} element. The
-     *       resulting list is itself unmodifiable.</li>
-     * </ol>
-     * After the invariants are satisfied, the {@code rows} parameter is
-     * <strong>reassigned</strong> to the defensive immutable copy. This ensures
-     * the record's stored list is unaffected by any subsequent mutation the caller
-     * may perform on the original list reference, and that consumers iterating
-     * {@link #rows()} cannot modify the underlying storage.
+     * <p>Normalizes every {@link String} component so that a {@code null}
+     * reference is converted to the empty {@link String} {@code ""}. This
+     * mirrors COBOL SEND-MAP semantics where unfilled BMS {@code PIC X(n)}
+     * fields are SPACES, never undefined.
      *
-     * <p>This constructor takes advantage of <strong>JEP 513 Flexible Constructor
-     * Bodies</strong> (finalized in Java 25): each validation statement runs before
-     * the implicit canonical field-assignment, which is exactly the place to
-     * capture COBOL-style "validate before bind" semantics described in AAP
-     * &sect;0.6.3.
+     * <p>Subsequently validates that each {@link String} component does not
+     * exceed its declared BMS {@code PIC X(n)} on-screen width: values longer
+     * than the declared width raise an {@link IllegalArgumentException}
+     * (CWE-20 input validation). Shorter values are accepted unchanged.
      *
-     * @throws NullPointerException     if any component is {@code null}, with the
-     *                                  component name as the exception detail
-     *                                  message; or if any entry within
-     *                                  {@code rows} is {@code null} (thrown by
-     *                                  {@link java.util.List#copyOf})
-     * @throws IllegalArgumentException if {@code rows.size()} is not
-     *                                  {@link #ROWS_PER_PAGE}
+     * <p>Uses <strong>JEP 513 Flexible Constructor Bodies</strong> (finalized
+     * in Java 25): normalization and validation statements run before the
+     * implicit canonical field-assignment, which is exactly the location for
+     * COBOL-style "default to SPACES then validate length" cleansing.
+     *
+     * @throws IllegalArgumentException if any {@link String} component exceeds
+     *                                  its declared BMS {@code PIC X(n)} width
      */
     public CoTrn00Output {
-        Objects.requireNonNull(title1, "title1");
-        Objects.requireNonNull(title2, "title2");
-        Objects.requireNonNull(transactionName, "transactionName");
-        Objects.requireNonNull(programName, "programName");
-        Objects.requireNonNull(currentDate, "currentDate");
-        Objects.requireNonNull(currentTime, "currentTime");
-        Objects.requireNonNull(searchTransactionId, "searchTransactionId");
-        Objects.requireNonNull(pageNum, "pageNum");
-        Objects.requireNonNull(rows, "rows");
-        Objects.requireNonNull(errMsg, "errMsg");
-        Objects.requireNonNull(errMsgColor, "errMsgColor");
-        if (rows.size() != ROWS_PER_PAGE) {
-            throw new IllegalArgumentException(
-                    "rows must contain exactly " + ROWS_PER_PAGE
-                            + " entries, but received " + rows.size());
-        }
-        // Defensive immutable copy. List.copyOf returns an unmodifiable List whose
-        // contents are a snapshot of the argument at copy time; subsequent mutation
-        // of the original list does not affect the stored copy. List.copyOf also
-        // throws NullPointerException if any element is null, enforcing the
-        // "no null row entries" invariant without an explicit per-element check.
-        rows = List.copyOf(rows);
+        // Header (8)
+        trnName  = orEmpty(trnName);
+        title01  = orEmpty(title01);
+        curDate  = orEmpty(curDate);
+        pgmName  = orEmpty(pgmName);
+        title02  = orEmpty(title02);
+        curTime  = orEmpty(curTime);
+        pageNum  = orEmpty(pageNum);
+        trnIdIn  = orEmpty(trnIdIn);
+        // Row 1 (5)
+        sel0001  = orEmpty(sel0001);
+        trnId01  = orEmpty(trnId01);
+        tDate01  = orEmpty(tDate01);
+        tDesc01  = orEmpty(tDesc01);
+        tAmt001  = orEmpty(tAmt001);
+        // Row 2 (5)
+        sel0002  = orEmpty(sel0002);
+        trnId02  = orEmpty(trnId02);
+        tDate02  = orEmpty(tDate02);
+        tDesc02  = orEmpty(tDesc02);
+        tAmt002  = orEmpty(tAmt002);
+        // Row 3 (5)
+        sel0003  = orEmpty(sel0003);
+        trnId03  = orEmpty(trnId03);
+        tDate03  = orEmpty(tDate03);
+        tDesc03  = orEmpty(tDesc03);
+        tAmt003  = orEmpty(tAmt003);
+        // Row 4 (5)
+        sel0004  = orEmpty(sel0004);
+        trnId04  = orEmpty(trnId04);
+        tDate04  = orEmpty(tDate04);
+        tDesc04  = orEmpty(tDesc04);
+        tAmt004  = orEmpty(tAmt004);
+        // Row 5 (5)
+        sel0005  = orEmpty(sel0005);
+        trnId05  = orEmpty(trnId05);
+        tDate05  = orEmpty(tDate05);
+        tDesc05  = orEmpty(tDesc05);
+        tAmt005  = orEmpty(tAmt005);
+        // Row 6 (5)
+        sel0006  = orEmpty(sel0006);
+        trnId06  = orEmpty(trnId06);
+        tDate06  = orEmpty(tDate06);
+        tDesc06  = orEmpty(tDesc06);
+        tAmt006  = orEmpty(tAmt006);
+        // Row 7 (5)
+        sel0007  = orEmpty(sel0007);
+        trnId07  = orEmpty(trnId07);
+        tDate07  = orEmpty(tDate07);
+        tDesc07  = orEmpty(tDesc07);
+        tAmt007  = orEmpty(tAmt007);
+        // Row 8 (5)
+        sel0008  = orEmpty(sel0008);
+        trnId08  = orEmpty(trnId08);
+        tDate08  = orEmpty(tDate08);
+        tDesc08  = orEmpty(tDesc08);
+        tAmt008  = orEmpty(tAmt008);
+        // Row 9 (5)
+        sel0009  = orEmpty(sel0009);
+        trnId09  = orEmpty(trnId09);
+        tDate09  = orEmpty(tDate09);
+        tDesc09  = orEmpty(tDesc09);
+        tAmt009  = orEmpty(tAmt009);
+        // Row 10 (5)
+        sel0010  = orEmpty(sel0010);
+        trnId10  = orEmpty(trnId10);
+        tDate10  = orEmpty(tDate10);
+        tDesc10  = orEmpty(tDesc10);
+        tAmt010  = orEmpty(tAmt010);
+        // Footer (1)
+        errMsg   = orEmpty(errMsg);
+
+        // PIC X(n) fixed-length validation per app/cpy-bms/COTRN00.CPY lines 374-728.
+        checkPicLength("trnName",  trnName,   4);  // TRNNAMEO  PIC X(4)
+        checkPicLength("title01",  title01,  40);  // TITLE01O  PIC X(40)
+        checkPicLength("curDate",  curDate,   8);  // CURDATEO  PIC X(8)
+        checkPicLength("pgmName",  pgmName,   8);  // PGMNAMEO  PIC X(8)
+        checkPicLength("title02",  title02,  40);  // TITLE02O  PIC X(40)
+        checkPicLength("curTime",  curTime,   8);  // CURTIMEO  PIC X(8)
+        checkPicLength("pageNum",  pageNum,   8);  // PAGENUMO  PIC X(8)
+        checkPicLength("trnIdIn",  trnIdIn,  16);  // TRNIDINO  PIC X(16)
+        checkPicLength("sel0001",  sel0001,   1);  // SEL0001O  PIC X(1)
+        checkPicLength("trnId01",  trnId01,  16);  // TRNID01O  PIC X(16)
+        checkPicLength("tDate01",  tDate01,   8);  // TDATE01O  PIC X(8)
+        checkPicLength("tDesc01",  tDesc01,  26);  // TDESC01O  PIC X(26)
+        checkPicLength("tAmt001",  tAmt001,  12);  // TAMT001O  PIC X(12)
+        checkPicLength("sel0002",  sel0002,   1);  // SEL0002O  PIC X(1)
+        checkPicLength("trnId02",  trnId02,  16);  // TRNID02O  PIC X(16)
+        checkPicLength("tDate02",  tDate02,   8);  // TDATE02O  PIC X(8)
+        checkPicLength("tDesc02",  tDesc02,  26);  // TDESC02O  PIC X(26)
+        checkPicLength("tAmt002",  tAmt002,  12);  // TAMT002O  PIC X(12)
+        checkPicLength("sel0003",  sel0003,   1);  // SEL0003O  PIC X(1)
+        checkPicLength("trnId03",  trnId03,  16);  // TRNID03O  PIC X(16)
+        checkPicLength("tDate03",  tDate03,   8);  // TDATE03O  PIC X(8)
+        checkPicLength("tDesc03",  tDesc03,  26);  // TDESC03O  PIC X(26)
+        checkPicLength("tAmt003",  tAmt003,  12);  // TAMT003O  PIC X(12)
+        checkPicLength("sel0004",  sel0004,   1);  // SEL0004O  PIC X(1)
+        checkPicLength("trnId04",  trnId04,  16);  // TRNID04O  PIC X(16)
+        checkPicLength("tDate04",  tDate04,   8);  // TDATE04O  PIC X(8)
+        checkPicLength("tDesc04",  tDesc04,  26);  // TDESC04O  PIC X(26)
+        checkPicLength("tAmt004",  tAmt004,  12);  // TAMT004O  PIC X(12)
+        checkPicLength("sel0005",  sel0005,   1);  // SEL0005O  PIC X(1)
+        checkPicLength("trnId05",  trnId05,  16);  // TRNID05O  PIC X(16)
+        checkPicLength("tDate05",  tDate05,   8);  // TDATE05O  PIC X(8)
+        checkPicLength("tDesc05",  tDesc05,  26);  // TDESC05O  PIC X(26)
+        checkPicLength("tAmt005",  tAmt005,  12);  // TAMT005O  PIC X(12)
+        checkPicLength("sel0006",  sel0006,   1);  // SEL0006O  PIC X(1)
+        checkPicLength("trnId06",  trnId06,  16);  // TRNID06O  PIC X(16)
+        checkPicLength("tDate06",  tDate06,   8);  // TDATE06O  PIC X(8)
+        checkPicLength("tDesc06",  tDesc06,  26);  // TDESC06O  PIC X(26)
+        checkPicLength("tAmt006",  tAmt006,  12);  // TAMT006O  PIC X(12)
+        checkPicLength("sel0007",  sel0007,   1);  // SEL0007O  PIC X(1)
+        checkPicLength("trnId07",  trnId07,  16);  // TRNID07O  PIC X(16)
+        checkPicLength("tDate07",  tDate07,   8);  // TDATE07O  PIC X(8)
+        checkPicLength("tDesc07",  tDesc07,  26);  // TDESC07O  PIC X(26)
+        checkPicLength("tAmt007",  tAmt007,  12);  // TAMT007O  PIC X(12)
+        checkPicLength("sel0008",  sel0008,   1);  // SEL0008O  PIC X(1)
+        checkPicLength("trnId08",  trnId08,  16);  // TRNID08O  PIC X(16)
+        checkPicLength("tDate08",  tDate08,   8);  // TDATE08O  PIC X(8)
+        checkPicLength("tDesc08",  tDesc08,  26);  // TDESC08O  PIC X(26)
+        checkPicLength("tAmt008",  tAmt008,  12);  // TAMT008O  PIC X(12)
+        checkPicLength("sel0009",  sel0009,   1);  // SEL0009O  PIC X(1)
+        checkPicLength("trnId09",  trnId09,  16);  // TRNID09O  PIC X(16)
+        checkPicLength("tDate09",  tDate09,   8);  // TDATE09O  PIC X(8)
+        checkPicLength("tDesc09",  tDesc09,  26);  // TDESC09O  PIC X(26)
+        checkPicLength("tAmt009",  tAmt009,  12);  // TAMT009O  PIC X(12)
+        checkPicLength("sel0010",  sel0010,   1);  // SEL0010O  PIC X(1)
+        checkPicLength("trnId10",  trnId10,  16);  // TRNID10O  PIC X(16)
+        checkPicLength("tDate10",  tDate10,   8);  // TDATE10O  PIC X(8)
+        checkPicLength("tDesc10",  tDesc10,  26);  // TDESC10O  PIC X(26)
+        checkPicLength("tAmt010",  tAmt010,  12);  // TAMT010O  PIC X(12)
+        checkPicLength("errMsg",   errMsg,   78);  // ERRMSGO   PIC X(78)
     }
 
     /**
-     * Returns an "empty" output record suitable for the initial COTRN00 send-map
-     * cycle: every text component is the empty {@link String}, the ten
-     * {@link #rows()} entries are each a fully-blank {@link TransactionRow}, and
-     * the error-message color is {@link FieldColor#DEFAULT}.
+     * Returns the argument if non-null, or the empty string {@code ""} otherwise.
+     *
+     * @param s the candidate string (may be {@code null})
+     * @return {@code s} if non-null, otherwise {@code ""}
+     */
+    private static String orEmpty(String s) {
+        return (s == null) ? "" : s;
+    }
+
+    /**
+     * Validates that a {@link String} component does not exceed its declared BMS
+     * {@code PIC X(n)} on-screen width.
+     *
+     * <p>Enforces the AAP &sect;0.7.1 Preserve-As-Is contract at the DTO
+     * boundary (CWE-20 input validation): values longer than the declared BMS
+     * width would cause silent hardware truncation in the CICS SEND-MAP layer.
+     * Shorter values are accepted unchanged.
+     *
+     * @param name      the component name (used in the exception message)
+     * @param value     the component value (never {@code null}: the caller
+     *                  guarantees normalization via {@link #orEmpty(String)})
+     * @param maxLength the declared BMS {@code PIC X(n)} width
+     * @throws IllegalArgumentException if {@code value.length() > maxLength}
+     */
+    private static void checkPicLength(String name, String value, int maxLength) {
+        if (value.length() > maxLength) {
+            throw new IllegalArgumentException(
+                    name + " exceeds BMS PIC X(" + maxLength
+                            + ") declared length; received length="
+                            + value.length() + " value=\"" + value + "\"");
+        }
+    }
+
+    /**
+     * Returns an "empty" output record suitable for the initial COTRN00
+     * send-map cycle: every text component is the empty {@link String}.
      *
      * <p>This matches the legacy COBOL idiom for the first program invocation:
-     * the controller issues {@code MOVE LOW-VALUES TO COTRN0AO} before populating
-     * any header or row fields, then issues {@code EXEC CICS SEND MAP} to paint
-     * the empty list screen.
+     * the controller issues {@code MOVE LOW-VALUES TO COTRN0AO} before
+     * populating any header or row fields, then issues {@code EXEC CICS SEND
+     * MAP} to paint the empty list screen.
      *
-     * <p>Implementation note: the helper allocates a new {@link java.util.ArrayList}
-     * of capacity {@link #ROWS_PER_PAGE}, fills it with ten
-     * {@link TransactionRow#empty()} entries, and passes it to the canonical
-     * constructor. The constructor defensively copies the list via
-     * {@link java.util.List#copyOf(java.util.Collection)}, so the
-     * {@link java.util.ArrayList} allocated here is discarded after construction
-     * and never escapes the method scope. Each {@link TransactionRow} is itself
-     * an immutable record produced by the {@link TransactionRow#empty()} factory.
-     *
-     * @return a fully-blank {@code CoTrn00Output} (never {@code null}) with all
-     *         eleven components set to their "neutral" values (empty strings, ten
-     *         blank rows, and {@link FieldColor#DEFAULT})
+     * @return a fully-blank {@code CoTrn00Output} (never {@code null}) with
+     *         all 59 components set to the empty {@link String}
      */
     public static CoTrn00Output empty() {
-        List<TransactionRow> emptyRows = new ArrayList<>(ROWS_PER_PAGE);
-        for (int i = 0; i < ROWS_PER_PAGE; i++) {
-            emptyRows.add(TransactionRow.empty());
-        }
         return new CoTrn00Output(
-                "",                // title1
-                "",                // title2
-                "",                // transactionName
-                "",                // programName
-                "",                // currentDate
-                "",                // currentTime
-                "",                // searchTransactionId
-                "",                // pageNum
-                emptyRows,         // rows (10 blank TransactionRow entries)
-                "",                // errMsg
-                FieldColor.DEFAULT // errMsgColor
-        );
+                // Header (8)
+                "", "", "", "", "", "", "", "",
+                // Row 1 (5)
+                "", "", "", "", "",
+                // Row 2 (5)
+                "", "", "", "", "",
+                // Row 3 (5)
+                "", "", "", "", "",
+                // Row 4 (5)
+                "", "", "", "", "",
+                // Row 5 (5)
+                "", "", "", "", "",
+                // Row 6 (5)
+                "", "", "", "", "",
+                // Row 7 (5)
+                "", "", "", "", "",
+                // Row 8 (5)
+                "", "", "", "", "",
+                // Row 9 (5)
+                "", "", "", "", "",
+                // Row 10 (5)
+                "", "", "", "", "",
+                // Footer (1)
+                "");
     }
 
     /**
-     * Returns a copy of this {@code CoTrn00Output} with a new {@link #errMsg()}
-     * and {@link #errMsgColor()}, preserving all other fields unchanged.
+     * Returns a copy of this {@code CoTrn00Output} with a new {@link #errMsg()},
+     * preserving all other fields unchanged.
      *
      * <p>This helper supports the canonical COBOL "decorate output with error
      * message" idiom &mdash; in the COBOL program, the controller computes the
      * row data and header values into the output map area, then conditionally
-     * moves an error message string to {@code ERRMSGO} and the RED color byte to
-     * {@code ERRMSGC} just before {@code EXEC CICS SEND MAP}. In the Java
-     * translation, the controller builds the output record without an error
-     * message via the various row/header setters and then, if an error condition
-     * occurs, calls {@code output.withErrMsg(msg, FieldColor.RED)} to derive a
-     * decorated copy. Because records in finalized Java 25 do not have a built-in
-     * {@code with} syntax (per AAP &sect;0.1.2), this method is the hand-written
-     * equivalent.
+     * moves an error message string to {@code ERRMSGO} just before
+     * {@code EXEC CICS SEND MAP}. In the Java translation, the controller
+     * builds the output record without an error message via the various
+     * row/header setters and then, if an error condition occurs, calls
+     * {@code output.withErrMsg(msg)} to derive a decorated copy. Because
+     * records in finalized Java 25 do not have a built-in {@code with} syntax
+     * (per AAP &sect;0.1.2), this method is the hand-written equivalent.
      *
-     * <p>The returned record reuses the same {@link #rows()} list reference: the
-     * stored list is already an unmodifiable {@link java.util.List#copyOf} result
-     * from the original record's compact constructor, so the canonical constructor
-     * of the new record will accept it and call {@code List.copyOf} on it a second
-     * time. {@link java.util.List#copyOf} short-circuits when the input is already
-     * an unmodifiable list, so the second copy is effectively a no-op and no
-     * additional allocation is incurred.
+     * <p>The BMS {@code ERRMSGC} color attribute byte (set to RED on error
+     * conditions per the {@code ERRMSG ATTRB=(ASKIP,BRT,FSET) COLOR=RED}
+     * declaration) is not represented on this DTO; it is a {@code *C} suffix
+     * attribute byte rather than a primary BMS leaf, and any future
+     * attribute-byte modeling will live on a separate attribute carrier.
      *
-     * @param newMsg   the new error / informational message text (78 chars max in
-     *                 the BMS map; this method does not truncate, leaving the
-     *                 wire-level truncation to the SEND-MAP adapter). Must not be
-     *                 {@code null}; pass the empty {@link String} {@code ""} to
-     *                 clear the message.
-     * @param newColor the new color attribute. Must not be {@code null}; pass
-     *                 {@link FieldColor#DEFAULT} to clear the override or
-     *                 {@link FieldColor#RED} to emit a hard-error message.
-     * @return a new {@code CoTrn00Output} identical to this one except with the
-     *         supplied {@code newMsg} and {@code newColor}
-     *
-     * @throws NullPointerException if {@code newMsg} or {@code newColor} is
-     *                              {@code null}
+     * @param newMsg the new error / informational message text. The value is
+     *               coerced to the empty {@link String} {@code ""} if
+     *               {@code null} via the compact constructor's normalization.
+     *               Must not exceed 78 characters (the BMS {@code PIC X(78)}
+     *               width of {@code ERRMSGO}); longer values raise
+     *               {@link IllegalArgumentException}.
+     * @return a new {@code CoTrn00Output} identical to this one except with
+     *         the supplied {@code newMsg}
+     * @throws IllegalArgumentException if {@code newMsg.length() > 78}
      */
-    public CoTrn00Output withErrMsg(String newMsg, FieldColor newColor) {
+    public CoTrn00Output withErrMsg(String newMsg) {
         return new CoTrn00Output(
-                title1,
-                title2,
-                transactionName,
-                programName,
-                currentDate,
-                currentTime,
-                searchTransactionId,
-                pageNum,
-                rows,
-                newMsg,
-                newColor);
+                trnName, title01, curDate, pgmName, title02, curTime, pageNum,
+                trnIdIn,
+                sel0001, trnId01, tDate01, tDesc01, tAmt001,
+                sel0002, trnId02, tDate02, tDesc02, tAmt002,
+                sel0003, trnId03, tDate03, tDesc03, tAmt003,
+                sel0004, trnId04, tDate04, tDesc04, tAmt004,
+                sel0005, trnId05, tDate05, tDesc05, tAmt005,
+                sel0006, trnId06, tDate06, tDesc06, tAmt006,
+                sel0007, trnId07, tDate07, tDesc07, tAmt007,
+                sel0008, trnId08, tDate08, tDesc08, tAmt008,
+                sel0009, trnId09, tDate09, tDesc09, tAmt009,
+                sel0010, trnId10, tDate10, tDesc10, tAmt010,
+                newMsg);
     }
 }
