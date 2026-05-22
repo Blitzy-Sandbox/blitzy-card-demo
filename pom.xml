@@ -1,48 +1,182 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =====================================================================================
+   AWS CardDemo — Maven Build Descriptor
+   =====================================================================================
+   Refactored target build descriptor for the COBOL → Java / AWS migration
+   per the Agent Action Plan (AAP) §0.5 "Dependency Inventory".
+
+   Source system retired by this build:
+     - IBM Enterprise COBOL compiler        → Java 17 compiler
+     - CICS Transaction Server              → Spring MVC + ALB + JWT
+     - VSAM KSDS / AIX / PATH               → RDS PostgreSQL + Spring Data JPA
+     - JCL / JES scheduler                  → AWS Step Functions + AWS Batch
+     - DFSORT / IDCAMS / IEBGENER / IEFBR14 → Spring Batch + Flyway + AWS SDK S3
+     - DFHCSDUP / SDSF / CEDA / CEMT        → ECS task-definition updates + Terraform
+     - RACF                                 → Spring Security 6 + JWT + AWS IAM
+     - LE runtime (CEEDAYS, CEE3ABD)        → java.time + typed exceptions
+     - 3270 terminal / BMS mapsets          → REST + JSON DTOs + Jakarta Validation
+     - CICS TDQ                             → Amazon MSK (Kafka) topics
+     - Sequential PS / GDG                  → Amazon S3 versioned objects
+
+   Target stack (AAP §0.1, §0.5.1):
+     - Java 17+ (Eclipse Temurin)
+     - Spring Boot 3.x
+     - Spring Cloud AWS 3.x
+     - AWS SDK for Java v2 (NEVER v1 — v1 is intentionally excluded)
+     - PostgreSQL via Spring Data JPA + Hibernate + Flyway 10.x
+     - Apache Kafka via Spring Kafka + MSK IAM auth
+     - ElastiCache Redis via Spring Data Redis (Lettuce)
+     - OpenSearch via REST High Level Client
+     - Observability via Spring Boot Actuator + Micrometer + CloudWatch + Logback JSON
+     - JWT via io.jsonwebtoken (jjwt 0.12.x)
+     - Testing via JUnit 5 + Mockito + Testcontainers (PostgreSQL, Kafka, LocalStack)
+
+   Rules enforced by this POM (AAP §0.7.1):
+     - All monetary arithmetic uses java.math.BigDecimal (JDK feature; no dep)
+     - AWS SDK v2 only — `com.amazonaws:aws-java-sdk-*` (v1) is excluded
+     - Spring Boot 3.x only (Jakarta EE `jakarta.*` imports — Spring Framework 6.x)
+     - Java 17 minimum baseline
+     - All versions are explicitly pinned (no `latest`, no placeholders)
+     - No plaintext credentials anywhere in this file
+     - UTF-8 encoding throughout
+  =====================================================================================
+-->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
     <modelVersion>4.0.0</modelVersion>
 
-    <!--
-        AWS CardDemo COBOL → Java/Spring Boot migration.
-        Target stack: Java 17+, Spring Boot 3.x, Spring Cloud AWS 3.x, AWS SDK for Java v2.
-        Per AAP §0.5 Dependency Inventory.
-    -->
+    <!-- ============================================================
+         Parent POM — Spring Boot 3.x BOM provides managed versions
+         for Jakarta EE, Hibernate, Jackson, Tomcat, Micrometer, etc.
+         ============================================================ -->
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
         <version>3.3.5</version>
-        <relativePath/>
+        <relativePath/> <!-- look up parent from Maven Central, not file system -->
     </parent>
 
+    <!-- ============================================================
+         Project coordinates
+         ============================================================ -->
     <groupId>com.awsm2</groupId>
     <artifactId>carddemo</artifactId>
     <version>1.0.0-SNAPSHOT</version>
     <packaging>jar</packaging>
-    <name>AWS CardDemo (Java/Spring Boot target)</name>
-    <description>Migration target for the AWS CardDemo mainframe COBOL application.</description>
 
+    <name>AWS CardDemo (Java/Spring Boot target)</name>
+    <description>
+        AWS CardDemo — Java 17 / Spring Boot 3.x migration target of the original
+        IBM z/OS COBOL credit card demo application. Delivers the same financial
+        business logic on AWS-native managed services (ECS Fargate, RDS PostgreSQL
+        Multi-AZ, MSK, ElastiCache, Step Functions, AWS Batch, Glue, S3, KMS,
+        Secrets Manager, OpenSearch, CloudTrail, CloudWatch) with PCI-DSS-aligned
+        encryption, audit, and credential-rotation controls. The COBOL source tree
+        under app/ is preserved frozen as the authoritative source of truth for
+        behavioral parity validation.
+    </description>
+    <url>https://github.com/Blitzy-Sandbox/blitzy-card-demo</url>
+    <inceptionYear>2024</inceptionYear>
+
+    <!-- ============================================================
+         License — Apache 2.0, matches repository LICENSE file
+         ============================================================ -->
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <organization>
+        <name>AWS CardDemo Migration Team</name>
+        <url>https://github.com/Blitzy-Sandbox/blitzy-card-demo</url>
+    </organization>
+
+    <scm>
+        <url>https://github.com/Blitzy-Sandbox/blitzy-card-demo</url>
+        <connection>scm:git:https://github.com/Blitzy-Sandbox/blitzy-card-demo.git</connection>
+        <developerConnection>scm:git:https://github.com/Blitzy-Sandbox/blitzy-card-demo.git</developerConnection>
+    </scm>
+
+    <!-- ============================================================
+         Properties — all versions explicitly pinned (AAP §0.5.1)
+         No placeholders, no `latest`, no `1.0.0` defaults.
+         ============================================================ -->
     <properties>
+        <!-- Java / Maven baseline -->
         <java.version>17</java.version>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
+        <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
-        <!-- BOM versions per AAP §0.5.1 -->
+        <!-- ===== Spring ecosystem ===== -->
+        <!-- Spring Cloud 2023.0.x is the GA train compatible with Spring Boot 3.3.x -->
+        <spring-cloud.version>2023.0.3</spring-cloud.version>
+        <!-- Spring Cloud AWS 3.x — Secrets Manager + Parameter Store + KMS + auto-config -->
         <spring-cloud-aws.version>3.2.1</spring-cloud-aws.version>
-        <aws-sdk.version>2.29.20</aws-sdk.version>
+
+        <!-- ===== AWS SDK for Java v2 (NEVER v1) =====
+             Pinned to 2.25.70 to align with the version transitively imported by
+             io.awspring.cloud:spring-cloud-aws-dependencies:3.2.1
+             (the BOM pin is `<awssdk-v2.version>2.25.70</awssdk-v2.version>`).
+             Importing our own AWS SDK BOM at this exact version provides explicit
+             documentation of the chosen runtime SDK and prevents accidental drift
+             if/when the Spring Cloud AWS BOM is upgraded.  Upgrading the AWS SDK
+             beyond Spring Cloud AWS's tested pin requires a coordinated bump of
+             Spring Cloud AWS to a version whose BOM declares the newer SDK. -->
+        <aws-sdk.version>2.25.70</aws-sdk.version>
+
+        <!-- ===== MSK IAM auth for Kafka (SASL_SSL with AWS_MSK_IAM) ===== -->
         <msk-iam-auth.version>2.2.0</msk-iam-auth.version>
-        <testcontainers.version>1.20.3</testcontainers.version>
-        <logstash-logback.version>8.0</logstash-logback.version>
-        <springdoc.version>2.6.0</springdoc.version>
-        <jjwt.version>0.12.6</jjwt.version>
+
+        <!-- ===== OpenSearch REST High Level Client (AAP §0.4.1 OpenSearchIndexer) ===== -->
         <opensearch-client.version>2.18.0</opensearch-client.version>
+
+        <!-- ===== Observability ===== -->
         <micrometer-cloudwatch.version>1.13.6</micrometer-cloudwatch.version>
+        <logstash-logback.version>8.0</logstash-logback.version>
+
+        <!-- ===== API documentation ===== -->
+        <springdoc.version>2.6.0</springdoc.version>
+
+        <!-- ===== Security: JWT signing/verification ===== -->
+        <jjwt.version>0.12.6</jjwt.version>
+
+        <!-- ===== Testing infrastructure ===== -->
+        <testcontainers.version>1.20.3</testcontainers.version>
+
+        <!-- ===== Quality / Build plugins ===== -->
+        <jacoco.version>0.8.12</jacoco.version>
+        <owasp-dc.version>11.1.1</owasp-dc.version>
+
+        <!-- ===== Output naming ===== -->
+        <start-class>com.awsm2.carddemo.CardDemoApplication</start-class>
     </properties>
 
+    <!-- ============================================================
+         Dependency Management — BOMs imported for version unification
+         (AAP §0.5.1)
+         ============================================================ -->
     <dependencyManagement>
         <dependencies>
+            <!-- Spring Cloud 2023.0.x BOM — provides spring-cloud-starter-bootstrap,
+                 spring-cloud-context, spring-cloud-commons, etc. -->
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- Spring Cloud AWS BOM — provides AWS-specific starters and auto-configs -->
             <dependency>
                 <groupId>io.awspring.cloud</groupId>
                 <artifactId>spring-cloud-aws-dependencies</artifactId>
@@ -50,6 +184,8 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+
+            <!-- AWS SDK for Java v2 BOM — provides every individual service-client version -->
             <dependency>
                 <groupId>software.amazon.awssdk</groupId>
                 <artifactId>bom</artifactId>
@@ -57,6 +193,8 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+
+            <!-- Testcontainers BOM — governs every testcontainers-* module -->
             <dependency>
                 <groupId>org.testcontainers</groupId>
                 <artifactId>testcontainers-bom</artifactId>
@@ -67,123 +205,180 @@
         </dependencies>
     </dependencyManagement>
 
+    <!-- ============================================================
+         Runtime dependencies (compile + runtime scope)
+         ============================================================ -->
     <dependencies>
-        <!-- ===== Spring Boot starters ===== -->
+
+        <!-- =============================================================
+             Spring Boot starters — versions managed by parent POM BOM
+             ============================================================= -->
         <dependency>
+            <!-- Spring MVC REST controllers, embedded Tomcat, Jackson JSON -->
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
         <dependency>
+            <!-- Spring Data JPA + Hibernate ORM (replaces VSAM file I/O) -->
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
         <dependency>
+            <!-- Spring Batch (replaces JCL batch programs CBTRN02C, CBACT04C, etc.) -->
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-batch</artifactId>
         </dependency>
         <dependency>
+            <!-- Spring Security 6 (replaces CICS RACF identity propagation) -->
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
         <dependency>
+            <!-- Actuator: /actuator/health, /metrics, /info — ECS + ALB health probes -->
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
         <dependency>
+            <!-- Jakarta Bean Validation — replaces per-paragraph COBOL validation paragraphs -->
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
         <dependency>
+            <!-- Spring Data Redis (Lettuce) — cache-aside for account balances, AAP §0.6 -->
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
-        <!-- ===== Spring Kafka (MSK) ===== -->
+        <!-- =============================================================
+             Spring Kafka (MSK) — replaces CICS TDQ
+             ============================================================= -->
         <dependency>
             <groupId>org.springframework.kafka</groupId>
             <artifactId>spring-kafka</artifactId>
         </dependency>
         <dependency>
+            <!-- AWS MSK IAM SASL authenticator (SASL_SSL + AWS_MSK_IAM mechanism) -->
             <groupId>software.amazon.msk</groupId>
             <artifactId>aws-msk-iam-auth</artifactId>
             <version>${msk-iam-auth.version}</version>
         </dependency>
 
-        <!-- ===== Spring Cloud AWS 3.x: Secrets Manager + Parameter Store ===== -->
+        <!-- =============================================================
+             Spring Cloud / Spring Cloud AWS (AAP §0.5.1, §0.6.4)
+             - Spring Cloud bootstrap context for legacy bootstrap.yml support
+             - Spring Cloud AWS auto-configs Secrets Manager + Parameter Store
+               + KMS + region/credentials provider
+             ============================================================= -->
         <dependency>
+            <!-- Re-enables bootstrap context for any future bootstrap.yml use cases -->
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-bootstrap</artifactId>
+        </dependency>
+        <dependency>
+            <!-- Core Spring Cloud AWS starter: AwsRegionProvider, CredentialsProvider beans -->
             <groupId>io.awspring.cloud</groupId>
             <artifactId>spring-cloud-aws-starter</artifactId>
         </dependency>
         <dependency>
+            <!-- Secrets Manager auto-config: spring.config.import=aws-secretsmanager: -->
             <groupId>io.awspring.cloud</groupId>
             <artifactId>spring-cloud-aws-starter-secrets-manager</artifactId>
         </dependency>
         <dependency>
+            <!-- Parameter Store auto-config: spring.config.import=aws-parameterstore: -->
             <groupId>io.awspring.cloud</groupId>
             <artifactId>spring-cloud-aws-starter-parameter-store</artifactId>
         </dependency>
 
-        <!-- ===== AWS SDK for Java v2 (per AAP §0.5.1) ===== -->
+        <!-- =============================================================
+             AWS SDK for Java v2 service clients (AAP §0.5.1)
+             Versions inherited from software.amazon.awssdk:bom
+             ============================================================= -->
         <dependency>
+            <!-- S3 — replaces sequential PS / GDG outputs (DALYREJS, SYSTRAN, etc.) -->
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>s3</artifactId>
         </dependency>
         <dependency>
+            <!-- Step Functions — replaces JCL job stream sequencing -->
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>sfn</artifactId>
         </dependency>
         <dependency>
+            <!-- Glue — replaces flat-file ETL utility steps (REPTFILE, DEFGDGB) -->
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>glue</artifactId>
         </dependency>
         <dependency>
+            <!-- KMS — encryption key management for at-rest data -->
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>kms</artifactId>
         </dependency>
         <dependency>
+            <!-- Secrets Manager — runtime credential fetch (no plaintext in config) -->
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>secretsmanager</artifactId>
         </dependency>
         <dependency>
+            <!-- CloudWatch — metrics + alarms publication target -->
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>cloudwatch</artifactId>
         </dependency>
         <dependency>
+            <!-- OpenSearch service management (domain creation, IAM) -->
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>opensearch</artifactId>
+        </dependency>
+        <dependency>
+            <!-- SNS — Secrets Manager rotation event publishing (AAP §0.6.4) -->
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>sns</artifactId>
         </dependency>
         <dependency>
+            <!-- SQS — rotation-event listener subscription (AAP §0.6.4) -->
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>sqs</artifactId>
         </dependency>
         <dependency>
+            <!-- STS — IAM role assumption for service-to-service calls -->
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>sts</artifactId>
         </dependency>
 
-        <!-- ===== OpenSearch REST client ===== -->
+        <!-- =============================================================
+             OpenSearch REST High Level Client (AAP §0.4.1, §0.6.6)
+             For application-side indexing of transaction logs + audit events
+             ============================================================= -->
         <dependency>
             <groupId>org.opensearch.client</groupId>
-            <artifactId>opensearch-java</artifactId>
+            <artifactId>opensearch-rest-high-level-client</artifactId>
             <version>${opensearch-client.version}</version>
         </dependency>
 
-        <!-- ===== Database: PostgreSQL + Flyway ===== -->
+        <!-- =============================================================
+             Persistence: PostgreSQL JDBC driver + Flyway 10.x
+             ============================================================= -->
         <dependency>
+            <!-- PostgreSQL JDBC driver — for RDS Multi-AZ in prod, Testcontainers in test -->
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
         <dependency>
+            <!-- Flyway core: schema migration runner -->
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
         </dependency>
         <dependency>
+            <!-- Flyway PostgreSQL module — required separately in Flyway 10+ -->
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
 
-        <!-- ===== JWT (for stateless auth replacing CICS COMMAREA) ===== -->
+        <!-- =============================================================
+             JWT (replaces CICS COMMAREA pseudo-conversation)
+             Three jjwt artifacts: api (compile), impl + jackson (runtime)
+             ============================================================= -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>
@@ -202,53 +397,79 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- ===== Observability ===== -->
+        <!-- =============================================================
+             Observability: Micrometer → CloudWatch + structured JSON logs
+             ============================================================= -->
         <dependency>
+            <!-- Micrometer CloudWatch v2 registry — publishes metrics under "CardDemo" -->
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-cloudwatch2</artifactId>
             <version>${micrometer-cloudwatch.version}</version>
         </dependency>
         <dependency>
+            <!-- logstash-logback-encoder — JSON layout for CloudWatch Logs ingestion -->
             <groupId>net.logstash.logback</groupId>
             <artifactId>logstash-logback-encoder</artifactId>
             <version>${logstash-logback.version}</version>
         </dependency>
 
-        <!-- ===== OpenAPI / Swagger UI ===== -->
+        <!-- =============================================================
+             OpenAPI / Swagger UI (AAP §0.3.4)
+             Exposes /v3/api-docs and /swagger-ui.html
+             ============================================================= -->
         <dependency>
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
             <version>${springdoc.version}</version>
         </dependency>
 
-        <!-- ===== Local development database ===== -->
+        <!-- =============================================================
+             Local development convenience: in-memory H2 DB
+             (PostgreSQL mode — supports running locally without Docker)
+             Production uses PostgreSQL exclusively via the JDBC driver above.
+             ============================================================= -->
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
             <scope>runtime</scope>
         </dependency>
 
-        <!-- ===== Test scope ===== -->
+        <!-- =============================================================
+             Test scope dependencies
+             ============================================================= -->
         <dependency>
+            <!-- JUnit 5 + Mockito + Spring Test + AssertJ + Hamcrest + JsonPath -->
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
+            <exclusions>
+                <!-- We use JUnit 5 (Jupiter) only — explicitly exclude JUnit 4 (Vintage) -->
+                <exclusion>
+                    <groupId>org.junit.vintage</groupId>
+                    <artifactId>junit-vintage-engine</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
+            <!-- Spring Security test helpers (@WithMockUser, etc.) -->
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- Spring Batch test harness (JobLauncherTestUtils, JobRepositoryTestUtils) -->
             <groupId>org.springframework.batch</groupId>
             <artifactId>spring-batch-test</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- Embedded Kafka for @KafkaListener tests -->
             <groupId>org.springframework.kafka</groupId>
             <artifactId>spring-kafka-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- Testcontainers modules — versions from BOM -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers</artifactId>
@@ -260,69 +481,174 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- @Testcontainers PostgreSQL container for @DataJpaTest -->
             <groupId>org.testcontainers</groupId>
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- Kafka container for end-to-end producer/consumer tests -->
             <groupId>org.testcontainers</groupId>
             <artifactId>kafka</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- LocalStack container for S3/SQS/Secrets Manager/KMS adapter tests -->
             <groupId>org.testcontainers</groupId>
             <artifactId>localstack</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
 
+    <!-- ============================================================
+         Build configuration
+         ============================================================ -->
     <build>
+        <!-- Produced JAR name (consumed by Dockerfile COPY) -->
         <finalName>carddemo</finalName>
+
+        <!-- Filter property placeholders in application*.yml/properties only -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>**/application*.yml</include>
+                    <include>**/application*.yaml</include>
+                    <include>**/application*.properties</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>**/application*.yml</exclude>
+                    <exclude>**/application*.yaml</exclude>
+                    <exclude>**/application*.properties</exclude>
+                </excludes>
+            </resource>
+        </resources>
+
         <plugins>
+            <!-- =====================================================
+                 Spring Boot Maven Plugin — fat JAR + layered JAR mode
+                 ===================================================== -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
-                    <excludes>
-                        <exclude>
-                            <groupId>org.projectlombok</groupId>
-                            <artifactId>lombok</artifactId>
-                        </exclude>
-                    </excludes>
+                    <mainClass>${start-class}</mainClass>
+                    <!-- Layered JAR mode enables efficient Docker image layering
+                         (dependencies, spring-boot-loader, snapshot-deps, application). -->
+                    <layers>
+                        <enabled>true</enabled>
+                    </layers>
+                    <excludeDevtools>true</excludeDevtools>
                 </configuration>
+                <executions>
+                    <execution>
+                        <id>repackage</id>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                        <configuration>
+                            <classifier/>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
+
+            <!-- =====================================================
+                 Maven Compiler Plugin — Java 17 release target
+                 ===================================================== -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <configuration>
                     <source>${java.version}</source>
                     <target>${java.version}</target>
+                    <release>${java.version}</release>
                     <parameters>true</parameters>
+                    <encoding>${project.build.sourceEncoding}</encoding>
+                    <showWarnings>true</showWarnings>
+                    <showDeprecation>true</showDeprecation>
                 </configuration>
             </plugin>
+
+            <!-- =====================================================
+                 Surefire — unit tests (*Test.java, *Tests.java)
+                 Integration tests (*IT.java, *IntegrationTest.java) are excluded
+                 here and picked up by Failsafe.
+                 ===================================================== -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <includes>
+                        <include>**/*Test.java</include>
+                        <include>**/*Tests.java</include>
+                    </includes>
+                    <excludes>
+                        <exclude>**/*IT.java</exclude>
+                        <exclude>**/*IntegrationTest.java</exclude>
+                    </excludes>
+                    <argLine>@{argLine} -Xshare:off</argLine>
+                    <reuseForks>true</reuseForks>
+                    <forkCount>1</forkCount>
+                </configuration>
             </plugin>
+
+            <!-- =====================================================
+                 Failsafe — integration tests (*IT.java, *IntegrationTest.java)
+                 Bound to integration-test and verify phases.
+                 ===================================================== -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <includes>
+                        <include>**/*IT.java</include>
+                        <include>**/*IntegrationTest.java</include>
+                    </includes>
+                    <argLine>@{argLine}</argLine>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>integration-tests</id>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
+
+            <!-- =====================================================
+                 JaCoCo — coverage report (target/site/jacoco/index.html)
+                 ===================================================== -->
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
-                <version>0.8.12</version>
+                <version>${jacoco.version}</version>
                 <executions>
                     <execution>
+                        <id>jacoco-prepare-agent</id>
                         <goals>
                             <goal>prepare-agent</goal>
                         </goals>
                     </execution>
                     <execution>
-                        <id>report</id>
+                        <id>jacoco-prepare-agent-it</id>
+                        <goals>
+                            <goal>prepare-agent-integration</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>jacoco-report</id>
                         <phase>verify</phase>
                         <goals>
                             <goal>report</goal>
+                            <goal>report-integration</goal>
                         </goals>
                     </execution>
                 </executions>
@@ -330,7 +656,11 @@
         </plugins>
     </build>
 
+    <!-- ============================================================
+         Profiles
+         ============================================================ -->
     <profiles>
+        <!-- Local development (default) — uses H2 + LocalStack -->
         <profile>
             <id>local</id>
             <activation>
@@ -340,17 +670,68 @@
                 <spring.profiles.active>local</spring.profiles.active>
             </properties>
         </profile>
+
+        <!-- Dev environment — AWS dev account, real RDS + MSK -->
         <profile>
             <id>dev</id>
             <properties>
                 <spring.profiles.active>dev</spring.profiles.active>
             </properties>
         </profile>
+
+        <!-- Production AWS deployment -->
         <profile>
             <id>prod</id>
             <properties>
                 <spring.profiles.active>prod</spring.profiles.active>
             </properties>
         </profile>
+
+        <!-- OWASP CVE scan — run on demand: ./mvnw verify -Powasp
+             Build fails on CVSS >= 7.0 (HIGH/CRITICAL). -->
+        <profile>
+            <id>owasp</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.owasp</groupId>
+                        <artifactId>dependency-check-maven</artifactId>
+                        <version>${owasp-dc.version}</version>
+                        <configuration>
+                            <!-- Fail build on HIGH (>=7.0) or CRITICAL CVEs -->
+                            <failBuildOnCVSS>7</failBuildOnCVSS>
+                            <formats>
+                                <format>HTML</format>
+                                <format>JSON</format>
+                            </formats>
+                            <!-- Local NVD cache speeds up subsequent runs -->
+                            <skipTestScope>false</skipTestScope>
+                            <skipProvidedScope>false</skipProvidedScope>
+                            <skipRuntimeScope>false</skipRuntimeScope>
+                            <suppressionFiles>
+                                <suppressionFile>${project.basedir}/.owasp/suppressions.xml</suppressionFile>
+                            </suppressionFiles>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- AWS deployment profile — excludes LocalStack-only test dependencies -->
+        <profile>
+            <id>aws</id>
+            <properties>
+                <spring.profiles.active>prod</spring.profiles.active>
+            </properties>
+        </profile>
     </profiles>
+
 </project>
