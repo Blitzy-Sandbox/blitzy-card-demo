@@ -1,0 +1,452 @@
+# =============================================================================
+# CardDemo Docker Build and ECR Push Workflow
+# =============================================================================
+#
+# Purpose:
+#   Build the CardDemo Spring Boot Docker image via the multi-stage `Dockerfile`
+#   (Maven build stage + Eclipse Temurin JRE 17 runtime stage) and push it to
+#   the Amazon ECR repository provisioned by `infrastructure/terraform/ecr.tf`.
+#
+#   This workflow is the MIDDLE link in the CI/CD chain:
+#
+#     1. build.yml        — ./mvnw -B clean verify (tests + JaCoCo + OWASP)
+#     2. docker-build.yml (THIS FILE) — Docker image build + ECR push
+#     3. deploy.yml       — ECS Fargate task-definition update on the pushed
+#                           short-SHA image tag
+#
+# Triggers:
+#   - push to main         — builds and pushes <short-sha> + latest tags
+#   - push of tag v*.*.*   — builds and pushes <short-sha> + <semver> tags
+#                            against the prod ECR repository
+#   - workflow_dispatch    — manual trigger with environment selection
+#                            (dev / staging / prod)
+#
+# Tags pushed (by trigger):
+#   - <short-sha>          — ALWAYS pushed; canonical immutable reference
+#                            consumed by deploy.yml
+#   - latest               — pushed only on push to refs/heads/main; treated
+#                            as best-effort because ECR repositories created
+#                            by `ecr.tf` have `image_tag_mutability=IMMUTABLE`
+#                            which rejects re-push of an existing tag — the
+#                            short-SHA tag is the canonical reference
+#   - <semver>             — pushed only on push of a tag matching `v*.*.*`
+#
+# Security guardrails:
+#   - NO long-lived AWS credentials in GitHub secrets. The workflow uses AWS
+#     IAM OIDC role assumption via aws-actions/configure-aws-credentials@v4
+#     against the `carddemo-${env}-gha-deploy` IAM role provisioned by
+#     `infrastructure/terraform/iam.tf`.
+#   - NO inline secrets or hardcoded AWS ARNs in this YAML. Every account-
+#     specific value is sourced from `${{ secrets.* }}` or `${{ vars.* }}`.
+#   - `mask-aws-account-id: true` prevents the AWS account ID from being
+#     leaked into the workflow run log (PCI-DSS-aligned per AAP §0.6.6).
+#   - `permissions: id-token: write` is required for OIDC federation; all
+#     other GitHub-scoped permissions follow least-privilege.
+#   - All third-party action versions are pinned to major tags (@v4, @v3, …)
+#     — NEVER `@latest` or `@main` (supply-chain security).
+#
+# Operational guardrails:
+#   - Ubuntu 24.04 LTS runner (pinned — not `ubuntu-latest`) for deterministic
+#     builds.
+#   - `linux/amd64` platform matches ECS Fargate `cpu_architecture = "X86_64"`
+#     declared in `infrastructure/terraform/ecs.tf`.
+#   - `cache-from: type=gha` + `cache-to: type=gha,mode=max` accelerates
+#     subsequent builds via the GitHub Actions cache backend.
+#   - `provenance: false` and `sbom: false` because ECR repositories with
+#     `image_tag_mutability=IMMUTABLE` reject the OCI attestation artifacts
+#     that Buildx would otherwise push under the same tag namespace.
+#   - `fetch-depth: 0` retains the full git history so any future
+#     `git describe` based semver derivation works deterministically.
+#   - `concurrency` cancels superseded builds on the same ref — saves CI
+#     minutes and shortens feedback latency for developers.
+#
+# Required GitHub repository configuration (operator runbook):
+#   - secrets.AWS_DEPLOY_ROLE_ARN          — ARN of `carddemo-${env}-gha-deploy`
+#                                            IAM role (OIDC trust policy)
+#   - vars.AWS_REGION (default us-east-1)  — region for ECR + STS endpoint
+#   - vars.ECR_REPOSITORY_URL_PROD         — <ACCOUNT>.dkr.ecr.<region>.amazon
+#                                            aws.com/carddemo-prod
+#   - vars.ECR_REPOSITORY_URL_STAGING      — (optional) staging registry
+#   - vars.ECR_REPOSITORY_URL_DEV          — (optional) dev registry
+#
+# References:
+#   - AAP §0.4.1 — `.github/workflows/docker-build.yml` listed as CREATE
+#   - AAP §0.5.1 — Java 17 baseline, Maven 3.8+, multi-stage Dockerfile
+#   - AAP §0.6.6 — PCI-DSS audit/observability constraints
+#   - AAP §0.7.2 — "For AWS deployment: docker build, push to ECR, deploy via
+#                   ECS Fargate task definition update"
+#   - .github/workflows/ folder summary (verbatim mandatory steps and pins)
+#   - infrastructure/terraform/ecr.tf  — ECR repo with IMMUTABLE tags
+#   - infrastructure/terraform/iam.tf  — OIDC role with ECR push permissions
+#   - Dockerfile (repository root)     — multi-stage Maven + Temurin JRE 17
+#
+# Replaces (legacy COBOL build artifacts — preserved as REFERENCE only):
+#   - samples/jcl/BATCMP.jcl — sample mainframe JCL that compiled COBOL via
+#     the BUILDBAT proc. Operationally REPLACED by this workflow's Docker
+#     build (which invokes ./mvnw inside the Maven build stage of the
+#     multi-stage Dockerfile and produces a single container image
+#     executing both online and batch Java code paths).
+#   - samples/jcl/CICCMP.jcl — sample mainframe JCL that compiled CICS COBOL
+#     via the BUILDONL proc plus a CEMT SET PROG(...) NEWCOPY operation.
+#     Operationally REPLACED by this Docker build workflow plus the
+#     downstream `deploy.yml` ECS task-definition update (which performs a
+#     rolling deployment behind the ALB — the cloud-native equivalent of
+#     CEMT NEWCOPY).
+# =============================================================================
+---
+name: Build Docker Image and Push to ECR
+
+# -----------------------------------------------------------------------------
+# Triggers:
+#   push to main       — continuous integration of the trunk
+#   push of v*.*.*     — semantic-versioned release tags
+#   workflow_dispatch  — manual triggering for emergency rebuilds and dev/
+#                        staging environment promotions
+# -----------------------------------------------------------------------------
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target ECR repository environment (dev, staging, prod)'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+        default: prod
+
+# -----------------------------------------------------------------------------
+# Top-level permissions — minimum required for OIDC + ECR push.
+#   id-token: write  — REQUIRED for aws-actions/configure-aws-credentials to
+#                      mint a short-lived AWS STS session via OIDC federation
+#   contents: read   — REQUIRED for actions/checkout to read repository
+#                      contents
+# All other GitHub-scoped permissions remain at the default (none).
+# -----------------------------------------------------------------------------
+permissions:
+  id-token: write
+  contents: read
+
+# -----------------------------------------------------------------------------
+# Cancel superseded builds on the same ref. A second push to main while an
+# earlier docker-build is still running for the same branch will cancel the
+# in-flight build — the most recent commit is the only useful artifact.
+# -----------------------------------------------------------------------------
+concurrency:
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    name: Build Docker Image and Push to ECR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Checkout repository.
+      #   `fetch-depth: 0` pulls the full git history so any future use of
+      #   `git describe` (for semver derivation, release-notes generation,
+      #   etc.) works deterministically. Shallow checkouts would limit the
+      #   tooling that downstream steps could invoke.
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # -----------------------------------------------------------------------
+      # Step 2: Set up QEMU for multi-architecture builds.
+      #   Currently only linux/amd64 is built (matching ECS Fargate
+      #   `cpu_architecture = "X86_64"` from `infrastructure/terraform/ecs.tf`)
+      #   but QEMU is installed defensively so adding an arm64 platform in
+      #   the future requires no workflow change beyond editing the
+      #   `platforms:` list of `docker/build-push-action@v6` below.
+      # -----------------------------------------------------------------------
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # -----------------------------------------------------------------------
+      # Step 3: Set up Docker Buildx.
+      #   The `docker-container` driver is required for advanced cache
+      #   backends (`type=gha`) and multi-platform builds. The default
+      #   `docker` driver does not support these features.
+      # -----------------------------------------------------------------------
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+
+      # -----------------------------------------------------------------------
+      # Step 4: Determine environment, ECR repository URL, and image tags.
+      #
+      # Environment selection rules:
+      #   - workflow_dispatch     -> caller-supplied input
+      #   - tag push (v*.*.*)     -> prod
+      #   - push to main          -> dev
+      #
+      # ECR URL resolution:
+      #   The repo URL is sourced from environment-specific repository
+      #   variables (vars.ECR_REPOSITORY_URL_<ENV>). If the variable is unset
+      #   for the resolved environment, the step fails fast with a clear
+      #   error rather than pushing to an unintended target.
+      #
+      # Tag set:
+      #   - <short-sha>           -> always (canonical immutable reference)
+      #   - latest                -> only on push to refs/heads/main
+      #                              (best-effort: ECR IMMUTABLE policy may
+      #                              reject re-push — see file header)
+      #   - <semver>              -> only on push of refs/tags/v*.*.*
+      # -----------------------------------------------------------------------
+      - name: Determine environment and image tags
+        id: meta
+        env:
+          ECR_REPOSITORY_URL_DEV: ${{ vars.ECR_REPOSITORY_URL_DEV }}
+          ECR_REPOSITORY_URL_STAGING: ${{ vars.ECR_REPOSITORY_URL_STAGING }}
+          ECR_REPOSITORY_URL_PROD: ${{ vars.ECR_REPOSITORY_URL_PROD }}
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
+        run: |
+          set -euo pipefail
+
+          # -------------------------------------------------------------------
+          # Resolve the target environment.
+          # -------------------------------------------------------------------
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENV="${INPUT_ENVIRONMENT}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            ENV="prod"
+          else
+            ENV="dev"
+          fi
+          echo "environment=${ENV}" >> "$GITHUB_OUTPUT"
+          echo "Resolved environment: ${ENV}"
+
+          # -------------------------------------------------------------------
+          # Resolve the ECR repository URL for the chosen environment.
+          # -------------------------------------------------------------------
+          case "${ENV}" in
+            dev)
+              ECR_URL="${ECR_REPOSITORY_URL_DEV}"
+              ;;
+            staging)
+              ECR_URL="${ECR_REPOSITORY_URL_STAGING}"
+              ;;
+            prod)
+              ECR_URL="${ECR_REPOSITORY_URL_PROD}"
+              ;;
+            *)
+              echo "::error::Unknown environment: ${ENV}"
+              exit 1
+              ;;
+          esac
+
+          if [ -z "${ECR_URL}" ]; then
+            echo "::error::Repository variable ECR_REPOSITORY_URL_$(echo "${ENV}" | tr '[:lower:]' '[:upper:]') is not set"
+            exit 1
+          fi
+          echo "ecr_url=${ECR_URL}" >> "$GITHUB_OUTPUT"
+          echo "Resolved ECR URL: ${ECR_URL}"
+
+          # -------------------------------------------------------------------
+          # Compute the short SHA (8 hex characters of github.sha).
+          # -------------------------------------------------------------------
+          SHORT_SHA="${GITHUB_SHA:0:8}"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Short SHA: ${SHORT_SHA}"
+
+          # -------------------------------------------------------------------
+          # Build the tag list. Each tag is a fully qualified ECR URI.
+          # -------------------------------------------------------------------
+          TAGS="${ECR_URL}:${SHORT_SHA}"
+
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            TAGS="${TAGS}"$'\n'"${ECR_URL}:latest"
+            echo "Adding latest tag (main branch)"
+          fi
+
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            SEMVER="${GITHUB_REF#refs/tags/}"
+            TAGS="${TAGS}"$'\n'"${ECR_URL}:${SEMVER}"
+            echo "semver=${SEMVER}" >> "$GITHUB_OUTPUT"
+            echo "Adding semver tag: ${SEMVER}"
+          fi
+
+          # -------------------------------------------------------------------
+          # Emit the tag list as a multi-line GITHUB_OUTPUT value using the
+          # heredoc form (required for multi-line outputs in GitHub Actions).
+          # -------------------------------------------------------------------
+          {
+            echo "tags<<EOF"
+            echo "${TAGS}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Computed tags:"
+          echo "${TAGS}"
+
+      # -----------------------------------------------------------------------
+      # Step 5: Configure AWS credentials via OIDC.
+      #   `aws-actions/configure-aws-credentials@v4` exchanges the GitHub
+      #   OIDC token for a short-lived AWS STS session by assuming the
+      #   `carddemo-${env}-gha-deploy` IAM role declared in
+      #   `infrastructure/terraform/iam.tf`. No AWS access keys are stored
+      #   in GitHub secrets — the only secret is the role ARN, which is
+      #   not itself sensitive but is treated as one to centralize rotation.
+      #
+      #   `role-session-name` distinguishes Docker-build sessions from
+      #   deploy sessions in CloudTrail (run_id makes each session unique).
+      #
+      #   `mask-aws-account-id: true` prevents the AWS account ID from
+      #   appearing in workflow logs — PCI-DSS-aligned per AAP §0.6.6.
+      # -----------------------------------------------------------------------
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-docker-build-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          mask-aws-account-id: true
+
+      # -----------------------------------------------------------------------
+      # Step 6: Log in to Amazon ECR.
+      #   `aws-actions/amazon-ecr-login@v2` obtains the ECR auth token from
+      #   the AWS STS session minted in Step 5 and configures the local
+      #   Docker daemon (and, transitively, Buildx) to authenticate pushes
+      #   to the ECR registry resolved from the role's caller-identity
+      #   account.
+      # -----------------------------------------------------------------------
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # -----------------------------------------------------------------------
+      # Step 7: Build and push the Docker image.
+      #
+      # Inputs:
+      #   context     — repository root (Dockerfile + pom.xml + src/ + .mvn/)
+      #   file        — multi-stage Dockerfile at repository root
+      #   platforms   — linux/amd64 only (matches ECS Fargate X86_64)
+      #   push        — true (always push after successful build)
+      #   tags        — multi-line tag list computed in Step 4 (short-sha,
+      #                 optionally latest, optionally semver)
+      #   labels      — OCI image-spec labels for traceability and provenance
+      #                 (revision, source, license, created timestamp)
+      #   build-args  — BUILD_VERSION (short SHA) and BUILD_COMMIT (full SHA)
+      #                 map to the Dockerfile ARG declarations and propagate
+      #                 to the running container as image labels
+      #   cache-from  — read from GitHub Actions cache (gha backend)
+      #   cache-to    — write to GitHub Actions cache (mode=max — every
+      #                 intermediate layer is cached for maximum reuse)
+      #   provenance  — false: ECR with IMMUTABLE tag policy cannot accept
+      #                 the OCI provenance attestation under the same tag,
+      #                 so we skip provenance generation to keep the push
+      #                 contract simple. If supply-chain attestation is
+      #                 required, generate signatures via `cosign sign` in
+      #                 a separate workflow step after this push.
+      #   sbom        — false: same reason as `provenance`. SBOMs may be
+      #                 generated via `syft` in a separate workflow step.
+      # -----------------------------------------------------------------------
+      - name: Build and push Docker image
+        id: docker-build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=carddemo
+            org.opencontainers.image.description=AWS CardDemo COBOL -> Java/Spring Boot migration
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+            org.opencontainers.image.ref.name=${{ github.ref_name }}
+          build-args: |
+            BUILD_VERSION=${{ steps.meta.outputs.short_sha }}
+            BUILD_COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+
+      # -----------------------------------------------------------------------
+      # Step 8: Verify the image was pushed and the CVE scan was initiated.
+      #   `ecr.tf` configures `scan_on_push = true`, so every pushed image
+      #   triggers an Amazon Inspector scan immediately. This step queries
+      #   ECR to confirm the image is present and reports the current scan
+      #   status (IN_PROGRESS, COMPLETE, or FAILED) in the workflow log.
+      #
+      #   The query targets the canonical short-SHA tag because that tag
+      #   is guaranteed to be unique per commit (the `latest` tag is best-
+      #   effort under the IMMUTABLE policy — see file header).
+      # -----------------------------------------------------------------------
+      - name: Verify image in ECR
+        env:
+          ENVIRONMENT: ${{ steps.meta.outputs.environment }}
+          SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          REPO_NAME="carddemo-${ENVIRONMENT}"
+          echo "Verifying image push to repository: ${REPO_NAME}"
+          echo "Image tag: ${SHORT_SHA}"
+          aws ecr describe-images \
+            --repository-name "${REPO_NAME}" \
+            --image-ids imageTag="${SHORT_SHA}" \
+            --query 'imageDetails[0].{tags:imageTags,size:imageSizeInBytes,pushed:imagePushedAt,scan:imageScanStatus.status}' \
+            --output table
+
+      # -----------------------------------------------------------------------
+      # Step 9: Write a workflow summary visible at the top of the run page.
+      #   Captures the pushed environment, repository, tags, and trigger
+      #   metadata. Useful for operators reviewing deploy logs and for
+      #   downstream automation (e.g., deploy.yml) that consumes the
+      #   short-SHA tag.
+      #
+      #   `if: always()` ensures the summary is emitted even when an
+      #   upstream step (e.g., the ECR push) fails — operators can then
+      #   see the intended target environment without having to trace
+      #   through the run log.
+      # -----------------------------------------------------------------------
+      - name: Write build summary
+        if: always()
+        env:
+          ENVIRONMENT: ${{ steps.meta.outputs.environment }}
+          SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
+          SEMVER: ${{ steps.meta.outputs.semver }}
+          ECR_URL: ${{ steps.meta.outputs.ecr_url }}
+        run: |
+          {
+            echo "## Docker Build Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Environment | ${ENVIRONMENT:-unresolved} |"
+            echo "| ECR repository | carddemo-${ENVIRONMENT:-unresolved} |"
+            echo "| ECR URL | ${ECR_URL:-unresolved} |"
+            echo "| Short-SHA tag | \`${SHORT_SHA:-unresolved}\` |"
+            if [ -n "${SEMVER:-}" ]; then
+              echo "| Semver tag | \`${SEMVER}\` |"
+            fi
+            if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+              echo "| Latest tag pushed | yes (best-effort under IMMUTABLE policy) |"
+            fi
+            echo "| Triggered by | ${{ github.actor }} |"
+            echo "| Trigger | ${{ github.event_name }} |"
+            echo "| Ref | ${{ github.ref }} |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Runner | ubuntu-24.04 |"
+            echo "| Platform | linux/amd64 |"
+            echo ""
+            echo "### Next step"
+            echo ""
+            echo "The \`deploy.yml\` workflow consumes the short-SHA tag"
+            echo "(\`${SHORT_SHA:-unresolved}\`) to roll out the new image to ECS Fargate."
+          } >> "$GITHUB_STEP_SUMMARY"
