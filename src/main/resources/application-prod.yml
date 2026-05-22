@@ -1,52 +1,658 @@
-# ---------------------------------------------------------------------------
-# Production profile - AWS-deployed (ECS Fargate + RDS Multi-AZ + MSK +
-# ElastiCache + Secrets Manager + Parameter Store).
-# Per AAP §0.3.1: "application-prod.yml - AWS-deployed profile".
-# ---------------------------------------------------------------------------
+# =============================================================================
+# AWS CardDemo — Production (`prod`) Spring Boot Profile
+# =============================================================================
+#
+# Purpose
+# -------
+# AWS-deployed production profile for the CardDemo Spring Boot 3.x service.
+# Layered on top of `application.yml` (base profile), this file overrides only
+# the properties that differ for production deployment on AWS-native managed
+# services (ECS Fargate + RDS Multi-AZ + MSK + ElastiCache + Secrets Manager
+# + Parameter Store + KMS + CloudWatch + OpenSearch). Per AAP §0.3.1 and
+# §0.4.1: "application-prod.yml — AWS-deployed profile".
+#
+# Activation
+# ----------
+# Activated when `SPRING_PROFILES_ACTIVE=prod` is set by the ECS Fargate task
+# definition (`infrastructure/terraform/ecs.tf`). NEVER activate this profile
+# locally or in dev — it requires real AWS Secrets Manager + Parameter Store
+# + RDS + MSK + ElastiCache endpoints.
+#
+# Security posture — PCI-DSS aligned (AAP §0.6.6 / §0.7.1 / §0.7.2)
+# -----------------------------------------------------------------
+#   * ZERO plaintext credentials. Every sensitive value is resolved at
+#     startup from AWS Secrets Manager (via Spring Cloud AWS
+#     `spring.config.import: aws-secretsmanager:…`) or injected by the
+#     ECS task definition's `secrets:` block as an environment variable
+#     populated from the corresponding Secrets Manager secret value.
+#   * TLS 1.2+ in transit everywhere:
+#       - JDBC to RDS:    `ssl=true&sslmode=verify-full` (full hostname
+#                         verification with the AWS RDS root CA bundle).
+#       - MSK Kafka:      `security.protocol=SASL_SSL` with the AWS_MSK_IAM
+#                         mechanism (per AAP §0.6.5).
+#       - ElastiCache:    `spring.data.redis.ssl.enabled=true`.
+#       - ALB ingress:    HTTPS listener with ACM cert (configured in
+#                         Terraform, not here).
+#   * Encryption at rest via AWS KMS customer-managed keys (CMKs):
+#       - RDS, S3, ElastiCache, CloudWatch Logs (provisioned by Terraform).
+#   * AWS IAM role attached to the ECS task provides all AWS credentials —
+#     `spring.cloud.aws.credentials.*` is intentionally NOT configured so
+#     the AWS SDK v2 DefaultCredentialsProvider chain resolves the ECS
+#     container credential endpoint (AAP §0.7.1).
+#   * Hot rotation of secrets via `@RefreshScope` beans (per AAP §0.6.4) —
+#     `spring.cloud.refresh.enabled: true` ensures DataSource, Kafka
+#     producer/consumer factories rebuild on `RefreshEvent` without
+#     restarting the JVM.
+#
+# Audit / observability posture (AAP §0.6.6 / §0.7.2)
+# ---------------------------------------------------
+#   * Structured JSON logging via Logback's <springProfile name="prod">
+#     block (CONSOLE_JSON appender) → ECS awslogs driver → CloudWatch Logs
+#     → OpenSearch indexed for fraud / audit / regulatory queries.
+#   * Micrometer → CloudWatch metrics under the `CardDemo` namespace
+#     (1-minute step). Disabled in local/dev profiles, force-enabled here.
+#   * Actuator MINIMAL exposure: only `health` + `info` (+ `prometheus`
+#     when the registry is added). Health details are NEVER shown to
+#     anonymous probes (PCI-DSS) — `show-details: never`.
+#   * Actuator binds to a separate management port (8081, inherited from
+#     base) that is NEVER exposed via the ALB target group.
+#
+# Mandatory environment variables (set by ECS task definition)
+# ------------------------------------------------------------
+# Per AAP §0.7.2 these are the seven non-sensitive vars Terraform exposes
+# to the ECS task via plain `environment:`:
+#   AWS_REGION                  e.g. us-east-1
+#   ECS_CLUSTER_NAME            e.g. carddemo-prod
+#   RDS_SECRET_ARN              arn:aws:secretsmanager:…:secret:carddemo/prod/rds-…
+#   KMS_KEY_ARN                 arn:aws:kms:…:key/…
+#   MSK_BOOTSTRAP_SERVERS       b-1.…amazonaws.com:9098,b-2.…amazonaws.com:9098
+#   S3_OUTPUT_BUCKET            carddemo-prod-output
+#   OPENSEARCH_ENDPOINT         https://search-carddemo-prod-…amazonaws.com
+#
+# Additional vars consumed below (Terraform-managed):
+#   RDS_HOST, RDS_PORT, RDS_DATABASE
+#   RDS_USERNAME, RDS_PASSWORD               (injected by ECS `secrets:`
+#                                             from the JSON keys of
+#                                             `${RDS_SECRET_ARN}`)
+#   ELASTICACHE_HOST, ELASTICACHE_PORT
+#   STATE_MACHINE_EOD_ARN, STATE_MACHINE_PROVISIONING_ARN
+#   CLOUDTRAIL_TRAIL_ARN
+#   JWT_SIGNING_KEY                          (injected from the
+#                                             `carddemo/prod/jwt-signing-key`
+#                                             secret value)
+#   SERVICE_VERSION                          set by CI to the Git SHA / tag
+#
+# Coordinating files
+# ------------------
+#   * `application.yml`                              — base profile (this overrides)
+#   * `src/main/java/com/awsm2/carddemo/config/SecretsManagerConfig.java`
+#                                                    — `@RefreshScope` wiring
+#   * `src/main/java/com/awsm2/carddemo/config/SecurityConfig.java`
+#                                                    — reads carddemo.security.jwt.*
+#   * `src/main/java/com/awsm2/carddemo/config/KafkaConfig.java`
+#                                                    — applies spring.kafka.*
+#   * `src/main/java/com/awsm2/carddemo/config/RedisConfig.java`
+#                                                    — applies spring.data.redis.*
+#   * `src/main/java/com/awsm2/carddemo/config/JpaConfig.java`
+#                                                    — applies spring.jpa.* / hikari
+#   * `src/main/resources/logback-spring.xml`        — CONSOLE_JSON appender
+#                                                      for the `prod` profile
+#   * `infrastructure/terraform/ecs.tf`              — ECS task definition
+#                                                      env + secrets injection
+#   * `infrastructure/terraform/rds.tf`              — RDS Multi-AZ + KMS
+#   * `infrastructure/terraform/msk.tf`              — MSK cluster + IAM auth
+#   * `infrastructure/terraform/elasticache.tf`      — Redis cluster + TLS
+#   * `infrastructure/terraform/secrets.tf`          — Secrets Manager + rotation
+# =============================================================================
+
 spring:
+  # ---------------------------------------------------------------------------
+  # Profile activation — applied ONLY when SPRING_PROFILES_ACTIVE=prod
+  # ---------------------------------------------------------------------------
   config:
     activate:
       on-profile: prod
+    # -------------------------------------------------------------------------
+    # Spring Cloud AWS 3.x config-data imports (Secrets Manager + Param Store)
+    # -------------------------------------------------------------------------
+    # Each `aws-secretsmanager:<name-or-arn>` entry causes Spring Boot 3.x to
+    # fetch the secret at startup and merge its JSON keys into the Spring
+    # Environment as a property source with HIGHER precedence than this YAML
+    # (per Spring Boot's documented config-data source ordering). The result:
+    # any property declared below as `${VAR}` is resolved against the union
+    # of (1) the imported secret JSON keys, (2) the imported Parameter Store
+    # tree, and (3) ECS-injected environment variables — in that order.
+    #
+    # The `optional:` prefix is intentionally OMITTED — production startup
+    # MUST fail loudly if any required secret cannot be retrieved. The local
+    # and dev profile overlays use `optional:` to permit standalone testing.
     import:
-      - aws-secretsmanager:carddemo/rds
-      - aws-secretsmanager:carddemo/jwt-signing-key
-      - aws-parameterstore:/carddemo/config/
+      - aws-secretsmanager:${RDS_SECRET_ARN}                  # RDS master credentials
+      - aws-secretsmanager:carddemo/prod/jwt-signing-key      # JWT HMAC signing key
+      - aws-secretsmanager:carddemo/prod/msk-credentials      # MSK IAM auth helpers
+      - aws-secretsmanager:carddemo/prod/opensearch-credentials  # OpenSearch fine-grained access (if enabled)
+      - aws-parameterstore:/carddemo/prod/                    # Non-secret config tree
+
+  # ---------------------------------------------------------------------------
+  # Spring Cloud — refresh support for @RefreshScope (AAP §0.6.4)
+  # ---------------------------------------------------------------------------
+  # `spring.cloud.refresh.enabled: true` ensures that beans annotated with
+  # `@RefreshScope` (DataSource, KafkaProducerFactory, KafkaConsumerFactory —
+  # wired in `SecretsManagerConfig.java`) are destroyed and re-created when
+  # the application receives a `RefreshEvent`. The event is published by the
+  # Secrets Manager rotation listener after AWS Secrets Manager rotates a
+  # secret (per AAP §0.6.4). HikariCP `max-lifetime` is sized below so that
+  # any pool connection opened with old credentials is recycled within 30
+  # minutes — well inside the typical 90-day rotation window.
+  cloud:
+    refresh:
+      enabled: true
+    # -------------------------------------------------------------------------
+    # AWS SDK region — production runs require an explicit region (no
+    # default fallback). The AWS SDK v2 DefaultCredentialsProvider chain
+    # resolves credentials from the ECS task IAM role automatically.
+    # -------------------------------------------------------------------------
+    aws:
+      region:
+        static: ${AWS_REGION}
+      # Force Spring Cloud AWS auto-config to import from Secrets Manager
+      # and Parameter Store (the `spring.config.import` directives above
+      # require these flags to be ON).
+      secretsmanager:
+        enabled: true
+        # No `endpoint:` override in prod — uses the real AWS Secrets
+        # Manager regional endpoint.
+      parameterstore:
+        enabled: true
+
+  # ---------------------------------------------------------------------------
+  # Lifecycle — graceful shutdown sized for ECS rolling deployments
+  # ---------------------------------------------------------------------------
+  # When ECS Fargate sends SIGTERM during a deployment, Spring Boot stops
+  # accepting new HTTP requests and gives in-flight requests this much time
+  # to complete before forcing shutdown. 30 s aligns with the ALB target
+  # group deregistration_delay (also 30 s in `infrastructure/terraform/alb.tf`)
+  # so the LB drains an instance before the JVM dies.
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+  # ---------------------------------------------------------------------------
+  # DataSource — RDS PostgreSQL Multi-AZ with TLS 1.2+ verify-full
+  # ---------------------------------------------------------------------------
+  # SECURITY:
+  #   * `sslmode=verify-full` — strict TLS 1.2+ with full hostname
+  #     verification against the AWS RDS root CA bundle baked into the
+  #     container image at `/etc/ssl/certs/rds-ca-2019-root.pem` (PCI-DSS
+  #     requirement per AAP §0.6.6 — "TLS 1.2+ in transit … RDS").
+  #   * `username` / `password` are injected by the ECS task definition's
+  #     `secrets:` block from the JSON values inside `${RDS_SECRET_ARN}`
+  #     (keys: `username`, `password`). No credential ever appears in this
+  #     YAML or in `application.yml`.
+  #   * If the `RDS_USERNAME` / `RDS_PASSWORD` env vars are absent, Spring
+  #     Cloud AWS Secrets Manager (via `spring.config.import` above) will
+  #     provide them from the secret's `username` / `password` JSON keys
+  #     as a fallback.
   datasource:
-    # JDBC URL resolved from Secrets Manager secret value.
-    url: ${RDS_JDBC_URL}
-    username: ${RDS_USERNAME}
-    password: ${RDS_PASSWORD}
+    url: jdbc:postgresql://${RDS_HOST}:${RDS_PORT:5432}/${RDS_DATABASE}?ssl=true&sslmode=verify-full&sslrootcert=/etc/ssl/certs/rds-ca-2019-root.pem&ApplicationName=carddemo
+    username: ${RDS_USERNAME:${username:}}
+    password: ${RDS_PASSWORD:${password:}}
     driver-class-name: org.postgresql.Driver
     hikari:
+      pool-name: CardDemoHikariCP
+      # Production sizing — sized for ECS Fargate task of 2 vCPU / 4 GB
+      # serving ~200 concurrent threads (Tomcat default).
       maximum-pool-size: 20
       minimum-idle: 5
+      # CRITICAL — `max-lifetime` MUST be < the AWS Secrets Manager rotation
+      # interval so that rotated credentials are picked up within one cycle
+      # (AAP §0.6.4). Any pool connection older than 30 min is recycled.
+      max-lifetime: 1800000             # 30 minutes
+      idle-timeout: 600000              # 10 minutes
+      connection-timeout: 30000         # 30 seconds (under ALB idle timeout)
+      keepalive-time: 60000             # 1 minute TCP keepalive probe
+      # Detect connection leaks (long-running queries holding pool
+      # connections beyond 60 s) — emits a warning with the full stack
+      # trace identifying the leaking caller.
+      leak-detection-threshold: 60000
+      auto-commit: false                # explicit @Transactional boundaries
+      connection-test-query: SELECT 1
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate — production tuning
+  # ---------------------------------------------------------------------------
+  # `show-sql: false` is enforced — SQL logging is NEVER enabled in
+  # production because PostgreSQL bind values include account numbers,
+  # card numbers, and balances (PCI-DSS leak risk per AAP §0.6.6).
+  # SQL is captured (when explicitly needed) via `pgaudit` on the RDS
+  # parameter group instead.
   jpa:
     hibernate:
-      ddl-auto: validate
+      ddl-auto: validate                # Flyway is the sole schema owner
+    show-sql: false                     # never true in production
+    open-in-view: false                 # close PC at controller boundary
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: false
+        generate_statistics: false
+        jdbc:
+          # Larger batch size than the base profile (25) — production hits
+          # higher write volume from EOD batch jobs and benefits from
+          # bigger JDBC batches against RDS.
+          batch_size: 50
+          time_zone: UTC
+          lob:
+            non_contextual_creation: true
+        order_inserts: true
+        order_updates: true
+        query:
+          in_clause_parameter_padding: true
+
+  # ---------------------------------------------------------------------------
+  # Flyway — strict production migration policy
+  # ---------------------------------------------------------------------------
+  # Production schema migrations are applied by a one-shot AWS Batch job
+  # (`carddemo-flyway-migrate`) run BEFORE the ECS service rolls out new
+  # tasks. On normal app startup, Flyway only VALIDATES that the deployed
+  # tasks match the schema version in `flyway_schema_history`.
   flyway:
     enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false          # RDS schema is provisioned empty
+    validate-on-migrate: true           # fail-fast on checksum drift
+    out-of-order: false                 # strict sequential ordering
+    schemas: public
+    table: flyway_schema_history
 
-spring.cloud:
-  aws:
-    secretsmanager:
-      enabled: true
-    parameterstore:
-      enabled: true
+  # ---------------------------------------------------------------------------
+  # Redis (ElastiCache) — TLS in transit, larger production pool
+  # ---------------------------------------------------------------------------
+  # ElastiCache for Redis cluster mode with in-transit + at-rest
+  # encryption (AAP §0.7.1 / §0.6.6). `allkeys-lru` eviction policy is
+  # set on the ElastiCache parameter group, not in this YAML.
+  data:
+    redis:
+      host: ${ELASTICACHE_HOST}
+      port: ${ELASTICACHE_PORT:6379}
+      ssl:
+        enabled: true                   # mandatory TLS in transit
+      timeout: 2s
+      connect-timeout: 5s
+      client-name: carddemo-prod
+      lettuce:
+        pool:
+          max-active: 32                # 4x base profile for prod throughput
+          max-idle: 16
+          min-idle: 4
+        shutdown-timeout: 100ms
 
-carddemo:
-  aws:
-    endpoint-override: ""
+  # ---------------------------------------------------------------------------
+  # Spring Cache — Redis cache-aside (AAP §0.7.1)
+  # ---------------------------------------------------------------------------
+  cache:
+    type: redis
+    redis:
+      time-to-live: 300000              # 5 min — aligned with transaction frequency
+      cache-null-values: false
+      use-key-prefix: true
+      key-prefix: "carddemo:prod:"
 
+  # ---------------------------------------------------------------------------
+  # Kafka (MSK) — SASL_SSL + AWS_MSK_IAM authentication (AAP §0.6.5)
+  # ---------------------------------------------------------------------------
+  # MSK IAM authentication binds Kafka client identity to the ECS task IAM
+  # role. The IAMLoginModule + IAMClientCallbackHandler are provided by
+  # the `software.amazon.msk:aws-msk-iam-auth` artifact (declared in
+  # `pom.xml`) and use the AWS SDK v2 DefaultCredentialsProvider chain to
+  # obtain credentials — which resolves the ECS task role automatically.
+  #
+  # Ordering + idempotence (AAP §0.6.5):
+  #   * `acks: all` + `enable-idempotence: true` + `max.in.flight=5` +
+  #     `retries: 2147483647` — guarantees at-least-once delivery with
+  #     per-partition ordering inside a single producer session.
+  #   * Partition key = account ID (the producer sets the key explicitly
+  #     in code per `KafkaEventPublisher`).
+  kafka:
+    bootstrap-servers: ${MSK_BOOTSTRAP_SERVERS}
+    producer:
+      acks: all
+      enable-idempotence: true
+      retries: 2147483647
+      max-in-flight-requests-per-connection: 5
+      compression-type: lz4
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        # ---- Required MSK transport security (PCI-DSS in transit) ----
+        security.protocol: SASL_SSL
+        sasl.mechanism: AWS_MSK_IAM
+        # The trailing semicolon is required by the JAAS configuration
+        # grammar. Quoted for YAML safety. `IAMLoginModule` resolves AWS
+        # credentials via the SDK v2 default chain (ECS task role in prod).
+        sasl.jaas.config: "software.amazon.msk.auth.iam.IAMLoginModule required;"
+        sasl.client.callback.handler.class: software.amazon.msk.auth.iam.IAMClientCallbackHandler
+        # ---- Delivery semantics ----
+        delivery.timeout.ms: 120000     # 2 minutes total before give-up
+        request.timeout.ms: 30000
+        linger.ms: 50
+        spring.json.add.type.headers: false
+    consumer:
+      # Production consumer group — distinct from local/dev to avoid
+      # accidental offset commits to shared-environment groups.
+      group-id: carddemo-prod
+      enable-auto-commit: false         # manual commit only (AAP §0.6.5)
+      isolation-level: read_committed   # skip uncommitted transactional records
+      max-poll-records: 100
+      auto-offset-reset: earliest       # replay history on group creation
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        # ---- Required MSK transport security (PCI-DSS in transit) ----
+        security.protocol: SASL_SSL
+        sasl.mechanism: AWS_MSK_IAM
+        sasl.jaas.config: "software.amazon.msk.auth.iam.IAMLoginModule required;"
+        sasl.client.callback.handler.class: software.amazon.msk.auth.iam.IAMClientCallbackHandler
+        # ---- Consumer reliability ----
+        spring.json.trusted.packages: com.awsm2.carddemo.dto,com.awsm2.carddemo.domain
+        spring.json.use.type.headers: false
+        # Generous poll interval to absorb the slowest handler latency
+        # (statement generation cascade, transaction posting validation).
+        max.poll.interval.ms: 300000    # 5 minutes
+        session.timeout.ms: 45000       # 45 s (must be < max.poll.interval.ms)
+        heartbeat.interval.ms: 15000    # ~1/3 of session.timeout.ms
+    listener:
+      ack-mode: MANUAL                  # ack-on-success only
+      # Higher concurrency in prod to match topic partition count (12
+      # partitions per topic per AAP §0.6.5 default). Each listener
+      # thread services one partition for per-account ordering.
+      concurrency: 6
+      missing-topics-fatal: false
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch — jobs invoked exclusively by AWS Batch / Step Functions
+  # ---------------------------------------------------------------------------
+  # Schema for `BATCH_JOB_INSTANCE`, `BATCH_STEP_EXECUTION`, … is owned by
+  # Flyway migrations (Spring Batch must NEVER create or modify them).
+  # `job.enabled: false` prevents jobs from auto-running at startup — a
+  # safety guarantee against accidentally double-posting an EOD batch
+  # when an ECS task restarts (AAP §0.6.3).
+  batch:
+    jdbc:
+      initialize-schema: never
+    job:
+      enabled: false
+
+# =============================================================================
+# Management / Actuator — minimal exposure for PCI-DSS (AAP §0.7.2)
+# =============================================================================
+# Endpoints exposed via HTTP on the management port:
+#   * /actuator/health           — UP/DOWN only (no component detail)
+#   * /actuator/health/liveness  — ECS task liveness probe target
+#   * /actuator/health/readiness — ALB target group health check target
+#   * /actuator/info             — service version + name only
+#   * /actuator/prometheus       — only when micrometer-registry-prometheus
+#                                  is on the classpath (forward-compatible)
+#
+# `show-details: never` is a STRICT PCI-DSS requirement — health check
+# output must NEVER reveal database connection strings, cache server
+# addresses, internal queue names, or anything else that an attacker
+# could use for reconnaissance.
+#
+# Management port is 8081 (inherited from base) — distinct from the app
+# port 8080. Terraform ALB target group only routes :8080 traffic to
+# the tasks; :8081 is reachable only by the ECS health-check executor
+# and operators inside the VPC.
 management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: never               # PCI-DSS — never leak internals
+      show-components: never
+      probes:
+        enabled: true                   # /health/liveness + /health/readiness
+    info:
+      enabled: true
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  info:
+    env:
+      enabled: true
+    java:
+      enabled: true
+    os:
+      enabled: false
   metrics:
+    tags:
+      application: ${spring.application.name}
+      environment: prod
     export:
       cloudwatch:
-        enabled: true
+        enabled: true                   # force-enable in production
+        namespace: CardDemo
+        step: 1m                        # 1-minute resolution
+        batch-size: 20
 
+# =============================================================================
+# Server — embedded Tomcat (production sizing)
+# =============================================================================
+# Port 8080 is the only port routed by the ALB target group. The ALB
+# terminates TLS (HTTPS listener) and forwards plain HTTP to the task;
+# `forward-headers-strategy: native` ensures Spring reads the original
+# scheme (`X-Forwarded-Proto: https`), client IP (`X-Forwarded-For`),
+# and host header from the ALB. Without this, Spring would believe every
+# request originated on plain HTTP, breaking secure-cookie issuance and
+# CSRF same-origin checks.
+server:
+  port: 8080
+  shutdown: graceful
+  forward-headers-strategy: native
+  error:
+    include-message: never              # PCI-DSS — never leak exception detail
+    include-binding-errors: never
+    include-stacktrace: never
+    include-exception: false
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/plain,text/css,text/csv,text/javascript
+    min-response-size: 1024
+  tomcat:
+    threads:
+      max: 200
+      min-spare: 10
+    accept-count: 100
+    max-connections: 8192
+    connection-timeout: 20000           # 20 seconds
+    keep-alive-timeout: 30000           # 30 s — slightly under ALB idle (60 s)
+    max-keep-alive-requests: 100
+
+# =============================================================================
+# CardDemo-specific application properties (overrides for production)
+# =============================================================================
+# Every `${VAR}` here is resolved from the union of:
+#   1. ECS task definition `environment:` block (non-secret values)
+#   2. ECS task definition `secrets:` block (Secrets Manager values
+#      surfaced as env vars at task launch)
+#   3. `spring.config.import` Secrets Manager entries (above)
+#   4. `spring.config.import` Parameter Store tree (above)
+# No `${VAR:default}` defaults are supplied for AWS-resource references —
+# production startup MUST fail loudly if any required infrastructure
+# identifier is missing.
+carddemo:
+  aws:
+    region: ${AWS_REGION}
+    ecs:
+      cluster-name: ${ECS_CLUSTER_NAME}
+    # No endpoint override in production — uses real regional AWS endpoints.
+    endpoint-override: ""
+    s3:
+      output-bucket: ${S3_OUTPUT_BUCKET}
+      statements-bucket: ${S3_STATEMENTS_BUCKET:${S3_OUTPUT_BUCKET}}
+      reports-bucket: ${S3_REPORTS_BUCKET:${S3_OUTPUT_BUCKET}}
+      rejects-bucket: ${S3_REJECTS_BUCKET:${S3_OUTPUT_BUCKET}}
+      backup-bucket: ${S3_BACKUP_BUCKET:${S3_OUTPUT_BUCKET}}
+      # SSE-KMS on every PUT — AAP §0.7.1 mandates SSE-KMS for all S3.
+      sse-kms-key-arn: ${KMS_KEY_ARN}
+    kms:
+      key-arn: ${KMS_KEY_ARN}
+    secrets:
+      rds-secret-arn: ${RDS_SECRET_ARN}
+    opensearch:
+      endpoint: ${OPENSEARCH_ENDPOINT}
+      # Use AWS IAM signing (SigV4) for OpenSearch — credentials come
+      # from the ECS task role; no static user/password is configured.
+      use-iam-auth: true
+    msk:
+      bootstrap-servers: ${MSK_BOOTSTRAP_SERVERS}
+    stepfunctions:
+      eod-batch-pipeline-arn: ${STATE_MACHINE_EOD_ARN}
+      file-provisioning-arn: ${STATE_MACHINE_PROVISIONING_ARN}
+    cloudtrail:
+      trail-arn: ${CLOUDTRAIL_TRAIL_ARN:}
+
+  # ---------------------------------------------------------------------------
+  # Security — JWT signing key from Secrets Manager; BCrypt strength 12
+  # ---------------------------------------------------------------------------
+  # `JWT_SIGNING_KEY` is injected by the ECS task definition's `secrets:`
+  # block from the value of `carddemo/prod/jwt-signing-key` (imported via
+  # `spring.config.import` above as a fallback source). The key must be at
+  # least 256 bits (32 bytes) for HS256 — secret rotation regenerates it
+  # via the Secrets Manager rotation Lambda configured in
+  # `infrastructure/terraform/secrets.tf`.
+  security:
+    bcrypt:
+      strength: 12                      # 2^12 rounds — production-grade
+    jwt:
+      signing-key: ${JWT_SIGNING_KEY}
+      issuer: carddemo-prod
+      # 30-minute access token — short window to limit replay if a token
+      # leaks. Refresh token rotation is handled by the auth controller.
+      expiration-seconds: 1800
+      access-token-ttl-minutes: 30
+      refresh-token-ttl-minutes: 720    # 12 hours
+
+  # ---------------------------------------------------------------------------
+  # Cache — production-scale Redis cache (cache-aside, AAP §0.7.1)
+  # ---------------------------------------------------------------------------
+  cache:
+    ttl-seconds: 300                    # 5 minutes
+    max-entries: 100000
+    account-balance-ttl-seconds: 300
+    card-detail-ttl-seconds: 600
+    reference-data-ttl-seconds: 3600
+
+  # ---------------------------------------------------------------------------
+  # Kafka — consumer group + topic names (overrides base)
+  # ---------------------------------------------------------------------------
+  # Production consumer group is namespaced with `-prod` to prevent any
+  # cross-environment offset commits.
+  kafka:
+    consumer:
+      group-id: carddemo-prod
+    topics:
+      transaction-posted: transaction.posted
+      account-updated: account.updated
+      ledger-balanced: ledger.balanced
+      report-requested: report.requested
+
+  # ---------------------------------------------------------------------------
+  # Transaction event topics — alias mapping for code that reads under
+  # `carddemo.transactions.kafka.topics.*` per agent prompt §Phase 10.
+  # ---------------------------------------------------------------------------
+  transactions:
+    kafka:
+      topics:
+        transaction-posted: transaction.posted
+        account-updated: account.updated
+        ledger-balanced: ledger.balanced
+        report-requested: report.requested
+
+  # ---------------------------------------------------------------------------
+  # Batch output S3 key prefixes (AAP §0.6.2 — sequential outputs → S3)
+  # ---------------------------------------------------------------------------
+  # Sequential PS / GDG datasets in the source COBOL become versioned S3
+  # objects under these prefixes inside `${S3_OUTPUT_BUCKET}`. Lifecycle
+  # policies (in `infrastructure/terraform/s3.tf`) age old generations to
+  # Glacier / Glacier Deep Archive per regulatory retention rules.
+  batch:
+    reject-prefix: rejects/             # ← DALYREJS (POSTTRAN.jcl)
+    systran-prefix: systran/            # ← SYSTRAN (INTCALC.jcl)
+    statements-prefix: statements/      # ← STMTFILE (CREASTMT.JCL)
+    reports-prefix: reports/            # ← TRANREPT (TRANREPT.jcl)
+    backup-prefix: backup/              # ← TRANSACT.BKUP (TRANBKP.jcl)
+
+  # ---------------------------------------------------------------------------
+  # Pagination — preserved BMS field counts (AAP §0.4.1)
+  # ---------------------------------------------------------------------------
+  pagination:
+    card-list-page-size: 7              # ← COCRDLI.bms (7 rows per page)
+    transaction-list-page-size: 10      # ← COTRN00.bms (10 rows per page)
+    user-list-page-size: 10             # ← COUSR00.bms (10 rows per page)
+
+  # ---------------------------------------------------------------------------
+  # Monetary arithmetic — BigDecimal scale + rounding (AAP §0.6.1)
+  # ---------------------------------------------------------------------------
+  monetary:
+    scale: 2
+    rounding-mode: HALF_EVEN            # banker's rounding (matches COBOL)
+
+  # ---------------------------------------------------------------------------
+  # Validation — ISO-8601 date / timestamp formats
+  # ---------------------------------------------------------------------------
+  validation:
+    date-format: yyyy-MM-dd
+    timestamp-format: yyyy-MM-dd'T'HH:mm:ss.SSSZ
+
+# =============================================================================
+# springdoc-openapi — disabled in production
+# =============================================================================
+# OpenAPI spec and Swagger UI are NOT served from production tasks (PCI-DSS
+# — never expose API documentation publicly that could be used for attack
+# surface mapping). The contract is published out-of-band to consumers.
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+  show-actuator: false
+
+# =============================================================================
+# Logging — Logback owns appender configuration (logback-spring.xml)
+# =============================================================================
+# In production, Logback selects the CONSOLE_JSON appender via the
+# <springProfile name="prod"> block in logback-spring.xml. The JSON
+# output is captured by the ECS awslogs log driver, shipped to the
+# `/ecs/carddemo` CloudWatch Log Group, then indexed in OpenSearch for
+# audit / fraud queries (AAP §0.6.6 / §0.7.2).
+#
+# Levels are tightened compared to the base profile to control CloudWatch
+# ingest cost and to ensure no PII appears in log output. SQL logging is
+# OFF (Hibernate WARN) — PCI-DSS leak risk.
 logging:
+  config: classpath:logback-spring.xml
   level:
     root: WARN
     com.awsm2.carddemo: INFO
+    # Audit logger — preserves the regulatory record of transaction IDs,
+    # timestamps, and operator codes from the original COBOL audit trail
+    # writes (CBSTM03A, CBTRN02C, COACTUPC, COBIL00C). Never quieted.
+    com.awsm2.carddemo.audit: INFO
+    org.springframework: WARN
+    org.springframework.web: WARN
+    org.springframework.security: WARN
+    org.springframework.kafka: WARN
+    org.springframework.batch: INFO
+    org.hibernate: WARN
+    org.hibernate.SQL: WARN
+    org.hibernate.orm.jdbc.bind: WARN
+    org.flywaydb: INFO
+    software.amazon.awssdk: WARN
+    io.awspring.cloud: INFO
+    org.apache.kafka: WARN
+    org.apache.kafka.clients.consumer.internals: WARN
