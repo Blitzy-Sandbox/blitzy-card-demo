@@ -1,0 +1,768 @@
+# =============================================================================
+# application-test.yml — Test Spring Profile (JUnit 5 + Testcontainers)
+# =============================================================================
+#
+# Purpose
+# -------
+# Overlay applied on top of the base `application.yml` when the `test` profile
+# is active. It configures the CardDemo Spring Boot 3.x service to run against
+# Testcontainers-managed PostgreSQL 16, Apache Kafka, and Redis containers
+# plus LocalStack for AWS service emulation (AAP §0.4.1, §0.5.1, §0.7.2).
+#
+# Activation
+# ----------
+# This profile is engaged ONLY when:
+#   * a test class is annotated `@ActiveProfiles("test")`, OR
+#   * the environment variable `SPRING_PROFILES_ACTIVE=test` is set, OR
+#   * a Maven Surefire / Failsafe execution sets `-Dspring.profiles.active=test`.
+#
+# `spring.profiles.active` MUST NOT be declared in this file — doing so would
+# activate the profile in non-test contexts, defeating the isolation guarantee.
+#
+# Stack provisioned by Testcontainers in the JVM under test
+# ---------------------------------------------------------
+#   * PostgreSQL 16-alpine  — started by the Testcontainers JDBC URL scheme
+#                             (`jdbc:tc:postgresql:16-alpine:///carddemo_test`).
+#                             Flyway migrations under `src/main/resources/
+#                             db/migration/V*.sql` are applied automatically.
+#   * Apache Kafka          — started by `KafkaContainer` in test fixtures;
+#                             the placeholder `bootstrap-servers` below is
+#                             overridden per test class via `@DynamicProperty
+#                             Source`.
+#   * Redis 7-alpine        — started by `GenericContainer("redis:7-alpine")`;
+#                             host/port placeholders below are overridden the
+#                             same way.
+#   * LocalStack            — started by `LocalStackContainer`; endpoint
+#                             override is propagated via @DynamicPropertySource
+#                             to all `spring.cloud.aws.*.endpoint` properties.
+#
+# Security posture
+# ----------------
+#   * ZERO production credentials. The single JWT signing key present here is
+#     EXPLICITLY labelled as a test-only placeholder. It contains the literal
+#     prefix `test-only-` to make its non-production origin unmistakable in
+#     log output and stack traces.
+#   * `spring.cloud.aws.secretsmanager.enabled: false` and
+#     `spring.cloud.aws.parameterstore.enabled: false` — tests MUST NOT
+#     require any AWS account or network access at context-start time
+#     (AAP §0.6.4, §0.7.1).
+#   * AWS credentials default to the LocalStack convention `test`/`test`.
+#     Real credential resolution is unreachable from the test classpath
+#     because the auto-config paths are disabled.
+#   * Kafka uses PLAINTEXT in test (Testcontainers Kafka does not implement
+#     IAM auth). Production uses SASL_SSL + AWS_MSK_IAM (AAP §0.6.5).
+#
+# Coordinating files (consumers / producers of these properties)
+# --------------------------------------------------------------
+#   * `src/main/resources/application.yml`               — base profile
+#   * `src/main/resources/application-local.yml`         — sibling overlay
+#   * `src/main/resources/logback-spring.xml`            — `<springProfile
+#                                                          name="local | dev |
+#                                                          test">` block
+#                                                          governs test output
+#   * `src/test/java/com/awsm2/carddemo/**/*Test.java`   — every Spring Boot
+#                                                          test class is
+#                                                          annotated
+#                                                          `@ActiveProfiles
+#                                                          ("test")`
+#   * `src/test/resources/golden/*.txt`                  — golden output
+#                                                          fixtures consumed
+#                                                          by `GoldenOutput
+#                                                          DiffTest` via
+#                                                          `carddemo.test.
+#                                                          golden-fixtures-
+#                                                          path`
+#   * `src/main/java/com/awsm2/carddemo/config/AwsSdkConfig.java`
+#                                                        — reads `spring.cloud.
+#                                                          aws.*` and
+#                                                          `carddemo.aws.*`
+#   * `src/main/java/com/awsm2/carddemo/config/KafkaConfig.java`
+#                                                        — reads `spring.kafka.
+#                                                          *` and `carddemo.
+#                                                          kafka.*`
+#   * `src/main/java/com/awsm2/carddemo/security/BCryptPasswordEncoderBean.
+#     java`                                              — reads `carddemo.
+#                                                          security.bcrypt.
+#                                                          strength` (if
+#                                                          parameterised
+#                                                          in tests via
+#                                                          `@TestConfiguration`)
+#
+# AAP cross-references
+# --------------------
+#   §0.4.1   — Test Code section lists this file as CREATE
+#   §0.5.1   — Testcontainers and Spring Boot Test dependencies enumerated
+#   §0.6.1   — BigDecimal precision (Jackson `write-bigdecimal-as-plain`)
+#   §0.6.4   — Secrets Manager rotation context (DISABLED in tests)
+#   §0.6.5   — MSK Kafka ordering invariants (preserved in tests for
+#              end-to-end ordering validation)
+#   §0.7.1   — Security rules (ZERO plaintext production credentials)
+#   §0.7.2   — Testing approach: JUnit 5 + Mockito + Testcontainers +
+#              LocalStack + parallel-run golden-output diff
+#   §0.7.3   — Minimal Change Clause (this file overrides ONLY what differs
+#              from base profile)
+# =============================================================================
+
+spring:
+  # ---------------------------------------------------------------------------
+  # Phase 1 — Spring Boot config-data activation
+  # ---------------------------------------------------------------------------
+  # The `spring.config.activate.on-profile: test` directive is the canonical
+  # Spring Boot 2.4+ profile activation marker. It ensures this file's content
+  # is engaged ONLY when the `test` profile is active. The profile itself is
+  # activated externally via `@ActiveProfiles("test")` on test classes or via
+  # `SPRING_PROFILES_ACTIVE=test`.
+  config:
+    activate:
+      on-profile: test
+
+  # ---------------------------------------------------------------------------
+  # Phase 2 — Spring core (quiet test output, eager wiring)
+  # ---------------------------------------------------------------------------
+  application:
+    name: carddemo-test
+  main:
+    # Suppress the Spring Boot banner — keeps test output focused on test
+    # assertions rather than startup decoration.
+    banner-mode: "off"
+    # Spring Boot 3.x default — kept explicit to catch accidental duplicate
+    # @Bean registrations in test slices.
+    allow-bean-definition-overriding: false
+    # Circular dependencies are a code smell that tests should surface, not
+    # hide. Fail-fast at context refresh.
+    allow-circular-references: false
+    # Eager bean initialisation — surfaces wiring bugs (missing @Component,
+    # missing constructor argument, qualifier mismatch) at context refresh
+    # rather than on first request inside a test.
+    lazy-initialization: false
+
+  # ---------------------------------------------------------------------------
+  # Phase 3 — Spring Cloud AWS 3.x: disable real AWS auto-config (AAP §0.6.4)
+  # ---------------------------------------------------------------------------
+  # CRITICAL — Tests MUST NOT require any AWS account, network access, or
+  # IMDS/ECS metadata endpoint to start a Spring context. Both Secrets
+  # Manager and Parameter Store auto-configs are explicitly disabled.
+  #
+  # Property naming — Spring Cloud AWS 3.x uses single-word property prefixes
+  # `secretsmanager` and `parameterstore` (NOT kebab-case `secrets-manager`
+  # or `parameter-store`). This matches the project convention established
+  # by `application.yml` (lines 352-359) and `application-local.yml`
+  # (lines 147-158) and is verified against the published binding metadata
+  # of `io.awspring.cloud:spring-cloud-aws-starter` 3.2.1.
+  #
+  # Endpoint override defaults are LocalStack edge port placeholders. Tests
+  # using `LocalStackContainer` overwrite these via @DynamicPropertySource:
+  #
+  #   @DynamicPropertySource
+  #   static void overrideAws(DynamicPropertyRegistry r) {
+  #       r.add("spring.cloud.aws.endpoint", () -> localstack.getEndpoint());
+  #       r.add("spring.cloud.aws.s3.endpoint", () -> localstack.getEndpoint());
+  #       ...
+  #   }
+  cloud:
+    aws:
+      region:
+        static: ${AWS_REGION:us-east-1}
+      credentials:
+        # LocalStack convention — these literal strings have NO production
+        # meaning. They satisfy the AWS SDK credential resolution chain so
+        # SDK client construction does not fail at context start.
+        access-key: ${AWS_ACCESS_KEY_ID:test}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+      # Global endpoint override — every AWS SDK v2 client builder inherits
+      # this unless a per-service block below supersedes it.
+      endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
+      secretsmanager:
+        # CRITICAL — disable real AWS lookup. Auto-config will NOT attempt to
+        # `spring.config.import: aws-secretsmanager:...` at context start.
+        enabled: false
+        endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
+        region: ${AWS_REGION:us-east-1}
+      parameterstore:
+        # CRITICAL — disable real AWS lookup. Same rationale as
+        # secretsmanager.enabled above.
+        enabled: false
+        endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
+        region: ${AWS_REGION:us-east-1}
+      s3:
+        endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
+        # LocalStack requires path-style access; production S3 supports both.
+        # In tests we always exercise the path-style code path so that any
+        # LocalStack-specific URL construction is integration-tested.
+        path-style-access-enabled: true
+      sns:
+        endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
+        region: ${AWS_REGION:us-east-1}
+      sqs:
+        endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
+        region: ${AWS_REGION:us-east-1}
+
+  # ---------------------------------------------------------------------------
+  # Phase 4 — DataSource (Testcontainers JDBC URL scheme)
+  # ---------------------------------------------------------------------------
+  # The `jdbc:tc:postgresql:16-alpine:///carddemo_test` URL scheme triggers
+  # the Testcontainers JDBC driver (`org.testcontainers.jdbc.Container
+  # DatabaseDriver`) to spin up a PostgreSQL 16-alpine container on first
+  # connection. The query parameter `TC_DAEMON=true` keeps the container
+  # alive across the entire JVM lifetime — faster than restarting it per
+  # test class.
+  #
+  # Tests using `@Testcontainers` + `@DynamicPropertySource` with their own
+  # `PostgreSQLContainer<?>` bean may override `spring.datasource.url`,
+  # `spring.datasource.username`, and `spring.datasource.password` at
+  # context refresh time — this file's values then serve only as fallback
+  # defaults.
+  datasource:
+    url: jdbc:tc:postgresql:16-alpine:///carddemo_test?TC_DAEMON=true
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+    # Credentials of the Testcontainers-managed PostgreSQL — the container
+    # starts with these credentials and the driver injects them into the
+    # JDBC URL transparently. They have no meaning outside the test JVM.
+    username: test
+    password: test
+    hikari:
+      pool-name: CardDemoHikariCP-test
+      maximum-pool-size: 5
+      minimum-idle: 1
+      connection-test-query: SELECT 1
+      # Explicit transaction boundaries — every @Transactional service test
+      # opens its own JDBC tx; nothing auto-commits silently.
+      auto-commit: false
+      idle-timeout: 300000
+      max-lifetime: 600000
+      connection-timeout: 20000
+      keepalive-time: 60000
+
+  # ---------------------------------------------------------------------------
+  # Phase 5 — JPA / Hibernate (validate-only; Flyway owns schema)
+  # ---------------------------------------------------------------------------
+  # Hibernate `ddl-auto: validate` is mandated by AAP §0.6.2 in EVERY
+  # environment, including tests. Flyway is the sole schema owner — Hibernate
+  # only verifies that the @Entity mappings agree with the migrated tables.
+  #
+  # `show-sql: true` is acceptable in tests — there is no PCI data in
+  # Testcontainers-provisioned databases (all data originates from Flyway
+  # seed migrations + test fixture builders). Production keeps this `false`.
+  jpa:
+    hibernate:
+      ddl-auto: validate
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.CamelCaseToUnderscoresNamingStrategy
+    show-sql: true
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        jdbc:
+          time_zone: UTC
+          batch_size: 25
+          lob:
+            non_contextual_creation: true
+        order_inserts: true
+        order_updates: true
+        generate_statistics: false
+        query:
+          # Pad IN clauses to power-of-two cardinality so the Hibernate
+          # statement cache reuses prepared statements across test runs.
+          in_clause_parameter_padding: true
+
+  # ---------------------------------------------------------------------------
+  # Phase 6 — Flyway (baseline-on-migrate for empty Testcontainers DB)
+  # ---------------------------------------------------------------------------
+  # `baseline-on-migrate: true` is CRITICAL for Testcontainers' freshly
+  # provisioned, empty PostgreSQL containers. With an empty schema, Flyway
+  # bootstraps `flyway_schema_history` at baseline version 0 and then
+  # applies every `V*` migration in order.
+  #
+  # `clean-disabled: false` allows test fixtures that need full isolation
+  # to call `Flyway.clean()` between test classes. Production must NEVER
+  # set this to `false` (cleaning RDS would be catastrophic).
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 0
+    validate-on-migrate: true
+    out-of-order: false
+    schemas: public
+    table: flyway_schema_history
+    clean-disabled: false
+
+  # ---------------------------------------------------------------------------
+  # Phase 7 — Redis (Testcontainers-managed; placeholder overridden per test)
+  # ---------------------------------------------------------------------------
+  # Default `localhost:6379` placeholders are overwritten by individual test
+  # classes that start a Redis Testcontainer:
+  #
+  #   @Container
+  #   static GenericContainer<?> redis =
+  #       new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
+  #
+  #   @DynamicPropertySource
+  #   static void overrideRedis(DynamicPropertyRegistry r) {
+  #       r.add("spring.data.redis.host", redis::getHost);
+  #       r.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+  #   }
+  #
+  # Tests that DO NOT exercise Redis can either point to a no-op stub bean
+  # via `@MockBean` on `RedisTemplate` or skip the Redis configuration via
+  # `@TestConfiguration`.
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      timeout: 2s
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 4
+          min-idle: 1
+          max-wait: 100ms
+  cache:
+    type: redis
+    redis:
+      # Short TTL aligns with the test-time `carddemo.cache.ttl-seconds`
+      # below — fast cache-aside refresh exercises eviction paths.
+      time-to-live: 60000
+      cache-null-values: false
+      use-key-prefix: true
+      key-prefix: "carddemo-test:"
+
+  # ---------------------------------------------------------------------------
+  # Phase 8 — Kafka (MSK equivalent — PLAINTEXT for Testcontainers)
+  # ---------------------------------------------------------------------------
+  # AAP §0.6.5 ordering invariants are preserved verbatim in tests so the
+  # producer/consumer behaviour validated locally matches production:
+  #
+  #   * acks=all                      — wait for full ISR ack
+  #   * enable.idempotence=true       — sequence-numbered, deduplicated sends
+  #   * retries=Integer.MAX_VALUE     — broker decides when to give up
+  #   * max.in.flight.requests=5      — preserves ordering with idempotence
+  #
+  # The ONLY test-specific change is `security.protocol: PLAINTEXT` —
+  # Testcontainers Kafka does not implement SASL_SSL/AWS_MSK_IAM.
+  #
+  # SCHEMA EXPORTS (this file's authoritative contract per file_schema):
+  #   * spring.kafka.producer.acks                                       (below)
+  #   * spring.kafka.producer.properties.enable.idempotence              (below)
+  #   * spring.kafka.producer.retries                                    (below)
+  #   * spring.kafka.producer.properties.max.in.flight.requests.per.connection
+  #                                                                      (below)
+  #   * spring.kafka.consumer.enable-auto-commit                         (below)
+  #   * spring.kafka.consumer.isolation-level                            (below)
+  #   * spring.kafka.consumer.properties.spring.json.trusted.packages    (below)
+  #   * spring.kafka.listener.ack-mode                                   (below)
+  # All eight properties are present in this section as required by schema.
+  #
+  # Tests using `@DynamicPropertySource` with `KafkaContainer` override
+  # `spring.kafka.bootstrap-servers` and the per-service security.protocol
+  # at context refresh:
+  #
+  #   @DynamicPropertySource
+  #   static void overrideKafka(DynamicPropertyRegistry r) {
+  #       r.add("spring.kafka.bootstrap-servers", kafka::getBootstrapServers);
+  #   }
+  kafka:
+    # Placeholder bootstrap-servers — overridden by @DynamicPropertySource
+    # in tests that start a `KafkaContainer`.
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      # AAP §0.6.5 — strongest durability guarantee. SCHEMA EXPORT.
+      acks: all
+      # SCHEMA EXPORT — see `properties.enable.idempotence` below for the
+      # native Kafka-client form. The Spring Boot abstraction below is
+      # commented out to avoid duplicate keys; `properties.*` takes
+      # precedence in Spring Kafka and matches the file_schema export
+      # path verbatim.
+      # enable-idempotence: true   ← omitted; native form used in `properties`
+      # AAP §0.6.5 — effectively infinite retries; broker decides via
+      # delivery.timeout.ms when to give up. SCHEMA EXPORT.
+      retries: 2147483647
+      # SCHEMA EXPORT — see `properties.max.in.flight.requests.per.connection`
+      # below for the native Kafka-client form. The Spring Boot abstraction
+      # below is commented out to avoid duplicate keys; `properties.*` takes
+      # precedence in Spring Kafka and matches the file_schema export path
+      # verbatim.
+      # max-in-flight-requests-per-connection: 5   ← omitted; native form used
+      compression-type: lz4
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        # SCHEMA EXPORT — `spring.kafka.producer.properties.enable.idempotence`.
+        # Native Kafka client property name `enable.idempotence` (literal dot
+        # in the key). Spring Kafka forwards the entire `properties:` map
+        # to the underlying Kafka producer config verbatim.
+        enable.idempotence: true
+        # SCHEMA EXPORT — `spring.kafka.producer.properties.
+        # max.in.flight.requests.per.connection`. Same rationale as above —
+        # native Kafka client property name with literal dots.
+        max.in.flight.requests.per.connection: 5
+        # Testcontainers Kafka uses plaintext only (no IAM). Production uses
+        # SASL_SSL + AWS_MSK_IAM.
+        security.protocol: PLAINTEXT
+        # Total time the producer will spend attempting to deliver a record
+        # (across retries and broker acknowledgments).
+        delivery.timeout.ms: 120000
+        # Allow up to 50 ms of batching to improve throughput on bursty
+        # test runs without materially affecting per-record latency.
+        linger.ms: 50
+        # Spring JsonSerializer — do not emit `__TypeId__` headers. Events
+        # are routed by topic, not by Java type.
+        spring.json.add.type.headers: false
+    consumer:
+      # Distinct group ID per environment to prevent accidental cross-env
+      # offset commits if a developer points a test at a non-test broker.
+      group-id: carddemo-test
+      # SCHEMA EXPORT — `spring.kafka.consumer.enable-auto-commit`.
+      # Manual offset commits only (AAP §0.6.5). The @KafkaListener handler
+      # invokes `Acknowledgment.acknowledge()` after successful processing.
+      enable-auto-commit: false
+      # SCHEMA EXPORT — `spring.kafka.consumer.isolation-level`.
+      # `read_committed` — consumer only sees records from committed
+      # transactional producer batches; uncommitted records are skipped.
+      isolation-level: read_committed
+      max-poll-records: 100
+      # `earliest` — tests typically start with a fresh broker and need to
+      # replay every produced record from the test setup phase.
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        # SCHEMA EXPORT — `spring.kafka.consumer.properties.
+        # spring.json.trusted.packages`. Whitelist of packages allowed for
+        # JSON-typed deserialisation — PREVENTS arbitrary-class
+        # deserialisation gadget attacks (CVE class). The string value here
+        # contains literal commas (multiple package names); YAML preserves
+        # it as a single string.
+        spring.json.trusted.packages: com.awsm2.carddemo.dto,com.awsm2.carddemo.domain
+        # Testcontainers Kafka uses plaintext only — see producer above.
+        security.protocol: PLAINTEXT
+        # Max time between successive polls before the consumer is
+        # considered dead and rebalance is triggered.
+        max.poll.interval.ms: 300000
+        # Spring JSON deserialiser — use the listener-declared target type,
+        # ignore inbound `__TypeId__` headers.
+        spring.json.use.type.headers: false
+    listener:
+      # SCHEMA EXPORT — `spring.kafka.listener.ack-mode`.
+      # `MANUAL` — application code calls `Acknowledgment.acknowledge()`
+      # after successful processing (AAP §0.6.5 manual commit semantics).
+      ack-mode: MANUAL
+      # Single consumer thread for deterministic test ordering. Production
+      # may raise this to match topic partition count.
+      concurrency: 1
+      missing-topics-fatal: false
+
+  # ---------------------------------------------------------------------------
+  # Phase 9 — Spring Batch (test harness invokes jobs explicitly)
+  # ---------------------------------------------------------------------------
+  # `initialize-schema: always` — Testcontainers PostgreSQL starts empty;
+  # Spring Batch auto-creates BATCH_JOB_INSTANCE, BATCH_STEP_EXECUTION, …
+  # on context start so `JobLauncherTestUtils` can launch jobs immediately.
+  #
+  # `job.enabled: false` — same invariant as base profile. Tests use
+  # `JobLauncherTestUtils.launchJob(JobParameters)` to invoke a specific
+  # batch job; no job ever runs as a side effect of context refresh.
+  batch:
+    jdbc:
+      initialize-schema: always
+    job:
+      enabled: false
+
+  # ---------------------------------------------------------------------------
+  # Phase 10 — Spring Security filter wiring
+  # ---------------------------------------------------------------------------
+  # The actual SecurityFilterChain bean (JWT filter, BCrypt encoder, role
+  # rules) is defined in SecurityConfig.java. Tests typically inject
+  # `@WithMockUser` annotations or mock the JwtTokenProvider directly via
+  # `@MockBean`. This block only controls how the filter chain is registered
+  # with the servlet container.
+  security:
+    filter:
+      dispatcher-types: REQUEST,ERROR,ASYNC
+
+  # ---------------------------------------------------------------------------
+  # Phase 11 — Jackson JSON (BigDecimal precision per AAP §0.6.1)
+  # ---------------------------------------------------------------------------
+  # Identical to the base profile — monetary BigDecimal serialisation MUST
+  # be plain decimal, never scientific notation. The test profile exercises
+  # the same serialisation code path as production.
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+      # CRITICAL (AAP §0.6.1) — preserves monetary precision in JSON output.
+      write-bigdecimal-as-plain: true
+      indent-output: false
+    deserialization:
+      fail-on-unknown-properties: false
+    default-property-inclusion: non_null
+    time-zone: UTC
+    date-format: yyyy-MM-dd'T'HH:mm:ss.SSSZ
+
+# =============================================================================
+# Phase 12 — Management / Actuator (all endpoints exposed for test inspection)
+# =============================================================================
+# Tests inspect actuator endpoints (`/actuator/health`, `/actuator/info`,
+# `/actuator/metrics`, `/actuator/flyway`, etc.) to validate startup
+# correctness without booting a full external monitoring stack. CloudWatch
+# metric publishing and OpenTelemetry tracing are disabled — tests run
+# fully offline.
+management:
+  endpoints:
+    web:
+      exposure:
+        # All actuator endpoints exposed — useful for verifying liveness,
+        # readiness, info, flyway, beans, conditions, env, metrics
+        # contents during test diagnostics.
+        include: "*"
+      base-path: /actuator
+  endpoint:
+    health:
+      # `always` exposes component-level health to test assertions —
+      # acceptable because there is no real surface area in tests.
+      show-details: always
+      show-components: always
+      probes:
+        enabled: true
+    info:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    export:
+      cloudwatch:
+        # NO CloudWatch metric publishing in tests — keeps the test JVM
+        # fully offline.
+        enabled: false
+  tracing:
+    # Disable tracing to keep tests offline. Production overlays enable
+    # OpenTelemetry export to AWS X-Ray / CloudWatch ServiceLens.
+    enabled: false
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  info:
+    env:
+      enabled: true
+
+# =============================================================================
+# Phase 13 — springdoc-openapi (disabled in tests to reduce scan overhead)
+# =============================================================================
+# Disabling OpenAPI / Swagger UI generation during tests avoids the cost of
+# scanning every @RestController in the controller package and emitting the
+# OpenAPI 3 spec on every context refresh. Tests that need to validate the
+# OpenAPI contract enable these flags via `@TestPropertySource`.
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+# =============================================================================
+# Phase 14 — Server (random port for parallel test execution)
+# =============================================================================
+# `port: 0` requests an OS-assigned random port — multiple test classes can
+# bind their own server without port-binding conflicts. The actual chosen
+# port is injected into test fields annotated `@LocalServerPort`.
+#
+# Error response settings are PERMISSIVE in tests so that JSON assertions
+# can verify internal error messages, binding errors, exception class names,
+# and stack-trace fragments. Production deliberately hides these (PCI-DSS).
+server:
+  port: 0
+  shutdown: immediate
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: on_param
+    include-exception: true
+
+# =============================================================================
+# Phase 15 — CardDemo-specific application properties (test overrides)
+# =============================================================================
+# Only properties that differ from base `application.yml` are overridden
+# here (Minimal Change Clause — AAP §0.7.3). Sibling values inherit base
+# defaults.
+carddemo:
+  # ---------------------------------------------------------------------------
+  # AWS resource references — fake LocalStack-friendly ARNs (account 0…0)
+  # ---------------------------------------------------------------------------
+  # Default values use the LocalStack convention of account ID 000000000000
+  # so ARN-parsing code paths are exercised without requiring a real AWS
+  # account. Tests using `LocalStackContainer` may override individual
+  # ARNs via `@DynamicPropertySource`.
+  aws:
+    region: ${AWS_REGION:us-east-1}
+    endpoint-override: ${AWS_ENDPOINT_URL:http://localhost:4566}
+    ecs:
+      cluster-name: ${ECS_CLUSTER_NAME:carddemo-test}
+    s3:
+      output-bucket: ${S3_OUTPUT_BUCKET:carddemo-test-output}
+      statements-bucket: ${S3_STATEMENTS_BUCKET:carddemo-test-statements}
+      reports-bucket: ${S3_REPORTS_BUCKET:carddemo-test-reports}
+      rejects-bucket: ${S3_REJECTS_BUCKET:carddemo-test-rejects}
+      backup-bucket: ${S3_BACKUP_BUCKET:carddemo-test-backup}
+      sse-kms-key-arn: ${S3_SSE_KMS_KEY_ARN:arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000}
+    kms:
+      key-arn: ${KMS_KEY_ARN:arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000}
+    secrets:
+      rds-secret-arn: ${RDS_SECRET_ARN:arn:aws:secretsmanager:us-east-1:000000000000:secret:carddemo/rds}
+    opensearch:
+      endpoint: ${OPENSEARCH_ENDPOINT:http://localhost:4566}
+      use-iam-auth: false
+    msk:
+      bootstrap-servers: ${MSK_BOOTSTRAP_SERVERS:localhost:9092}
+    stepfunctions:
+      eod-batch-pipeline-arn: ${STATE_MACHINE_EOD_ARN:arn:aws:states:us-east-1:000000000000:stateMachine:eod-batch-pipeline}
+      file-provisioning-arn: ${STATE_MACHINE_PROVISIONING_ARN:arn:aws:states:us-east-1:000000000000:stateMachine:file-provisioning}
+    cloudtrail:
+      trail-arn: ${CLOUDTRAIL_TRAIL_ARN:arn:aws:cloudtrail:us-east-1:000000000000:trail/carddemo-test}
+
+  # ---------------------------------------------------------------------------
+  # Security — JWT signing key is a TEST-ONLY placeholder (AAP §0.7.1)
+  # ---------------------------------------------------------------------------
+  # The leading `test-only-` prefix makes this value unmistakable as a
+  # non-production placeholder if it ever appears in a log or assertion
+  # output. The full string is 70 ASCII characters = 70 bytes — well above
+  # the HS256 minimum of 32 bytes (256 bits). It NEVER reaches dev or prod
+  # because those overlays source the real signing key from AWS Secrets
+  # Manager via `spring.config.import`.
+  security:
+    jwt:
+      signing-key: ${JWT_SIGNING_KEY:test-only-jwt-signing-secret-do-not-use-in-production-min-32-bytes}
+      issuer: carddemo-test
+      expiration-seconds: 3600
+      access-token-ttl-minutes: 60
+      refresh-token-ttl-minutes: 1440
+    bcrypt:
+      # BCrypt cost factor 4 = 2^4 = 16 rounds (~256× faster than the
+      # production strength of 12 = 2^12 = 4096 rounds). This accelerates
+      # tests that exercise UserAddService / UserSecurityRepository
+      # roundtrips by ~256× without changing the verified algorithm. The
+      # BCryptPasswordEncoderBean currently constructs a strength-12 bean
+      # statically; test classes that need the faster strength override
+      # the bean via `@TestConfiguration` reading this property.
+      strength: 4
+
+  # ---------------------------------------------------------------------------
+  # Cache TTLs — short for tests to surface stale-data bugs quickly
+  # ---------------------------------------------------------------------------
+  cache:
+    ttl-seconds: 60
+    account-balance-ttl-seconds: 60
+    card-detail-ttl-seconds: 60
+    reference-data-ttl-seconds: 60
+    max-entries: 1000
+
+  # ---------------------------------------------------------------------------
+  # Kafka topics — SCHEMA EXPORTS (the canonical `carddemo.kafka.topics.*`
+  # path required by file_schema.exports)
+  # ---------------------------------------------------------------------------
+  # SCHEMA EXPORTS (file_schema.exports[0].members_exposed):
+  #   * carddemo.kafka.topics.transaction-posted
+  #   * carddemo.kafka.topics.account-updated
+  #   * carddemo.kafka.topics.ledger-balanced
+  #   * carddemo.kafka.topics.report-requested
+  # All four properties are present below.
+  #
+  # The values are kept identical to base profile so that any test asserting
+  # against a topic name sees the same value the production code path uses.
+  kafka:
+    consumer:
+      group-id: carddemo-test
+    topics:
+      # SCHEMA EXPORT — published by TransactionAddService, BillPaymentService
+      # (AAP §0.6.5).
+      transaction-posted: transaction.posted
+      # SCHEMA EXPORT — published by AccountUpdateService,
+      # InterestCalculationService, BillPaymentService (AAP §0.6.5).
+      account-updated: account.updated
+      # SCHEMA EXPORT — published by end-of-day reconciliation jobs
+      # (AAP §0.6.5).
+      ledger-balanced: ledger.balanced
+      # SCHEMA EXPORT — published by ReportSubmissionService (online-to-batch
+      # bridge, AAP §0.1.1) and consumed by the Step Functions trigger.
+      report-requested: report.requested
+
+  # ---------------------------------------------------------------------------
+  # Pagination — same page sizes as base profile (preserve BMS field counts)
+  # ---------------------------------------------------------------------------
+  pagination:
+    card-list-page-size: 7
+    transaction-list-page-size: 10
+    user-list-page-size: 10
+
+  # ---------------------------------------------------------------------------
+  # Validation — ISO-8601 dates (AAP §0.6.1)
+  # ---------------------------------------------------------------------------
+  validation:
+    date-format: yyyy-MM-dd
+    timestamp-format: yyyy-MM-dd'T'HH:mm:ss.SSSZ
+
+  # ---------------------------------------------------------------------------
+  # Monetary arithmetic (AAP §0.6.1 — BigDecimal scale + rounding)
+  # ---------------------------------------------------------------------------
+  monetary:
+    scale: 2
+    rounding-mode: HALF_EVEN
+
+  # ---------------------------------------------------------------------------
+  # Batch — test-specific S3 prefixes so production output buckets are
+  # untouched by test runs
+  # ---------------------------------------------------------------------------
+  batch:
+    reject-prefix: test-rejects/
+    systran-prefix: test-systran/
+    statements-prefix: test-statements/
+    reports-prefix: test-reports/
+
+  # ---------------------------------------------------------------------------
+  # Test-specific properties (consumed by integration tests)
+  # ---------------------------------------------------------------------------
+  # `golden-fixtures-path` is read by `GoldenOutputDiffTest` via
+  # `@Value("${carddemo.test.golden-fixtures-path}")` to locate the byte-for-
+  # byte golden fixtures copied from `app/data/ASCII/*.txt`. The path is a
+  # Spring Resource location, resolvable via the classloader.
+  test:
+    golden-fixtures-path: classpath:golden/
+
+# =============================================================================
+# Phase 16 — Logging (verbose for test diagnostics; delegated to logback)
+# =============================================================================
+# `logging.config: classpath:logback-spring.xml` engages the central Logback
+# configuration. The `<springProfile name="local | dev | test">` block in
+# `logback-spring.xml` provides human-readable console output for tests;
+# the `prod` block provides JSON output for CloudWatch ingestion.
+#
+# Application code logs at DEBUG so test failures can be diagnosed without
+# needing to rebuild with a tweaked log level. Hibernate SQL is at DEBUG
+# (acceptable in tests — no PCI data) so test assertions can compare
+# expected vs actual SQL when chasing N+1 regressions. Bind parameters are
+# TRACE so monetary values, account IDs, and card numbers are visible in
+# debug output (TEST DATA ONLY — real PANs MUST NOT appear in any non-test
+# environment per AAP §0.7.2 PCI-DSS).
+logging:
+  config: classpath:logback-spring.xml
+  level:
+    root: INFO
+    com.awsm2.carddemo: DEBUG
+    org.springframework: INFO
+    org.springframework.boot.test: INFO
+    org.springframework.test: INFO
+    org.springframework.security: INFO
+    org.springframework.transaction: DEBUG
+    org.springframework.kafka: INFO
+    org.springframework.batch: INFO
+    org.hibernate: WARN
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql: WARN
+    org.hibernate.orm.jdbc.bind: TRACE
+    org.flywaydb: INFO
+    org.testcontainers: INFO
+    com.github.dockerjava: WARN
+    org.apache.kafka: WARN
+    software.amazon.awssdk: WARN
+    io.awspring.cloud: INFO
