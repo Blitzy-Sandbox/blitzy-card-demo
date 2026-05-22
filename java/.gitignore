@@ -1,35 +1,79 @@
-# Maven build artifacts
+# Maven build outputs
 target/
 **/target/
+*.jar
+*.war
+*.ear
+*.zip
+*.tar.gz
+*.rar
 
-# IDE settings
+# Maven local state
+.mvn/wrapper/maven-wrapper.jar
+!.mvn/wrapper/maven-wrapper.properties
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.flattened-pom.xml
+
+# IntelliJ IDEA
 .idea/
 *.iml
 *.iws
 *.ipr
-.vscode/
-.settings/
-.project
-.classpath
-.factorypath
-.metadata/
-bin/
 out/
 
-# OS junk
-.DS_Store
-Thumbs.db
+# Eclipse
+.project
+.classpath
+.settings/
+.factorypath
+.apt_generated/
+.springBeans
+.sts4-cache/
+bin/
 
-# Logs
+# VS Code
+.vscode/
+*.code-workspace
+.history/
+
+# NetBeans
+nbproject/private/
+nbbuild/
+nbdist/
+.nb-gradle/
+
+# OS-generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# JVM dumps and crash files
+hs_err_pid*.log
+replay_pid*.log
+*.hprof
+core
+core.*
+
+# Java Flight Recorder
+*.jfr
+
+# Test output (non-target locations)
 *.log
 logs/
 
-# Java Flight Recorder output (kept out of git; produced by JFR baseline tests at AAP §0.6.11)
-*.jfr
-
-# jqwik failure-replay database (test runtime artifact)
-.jqwik-database
-**/.jqwik-database
-
-# Local application overrides (template is application.properties.example, committed)
+# Local environment overrides — never commit secrets or local paths
 application.properties
+application-local.properties
+.env
+.env.local
