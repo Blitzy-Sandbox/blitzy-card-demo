@@ -21,6 +21,7 @@ import com.aws.carddemo.service.AccountUpdateResult;
 import com.aws.carddemo.service.AccountUpdateService;
 import com.aws.carddemo.service.AccountViewResponse;
 import com.aws.carddemo.service.AccountViewService;
+import com.fasterxml.jackson.annotation.JsonFormat;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -751,11 +752,27 @@ public class AccountController {
             String accountId,
             String cardNumber,
             String activeStatus,
-            BigDecimal currentBalance,
-            BigDecimal creditLimit,
-            BigDecimal cashCreditLimit,
-            BigDecimal currentCycleCredit,
-            BigDecimal currentCycleDebit,
+            // ---------------------------------------------------------------
+            // AAP §0.10.3 — Monetary fields on the HTTP boundary
+            //
+            // BigDecimal monetary values are serialised to JSON as strings so
+            // that the COBOL PIC S9(10)V99 scale-2 contract is preserved
+            // verbatim on the wire (e.g., the literal "1250.00" — never
+            // 1250 or 1250.0). Numeric JSON serialisation would lose scale
+            // for trailing-zero values and would force test code to use
+            // Java `double` literals, which the AAP forbids ("No float or
+            // double used for any monetary value — BigDecimal exclusively").
+            //
+            // Annotating each monetary field with @JsonFormat(shape = STRING)
+            // is the narrow, declarative Jackson directive for this. The
+            // ToString serialiser preserves scale because BigDecimal#toString
+            // emits the exact unscaled value with the recorded scale.
+            // ---------------------------------------------------------------
+            @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal currentBalance,
+            @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal creditLimit,
+            @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal cashCreditLimit,
+            @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal currentCycleCredit,
+            @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal currentCycleDebit,
             String openDate,
             String expirationDate,
             String reissueDate,

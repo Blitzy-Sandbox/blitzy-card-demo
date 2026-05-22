@@ -102,6 +102,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -164,6 +165,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.cookie;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -302,7 +305,43 @@ final class AuthControllerTest {
                 .andExpect(jsonPath("$.password").doesNotExist())
                 .andExpect(jsonPath("$.passwordHash").doesNotExist())
                 .andExpect(jsonPath("$.session.password").doesNotExist())
-                .andExpect(jsonPath("$.session.passwordHash").doesNotExist());
+                .andExpect(jsonPath("$.session.passwordHash").doesNotExist())
+                // ---------------------------------------------------------------
+                // Authentication-transport contract (AAP §0.10.5 + §0.10.4)
+                // ---------------------------------------------------------------
+                // The CardDemo REST migration is intentionally STATELESS and
+                // TOKEN-BASED at the transport layer: the session payload
+                // travels in the JSON response body ({@code $.session}), and
+                // the AuthController NEVER emits a {@code Set-Cookie} header
+                // on the happy path or on any failure path. This is enforced
+                // here so that a future regression that introduces a server-
+                // side HTTP session (and the implicit {@code JSESSIONID}
+                // {@code Set-Cookie} that comes with it) fails this test.
+                //
+                // Rationale per AAP §0.10.4 (immutable boundaries) — downstream
+                // consumers (the future single-page application, mobile
+                // clients, and any service-to-service caller) treat the
+                // session as a JSON payload to be carried in an explicit
+                // header (e.g., {@code Authorization: Bearer <token>}) on
+                // subsequent requests. Issuing a session cookie would either
+                // (a) silently change that contract or (b) introduce a
+                // dual-transport surface that the migration explicitly avoids.
+                //
+                // Rationale per AAP §0.10.5 — cookies that lack {@code HttpOnly},
+                // {@code Secure}, and {@code SameSite=Strict} attributes are a
+                // PCI-scope attack surface (XSS-driven credential theft). The
+                // safest enforcement is "no session cookie at all" — which is
+                // also what the production AuthController source implements
+                // (verified in {@code AuthController.signOn} L233–289: no
+                // {@code ResponseEntity#header(HttpHeaders.SET_COOKIE, ...)},
+                // no {@code Cookie} type referenced anywhere in the source).
+                .andExpect(header().doesNotExist(HttpHeaders.SET_COOKIE))
+                // Defence-in-depth: also assert no {@code JSESSIONID} cookie was
+                // surfaced via the MockHttpServletResponse#getCookies() API,
+                // which captures cookies emitted via either the Set-Cookie
+                // header OR the Servlet API's HttpServletResponse#addCookie.
+                .andExpect(cookie().doesNotExist("JSESSIONID"))
+                .andExpect(cookie().doesNotExist("SESSION"));
 
         // Verify the controller delegated to the service exactly once with the
         // EXACT request (AuthenticationRequest is a Java record with
@@ -335,7 +374,14 @@ final class AuthControllerTest {
                 .andExpect(jsonPath("$.session.nextRoute").value("MAIN_MENU"))
                 // PCI defence (AAP §0.10.5)
                 .andExpect(jsonPath("$.password").doesNotExist())
-                .andExpect(jsonPath("$.session.password").doesNotExist());
+                .andExpect(jsonPath("$.session.password").doesNotExist())
+                // Token-only transport contract — see the long-form rationale on
+                // signOn_validAdminUser_returns200WithSession above. The happy-
+                // path response carries the session in JSON and emits NO
+                // Set-Cookie header on success.
+                .andExpect(header().doesNotExist(HttpHeaders.SET_COOKIE))
+                .andExpect(cookie().doesNotExist("JSESSIONID"))
+                .andExpect(cookie().doesNotExist("SESSION"));
 
         verify(authenticationService, times(1)).authenticate(any(AuthenticationRequest.class));
     }
@@ -705,6 +751,139 @@ final class AuthControllerTest {
         assertThat(wrongPasswordBody.isSuccess()).isFalse();
         assertThat(unknownUserBody.getSession()).isNull();
         assertThat(wrongPasswordBody.getSession()).isNull();
+    }
+
+    // =========================================================================
+    // TOKEN-ONLY TRANSPORT CONTRACT — no Set-Cookie on ANY response path
+    // =========================================================================
+    //
+    // Code-review finding (AuthControllerTest, MAJOR): the happy-path tests
+    // assert only on the JSON body and do not verify the cookie-issuance
+    // contract that the original checkpoint scope called out as part of
+    // "session cookie issuance". The CardDemo migration's chosen design is
+    // explicitly token-based — the session payload travels in the JSON body
+    // and authentication has no server-side session cookie. The block below
+    // closes that gap by exhaustively asserting "no Set-Cookie on any
+    // response path", which simultaneously:
+    //
+    //   (a) Documents the design choice in test code so future engineers
+    //       cannot silently introduce a session cookie without breaking a
+    //       test (AAP §0.10.4 immutable boundaries).
+    //   (b) Defends against PCI-scope cookie-attribute vulnerabilities
+    //       (missing HttpOnly / Secure / SameSite) by virtue of "no cookie
+    //       at all" being trivially safer than "cookie with the wrong
+    //       attributes" (AAP §0.10.5).
+    //   (c) Catches a class of Spring-config regression where adding a
+    //       stateful session-management filter would inject a JSESSIONID
+    //       Set-Cookie response header.
+    //
+    // The original happy-path tests above already assert the no-cookie
+    // contract for HTTP 200; the test below extends it to HTTP 400, 401,
+    // 423, and the inputs that trigger each.
+
+    @Test
+    @DisplayName("Token-only contract: NO Set-Cookie / JSESSIONID issued on any response path")
+    void signOn_neverIssuesSessionCookie_onAnyResponsePath() throws Exception {
+        // -------------------------------------------------------------------
+        // Path 1 — HTTP 200 happy path (admin)
+        // -------------------------------------------------------------------
+        given(authenticationService.authenticate(any(AuthenticationRequest.class)))
+                .willReturn(standardAuthResult("ADMIN"));
+        mockMvc.perform(post("/api/auth/sign-on")
+                        .with(SecurityMockMvcRequestPostProcessors.csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validAdminSignOnRequestJson()))
+                .andExpect(status().isOk())
+                .andExpect(header().doesNotExist(HttpHeaders.SET_COOKIE))
+                .andExpect(cookie().doesNotExist("JSESSIONID"))
+                .andExpect(cookie().doesNotExist("SESSION"));
+
+        // -------------------------------------------------------------------
+        // Path 2 — HTTP 401 unknown-user reject
+        // -------------------------------------------------------------------
+        given(authenticationService.authenticate(any(AuthenticationRequest.class)))
+                .willReturn(AuthenticationResult.failure("User not found. Try again ..."));
+        mockMvc.perform(post("/api/auth/sign-on")
+                        .with(SecurityMockMvcRequestPostProcessors.csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(unknownUserSignOnRequestJson()))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().doesNotExist(HttpHeaders.SET_COOKIE))
+                .andExpect(cookie().doesNotExist("JSESSIONID"))
+                .andExpect(cookie().doesNotExist("SESSION"));
+
+        // -------------------------------------------------------------------
+        // Path 3 — HTTP 401 wrong-password reject
+        // -------------------------------------------------------------------
+        given(authenticationService.authenticate(any(AuthenticationRequest.class)))
+                .willReturn(AuthenticationResult.failure("Wrong Password. Try again ..."));
+        mockMvc.perform(post("/api/auth/sign-on")
+                        .with(SecurityMockMvcRequestPostProcessors.csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validAdminSignOnRequestJson()))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().doesNotExist(HttpHeaders.SET_COOKIE))
+                .andExpect(cookie().doesNotExist("JSESSIONID"))
+                .andExpect(cookie().doesNotExist("SESSION"));
+
+        // -------------------------------------------------------------------
+        // Path 4 — HTTP 423 locked-account reject
+        // -------------------------------------------------------------------
+        // The locked-account reject message MUST equal the controller's
+        // MSG_ACCOUNT_LOCKED constant verbatim for the controller to map
+        // the reject to HTTP 423 Locked (RFC 4918). The verbatim literal
+        // used here matches AuthController.MSG_ACCOUNT_LOCKED at L149.
+        given(authenticationService.authenticate(any(AuthenticationRequest.class)))
+                .willReturn(AuthenticationResult.failure(
+                        "Account is locked. Contact administrator ..."));
+        mockMvc.perform(post("/api/auth/sign-on")
+                        .with(SecurityMockMvcRequestPostProcessors.csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(validRegularSignOnRequestJson()))
+                .andExpect(status().isLocked())
+                .andExpect(header().doesNotExist(HttpHeaders.SET_COOKIE))
+                .andExpect(cookie().doesNotExist("JSESSIONID"))
+                .andExpect(cookie().doesNotExist("SESSION"));
+
+        // -------------------------------------------------------------------
+        // Path 5 — HTTP 400 empty-userId reject (service-driven)
+        // -------------------------------------------------------------------
+        given(authenticationService.authenticate(any(AuthenticationRequest.class)))
+                .willReturn(AuthenticationResult.failure("Please enter User ID ..."));
+        String emptyUserIdBody = """
+                {
+                  "userId": "",
+                  "password": "%s"
+                }
+                """.formatted(TestFixtures.Users.TEST_PASSWORD_PLAINTEXT);
+        mockMvc.perform(post("/api/auth/sign-on")
+                        .with(SecurityMockMvcRequestPostProcessors.csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(emptyUserIdBody))
+                .andExpect(status().isBadRequest())
+                .andExpect(header().doesNotExist(HttpHeaders.SET_COOKIE))
+                .andExpect(cookie().doesNotExist("JSESSIONID"))
+                .andExpect(cookie().doesNotExist("SESSION"));
+
+        // -------------------------------------------------------------------
+        // Path 6 — HTTP 400 over-length userId (controller-driven, service
+        //          NOT called — but the response still must not issue any
+        //          session cookie)
+        // -------------------------------------------------------------------
+        String overLengthBody = """
+                {
+                  "userId": "TOOLONG99",
+                  "password": "%s"
+                }
+                """.formatted(TestFixtures.Users.TEST_PASSWORD_PLAINTEXT);
+        mockMvc.perform(post("/api/auth/sign-on")
+                        .with(SecurityMockMvcRequestPostProcessors.csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(overLengthBody))
+                .andExpect(status().isBadRequest())
+                .andExpect(header().doesNotExist(HttpHeaders.SET_COOKIE))
+                .andExpect(cookie().doesNotExist("JSESSIONID"))
+                .andExpect(cookie().doesNotExist("SESSION"));
     }
 
     // =========================================================================

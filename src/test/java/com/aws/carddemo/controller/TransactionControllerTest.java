@@ -443,9 +443,20 @@ final class TransactionControllerTest {
                             .value(TestFixtures.Transactions.SAMPLE_TRANSACTION_ID))
                     .andExpect(jsonPath("$.content[0].cardNumber")
                             .value(TestFixtures.Cards.SAMPLE_CARD_NUMBER_01))
-                    // Scale-2 BigDecimal serialised as the JSON string "100.50"
-                    // (Jackson default for BigDecimal: toString preserves scale).
-                    .andExpect(jsonPath("$.content[0].amount").value(100.50))
+                    // ------------------------------------------------------------------
+                    // AAP §0.10.3 — Monetary JSON-boundary contract (BigDecimal as
+                    // string, scale 2 preserved). The production
+                    // TransactionController.TransactionSummary record annotates the
+                    // BigDecimal `amount` field with @JsonFormat(shape = STRING), so
+                    // the wire-format value for TRAN-AMT is the quoted string
+                    // literal "100.50" — never the JSON numeric literal 100.50 (which
+                    // would force this test to use a Java `double` literal in the
+                    // assertion, violating AAP §0.10.3 "No float or double used for
+                    // any monetary value — BigDecimal exclusively"). The string form
+                    // also preserves scale exactly: "100.50" never collapses to
+                    // "100.5" or "100".
+                    // ------------------------------------------------------------------
+                    .andExpect(jsonPath("$.content[0].amount").value("100.50"))
                     .andExpect(jsonPath("$.content[0].transactionType")
                             .value(TestFixtures.Transactions.TRAN_TYPE_PURCHASE))
                     .andExpect(jsonPath("$.content[0].transactionCategoryCode")
@@ -602,8 +613,15 @@ final class TransactionControllerTest {
                             .value(TestFixtures.Transactions.SAMPLE_TRANSACTION_ID))
                     .andExpect(jsonPath("$.cardNumber")
                             .value(TestFixtures.Cards.SAMPLE_CARD_NUMBER_01))
-                    // Scale-2 BigDecimal — AAP §0.10.3 financial-precision boundary
-                    .andExpect(jsonPath("$.amount").value(100.50))
+                    // ------------------------------------------------------------------
+                    // AAP §0.10.3 — Monetary JSON-boundary contract: TRAN-AMT
+                    // serialised as the quoted string "100.50" so scale-2 precision
+                    // is preserved verbatim on the wire and the test code carries
+                    // no Java `double` literals. See the detailed comment on
+                    // listTransactions_noFilters_returns200WithPagedResults for the
+                    // full rationale.
+                    // ------------------------------------------------------------------
+                    .andExpect(jsonPath("$.amount").value("100.50"))
                     .andExpect(jsonPath("$.transactionType")
                             .value(TestFixtures.Transactions.TRAN_TYPE_PURCHASE))
                     .andExpect(jsonPath("$.transactionCategoryCode")
@@ -837,6 +855,13 @@ final class TransactionControllerTest {
             // service's reject path. The slice test asserts the HTTP-status
             // mapping; the service-level test asserts the reject-trigger
             // condition.
+            //
+            // AAP §0.10.3 — the monetary value "amount" is encoded as a
+            // quoted JSON string ("-100.50") rather than a bare JSON numeric
+            // literal (-100.50) so that the test source contains no Java
+            // `double` literals at any monetary calculation boundary and the
+            // production-side TransactionAddRequest@JsonFormat(STRING)
+            // contract is exercised on the deserialisation path.
             String body = """
                     {
                       "accountId":               "%s",
@@ -845,7 +870,7 @@ final class TransactionControllerTest {
                       "transactionCategoryCode": "0001",
                       "source":                  "POS TERM  ",
                       "description":             "EXAMPLE STORE PURCHASE",
-                      "amount":                  -100.50,
+                      "amount":                  "-100.50",
                       "originDate":              "2022-07-06",
                       "processDate":             "2022-07-07",
                       "merchantId":              "000123456",
@@ -881,6 +906,12 @@ final class TransactionControllerTest {
             given(transactionAddService.addTransaction(any(TransactionAddRequest.class)))
                     .willReturn(TransactionAddResult.failure(MSG_AMOUNT_FORMAT_INVALID));
 
+            // AAP §0.10.3 — monetary values cross the HTTP boundary as
+            // quoted-string JSON to preserve BigDecimal scale (PIC S9(9)V99
+            // → scale 2) end-to-end. A literal "100.123" (scale 3) below
+            // proves the service-layer rejection path fires on the
+            // over-scale boundary; if it were a numeric JSON literal,
+            // Jackson's permissive numeric parser could mask the test.
             String body = """
                     {
                       "accountId":               "%s",
@@ -889,7 +920,7 @@ final class TransactionControllerTest {
                       "transactionCategoryCode": "0001",
                       "source":                  "POS TERM  ",
                       "description":             "EXAMPLE STORE PURCHASE",
-                      "amount":                  100.123,
+                      "amount":                  "100.123",
                       "originDate":              "2022-07-06",
                       "processDate":             "2022-07-07",
                       "merchantId":              "000123456",
@@ -923,6 +954,7 @@ final class TransactionControllerTest {
             given(transactionAddService.addTransaction(any(TransactionAddRequest.class)))
                     .willReturn(TransactionAddResult.failure(MSG_CARD_NUMBER_NOT_NUMERIC));
 
+            // AAP §0.10.3 — monetary values cross the HTTP boundary as quoted strings.
             String body = """
                     {
                       "accountId":               "%s",
@@ -931,7 +963,7 @@ final class TransactionControllerTest {
                       "transactionCategoryCode": "0001",
                       "source":                  "POS TERM  ",
                       "description":             "EXAMPLE STORE PURCHASE",
-                      "amount":                  100.50,
+                      "amount":                  "100.50",
                       "originDate":              "2022-07-06",
                       "processDate":             "2022-07-07",
                       "merchantId":              "000123456",
@@ -967,6 +999,7 @@ final class TransactionControllerTest {
             given(transactionAddService.addTransaction(any(TransactionAddRequest.class)))
                     .willReturn(TransactionAddResult.failure(MSG_TYPE_CODE_NOT_NUMERIC));
 
+            // AAP §0.10.3 — monetary values cross the HTTP boundary as quoted strings.
             String body = """
                     {
                       "accountId":               "%s",
@@ -975,7 +1008,7 @@ final class TransactionControllerTest {
                       "transactionCategoryCode": "0001",
                       "source":                  "POS TERM  ",
                       "description":             "EXAMPLE STORE PURCHASE",
-                      "amount":                  100.50,
+                      "amount":                  "100.50",
                       "originDate":              "2022-07-06",
                       "processDate":             "2022-07-07",
                       "merchantId":              "000123456",
@@ -1020,7 +1053,7 @@ final class TransactionControllerTest {
                       "transactionCategoryCode": "0001",
                       "source":                  "POS TERM  ",
                       "description":             "EXAMPLE STORE PURCHASE",
-                      "amount":                  100.50,
+                      "amount":                  "100.50",
                       "originDate":              "2022-07-06",
                       "processDate":             "2022-07-07",
                       "merchantId":              "000123456",
@@ -1300,9 +1333,17 @@ final class TransactionControllerTest {
     /**
      * Canonical JSON body for a valid {@code POST /api/transactions}
      * request. Populates all 13 operator-entered fields with values from
-     * the {@link TestFixtures} constants. The amount is a numeric JSON
-     * literal so Jackson deserialises it into a scale-2 {@link BigDecimal}
-     * via the auto-configured {@code @JsonDeserialize} chain.
+     * the {@link TestFixtures} constants. Per AAP §0.10.3 (financial
+     * precision / no floating-point in monetary paths), the {@code amount}
+     * field is emitted as a quoted-string JSON literal — production's
+     * {@link com.aws.carddemo.service.TransactionAddRequest#amount} carries
+     * a {@link com.fasterxml.jackson.annotation.JsonFormat}{@code (Shape.STRING)}
+     * annotation, and Jackson's {@code BigDecimalDeserializer} still
+     * accepts both quoted-string and numeric inputs for bidirectional
+     * wire-compatibility. The quoted-string form is the contract this
+     * suite asserts because it removes any chance of intermediate
+     * floating-point promotion (the immutable-boundary rule in
+     * AAP §0.10.4).
      *
      * @return the JSON body as a string
      */
@@ -1315,7 +1356,7 @@ final class TransactionControllerTest {
                   "transactionCategoryCode": "%s",
                   "source":                  "%s",
                   "description":             "EXAMPLE STORE PURCHASE",
-                  "amount":                  100.50,
+                  "amount":                  "100.50",
                   "originDate":              "2022-07-06",
                   "processDate":             "2022-07-07",
                   "merchantId":              "000123456",

@@ -25,6 +25,7 @@ import com.aws.carddemo.service.TransactionDetailService;
 import com.aws.carddemo.service.TransactionListRequest;
 import com.aws.carddemo.service.TransactionListResponse;
 import com.aws.carddemo.service.TransactionListService;
+import com.fasterxml.jackson.annotation.JsonFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -445,7 +446,18 @@ public class TransactionController {
     public static record TransactionSummary(
             String transactionId,
             String cardNumber,
-            BigDecimal amount,
+            // ---------------------------------------------------------------
+            // AAP §0.10.3 — Monetary fields on the HTTP boundary
+            //
+            // The TRAN-AMT field carries scale-2 BigDecimal values that must
+            // be transmitted verbatim — never coerced through Java
+            // float/double, never truncated to lower scale on the wire.
+            // Annotating the field with @JsonFormat(shape = STRING) routes
+            // Jackson through BigDecimal#toString (which preserves scale
+            // exactly) instead of the default numeric path (which may emit
+            // 100.5 instead of "100.50" for trailing-zero values).
+            // ---------------------------------------------------------------
+            @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal amount,
             String transactionType,
             String transactionCategoryCode,
             String description,
@@ -528,7 +540,15 @@ public class TransactionController {
             String transactionId,
             String accountId,
             String cardNumber,
-            BigDecimal amount,
+            // ---------------------------------------------------------------
+            // AAP §0.10.3 — Monetary fields on the HTTP boundary
+            // Same rationale as TransactionSummary#amount above: route the
+            // BigDecimal through @JsonFormat(shape = STRING) so the COBOL
+            // PIC S9(09)V99 scale-2 contract is preserved on the wire and
+            // the immutable downstream-consumer interface (AAP §0.10.4)
+            // is honoured.
+            // ---------------------------------------------------------------
+            @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal amount,
             String transactionType,
             String transactionCategoryCode,
             String source,

@@ -148,6 +148,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 // ---------------------------------------------------------------------------
 // Spring Security Test — request post-processors
@@ -197,11 +198,10 @@ import java.time.Instant;
 import java.time.LocalDate;
 
 // ---------------------------------------------------------------------------
-// Static imports — AssertJ fluent DSL, Hamcrest matcher, Mockito DSL,
-// MockMvc DSL (AAP §0.6.2 import transformation rules).
+// Static imports — AssertJ fluent DSL + Mockito DSL + MockMvc DSL (AAP §0.6.2
+// + §0.10.10 — AssertJ-only style; no Hamcrest matchers in CardDemo tests).
 // ---------------------------------------------------------------------------
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.hamcrest.Matchers.containsString;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
@@ -674,12 +674,12 @@ final class ReportControllerTest {
      * Verifies that a CUSTOM submission with {@code startDate} AFTER
      * {@code endDate} is rejected with HTTP 400 and the COBOL-equivalent
      * reject message {@code "End Date should be greater than Start Date"}.
-     * The response body is additionally asserted via Hamcrest's
-     * {@link org.hamcrest.Matchers#containsString} for the substrings
-     * {@code "Start"} (case-sensitive — matches the COBOL token "Start
-     * Date") and {@code "End"} so the test surfaces drift if a future
-     * refactor rewords the message but preserves only one of the two
-     * tokens.
+     * The response body is additionally asserted with AssertJ's
+     * {@code .contains(...)} for the substrings {@code "Start"}
+     * (case-sensitive — matches the COBOL token "Start Date") and
+     * {@code "End"} so the test surfaces drift if a future refactor
+     * rewords the message but preserves only one of the two tokens.
+     * AssertJ-only style per AAP §0.10.10 — no Hamcrest matchers.
      */
     @Test
     @WithMockUser(username = TEST_USERNAME, roles = "USER")
@@ -692,7 +692,7 @@ final class ReportControllerTest {
                 .willReturn(ReportSubmissionResult.failure(MSG_END_BEFORE_START));
 
         // Act + Assert — start=2022-07-06, end=2022-01-01 (inverted).
-        mockMvc.perform(post("/api/reports/submit")
+        MvcResult result = mockMvc.perform(post("/api/reports/submit")
                         .with(SecurityMockMvcRequestPostProcessors.csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -705,17 +705,20 @@ final class ReportControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.message").value(MSG_END_BEFORE_START))
-                // Hamcrest token-presence assertions — verifies both
-                // "Start" and "End" tokens survive any future message
-                // refactor. The test would NOT fail on a rephrased message
-                // like "End Date must be later than Start Date" — only on a
-                // refactor that drops one of the two date-name tokens
-                // (e.g., "End-of-range must follow beginning-of-range",
-                // which would lose both anchor tokens).
-                .andExpect(content().string(containsString("Start")))
-                .andExpect(content().string(containsString("End")))
                 .andExpect(jsonPath("$.jobId").doesNotExist())
-                .andExpect(jsonPath("$.jobName").doesNotExist());
+                .andExpect(jsonPath("$.jobName").doesNotExist())
+                .andReturn();
+        // AssertJ token-presence assertions — verifies both "Start" and
+        // "End" tokens survive any future message refactor. The test would
+        // NOT fail on a rephrased message like "End Date must be later
+        // than Start Date" — only on a refactor that drops one of the two
+        // date-name tokens (e.g., "End-of-range must follow beginning-of-
+        // range", which would lose both anchor tokens). AssertJ-only style
+        // per AAP §0.10.10.
+        assertThat(result.getResponse().getContentAsString())
+                .as("end-before-start reject body retains both Start and End tokens")
+                .contains("Start")
+                .contains("End");
 
         verify(reportSubmissionService, times(1))
                 .submit(any(ReportSubmissionRequest.class));
@@ -975,7 +978,7 @@ final class ReportControllerTest {
                         "Unable to dispatch job to batch executor"));
 
         // Act + Assert
-        mockMvc.perform(post("/api/reports/submit")
+        MvcResult result = mockMvc.perform(post("/api/reports/submit")
                         .with(SecurityMockMvcRequestPostProcessors.csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(monthlyRequestJson()))
@@ -985,18 +988,14 @@ final class ReportControllerTest {
                 .andExpect(jsonPath("$.message").value(MSG_INTERNAL_ERROR))
                 .andExpect(jsonPath("$.jobId").doesNotExist())
                 .andExpect(jsonPath("$.jobName").doesNotExist())
-                // PCI-style defence: the canary substring from the
-                // underlying RuntimeException must NOT appear anywhere in
-                // the response body. Hamcrest containsString is the
-                // canonical helper, but here we use a negative
-                // jsonPath().value() check — assert that the message field
-                // is the sanitised literal and not the canary.
-                .andExpect(content().string(
-                        org.hamcrest.Matchers.not(
-                                containsString("dispatch job to batch executor"))))
-                .andExpect(content().string(
-                        org.hamcrest.Matchers.not(
-                                containsString("RuntimeException"))));
+                .andReturn();
+        // PCI-style defence: the canary substring from the underlying
+        // RuntimeException must NOT appear anywhere in the response body.
+        // AssertJ body-string assertion per AAP §0.10.10 — no Hamcrest.
+        assertThat(result.getResponse().getContentAsString())
+                .as("sanitised 500 body must NOT echo internal-exception details (AAP §0.10.5)")
+                .doesNotContain("dispatch job to batch executor")
+                .doesNotContain("RuntimeException");
 
         verify(reportSubmissionService, times(1))
                 .submit(any(ReportSubmissionRequest.class));

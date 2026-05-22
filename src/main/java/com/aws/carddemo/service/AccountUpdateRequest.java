@@ -18,6 +18,7 @@ package com.aws.carddemo.service;
 
 import com.aws.carddemo.entity.Account;
 import com.aws.carddemo.entity.Customer;
+import com.fasterxml.jackson.annotation.JsonFormat;
 
 import java.math.BigDecimal;
 
@@ -151,7 +152,19 @@ public class AccountUpdateRequest {
      * {@code ACCT-UPDATE-CURR-BAL} per {@code COACTUPC.cbl} line 424
      * ({@code PIC S9(10)V99}). {@link BigDecimal} scale 2 per AAP §0.10.3
      * financial-precision mandate.
+     *
+     * <p>The {@link JsonFormat} annotation forces Jackson to deserialise
+     * the JSON representation of this monetary value as a string (so the
+     * COBOL scale-2 PICTURE clause is preserved verbatim on the wire and
+     * client code never has to send Java {@code double}/{@code float}
+     * literals on the request body, which the AAP forbids). Jackson's
+     * {@code BigDecimalDeserializer} accepts both numeric and string JSON
+     * for backward compatibility; pinning the field to {@code STRING}
+     * makes the contract explicit and symmetrical with the response
+     * serialisation in
+     * {@link com.aws.carddemo.controller.AccountController.AccountViewJsonResponse}.
      */
+    @JsonFormat(shape = JsonFormat.Shape.STRING)
     private BigDecimal currentBalance;
 
     /**
@@ -159,27 +172,43 @@ public class AccountUpdateRequest {
      * ({@code PIC S9(10)V99}). {@link BigDecimal} scale 2. The service
      * rejects negative values per the COBOL {@code CRED-LIMIT-IS-NOT-VALID}
      * reject literal at line 510.
+     *
+     * <p>See {@link #currentBalance} for the rationale behind
+     * {@code @JsonFormat(shape = STRING)} on monetary fields.
      */
+    @JsonFormat(shape = JsonFormat.Shape.STRING)
     private BigDecimal creditLimit;
 
     /**
      * {@code ACCT-UPDATE-CASH-CREDIT-LIMIT} per {@code COACTUPC.cbl} line
      * 426 ({@code PIC S9(10)V99}). {@link BigDecimal} scale 2.
+     *
+     * <p>See {@link #currentBalance} for the rationale behind
+     * {@code @JsonFormat(shape = STRING)} on monetary fields.
      */
+    @JsonFormat(shape = JsonFormat.Shape.STRING)
     private BigDecimal cashCreditLimit;
 
     /**
      * {@code ACCT-UPDATE-CURR-CYC-CREDIT} per {@code COACTUPC.cbl} line 430
      * ({@code PIC S9(10)V99}) — running credit total for the current billing
      * cycle. {@link BigDecimal} scale 2.
+     *
+     * <p>See {@link #currentBalance} for the rationale behind
+     * {@code @JsonFormat(shape = STRING)} on monetary fields.
      */
+    @JsonFormat(shape = JsonFormat.Shape.STRING)
     private BigDecimal currentCycleCredit;
 
     /**
      * {@code ACCT-UPDATE-CURR-CYC-DEBIT} per {@code COACTUPC.cbl} line 431
      * ({@code PIC S9(10)V99}) — running debit total for the current billing
      * cycle. {@link BigDecimal} scale 2.
+     *
+     * <p>See {@link #currentBalance} for the rationale behind
+     * {@code @JsonFormat(shape = STRING)} on monetary fields.
      */
+    @JsonFormat(shape = JsonFormat.Shape.STRING)
     private BigDecimal currentCycleDebit;
 
     /**

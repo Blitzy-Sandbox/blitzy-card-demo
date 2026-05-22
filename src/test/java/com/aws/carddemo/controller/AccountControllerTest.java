@@ -538,11 +538,31 @@ final class AccountControllerTest {
                     .andExpect(jsonPath("$.accountId")
                             .value(TestFixtures.Accounts.SAMPLE_ACCOUNT_ID_10))
                     .andExpect(jsonPath("$.activeStatus").value("Y"))
-                    .andExpect(jsonPath("$.currentBalance").value(1250.00))
-                    .andExpect(jsonPath("$.creditLimit").value(5000.00))
-                    .andExpect(jsonPath("$.cashCreditLimit").value(500.00))
-                    .andExpect(jsonPath("$.currentCycleCredit").value(0.00))
-                    .andExpect(jsonPath("$.currentCycleDebit").value(1250.00))
+                    // ------------------------------------------------------------------
+                    // AAP §0.10.3 — Monetary JSON-boundary contract (BigDecimal as
+                    // string, scale 2 preserved). The production AccountController
+                    // serialises every BigDecimal monetary field with
+                    // @JsonFormat(shape = STRING), so the wire-format value for
+                    // ACCT-CURR-BAL is the quoted string literal "1250.00" — never
+                    // the JSON numeric literal 1250.00 (which would force this test
+                    // to use a Java `double` literal in the assertion, violating
+                    // AAP §0.10.3 "No float or double used for any monetary value").
+                    //
+                    // The string assertion proves three properties simultaneously:
+                    //   (1) the BigDecimal was serialised at all (a missing value
+                    //       would not match the literal "1250.00");
+                    //   (2) the scale is preserved exactly — "1250.00" not "1250"
+                    //       or "1250.0" (the latter two would NOT match);
+                    //   (3) no double promotion occurred — Java's IEEE-754 double
+                    //       representation of e.g. 0.10 cannot round-trip through
+                    //       JSON without scale drift, so a passing test guarantees
+                    //       the production code stayed on the BigDecimal path.
+                    // ------------------------------------------------------------------
+                    .andExpect(jsonPath("$.currentBalance").value("1250.00"))
+                    .andExpect(jsonPath("$.creditLimit").value("5000.00"))
+                    .andExpect(jsonPath("$.cashCreditLimit").value("500.00"))
+                    .andExpect(jsonPath("$.currentCycleCredit").value("0.00"))
+                    .andExpect(jsonPath("$.currentCycleDebit").value("1250.00"))
                     .andExpect(jsonPath("$.openDate").value(OPEN_DATE))
                     .andExpect(jsonPath("$.expirationDate").value(EXPIRATION_DATE))
                     .andExpect(jsonPath("$.reissueDate").value(REISSUE_DATE))

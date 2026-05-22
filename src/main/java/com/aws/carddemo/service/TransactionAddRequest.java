@@ -16,6 +16,8 @@
  */
 package com.aws.carddemo.service;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
+
 import java.math.BigDecimal;
 
 /**
@@ -165,7 +167,19 @@ public class TransactionAddRequest {
      * value — BigDecimal exclusively") this field is strictly {@link BigDecimal};
      * negative values are accepted (the COBOL field is SIGNED so refunds are
      * valid input). Validated as non-null by {@link TransactionAddService}.
+     *
+     * <p>The {@link JsonFormat} annotation pins the JSON wire-format to a
+     * string so the inbound HTTP request body carries the value as the
+     * quoted string literal {@code "100.50"} rather than the JSON numeric
+     * literal {@code 100.50}. The string form preserves the COBOL scale-2
+     * contract exactly (trailing zeros and all) and keeps test-code and
+     * client-code free of Java {@code double} literals — which the AAP
+     * forbids at any monetary calculation boundary. Jackson's
+     * {@code BigDecimalDeserializer} accepts both numeric and string JSON
+     * for backward compatibility, so existing numeric request bodies
+     * continue to deserialise correctly.
      */
+    @JsonFormat(shape = JsonFormat.Shape.STRING)
     private BigDecimal amount;
 
     /**

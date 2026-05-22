@@ -87,6 +87,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 // ---------------------------------------------------------------------------
 // Spring Security Test — request post-processors
@@ -127,11 +128,11 @@ import java.time.Instant;
 import java.util.NoSuchElementException;
 
 // ---------------------------------------------------------------------------
-// Static imports — Mockito DSL + MockMvc DSL + Hamcrest matchers (AAP
-// §0.6.2 import transformation rules: "Use static imports for Mockito DSL"
-// / "Use static imports for MockMvc DSL").
+// Static imports — AssertJ DSL + Mockito DSL + MockMvc DSL (AAP §0.6.2 +
+// §0.10.10 — AssertJ-only style, no Hamcrest matchers anywhere in the
+// CardDemo test suite).
 // ---------------------------------------------------------------------------
-import static org.hamcrest.Matchers.containsString;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
@@ -431,7 +432,7 @@ final class BillPaymentControllerTest {
                     .willReturn(BillPaymentResult.failure(MSG_NOTHING_TO_PAY));
 
             // Act + Assert
-            mockMvc.perform(post("/api/bill-payment")
+            MvcResult result = mockMvc.perform(post("/api/bill-payment")
                             .with(SecurityMockMvcRequestPostProcessors.csrf())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(validRequestJson()))
@@ -439,8 +440,12 @@ final class BillPaymentControllerTest {
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     .andExpect(jsonPath("$.success").value(false))
                     .andExpect(jsonPath("$.message").value(MSG_NOTHING_TO_PAY))
-                    // Preserve the COBOL message tokens at the HTTP boundary
-                    .andExpect(content().string(containsString("nothing to pay")));
+                    .andReturn();
+            // Preserve the COBOL message tokens at the HTTP boundary (AssertJ
+            // body-string assertion per AAP §0.10.10 — no Hamcrest matchers).
+            assertThat(result.getResponse().getContentAsString())
+                    .as("zero-balance reject body preserves COBOL message tokens")
+                    .contains("nothing to pay");
 
             // Service WAS reached (the zero-balance check is inside the service)
             verify(billPaymentService).payBill(any(BillPaymentRequest.class));
@@ -475,7 +480,7 @@ final class BillPaymentControllerTest {
                     }
                     """.formatted(TestFixtures.Accounts.NONEXISTENT_ACCOUNT_ID);
 
-            mockMvc.perform(post("/api/bill-payment")
+            MvcResult result = mockMvc.perform(post("/api/bill-payment")
                             .with(SecurityMockMvcRequestPostProcessors.csrf())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(nonexistentAccountRequest))
@@ -483,7 +488,11 @@ final class BillPaymentControllerTest {
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     .andExpect(jsonPath("$.success").value(false))
                     .andExpect(jsonPath("$.message").value(MSG_ACCOUNT_NOT_FOUND))
-                    .andExpect(content().string(containsString("NOT found")));
+                    .andReturn();
+            // AssertJ body-string assertion per AAP §0.10.10
+            assertThat(result.getResponse().getContentAsString())
+                    .as("account-not-found body preserves the COBOL 'NOT found' token")
+                    .contains("NOT found");
 
             // Service was reached (account-not-found check happens inside the service)
             verify(billPaymentService).payBill(any(BillPaymentRequest.class));
@@ -524,7 +533,7 @@ final class BillPaymentControllerTest {
                     """;
 
             // Act + Assert
-            mockMvc.perform(post("/api/bill-payment")
+            MvcResult result = mockMvc.perform(post("/api/bill-payment")
                             .with(SecurityMockMvcRequestPostProcessors.csrf())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(missingAccountIdJson))
@@ -532,7 +541,11 @@ final class BillPaymentControllerTest {
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     .andExpect(jsonPath("$.success").value(false))
                     .andExpect(jsonPath("$.message").value(MSG_ACCOUNT_ID_EMPTY))
-                    .andExpect(content().string(containsString("can NOT be empty")));
+                    .andReturn();
+            // AssertJ body-string assertion per AAP §0.10.10
+            assertThat(result.getResponse().getContentAsString())
+                    .as("empty-accountId body preserves the COBOL 'can NOT be empty' token")
+                    .contains("can NOT be empty");
 
             // Service WAS reached (validation lives inside the service per the
             // production design — controller is a pure HTTP-status mapper).
@@ -609,7 +622,7 @@ final class BillPaymentControllerTest {
                     """.formatted(TestFixtures.Accounts.SAMPLE_ACCOUNT_ID_10);
 
             // Act + Assert
-            mockMvc.perform(post("/api/bill-payment")
+            MvcResult result = mockMvc.perform(post("/api/bill-payment")
                             .with(SecurityMockMvcRequestPostProcessors.csrf())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(confirmationNJson))
@@ -617,7 +630,11 @@ final class BillPaymentControllerTest {
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     .andExpect(jsonPath("$.success").value(false))
                     .andExpect(jsonPath("$.message").value(MSG_CONFIRMATION_CANCELLED))
-                    .andExpect(content().string(containsString("cancelled by user")));
+                    .andReturn();
+            // AssertJ body-string assertion per AAP §0.10.10
+            assertThat(result.getResponse().getContentAsString())
+                    .as("confirmation=N reject body preserves the COBOL 'cancelled by user' token")
+                    .contains("cancelled by user");
 
             verify(billPaymentService).payBill(any(BillPaymentRequest.class));
         }
@@ -789,18 +806,21 @@ final class BillPaymentControllerTest {
                     .willThrow(new RuntimeException(sensitiveInternalMessage));
 
             // Act + Assert
-            mockMvc.perform(post("/api/bill-payment")
+            MvcResult result = mockMvc.perform(post("/api/bill-payment")
                             .with(SecurityMockMvcRequestPostProcessors.csrf())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(validRequestJson()))
                     .andExpect(status().isInternalServerError())
                     .andExpect(jsonPath("$.success").value(false))
                     .andExpect(jsonPath("$.message").value("An unexpected error occurred"))
-                    // Defence-in-depth: confirm the internal detail did not leak.
-                    .andExpect(content().string(org.hamcrest.Matchers.not(
-                            containsString("ResultSet"))))
-                    .andExpect(content().string(org.hamcrest.Matchers.not(
-                            containsString("SELECT *"))));
+                    .andReturn();
+            // Defence-in-depth: confirm the internal detail did not leak.
+            // AssertJ body-string assertion per AAP §0.10.10 — no Hamcrest.
+            String sanitisedBody = result.getResponse().getContentAsString();
+            assertThat(sanitisedBody)
+                    .as("response must NOT contain DB-style internal-detail tokens (PCI / §0.10.5)")
+                    .doesNotContain("ResultSet")
+                    .doesNotContain("SELECT *");
         }
 
         /**

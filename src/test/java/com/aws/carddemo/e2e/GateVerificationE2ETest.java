@@ -365,10 +365,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * without auth, regular users get 200/400/422 on NONE-role endpoints
  * and 403 on ADMIN-role endpoints, and admins get 200/400/422 on
  * ADMIN-role endpoints. Until reactivation the same invocation
- * produces {@code Tests run: 21, Failures: 0, Errors: 0,
- * Skipped: 21} (one sign-on test + 16 parameterized 401 tests + 3
- * role-aware tests + 1 = 21 invocations total once
- * {@link #securedEndpoints()} fires its 16 parameterised rows; the
+ * produces {@code Tests run: 23, Failures: 0, Errors: 0,
+ * Skipped: 23} (one sign-on test + 18 parameterized 401 tests + 3
+ * role-aware tests + 1 = 23 invocations total once
+ * {@link #securedEndpoints()} fires its 18 parameterised rows; the
  * actual reported count depends on the test runner) — the build
  * stays green and the suite is preserved verbatim for future
  * activation.
@@ -485,14 +485,31 @@ class GateVerificationE2ETest {
      *       so a 404 (user not found) is an acceptable outcome.</li>
      * </ul>
      *
-     * <p>16 endpoints total: 11 NONE-role + 5 ADMIN-role (per AAP §0.5.1
-     * controller test table).
+     * <p>18 endpoints total: 12 NONE-role + 6 ADMIN-role (per AAP §0.5.1
+     * controller test table). The four {@code /api/menu/**} endpoints
+     * (GET main, GET admin, POST main/dispatch, POST admin/dispatch) all
+     * sit on the security gate because every protected endpoint in the
+     * application requires authentication — even the menu dispatchers
+     * that route the user to the next screen.
      */
     private static final List<EndpointSpec> SECURED_ENDPOINTS = List.of(
             // ----- COMEN01C — main menu (any authenticated user) -----
             new EndpointSpec(HttpMethod.GET, "/api/menu/main", ROLE_NONE),
+            // ----- COMEN01C — main menu option dispatcher (any authenticated user).
+            //       Routes the user-selected menu option (PROCESS-ENTER-KEY
+            //       paragraph of COMEN01C.cbl) — preserves the menu's
+            //       authentication-only authorisation contract because every
+            //       option dispatcher requires the caller to be signed in.
+            new EndpointSpec(HttpMethod.POST, "/api/menu/main/dispatch", ROLE_NONE),
             // ----- COADM01C — admin menu (admin only) -----
             new EndpointSpec(HttpMethod.GET, "/api/menu/admin", ROLE_ADMIN),
+            // ----- COADM01C — admin menu option dispatcher (admin only).
+            //       Routes the admin-selected menu option (PROCESS-ENTER-KEY
+            //       paragraph of COADM01C.cbl) — preserves the admin-menu's
+            //       ADMIN-only authorisation contract via
+            //       @PreAuthorize("hasRole('ADMIN')") on the controller
+            //       method; a non-admin authenticated caller receives 403.
+            new EndpointSpec(HttpMethod.POST, "/api/menu/admin/dispatch", ROLE_ADMIN),
             // ----- COACTVWC — account view -----
             new EndpointSpec(HttpMethod.GET,
                     "/api/accounts/" + TestFixtures.Accounts.SAMPLE_ACCOUNT_ID_10, ROLE_NONE),

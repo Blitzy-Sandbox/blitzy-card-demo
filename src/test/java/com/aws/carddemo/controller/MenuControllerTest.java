@@ -133,6 +133,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 // ---------------------------------------------------------------------------
 // Spring Security Test — request post-processors
@@ -173,6 +174,7 @@ import java.util.List;
 // transformation rules: "Use static imports for Mockito DSL" / "Use static
 // imports for MockMvc DSL").
 // ---------------------------------------------------------------------------
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
@@ -631,7 +633,12 @@ final class MenuControllerTest {
             request.setCallerUserType(USER_TYPE_REGULAR);
             request.setOption("1");
 
-            mockMvc.perform(post("/api/menu/main/dispatch")
+            // PCI / detail-leakage assertion: the underlying RuntimeException
+            // message must NEVER appear anywhere in the response body. The
+            // assertion is performed via AssertJ on the captured response
+            // body string (AAP §0.10.10 — AssertJ-only style; no Hamcrest
+            // matchers in CardDemo tests).
+            MvcResult dispatchResult = mockMvc.perform(post("/api/menu/main/dispatch")
                             .with(SecurityMockMvcRequestPostProcessors.csrf())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsString(request))
@@ -639,11 +646,11 @@ final class MenuControllerTest {
                     .andExpect(status().isInternalServerError())
                     .andExpect(jsonPath("$.success").value(false))
                     .andExpect(jsonPath("$.message").value(MSG_INTERNAL_ERROR))
-                    // PCI / detail-leakage assertion: the underlying RuntimeException
-                    // message must NEVER appear anywhere in the response body.
-                    .andExpect(jsonPath("$.message").value(
-                            org.hamcrest.Matchers.not(
-                                    org.hamcrest.Matchers.containsString("internal-detail-must-not-leak"))));
+                    .andReturn();
+            String dispatchBody = dispatchResult.getResponse().getContentAsString();
+            assertThat(dispatchBody)
+                    .as("PCI / detail-leakage: response body must not echo the underlying exception message")
+                    .doesNotContain("internal-detail-must-not-leak");
 
             verify(mainMenuService).dispatch(any(MainMenuRequest.class));
         }
@@ -884,7 +891,10 @@ final class MenuControllerTest {
             request.setCallerUserType(USER_TYPE_ADMIN);
             request.setOption("1");
 
-            mockMvc.perform(post("/api/menu/admin/dispatch")
+            // PCI / detail-leakage assertion via AssertJ on the captured
+            // response body string (AAP §0.10.10 — AssertJ-only style; no
+            // Hamcrest matchers in CardDemo tests).
+            MvcResult adminResult = mockMvc.perform(post("/api/menu/admin/dispatch")
                             .with(SecurityMockMvcRequestPostProcessors.csrf())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsString(request))
@@ -892,9 +902,11 @@ final class MenuControllerTest {
                     .andExpect(status().isInternalServerError())
                     .andExpect(jsonPath("$.success").value(false))
                     .andExpect(jsonPath("$.message").value(MSG_INTERNAL_ERROR))
-                    .andExpect(jsonPath("$.message").value(
-                            org.hamcrest.Matchers.not(
-                                    org.hamcrest.Matchers.containsString("admin-detail-must-not-leak"))));
+                    .andReturn();
+            String adminBody = adminResult.getResponse().getContentAsString();
+            assertThat(adminBody)
+                    .as("PCI / detail-leakage: admin dispatch response must not echo the underlying exception message")
+                    .doesNotContain("admin-detail-must-not-leak");
 
             verify(adminMenuService).dispatch(any(AdminMenuRequest.class));
         }
