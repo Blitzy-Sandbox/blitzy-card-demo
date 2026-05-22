@@ -325,16 +325,15 @@ Watch this space for updates
 
 ## Java 25 Implementation
 
-A source-to-source migration of this application to **Java 25 LTS** is under way
-in a sibling top-level tree at [`java/`](java/README.md). It is a hexagonal
-Maven multi-module build that translates every COBOL program, copybook, BMS
-map, symbolic copybook, and JCL job into Java records, sealed interfaces,
-application classes, and main entry points respectively.
+A modern Java 25 LTS source-to-source migration of this COBOL application is maintained in the `java/` directory as a Maven multi-module project. See [`java/README.md`](./java/README.md) for build and run instructions.
 
-The original COBOL source tree at [`app/`](app/) **remains unmodified** and
-serves as the immutable **reference implementation** plus the source of
-golden-record test fixtures for the Java baseline. See
-[`java/README.md`](java/README.md) for build and run instructions and
-[`java/MIGRATION_NOTES.md`](java/MIGRATION_NOTES.md) for the migration log.
+**Key points:**
+
+- The `app/` directory containing the original COBOL programs, copybooks, BMS maps, JCL jobs, ASCII data fixtures, IDCAMS LISTCAT report, CICS CSD, and cataloged procedures is **preserved unmodified** as the reference implementation and as the source for golden-record test fixtures.
+- The Java tree under `java/` translates each of the 28 COBOL programs (`app/cbl/`) into one Java class, each of the 28 copybooks (`app/cpy/`) into a Java `record`, each of the 17 BMS maps (`app/bms/`, `app/cpy-bms/`) into a pair of entry-contract DTO records, and each of the 29 JCL jobs (`app/jcl/`) into a Java main class packaged as a shaded jar.
+- The migration produces **byte-for-byte identical** file outputs versus the COBOL baseline; a golden-record test harness asserts this on every PR.
+- The target architecture is **plain Java with constructor injection (no Spring), file-based batch processing by default, single shaded jar per executable, virtual-thread fan-out for parallelizable per-record work, and `ScopedValue` propagation of batch-run context**.
+
+For module structure, build commands, JVM tuning flags, and the list of migration notes, refer to [`java/README.md`](./java/README.md) and [`java/MIGRATION_NOTES.md`](./java/MIGRATION_NOTES.md).
 
 <br/>
