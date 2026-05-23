@@ -391,6 +391,109 @@ produced, so that downstream agents do not "helpfully" correct the
 spelling and break parity. Sections 1.4.1 through 1.4.5 already follow
 this convention.
 
+### 1.4.7 Logback PAN-masking regex: fixed-length mask and `%msg`-only scope
+
+**Where**: `java/carddemo-app/src/main/resources/logback.xml`. The
+Logback configuration bundled into every shaded jar implements the PCI
+PAN-masking mandate from AAP §0.7.2 ("No card PAN logged in full; mask
+all but last 4 digits in logs and error messages") through a
+`%replace(%msg){'<regex>','<replacement>'}` conversion on the encoder
+pattern.
+
+**The regex**: `\b(\d{9,15})(\d{4})\b` — matches any sequence of 13 to 19
+consecutive digits at word boundaries, with two capture groups. Group 1
+captures the all-but-last-4 prefix (9–15 digits); group 2 captures the
+last 4 digits. This range covers the standard PAN lengths: Visa
+(13/16/19), MasterCard (16), Amex (15), Discover (16/19).
+
+**The replacement**: `************$2` — a fixed sequence of 12 asterisks
+followed by the back-reference to the captured last 4 digits. For the
+dominant 16-digit case this yields a length-preserving 16-character mask
+that exactly replaces the original PAN.
+
+**Trade-off 1: fixed-length mask vs. dynamic length**. Logback's
+`%replace` conversion (which uses `java.util.regex` under the hood) does
+NOT support back-reference-length-aware replacements: there is no
+standard regex construct equivalent to "match the length of capture
+group 1 and emit that many asterisks". Implementing dynamic mask length
+would require a custom Logback converter class (subclassing
+`ch.qos.logback.core.pattern.CompositeConverter`), which adds runtime
+complexity disproportionate to the security benefit. The Java team
+selected the simpler 12-asterisk approach with the following observable
+consequences:
+
+| PAN length | Pre-mask | Post-mask           | Length diff | Last-4 correct |
+|-----------:|---------:|---------------------|------------:|---------------:|
+| 13 digits  | `4111111111234`     | `************1234`     | +3 chars (over-masked) | YES |
+| 15 digits  | `411111111111234`   | `************1234`     | +1 char  (over-masked) | YES |
+| 16 digits  | `4111111111111234`  | `************1234`     | 0 (exact)              | YES |
+| 19 digits  | `4111111111111234567`| `************4567`    | -3 chars (under-masked) | YES |
+
+The under-masking case for 19-digit PANs leaves the digit count of the
+masked output (16 chars) lower than the original (19 chars), which
+**does not** reveal any of the original card number — the asterisks
+still cover everything except the last 4 digits the regex captures.
+The over-masking cases for 13/15-digit PANs make the masked output
+**longer** than the original, again revealing nothing about the masked
+portion. **The security property "no more than the last 4 digits are
+visible in logs" is preserved for every supported PAN length.** Only
+the visual length of the asterisk run varies.
+
+**Trade-off 2: `%msg`-only scope**. The encoder pattern applies
+`%replace(...)` only to the `%msg` conversion word (the message body
+passed to `Logger.info(...)`, `Logger.error(...)`, etc.). Stack traces
+(`%ex`), MDC values (`%X{...}`), logger names, and thread names are NOT
+filtered. This is a deliberate scope choice with two implications:
+
+1. **Defensive coding requirement**: application code MUST NOT place
+   raw card PANs into exception messages, MDC values, or logger names.
+   Code that throws an exception with a PAN in the message
+   (`throw new IllegalArgumentException("Bad card: " + cardNumber)`)
+   would leak the PAN through the `%ex` rendering. The convention
+   for the Java translation is to mask before throwing: callers must
+   use `Decimals.maskPan(cardNumber)` (or a future equivalent helper
+   on the domain layer) before constructing exception messages or MDC
+   entries. Any deviation discovered in downstream translation passes
+   must be flagged as a defect and fixed at the call site, not by
+   widening the Logback regex.
+
+2. **Alternative considered and rejected**: wrapping the entire
+   pattern in `%replace(...)` was considered:
+   `%replace(<full layout including %ex>){'<regex>','<replacement>'}`.
+   This was rejected because it would also mask digit sequences in
+   timestamps, thread names, and logger names that happen to fall in
+   the 13–19 digit range (e.g., a thread named `pool-2-thread-1234567890123`
+   would have its trailing digits partially masked). The narrower
+   `%msg` scope provides cleaner output for non-PAN diagnostics at the
+   cost of requiring discipline at exception-message construction
+   sites.
+
+**Why this is a DEVIATION rather than an IMPLEMENTATION DECISION**: a
+strict idiom-for-idiom translation of the PCI masking requirement would
+yield a mask whose asterisk count equals the original PAN's length, and
+would apply to every surface where a PAN might appear (message body,
+exception trace, MDC). The Java translation provides this guarantee
+fully only for the 16-digit message-body case. The remaining cases
+(13/15/19-digit PANs in the message body, and any PAN length in stack
+traces / MDC) are handled by best-effort regex masking + a coding
+convention rather than by Logback alone. The deviation is documented
+here so downstream code-generation agents (a) do not "fix" the regex
+under the assumption it is buggy, and (b) treat the masking helper at
+the application layer as the primary defence, not the logging layer.
+
+**Action items for downstream translation**:
+
+1. When translating any program that logs card numbers (most likely
+   `COCRDLIC`, `COCRDSLC`, `COCRDUPC`, `CBTRN02C`, `COBIL00C`), use the
+   application-layer masking helper before passing the value to the
+   logger. Do not rely on Logback alone.
+2. When translating exception sites that include a PAN in the message,
+   mask at the throw site, not at the catch site.
+3. If a future Java 25 release adds a Logback feature for
+   back-reference-length-aware replacement, revisit this section and
+   consider tightening the regex; the entry should then be updated
+   from DEVIATION to RESOLVED.
+
 ---
 
 ## Section 1.5: BEHAVIORAL PARITY PRESERVATIONS

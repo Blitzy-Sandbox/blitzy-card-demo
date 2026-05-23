@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  Logback configuration for the carddemo-app shaded jars.
+  ============================================================================
+
+  Bundled into the classpath of every shaded jar produced by maven-shade-plugin
+  in java/carddemo-app/pom.xml (one shaded jar per JCL EXEC PGM= step,
+  per AAP §0.3.1 / §0.7.2). At process startup, SLF4J's ServiceLoader mechanism
+  discovers the ch.qos.logback.classic.spi.LogbackServiceProvider that is
+  preserved by the ServicesResourceTransformer in the shade plugin
+  configuration; Logback then locates this file at the classpath root and
+  initialises the logging context from it.
+
+  This file is the SINGLE runtime logging configuration consumed by ALL 29
+  shaded executables in the carddemo-app module. It establishes:
+    1. Console output at INFO level by default (override via LOG_LEVEL env var)
+    2. Structured log lines suitable for ingestion by JSON-aware aggregators
+    3. PCI-mandated PAN masking (mask all but last 4 digits of card numbers)
+    4. An application-specific logger override at com.blitzy.carddemo level
+
+  PCI mandate (AAP §0.7.2): card PAN must be masked in logs — all but the last
+  4 digits replaced with '*'. The %replace conversion in the encoder pattern
+  applies a regex-based mask to every log message before it is written to the
+  appender. The trade-off (fixed 12-asterisk prefix vs. dynamic length) is
+  documented in MIGRATION_NOTES.md §1.4.7.
+
+  Architecture (AAP §0.1.1, §0.6.12): NO Spring, NO logback-spring extensions,
+  NO Spring Boot specific elements like <springProperty> or <springProfile>.
+  This is a plain Logback configuration consumed by a plain-Java application
+  using SLF4J directly. No file appenders are configured: operators control log
+  routing externally via shell redirection (12-factor model, AAP §0.5.4).
+-->
+<configuration scan="false" debug="false">
+
+    <!--
+      ========================================================================
+      Properties (env-var-overridable defaults)
+      ========================================================================
+      Logback supports the bash-style `${VAR:-default}` syntax for variable
+      substitution from environment variables and/or system properties. These
+      values are resolved once at configuration load time.
+    -->
+
+    <!-- Default log level for the ROOT logger; override via env var LOG_LEVEL
+         (valid values: TRACE, DEBUG, INFO, WARN, ERROR, OFF). -->
+    <property name="LOG_LEVEL" value="${LOG_LEVEL:-INFO}"/>
+
+    <!-- Default log level for the com.blitzy.carddemo application logger;
+         override via env var CARDDEMO_LOG_LEVEL independently of root. -->
+    <property name="CARDDEMO_LOG_LEVEL" value="${CARDDEMO_LOG_LEVEL:-INFO}"/>
+
+    <!--
+      PAN masking regex (per AAP §0.7.2): matches a sequence of 13 to 19
+      consecutive digits at word boundaries (the standard PAN length range:
+      Amex 15, Visa 13/16/19, MasterCard 16, Discover 16/19). The regex uses
+      two capture groups:
+        group 1: 9–15 leading digits  (all but the last 4)
+        group 2: 4 trailing digits    (preserved verbatim in the replacement)
+      The replacement string is a fixed 12-asterisk prefix followed by `$2`
+      (the captured last 4 digits). For the dominant 16-digit case this yields
+      a length-preserving "************NNNN" mask; for non-16-digit PANs the
+      prefix length is slightly off (over-masked for 13/15-digit, under-masked
+      for 19-digit) but the last 4 digits are ALWAYS correct.
+
+      Logback's %replace conversion uses java.util.regex and supports
+      back-references in the replacement string. The variables ${PAN_REGEX}
+      and ${PAN_REPLACEMENT} are resolved here at configuration load time
+      and the resulting literal strings are then compiled into the encoder
+      pattern as the second/third arguments of %replace(...) below.
+    -->
+    <property name="PAN_REGEX" value="\b(\d{9,15})(\d{4})\b"/>
+    <property name="PAN_REPLACEMENT" value="************$2"/>
+
+    <!--
+      Log pattern layout. Order: timestamp, thread, level, logger, MDC
+      context, PAN-masked message, newline, optional stack trace.
+
+      Conversion words used:
+        %d{yyyy-MM-dd HH:mm:ss.SSS}  ISO-like timestamp (millisecond precision)
+        [%thread]                    Thread name (useful for virtual threads)
+        %-5level                     Log level, left-padded to 5 chars
+        %logger{36}                  Logger name truncated to 36 chars
+        %X{batchRunId:-}             Batch run ID from MDC (empty if not set)
+        %X{processingDate:-}         Processing date from MDC (empty if not set)
+        %replace(%msg){'r','t'}      Regex replacement on the message body
+        %n                           Platform-appropriate line separator
+        %ex                          Stack trace if the event carries a Throwable
+
+      The MDC keys batchRunId and processingDate are populated by
+      com.blitzy.carddemo.batch.BatchRunContext when a batch enters a
+      ScopedValue.where(...).run(...) scope (per AAP §0.6.6, JEP 506). If they
+      are absent (online / interactive use), the slots degrade gracefully to
+      an empty string between the brackets.
+    -->
+    <property name="LOG_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [%X{batchRunId:-}/%X{processingDate:-}] %replace(%msg){'${PAN_REGEX}','${PAN_REPLACEMENT}'}%n%ex"/>
+
+    <!--
+      ========================================================================
+      Appenders
+      ========================================================================
+      Only a console appender is configured. Operators redirect stdout to a
+      file or pipe it to a log-aggregation collector outside the JVM
+      (12-factor convention; see AAP §0.5.4). No <file> or <fileNamePattern>
+      appender writes to disk from inside the shaded jar.
+    -->
+
+    <!--
+      Console appender targets System.out (NOT System.err) so that batch
+      operators can capture job output cleanly without mixing application
+      diagnostics with JVM-generated stderr noise (e.g., GC logs, warnings
+      from sun.misc.Unsafe).
+    -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.out</target>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!--
+      ========================================================================
+      Loggers
+      ========================================================================
+    -->
+
+    <!--
+      Application-specific logger: lets operators tune com.blitzy.carddemo
+      verbosity independently of root via the CARDDEMO_LOG_LEVEL env var.
+      additivity="false" prevents events from being processed twice (once by
+      this logger and again by the root logger).
+    -->
+    <logger name="com.blitzy.carddemo" level="${CARDDEMO_LOG_LEVEL}" additivity="false">
+        <appender-ref ref="STDOUT"/>
+    </logger>
+
+    <!--
+      Quiet down chatty third-party loggers commonly noisy in batch runs.
+      These are precautionary defaults: they prevent log floods if a
+      transitive dependency happens to emit at INFO/DEBUG. Operators can
+      override per-logger via additional <logger> entries in an external
+      logback.xml supplied on the classpath ahead of the bundled file.
+    -->
+    <logger name="org.apache" level="WARN"/>
+    <logger name="sun" level="WARN"/>
+    <logger name="jdk" level="WARN"/>
+
+    <!--
+      Root logger: catches everything not handled by a more specific logger
+      above. Level controlled by LOG_LEVEL env var (default INFO).
+    -->
+    <root level="${LOG_LEVEL}">
+        <appender-ref ref="STDOUT"/>
+    </root>
+
+</configuration>
