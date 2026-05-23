@@ -92,7 +92,7 @@ pie title Project Completion Status
 | Application Entry Point | 2 | CardDemoApplication.java with @SpringBootApplication |
 | Unit Tests | 40 | 729 tests across 30+ test classes covering all services, batch processors, models, DTOs, enums, validation |
 | Integration Tests | 28 | 131 tests: 11 repository ITs, 5 batch pipeline ITs, 3 AWS ITs (S3/SQS/SNS), 2 validation ITs |
-| E2E Tests | 14 | 28 tests: BatchPipelineE2ETest (6), OnlineTransactionE2ETest (19), GateVerificationTest (8) |
+| E2E Tests | 14 | 28 tests: BatchPipelineE2EIT (6, Failsafe IT), OnlineTransactionE2ETest (19), GateVerificationTest (8) |
 | Documentation | 24 | README.md (complete rewrite), DECISION_LOG.md (18 decisions), TRACEABILITY_MATRIX.md (100% paragraph coverage), executive-presentation.html (reveal.js), architecture-before-after.md, onboarding-guide.md, validation-gates.md, api-contracts.md, grafana-dashboard.json, prometheus.yml |
 | QA Fixes & Debugging | 16 | 12 fix commits: integration test alignment, security hardening, batch pipeline corrections, observability wiring, documentation QA, performance testing fixes |
 | **Total** | **391** | |

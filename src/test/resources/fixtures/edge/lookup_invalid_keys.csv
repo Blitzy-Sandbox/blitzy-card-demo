@@ -1,0 +1,33 @@
+lookupCategory,inputKey,expectedValid,expectedReason
+AREA_CODE,201,true,VALID
+AREA_CODE,212,true,VALID
+AREA_CODE,415,true,VALID
+AREA_CODE,000,false,Area code starts with 0
+AREA_CODE,001,false,Area code starts with 0
+AREA_CODE,100,false,Area code starts with 1
+AREA_CODE,199,false,Area code starts with 1
+AREA_CODE,555,false,Area code not assigned
+AREA_CODE,911,false,Area code is reserved emergency code
+AREA_CODE,XXX,false,Area code must be numeric
+AREA_CODE,12,false,Area code must be 3 digits
+AREA_CODE,1234,false,Area code must be 3 digits
+STATE_CODE,CA,true,VALID
+STATE_CODE,NY,true,VALID
+STATE_CODE,TX,true,VALID
+STATE_CODE,DC,true,VALID
+STATE_CODE,PR,true,VALID
+STATE_CODE,XX,false,State code not in valid set
+STATE_CODE,AB,false,State code not in valid set
+STATE_CODE,ZZ,false,State code not in valid set
+STATE_CODE,A,false,State code must be 2 characters
+STATE_CODE,ABC,false,State code must be 2 characters
+STATE_CODE,12,false,State code must be alphabetic
+STATE_CODE,ca,false,State code must be uppercase
+ZIP_PREFIX,AA34,true,VALID
+ZIP_PREFIX,AE90,true,VALID
+ZIP_PREFIX,00000,false,ZIP prefix not in valid set
+ZIP_PREFIX,99999,false,ZIP prefix not in valid set
+ZIP_PREFIX,ABCDE,false,ZIP prefix must be numeric
+ZIP_PREFIX,1234,false,ZIP prefix must be 5 characters
+ZIP_PREFIX,123456,false,ZIP prefix must be 5 characters
+ZIP_PREFIX,XX12,false,ZIP prefix combo not in valid set

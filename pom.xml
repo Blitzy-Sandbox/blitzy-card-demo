@@ -1,0 +1,893 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        CardDemo COBOL-to-Java migration — Maven build descriptor.
+
+        Runtime envelope per AAP §0.8.2: Java 17 LTS + Spring Boot 3.x.
+        Test envelope per AAP §0.6.1: JUnit Jupiter 5.10.x + Mockito 5.x + AssertJ +
+            spring-batch-test + spring-security-test + Testcontainers BOM 1.20.4 +
+            Awaitility, all in `test` scope (test deps must never leak into the
+            production JAR — see AAP §0.6.1 note on scope).
+
+        Versions for runtime/test libraries are BOM-managed by spring-boot-starter-parent
+        so the Spring Boot release engineering team's compatibility matrix is honoured.
+        Explicit version pins exist only for build plugins and the Testcontainers BOM.
+
+        Spring Boot is pinned at 3.3.13 — the latest patch in the 3.3.x line at the
+        time of this checkpoint. The 3.3.x stream up to 3.3.10 carried CVE-2025-22235
+        (Spring Boot conditional address-resolution bypass on the Tomcat connector);
+        3.3.11 patched it. Staying on the latest patch in the active line gives the
+        deepest CVE coverage available without bumping the minor version and risking
+        unrelated regressions.
+
+        JaCoCo coverage enforcement (AAP §0.7.1) is gated by the `jacoco` profile to
+        avoid blocking early-stage builds before the migration has produced enough
+        source/test code to satisfy the thresholds. CI invokes `mvn verify -Pjacoco`
+        to enforce all package rules (service, validation, io, repository) — see
+        the `<rules>` block at the bottom of this file.
+    -->
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.13</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.aws.carddemo</groupId>
+    <artifactId>carddemo</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+    <name>CardDemo</name>
+    <description>AWS CardDemo COBOL-to-Java migration (Java 17 LTS + Spring Boot 3.x)</description>
+
+    <properties>
+        <java.version>17</java.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <maven.compiler.release>17</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!--
+            Default JVM argLine for forked Surefire/Failsafe processes.
+
+            Empty by default so that `@{argLine}` in the Surefire/Failsafe
+            <argLine> always resolves cleanly (Java would otherwise interpret
+            the literal `@{argLine}` as an @argfile directive and abort the
+            forked VM with "could not open `{argLine}`").
+
+            When the `jacoco` profile is active, JaCoCo's prepare-agent /
+            prepare-agent-integration goals override this property with the
+            javaagent flag, transparently chaining into the JVM args.
+            See AAP §0.9.1 (mvn test / mvn verify must succeed without
+            -Pjacoco) and §0.7.1 (-Pjacoco enforces the coverage rule).
+        -->
+        <argLine/>
+
+        <!-- Plugin versions (explicit pins; outside the Spring Boot BOM) -->
+        <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
+        <maven-failsafe-plugin.version>3.5.2</maven-failsafe-plugin.version>
+        <jacoco-maven-plugin.version>0.8.12</jacoco-maven-plugin.version>
+
+        <!--
+            Testcontainers BOM pin (outside the Spring Boot BOM). The 1.20.x
+            line aligns the testcontainers core, junit-jupiter, postgresql,
+            and localstack modules at a tested-together release.
+        -->
+        <testcontainers.version>1.20.4</testcontainers.version>
+
+        <!-- AWS Spring Cloud (outside Spring Boot BOM) -->
+        <spring-cloud-aws.version>3.2.1</spring-cloud-aws.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Testcontainers BOM aligns testcontainers-* module versions -->
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- AWS Spring Cloud BOM for s3/sqs/sns starters -->
+            <dependency>
+                <groupId>io.awspring.cloud</groupId>
+                <artifactId>spring-cloud-aws-dependencies</artifactId>
+                <version>${spring-cloud-aws.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- ============================================================ -->
+        <!-- Runtime dependencies                                          -->
+        <!-- ============================================================ -->
+
+        <!-- REST API framework with embedded Tomcat -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- JPA/Hibernate ORM for PostgreSQL VSAM replacement -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- Spring Batch for JCL job migration -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <!-- Authentication/authorization replacing RACF concepts -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- Bean validation for input data integrity -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- AOP for @Transactional, logging interceptors, etc. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+
+        <!-- Health checks, metrics endpoint, readiness probes -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- PostgreSQL JDBC driver -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Database schema migration management -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
+        <!-- AWS Spring Cloud starters for S3 (GDG replacement), SQS (TDQ replacement), SNS -->
+        <dependency>
+            <groupId>io.awspring.cloud</groupId>
+            <artifactId>spring-cloud-aws-starter-s3</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.awspring.cloud</groupId>
+            <artifactId>spring-cloud-aws-starter-sqs</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.awspring.cloud</groupId>
+            <artifactId>spring-cloud-aws-starter-sns</artifactId>
+        </dependency>
+
+        <!-- Observability: OpenTelemetry tracing bridge + Prometheus metrics -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Structured JSON logging with correlation IDs -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>8.0</version>
+        </dependency>
+
+        <!-- ============================================================ -->
+        <!-- Test dependencies (every dependency in `test` scope —         -->
+        <!-- AAP §0.6.1: "Mockito in particular includes byte-code         -->
+        <!-- manipulation libraries that have no place in production")    -->
+        <!-- ============================================================ -->
+
+        <!--
+            Umbrella starter that brings in JUnit 5, Mockito, AssertJ, Hamcrest,
+            Spring Test, JSONassert, JsonPath, and several other testing libraries
+            at versions tested together by the Spring Boot team.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- @SpringBatchTest, JobLauncherTestUtils, JobRepositoryTestUtils -->
+        <dependency>
+            <groupId>org.springframework.batch</groupId>
+            <artifactId>spring-batch-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- @WithMockUser, SecurityMockMvcConfigurers -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            Testcontainers — ephemeral PostgreSQL 16 + LocalStack containers.
+
+            AAP §0.10.7 framework constraint: only JUnit 5 (Jupiter) is on
+            the test source classpath for TEST AUTHORING; no `org.junit.Test`
+            imports, no `junit-vintage-engine`, no `@RunWith` annotations.
+            However, Testcontainers 1.20.x (and every published 1.x line)
+            transitively depends on junit:junit:4.13.2 at compile-time for
+            its `org.junit.rules.TestRule` interface — the GenericContainer
+            base class implements `TestRule` to support legacy JUnit 4
+            `@Rule` usage. The JUnit 5 binding in
+            `org.testcontainers:junit-jupiter` re-uses that base class.
+
+            The junit:junit:4.13.2 API artefact is therefore an unavoidable
+            transitive at compile-time. To compensate, the test classpath:
+              1. Excludes the `junit-vintage-engine` runtime so JUnit 4
+                 `@Test`-annotated classes (if any ever slipped in) cannot
+                 be discovered or executed by the JUnit Platform.
+              2. Forbids `org.junit.Test` / `org.junit.runner.*` imports
+                 in test source via code review (the AAP §0.10.7 rule).
+              3. Documents the situation here so future readers do not
+                 attempt the (broken) exclusion of junit:junit from the
+                 testcontainers artefacts — that exclusion makes
+                 AbstractBatchIT / AbstractRepositoryIT fail compilation
+                 with "cannot access org.junit.rules.TestRule".
+
+            See Testcontainers GitHub issue #970 and AAP §0.6.1
+            "Mockito Java 17 + interface-mock note" for the same rationale
+            applied to other transitive APIs.
+        -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>localstack</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Asynchronous wait-for-condition utility for batch-completion polling -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            H2 in-memory database — optional fallback (AAP §0.6.1).
+
+            The primary repository-IT strategy uses Testcontainers PostgreSQL 16
+            (AAP §0.4.4); H2 is reserved for the rare repository unit test that
+            does not require PostgreSQL-specific behaviour, where the
+            Testcontainers overhead is not justified. Version is BOM-managed by
+            spring-boot-starter-parent.
+        -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>${project.artifactId}</finalName>
+
+        <plugins>
+            <!-- Java 17 compiler plugin (release flag is canonical for JDK 9+) -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>${maven-compiler-plugin.version}</version>
+                <configuration>
+                    <release>${java.version}</release>
+                    <parameters>true</parameters>
+                </configuration>
+            </plugin>
+
+            <!--
+                Surefire — unit tests (AAP §0.10.6: split is enforced by Maven,
+                not by convention). Picks up **/*Test.java; excludes **/*IT.java.
+                argLine wires in @{argLine} so the JaCoCo agent (when active)
+                appends to the JVM args.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${maven-surefire-plugin.version}</version>
+                <configuration>
+                    <includes>
+                        <include>**/*Test.java</include>
+                    </includes>
+                    <excludes>
+                        <exclude>**/*IT.java</exclude>
+                    </excludes>
+                    <argLine>@{argLine} -Xshare:off</argLine>
+                </configuration>
+            </plugin>
+
+            <!--
+                Failsafe — integration tests (AAP §0.10.6). Picks up **/*IT.java
+                in the integration-test phase, verifies in the verify phase so
+                Maven's exit code reflects IT results.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>${maven-failsafe-plugin.version}</version>
+                <configuration>
+                    <includes>
+                        <include>**/*IT.java</include>
+                    </includes>
+                    <argLine>@{argLine} -Xshare:off</argLine>
+                    <!--
+                        Override JUnit Jupiter's class-level parallel execution for
+                        integration tests. The platform-wide default in
+                        src/test/resources/junit-platform.properties is
+                        `parallel.mode.classes.default = concurrent`, which is
+                        appropriate for the ~729 unit tests targeted by AAP §0.4.1
+                        but problematic for repository integration tests: each
+                        *IT class instantiates its own
+                        @Container static PostgreSQLContainer, so concurrent class
+                        execution spawns multiple postgres:16-alpine containers
+                        simultaneously. Empirical observation (CK7 Phase 9): 4 parallel
+                        workers contending for Docker daemon resources produced
+                        `ContainerLaunch Container startup failed` and
+                        `CannotCreateTransaction Could not open JPA EntityManager`
+                        errors across the IT classes. Forcing classes to run
+                        sequentially keeps a single PostgreSQLContainer alive at
+                        a time, satisfying AAP §0.10.9 (test isolation) and the
+                        Testcontainers `@Container static` per-class lifecycle
+                        contract. Method-level parallelism remains
+                        `same_thread` (the platform default), preserving
+                        @BeforeEach / @AfterEach semantics inside each IT class.
+                    -->
+                    <properties>
+                        <configurationParameters>
+                            junit.jupiter.execution.parallel.mode.classes.default = same_thread
+                        </configurationParameters>
+                    </properties>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>integration-tests</id>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+                Executable (fat) JAR packaging via Spring Boot's repackage
+                goal. Spring Boot's `repackage` execution detects the
+                `public static void main(String[])` method in
+                `com.aws.carddemo.CardDemoApplication` and rewrites the
+                Maven-produced JAR in place to include all runtime
+                dependencies under `BOOT-INF/lib/`, producing the
+                executable artifact `target/carddemo-1.0.0-SNAPSHOT.jar`
+                runnable with `java -jar`.
+
+                Version is BOM-managed via `spring-boot-starter-parent`
+                (no explicit `<version>` required).
+            -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!--
+            JaCoCo coverage gating profile (AAP §0.9.1: invoke as
+            `mvn verify -Pjacoco`). The coverage rule fails the build when any
+            class under com.aws.carddemo.service.** drops below LINE 0.80 /
+            BRANCH 0.70 — AAP §0.7.1.
+
+            Excluding generated/DTO/config code from the rule per AAP §0.7.1:
+            DTOs are data carriers, Spring config classes are exercised
+            indirectly by ITs.
+        -->
+        <profile>
+            <id>jacoco</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.jacoco</groupId>
+                        <artifactId>jacoco-maven-plugin</artifactId>
+                        <version>${jacoco-maven-plugin.version}</version>
+                        <configuration>
+                            <excludes>
+                                <exclude>com/aws/carddemo/dto/**</exclude>
+                                <exclude>com/aws/carddemo/config/**</exclude>
+                                <exclude>com/aws/carddemo/CardDemoApplication.class</exclude>
+                            </excludes>
+                        </configuration>
+                        <executions>
+                            <!-- Prepare the JaCoCo runtime agent (Surefire/Failsafe argLine) -->
+                            <execution>
+                                <id>prepare-agent</id>
+                                <goals>
+                                    <goal>prepare-agent</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>prepare-agent-integration</id>
+                                <goals>
+                                    <goal>prepare-agent-integration</goal>
+                                </goals>
+                            </execution>
+
+                            <!-- HTML + XML report after verify -->
+                            <execution>
+                                <id>report</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>report</goal>
+                                </goals>
+                            </execution>
+
+                            <!--
+                                Coverage rule enforcement (AAP §0.7.1 and
+                                docs/testing/test-strategy.md §4).
+
+                                Layer-specific thresholds enforced by JaCoCo
+                                on PACKAGE elements with includes filters so
+                                each rule scopes to exactly one production
+                                package family. dto.** and config.** are not
+                                gated (data carriers and Spring configuration
+                                classes are exercised indirectly by ITs); they
+                                report coverage without blocking the build.
+
+                                Thresholds (AAP §0.7.1 table):
+                                  - service     : LINE >= 0.80 / BRANCH >= 0.70 (user mandate)
+                                  - validation  : LINE >= 0.90 / BRANCH >= 0.85
+                                  - io          : LINE >= 0.90 / BRANCH >= 0.85
+                                  - batch       : LINE >= 0.85 / BRANCH >= 0.75
+                                                  (immediate package only;
+                                                  batch.config Spring wiring
+                                                  excluded; see rule comment)
+                                  - controller  : LINE >= 0.80 / BRANCH >= 0.70
+                                  - repository  : LINE >= 0.75 (mostly Spring-generated)
+
+                                Each rule has its own <execution> id so failure
+                                diagnostics point clearly at the offending layer.
+                            -->
+                            <execution>
+                                <id>check-service-coverage</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <rule>
+                                            <element>PACKAGE</element>
+                                            <includes>
+                                                <include>com.aws.carddemo.service</include>
+                                                <include>com.aws.carddemo.service.*</include>
+                                            </includes>
+                                            <limits>
+                                                <limit>
+                                                    <counter>LINE</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.80</minimum>
+                                                </limit>
+                                                <limit>
+                                                    <counter>BRANCH</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.70</minimum>
+                                                </limit>
+                                            </limits>
+                                        </rule>
+                                    </rules>
+                                </configuration>
+                            </execution>
+
+                            <!--
+                                Validation layer (com.aws.carddemo.validation.**)
+                                LINE >= 0.90 / BRANCH >= 0.85 per AAP §0.7.1.
+                                The validation surface is small and high-criticality
+                                (date validator, lookup validator); near-total
+                                coverage is achievable and expected.
+                            -->
+                            <execution>
+                                <id>check-validation-coverage</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <rule>
+                                            <element>PACKAGE</element>
+                                            <includes>
+                                                <include>com.aws.carddemo.validation</include>
+                                                <include>com.aws.carddemo.validation.*</include>
+                                            </includes>
+                                            <limits>
+                                                <limit>
+                                                    <counter>LINE</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.90</minimum>
+                                                </limit>
+                                                <limit>
+                                                    <counter>BRANCH</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.85</minimum>
+                                                </limit>
+                                            </limits>
+                                        </rule>
+                                    </rules>
+                                </configuration>
+                            </execution>
+
+                            <!--
+                                I/O layer (com.aws.carddemo.io.**) LINE >= 0.90 /
+                                BRANCH >= 0.85 per AAP §0.7.1. Replaces VSAM
+                                file-status code interpretation and other small,
+                                critical adapter utilities (FileStatusMapper).
+                            -->
+                            <execution>
+                                <id>check-io-coverage</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <rule>
+                                            <element>PACKAGE</element>
+                                            <includes>
+                                                <include>com.aws.carddemo.io</include>
+                                                <include>com.aws.carddemo.io.*</include>
+                                            </includes>
+                                            <limits>
+                                                <limit>
+                                                    <counter>LINE</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.90</minimum>
+                                                </limit>
+                                                <limit>
+                                                    <counter>BRANCH</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.85</minimum>
+                                                </limit>
+                                            </limits>
+                                        </rule>
+                                    </rules>
+                                </configuration>
+                            </execution>
+
+                            <!--
+                                Batch processor layer
+                                (com.aws.carddemo.batch.*, EXCLUDING
+                                com.aws.carddemo.batch.config).
+
+                                LINE >= 0.85 / BRANCH >= 0.75 per AAP §0.7.1.
+                                Rationale (AAP §0.7.1): "The 5 batch processors
+                                carry the financial-calculation correctness
+                                burden (interest, posting, statement, report)";
+                                hence the elevated 85%/75% floor relative to
+                                the 80%/70% service layer.
+
+                                The com.aws.carddemo.batch.config sub-package
+                                is intentionally excluded from this rule
+                                because it holds Spring Batch wiring DSL
+                                (Job/Step/ItemReader/ItemWriter bean definitions),
+                                NOT business logic. The branch surface of that
+                                wiring is dominated by Spring's lambda-based
+                                bean-configurator branches and exception-handling
+                                fallbacks that do not encode any COBOL paragraph
+                                semantics. Enforcing AAP §0.7.1 thresholds on
+                                wiring DSL would mis-attribute the
+                                financial-correctness intent to infrastructure
+                                code. The processors in the immediate
+                                com.aws.carddemo.batch package (12 classes:
+                                AccountFileProcessor, CardFileProcessor,
+                                CardXrefFileProcessor, CombineTransactionsProcessor,
+                                CustomerFileProcessor,
+                                InterestCalculationProcessor, PostingResult,
+                                StatementFileProcessor, StatementProcessor,
+                                TransactionPostingProcessor,
+                                TransactionReportProcessor,
+                                TransactionValidationProcessor) ARE the
+                                financial-calculation surface and are fully
+                                gated by this rule.
+
+                                Defence-in-depth: this rule also catches a
+                                regression where the 5 batch job ITs are
+                                skipped or fail to execute; batch.*
+                                processor coverage falls below the floor and
+                                the build fails.
+                            -->
+                            <execution>
+                                <id>check-batch-coverage</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <rule>
+                                            <element>PACKAGE</element>
+                                            <includes>
+                                                <include>com.aws.carddemo.batch</include>
+                                                <include>com.aws.carddemo.batch.*</include>
+                                            </includes>
+                                            <excludes>
+                                                <exclude>com.aws.carddemo.batch.config</exclude>
+                                            </excludes>
+                                            <limits>
+                                                <limit>
+                                                    <counter>LINE</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.85</minimum>
+                                                </limit>
+                                                <limit>
+                                                    <counter>BRANCH</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.75</minimum>
+                                                </limit>
+                                            </limits>
+                                        </rule>
+                                    </rules>
+                                </configuration>
+                            </execution>
+
+                            <!--
+                                REST controller layer
+                                (com.aws.carddemo.controller.**).
+
+                                LINE >= 0.80 / BRANCH >= 0.70 per AAP §0.7.1.
+                                Rationale (AAP §0.7.1): "HTTP routing,
+                                validation, response shape"; the 8
+                                controllers replace the 17 BMS mapsets and
+                                are the external surface consumed by
+                                downstream systems. AAP §0.10.4 (Immutable
+                                Boundaries: "External interfaces consumed by
+                                downstream systems MUST NOT change") makes
+                                the controller layer's behavioural coverage
+                                critical for boundary preservation.
+
+                                The 8 @WebMvcTest slice tests
+                                (AccountControllerTest, AuthControllerTest,
+                                BillPaymentControllerTest,
+                                CardControllerTest, MenuControllerTest,
+                                ReportControllerTest,
+                                TransactionControllerTest,
+                                UserAdminControllerTest) drive every routed
+                                endpoint with happy paths, validation-fail
+                                paths, and authorization paths.
+
+                                Defence-in-depth: this rule also catches a
+                                regression where any controller test class
+                                is silently skipped or its endpoints stop
+                                being exercised; coverage falls below the
+                                floor and the build fails.
+                            -->
+                            <execution>
+                                <id>check-controller-coverage</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <rule>
+                                            <element>PACKAGE</element>
+                                            <includes>
+                                                <include>com.aws.carddemo.controller</include>
+                                                <include>com.aws.carddemo.controller.*</include>
+                                            </includes>
+                                            <limits>
+                                                <limit>
+                                                    <counter>LINE</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.80</minimum>
+                                                </limit>
+                                                <limit>
+                                                    <counter>BRANCH</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.70</minimum>
+                                                </limit>
+                                            </limits>
+                                        </rule>
+                                    </rules>
+                                </configuration>
+                            </execution>
+
+                            <!--
+                                Repository layer (com.aws.carddemo.repository.**)
+                                LINE >= 0.75 per AAP §0.7.1. Branch coverage is
+                                not gated here because Spring Data repositories
+                                are predominantly interface-only contracts whose
+                                implementations are generated by Spring at
+                                startup; integration tests (extending
+                                AbstractRepositoryIT) exercise the custom queries
+                                and @Modifying methods where branch logic exists.
+
+                                IMPORTANT — JaCoCo limitation with Spring Data
+                                JPA repositories:
+
+                                Spring Data JPA repositories are pure Java
+                                interfaces that declare method signatures only;
+                                their implementations are dynamic proxies
+                                generated by Spring at runtime. JaCoCo's
+                                source-code-based bytecode instrumentation
+                                cannot instrument runtime-generated proxies, so
+                                interface-only repositories report ZERO counters
+                                of any type (LINE, BRANCH, INSTRUCTION, METHOD,
+                                CLASS, COMPLEXITY). The PACKAGE-scoped LINE
+                                rule above is therefore vacuous as long as the
+                                repository interfaces remain pure JpaRepository
+                                extensions — it becomes meaningful once a
+                                @Query method, @Modifying method, or default
+                                method body is added to any repository.
+
+                                The QA Checkpoint CK7 report (Issue 3) flagged
+                                that a vacuous LINE rule alone cannot detect
+                                "tests not actually running" failure modes.
+                                The defence-in-depth guard chosen here is a
+                                COVEREDCOUNT floor on the COMPANION entity
+                                package (com.aws.carddemo.entity.**) because:
+
+                                  - Entity classes ARE instrumentable (they
+                                    are POJOs with real bytecode for fields,
+                                    constructors, getters/setters, equals,
+                                    hashCode, and @Version handling).
+
+                                  - Repository ITs that successfully execute
+                                    queries through Spring Data MUST traverse
+                                    Hibernate's entity-to-row mapping, which
+                                    constructs entity instances and invokes
+                                    their setters/getters. Coverage on entity
+                                    classes is therefore a reliable proxy for
+                                    "repository ITs are actually exercising
+                                    the persistence layer".
+
+                                  - If the 10 repository ITs are skipped or
+                                    fail to execute (the failure mode the QA
+                                    report describes), entity coverage falls
+                                    toward zero and the COVEREDCOUNT >= 6
+                                    guard trips a hard build failure.
+
+                                The minimum of 6 covered entity classes is
+                                empirically set: at the time of CK7 remediation,
+                                the 86 IT methods across 10 ITs exercise the
+                                following 6 entity classes: Account, Card,
+                                CardXref, Customer, SecurityUser, Transaction.
+                                The remaining 7 entity classes (DiscountGroup,
+                                DiscountGroupKey, TransactionCategoryKey,
+                                TransactionCategory, TransactionType, plus the
+                                two TransactionCategoryBalance* classes) are
+                                exercised via JPA bulk lookups through the
+                                repository proxy without invoking their getter
+                                methods directly; JaCoCo doesn't count them
+                                because JPA hydration uses field-access
+                                strategy by default for Hibernate 6. The
+                                threshold of 6 is therefore the floor that
+                                proves the repository ITs are running without
+                                falsely failing when JPA hydration bypasses
+                                getters.
+                            -->
+                            <execution>
+                                <id>check-repository-coverage</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <rule>
+                                            <element>PACKAGE</element>
+                                            <includes>
+                                                <include>com.aws.carddemo.repository</include>
+                                                <include>com.aws.carddemo.repository.*</include>
+                                            </includes>
+                                            <limits>
+                                                <limit>
+                                                    <counter>LINE</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.75</minimum>
+                                                </limit>
+                                            </limits>
+                                        </rule>
+                                        <!--
+                                            Companion entity-package COVEREDCOUNT
+                                            sentinel — see the block comment
+                                            above for full rationale. Trips when
+                                            repository ITs are skipped or fail
+                                            to execute.
+                                        -->
+                                        <rule>
+                                            <element>PACKAGE</element>
+                                            <includes>
+                                                <include>com.aws.carddemo.entity</include>
+                                                <include>com.aws.carddemo.entity.*</include>
+                                            </includes>
+                                            <limits>
+                                                <limit>
+                                                    <counter>CLASS</counter>
+                                                    <value>COVEREDCOUNT</value>
+                                                    <minimum>6</minimum>
+                                                </limit>
+                                            </limits>
+                                        </rule>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
+    <repositories>
+        <repository>
+            <id>central</id>
+            <name>Maven Central</name>
+            <url>https://repo.maven.apache.org/maven2</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
+    <pluginRepositories>
+        <pluginRepository>
+            <id>central</id>
+            <name>Maven Central</name>
+            <url>https://repo.maven.apache.org/maven2</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </pluginRepository>
+    </pluginRepositories>
+</project>
