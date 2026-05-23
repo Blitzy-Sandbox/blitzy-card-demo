@@ -1,0 +1,9 @@
+# COTRN00C captured COBOL DISPLAY stdout -- PENDING COBOL baseline capture
+# See java/MIGRATION_NOTES.md section 1.6 for the capture procedure.
+# Until captured, the consuming test class CoTrn00CGoldenTest is @Disabled
+# per AAP section 0.6.11.
+#
+# Under the 10 scenarios in input_scenario.txt, NO DISPLAY statement in
+# COTRN00C is reached (all 3 active DISPLAY sites at L613, L647, L681 fire
+# only on WHEN OTHER CICS response codes, not on NORMAL/NOTFND/ENDFILE).
+# Expected captured artifact under happy-path scenarios: 0 bytes (empty).
