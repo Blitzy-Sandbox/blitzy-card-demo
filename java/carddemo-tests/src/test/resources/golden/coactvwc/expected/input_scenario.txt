@@ -1,0 +1,260 @@
+# COACTVWC (Account View, CAVW) -- Golden-Record CICS Pseudo-Conversation Driver Script.
+#
+# SOURCE: app/cbl/COACTVWC.cbl (941 lines; PROGRAM-ID COACTVWC at L23-L24; DATE-WRITTEN May 2022).
+# CONSUMED BY: com.blitzy.carddemo.tests.golden.CoActVwCGoldenTest (extends GoldenRecordTest).
+# CLASS UNDER TEST: com.blitzy.carddemo.application.account.CoActVwC (AAP section 0.4.1).
+#
+# License note: Apache 2.0 license at app/cbl/COACTVWC.cbl L6-L20 is NOT reproduced here.
+#
+# Encoding: ASCII only, LF line endings only, no tabs, single trailing LF, no BOM.
+#
+# Scenario count: 12.
+# Scenario format: '=== SCENARIO <n>: <description> ===' opener, 'END_SCENARIO' closer.
+#
+# Directive grammar (one directive per line):
+#   EIBCALEN=<int>                        bytes in DFHCOMMAREA on entry (0 for fresh entry)
+#   COMMAREA_HEX=<hex string>             optional 320-byte hex-encoded WS-COMMAREA payload
+#   AID=<DFHENTER|DFHPF3|DFHPF4|DFHCLEAR> EIBAID value
+#   FIELD <name>="<value>"                bind a value to a BMS input field
+#   MOCK_READ FILE=<name> RIDFLD="<key>" RESP=<NORMAL|NOTFND|other> [RECORD_HEX=<hex>]
+#   EXPECT_XCTL PROGRAM="<8-char>"        expected next XCTL target
+#   EXPECT_MSG WS-RETURN-MSG="<text>"     expected ERRMSGO content (verbatim, double-space preserved)
+#   EXPECT_MSG WS-INFO-MSG="<text>"       expected INFOMSGO content (verbatim)
+#   EXPECT_CURSOR FIELD=<BMS field name>  expected cursor placement
+#   EXPECT_FIELD <name>="<value>"         expected output field value (after PAN masking if applicable)
+#   EXPECT_FOUND_ACCT=<true|false>        FOUND-ACCT-IN-MASTER state after 9000-READ-ACCT
+#   EXPECT_FOUND_CUST=<true|false>        FOUND-CUST-IN-MASTER state
+#   EXPECT_FOUND_XREF=<true|false>        FOUND-ACCT-IN-XREF state
+#   EXPECT_ABCODE="<4-char>"              expected EXEC CICS ABEND ABCODE (e.g., 9999)
+#   EXPECT_ACCTDAT_UNCHANGED=true         REQUIRED -- COACTVWC reads ACCTDAT READ-only
+#   EXPECT_CUSTDAT_UNCHANGED=true         REQUIRED -- COACTVWC reads CUSTDAT READ-only
+#   EXPECT_CXACAIX_UNCHANGED=true         REQUIRED -- COACTVWC reads CXACAIX READ-only
+#   MASKED_PAN_LAST4="<4 digits>"         PAN masking marker for any 16-digit XREF-CARD-NUM exposure
+#
+# Authority: AAP sections 0.4.1, 0.6.4, 0.6.5, 0.6.6, 0.6.11, 0.6.12, 0.7.1, 0.7.2, 0.7.4, 0.7.5.
+#
+# DO NOT modify existing scenarios without paired COBOL re-capture per AAP section 0.6.11.
+
+=== SCENARIO 1: first_time_entry_no_commarea ===
+# Tests 0000-MAIN EIBCALEN=0 branch (L282-L293): INITIALIZE CARDDEMO-COMMAREA +
+# WS-THIS-PROGCOMMAREA, 1000-SEND-MAP fall-through, NEXT-TRANID=CAVW.
+EIBCALEN=0
+AID=DFHENTER
+EXPECT_MSG WS-INFO-MSG="Enter or update id of account to display"
+EXPECT_MSG WS-RETURN-MSG=""
+EXPECT_CURSOR FIELD=ACCTSIDL
+EXPECT_FOUND_ACCT=false
+EXPECT_FOUND_CUST=false
+EXPECT_FOUND_XREF=false
+EXPECT_ACCTDAT_UNCHANGED=true
+EXPECT_CUSTDAT_UNCHANGED=true
+EXPECT_CXACAIX_UNCHANGED=true
+END_SCENARIO
+
+=== SCENARIO 2: enter_with_blank_acctsid ===
+# Tests 2210-EDIT-ACCOUNT LOW-VALUES/SPACES branch at L653-L661.
+# COMMAREA: 160-byte payload with CDEMO-PGM-CONTEXT=1 (REENTER),
+# CDEMO-USER-ID="USER0001", CDEMO-USER-TYPE="U" per app/cpy/COCOM01Y.cpy layout.
+EIBCALEN=160
+AID=DFHENTER
+FIELD ACCTSIDI="           "
+EXPECT_MSG WS-RETURN-MSG="Account number not provided"
+EXPECT_MSG WS-INFO-MSG="Enter or update id of account to display"
+EXPECT_CURSOR FIELD=ACCTSIDL
+EXPECT_FOUND_ACCT=false
+EXPECT_FOUND_CUST=false
+EXPECT_FOUND_XREF=false
+EXPECT_ACCTDAT_UNCHANGED=true
+EXPECT_CUSTDAT_UNCHANGED=true
+EXPECT_CXACAIX_UNCHANGED=true
+END_SCENARIO
+
+=== SCENARIO 3: enter_with_zeros_acctsid ===
+# Tests 2210-EDIT-ACCOUNT NOT NUMERIC / ZEROES branch at L666-L676.
+# All-zeros input fails the EQUAL ZEROES test producing SEARCHED-ACCT-ZEROES (L126).
+EIBCALEN=160
+AID=DFHENTER
+FIELD ACCTSIDI="00000000000"
+EXPECT_MSG WS-RETURN-MSG="Account number must be a non zero 11 digit number"
+EXPECT_MSG WS-INFO-MSG="Enter or update id of account to display"
+EXPECT_CURSOR FIELD=ACCTSIDL
+EXPECT_FOUND_ACCT=false
+EXPECT_FOUND_CUST=false
+EXPECT_FOUND_XREF=false
+EXPECT_ACCTDAT_UNCHANGED=true
+EXPECT_CUSTDAT_UNCHANGED=true
+EXPECT_CXACAIX_UNCHANGED=true
+END_SCENARIO
+
+=== SCENARIO 4: enter_with_nonnumeric_acctsid ===
+# Tests 2210-EDIT-ACCOUNT inline-literal branch at L670-L676 (NOT NUMERIC).
+# NOTE: The string after "must" contains TWO spaces (verbatim L672 preservation per AAP section 0.7.1).
+EIBCALEN=160
+AID=DFHENTER
+FIELD ACCTSIDI="ABCDEFGHIJK"
+EXPECT_MSG WS-RETURN-MSG="Account Filter must  be a non-zero 11 digit number"
+EXPECT_MSG WS-INFO-MSG="Enter or update id of account to display"
+EXPECT_CURSOR FIELD=ACCTSIDL
+EXPECT_FOUND_ACCT=false
+EXPECT_FOUND_CUST=false
+EXPECT_FOUND_XREF=false
+EXPECT_ACCTDAT_UNCHANGED=true
+EXPECT_CUSTDAT_UNCHANGED=true
+EXPECT_CXACAIX_UNCHANGED=true
+END_SCENARIO
+
+=== SCENARIO 5: enter_valid_full_chain_success ===
+# Tests 9000-READ-ACCT happy path: CXACAIX -> ACCTDAT -> CUSTDAT all RESP=NORMAL.
+# Canonical fixture ACCT-ID=00000000001 from app/data/ASCII/acctdata.txt L1.
+# Linked XREF record from app/data/ASCII/cardxref.txt: XREF-CUST-ID=000000001.
+EIBCALEN=160
+AID=DFHENTER
+FIELD ACCTSIDI="00000000001"
+MOCK_READ FILE=CXACAIX RIDFLD="00000000001" RESP=NORMAL
+MOCK_READ FILE=ACCTDAT RIDFLD="00000000001" RESP=NORMAL
+MOCK_READ FILE=CUSTDAT RIDFLD="000000001" RESP=NORMAL
+EXPECT_MSG WS-INFO-MSG="Displaying details of given Account"
+EXPECT_MSG WS-RETURN-MSG=""
+EXPECT_FIELD ACCTSIDO="00000000001"
+EXPECT_FIELD ACSTTUSO="Y"
+EXPECT_FIELD ACSTSSNO="020-97-3888"
+EXPECT_FIELD ADTOPENO="2014-11-20"
+EXPECT_FIELD AEXPDTO="2025-05-20"
+EXPECT_FOUND_XREF=true
+EXPECT_FOUND_ACCT=true
+EXPECT_FOUND_CUST=true
+MASKED_PAN_LAST4="3697"
+EXPECT_ACCTDAT_UNCHANGED=true
+EXPECT_CUSTDAT_UNCHANGED=true
+EXPECT_CXACAIX_UNCHANGED=true
+END_SCENARIO
+
+=== SCENARIO 6: enter_valid_notfnd_in_cxacaix ===
+# Tests 9200-GETCARDXREF-BYACCT WHEN NOTFND branch (L741-L758).
+# 9300 and 9400 are NOT invoked because FLG-ACCTFILTER-NOT-OK short-circuits at L697.
+EIBCALEN=160
+AID=DFHENTER
+FIELD ACCTSIDI="99999999999"
+MOCK_READ FILE=CXACAIX RIDFLD="99999999999" RESP=NOTFND
+EXPECT_MSG WS-RETURN-MSG="Did not find this account in account card xref file"
+EXPECT_MSG WS-INFO-MSG="Enter or update id of account to display"
+EXPECT_FOUND_XREF=false
+EXPECT_FOUND_ACCT=false
+EXPECT_FOUND_CUST=false
+EXPECT_ACCTDAT_UNCHANGED=true
+EXPECT_CUSTDAT_UNCHANGED=true
+EXPECT_CXACAIX_UNCHANGED=true
+END_SCENARIO
+
+=== SCENARIO 7: enter_valid_notfnd_in_acctdat ===
+# Tests 9300-GETACCTDATA-BYACCT WHEN NOTFND branch (data integrity violation).
+# CXACAIX found XREF-ACCT-ID but ACCTDAT lookup returns NOTFND; 9400 NOT invoked.
+EIBCALEN=160
+AID=DFHENTER
+FIELD ACCTSIDI="00000000001"
+MOCK_READ FILE=CXACAIX RIDFLD="00000000001" RESP=NORMAL
+MOCK_READ FILE=ACCTDAT RIDFLD="00000000001" RESP=NOTFND
+EXPECT_MSG WS-RETURN-MSG="Did not find this account in account master file"
+EXPECT_MSG WS-INFO-MSG="Enter or update id of account to display"
+EXPECT_FOUND_XREF=true
+EXPECT_FOUND_ACCT=false
+EXPECT_FOUND_CUST=false
+MASKED_PAN_LAST4="3697"
+EXPECT_ACCTDAT_UNCHANGED=true
+EXPECT_CUSTDAT_UNCHANGED=true
+EXPECT_CXACAIX_UNCHANGED=true
+END_SCENARIO
+
+=== SCENARIO 8: enter_valid_notfnd_in_custdat ===
+# Tests 9400-GETCUSTDATA-BYCUST WHEN NOTFND branch (data integrity violation).
+# Both CXACAIX and ACCTDAT lookups succeed; customer lookup returns NOTFND.
+EIBCALEN=160
+AID=DFHENTER
+FIELD ACCTSIDI="00000000001"
+MOCK_READ FILE=CXACAIX RIDFLD="00000000001" RESP=NORMAL
+MOCK_READ FILE=ACCTDAT RIDFLD="00000000001" RESP=NORMAL
+MOCK_READ FILE=CUSTDAT RIDFLD="000000001" RESP=NOTFND
+EXPECT_MSG WS-RETURN-MSG="Did not find associated customer in master file"
+EXPECT_MSG WS-INFO-MSG="Enter or update id of account to display"
+EXPECT_FOUND_XREF=true
+EXPECT_FOUND_ACCT=true
+EXPECT_FOUND_CUST=false
+MASKED_PAN_LAST4="3697"
+EXPECT_ACCTDAT_UNCHANGED=true
+EXPECT_CUSTDAT_UNCHANGED=true
+EXPECT_CXACAIX_UNCHANGED=true
+END_SCENARIO
+
+=== SCENARIO 9: pf03_eibcalen_zero ===
+# Tests 0000-MAIN PF3 branch at L324-L352 with EIBCALEN=0.
+# CDEMO-FROM-PROGRAM is SPACES so XCTL falls through to LIT-MENUPGM=COMEN01C (L169).
+# NOTE: WS-EXIT-MESSAGE has 14 trailing spaces (verbatim L120-L122 preservation).
+EIBCALEN=0
+AID=DFHPF3
+EXPECT_XCTL PROGRAM="COMEN01C"
+EXPECT_MSG WS-RETURN-MSG="PF03 pressed.Exiting              "
+EXPECT_MSG WS-INFO-MSG=""
+EXPECT_FOUND_ACCT=false
+EXPECT_FOUND_CUST=false
+EXPECT_FOUND_XREF=false
+EXPECT_ACCTDAT_UNCHANGED=true
+EXPECT_CUSTDAT_UNCHANGED=true
+EXPECT_CXACAIX_UNCHANGED=true
+END_SCENARIO
+
+=== SCENARIO 10: pf03_from_cocrdlic ===
+# Tests 0000-MAIN PF3 branch at L334-L351 with CDEMO-FROM-PROGRAM=COCRDLIC.
+# COMMAREA: 160-byte payload with CDEMO-FROM-PROGRAM="COCRDLIC",
+# CDEMO-FROM-TRANID="CCLI", CDEMO-PGM-CONTEXT=1 (REENTER) per COCOM01Y layout.
+EIBCALEN=160
+AID=DFHPF3
+EXPECT_XCTL PROGRAM="COCRDLIC"
+EXPECT_MSG WS-RETURN-MSG="PF03 pressed.Exiting              "
+EXPECT_MSG WS-INFO-MSG=""
+EXPECT_FOUND_ACCT=false
+EXPECT_FOUND_CUST=false
+EXPECT_FOUND_XREF=false
+EXPECT_ACCTDAT_UNCHANGED=true
+EXPECT_CUSTDAT_UNCHANGED=true
+EXPECT_CXACAIX_UNCHANGED=true
+END_SCENARIO
+
+=== SCENARIO 11: invalid_aid_pfk04 ===
+# Tests invalid-AID coercion at L311-L314 (PFK-INVALID -> SET CCARD-AID-ENTER TO TRUE).
+# NOTE: PF4 is silently coerced to ENTER at L311-L314 (PFK-INVALID -> SET CCARD-AID-ENTER TO TRUE).
+# Subsequent behavior mirrors scenario 2 (blank ACCTSID treated as fresh enter press).
+EIBCALEN=160
+AID=DFHPF4
+FIELD ACCTSIDI="           "
+EXPECT_MSG WS-RETURN-MSG="Account number not provided"
+EXPECT_MSG WS-INFO-MSG="Enter or update id of account to display"
+EXPECT_CURSOR FIELD=ACCTSIDL
+EXPECT_FOUND_ACCT=false
+EXPECT_FOUND_CUST=false
+EXPECT_FOUND_XREF=false
+EXPECT_ACCTDAT_UNCHANGED=true
+EXPECT_CUSTDAT_UNCHANGED=true
+EXPECT_CXACAIX_UNCHANGED=true
+END_SCENARIO
+
+=== SCENARIO 12: cxacaix_read_other_error ===
+# Tests 9200-GETCARDXREF-BYACCT WHEN OTHER branch at L759-L766 (I/O error path).
+# NOTE: STRING error message has DOUBLE SPACE after "file." (verbatim L751 template preservation).
+# RESP=OTHER simulates a non-NOTFND non-NORMAL response (e.g., DSIDERR or PGMIDERR).
+EIBCALEN=160
+AID=DFHENTER
+FIELD ACCTSIDI="00000000001"
+MOCK_READ FILE=CXACAIX RIDFLD="00000000001" RESP=OTHER
+EXPECT_MSG WS-RETURN-MSG="Account:00000000001 not found in Cross ref file.  Resp:DSIDERR    Reas:00000000  "
+EXPECT_MSG WS-INFO-MSG="Enter or update id of account to display"
+EXPECT_FOUND_XREF=false
+EXPECT_FOUND_ACCT=false
+EXPECT_FOUND_CUST=false
+EXPECT_ACCTDAT_UNCHANGED=true
+EXPECT_CUSTDAT_UNCHANGED=true
+EXPECT_CXACAIX_UNCHANGED=true
+END_SCENARIO
+
+# END OF SCENARIOS.
+# Total: 12 scenarios.
+# Capture procedure: java/MIGRATION_NOTES.md section 1.6.
