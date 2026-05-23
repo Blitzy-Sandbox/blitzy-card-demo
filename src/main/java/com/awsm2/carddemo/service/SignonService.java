@@ -31,114 +31,181 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.HashMap;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
 /**
  * Sign-on / authentication service &mdash; the Java target for the
- * COBOL/CICS program {@code app/cbl/COSGN00C.cbl}
- * (CICS transaction id {@code CC00}).
+ * COBOL/CICS program {@code app/cbl/COSGN00C.cbl} (CICS transaction id
+ * {@code 'CC00'}, file {@code 'USRSEC'}).
  *
- * <p>This service authenticates a user against the {@code USRSEC}
- * dataset, returning a signed JWT bearer token on success. In the COBOL
- * source the program performs:
- * <ol>
- *   <li>{@code MOVE FUNCTION UPPER-CASE(USERIDI) TO WS-USER-ID}
- *       (uppercase user-id);</li>
- *   <li>{@code EXEC CICS READ DATASET('USRSEC') RIDFLD(WS-USER-ID)};</li>
- *   <li>{@code IF SEC-USR-PWD = WS-USER-PWD} (plaintext compare);</li>
- *   <li>{@code XCTL} to {@code COMEN01C} (user) or {@code COADM01C}
- *       (admin) based on {@code SEC-USR-TYPE}.</li>
- * </ol>
- * In the Java target:
- * <ol>
- *   <li>Both {@code userId} and {@code password} are uppercased via
- *       {@link String#toUpperCase(Locale)} with {@link Locale#US} to
- *       avoid locale-sensitive Turkish-I problems (AAP &sect;0.7.1
- *       Minimal Change Clause: uppercase normalisation is preserved
- *       from the COBOL source);</li>
- *   <li>{@link UserSecurityRepository#findById(Object)} loads the
- *       {@link UserSecurity} record;</li>
- *   <li>{@link PasswordEncoder#matches(CharSequence, String)} compares
- *       the supplied plaintext against the stored BCrypt hash &mdash;
- *       the COBOL plaintext-equality is upgraded to BCrypt per
- *       AAP &sect;0.1.1 / &sect;0.7.1 (a deliberate security
- *       improvement within the scope of PCI-DSS compliance);</li>
- *   <li>{@link JwtTokenProvider#issueToken(String, String, String, String)}
- *       returns a signed JWT containing {@code userId} (subject),
- *       {@code userType} (custom claim), {@code firstName},
- *       {@code lastName} &mdash; replacing the CICS pseudo-conversational
- *       COMMAREA state with a stateless token (AAP &sect;0.1.1).</li>
- * </ol>
+ * <p>This service authenticates a user against the {@code user_security}
+ * table (which replaces the COBOL VSAM KSDS cluster
+ * {@code AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS}) and, on success, mints a
+ * signed JWT bearer token for use by all downstream REST endpoints. It
+ * preserves the COBOL signon program's externally observable contract
+ * exactly while upgrading the credential check from plaintext comparison
+ * to BCrypt hashing per AAP &sect;0.1.1 and &sect;0.7.1 (deliberate
+ * PCI-DSS-aligned security improvement within the scope of the migration).
  *
- * <h2>Source provenance (AAP &sect;0.7.3 refactor discipline)</h2>
+ * <h2>COBOL provenance (AAP &sect;0.7.3 refactor discipline)</h2>
  * <ul>
- *   <li><b>COBOL program:</b> {@code app/cbl/COSGN00C.cbl} (CICS TRANID
- *       {@code 'CC00'}).</li>
+ *   <li><b>Program:</b> {@code app/cbl/COSGN00C.cbl} (TRANID {@code 'CC00'};
+ *       reads dataset {@code 'USRSEC'} keyed by {@code WS-USER-ID}).</li>
  *   <li><b>BMS mapset:</b> {@code app/bms/COSGN00.bms} (mapset
  *       {@code COSGN00}, map {@code COSGN0A}).</li>
- *   <li><b>Record layout:</b> {@code app/cpy/CSUSR01Y.cpy}
- *       ({@code SEC-USER-DATA}, 80 bytes) &mdash; mapped to JPA entity
- *       {@link UserSecurity}.</li>
- *   <li><b>VSAM cluster:</b> {@code AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS}
- *       (KEYS(8 0), RECORDSIZE(80 80)) &mdash; replaced by the
- *       PostgreSQL {@code user_security} table created in V010 and
- *       seeded by V015.</li>
+ *   <li><b>Symbolic map:</b> {@code app/cpy-bms/COSGN00.CPY} (lines
+ *       67&ndash;78 define {@code USERIDI PIC X(8)} and
+ *       {@code PASSWDI PIC X(8)}).</li>
+ *   <li><b>Record layout:</b> {@code app/cpy/CSUSR01Y.cpy} (80-byte
+ *       {@code SEC-USER-DATA} record &mdash; mapped to JPA entity
+ *       {@link UserSecurity}).</li>
+ *   <li><b>COMMAREA:</b> {@code app/cpy/COCOM01Y.cpy}
+ *       ({@code CARDDEMO-COMMAREA} carries
+ *       {@code CDEMO-USER-ID}/{@code CDEMO-USER-TYPE} for downstream
+ *       transactions &mdash; replaced by the JWT claim set in the Java
+ *       target).</li>
  * </ul>
  *
- * <h2>COBOL paragraph translation</h2>
+ * <h2>Verbatim COBOL semantics preserved</h2>
+ * <p>The {@code PROCESS-ENTER-KEY} paragraph (COSGN00C.cbl lines
+ * 108&ndash;140) implements the following control flow:
+ * <pre>
+ *     EVALUATE TRUE
+ *         WHEN USERIDI = SPACES OR LOW-VALUES
+ *             MOVE "Please enter User ID ..." TO ERRMSGO
+ *         WHEN PASSWDI = SPACES OR LOW-VALUES
+ *             MOVE "Please enter Password ..." TO ERRMSGO
+ *         WHEN OTHER
+ *             CONTINUE
+ *     END-EVALUATE.
+ *
+ *     MOVE FUNCTION UPPER-CASE(USERIDI OF COSGN0AI) TO WS-USER-ID
+ *                                                     CDEMO-USER-ID
+ *     MOVE FUNCTION UPPER-CASE(PASSWDI OF COSGN0AI) TO WS-USER-PWD
+ *
+ *     IF NOT ERR-FLG-ON
+ *         PERFORM READ-USER-SEC-FILE
+ *     END-IF.
+ * </pre>
+ * <p>And {@code READ-USER-SEC-FILE} (lines 207&ndash;257) implements:
+ * <pre>
+ *     EXEC CICS READ DATASET ('USRSEC')
+ *                    INTO    (SEC-USER-DATA)
+ *                    RIDFLD  (WS-USER-ID)
+ *     END-EXEC.
+ *
+ *     EVALUATE WS-RESP-CD
+ *         WHEN 0
+ *             IF SEC-USR-PWD = WS-USER-PWD
+ *                 IF CDEMO-USRTYP-ADMIN
+ *                     EXEC CICS XCTL PROGRAM ('COADM01C') END-EXEC
+ *                 ELSE
+ *                     EXEC CICS XCTL PROGRAM ('COMEN01C') END-EXEC
+ *                 END-IF
+ *             ELSE
+ *                 MOVE 'Wrong Password. Try again ...' TO WS-MESSAGE
+ *             END-IF
+ *         WHEN 13   ! NOTFND
+ *             MOVE 'User not found. Try again ...' TO WS-MESSAGE
+ *         WHEN OTHER
+ *             MOVE 'Unable to verify the User ...' TO WS-MESSAGE
+ *     END-EVALUATE.
+ * </pre>
+ *
+ * <h2>COBOL paragraph &harr; Java translation</h2>
  * <table>
- *   <caption>COBOL COSGN00C.cbl &harr; SignonService.authenticate(...)</caption>
- *   <tr><th>COBOL paragraph</th><th>Java equivalent</th></tr>
- *   <tr><td>{@code PROCESS-ENTER-KEY} (user/password presence checks)</td>
+ *   <caption>COSGN00C.cbl &harr; SignonService.signon(...)</caption>
+ *   <tr><th>COBOL paragraph / line</th><th>Java equivalent</th></tr>
+ *   <tr><td>{@code PROCESS-ENTER-KEY} presence guards (L118&ndash;L127)</td>
  *       <td>Jakarta Bean Validation on {@link SignonRequestDto} +
- *       explicit {@link #ensurePresent(String, String)} guard.</td></tr>
- *   <tr><td>{@code MOVE FUNCTION UPPER-CASE(USERIDI) TO WS-USER-ID}</td>
- *       <td>{@code userId.toUpperCase(Locale.US)}</td></tr>
- *   <tr><td>{@code READ-USER-SEC-FILE}
- *       (EXEC CICS READ DATASET('USRSEC'))</td>
+ *       explicit non-blank guard in {@link #signon(SignonRequestDto)}</td></tr>
+ *   <tr><td>{@code MOVE FUNCTION UPPER-CASE(USERIDI)} (L132&ndash;L134)</td>
+ *       <td>{@code request.userId().trim().toUpperCase(Locale.US)}</td></tr>
+ *   <tr><td>{@code MOVE FUNCTION UPPER-CASE(PASSWDI)} (L135&ndash;L137)</td>
+ *       <td>{@code request.password().toUpperCase(Locale.US)} &mdash;
+ *       <b>uppercase BEFORE {@code passwordEncoder.matches}</b>
+ *       (CRITICAL: the V015 seed migration stores hashes of the
+ *       <i>uppercased</i> plaintext, so the Java target must uppercase
+ *       first to remain byte-compatible with the COBOL source)</td></tr>
+ *   <tr><td>{@code PERFORM READ-USER-SEC-FILE} +
+ *       {@code EXEC CICS READ DATASET('USRSEC')} (L209&ndash;L219)</td>
  *       <td>{@link UserSecurityRepository#findById(Object)}</td></tr>
- *   <tr><td>{@code FILE STATUS 23} (NOTFND)</td>
- *       <td>{@link RecordNotFoundException} &rarr; HTTP 404 via
- *       {@code GlobalExceptionHandler}</td></tr>
- *   <tr><td>{@code IF SEC-USR-PWD = WS-USER-PWD} (plaintext)</td>
+ *   <tr><td>{@code WS-RESP-CD = 13} (NOTFND) &rarr;
+ *       "User not found ..." (L247&ndash;L251)</td>
+ *       <td>{@link RecordNotFoundException} with generic
+ *       "Invalid credentials" message &rarr; HTTP 404 via
+ *       {@code GlobalExceptionHandler} (security hardening: prevent
+ *       user-enumeration attacks per AAP &sect;0.7.1)</td></tr>
+ *   <tr><td>{@code IF SEC-USR-PWD = WS-USER-PWD} (L223)</td>
  *       <td>{@link PasswordEncoder#matches(CharSequence, String)}
- *       (BCrypt strength 12)</td></tr>
- *   <tr><td>Password mismatch &rarr; "Wrong Password" message</td>
- *       <td>{@link ValidationException} with field error on
- *       {@code password}</td></tr>
- *   <tr><td>{@code XCTL PROGRAM('COMEN01C' | 'COADM01C')}</td>
+ *       (BCrypt strength 12 verification)</td></tr>
+ *   <tr><td>{@code ELSE MOVE 'Wrong Password' TO WS-MESSAGE}
+ *       (L242&ndash;L244)</td>
+ *       <td>{@link ValidationException} with generic
+ *       "Invalid credentials" message (identical to user-not-found path
+ *       to prevent enumeration)</td></tr>
+ *   <tr><td>{@code MOVE WS-USER-ID TO CDEMO-USER-ID} +
+ *       {@code MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE} (L224&ndash;L228)</td>
+ *       <td>{@link JwtTokenProvider#issueToken(String, String, String, String)}
+ *       embeds {@code sub} + {@code userType} + display-name claims</td></tr>
+ *   <tr><td>{@code EXEC CICS XCTL PROGRAM('COADM01C' | 'COMEN01C')}
+ *       (L231&ndash;L240)</td>
  *       <td>Caller-side routing on
- *       {@link SignonResponseDto#userType()} (the controller / client
- *       chooses the next endpoint).</td></tr>
+ *       {@link SignonResponseDto#userType()}: the client reads the
+ *       userType field returned in the response and routes to the
+ *       admin menu ('A') or main menu ('U') &mdash; the JWT carries
+ *       the same value as the {@code role} claim for server-side
+ *       enforcement via {@code @PreAuthorize}</td></tr>
  * </table>
  *
  * <h2>Security upgrades (AAP &sect;0.1.1 / &sect;0.6.6 / &sect;0.7.1)</h2>
  * <ul>
  *   <li><b>Plaintext &rarr; BCrypt:</b> the COBOL plaintext password
- *       compare is upgraded to BCrypt strength 12 hashing. The seeded
- *       {@code user_security.sec_usr_pwd} column holds a 60-character
- *       BCrypt hash whose verification is performed by
- *       {@link PasswordEncoder#matches(CharSequence, String)}.</li>
- *   <li><b>JWT bearer token:</b> the CICS pseudo-conversational
- *       COMMAREA state ({@code CARDDEMO-COMMAREA} in
- *       {@code app/cpy/COCOM01Y.cpy}) is replaced by a stateless
- *       HS256-signed JWT carrying the user identity, role
- *       discriminator ({@code A}/{@code U}), and display name. The
- *       signing key is sourced at runtime from AWS Secrets Manager
- *       via {@link JwtTokenProvider} (AAP &sect;0.6.4).</li>
+ *       compare ({@code IF SEC-USR-PWD = WS-USER-PWD} on L223) is
+ *       upgraded to BCrypt strength 12 hashing via
+ *       {@link PasswordEncoder#matches(CharSequence, String)}. The
+ *       seeded {@code user_security.sec_usr_pwd} column holds a
+ *       60-character BCrypt hash whose verification incorporates the
+ *       per-record salt and is computationally infeasible to reverse.
+ *       The V015 seed migration ({@code V015__seed_default_users.sql})
+ *       stores BCrypt hashes of the <i>uppercased</i> plaintext
+ *       (e.g., hash("PASSWORDA") for {@code ADMIN001}), so the Java
+ *       target must uppercase the supplied password before invoking
+ *       {@code matches} &mdash; this is the verbatim preservation of
+ *       COSGN00C L132&ndash;L137.</li>
+ *   <li><b>JWT bearer token replaces CICS COMMAREA:</b> the CICS
+ *       pseudo-conversational COMMAREA state
+ *       ({@code CARDDEMO-COMMAREA} in {@code app/cpy/COCOM01Y.cpy})
+ *       is replaced by a stateless HS256-signed JWT carrying the user
+ *       identity, role discriminator ({@code 'A'}/{@code 'U'}), and
+ *       display name. The signing key is sourced at runtime from AWS
+ *       Secrets Manager via {@link JwtTokenProvider} (AAP &sect;0.6.4
+ *       &mdash; dynamic rotation without Spring Boot restart).</li>
+ *   <li><b>User-enumeration hardening:</b> both the "user-not-found"
+ *       and "wrong-password" paths return the generic message
+ *       {@code "Invalid credentials"} so an attacker probing for valid
+ *       user IDs cannot distinguish "this user does not exist" from
+ *       "this user exists but the password is wrong". This goes
+ *       slightly beyond the COBOL original (which surfaced "User not
+ *       found ..." and "Wrong Password ..." as distinct messages on
+ *       the 3270 screen), but is justified by the PCI-DSS posture
+ *       mandated in AAP &sect;0.7.1 and aligns with OWASP
+ *       authentication best practices.</li>
  *   <li><b>PII-safe logging:</b> the service emits log lines that
  *       reference only the (already-uppercased) user id; the password
- *       value is never logged, nor is the JWT hash.</li>
+ *       value is NEVER logged, nor is the JWT token. Per AAP
+ *       &sect;0.6.6, audit emission is centralized via
+ *       {@link AuditLogService#logSecurityEvent} which sanitizes
+ *       payloads via its allowlist and PAN-masking regex.</li>
  * </ul>
  *
  * <h2>Thread-safety, transactions, exception translation</h2>
  *
  * <p>The service is stateless &mdash; only the constructor-injected
- * collaborators are held as instance fields. All public methods are
+ * collaborators (repository, password encoder, JWT provider, audit
+ * service) are held as instance fields. All public methods are
  * thread-safe.</p>
  *
  * <p>The {@link Transactional &#64;Transactional(readOnly = true)}
@@ -146,56 +213,196 @@ import java.util.Objects;
  * {@code user_security} table as a read-only transaction. PostgreSQL
  * applies {@code READ ONLY} mode at the connection level, which permits
  * the planner to skip MVCC tuple-visibility upper-bound checks and
- * delivers slightly lower latency on the hot signon path. No
- * write operations are performed by this service.</p>
+ * delivers slightly lower latency on the hot signon path. No write
+ * operations are performed by this service &mdash; password rehashing
+ * on successful login, token revocation, and similar mutable side
+ * effects are deferred to other services per the one-service-per-COBOL-
+ * program rule from AAP &sect;0.7.1.</p>
+ *
+ * <p>Domain exceptions ({@link RecordNotFoundException},
+ * {@link ValidationException}) thrown from this service propagate
+ * unhandled through the controller layer and are caught by the
+ * application's {@code @RestControllerAdvice}
+ * {@code GlobalExceptionHandler}, which translates them into the
+ * standardized JSON error envelope and the appropriate HTTP status
+ * code (404 for {@code RecordNotFoundException}, 400 for
+ * {@code ValidationException}). This preserves the layered architecture
+ * mandate from AAP &sect;0.3.3.</p>
  *
  * @see com.awsm2.carddemo.repository.UserSecurityRepository
  * @see com.awsm2.carddemo.security.JwtTokenProvider
  * @see com.awsm2.carddemo.dto.SignonRequestDto
  * @see com.awsm2.carddemo.dto.SignonResponseDto
+ * @see com.awsm2.carddemo.adapter.AuditLogService
  */
+// Replaces: COBOL COSGN00C.cbl (TRANID 'CC00', file 'USRSEC') signon program.
 @Service
 public class SignonService {
 
-    /** Class-level SLF4J logger &mdash; structured JSON output per AAP &sect;0.6.6. */
+    /**
+     * Class-level SLF4J logger emitting structured operational events.
+     * Routed through Logback + logstash-logback-encoder to CloudWatch
+     * Logs per AAP &sect;0.6.6 observability.
+     *
+     * <p><b>CRITICAL PCI-DSS DISCIPLINE:</b> this logger MUST NEVER emit
+     * {@code request.password()}, {@code normalizedPassword}, the
+     * stored BCrypt hash {@code user.getSecUsrPwd()}, or the issued
+     * JWT token at any level (INFO, DEBUG, WARN, ERROR). Only the
+     * (already-uppercased) user id, user type, and event type may
+     * appear in log lines. The audit pipeline
+     * ({@link AuditLogService#logSecurityEvent}) similarly sanitizes
+     * payloads via its built-in allowlist and PAN-masking regex.
+     */
     private static final Logger LOG = LoggerFactory.getLogger(SignonService.class);
 
-    /** Audit event name emitted on successful sign-on. */
-    private static final String EVENT_SIGNON_SUCCESS = "auth.signon.success";
+    /**
+     * Audit event type for {@code AuditLogService.logSecurityEvent} on
+     * a successful signon. The eventType discriminator drives metric
+     * dimensions ({@code carddemo.audit.security{event_type="SIGNON_SUCCESS"}})
+     * and OpenSearch index field, enabling failure-rate alarms.
+     */
+    private static final String EVENT_TYPE_SIGNON_SUCCESS = "SIGNON_SUCCESS";
 
-    /** Audit event name emitted on failed sign-on (any reason). */
-    private static final String EVENT_SIGNON_FAILURE = "auth.signon.failure";
+    /**
+     * Audit event type for {@code AuditLogService.logSecurityEvent} on
+     * a failed signon. Both "user not found" and "wrong password"
+     * failures share the same event type so the security-operations
+     * dashboard surfaces all signon failures as a single metric;
+     * the {@code result} dimension (passed alongside) carries the
+     * specific failure reason ({@value #RESULT_USER_NOT_FOUND} or
+     * {@value #RESULT_BAD_PASSWORD}).
+     */
+    private static final String EVENT_TYPE_SIGNON_FAILURE = "SIGNON_FAILURE";
 
-    /** Maximum length of the user-id field per CSUSR01Y.cpy SEC-USR-ID PIC X(08). */
-    private static final int USER_ID_MAX_LENGTH = 8;
+    /**
+     * Audit result tag indicating successful authentication. Aligned
+     * with {@code AuditLogService.logSecurityEvent}'s {@code result}
+     * parameter convention ({@code "SUCCESS"} / {@code "FAILURE"}).
+     */
+    private static final String RESULT_SUCCESS = "SUCCESS";
 
-    /** Maximum length of the password field per CSUSR01Y.cpy SEC-USR-PWD PIC X(08). */
-    private static final int PASSWORD_MAX_LENGTH = 8;
+    /**
+     * Audit result tag indicating the supplied user id was not found
+     * in {@code user_security}. Maps to the COBOL signon failure
+     * surfaced on line 249 of COSGN00C.cbl
+     * ({@code MOVE "User not found ..." TO WS-MESSAGE}) when
+     * {@code WS-RESP-CD = 13}.
+     */
+    private static final String RESULT_USER_NOT_FOUND = "USER_NOT_FOUND";
 
+    /**
+     * Audit result tag indicating the supplied password did not match
+     * the stored BCrypt hash. Maps to the COBOL signon failure
+     * surfaced on line 242 of COSGN00C.cbl
+     * ({@code MOVE "Wrong Password ..." TO WS-MESSAGE}) when
+     * {@code SEC-USR-PWD &ne; WS-USER-PWD}.
+     */
+    private static final String RESULT_BAD_PASSWORD = "BAD_PASSWORD";
+
+    /**
+     * Generic error message returned for BOTH "user not found" and
+     * "wrong password" failure paths. This is a deliberate security
+     * hardening that goes slightly beyond the COBOL original (which
+     * distinguished "User not found ..." from "Wrong Password ...")
+     * to prevent user-enumeration attacks. Per OWASP authentication
+     * guidance and PCI-DSS posture in AAP &sect;0.7.1, signon
+     * failures MUST NOT leak whether the user id exists in the
+     * directory.
+     */
+    private static final String INVALID_CREDENTIALS_MESSAGE = "Invalid credentials";
+
+    /**
+     * Reason code propagated through {@link RecordNotFoundException}
+     * for the "user not found" failure path. This is the JPA entity
+     * name (rather than the COBOL FILE STATUS value {@code "23"}) so
+     * that downstream consumers of the JSON error envelope can
+     * differentiate between user-security lookups and other
+     * not-found conditions while still treating the response as
+     * HTTP 404 per the {@code GlobalExceptionHandler} mapping.
+     */
+    private static final String NOT_FOUND_REASON_CODE = "UserSecurity";
+
+    /**
+     * Spring Data JPA repository over the {@code user_security} table
+     * (replaces the COBOL VSAM KSDS cluster
+     * {@code AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS}). Injected via
+     * constructor (final field) per AAP &sect;0.3.3 dependency
+     * injection mandate. The repository's {@code findById(String)}
+     * method maps to the COBOL
+     * {@code EXEC CICS READ FILE('USRSEC') RIDFLD(WS-USER-ID)}
+     * pattern from {@code COSGN00C.READ-USER-SEC-FILE} (line 211).
+     */
     private final UserSecurityRepository userSecurityRepository;
+
+    /**
+     * BCrypt-backed password encoder bean produced by
+     * {@code BCryptPasswordEncoderBean.passwordEncoder()}. The
+     * {@link PasswordEncoder} interface (rather than the concrete
+     * BCrypt implementation) decouples this service from the
+     * underlying hashing algorithm; a future migration to Argon2 or
+     * a delegating encoder requires no source-code change in this
+     * service. Used to verify the supplied (uppercased) password
+     * against the stored BCrypt hash on
+     * {@link UserSecurity#getSecUsrPwd()}.
+     */
     private final PasswordEncoder passwordEncoder;
+
+    /**
+     * JWT issuer / verifier (replaces CICS COMMAREA pseudo-
+     * conversational state per AAP &sect;0.1.1). On successful
+     * authentication, this service calls
+     * {@link JwtTokenProvider#issueToken(String, String, String, String)}
+     * to mint the HS256-signed token returned in
+     * {@link SignonResponseDto}, embedding {@code userType} so
+     * downstream endpoints can authorize by {@code 'A'} (admin) vs
+     * {@code 'U'} (user) via {@code @PreAuthorize}.
+     */
     private final JwtTokenProvider jwtTokenProvider;
+
+    /**
+     * Centralized audit/observability adapter. This service calls
+     * {@link AuditLogService#logSecurityEvent} for both failure
+     * paths ({@link #RESULT_USER_NOT_FOUND},
+     * {@link #RESULT_BAD_PASSWORD}) and the success path
+     * ({@link #EVENT_TYPE_SIGNON_SUCCESS} with userType in payload);
+     * the adapter writes immutable security events to OpenSearch +
+     * CloudWatch metrics per AAP &sect;0.6.6. The audit emission is
+     * {@code @Async} on the adapter side, so it does not block
+     * signon latency.
+     */
     private final AuditLogService auditLogService;
 
     /**
-     * Constructor &mdash; Spring supplies the collaborators.
+     * Constructor injection of the four collaborators per AAP
+     * &sect;0.3.3 (mandatory constructor injection &mdash; no
+     * {@code @Autowired} field injection allowed). All four arguments
+     * are required and validated non-null via
+     * {@link Objects#requireNonNull(Object, String)} so a
+     * misconfigured bean container fails fast at startup rather than
+     * NPE-ing at request-time.
      *
-     * @param userSecurityRepository repository over the
-     *                               {@code user_security} table; never
-     *                               {@code null}
-     * @param passwordEncoder        BCrypt-backed password encoder from
-     *                               {@code BCryptPasswordEncoderBean};
-     *                               never {@code null}
-     * @param jwtTokenProvider       issuer of HS256-signed JWT tokens;
-     *                               never {@code null}
-     * @param auditLogService        async audit-log sink (CloudTrail /
-     *                               OpenSearch); never {@code null}
+     * @param userSecurityRepository Spring Data JPA repository over
+     *                               the {@code user_security} table;
+     *                               must not be {@code null}
+     * @param passwordEncoder        Spring Security
+     *                               {@link PasswordEncoder} for
+     *                               BCrypt hash verification; must
+     *                               not be {@code null}
+     * @param jwtTokenProvider       HS256-signed JWT bearer-token
+     *                               issuer; must not be {@code null}
+     * @param auditLogService        AWS CloudWatch + OpenSearch
+     *                               audit emission adapter; must not
+     *                               be {@code null}
      */
     public SignonService(
             UserSecurityRepository userSecurityRepository,
             PasswordEncoder passwordEncoder,
             JwtTokenProvider jwtTokenProvider,
             AuditLogService auditLogService) {
+        // Replaces: implicit CICS dependency injection via PROGRAM-ID +
+        //           DFHCOMMAREA in COSGN00C.cbl. Constructor injection
+        //           is mandated by AAP §0.3.3 (Dependency Injection —
+        //           constructor injection for all @Service beans).
         this.userSecurityRepository = Objects.requireNonNull(
                 userSecurityRepository, "userSecurityRepository");
         this.passwordEncoder = Objects.requireNonNull(
@@ -206,111 +413,289 @@ public class SignonService {
                 auditLogService, "auditLogService");
     }
 
+    // =========================================================================
+    // Public API — schema-required signon(SignonRequestDto)
+    // =========================================================================
+
     /**
-     * Authenticate a sign-on request and emit a JWT on success.
+     * Authenticates a sign-on request and returns a
+     * {@link SignonResponseDto} carrying a freshly-issued JWT bearer
+     * token plus the user-identity attributes needed for client-side
+     * routing.
      *
-     * <p>Replicates the COBOL {@code COSGN00C} {@code PROCESS-ENTER-KEY}
-     * paragraph from {@code app/cbl/COSGN00C.cbl}:</p>
-     * <pre>
-     *     IF USERIDI = SPACES OR LOW-VALUES
-     *        MOVE "Please enter User ID ..." TO ERRMSGO
-     *     ELSE IF PASSWDI = SPACES OR LOW-VALUES
-     *        MOVE "Please enter Password ..." TO ERRMSGO
-     *     ELSE
-     *        MOVE FUNCTION UPPER-CASE(USERIDI) TO WS-USER-ID
-     *        PERFORM READ-USER-SEC-FILE
-     *        IF WS-RESP-CD = 23
-     *           MOVE "User not found ..." TO ERRMSGO
-     *        ELSE IF SEC-USR-PWD &ne; WS-USER-PWD
-     *           MOVE "Wrong Password ..." TO ERRMSGO
-     *        ELSE
-     *           IF SEC-USR-TYPE = 'A'  XCTL COADM01C
-     *           ELSE                   XCTL COMEN01C
-     *     END-IF
-     * </pre>
+     * <p>Flow (matches COSGN00C verbatim where the COBOL semantics
+     * survive the migration target, with the explicit PCI-DSS
+     * upgrades noted):</p>
+     * <ol>
+     *   <li><b>Validate inputs</b> &mdash; non-null DTO, non-blank
+     *       {@code userId}, non-blank {@code password}. Replicates
+     *       the COBOL {@code WHEN USERIDI = SPACES OR LOW-VALUES} /
+     *       {@code WHEN PASSWDI = SPACES OR LOW-VALUES} guards at
+     *       COSGN00C.cbl L118&ndash;L127. Throws
+     *       {@link ValidationException} on failure (HTTP 400 via
+     *       {@code GlobalExceptionHandler}).</li>
+     *   <li><b>Uppercase BOTH userId and password</b> &mdash; verbatim
+     *       COBOL {@code MOVE FUNCTION UPPER-CASE(...)} at
+     *       COSGN00C.cbl L132&ndash;L137. CRITICAL: the uppercase
+     *       step MUST occur BEFORE
+     *       {@link PasswordEncoder#matches(CharSequence, String)}
+     *       because the V015 seed migration stores BCrypt hashes of
+     *       the <i>uppercased</i> plaintext; comparing the raw input
+     *       against an uppercase-hashed value silently fails.
+     *       {@link Locale#US} is used to avoid locale-sensitive
+     *       Turkish-I issues that would corrupt the comparison.</li>
+     *   <li><b>Lookup USRSEC</b> &mdash; replaces COBOL
+     *       {@code EXEC CICS READ DATASET('USRSEC') RIDFLD(WS-USER-ID)}
+     *       with {@link UserSecurityRepository#findById(Object)}. A
+     *       missing record (COBOL FILE STATUS 13, NOTFND) maps to a
+     *       {@link RecordNotFoundException} with the generic
+     *       "Invalid credentials" message (security hardening: do
+     *       NOT leak whether the userId exists).</li>
+     *   <li><b>Verify password</b> &mdash; BCrypt
+     *       {@link PasswordEncoder#matches(CharSequence, String)}
+     *       replaces the COBOL plaintext compare on L223
+     *       ({@code IF SEC-USR-PWD = WS-USER-PWD}). A mismatch maps
+     *       to a {@link ValidationException} with the SAME generic
+     *       "Invalid credentials" message so the response shape is
+     *       identical to the user-not-found path.</li>
+     *   <li><b>Issue JWT</b> &mdash; replaces COBOL
+     *       {@code MOVE ... TO CDEMO-USER-ID / CDEMO-USER-TYPE} +
+     *       {@code EXEC CICS XCTL} with
+     *       {@link JwtTokenProvider#issueToken(String, String, String, String)}.
+     *       The token's {@code sub} claim is the userId (from
+     *       {@link UserSecurity#getSecUsrId()}); the {@code userType}
+     *       claim carries {@code 'A'}/{@code 'U'} for downstream
+     *       authorization.</li>
+     *   <li><b>Audit success</b> &mdash; emit a
+     *       {@link AuditLogService#logSecurityEvent} event with
+     *       {@link #EVENT_TYPE_SIGNON_SUCCESS} +
+     *       {@link #RESULT_SUCCESS} + userType in the payload.</li>
+     *   <li><b>Return response</b> &mdash; build a
+     *       {@link SignonResponseDto} carrying (token, userId,
+     *       firstName, lastName, userType, expiresAt). The
+     *       expiresAt is computed as
+     *       {@code Instant.now().plus(jwtTokenProvider.getExpiration()).getEpochSecond()}
+     *       so clients can refresh the token proactively before it
+     *       expires.</li>
+     * </ol>
      *
-     * @param request the validated sign-on request DTO (Jakarta Bean
-     *                Validation has already enforced presence and
-     *                length constraints at the controller boundary);
-     *                never {@code null}
-     * @return the signon response DTO with token, user identity, and
-     *         role discriminator; never {@code null}
-     * @throws ValidationException     when the user-supplied password
-     *                                 does not match the stored hash
-     *                                 (HTTP 400)
-     * @throws RecordNotFoundException when the user-id does not exist
-     *                                 in {@code user_security}
-     *                                 (HTTP 404; COBOL FILE STATUS 23)
+     * <p><b>Authority Routing Reminder.</b> The COBOL
+     * {@code EXEC CICS XCTL PROGRAM('COADM01C' | 'COMEN01C')} dispatch
+     * (COSGN00C.cbl L231&ndash;L239) is replaced by <i>client-side</i>
+     * routing keyed off {@link SignonResponseDto#userType()}. The
+     * server-side enforcement of that distinction lives in
+     * {@code SecurityConfig} + {@code @PreAuthorize} on the menu
+     * endpoints, not in this service.</p>
+     *
+     * @param request the validated sign-on request DTO carrying the
+     *                operator-supplied {@code userId} and
+     *                {@code password}; must not be {@code null}
+     * @return the signon response DTO with token, user identity, role
+     *         discriminator, and expiry; never {@code null}
+     * @throws ValidationException     when (a) the request DTO is
+     *                                 {@code null} or (b) userId or
+     *                                 password is null/blank or (c)
+     *                                 the supplied password does not
+     *                                 match the stored BCrypt hash
+     *                                 (HTTP 400 via
+     *                                 {@code GlobalExceptionHandler})
+     * @throws RecordNotFoundException when the (uppercased) userId
+     *                                 does not exist in the
+     *                                 {@code user_security} table
+     *                                 (HTTP 404 via
+     *                                 {@code GlobalExceptionHandler};
+     *                                 message is the generic
+     *                                 "Invalid credentials" to
+     *                                 prevent enumeration)
      */
     @Transactional(readOnly = true)
-    public SignonResponseDto authenticate(SignonRequestDto request) {
-        Objects.requireNonNull(request, "request");
-
+    public SignonResponseDto signon(SignonRequestDto request) {
         // -------------------------------------------------------------
-        // COBOL: PROCESS-ENTER-KEY presence guards (COSGN00C.cbl L118)
+        // STEP 1 — Validate inputs (COBOL: COSGN00C:PROCESS-ENTER-KEY
+        //          L118-L127 — empty checks on USERIDI / PASSWDI)
         // -------------------------------------------------------------
-        // Although Jakarta Bean Validation on SignonRequestDto already
-        // catches @NotBlank, this guard reproduces the source program's
-        // double-check defence (the controller may be invoked without
-        // validation in unit tests).
-        ensurePresent(request.userId(), "userId");
-        ensurePresent(request.password(), "password");
-
-        // -------------------------------------------------------------
-        // COBOL: MOVE FUNCTION UPPER-CASE(USERIDI) TO WS-USER-ID
-        // -------------------------------------------------------------
-        // Locale.US avoids locale-sensitive case folding (Turkish I).
-        // Both fields are uppercased to match the COBOL behaviour --
-        // SEC-USR-PWD in the legacy USRSEC file is stored uppercase
-        // per the JCL seed.
-        String userId = request.userId().toUpperCase(Locale.US);
-        String password = request.password().toUpperCase(Locale.US);
-
-        // -------------------------------------------------------------
-        // COBOL: PERFORM READ-USER-SEC-FILE -> EXEC CICS READ DATASET
-        // -------------------------------------------------------------
-        UserSecurity user = userSecurityRepository.findById(userId)
-                .orElseThrow(() -> {
-                    LOG.info("Signon failed: user not found userId={}", userId);
-                    auditFailure(userId, "USER_NOT_FOUND");
-                    return new RecordNotFoundException(
-                            "USER_NOT_FOUND",
-                            "User not found");
-                });
-
-        // -------------------------------------------------------------
-        // COBOL: IF SEC-USR-PWD = WS-USER-PWD (plaintext)
-        // Java:  PasswordEncoder.matches(raw, hash) -- BCrypt strength 12
-        // -------------------------------------------------------------
-        if (!passwordEncoder.matches(password, user.getSecUsrPwd())) {
-            LOG.info("Signon failed: password mismatch userId={}", userId);
-            auditFailure(userId, "WRONG_PASSWORD");
-            throw new ValidationException(
-                    "WRONG_PASSWORD",
-                    "Wrong Password",
-                    List.of(new ValidationException.FieldError(
-                            "password", "Wrong password supplied")));
+        // The Jakarta Bean Validation annotations on SignonRequestDto
+        // (@NotBlank, @Size, @Pattern) catch these at the controller
+        // boundary. This defensive guard handles the case where the
+        // service is invoked directly (e.g., from a unit test or an
+        // internal call) without controller-level validation and
+        // ensures we never reach the upper-case / BCrypt steps with
+        // null inputs.
+        if (request == null) {
+            // Audit emission is skipped here because we have no userId
+            // to log. This branch should never fire in production
+            // (controller layer prevents null bodies) but exists as a
+            // last-line-of-defense per AAP §0.7.1.
+            throw new ValidationException("Request must not be null");
+        }
+        if (request.userId() == null || request.userId().isBlank()) {
+            // COBOL: COSGN00C.cbl L118 — WHEN USERIDI = SPACES OR LOW-VALUES
+            //        MOVE 'Please enter User ID ...' TO WS-MESSAGE
+            throw new ValidationException("User ID must not be empty");
+        }
+        if (request.password() == null || request.password().isBlank()) {
+            // COBOL: COSGN00C.cbl L123 — WHEN PASSWDI = SPACES OR LOW-VALUES
+            //        MOVE 'Please enter Password ...' TO WS-MESSAGE
+            throw new ValidationException("Password must not be empty");
         }
 
         // -------------------------------------------------------------
-        // COBOL: XCTL PROGRAM('COMEN01C' | 'COADM01C') based on
-        //        SEC-USR-TYPE = 'A' | 'U'. Java target: emit a JWT and
-        //        let the caller route on userType.
+        // STEP 2 — Uppercase BOTH userId and password
+        //          (COBOL: COSGN00C:L132-135 FUNCTION UPPER-CASE)
         // -------------------------------------------------------------
-        String token = jwtTokenProvider.issueToken(
+        // COBOL: COSGN00C lines 132-137 — FUNCTION UPPER-CASE applied BEFORE auth.
+        //   MOVE FUNCTION UPPER-CASE(USERIDI OF COSGN0AI) TO WS-USER-ID
+        //                                                   CDEMO-USER-ID
+        //   MOVE FUNCTION UPPER-CASE(PASSWDI OF COSGN0AI) TO WS-USER-PWD
+        //
+        // CRITICAL — the password MUST be uppercased BEFORE
+        //            passwordEncoder.matches(...). The V015 seed migration
+        //            (V015__seed_default_users.sql) stores BCrypt hashes
+        //            of the UPPERCASED plaintext (e.g., hash("PASSWORDA")
+        //            for ADMIN001, hash("PASSWORDU") for USER0001). Skipping
+        //            the uppercase step here would silently break
+        //            authentication against those seeded credentials.
+        //
+        // Locale.US is used explicitly to avoid locale-sensitive case folding
+        // (e.g., the Turkish locale lowercases 'I' to dotless-i which would
+        // produce mismatched uppercase output and break the lookup).
+        // .trim() on userId only — the BMS field is space-padded on the
+        // 3270 device, but passwords are not trimmed (a leading or trailing
+        // space in a password should be preserved verbatim, matching the
+        // COBOL behaviour where PIC X(08) preserves all 8 bytes literally).
+        final String normalizedUserId = request.userId().trim().toUpperCase(Locale.US);
+        final String normalizedPassword = request.password().toUpperCase(Locale.US);
+
+        LOG.info("Signon attempt for userId={}", normalizedUserId);
+
+        // -------------------------------------------------------------
+        // STEP 3 — Lookup USRSEC (COBOL: COSGN00C:READ-USER-SEC-FILE
+        //          L209-L219 — EXEC CICS READ DATASET('USRSEC'))
+        // -------------------------------------------------------------
+        // Maps to: EXEC CICS READ DATASET('USRSEC') RIDFLD(WS-USER-ID)
+        //          INTO(SEC-USER-DATA) — COSGN00C.cbl L211-L219.
+        // A miss (Optional.empty) surfaces as RecordNotFoundException
+        // with reasonCode 'UserSecurity' and a deliberately generic
+        // 'Invalid credentials' message to prevent user-enumeration
+        // attacks (PCI-DSS hardening per AAP §0.7.1 — security best
+        // practice beyond the COBOL original, which surfaced
+        // "User not found ..." as a distinct message on the 3270
+        // screen).
+        final UserSecurity user = userSecurityRepository.findById(normalizedUserId)
+                .orElseThrow(() -> {
+                    // PII-safe audit: never log the password.
+                    // Note: this Optional.orElseThrow lambda is invoked
+                    // synchronously within the read-only transaction;
+                    // the @Async audit emission is handed off to the
+                    // Spring task executor and does not block the
+                    // throw of RecordNotFoundException.
+                    auditFailure(normalizedUserId, RESULT_USER_NOT_FOUND);
+                    LOG.info("Signon failed: user not found userId={}", normalizedUserId);
+                    // COBOL: COSGN00C.cbl L247-L251 — WS-RESP-CD = 13 path.
+                    //        The COBOL message was "User not found ..."; the
+                    //        Java target uses the generic "Invalid credentials"
+                    //        message to prevent user-enumeration attacks.
+                    return new RecordNotFoundException(
+                            NOT_FOUND_REASON_CODE,
+                            INVALID_CREDENTIALS_MESSAGE);
+                });
+
+        // -------------------------------------------------------------
+        // STEP 4 — Verify password via BCrypt
+        //          (COBOL: COSGN00C.cbl L223 — IF SEC-USR-PWD = WS-USER-PWD)
+        // -------------------------------------------------------------
+        // COBOL: COSGN00C.cbl L223 plaintext byte-equality compare.
+        // Java:  PasswordEncoder.matches(rawPassword, encodedPassword)
+        //        — BCrypt strength 12 verification incorporates the per-
+        //        record salt embedded in the stored hash. The compare
+        //        is constant-time (BCrypt's design) so timing attacks
+        //        cannot distinguish "wrong password" from "right password"
+        //        based on response latency.
+        //
+        // CRITICAL: pass normalizedPassword (the UPPERCASED input), NOT
+        //           request.password() — see STEP 2 comment.
+        final boolean passwordMatches = passwordEncoder.matches(
+                normalizedPassword, user.getSecUsrPwd());
+        if (!passwordMatches) {
+            // COBOL: COSGN00C.cbl L242-L244 — "Wrong Password" path.
+            //        The COBOL message was "Wrong Password. Try again ...";
+            //        the Java target uses the same generic
+            //        "Invalid credentials" message as the user-not-found
+            //        path so the HTTP response shape is identical between
+            //        the two failure modes (prevents enumeration via
+            //        differential error analysis).
+            auditFailure(normalizedUserId, RESULT_BAD_PASSWORD);
+            LOG.info("Signon failed: bad password userId={}", normalizedUserId);
+            throw new ValidationException(INVALID_CREDENTIALS_MESSAGE);
+        }
+
+        // -------------------------------------------------------------
+        // STEP 5 — Issue JWT (COBOL: COSGN00C:ROUTE-BY-USRTYPE
+        //          L222-L240 — MOVE to CDEMO-* + EXEC CICS XCTL)
+        // -------------------------------------------------------------
+        // COBOL: COSGN00C.cbl L222-L240 — on successful READ USRSEC +
+        //        password match, COSGN00C populates CDEMO-USER-ID,
+        //        CDEMO-USER-TYPE in CARDDEMO-COMMAREA and then issues
+        //        EXEC CICS XCTL PROGRAM('COADM01C') for admins or
+        //        EXEC CICS XCTL PROGRAM('COMEN01C') for regular users.
+        //
+        // Java equivalent: mint a signed JWT carrying those identity
+        // claims (sub=userId, userType=A/U, firstName, lastName). The
+        // CICS-managed COMMAREA persistence is replaced by the
+        // cryptographically signed bearer token returned in
+        // SignonResponseDto. Server-side authorization is enforced by
+        // SecurityConfig + @PreAuthorize on the menu endpoints based on
+        // the userType claim. Client-side routing (admin menu vs main
+        // menu) is performed by inspecting SignonResponseDto.userType().
+        //
+        // JwtTokenProvider.issueToken signature:
+        //   issueToken(userId, userType, firstName, lastName) -> String
+        final String token = jwtTokenProvider.issueToken(
                 user.getSecUsrId(),
                 user.getSecUsrType(),
                 user.getSecUsrFname(),
                 user.getSecUsrLname());
 
-        long expiresAt = Instant.now()
+        // -------------------------------------------------------------
+        // STEP 6 — Compute expiresAt for the response DTO
+        // -------------------------------------------------------------
+        // SignonResponseDto.expiresAt is a Long (seconds since
+        // 1970-01-01 UTC), matching the JWT 'exp' claim. We compute it
+        // as Instant.now() + jwtTokenProvider.getExpiration() so the
+        // client can refresh the token proactively before expiry. This
+        // value has no COBOL analogue — it is a structural requirement
+        // of the stateless REST model that has no equivalent in the
+        // CICS pseudo-conversational model (where the session was
+        // kept alive implicitly by CARDDEMO-COMMAREA chaining across
+        // EXEC CICS RETURN TRANSID('CC00') calls).
+        final long expiresAt = Instant.now()
                 .plus(jwtTokenProvider.getExpiration())
                 .getEpochSecond();
 
+        // -------------------------------------------------------------
+        // STEP 7 — Audit success (AAP §0.6.6 — immutable security
+        //          events to OpenSearch + CloudWatch metrics)
+        // -------------------------------------------------------------
+        // Replaces: COBOL has no explicit signon audit (the only trace
+        //           is the XCTL itself, recorded in CICS auxtrace).
+        //           The Java target emits an explicit security audit
+        //           event so signon success/failure rates can be
+        //           alarmed in CloudWatch and queried in OpenSearch
+        //           Dashboards for fraud investigation.
+        auditSuccess(normalizedUserId, user.getSecUsrType());
         LOG.info("Signon success userId={} userType={}",
                 user.getSecUsrId(), user.getSecUsrType());
-        auditSuccess(user.getSecUsrId(), user.getSecUsrType());
 
+        // -------------------------------------------------------------
+        // STEP 8 — Return response (NO password / hash / cleartext
+        //          credential material — PCI-DSS per AAP §0.7.1)
+        // -------------------------------------------------------------
+        // SignonResponseDto constructor (record canonical order):
+        //   (token, userId, firstName, lastName, userType, expiresAt)
+        // The response DTO explicitly OMITS the password / hash per
+        // PCI-DSS rules in AAP §0.7.1; the SignonResponseDto record
+        // does not declare a password component at all, making any
+        // accidental inclusion a compile error.
         return new SignonResponseDto(
                 token,
                 user.getSecUsrId(),
@@ -320,60 +705,78 @@ public class SignonService {
                 expiresAt);
     }
 
-    // -----------------------------------------------------------------
-    // Defensive-guard helpers (preserves COBOL PROCESS-ENTER-KEY contract)
-    // -----------------------------------------------------------------
+    // =========================================================================
+    // Audit helpers (PCI-DSS — never include password material in payloads)
+    // =========================================================================
 
     /**
-     * Ensures the value is non-{@code null}, non-empty, and within
-     * the PIC X(08) length limit. Used to defend against bypasses of
-     * Jakarta Bean Validation when the service is invoked directly
-     * (e.g., in unit tests).
+     * Emits a successful-signon audit event via
+     * {@link AuditLogService#logSecurityEvent}. The userType is
+     * included in the payload (non-sensitive operational identifier;
+     * appears in audit trails per AAP &sect;0.6.6) but the password
+     * value is intentionally NEVER referenced anywhere in this method
+     * or any downstream call site.
+     *
+     * <p>The audit emission is {@code @Async} on the adapter side, so
+     * this call returns immediately and does not block the signon
+     * latency on OpenSearch indexing.</p>
+     *
+     * @param userId   the (already-uppercased) user identifier
+     * @param userType the role discriminator ({@code 'A'} for admin,
+     *                 {@code 'U'} for user) from
+     *                 {@link UserSecurity#getSecUsrType()}
      */
-    private static void ensurePresent(String value, String fieldName) {
-        if (value == null || value.isBlank()) {
-            throw new ValidationException(
-                    "MISSING_FIELD",
-                    "Please enter " + displayName(fieldName) + " ...",
-                    List.of(new ValidationException.FieldError(
-                            fieldName, displayName(fieldName) + " is required")));
-        }
-        int max = "password".equals(fieldName) ? PASSWORD_MAX_LENGTH : USER_ID_MAX_LENGTH;
-        if (value.length() > max) {
-            throw new ValidationException(
-                    "FIELD_TOO_LONG",
-                    displayName(fieldName) + " exceeds maximum length",
-                    List.of(new ValidationException.FieldError(
-                            fieldName,
-                            displayName(fieldName) + " must be at most "
-                                    + max + " characters")));
-        }
-    }
-
-    /** Maps an internal field name to its COBOL display label. */
-    private static String displayName(String fieldName) {
-        return switch (fieldName) {
-            case "userId" -> "User ID";
-            case "password" -> "Password";
-            default -> fieldName;
-        };
-    }
-
-    // -----------------------------------------------------------------
-    // Audit helpers (AAP §0.6.6 -- CloudTrail + OpenSearch sink)
-    // -----------------------------------------------------------------
-
     private void auditSuccess(String userId, String userType) {
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("userId", userId);
-        payload.put("userType", userType);
-        auditLogService.auditEvent(EVENT_SIGNON_SUCCESS, userId, payload);
+        // Map.of(...) creates an immutable map literal — preferred over
+        // a mutable HashMap for static payloads. The userType is the
+        // only non-identity field needed for fraud-investigation
+        // dashboards; the userId is passed as the second positional
+        // argument to logSecurityEvent.
+        // sourceIp is null — the service layer does not have access to
+        // the HTTP request context; if a future requirement adds IP
+        // capture, the controller can propagate it through a parameter
+        // or a request-scoped bean.
+        // correlationId is null — MDC-derived correlation is captured
+        // by the audit adapter from the current thread's MDC context.
+        auditLogService.logSecurityEvent(
+                EVENT_TYPE_SIGNON_SUCCESS,
+                userId,
+                RESULT_SUCCESS,
+                null,
+                Map.of("userType", userType),
+                null);
     }
 
+    /**
+     * Emits a failed-signon audit event via
+     * {@link AuditLogService#logSecurityEvent}. The reason
+     * ({@link #RESULT_USER_NOT_FOUND} or {@link #RESULT_BAD_PASSWORD})
+     * is passed as the {@code result} dimension so the security
+     * dashboard can show failure-rate breakdowns by cause. The
+     * payload is empty &mdash; we never include the (raw or
+     * uppercased) password value, and we already convey userId as
+     * the second positional argument.
+     *
+     * <p>The audit emission is {@code @Async} on the adapter side, so
+     * this call returns immediately and the subsequent exception
+     * throw is not delayed by OpenSearch indexing.</p>
+     *
+     * @param userId the (already-uppercased) user identifier
+     * @param reason the failure reason discriminator
+     *               ({@link #RESULT_USER_NOT_FOUND} or
+     *               {@link #RESULT_BAD_PASSWORD})
+     */
     private void auditFailure(String userId, String reason) {
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("userId", userId);
-        payload.put("reason", reason);
-        auditLogService.auditEvent(EVENT_SIGNON_FAILURE, userId, payload);
+        // Map.of() — empty immutable map. We deliberately do NOT include
+        // any password-related field in the payload, even masked, to
+        // align with the strict PCI-DSS posture in AAP §0.7.1 (no
+        // credential material in audit logs).
+        auditLogService.logSecurityEvent(
+                EVENT_TYPE_SIGNON_FAILURE,
+                userId,
+                reason,
+                null,
+                Map.of(),
+                null);
     }
 }
