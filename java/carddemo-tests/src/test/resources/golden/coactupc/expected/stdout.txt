@@ -1,0 +1,8 @@
+# COACTUPC golden-record stdout / DISPLAY output capture (placeholder)
+# Authority: AAP section 0.6.11 (golden-record PR gate), 0.7.2 (PAN masking), 0.7.5 (capture procedure)
+# COACTUPC is a CICS BMS-screen program: primary user output flows through EXEC CICS SEND MAP, not DISPLAY
+# Limited DISPLAY usage expected: only error/abend diagnostics; main I/O goes to bms_output.txt instead
+# PAN masking invariant: any XREF-CARD-NUM logged here MUST appear as ************<last4digits>
+# Per-scenario blocks separated by SCENARIO: <id> header lines matching input_scenario.txt
+# This file remains a placeholder until the capture procedure in java/MIGRATION_NOTES.md section 1.6 runs
+# DO NOT manually edit: regenerate via capture procedure to maintain byte-for-byte parity
