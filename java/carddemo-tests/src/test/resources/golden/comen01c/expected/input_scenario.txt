@@ -1,0 +1,107 @@
+# COMEN01C (Main Menu, CICS transaction CM00) -- Golden-Record Scenario Script
+# 12 scenarios exercising EIBCALEN-gated dispatch, ENTER/PF3/OTHER AID handling, and menu-option validation
+# Authority: AAP section 0.6.11 (PR gate); see expected/README.md for full contract
+#
+# Fixture inputs:
+#   - app/cpy/COMEN02Y.cpy: static menu table (10 options; CDEMO-MENU-OPT-COUNT=10)
+#   - This file: 12 sequential simulated 3270 interactions
+#
+# COMEN01C does NOT read USRSEC; there is no usrsec.txt fixture in this directory.
+# All directives are processed in strict order. Each EXPECT_* assertion is
+# evaluated by CoMen01CGoldenTest after the corresponding CICS event has occurred.
+
+# Scenario 1: EIBCALEN=0 first connection -> auto-redirect to signon
+EIBCALEN 0
+AID DFHENTER
+EXPECT_XCTL COSGN00C
+END_SCENARIO
+
+# Scenario 2: First non-zero entry (CDEMO-PGM-ENTER=0) -> initial menu display
+EIBCALEN 196
+COMMAREA CDEMO-USER-TYPE=U
+COMMAREA CDEMO-PGM-CONTEXT=0
+AID DFHENTER
+EXPECT_SEND_MAP
+EXPECT_RETURN
+END_SCENARIO
+
+# Scenario 3: ENTER with option 01 (Account View) -> XCTL COACTVWC
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=01
+AID DFHENTER
+EXPECT_XCTL COACTVWC
+EXPECT_COMMAREA_FIELD CDEMO-FROM-TRANID=CM00
+EXPECT_COMMAREA_FIELD CDEMO-FROM-PROGRAM=COMEN01C
+EXPECT_COMMAREA_FIELD CDEMO-PGM-CONTEXT=0
+END_SCENARIO
+
+# Scenario 4: ENTER with option 03 (Credit Card List) -> XCTL COCRDLIC
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=03
+AID DFHENTER
+EXPECT_XCTL COCRDLIC
+END_SCENARIO
+
+# Scenario 5: ENTER with option 06 (Transaction List) -> XCTL COTRN00C
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=06
+AID DFHENTER
+EXPECT_XCTL COTRN00C
+END_SCENARIO
+
+# Scenario 6: ENTER with option 10 (Bill Payment) -> XCTL COBIL00C
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=10
+AID DFHENTER
+EXPECT_XCTL COBIL00C
+END_SCENARIO
+
+# Scenario 7: ENTER with option 11 (out of range; > CDEMO-MENU-OPT-COUNT=10)
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=11
+AID DFHENTER
+EXPECT_SEND_MAP
+EXPECT_MSG 'Please enter a valid option number...'
+EXPECT_RETURN
+END_SCENARIO
+
+# Scenario 8: ENTER with option 00 (zero) -> validation rejects
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=00
+AID DFHENTER
+EXPECT_SEND_MAP
+EXPECT_MSG 'Please enter a valid option number...'
+EXPECT_RETURN
+END_SCENARIO
+
+# Scenario 9: ENTER with non-numeric option (AB) -> validation rejects
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=AB
+AID DFHENTER
+EXPECT_SEND_MAP
+EXPECT_MSG 'Please enter a valid option number...'
+EXPECT_RETURN
+END_SCENARIO
+
+# Scenario 10: ENTER with empty/blank option -> INSPECT REPLACING converts to 00 -> zero rejected
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=
+AID DFHENTER
+EXPECT_SEND_MAP
+EXPECT_MSG 'Please enter a valid option number...'
+EXPECT_RETURN
+END_SCENARIO
+
+# Scenario 11: PF3 pressed -> XCTL COSGN00C
+COMMAREA CDEMO-PGM-CONTEXT=1
+AID DFHPF3
+EXPECT_XCTL COSGN00C
+END_SCENARIO
+
+# Scenario 12: Invalid AID key (PF1) -> WHEN OTHER -> CCDA-MSG-INVALID-KEY
+COMMAREA CDEMO-PGM-CONTEXT=1
+AID DFHPF1
+EXPECT_SEND_MAP
+EXPECT_MSG 'Invalid key pressed. Please see below...         '
+EXPECT_RETURN
+END_SCENARIO
