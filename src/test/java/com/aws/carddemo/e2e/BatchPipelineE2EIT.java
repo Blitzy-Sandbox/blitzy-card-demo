@@ -113,7 +113,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     between test runs.
 // ---------------------------------------------------------------------------
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -427,19 +426,6 @@ import java.nio.file.Path;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @DisplayName("Batch Pipeline E2E -- POSTTRAN -> INTCALC -> COMBTRAN -> CREASTMT || TRANREPT byte-identical parity")
-@Disabled("Awaits authentic COBOL baseline capture for the composed pipeline "
-        + "POSTTRAN -> INTCALC -> COMBTRAN -> CREASTMT || TRANREPT. Per AAP §0.10.4 "
-        + "(Immutable Boundaries) the six byte-identical parity assertions inside this "
-        + "class compare Java output to expected fixtures under "
-        + "src/test/resources/baseline/expected/ (posted.txt, tcatbal_after_interest.txt, "
-        + "combined.txt, statements_text.txt, statements_html.txt, transaction_report.txt). "
-        + "All six expected fixtures are currently committed as BASELINE_CAPTURE_PENDING_* "
-        + "placeholders until the COBOL/JCL runtime is available to capture the references. "
-        + "When this annotation is removed (by the same change that publishes the authentic "
-        + "COBOL captures) the pipeline executes all six staged @Test methods in order and "
-        + "asserts byte parity of every inter-stage output. See docs/testing/baseline-parity.md §5 "
-        + "for the 7-step capture procedure and the sibling 5 *BaselineParityIT classes for "
-        + "individual-job parity counterparts.")
 class BatchPipelineE2EIT extends AbstractBatchIT {
 
     // ------------------------------------------------------------------

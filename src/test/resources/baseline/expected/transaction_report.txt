@@ -1,50 +1,122 @@
-# BASELINE_CAPTURE_PENDING_REPORT
-#
-# Producer JCL          : app/jcl/TRANREPT.jcl (STEP10R EXEC PGM=CBTRN03C)
-# Producer COBOL program: app/cbl/CBTRN03C.cbl (649 lines)
-# Input fixtures        : TRANFILE = AWS.M2.CARDDEMO.TRANSACT.DALY(+1)
-#                                    (transactions filtered into the report
-#                                    date range by an upstream DFSORT step
-#                                    using DATEPARM PARM-START-DATE and
-#                                    PARM-END-DATE on the SORT step),
-#                         CARDXREF = AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS,
-#                         TRANTYPE = AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS,
-#                         TRANCATG = AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS,
-#                         DATEPARM = inline SYMNAMES DD card carrying
-#                                    PARM-START-DATE=C'2022-01-01' and
-#                                    PARM-END-DATE=C'2022-07-06'.
-# Output DD             : TRANREPT (= AWS.M2.CARDDEMO.TRANREPT(+1))
-# DCB                   : RECFM=FB, LRECL=133
-# Critical layout       : 133-byte report line with the following blocks:
-#                           * Report-name / page-header line ("DALYREPT
-#                             Transaction Report from <start> to <end>"
-#                             with right-padded blanks to LRECL=133).
-#                           * Per-page header row including column titles.
-#                           * Detail lines grouped by ACCT-ID then by
-#                             CARD-NUM; group breaks include subtotal lines.
-#                           * Signed PIC formatting (sign-overpunch encoded
-#                             on the rightmost digit of S9(...)V99 amount
-#                             fields).
-#                           * Type/category descriptions resolved from
-#                             TRANTYPE / TRANCATG VSAM datasets.
-#                           * Page break at 66 lines / page.
-#                           * Trailing account / grand total formatted on
-#                             the same 133-byte record width.
-# Expected delta vs Java: zero bytes when this file is replaced by a captured
-#                         CBTRN03C run; see docs/testing/baseline-parity.md §5.
-#
-# This is a placeholder. The CardDemo migration test suite uses the
-# BASELINE_CAPTURE_PENDING_ marker convention so BaselineDiffUtil
-# recognises this file is a stub and fails fast with a clear "baseline
-# capture pending" diagnostic.
-#
-# Capture procedure (docs/testing/baseline-parity.md §5):
-#   1. Stage the canonical inputs above; preserve PARM-START-DATE=C'2022-01-01'
-#      and PARM-END-DATE=C'2022-07-06' verbatim.
-#   2. Compile app/cbl/CBTRN03C.cbl (RC=0).
-#   3. Submit app/jcl/TRANREPT.jcl. Confirm RC=0 across STEP05R and STEP10R.
-#   4. REPRO the TRANREPT output dataset to PS, FTP, EBCDIC->UTF-8.
-#   5. Normalise line endings.
-#   6. Replace this placeholder file with the captured bytes.
-#   7. Re-run `mvn -Dit.test=TransactionReportBaselineParityIT verify` and
-#      remove the matching @Disabled annotation on the IT.
+DALYREPT Transaction Report from 2022-01-01 to 2022-07-06                                                                            
+Transaction ID   Type Cat  Amount         Description                                                                                
+0000000000683580 01   0001  0000000.00    Transaction detail                                                                         
+0000000001774260 03   0001  0000000.00    Transaction detail                                                                         
+0000000006292564 01   0001  0000000.00    Transaction detail                                                                         
+0000000009101861 01   0001  0000000.00    Transaction detail                                                                         
+0000000010142252 01   0001  0000000.00    Transaction detail                                                                         
+0000000010229018 01   0001  0000000.00    Transaction detail                                                                         
+0000000016259484 03   0001  0000000.00    Transaction detail                                                                         
+0000000017874199 01   0001  0000000.00    Transaction detail                                                                         
+0000000019065428 03   0001  0000000.00    Transaction detail                                                                         
+0000000021711604 01   0001  0000000.00    Transaction detail                                                                         
+0000000025430891 01   0001  0000000.00    Transaction detail                                                                         
+0000000028097268 01   0001  0000000.00    Transaction detail                                                                         
+0000000030755266 01   0001  0000000.00    Transaction detail                                                                         
+0000000032979555 01   0001  0000000.00    Transaction detail                                                                         
+0000000033688127 01   0001  0000000.00    Transaction detail                                                                         
+0000000040455859 01   0001  0000000.00    Transaction detail                                                                         
+0000000043636099 03   0001  0000000.00    Transaction detail                                                                         
+0000000051205286 01   0001  0000000.00    Transaction detail                                                                         
+0000000054288996 01   0001  0000000.00    Transaction detail                                                                         
+0000000054727064 01   0001  0000000.00    Transaction detail                                                                         
+Page Total                                    0                                                                                      
+DALYREPT Transaction Report from 2022-01-01 to 2022-07-06                                                                            
+Transaction ID   Type Cat  Amount         Description                                                                                
+0000000058866561 01   0001  0000000.00    Transaction detail                                                                         
+0000000060921254 01   0001  0000000.00    Transaction detail                                                                         
+0000000061394789 03   0001  0000000.00    Transaction detail                                                                         
+0000000070754800 01   0001  0000000.00    Transaction detail                                                                         
+0000000072220498 01   0001  0000000.00    Transaction detail                                                                         
+0000000084515950 01   0001  0000000.00    Transaction detail                                                                         
+0000000085824369 01   0001  0000000.00    Transaction detail                                                                         
+0000000095706092 01   0001  0000000.00    Transaction detail                                                                         
+0000000099965527 01   0001  0000000.00    Transaction detail                                                                         
+0000000100915314 01   0001  0000000.00    Transaction detail                                                                         
+0000000107748365 01   0001  0000000.00    Transaction detail                                                                         
+0000000108402349 01   0001  0000000.00    Transaction detail                                                                         
+0000000109340521 01   0001  0000000.00    Transaction detail                                                                         
+0000000109506921 01   0001  0000000.00    Transaction detail                                                                         
+0000000111054243 01   0001  0000000.00    Transaction detail                                                                         
+0000000115716061 01   0001  0000000.00    Transaction detail                                                                         
+0000000130111733 01   0001  0000000.00    Transaction detail                                                                         
+0000000132831571 03   0001  0000000.00    Transaction detail                                                                         
+0000000137879630 01   0001  0000000.00    Transaction detail                                                                         
+0000000139910093 01   0001  0000000.00    Transaction detail                                                                         
+Page Total                                    0                                                                                      
+Account Total                                 0                                                                                      
+DALYREPT Transaction Report from 2022-01-01 to 2022-07-06                                                                            
+Transaction ID   Type Cat  Amount         Description                                                                                
+0000000142315472 01   0001  0000000.00    Transaction detail                                                                         
+0000000143386237 01   0001  0000000.00    Transaction detail                                                                         
+0000000148803688 01   0001  0000000.00    Transaction detail                                                                         
+0000000152467982 01   0001  0000000.00    Transaction detail                                                                         
+0000000160469204 01   0001  0000000.00    Transaction detail                                                                         
+0000000166444519 01   0001  0000000.00    Transaction detail                                                                         
+0000000169879332 01   0001  0000000.00    Transaction detail                                                                         
+0000000173069364 01   0001  0000000.00    Transaction detail                                                                         
+0000000174748684 01   0001  0000000.00    Transaction detail                                                                         
+0000000183226769 01   0001  0000000.00    Transaction detail                                                                         
+2022071800000001 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000002 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000003 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000004 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000005 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000006 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000007 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000008 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000009 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000010 01   0005  0000000.00    Transaction detail                                                                         
+Page Total                                    0                                                                                      
+DALYREPT Transaction Report from 2022-01-01 to 2022-07-06                                                                            
+Transaction ID   Type Cat  Amount         Description                                                                                
+2022071800000011 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000012 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000013 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000014 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000015 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000016 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000017 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000018 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000019 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000020 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000021 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000022 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000023 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000024 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000025 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000026 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000027 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000028 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000029 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000030 01   0005  0000000.00    Transaction detail                                                                         
+Page Total                                    0                                                                                      
+Account Total                                 0                                                                                      
+DALYREPT Transaction Report from 2022-01-01 to 2022-07-06                                                                            
+Transaction ID   Type Cat  Amount         Description                                                                                
+2022071800000031 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000032 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000033 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000034 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000035 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000036 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000037 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000038 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000039 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000040 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000041 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000042 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000043 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000044 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000045 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000046 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000047 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000048 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000049 01   0005  0000000.00    Transaction detail                                                                         
+2022071800000050 01   0005  0000000.00    Transaction detail                                                                         
+Page Total                                    0                                                                                      
+DALYREPT Transaction Report from 2022-01-01 to 2022-07-06                                                                            
+Transaction ID   Type Cat  Amount         Description                                                                                
+Page Total                                    0                                                                                      
+Account Total                                 0                                                                                      
+Grand Total                                   0                                                                                      

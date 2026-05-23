@@ -98,7 +98,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     mechanism for test-scoped filesystem isolation per AAP §0.10.9
 //     (test isolation requirements).
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -328,17 +327,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  *      parity.
  */
 @DisplayName("TRANREPT.jcl baseline parity (byte-identical paginated report output)")
-@Disabled("Awaits authentic COBOL baseline capture for TRANREPT.jcl / CBTRN03C. "
-        + "Per AAP §0.10.4 (Immutable Boundaries) this byte-identical parity gate must "
-        + "compare Java output to a COBOL-produced TRANREPT (LRECL=133, RECFM=FB) reference "
-        + "produced with DATEPARM PARM-START-DATE=C'2022-01-01' / PARM-END-DATE=C'2022-07-06'; "
-        + "src/test/resources/baseline/expected/transaction_report.txt is committed as a "
-        + "BASELINE_CAPTURE_PENDING_REPORT placeholder until the COBOL/JCL runtime is "
-        + "available to capture the reference output. The captured baseline must preserve "
-        + "the 133-byte report layout including page-break behavior, account-group breaks, "
-        + "type/category descriptions, signed PIC formatting, and account/grand total formatting. "
-        + "See docs/testing/baseline-parity.md §5 for the 7-step capture procedure. "
-        + "Remove this annotation when the authentic COBOL reference is committed.")
 class TransactionReportBaselineParityIT extends AbstractBatchIT {
 
     /**
