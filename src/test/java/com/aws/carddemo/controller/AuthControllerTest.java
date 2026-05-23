@@ -77,6 +77,7 @@ import com.aws.carddemo.testsupport.TestFixtures;
 // ---------------------------------------------------------------------------
 // JUnit 5 Jupiter API (AAP §0.10.7 framework constraint — JUnit 5 only).
 // ---------------------------------------------------------------------------
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -158,8 +159,10 @@ import java.time.ZoneOffset;
 // ---------------------------------------------------------------------------
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -261,6 +264,50 @@ final class AuthControllerTest {
      */
     @MockBean
     private AuthenticationService authenticationService;
+
+    /**
+     * Mocked session-token registry — the second mocking boundary needed
+     * because {@link AuthController} now mints a Bearer token on every
+     * successful sign-on via
+     * {@link com.aws.carddemo.security.SessionTokenRegistry#register} and
+     * embeds it in the {@code session.token} field of the response body.
+     *
+     * <p>The bean is mocked rather than supplied as the real
+     * {@code @Component} because (a) {@code @WebMvcTest} excludes regular
+     * {@code @Component} classes from the slice context by design and would
+     * otherwise fail to wire the controller's constructor argument, and
+     * (b) the test does not need a real UUID per call &mdash; it only needs
+     * the controller's wire-up to the registry to be exercised. The
+     * {@link #FIXED_TEST_TOKEN} string below is the deterministic value the
+     * mocked {@code register(...)} returns; it surfaces in any future
+     * {@code $.session.token} JSON assertion as the canonical expected
+     * value.
+     */
+    @MockBean
+    private com.aws.carddemo.security.SessionTokenRegistry sessionTokenRegistry;
+
+    /**
+     * Deterministic Bearer token returned by the mocked
+     * {@link com.aws.carddemo.security.SessionTokenRegistry#register} stub.
+     * Chosen as a syntactically-valid UUID string so any future
+     * {@code $.session.token} assertion can pin the value.
+     */
+    private static final String FIXED_TEST_TOKEN = "00000000-0000-0000-0000-000000000001";
+
+    /**
+     * Stubs the {@code SessionTokenRegistry#register} call to return a
+     * deterministic Bearer token so happy-path tests see a stable
+     * {@code session.token} value in the JSON response. The stub is declared
+     * with {@code lenient()} so failure-path tests that never reach the
+     * registry (and therefore never invoke the stub) do not raise
+     * {@code UnnecessaryStubbingException} under Mockito's
+     * {@code STRICT_STUBS} default.
+     */
+    @BeforeEach
+    void stubSessionTokenRegistry() {
+        lenient().when(sessionTokenRegistry.register(anyString(), anyString()))
+                .thenReturn(FIXED_TEST_TOKEN);
+    }
 
     // =========================================================================
     // HAPPY PATHS — successful authentication returns HTTP 200 with a session

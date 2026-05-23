@@ -25,7 +25,6 @@ import com.aws.carddemo.service.TransactionDetailService;
 import com.aws.carddemo.service.TransactionListRequest;
 import com.aws.carddemo.service.TransactionListResponse;
 import com.aws.carddemo.service.TransactionListService;
-import com.fasterxml.jackson.annotation.JsonFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -321,26 +320,94 @@ public class TransactionController {
         TransactionAddResult result = transactionAddService.addTransaction(request);
 
         String requestAccountId = (request == null) ? null : request.getAccountId();
+        // -----------------------------------------------------------------
+        // AAP §0.10.5 — PCI/PAN exposure mitigation.
+        //
+        // The add-transaction response echoes the request's card number to
+        // let the client confirm the persisted record. The OnlineTransaction
+        // E2E test (step5_addTransaction_validRequest_returns201AndAssignsTransactionId)
+        // explicitly asserts the response MUST NOT expose any unmasked
+        // 16-digit Visa PAN from the seeded range
+        // 4111111111111101-4111111111111150 — i.e., the card number echoed
+        // back must be masked at the HTTP boundary even though the database
+        // and service-layer DTOs retain the full PAN for downstream
+        // processing (the COBOL CICS COMMAREA carries the unmasked PAN
+        // between programs, and AAP §0.10.4 preserves that for the
+        // record-layout-immutable contract).
+        //
+        // The masking applies last-4-only — replacing the first 12 of a
+        // 16-digit PAN with asterisks ("************1234"). The
+        // {@link #maskPanLastFour(String)} helper preserves non-PAN
+        // strings (null, blank, non-16-digit values) verbatim so the
+        // {@link TransactionAddRequest#getCardNumber()} validation reject
+        // paths (which surface the input value in error messages) still
+        // function and the COBOL "Card Number must be a 16-digit number"
+        // reject is reachable unchanged.
+        // -----------------------------------------------------------------
         String requestCardNumber = (request == null) ? null : request.getCardNumber();
+        String maskedCardNumber = maskPanLastFour(requestCardNumber);
 
         if (result.isSuccess()) {
             return ResponseEntity.status(HttpStatus.CREATED)
                     .body(new TransactionAddJsonResponse(
                             true,
                             requestAccountId,
-                            requestCardNumber,
+                            maskedCardNumber,
                             result.getMessage()));
         }
 
         // Failure path — every TransactionAddService reject is a validation
         // failure mapping to HTTP 400. The reject reason text comes from the
-        // service verbatim per AAP §0.10.4 (immutable boundaries).
+        // service verbatim per AAP §0.10.4 (immutable boundaries). The
+        // card-number echo is masked the same way as the happy-path branch
+        // so a rejected POST cannot leak the unmasked PAN that the caller
+        // submitted.
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(new TransactionAddJsonResponse(
                         false,
                         requestAccountId,
-                        requestCardNumber,
+                        maskedCardNumber,
                         result.getMessage()));
+    }
+
+    /**
+     * Returns the last-four-digit masked form of a 16-character all-digit
+     * card number — the canonical PCI / AAP §0.10.5 PAN-masking shape used
+     * by the add-transaction response.
+     *
+     * <p>For an input PAN {@code 4111111111111101} the returned string is
+     * {@code ************1101} (12 asterisks followed by the last 4
+     * digits). Inputs that do NOT match the 16-digit all-numeric shape
+     * (including {@code null}, blank, partially-digit, and lengths other
+     * than 16) are returned verbatim — this preserves the existing
+     * controller-test reject-path assertions where the request-validation
+     * surface echoes the malformed input back to the client with the
+     * COBOL-equivalent reject message ("Card Number must be a 16-digit
+     * number..."), and it preserves the {@code null} case where the
+     * request body omitted the field entirely.
+     *
+     * <p>The method is package-private (no access modifier) so the
+     * controller-test suite can exercise the masking logic directly via
+     * {@code TransactionController.maskPanLastFour(...)} without requiring
+     * a full HTTP round-trip — matching the
+     * {@code TransactionPostingProcessor}'s package-private helper
+     * convention used elsewhere in the migrated codebase.
+     *
+     * @param pan the input card number; may be {@code null} or any
+     *            length / character composition
+     * @return the masked form when the input is a 16-character all-digit
+     *         PAN; the original input otherwise (including {@code null})
+     */
+    static String maskPanLastFour(String pan) {
+        if (pan == null || pan.length() != 16) {
+            return pan;
+        }
+        for (int i = 0; i < pan.length(); i++) {
+            if (!Character.isDigit(pan.charAt(i))) {
+                return pan;
+            }
+        }
+        return "************" + pan.substring(12);
     }
 
     // ========================================================================
@@ -415,9 +482,16 @@ public class TransactionController {
      * @return a fresh {@link TransactionSummary} carrying the per-row fields
      */
     private static TransactionSummary toSummary(Transaction transaction) {
+        // AAP §0.10.5 — PAN masking on the HTTP boundary. The Transaction
+        // entity carries the unmasked TRAN-CARD-NUM for downstream COBOL
+        // CICS COMMAREA semantics (preserved per AAP §0.10.4 immutable
+        // boundaries), but the HTTP wire format must mask the value to
+        // last-4-only form. See {@link #maskPanLastFour(String)} for the
+        // mask shape contract (16-digit all-numeric → "************" +
+        // last 4; non-PAN values pass through verbatim).
         return new TransactionSummary(
                 transaction.getTransactionId(),
-                transaction.getCardNumber(),
+                maskPanLastFour(transaction.getCardNumber()),
                 transaction.getAmount(),
                 transaction.getTransactionTypeCode(),
                 transaction.getTransactionCategoryCode(),
@@ -452,12 +526,28 @@ public class TransactionController {
             // The TRAN-AMT field carries scale-2 BigDecimal values that must
             // be transmitted verbatim — never coerced through Java
             // float/double, never truncated to lower scale on the wire.
-            // Annotating the field with @JsonFormat(shape = STRING) routes
-            // Jackson through BigDecimal#toString (which preserves scale
-            // exactly) instead of the default numeric path (which may emit
-            // 100.5 instead of "100.50" for trailing-zero values).
+            // Jackson serialises {@link BigDecimal} as a JSON number by
+            // default, preserving the scale set by the source field
+            // (i.e., a {@code BigDecimal} carrying {@code "100.50"} emits
+            // the JSON literal {@code 100.50}, not the scientific-notation
+            // {@code 1.005E2} or the trimmed {@code 100.5}). Combined with
+            // the {@link com.aws.carddemo.config.JacksonConfig} customizer
+            // — which enables
+            // {@link com.fasterxml.jackson.databind.DeserializationFeature#USE_BIG_DECIMAL_FOR_FLOATS}
+            // and an exact-mode
+            // {@link com.fasterxml.jackson.databind.node.JsonNodeFactory#withExactBigDecimals(boolean)
+            // JsonNodeFactory} on the auto-configured {@code ObjectMapper}
+            // — round-trip clients see the verbatim scale-2 value at every
+            // boundary (entity ↔ DTO ↔ JSON wire ↔ test JsonNode tree).
+            // The {@code @JsonFormat(shape = STRING)} annotation that
+            // previously routed the BigDecimal through {@code toString} is
+            // intentionally absent: the COBOL {@code PIC S9(09)V99}
+            // contract is honoured at the numeric level, not via string
+            // coercion. The E2E parity assertion
+            // ({@code OnlineTransactionE2ETest.step4_*.amount.isNumber()})
+            // verifies the wire format is a JSON number.
             // ---------------------------------------------------------------
-            @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal amount,
+            BigDecimal amount,
             String transactionType,
             String transactionCategoryCode,
             String description,
@@ -542,13 +632,21 @@ public class TransactionController {
             String cardNumber,
             // ---------------------------------------------------------------
             // AAP §0.10.3 — Monetary fields on the HTTP boundary
-            // Same rationale as TransactionSummary#amount above: route the
-            // BigDecimal through @JsonFormat(shape = STRING) so the COBOL
-            // PIC S9(09)V99 scale-2 contract is preserved on the wire and
-            // the immutable downstream-consumer interface (AAP §0.10.4)
-            // is honoured.
+            //
+            // Same contract as TransactionSummary#amount above: emit
+            // TRAN-AMT as a JSON number (NOT a JSON string) so the wire
+            // preserves the COBOL PIC S9(09)V99 scale-2 contract verbatim.
+            // The {@link com.aws.carddemo.config.JacksonConfig} customizer
+            // pins the auto-configured {@code ObjectMapper}'s
+            // {@code JsonNodeFactory} to exact-BigDecimals mode so the
+            // E2E test's {@code body.get("amount").asText()} parses back
+            // to {@code BigDecimal} with scale=2 — required by
+            // {@code OnlineTransactionE2ETest.step4_*}'s
+            // {@code amount.isNumber()} +
+            // {@code new BigDecimal(amt.asText()).scale() == 2} assertion
+            // pair.
             // ---------------------------------------------------------------
-            @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal amount,
+            BigDecimal amount,
             String transactionType,
             String transactionCategoryCode,
             String source,
@@ -572,11 +670,18 @@ public class TransactionController {
          * @return a success-flagged JSON response with all fields hydrated
          */
         static TransactionDetailJsonResponse success(TransactionDetailResponse r) {
+            // AAP §0.10.5 — PAN masking on the HTTP boundary. The
+            // TransactionDetailResponse carries the unmasked
+            // TRAN-CARD-NUM for downstream COBOL CICS COMMAREA semantics
+            // (preserved per AAP §0.10.4 immutable boundaries), but the
+            // HTTP wire format must mask the value to last-4-only form.
+            // See {@link TransactionController#maskPanLastFour(String)}
+            // for the mask shape contract.
             return new TransactionDetailJsonResponse(
                     true,
                     r.getTransactionId(),
                     null, // accountId — not surfaced by TransactionDetailService
-                    r.getCardNumber(),
+                    maskPanLastFour(r.getCardNumber()),
                     r.getAmount(),
                     r.getTransactionTypeCode(),
                     r.getTransactionCategoryCode(),

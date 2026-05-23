@@ -397,27 +397,21 @@
             </plugin>
 
             <!--
-                Executable JAR packaging (Spring Boot's repackage goal).
+                Executable (fat) JAR packaging via Spring Boot's repackage
+                goal. Spring Boot's `repackage` execution detects the
+                `public static void main(String[])` method in
+                `com.aws.carddemo.CardDemoApplication` and rewrites the
+                Maven-produced JAR in place to include all runtime
+                dependencies under `BOOT-INF/lib/`, producing the
+                executable artifact `target/carddemo-1.0.0-SNAPSHOT.jar`
+                runnable with `java -jar`.
 
-                The `<skip>true</skip>` flag below is a TEMPORARY setup-phase
-                accommodation: until the migration agents create
-                `com.aws.carddemo.CardDemoApplication` (the Spring Boot main
-                class), the repackage goal cannot find a `public static void
-                main(String[])` entry point and the build fails. Once the main
-                class exists, remove the `<skip>true</skip>` block (or override
-                with `-Dspring-boot.repackage.skip=false`) to produce the
-                executable JAR.
-
-                Note: jar-packaging itself (`maven-jar-plugin`) still runs and
-                produces target/carddemo.jar — only the Spring Boot
-                fat-jar repackage is deferred.
+                Version is BOM-managed via `spring-boot-starter-parent`
+                (no explicit `<version>` required).
             -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
-                <configuration>
-                    <skip>true</skip>
-                </configuration>
             </plugin>
         </plugins>
     </build>

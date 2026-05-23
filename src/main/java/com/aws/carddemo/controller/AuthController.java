@@ -18,6 +18,8 @@ package com.aws.carddemo.controller;
 
 import com.aws.carddemo.dto.auth.AuthenticationRequest;
 import com.aws.carddemo.dto.auth.AuthenticationResult;
+import com.aws.carddemo.dto.auth.UserSession;
+import com.aws.carddemo.security.SessionTokenRegistry;
 import com.aws.carddemo.service.AuthenticationService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -201,17 +203,37 @@ public class AuthController {
     static final String MSG_INTERNAL_ERROR = "An unexpected error occurred";
 
     private final AuthenticationService authenticationService;
+    private final SessionTokenRegistry sessionTokenRegistry;
 
     /**
-     * Constructs the controller with a constructor-injected
-     * {@link AuthenticationService} collaborator.
+     * Constructs the controller with the constructor-injected
+     * {@link AuthenticationService} collaborator and the
+     * {@link SessionTokenRegistry} that mints opaque Bearer tokens for
+     * successful sign-on responses.
+     *
+     * <p>The registry is the server-side complement of the stateless
+     * token-transport model documented on
+     * {@link com.aws.carddemo.dto.auth.UserSession}: on every successful
+     * sign-on the controller calls {@link SessionTokenRegistry#register} to
+     * mint a fresh UUID-based token bound to the authenticated principal
+     * and embeds the token in the {@code session.token} field of the JSON
+     * response. The client presents that token on subsequent requests as
+     * {@code Authorization: Bearer &lt;token&gt;}; the
+     * {@code TokenAuthenticationFilter} resolves it back into a populated
+     * {@code SecurityContext} so {@code @PreAuthorize("hasRole('ADMIN')")}
+     * guards on the migrated controllers fire correctly.
      *
      * @param authenticationService the service that owns the sign-on validation
      *                              cascade, BCrypt verification, role dispatch,
      *                              and session creation (must not be {@code null})
+     * @param sessionTokenRegistry  the in-memory token store that binds the
+     *                              opaque Bearer token to the authenticated
+     *                              principal (must not be {@code null})
      */
-    public AuthController(AuthenticationService authenticationService) {
+    public AuthController(AuthenticationService authenticationService,
+                          SessionTokenRegistry sessionTokenRegistry) {
         this.authenticationService = authenticationService;
+        this.sessionTokenRegistry = sessionTokenRegistry;
     }
 
     /**
@@ -254,8 +276,30 @@ public class AuthController {
         AuthenticationResult result = authenticationService.authenticate(request);
 
         // Step 3 — happy path: HTTP 200 OK with the session-bearing result.
+        //
+        // The service produces a token-less UserSession (it has no knowledge
+        // of HTTP-transport concerns); the controller mints an opaque Bearer
+        // token via the SessionTokenRegistry and wraps the session with the
+        // token before returning. This is the boundary at which the
+        // stateless-token transport model crosses the service / web split:
+        // upstream of this point the authentication outcome carries the
+        // verified principal only; downstream of this point the response
+        // body carries the on-the-wire session shape including the token
+        // that the client will present on subsequent requests.
         if (result.isSuccess()) {
-            return ResponseEntity.ok(result);
+            UserSession verifiedSession = result.getSession();
+            String token = sessionTokenRegistry.register(
+                    verifiedSession.getUserId(),
+                    verifiedSession.getUserType());
+            UserSession sessionWithToken = new UserSession(
+                    verifiedSession.getUserId(),
+                    verifiedSession.getUserType(),
+                    verifiedSession.getLoginTime(),
+                    verifiedSession.getNextRoute(),
+                    token);
+            AuthenticationResult resultWithToken =
+                    AuthenticationResult.success(result.getMessage(), sessionWithToken);
+            return ResponseEntity.ok(resultWithToken);
         }
 
         // Step 4 — failure-message → HTTP-status mapping.

@@ -140,7 +140,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 //     persist across the ordered test methods — required because the
 //     journey shares state between steps (the COBOL commarea equivalent).
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -371,17 +370,30 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Testcontainers
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-@Disabled("Awaits production-side prerequisites: @Service annotations on the AuthenticationService, "
-        + "MainMenuService, TransactionListService, TransactionDetailService, and TransactionAddService "
-        + "classes under com.aws.carddemo.service; SecurityConfig wiring of the Spring Security filter "
-        + "chain so MenuController#getMainMenu's Authentication parameter is populated; and Flyway "
-        + "V1__schema.sql + V3__seed.sql under src/main/resources/db/migration/ (seed user_security "
-        + "with the BCrypt hash paired with TestFixtures.Users.TEST_PASSWORD_PLAINTEXT, seed the "
-        + "transactions table from app/data/ASCII/dailytran.txt, and seed the accounts + cards + "
-        + "card_xref tables so the add-transaction POST has a valid account/card lookup target). "
-        + "Per AAP §0.8.1 the testing flavor cannot modify those production files; the next "
-        + "REFACTOR-flavor agent removes this annotation when the prerequisites are complete. See "
-        + "the class Javadoc 'Reactivation Checklist' for the full list.")
+// ---------------------------------------------------------------------------
+// AAP §0.5.4 — Test fixture state. The seed under
+// src/test/resources/db/seed/e2e-fixtures.sql carries the 252 INSERTs
+// (2 security_users + 50 customers + 50 accounts + 50 cards + 50 card_xref
+// + 50 transactions) that the E2E journey depends on. The seed is NOT
+// bundled into the production V3__seed.sql Flyway migration because the
+// IT layer's per-table repository tests (CustomerRepositoryIT etc.) INSERT
+// their own synthetic records under the same primary-key ranges that the
+// E2E seed uses — bundling would crash those ITs with PK violations.
+//
+// executionPhase = BEFORE_TEST_METHOD (not BEFORE_TEST_CLASS) — required
+// because BEFORE_TEST_CLASS fires from SpringExtension.beforeAll BEFORE
+// the TestcontainersExtension has started the @Container PostgreSQLContainer,
+// causing @DynamicPropertySource's POSTGRES::getJdbcUrl lambda to throw
+// "Mapped port can only be obtained after the container is started"
+// during context load. BEFORE_TEST_METHOD defers script execution until
+// after all @BeforeAll hooks complete (container started, context
+// refreshed). The script is IDEMPOTENT (every INSERT carries
+// ON CONFLICT DO NOTHING) so per-method invocation overhead is minimal
+// and re-application is safe.
+// ---------------------------------------------------------------------------
+@org.springframework.test.context.jdbc.Sql(
+        scripts = "/db/seed/e2e-fixtures.sql",
+        executionPhase = org.springframework.test.context.jdbc.Sql.ExecutionPhase.BEFORE_TEST_METHOD)
 @DisplayName("Online Transaction E2E — sign-on → menu → list → view → add round-trip parity with COBOL "
         + "COSGN00C→COMEN01C→COTRN00C→COTRN01C→COTRN02C")
 class OnlineTransactionE2ETest {

@@ -126,7 +126,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 //     (adminHeaders, capturedVersion) that persist across the ordered test
 //     methods — required because the journey shares state between steps.
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -344,13 +343,28 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Testcontainers
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-@Disabled("Awaits production-side prerequisites: @Service annotations on the 17 service classes "
-        + "under com.aws.carddemo.service, SecurityConfig wiring of @PreAuthorize, and Flyway "
-        + "V1__schema.sql + V3__seed.sql under src/main/resources/db/migration/ (seed BCrypt "
-        + "hashes paired with TestFixtures.Users.TEST_PASSWORD_PLAINTEXT). Per AAP §0.8.1 the "
-        + "testing flavor cannot modify those production files; the next REFACTOR-flavor agent "
-        + "removes this annotation when the prerequisites are complete. See the class Javadoc "
-        + "'Reactivation Checklist' for the full list.")
+// ---------------------------------------------------------------------------
+// AAP §0.5.4 — Test fixture state. See OnlineTransactionE2ETest for the
+// full rationale. The seed is shared across all 3 E2E test classes via
+// the @Sql annotation pattern: the script's idempotent ON CONFLICT
+// DO NOTHING clause lets repeated applications (one per test method)
+// coexist without conflict. The journey here primarily needs
+// security_users (USRTST01 regular, ADMTST01 admin) for admin-vs-regular
+// authentication paths and the customer/user fixtures for the
+// COUSR00C list flow.
+//
+// executionPhase = BEFORE_TEST_METHOD (not BEFORE_TEST_CLASS) — required
+// to defer script execution until after the @Container PostgreSQLContainer
+// has been started by the TestcontainersExtension's beforeAll hook. See
+// the corresponding comment on GateVerificationE2ETest for the full
+// rationale (Spring's @Sql BEFORE_TEST_CLASS fires inside
+// SpringExtension.beforeAll, before TestcontainersExtension has booted
+// the container, which crashes @DynamicPropertySource's
+// POSTGRES::getJdbcUrl supplier).
+// ---------------------------------------------------------------------------
+@org.springframework.test.context.jdbc.Sql(
+        scripts = "/db/seed/e2e-fixtures.sql",
+        executionPhase = org.springframework.test.context.jdbc.Sql.ExecutionPhase.BEFORE_TEST_METHOD)
 @DisplayName("Admin User Management E2E — admin sign-on → admin menu → list/add/update/delete users (parity with COSGN00C→COADM01C→COUSR00C→COUSR01C→COUSR02C→COUSR03C)")
 class AdminUserManagementE2ETest {
 

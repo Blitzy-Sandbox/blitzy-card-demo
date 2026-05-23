@@ -19,6 +19,7 @@ package com.aws.carddemo.service;
 import com.aws.carddemo.entity.SecurityUser;
 import com.aws.carddemo.repository.UserSecurityRepository;
 
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.util.Optional;
@@ -497,6 +498,59 @@ public class UserUpdateService {
             return UserUpdateResult.failure(MSG_USER_NOT_FOUND);
         }
 
+        SecurityUser entity = existingOpt.get();
+
+        // Step 6b — Optimistic-locking version check (COBOL parity: the
+        // before/after-image record comparison in COUSR02C lines 211–217
+        // where the program loads the persisted record, compares each
+        // field against the screen's "current value" snapshot the
+        // operator's edit was based on, and rejects the update with a
+        // 'data was changed by another user' message when any field has
+        // moved on under the operator's feet).
+        //
+        // The Java migration carries this guard explicitly: when the
+        // request supplies a {@code version} field (the value the
+        // operator's edit was based on, loaded earlier by the view
+        // endpoint) and that value disagrees with the version on the
+        // freshly-loaded entity, raise
+        // {@link OptimisticLockingFailureException} BEFORE mutating any
+        // field on the entity. The controller layer maps this exception
+        // to HTTP 409 Conflict (per UserAdminController's exception
+        // handler).
+        //
+        // Without this explicit check Hibernate's automatic {@code
+        // @Version} guard would still fire — but only if the persisted
+        // {@code version} column changes between {@code findById(...)}
+        // and {@code save(...)} within THIS transaction; the more common
+        // case where the request body's version is already stale before
+        // the transaction starts (because another operator committed in
+        // between the view-load and the update-submit) would silently
+        // succeed with Hibernate UPDATE-by-PK because the loaded entity
+        // already carries the up-to-date version. The explicit check
+        // here ensures the "stale operator edit" path is rejected with
+        // the COBOL-equivalent 409 semantics regardless of whether a
+        // concurrent transaction fires in this exact instant.
+        //
+        // The guard is bidirectional-tolerant: when {@code
+        // request.getVersion()} is null (legacy client that did not
+        // round-trip the version) or {@code entity.getVersion()} is
+        // null (entity hydrated outside a JPA flush boundary), the
+        // check is skipped — the COBOL baseline did not require a
+        // version round-trip and the Java migration must remain
+        // backwards-compatible with non-version-aware callers. Once
+        // both sides carry a non-null version, mismatch is an error.
+        Long requestVersion = request.getVersion();
+        Long entityVersion = entity.getVersion();
+        if (requestVersion != null
+                && entityVersion != null
+                && !requestVersion.equals(entityVersion)) {
+            throw new OptimisticLockingFailureException(
+                    "User " + userId
+                            + " was modified by another transaction "
+                            + "(request version=" + requestVersion
+                            + ", persisted version=" + entityVersion + ")");
+        }
+
         // Step 7 — Apply updates to the loaded entity (COBOL parity: lines
         // 219–234). The COBOL workflow performs per-field comparisons and
         // skips the assignment on unchanged fields; the Java migration
@@ -505,7 +559,6 @@ public class UserUpdateService {
         // persisted value, and (b) the comparison is symmetric for plain
         // strings (firstName, lastName, userType) but NOT for the
         // BCrypt-hashed password — see the password handling below.
-        SecurityUser entity = existingOpt.get();
         entity.setFirstName(request.getFirstName());
         entity.setLastName(request.getLastName());
         entity.setUserType(userType);

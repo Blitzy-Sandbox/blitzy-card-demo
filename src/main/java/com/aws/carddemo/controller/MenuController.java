@@ -405,7 +405,47 @@ public class MenuController {
                  produces = MediaType.APPLICATION_JSON_VALUE)
     @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<AdminMenuResponse> dispatchAdminMenuOption(
-            @RequestBody AdminMenuRequest request) {
+            @RequestBody AdminMenuRequest request,
+            Authentication authentication) {
+
+        // ----------------------------------------------------------------
+        // SecurityContext → AdminMenuRequest#callerUserType propagation.
+        //
+        // The {@code @PreAuthorize("hasRole('ADMIN')")} gate above has
+        // already verified the caller carries {@code ROLE_ADMIN} on the
+        // authenticated principal — i.e., the COBOL CDEMO-USRTYP-ADMIN
+        // assertion is true by the time this method body executes. The
+        // {@link AdminMenuService}'s defence-in-depth re-check at line
+        // 251 ({@code if (!USER_TYPE_ADMIN.equals(callerType))}) reads
+        // {@code request.getCallerUserType()} — which is {@code null}
+        // when the client posts an empty / minimal JSON body that omits
+        // the field, even though the principal IS an admin. Letting the
+        // service-level re-check fail in that case maps to HTTP 403
+        // (via the {@link #MSG_NOT_AUTHORIZED} branch below) and falsely
+        // tells an admin caller that they are unauthorised.
+        //
+        // The fix: pre-populate {@code callerUserType} from the
+        // authenticated principal's role authority BEFORE invoking the
+        // service. Per the COBOL {@code CDEMO-USRTYP-ADMIN VALUE 'A'}
+        // 88-level (COCOM01Y lines 26–28), an admin's user-type code is
+        // {@code "A"}; a regular user's is {@code "U"}. Because
+        // {@code @PreAuthorize} has already established
+        // {@code ROLE_ADMIN}, the only valid code here is {@code "A"} —
+        // we set it unconditionally when the client omitted it (and
+        // leave any explicit value alone so tests that exercise the
+        // service-level reject path via a deliberately-mismatched
+        // {@code callerUserType} continue to work). This mirrors the
+        // CICS COMMAREA pattern where {@code COSGN00C} populates
+        // {@code CDEMO-USER-TYPE} in the COMMAREA before XCTLing to
+        // {@code COADM01C}: the dispatcher reads the user-type from
+        // session-level state, not from the BMS map's user input.
+        // ----------------------------------------------------------------
+        if (request != null
+                && (request.getCallerUserType() == null
+                    || request.getCallerUserType().isBlank())
+                && hasAdminRole(authentication)) {
+            request.setCallerUserType(CALLER_USER_TYPE_ADMIN);
+        }
 
         AdminMenuResponse result = adminMenuService.dispatch(request);
 

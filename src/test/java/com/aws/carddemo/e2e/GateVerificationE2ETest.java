@@ -138,7 +138,6 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     classes use the same @Disabled pattern — this file mirrors that
 //     project convention.
 // ---------------------------------------------------------------------------
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -379,16 +378,31 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
 @Testcontainers
-@Disabled("Awaits production-side prerequisites: (1) SecurityConfig under "
-        + "src/main/java/com/aws/carddemo/config/ wiring SecurityFilterChain with @EnableWebSecurity "
-        + "+ @EnableMethodSecurity and a BCryptPasswordEncoder bean; (2) @Service annotations on the "
-        + "17 service classes under com.aws.carddemo.service that the controller bean graph requires; "
-        + "(3) Flyway V1__schema.sql + V2__indexes.sql + V3__seed.sql under src/main/resources/db/"
-        + "migration/ (seed user_security with both REGULAR and ADMIN fixture users carrying the "
-        + "BCrypt hash paired with TestFixtures.Users.TEST_PASSWORD_PLAINTEXT). Per AAP §0.8.1 the "
-        + "testing flavor cannot modify those production files; the next REFACTOR-flavor agent "
-        + "removes this annotation when the prerequisites are complete. See the class Javadoc "
-        + "'Reactivation Checklist' for the full list.")
+// ---------------------------------------------------------------------------
+// AAP §0.5.4 — Test fixture state. See OnlineTransactionE2ETest for the
+// full rationale. This E2E class iterates every secured endpoint and
+// asserts the canonical 401-no-auth and 403-wrong-role responses. It
+// requires the security_users seed (USRTST01 regular and ADMTST01 admin)
+// so both regular-on-admin-endpoint and admin-on-regular-endpoint paths
+// can be exercised with valid auth tokens. The remaining fixture data
+// (customers/accounts/cards/transactions) ensures path-variable-bound
+// endpoints (e.g., GET /api/accounts/{accountId}) reach the service
+// layer with realistic state.
+//
+// executionPhase = BEFORE_TEST_METHOD (not BEFORE_TEST_CLASS) — required
+// because BEFORE_TEST_CLASS fires from SpringExtension.beforeAll BEFORE
+// the TestcontainersExtension has started the @Container PostgreSQLContainer,
+// causing @DynamicPropertySource's POSTGRES::getJdbcUrl lambda to throw
+// "Mapped port can only be obtained after the container is started"
+// during context load. BEFORE_TEST_METHOD defers script execution until
+// after all @BeforeAll hooks complete (container started, context
+// refreshed). The script is IDEMPOTENT (every INSERT carries
+// ON CONFLICT DO NOTHING) so per-method invocation overhead is minimal
+// and re-application is safe.
+// ---------------------------------------------------------------------------
+@org.springframework.test.context.jdbc.Sql(
+        scripts = "/db/seed/e2e-fixtures.sql",
+        executionPhase = org.springframework.test.context.jdbc.Sql.ExecutionPhase.BEFORE_TEST_METHOD)
 @DisplayName("Gate Verification E2E — Every endpoint requires authentication (401 unauth) and "
         + "enforces role-based authorization (403 not 401 for auth-but-unauthorized)")
 class GateVerificationE2ETest {

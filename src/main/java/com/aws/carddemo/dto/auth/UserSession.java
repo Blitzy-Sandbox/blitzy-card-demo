@@ -51,6 +51,14 @@ import java.util.Objects;
  *   <li>{@link #nextRoute} — the next-screen hint ({@code "MAIN_MENU"} or
  *       {@code "ADMIN_MENU"}); the COBOL equivalent is the program name passed to
  *       {@code EXEC CICS XCTL}</li>
+ *   <li>{@link #token} — optional opaque session token for stateless
+ *       Bearer-token authentication on subsequent HTTP requests. {@code null} when
+ *       the session is produced by {@code AuthenticationService} in isolation
+ *       (e.g., unit tests that mock the service); populated by the
+ *       {@code AuthController} after successful sign-on by registering the session
+ *       with the {@code SessionTokenRegistry} so the
+ *       {@code TokenAuthenticationFilter} can authenticate later requests carrying
+ *       {@code Authorization: Bearer <token>}.</li>
  * </ul>
  *
  * <h2>Security — No Password Field</h2>
@@ -59,6 +67,17 @@ import java.util.Objects;
  * The {@link #toString()} method is therefore safe to log: it cannot disclose the
  * credential under any circumstances. Per AAP §0.10.5 ("No financial data written
  * to logs at any level"), applied transitively to credentials.
+ *
+ * <h2>Token-Transport Model (AAP §0.10.4)</h2>
+ *
+ * <p>The session token is the canonical Spring Security opaque-token pattern: a
+ * UUID generated server-side, exchanged with the client in the sign-on response
+ * body (NOT a cookie — AAP §0.10.5 architectural decision documented in
+ * {@code AuthControllerTest.signOn_neverIssuesSessionCookie_onAnyResponsePath()}),
+ * and presented by the client on subsequent requests via {@code Authorization:
+ * Bearer <token>}. The {@code SessionTokenRegistry} maps the token back to a
+ * {@code (userId, userType)} pair so the {@code TokenAuthenticationFilter} can
+ * reconstruct the security principal without a server-side {@code HttpSession}.
  *
  * @see com.aws.carddemo.service.AuthenticationService
  * @see AuthenticationResult#getSession()
@@ -69,9 +88,14 @@ public final class UserSession {
     private final String userType;
     private final LocalDateTime loginTime;
     private final String nextRoute;
+    private final String token;
 
     /**
-     * Constructs a new immutable session.
+     * Constructs a new immutable session WITHOUT a token. This is the canonical
+     * service-layer constructor: {@code AuthenticationService} produces a
+     * token-less session because token issuance is a transport concern owned by
+     * the controller (so the service can be unit-tested without coupling to the
+     * {@code SessionTokenRegistry} Spring bean).
      *
      * @param userId    the authenticated user identifier
      * @param userType  one of {@code "U"} or {@code "A"}
@@ -79,10 +103,34 @@ public final class UserSession {
      * @param nextRoute the next-screen hint
      */
     public UserSession(String userId, String userType, LocalDateTime loginTime, String nextRoute) {
+        this(userId, userType, loginTime, nextRoute, null);
+    }
+
+    /**
+     * Constructs a new immutable session WITH a token. Invoked by
+     * {@code AuthController.signOn} after {@code SessionTokenRegistry.register}
+     * to produce the on-the-wire response shape that carries the Bearer token
+     * for stateless authentication of subsequent requests.
+     *
+     * @param userId    the authenticated user identifier
+     * @param userType  one of {@code "U"} or {@code "A"}
+     * @param loginTime the authentication moment from the injected clock
+     * @param nextRoute the next-screen hint
+     * @param token     the opaque session token to be presented on subsequent
+     *                  requests as {@code Authorization: Bearer <token>};
+     *                  may be {@code null} when this constructor is invoked
+     *                  in a code path that does not require token issuance
+     */
+    public UserSession(String userId,
+                       String userType,
+                       LocalDateTime loginTime,
+                       String nextRoute,
+                       String token) {
         this.userId = userId;
         this.userType = userType;
         this.loginTime = loginTime;
         this.nextRoute = nextRoute;
+        this.token = token;
     }
 
     public String getUserId() {
@@ -101,6 +149,23 @@ public final class UserSession {
         return nextRoute;
     }
 
+    /**
+     * Returns the opaque session token presented by the client on subsequent
+     * requests, or {@code null} when no token is associated with this session
+     * (for example, a session produced by {@code AuthenticationService} in a
+     * unit test where token issuance is not exercised).
+     *
+     * <p>The token is serialised to JSON as {@code session.token} by the default
+     * Jackson naming strategy; the {@code OnlineTransactionE2ETest} signIn
+     * helper reads either {@code response.token} or {@code response.session.token}
+     * to extract the Bearer credential.
+     *
+     * @return the opaque session token, or {@code null} when not issued
+     */
+    public String getToken() {
+        return token;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -113,17 +178,21 @@ public final class UserSession {
         return Objects.equals(userId, that.userId)
                 && Objects.equals(userType, that.userType)
                 && Objects.equals(loginTime, that.loginTime)
-                && Objects.equals(nextRoute, that.nextRoute);
+                && Objects.equals(nextRoute, that.nextRoute)
+                && Objects.equals(token, that.token);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(userId, userType, loginTime, nextRoute);
+        return Objects.hash(userId, userType, loginTime, nextRoute, token);
     }
 
     /**
-     * String representation containing all session fields. The absence of a password
-     * field by design guarantees this method cannot disclose credentials.
+     * String representation containing the non-credential session fields. Both
+     * the password field (which does not exist) and the session token (which
+     * is a Bearer credential equivalent to a session cookie and therefore PCI-
+     * adjacent per AAP §0.10.5) are deliberately omitted from this rendering
+     * so the method is safe to call from log statements.
      */
     @Override
     public String toString() {

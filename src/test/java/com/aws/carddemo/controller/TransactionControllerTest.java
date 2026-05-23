@@ -184,6 +184,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -441,22 +442,55 @@ final class TransactionControllerTest {
                     .andExpect(jsonPath("$.totalElements").value(1))
                     .andExpect(jsonPath("$.content[0].transactionId")
                             .value(TestFixtures.Transactions.SAMPLE_TRANSACTION_ID))
+                    // ------------------------------------------------------------------
+                    // AAP §0.10.5 — PAN masking on the HTTP boundary. The
+                    // TransactionController.toSummary helper masks the TRAN-CARD-NUM
+                    // to last-4 form ("************" + last 4 digits) before emitting
+                    // it on the wire, matching the OnlineTransactionE2ETest step 4
+                    // and step 6 assertions which forbid any 16-digit Visa PAN
+                    // (range 4111111111111101-4111111111111150) from appearing in
+                    // the list response body. The underlying Transaction entity
+                    // retains the unmasked PAN for downstream COBOL CICS COMMAREA
+                    // semantics per AAP §0.10.4 immutable boundaries.
+                    // ------------------------------------------------------------------
                     .andExpect(jsonPath("$.content[0].cardNumber")
-                            .value(TestFixtures.Cards.SAMPLE_CARD_NUMBER_01))
+                            .value("************"
+                                    + TestFixtures.Cards.SAMPLE_CARD_NUMBER_01.substring(12)))
                     // ------------------------------------------------------------------
-                    // AAP §0.10.3 — Monetary JSON-boundary contract (BigDecimal as
-                    // string, scale 2 preserved). The production
-                    // TransactionController.TransactionSummary record annotates the
-                    // BigDecimal `amount` field with @JsonFormat(shape = STRING), so
-                    // the wire-format value for TRAN-AMT is the quoted string
-                    // literal "100.50" — never the JSON numeric literal 100.50 (which
-                    // would force this test to use a Java `double` literal in the
-                    // assertion, violating AAP §0.10.3 "No float or double used for
-                    // any monetary value — BigDecimal exclusively"). The string form
-                    // also preserves scale exactly: "100.50" never collapses to
-                    // "100.5" or "100".
+                    // AAP §0.10.3 — Monetary JSON-boundary contract (BigDecimal as a
+                    // JSON NUMBER, scale 2 preserved on the wire).
+                    //
+                    // The production TransactionController.TransactionSummary record
+                    // declares the BigDecimal `amount` field WITHOUT a @JsonFormat
+                    // annotation so the wire-format value for TRAN-AMT is the JSON
+                    // numeric literal 100.50 (NOT the quoted string "100.50"). The
+                    // OnlineTransactionE2ETest step 4 asserts `amount.isNumber()` and
+                    // then derives BigDecimal scale from `amount.asText()` — the JSON
+                    // string form would fail .isNumber() and break that journey.
+                    //
+                    // Scale-2 preservation is verified through TWO complementary
+                    // assertions because JsonPath's default parser strips trailing
+                    // zeros from JSON numbers via internal Double coercion (a
+                    // JsonPath library limitation that the project-wide JacksonConfig
+                    // customizer cannot override because Spring Test's MockMvc
+                    // JsonPath helper uses JsonPath's OWN Configuration.defaultConfiguration(),
+                    // not the Spring-managed ObjectMapper):
+                    //   1. jsonPath("$...amount").isNumber() — verifies the JSON
+                    //      SHAPE is a NUMBER, NOT a STRING. Catches accidental
+                    //      reintroduction of @JsonFormat(shape = STRING) on the
+                    //      production record.
+                    //   2. content().string(containsString("\"amount\":100.50")) —
+                    //      verifies the literal wire format INCLUDES the trailing
+                    //      zero. Catches a production-side switch to float/double
+                    //      (which would serialise as "100.5") or any future
+                    //      Jackson configuration that strips trailing zeros from
+                    //      BigDecimal serialisation. No double/float literal
+                    //      appears in this test — the expected substring is a
+                    //      string literal, fully AAP §0.10.3-compliant.
                     // ------------------------------------------------------------------
-                    .andExpect(jsonPath("$.content[0].amount").value("100.50"))
+                    .andExpect(jsonPath("$.content[0].amount").isNumber())
+                    .andExpect(content().string(
+                            org.hamcrest.Matchers.containsString("\"amount\":100.50")))
                     .andExpect(jsonPath("$.content[0].transactionType")
                             .value(TestFixtures.Transactions.TRAN_TYPE_PURCHASE))
                     .andExpect(jsonPath("$.content[0].transactionCategoryCode")
@@ -611,17 +645,31 @@ final class TransactionControllerTest {
                     .andExpect(jsonPath("$.success").value(true))
                     .andExpect(jsonPath("$.transactionId")
                             .value(TestFixtures.Transactions.SAMPLE_TRANSACTION_ID))
+                    // ------------------------------------------------------------------
+                    // AAP §0.10.5 — PAN masking on the HTTP boundary. The
+                    // TransactionDetailJsonResponse.success() factory masks the
+                    // TRAN-CARD-NUM to last-4 form ("************" + last 4 digits)
+                    // before emitting it on the wire, matching the
+                    // OnlineTransactionE2ETest step 4 assertion which requires the
+                    // detail response card number to match the last-4-only pattern
+                    // ".*\\*{4,}\\d{4}$" or the fully-masked pattern "\\*{12,16}".
+                    // ------------------------------------------------------------------
                     .andExpect(jsonPath("$.cardNumber")
-                            .value(TestFixtures.Cards.SAMPLE_CARD_NUMBER_01))
+                            .value("************"
+                                    + TestFixtures.Cards.SAMPLE_CARD_NUMBER_01.substring(12)))
                     // ------------------------------------------------------------------
-                    // AAP §0.10.3 — Monetary JSON-boundary contract: TRAN-AMT
-                    // serialised as the quoted string "100.50" so scale-2 precision
-                    // is preserved verbatim on the wire and the test code carries
-                    // no Java `double` literals. See the detailed comment on
-                    // listTransactions_noFilters_returns200WithPagedResults for the
-                    // full rationale.
+                    // AAP §0.10.3 — Monetary JSON-boundary contract (BigDecimal as a
+                    // JSON NUMBER, scale 2 preserved on the wire). See the detailed
+                    // comment on listTransactions_noFilters_returns200WithPagedResults
+                    // for the full rationale (JsonPath's default parser strips
+                    // trailing zeros via internal Double coercion, so this test
+                    // verifies both the JSON SHAPE via .isNumber() and the literal
+                    // wire-format scale preservation via content().string()
+                    // containsString — no double/float literal in the assertion).
                     // ------------------------------------------------------------------
-                    .andExpect(jsonPath("$.amount").value("100.50"))
+                    .andExpect(jsonPath("$.amount").isNumber())
+                    .andExpect(content().string(
+                            org.hamcrest.Matchers.containsString("\"amount\":100.50")))
                     .andExpect(jsonPath("$.transactionType")
                             .value(TestFixtures.Transactions.TRAN_TYPE_PURCHASE))
                     .andExpect(jsonPath("$.transactionCategoryCode")
@@ -799,8 +847,22 @@ final class TransactionControllerTest {
                     .andExpect(jsonPath("$.success").value(true))
                     .andExpect(jsonPath("$.accountId")
                             .value(TestFixtures.Accounts.SAMPLE_ACCOUNT_ID_10))
+                    // ------------------------------------------------------------------
+                    // AAP §0.10.5 — PCI/PAN exposure mitigation at the HTTP boundary.
+                    // The add-transaction response echoes the request's card number to
+                    // confirm the persisted record, but the controller masks the PAN
+                    // to last-4 form ("************" + last 4) before sending the
+                    // response. The seeded fixture PAN
+                    // 4111111111111101 (TestFixtures.Cards.SAMPLE_CARD_NUMBER_01)
+                    // therefore appears on the wire as "************1101". The
+                    // underlying TransactionAddRequest still carries the unmasked
+                    // PAN for the service (verified by the ArgumentCaptor assertion
+                    // below) and downstream COBOL CICS COMMAREA semantics remain
+                    // record-layout-identical per AAP §0.10.4.
+                    // ------------------------------------------------------------------
                     .andExpect(jsonPath("$.cardNumber")
-                            .value(TestFixtures.Cards.SAMPLE_CARD_NUMBER_01))
+                            .value("************"
+                                    + TestFixtures.Cards.SAMPLE_CARD_NUMBER_01.substring(12)))
                     // Success message embeds the auto-generated 16-character
                     // TRAN-ID per the COBOL STRING construct in COTRN02C
                     // SEND-TRNADD-SCREEN.
