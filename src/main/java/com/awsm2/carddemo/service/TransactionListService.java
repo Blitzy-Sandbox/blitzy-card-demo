@@ -28,6 +28,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
 
@@ -74,9 +75,9 @@ import java.util.Objects;
  *       <td>{@link #listTransactions(String, int)}</td></tr>
  *   <tr><td>{@code STARTBR-TRANSACT-FILE} (positioning) +
  *       {@code READNEXT-TRANSACT-FILE} (ascending traversal)</td>
- *       <td>{@code transactionRepository.findAll(Pageable)} (or
- *       {@code findByTranCardNumOrderByTranProcTsDesc} when a
- *       card-number filter is supplied)</td></tr>
+ *       <td>{@code transactionRepository.findByOrderByTranIdAsc(Pageable)}
+ *       (or {@code findByTranCardNumAndTranProcTsBetween} with wide-open
+ *       boundary constants when a card-number filter is supplied)</td></tr>
  *   <tr><td>{@code PROCESS-PF7-KEY} / {@code PROCESS-PF8-KEY}</td>
  *       <td>{@link Pageable#previousOrFirst()} / {@link Pageable#next()}
  *       driven by client-supplied {@code page}; this service is
@@ -119,6 +120,21 @@ public class TransactionListService {
      */
     public static final int PAGE_SIZE = 10;
 
+    /**
+     * Wide-open lower-bound on {@code tran_proc_ts} used when scoping
+     * the schema-mandated
+     * {@link TransactionRepository#findByTranCardNumAndTranProcTsBetween(
+     * String, LocalDateTime, LocalDateTime, Pageable)} to a card with
+     * no date window — preserves the COBOL COTRN00C semantic of an
+     * unbounded card-scoped browse.
+     */
+    static final LocalDateTime LIST_MIN_TS = LocalDateTime.of(1900, 1, 1, 0, 0);
+
+    /**
+     * Wide-open upper-bound counterpart to {@link #LIST_MIN_TS}.
+     */
+    static final LocalDateTime LIST_MAX_TS = LocalDateTime.of(9999, 12, 31, 23, 59, 59, 999_999_999);
+
     private static final Logger LOG = LoggerFactory.getLogger(TransactionListService.class);
 
     private final TransactionRepository transactionRepository;
@@ -136,10 +152,14 @@ public class TransactionListService {
      * <p>Equivalent to {@code COTRN00C.cbl}'s
      * {@code 0000-MAIN}/{@code STARTBR-TRANSACT-FILE}/{@code READNEXT}
      * loop. When {@code cardNumberFilter} is supplied, this method uses
-     * the derived query
-     * {@link TransactionRepository#findByTranCardNumOrderByTranProcTsDesc}
-     * to scope the browse to the card's history; otherwise it browses
-     * the full {@code TRANSACT} cluster ordered by {@code tran_id}.</p>
+     * the schema-mandated derived query
+     * {@link TransactionRepository#findByTranCardNumAndTranProcTsBetween(
+     * String, LocalDateTime, LocalDateTime, Pageable)} with
+     * wide-open timestamp bounds to scope the browse to the card's
+     * history (sorted by {@code tran_proc_ts} DESC via the
+     * {@link Pageable}); otherwise it browses the full
+     * {@code TRANSACT} cluster via the schema-mandated derived query
+     * {@link TransactionRepository#findByOrderByTranIdAsc(Pageable)}.</p>
      *
      * @param cardNumberFilter optional 16-digit card number to scope
      *                         the result; {@code null} for unfiltered
@@ -159,17 +179,26 @@ public class TransactionListService {
         if (cardNumberFilter != null && !cardNumberFilter.isBlank()) {
             // Card-scoped browse mirrors the COBOL ALT-INDEX walk
             // ordered by tran_proc_ts DESC (most-recent first).
-            Pageable pageable = PageRequest.of(page, PAGE_SIZE);
+            // Per AAP §0.7.3, this uses the schema-mandated
+            // findByTranCardNumAndTranProcTsBetween(...) with
+            // wide-open timestamp boundaries — equivalent to the
+            // unfiltered per-card walk because every transaction
+            // necessarily falls between LIST_MIN_TS and LIST_MAX_TS.
+            Pageable pageable = PageRequest.of(page, PAGE_SIZE,
+                    Sort.by(Sort.Direction.DESC, "tranProcTs"));
             LOG.debug("Listing transactions for card (masked) page {} size {}", page, PAGE_SIZE);
-            result = transactionRepository.findByTranCardNumOrderByTranProcTsDesc(
-                    cardNumberFilter, pageable);
+            result = transactionRepository.findByTranCardNumAndTranProcTsBetween(
+                    cardNumberFilter, LIST_MIN_TS, LIST_MAX_TS, pageable);
         } else {
             // Unfiltered browse ordered by primary key tran_id ASC, the
-            // legacy COTRN00C default behavior.
-            Pageable pageable = PageRequest.of(page, PAGE_SIZE,
-                    Sort.by(Sort.Direction.ASC, "tranId"));
+            // legacy COTRN00C default behavior. Uses the
+            // schema-mandated derived query
+            // findByOrderByTranIdAsc(Pageable) so the ORDER BY clause
+            // is encoded in the method name (PageRequest sort is
+            // unused for this method).
+            Pageable pageable = PageRequest.of(page, PAGE_SIZE);
             LOG.debug("Listing all transactions page {} size {}", page, PAGE_SIZE);
-            result = transactionRepository.findAll(pageable);
+            result = transactionRepository.findByOrderByTranIdAsc(pageable);
         }
 
         List<TransactionListDto.TransactionRow> rows = result.getContent().stream()

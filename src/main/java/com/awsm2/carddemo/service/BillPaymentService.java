@@ -82,7 +82,8 @@ import java.util.Objects;
  *       &rarr; first card</td></tr>
  *   <tr><td>{@code MOVE HIGH-VALUES TO TRAN-ID; STARTBR; READPREV;
  *       ENDBR; ADD 1 TO WS-TRAN-ID-NUM}</td>
- *       <td>{@link TransactionRepository#findMaxTranId()} + 1 with
+ *       <td>{@link TransactionRepository#findTopByOrderByTranIdDesc()}
+ *       (extract {@code tranId}) + 1 with
  *       zero-pad to 16 digits (AAP &sect;0.6.2)</td></tr>
  *   <tr><td>{@code INITIALIZE TRAN-RECORD} + {@code MOVE '02' TO
  *       TRAN-TYPE-CD} + {@code MOVE 2 TO TRAN-CAT-CD} + {@code MOVE
@@ -384,11 +385,22 @@ public class BillPaymentService {
 
     /**
      * Computes the next 16-digit zero-padded transaction ID by reading
-     * {@link TransactionRepository#findMaxTranId()} and adding 1.
-     * Implements the MAX-TRAN-ID + 1 idiom per AAP &sect;0.6.2.
+     * the highest existing tran_id from
+     * {@link TransactionRepository#findTopByOrderByTranIdDesc()} and
+     * adding 1. Implements the MAX-TRAN-ID + 1 idiom per AAP
+     * &sect;0.6.2.
+     *
+     * <p>Per AAP &sect;0.7.3, the
+     * {@link TransactionRepository#findTopByOrderByTranIdDesc()}
+     * derived query returns the {@link Transaction} entity (not just
+     * the ID) per Spring Data JPA convention; the {@code tranId} field
+     * is extracted via {@link Transaction#getTranId()} and an empty
+     * journal is seeded with {@link #SEED_TRAN_ID}.</p>
      */
     private String nextTransactionId() {
-        String maxId = transactionRepository.findMaxTranId().orElse(SEED_TRAN_ID);
+        String maxId = transactionRepository.findTopByOrderByTranIdDesc()
+                                            .map(Transaction::getTranId)
+                                            .orElse(SEED_TRAN_ID);
         BigDecimal numeric;
         try {
             numeric = new BigDecimal(maxId);

@@ -40,7 +40,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -108,11 +107,12 @@ import java.util.Optional;
  * <h2>Implementation notes (AAP &sect;0.7.1)</h2>
  * <ul>
  *   <li><b>Streaming pagination:</b> The COBOL source reads the
- *       transaction file sequentially. JPA's {@code findAll} would
- *       load the whole table; instead, this service uses paged reads
- *       via
- *       {@link TransactionRepository#findByTranProcTsBetween(LocalDateTime,
- *       LocalDateTime, Pageable)} sized to bound memory.</li>
+ *       transaction file sequentially. To avoid loading the entire
+ *       {@code transactions} table into memory, this service uses
+ *       paged reads via
+ *       {@link TransactionRepository#findAll(Pageable)} sized at
+ *       {@link #DB_PAGE_SIZE} per chunk; the date-window filter is
+ *       applied in memory per the COBOL semantic at L172-L178.</li>
  *   <li><b>BigDecimal arithmetic:</b> Running totals use
  *       {@link BigDecimal} with {@link RoundingMode#HALF_EVEN}.</li>
  *   <li><b>ON SIZE ERROR:</b> Totals are guarded against
@@ -233,9 +233,6 @@ public class TransactionReportService {
         LOG.info("CBTRN03C: starting transaction report (startDate={}, endDate={}, batchRunId={})",
                 startDate, endDate, batchRunId);
 
-        LocalDateTime windowStart = startDate.atStartOfDay();
-        LocalDateTime windowEnd = endDate.atTime(23, 59, 59, 999_999_999);
-
         List<ReportLineDto> lines = new ArrayList<>();
         // COBOL: paragraph 1120-WRITE-HEADERS &mdash; header line is emitted first
         lines.add(appendHeaderLine(startDate, endDate));
@@ -252,10 +249,18 @@ public class TransactionReportService {
         int page = 0;
         Page<Transaction> currentPage;
         do {
+            // Per AAP §0.7.3, this service replaces the legacy
+            // cross-card date-range query with the inherited
+            // findAll(Pageable) plus the in-memory date filter
+            // immediately below — exactly mirroring the COBOL
+            // CBTRN03C semantic at L172-L178 which iterates every
+            // TRANSACT row and skips those outside the date window
+            // (IF TRAN-PROC-TS (1:10) >= WS-START-DATE AND <= WS-END-DATE
+            // CONTINUE ELSE NEXT SENTENCE). The Pageable's Sort orders
+            // the scan by tran_proc_ts for stable grouping by account.
             Pageable pageable = PageRequest.of(page, DB_PAGE_SIZE,
                     Sort.by("tranProcTs"));
-            currentPage = transactionRepository.findByTranProcTsBetween(
-                    windowStart, windowEnd, pageable);
+            currentPage = transactionRepository.findAll(pageable);
             for (Transaction tx : currentPage.getContent()) {
                 if (tx == null || tx.getTranProcTs() == null) {
                     continue;

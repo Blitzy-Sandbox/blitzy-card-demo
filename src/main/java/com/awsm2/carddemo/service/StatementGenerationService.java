@@ -29,12 +29,14 @@ import com.awsm2.carddemo.repository.CustomerRepository;
 import com.awsm2.carddemo.repository.TransactionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -149,6 +151,22 @@ public class StatementGenerationService {
 
     /** Audit event names. */
     static final String AUDIT_STATEMENT_GENERATED = "statement.generated";
+
+    /**
+     * Wide-open lower-bound on {@code tran_proc_ts} used when invoking
+     * {@link TransactionRepository#findByTranCardNumAndTranProcTsBetween(
+     * String, LocalDateTime, LocalDateTime, Pageable)} as a stand-in
+     * for the unfiltered per-card slice — preserves the COBOL CBSTM03A
+     * semantic of consuming every transaction on the supplied card list
+     * (the statement-cycle bounding is applied upstream in the COBOL
+     * source by the caller, not in this paragraph).
+     */
+    static final LocalDateTime STMT_MIN_TS = LocalDateTime.of(1900, 1, 1, 0, 0);
+
+    /**
+     * Wide-open upper-bound counterpart to {@link #STMT_MIN_TS}.
+     */
+    static final LocalDateTime STMT_MAX_TS = LocalDateTime.of(9999, 12, 31, 23, 59, 59, 999_999_999);
 
     private static final DateTimeFormatter STATEMENT_DATE_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd");
@@ -341,7 +359,18 @@ public class StatementGenerationService {
                 continue;
             }
             cardNumbers.add(cardNum);
-            List<Transaction> txs = transactionRepository.findByTranCardNum(cardNum);
+            // Per AAP §0.7.3, replaced the legacy findByTranCardNum(...)
+            // convenience with the schema-mandated derived query
+            // findByTranCardNumAndTranProcTsBetween(...) using
+            // wide-open boundaries — equivalent to the COBOL CBSTM03A
+            // per-card transaction enumeration. Pageable.unpaged()
+            // materializes the full per-card slice for statement
+            // composition.
+            List<Transaction> txs = transactionRepository.findByTranCardNumAndTranProcTsBetween(
+                    cardNum,
+                    STMT_MIN_TS,
+                    STMT_MAX_TS,
+                    Pageable.unpaged()).getContent();
             for (Transaction tx : txs) {
                 BigDecimal amt = tx.getTranAmt() == null
                         ? BigDecimal.ZERO.setScale(2, RoundingMode.HALF_EVEN)

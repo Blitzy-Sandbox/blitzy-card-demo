@@ -84,7 +84,8 @@ import java.util.Optional;
  *       {@code MOVE HIGH-VALUES TO TRAN-ID;
  *       STARTBR; READPREV; ENDBR; MOVE TRAN-ID TO WS-TRAN-ID-N;
  *       ADD 1 TO WS-TRAN-ID-N})</td>
- *       <td>{@link TransactionRepository#findMaxTranId()} &rarr;
+ *       <td>{@link TransactionRepository#findTopByOrderByTranIdDesc()} &rarr;
+ *       extract {@code tranId} from the returned entity &rarr;
  *       {@code Long.parseLong(max) + 1} &rarr;
  *       {@code String.format("%016d", next)} (the canonical
  *       MAX-TRAN-ID + 1 pattern per AAP &sect;0.6.2)</td></tr>
@@ -108,7 +109,7 @@ import java.util.Optional;
  * lock on the {@code TRANSACT} cluster during the
  * {@code STARTBR}/{@code READPREV}/{@code ENDBR}/{@code WRITE}
  * sequence inside a single CICS task. The Java target preserves the
- * same invariant by wrapping the {@code findMaxTranId} read and the
+ * same invariant by wrapping the {@code findTopByOrderByTranIdDesc} read and the
  * {@code save} write in the same {@link Transactional &#64;Transactional}
  * boundary using {@code SERIALIZABLE} isolation on the database
  * connection (provided by RDS PostgreSQL Multi-AZ per AAP &sect;0.6.2).
@@ -276,15 +277,25 @@ public class TransactionAddService {
 
     /**
      * Computes the next 16-digit zero-padded transaction ID by reading
-     * the current maximum from {@link TransactionRepository#findMaxTranId()}
-     * and adding 1. Throws {@link OnSizeErrorException} if the result
-     * would overflow the {@link #MAX_TRAN_ID} ceiling &mdash; replicates
-     * the COBOL {@code ON SIZE ERROR} semantic for the
+     * the current maximum tran_id from
+     * {@link TransactionRepository#findTopByOrderByTranIdDesc()} and
+     * adding 1. Throws {@link OnSizeErrorException} if the result would
+     * overflow the {@link #MAX_TRAN_ID} ceiling &mdash; replicates the
+     * COBOL {@code ON SIZE ERROR} semantic for the
      * {@code ADD 1 TO WS-TRAN-ID-N} arithmetic (per AAP &sect;0.7.1
      * implementation rules).
+     *
+     * <p>Per AAP &sect;0.7.3, the
+     * {@link TransactionRepository#findTopByOrderByTranIdDesc()}
+     * derived query returns the {@link Transaction} entity (not just
+     * the ID) per Spring Data JPA convention; the {@code tranId} field
+     * is extracted via {@link Transaction#getTranId()} and an empty
+     * journal (initial install) is seeded with {@link #SEED_TRAN_ID}.</p>
      */
     private String nextTransactionId() {
-        String maxId = transactionRepository.findMaxTranId().orElse(SEED_TRAN_ID);
+        String maxId = transactionRepository.findTopByOrderByTranIdDesc()
+                                            .map(Transaction::getTranId)
+                                            .orElse(SEED_TRAN_ID);
 
         BigDecimal numeric;
         try {

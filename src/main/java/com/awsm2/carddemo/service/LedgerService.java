@@ -26,6 +26,7 @@ import com.awsm2.carddemo.repository.AccountRepository;
 import com.awsm2.carddemo.repository.TransactionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -97,6 +98,23 @@ public class LedgerService {
 
     /** Audit event names. */
     static final String AUDIT_LEDGER_RECONCILED = "ledger.reconciled";
+
+    /**
+     * Wide-open lower-bound on {@code tran_proc_ts} used when invoking
+     * {@link TransactionRepository#findByTranCardNumAndTranProcTsBetween(
+     * String, LocalDateTime, LocalDateTime, Pageable)} as a stand-in
+     * for the unfiltered per-card slice. Pre-dates any plausible
+     * transaction processing timestamp in the COBOL source (sample
+     * fixtures start in 2022-06-10).
+     */
+    static final LocalDateTime LEDGER_MIN_TS = LocalDateTime.of(1900, 1, 1, 0, 0);
+
+    /**
+     * Wide-open upper-bound counterpart to {@link #LEDGER_MIN_TS}.
+     * Beyond any plausible transaction processing timestamp for the
+     * lifetime of the {@code transactions} table.
+     */
+    static final LocalDateTime LEDGER_MAX_TS = LocalDateTime.of(9999, 12, 31, 23, 59, 59, 999_999_999);
 
     private final AccountRepository accountRepository;
     private final TransactionRepository transactionRepository;
@@ -174,7 +192,18 @@ public class LedgerService {
             if (cardNum == null || cardNum.isBlank()) {
                 continue;
             }
-            List<Transaction> txs = transactionRepository.findByTranCardNum(cardNum);
+            // Per AAP §0.7.3, replaced the legacy findByTranCardNum(...)
+            // convenience with the schema-mandated derived query
+            // findByTranCardNumAndTranProcTsBetween(...) using
+            // wide-open boundaries — equivalent to the COBOL VSAM
+            // AIX walk by TRAN-CARD-NUM with no date-range predicate
+            // (Pageable.unpaged() materializes the full per-card slice
+            // for the reconciliation pass).
+            List<Transaction> txs = transactionRepository.findByTranCardNumAndTranProcTsBetween(
+                    cardNum,
+                    LEDGER_MIN_TS,
+                    LEDGER_MAX_TS,
+                    Pageable.unpaged()).getContent();
             for (Transaction tx : txs) {
                 BigDecimal amt = nonNull(tx.getTranAmt());
                 total = total.add(amt).setScale(2, RoundingMode.HALF_EVEN);

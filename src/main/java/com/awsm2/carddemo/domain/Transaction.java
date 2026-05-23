@@ -71,8 +71,10 @@ import java.util.Objects;
  *       {@code POST /api/transactions}. Translates the COBOL
  *       {@code STARTBR}/{@code READPREV}/{@code ADD 1} browse-to-end
  *       pattern (see {@code app/cbl/COTRN02C.cbl} L444-L451) to
- *       {@link com.awsm2.carddemo.repository.TransactionRepository#findMaxTranId()}
- *       (MAX-TRAN-ID query) + numeric increment + zero-padded
+ *       {@link com.awsm2.carddemo.repository.TransactionRepository#findTopByOrderByTranIdDesc()}
+ *       (returns the highest-{@code tran_id} entity per Spring Data
+ *       JPA convention; the caller extracts {@link #tranId} via
+ *       {@link #getTranId()}) + numeric increment + zero-padded
  *       16-character formatting per AAP &sect;0.6.2; publishes
  *       {@code transaction.posted} to MSK partitioned by account ID
  *       per AAP &sect;0.6.5.</li>
@@ -299,11 +301,12 @@ public class Transaction implements Serializable {
      * via the MAX-TRAN-ID + 1 pattern translated from the COBOL
      * source. {@code TransactionAddService} (and {@code BillPaymentService})
      * invoke
-     * {@link com.awsm2.carddemo.repository.TransactionRepository#findMaxTranId()}
-     * to retrieve the current maximum 16-character transaction
-     * identifier, increment it numerically, and zero-pad the result
-     * back to exactly 16 characters &mdash; mirroring the COBOL
-     * {@code STARTBR}/{@code READPREV}/{@code ADD 1 TO WS-TRAN-ID-N}
+     * {@link com.awsm2.carddemo.repository.TransactionRepository#findTopByOrderByTranIdDesc()}
+     * to retrieve the {@link Transaction} entity with the highest
+     * 16-character {@code tran_id}, extract its {@link #tranId} via
+     * {@link #getTranId()}, increment it numerically, and zero-pad
+     * the result back to exactly 16 characters &mdash; mirroring the
+     * COBOL {@code STARTBR}/{@code READPREV}/{@code ADD 1 TO WS-TRAN-ID-N}
      * pattern at {@code app/cbl/COTRN02C.cbl} L444-L451 and
      * {@code app/cbl/COBIL00C.cbl} L209-L217 (per AAP &sect;0.7.3
      * Minimal Change Clause). Existing data carries the verbatim
