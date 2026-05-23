@@ -1,0 +1,62 @@
+<!--
+  PLACEHOLDER - capture from COBOL per java/MIGRATION_NOTES.md section 1.6
+
+  This file is awaiting genuine COBOL capture from STEP040 EXEC PGM=CBSTM03A
+  per app/jcl/CREASTMT.JCL line 79 (HTMLFILE DD at lines 92-96, DSN=
+  AWS.M2.CARDDEMO.STATEMNT.HTML, DCB=(LRECL=100,BLKSIZE=800,RECFM=FB)).
+
+  The captured content MUST replace this placeholder verbatim (full byte
+  replacement, NOT appended) before the companion test class
+  CbStm03AGoldenTest can be enabled per AAP section 0.6.11.
+
+  CRITICAL byte-for-byte HTML parity rules (binding):
+    - Whitespace: every space, tab, and FILLER padding character preserved
+      exactly per app/cbl/CBSTM03A.CBL lines 148-223
+    - Attribute order: style="font-size:16px", width:70%, font-family:
+      'Segoe UI' and CSS color codes #1d1d96b3, #FFAF33, #f2f2f2, #33FFD1,
+      #33FF5E preserved exactly per app/cbl/CBSTM03A.CBL lines 148-223
+    - Line endings: COBOL writes 100-byte fixed-width records; Java MUST
+      write 100-byte records, NOT logical HTML lines
+    - Self-closing-tag conventions: COBOL uses <p>...</p> paired tags
+      (NOT self-closing <p />); preserve exactly
+    - Bank info: 'Bank of XYZ', '410 Terry Ave N', 'Seattle WA 99999' from
+      app/cbl/CBSTM03A.CBL lines 168, 170, 172 preserved verbatim
+    - STRING construction with DELIMITED BY '*' and DELIMITED BY '  '
+      (two spaces) per app/cbl/CBSTM03A.CBL lines 560-718 preserved exactly
+
+  HTML record stream structure (informational):
+    - HTML-L01 through HTML-L08: DOCTYPE, html, head, meta, title, opening
+      table (CBSTM03A.CBL lines 150-158)
+    - HTML-LTRS opening table row (line 159)
+    - HTML-L10 colspan=3 styling (lines 163-164)
+    - HTML-L11 'Statement for Account Number:' with L11-ACCT (lines 212-216)
+    - HTML-LTDE, HTML-LTRE closing td and tr (lines 160, 162)
+    - HTML-L15, HTML-L16, HTML-L17, HTML-L18: Bank info block (lines 165-172)
+    - HTML-L22-35: Spacer row styled #f2f2f2 (lines 173-175)
+    - HTML-L23 'p' opening + L23-NAME (lines 217-220)
+    - HTML-ADDR-LN three occurrences for ST-ADD1, ST-ADD2, ST-ADD3
+      (lines 221, 569-592)
+    - HTML-L30-42, HTML-L31 'Basic Details' (lines 176-180)
+    - HTML-BSIC-LN three occurrences: Account ID, Current Balance, FICO
+      Score (lines 222, 613-633)
+    - HTML-L43 'Transaction Summary' (lines 181-182)
+    - HTML-L47, HTML-L48 'Tran ID' column header (lines 183-187)
+    - HTML-L50, HTML-L51 'Tran Details' column header (lines 188-192)
+    - HTML-L53, HTML-L54 'Amount' column header (lines 193-197)
+    - Per transaction: HTML-LTRS, HTML-L58, HTML-TRAN-LN (TranID),
+      HTML-LTDE, HTML-L61, HTML-TRAN-LN (Date), HTML-LTDE, HTML-L64,
+      HTML-TRAN-LN (Amount), HTML-LTDE, HTML-LTRE (lines 198-206, 223,
+      675-723)
+    - Closing: HTML-LTRS, HTML-L10, HTML-L75 'End of Statement',
+      HTML-LTDE, HTML-LTRE, HTML-L78 '/table', HTML-L79 '/body',
+      HTML-L80 '/html' (lines 207-211, 437-454)
+
+  DEVIATION items: TIOT/TCB/PSA control-block inspection, ALTER/GO TO
+  control flow (informational; do NOT affect this file's byte parity, but
+  documented in java/MIGRATION_NOTES.md per AAP section 0.4.1).
+
+  Authority: AAP sections 0.1.1, 0.4.1, 0.6.5, 0.6.11, 0.7.5
+  Capture procedure: java/MIGRATION_NOTES.md section 1.6
+  Test class: com.blitzy.carddemo.tests.golden.CbStm03AGoldenTest (@Disabled)
+  DO NOT hand-edit. Replace via genuine COBOL capture only.
+-->
