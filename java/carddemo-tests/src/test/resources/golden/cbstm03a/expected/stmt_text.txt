@@ -1,0 +1,64 @@
+# PLACEHOLDER - capture from COBOL per java/MIGRATION_NOTES.md section 1.6
+#
+# This file is awaiting genuine COBOL capture from STEP040 EXEC PGM=CBSTM03A
+# per app/jcl/CREASTMT.JCL line 79 (STMTFILE DD at lines 87-91, DSN=
+# AWS.M2.CARDDEMO.STATEMNT.PS, DCB=(LRECL=80,BLKSIZE=8000,RECFM=FB)).
+#
+# The captured content MUST replace this placeholder verbatim (full byte
+# replacement, NOT appended) before the companion test class
+# CbStm03AGoldenTest can be enabled per AAP section 0.6.11.
+#
+# Statement record stream structure (informational; see README.md for full
+# details and exact field semantics per app/cbl/CBSTM03A.CBL lines 85-146):
+#
+#   Per-statement 16 line templates (80 bytes each, RECFM=FB LRECL=80):
+#     ST-LINE0  - asterisk banner with 'START OF STATEMENT' (line 86-89)
+#     ST-LINE1  - blank between statements (line 90-92)
+#     ST-LINE2  - ST-NAME 75 chars + 5 trailing spaces (line 93-95)
+#     ST-LINE3  - ST-ADD1 50 chars + 30 trailing spaces (line 96-98)
+#     ST-LINE4  - ST-ADD2 50 chars + 30 trailing spaces (line 99-100)
+#     ST-LINE5  - ALL '-' 80 chars separator (line 101-102)
+#     ST-LINE6  - 'Basic Details' header centered (line 103-106)
+#     ST-LINE5  - ALL '-' 80 chars separator (repeated; line 494)
+#     ST-LINE7  - 'Account ID         :' + ST-ACCT-ID (line 107-110)
+#     ST-LINE8  - 'Current Balance    :' + ST-CURR-BAL (line 111-115)
+#     ST-LINE9  - 'FICO Score         :' + ST-FICO-SCORE (line 116-119)
+#     ST-LINE10 - ALL '-' 80 chars separator (line 120-121)
+#     ST-LINE11 - 'TRANSACTION SUMMARY' header (line 122-125)
+#     ST-LINE12 - ALL '-' 80 chars separator (line 126-127)
+#     ST-LINE13 - 'Tran ID' + 'Tran Details' + 'Tran Amount' headers
+#                  (line 128-131)
+#     ST-LINE12 - ALL '-' 80 chars separator (line 502)
+#     ST-LINE14 - per-transaction detail row written by paragraph
+#                  6000-WRITE-TRANS (line 132-137, 679)
+#     ST-LINE12 - ALL '-' 80 chars separator (line 435)
+#     ST-LINE14A- 'Total EXP:' + total amount (line 138-142, 436)
+#     ST-LINE15 - asterisk banner with 'END OF STATEMENT' (line 143-146, 437)
+#
+# CRITICAL byte-for-byte parity rules (binding):
+#   - Each output record is exactly 80 bytes (RECFM=FB,LRECL=80)
+#   - Trailing FILLER spaces are part of the record bytes - preserve EXACTLY
+#   - The ALL '*' and ALL '-' literals in ST-LINE0, ST-LINE5, ST-LINE10,
+#     ST-LINE12, ST-LINE15 produce sequences of asterisks/dashes with exact
+#     widths (31+18+31=80 for asterisk banner; 80 chars of '-' for dashes;
+#     32+16+32=80 for end-of-statement banner) per CBSTM03A.CBL lines 87-89,
+#     102, 121, 127, 144-146
+#   - ST-CURR-BAL uses PIC 9(9).99- (negative trailing sign) format per
+#     CBSTM03A.CBL line 113
+#   - ST-TRANAMT and ST-TOTAL-TRAMT use PIC Z(9).99- format (zero-suppressed
+#     leading + trailing minus) per CBSTM03A.CBL lines 137, 142
+#   - 'Total EXP:' label per CBSTM03A.CBL line 139 - preserved verbatim
+#
+# DEVIATION items (from app/cbl/CBSTM03A.CBL):
+#   - Lines 262-291: TIOT/TCB/PSA inspection (z/OS control blocks) - does
+#     NOT affect this file's byte parity but documented in
+#     java/MIGRATION_NOTES.md per AAP section 0.4.1
+#   - Lines 296-314: 0000-START ALTER + GO TO dispatcher - does NOT affect
+#     this file's byte parity
+#   - Lines 225-230: 2D in-memory table WS-TRNX-TABLE (51 cards x 10 trans)
+#     - capacity boundary preserved exactly in Java translation
+#
+# Authority: AAP sections 0.1.1, 0.4.1, 0.6.5, 0.6.11, 0.7.5
+# Capture procedure: java/MIGRATION_NOTES.md section 1.6
+# Test class: com.blitzy.carddemo.tests.golden.CbStm03AGoldenTest (@Disabled)
+# DO NOT hand-edit. Replace via genuine COBOL capture only.
