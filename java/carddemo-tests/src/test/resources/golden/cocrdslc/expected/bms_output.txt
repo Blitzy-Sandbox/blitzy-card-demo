@@ -1,0 +1,13 @@
+# COCRDSLC bms_output.txt -- PENDING COBOL baseline capture
+# See java/MIGRATION_NOTES.md section 1.6 for capture procedure.
+# Until captured, the consuming test class CoCrdSlCGoldenTest is @Disabled
+# per AAP section 0.6.11.
+#
+# After capture, this file contains approximately 12 BMS SEND MAP frames
+# (one per scenario in input_scenario.txt), each separated by
+# "=== SCENARIO n ===" markers.
+# Each frame is the 1920-byte (24x80) symbolic map dump from CCRDSLAO.
+# PAN masking per AAP section 0.7.2: 16-digit CARDSID values MUST be masked
+# (last 4 digits visible only, e.g., "************0001").
+# Fixed Clock injection via ScopedValue per AAP section 0.6.6 so that
+# CURDATE/CURTIME fields produce deterministic byte sequences.
