@@ -31,6 +31,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -60,8 +61,13 @@ import java.util.Optional;
  *
  * <p>In the Java target:
  * <ol>
- *   <li>{@link CardCrossReferenceRepository#findFirstByXrefAcctIdOrderByXrefCardNumAsc(Long)}
- *       performs the XREF AIX lookup;</li>
+ *   <li>{@link CardCrossReferenceRepository#findByXrefAcctId(Long)}
+ *       performs the XREF AIX lookup (NONUNIQUEKEY semantics:
+ *       returns a {@link List} of zero, one, or many rows); the
+ *       service picks the first row by ascending
+ *       {@code xrefCardNum} client-side to preserve the COBOL
+ *       {@code CXACAIX STARTBR}/{@code READNEXT} ordered-browse
+ *       traversal semantics;</li>
  *   <li>{@link AccountRepository#findById(Object)} performs the account
  *       read;</li>
  *   <li>{@link CustomerRepository#findById(Object)} performs the
@@ -175,8 +181,10 @@ public class AccountViewService {
      *   <tr><td>{@code 9100-GETCARDXREF-BYACCT}
      *       (CXACAIX AIX read)</td>
      *       <td>{@link
-     *           CardCrossReferenceRepository#findFirstByXrefAcctIdOrderByXrefCardNumAsc(Long)}
-     *       on {@code card_xref}</td></tr>
+     *           CardCrossReferenceRepository#findByXrefAcctId(Long)}
+     *       on {@code card_xref}, with client-side ascending sort by
+     *       {@code xrefCardNum} to pick the first row (NONUNIQUEKEY
+     *       semantics: the AIX may return 0/1/N rows)</td></tr>
      *   <tr><td>{@code 9200-READ-CUST}</td>
      *       <td>{@link CustomerRepository#findById(Object)} on
      *       {@code customers}</td></tr>
@@ -214,13 +222,24 @@ public class AccountViewService {
         // ---- COBOL 9100-GETCARDXREF-BYACCT
         // The COBOL source uses the CXACAIX alternate index to find the
         // owning customer ID by traversing from the account back to a
-        // card record. In the Java target we go via card_xref directly.
-        Optional<CardCrossReference> xrefOpt =
-                cardCrossReferenceRepository
-                        .findFirstByXrefAcctIdOrderByXrefCardNumAsc(accountId);
+        // card record. In the Java target we go via card_xref directly:
+        // CardCrossReferenceRepository.findByXrefAcctId(...) issues a
+        // single SELECT against the idx_cardxref_acct_id index and
+        // returns all matching rows (NONUNIQUEKEY semantics from
+        // app/jcl/XREFFILE.jcl). The service then picks the first row
+        // in ascending xrefCardNum order client-side to preserve the
+        // COBOL CXACAIX STARTBR/READNEXT ordered-browse traversal
+        // (which always returned rows in ascending alternate-key
+        // order). Per the repository contract, the caller -- not the
+        // repository -- owns the cardinality decision.
+        List<CardCrossReference> xrefs =
+                cardCrossReferenceRepository.findByXrefAcctId(accountId);
         Long customerId;
-        if (xrefOpt.isPresent()) {
-            customerId = xrefOpt.get().getXrefCustId();
+        if (!xrefs.isEmpty()) {
+            CardCrossReference xref = xrefs.stream()
+                    .min(Comparator.comparing(CardCrossReference::getXrefCardNum))
+                    .orElseThrow();
+            customerId = xref.getXrefCustId();
         } else {
             // No card linked yet: surface a not-found per the COBOL
             // semantics (CXACAIX miss is propagated as FILE STATUS 23).
