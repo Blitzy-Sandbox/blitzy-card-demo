@@ -20,7 +20,6 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 import org.springframework.cache.annotation.EnableCaching;
-import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
@@ -88,15 +87,21 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
  *   <li>{@code @OpenAPIDefinition} &mdash; belongs on {@code OpenApiConfig}.</li>
  * </ul>
  *
- * <h2>JPA repositories and scheduling enabled here (CP3)</h2>
+ * <h2>Scheduling enabled here (CP3)</h2>
+ *
+ * <p>Spring Data JPA repository discovery is delegated to
+ * {@link com.awsm2.carddemo.config.JpaConfig JpaConfig}, which owns the
+ * single {@code @EnableJpaRepositories(basePackages =
+ * "com.awsm2.carddemo.repository")} declaration for the application. This
+ * follows the codebase convention (stated in the section above) of
+ * placing infrastructure annotations on dedicated {@code @Configuration}
+ * classes rather than the main entry point, and avoids the
+ * {@code BeanDefinitionOverrideException} that would occur if both
+ * locations attempted to register the same {@code @Repository} beans
+ * (Spring Boot 3.x defaults to
+ * {@code spring.main.allow-bean-definition-overriding=false}).</p>
+ *
  * <ul>
- *   <li>{@link EnableJpaRepositories} &mdash; activates Spring Data JPA
- *       repository discovery for the {@code com.awsm2.carddemo.repository}
- *       package (AAP &sect;0.4.1, &sect;0.6.2 &mdash; VSAM &rarr; RDS
- *       PostgreSQL migration via Spring Data JPA). The {@code JpaConfig}
- *       class still declares its own {@code @EnableJpaRepositories} for
- *       local self-documentation, but having the annotation here ensures
- *       repository scanning works even before {@code JpaConfig} loads.</li>
  *   <li>{@link EnableScheduling} &mdash; activates Spring's task
  *       scheduling infrastructure required by
  *       {@code SecretsManagerConfig.SecretsRotationListener#pollOnce()}
@@ -156,7 +161,6 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
 @EnableCaching
 @EnableAsync
 @EnableScheduling
-@EnableJpaRepositories(basePackages = "com.awsm2.carddemo.repository")
 @EnableTransactionManagement
 public class CardDemoApplication {
 
