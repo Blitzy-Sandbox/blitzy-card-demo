@@ -1,0 +1,24 @@
+# PLACEHOLDER - capture from COBOL per java/MIGRATION_NOTES.md section 1.6
+#
+# This file is awaiting genuine COBOL capture from STEP040 EXEC PGM=CBSTM03A
+# per app/jcl/CREASTMT.JCL line 79. The captured content MUST replace this
+# placeholder verbatim (full byte replacement, NOT appended) before the
+# companion test class CbStm03AGoldenTest can be enabled per AAP section
+# 0.6.11.
+#
+# Expected captured content (informational; see README.md for full details):
+#   - TIOT inspection DISPLAYs from app/cbl/CBSTM03A.CBL lines 270-291
+#     (DEVIATION: z/OS-specific TIOT/TCB/PSA control-block inspection;
+#     Java translation MUST emit informational equivalent OR document
+#     in java/MIGRATION_NOTES.md per AAP section 0.4.1)
+#   - On happy-path: NO error or ABEND DISPLAYs
+#
+# DEVIATION items (from app/cbl/CBSTM03A.CBL):
+#   - Lines 262-291: TIOT/TCB/PSA inspection (z/OS control blocks)
+#   - Lines 296-314: 0000-START ALTER + GO TO dispatcher
+#   - Lines 225-230: 2D in-memory table WS-TRNX-TABLE (51 cards x 10 trans)
+#
+# Authority: AAP sections 0.1.1, 0.4.1, 0.6.11, 0.7.5
+# Capture procedure: java/MIGRATION_NOTES.md section 1.6
+# Test class: com.blitzy.carddemo.tests.golden.CbStm03AGoldenTest (@Disabled)
+# DO NOT hand-edit. Replace via genuine COBOL capture only.
