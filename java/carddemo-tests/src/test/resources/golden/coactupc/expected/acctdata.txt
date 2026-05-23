@@ -1,0 +1,15 @@
+# COACTUPC golden-record ACCTDAT post-REWRITE capture (placeholder)
+# Authority: AAP section 0.1.1 (byte-for-byte parity), 0.4.1 (REWRITE + SYNCPOINT ROLLBACK), 0.6.11 (PR gate), 0.7.1 (preserve acctExpiraionDate typo), 0.7.5 (capture)
+# Source layout: app/cpy/CVACT01Y.cpy ACCOUNT-RECORD (300 bytes per record)
+# Field map (1-based offsets): ACCT-ID 1-11 (9(11)) ACCT-ACTIVE-STATUS 12 (X01) ACCT-CURR-BAL 13-24 (S9(10)V99)
+# ACCT-CREDIT-LIMIT 25-36 (S9(10)V99) ACCT-CASH-CREDIT-LIMIT 37-48 (S9(10)V99) ACCT-OPEN-DATE 49-58 (X10 yyyy-mm-dd)
+# ACCT-EXPIRAION-DATE 59-68 (X10 yyyy-mm-dd; sic: COBOL misspelling preserved per AAP 0.7.1) ACCT-REISSUE-DATE 69-78 (X10 yyyy-mm-dd)
+# ACCT-CURR-CYC-CREDIT 79-90 (S9(10)V99) ACCT-CURR-CYC-DEBIT 91-102 (S9(10)V99) ACCT-ADDR-ZIP 103-112 (X10) ACCT-GROUP-ID 113-122 (X10) FILLER 123-300 (X178)
+# Source fixture (initial state): app/data/ASCII/acctdata.txt (50 records x 300 bytes = 15000 bytes + 50 LF terminators = 15050 bytes)
+# Expected post-state per scenario: see input_scenario.txt EXPECT_ACCTDAT_UNCHANGED / EXPECT_ACCTDAT_CHANGED directives
+# In-place REWRITE invariant: file length MUST equal source fixture length; only affected 300-byte slot(s) differ
+# Sign encoding: trailing-overpunch ASCII (e.g., positive-zero { = +0, J = -1, K = -2, ..., R = -9; positive A-I = +1 through +9; { = +0, A = +1, B = +2, ..., I = +9)
+# SYNCPOINT ROLLBACK invariant (CRITICAL): for scenario pf05_save_rollback_on_custdat_fail, this file MUST be byte-identical to app/data/ASCII/acctdata.txt (Java try/finally compensating REWRITE restores pre-update bytes per AAP 0.4.1)
+# Successful REWRITE (scenario pf05_save_success_rewrite_both): file differs ONLY in the affected 300-byte slot for the edited account record
+# This file remains a placeholder until the capture procedure in java/MIGRATION_NOTES.md section 1.6 runs
+# DO NOT manually edit: regenerate via capture procedure to maintain byte-for-byte parity
