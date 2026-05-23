@@ -77,3 +77,10 @@ application.properties
 application-local.properties
 .env
 .env.local
+
+# Un-ignore the bundled classpath default application.properties shipped INSIDE
+# every shaded jar produced by carddemo-app/maven-shade-plugin. This file is
+# committed and bundled (NOT a local override); the broad rule above would
+# otherwise prevent it from being tracked. See AAP §0.2.1 and the file header
+# of java/carddemo-app/src/main/resources/application.properties for details.
+!carddemo-app/src/main/resources/application.properties
