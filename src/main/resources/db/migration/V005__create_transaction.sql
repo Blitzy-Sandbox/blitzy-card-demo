@@ -1,0 +1,942 @@
+-- =============================================================================
+-- Flyway Migration: V005__create_transaction.sql
+-- Purpose:    Create the transactions table -- the JPA-mapped relational
+--             equivalent of the COBOL VSAM cluster
+--             AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS plus its alternate index
+--             AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX. The transactions table is
+--             the central JOURNAL of every posted financial transaction in
+--             the CardDemo system -- it is the write-once-then-frequently-
+--             read fact table that powers every reporting, statement-
+--             generation, interest-calculation, and audit flow downstream
+--             of the daily transaction posting cascade.
+--
+--             Consumers (Java target services that READ from / WRITE to
+--             the transactions table):
+--               - TransactionAddService       (COBOL COTRN02C)  -- online
+--                 insertion of a single new transaction via the
+--                 POST /api/transactions REST endpoint. Uses JPA sequence
+--                 ID generation as the replacement for the COBOL
+--                 browse-to-end pattern; publishes transaction.posted to
+--                 MSK partitioned by account ID per AAP §0.6.5.
+--               - TransactionListService      (COBOL COTRN00C)  -- paginated
+--                 browse of recent transactions for a card or account; the
+--                 COTRN00.bms 10-row-per-page list screen. Uses the
+--                 composite secondary index idx_transactions_card_proc_ts
+--                 (declared below) for efficient by-card time-windowed
+--                 scans.
+--               - TransactionDetailService    (COBOL COTRN01C)  -- random
+--                 read by tran_id (the 16-character primary key) to
+--                 populate the COTRN01.bms transaction-detail screen.
+--               - BillPaymentService          (COBOL COBIL00C)  -- inserts
+--                 the offsetting transaction row when an account holder
+--                 makes a bill payment; the @Transactional boundary
+--                 simultaneously decrements acct_curr_bal (V001) and
+--                 increments transactions. Publishes account.updated to
+--                 MSK per AAP §0.4.1.
+--               - TransactionPostingService   (COBOL CBTRN01C/02C/03C) --
+--                 batch posting pipeline that reads from daily_transactions
+--                 (V011), runs the 4-stage validation cascade
+--                 (XREF lookup / Account lookup / Credit-limit check /
+--                 Card-expiration check; reject codes 100-109 preserved
+--                 verbatim per AAP §0.1.1 / §0.4.1), and INSERTs the
+--                 accepted transactions here. The composite index on
+--                 (tran_card_num, tran_proc_ts) supports the per-card
+--                 chronological scan used by the batch reconciliation
+--                 pass.
+--               - InterestCalculationService  (COBOL CBACT04C)  -- end-of-
+--                 cycle batch job that emits interest-charge transactions
+--                 via the formula (tran_cat_bal * dis_int_rate) / 1200
+--                 with BigDecimal scale 2 and RoundingMode.HALF_EVEN per
+--                 AAP §0.6.1; the resulting rows are inserted as new
+--                 transactions records.
+--               - StatementGenerationService  (COBOL CBSTM03A/03B) --
+--                 reads transactions filtered by card and statement
+--                 cycle window when printing monthly statements; the
+--                 composite index supports the date-range scan.
+--               - TransactionReportService    (COBOL CBTRN03C report
+--                 variant) -- date-windowed report generation joining
+--                 transactions with tran_type (V008), tran_category
+--                 (V009), and card_xref (V004); output written to S3 via
+--                 S3OutputService per AAP §0.4.1.
+--               - TransactionRepository (Spring Data JPA) -- exposes
+--                 findById(String tranId), paged findAll(Pageable), and
+--                 derived queries on (tran_card_num, tran_proc_ts) that
+--                 leverage the composite index; injected into every
+--                 service above.
+--
+-- Source:     app/cpy/CVTRA05Y.cpy   (TRAN-RECORD layout, RECLN 350,
+--                                     13 business fields + 20-byte
+--                                     trailing FILLER; verified L4-L18.
+--                                     Total record length:
+--                                     16 + 2 + 4 + 10 + 100 + 11 + 9 +
+--                                     50 + 50 + 10 + 16 + 26 + 26 + 20
+--                                     = 350 bytes, exactly matching the
+--                                     LISTCAT MAXLRECL=350 / AVGLRECL=350.)
+--             app/jcl/TRANFILE.jcl   (IDCAMS DEFINE CLUSTER L49-L62:
+--                                     KEYS(16 0), RECORDSIZE(350 350),
+--                                     CYLINDERS(1 5), SHAREOPTIONS(2 3),
+--                                     ERASE, INDEXED; plus REPRO step
+--                                     L67-L75 loading DALYTRAN.PS.INIT
+--                                     -> KSDS; plus DEFINE
+--                                     ALTERNATEINDEX L79-L92 KEYS(26 304)
+--                                     NONUNIQUEKEY UPGRADE
+--                                     RECORDSIZE(350,350); plus DEFINE
+--                                     PATH L96-L102 and BLDINDEX
+--                                     L106-L112 for AIX-base-cluster
+--                                     linkage.)
+--             app/catlg/LISTCAT.txt  (verifies TRANSACT.VSAM.KSDS cluster
+--                                     attributes: KEYLEN=16, RKP=0,
+--                                     MAXLRECL=350, AVGLRECL=350,
+--                                     INDEXED, SHROPTNS(2,3), CISIZE=18432,
+--                                     BUFSPACE=37376, REC-TOTAL=311;
+--                                     also confirms the AIX association
+--                                     AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX
+--                                     with the base cluster.)
+--
+-- AAP Refs:   §0.4.1 (V005 transactions; one-to-one mapping of
+--                     TRANSACT.KSDS to the transactions relational table;
+--                     the TRANSACT.VSAM.AIX KEYS(26 304) NONUNIQUEKEY
+--                     UPGRADE alternate index -- which keyed on
+--                     TRAN-PROC-TS at byte offset 304 -- is translated to
+--                     a PostgreSQL COMPOSITE secondary index
+--                     idx_transactions_card_proc_ts on
+--                     (tran_card_num, tran_proc_ts) per AAP §0.6.2 for
+--                     BETTER query coverage than the original VSAM AIX),
+--             §0.6.1 (COBOL decimal precision and BigDecimal mapping --
+--                     TRAN-AMT PIC S9(09)V99 maps to NUMERIC(11,2) where
+--                     precision = 9 (digits) + 2 (V99 fractional) = 11
+--                     and scale = 2; banker's rounding
+--                     -- RoundingMode.HALF_EVEN -- is enforced in the
+--                     Java arithmetic boundary; ON SIZE ERROR overflow
+--                     is detected via OnSizeErrorException),
+--             §0.6.2 (VSAM-to-RDS migration strategy -- KEYS(16 0) maps
+--                     to VARCHAR(16) PRIMARY KEY on tran_id (16-character
+--                     transaction-id string -- stored as VARCHAR because
+--                     transaction identifiers are conventionally treated
+--                     as opaque alphanumeric tokens, not arithmetic
+--                     values, and leading-zero / formatting preservation
+--                     is required for parallel-run byte-identical diff
+--                     validation); the AIX KEYS(26 304) NONUNIQUEKEY
+--                     translates to a regular (NOT UNIQUE) PostgreSQL
+--                     B-tree index, but the index column SET is
+--                     IMPROVED from the VSAM single-key
+--                     (TRAN-PROC-TS alone) to a COMPOSITE
+--                     (tran_card_num, tran_proc_ts) because the
+--                     dominant query patterns -- transaction list by
+--                     card with date-range filter (COTRN00C) and
+--                     date-windowed report generation (CBTRN03C) --
+--                     benefit from leading-prefix card filtering before
+--                     the timestamp scan),
+--             §0.6.5 (MSK topic ordering guarantees -- partition by
+--                     account ID; transaction.posted, account.updated,
+--                     ledger.balanced topics carry per-account ordered
+--                     event streams; the tran_card_num column on this
+--                     table is the natural Kafka partition key when
+--                     publishing the source-of-truth transaction event
+--                     after a successful insert),
+--             §0.6.6 (PCI-DSS compliance -- the tran_card_num column is
+--                     CARDHOLDER DATA per PCI-DSS scope; encryption at
+--                     rest is delegated to RDS via the customer KMS CMK
+--                     (configured in infrastructure/terraform/rds.tf);
+--                     encryption in transit via 'rds.force_ssl=1'
+--                     parameter; per AAP §0.6.6 the Java application
+--                     layer MUST mask tran_card_num in logs (PAN-like
+--                     regex enforced by CloudWatch log filters)),
+--             §0.7.1 (refactor discipline -- (a) FK to cards uses
+--                     ON DELETE NO ACTION (NEVER CASCADE) to preserve
+--                     referential integrity without surprising cascades
+--                     -- consistent with V002 cards.card_acct_id ->
+--                     accounts FK and V006 tran_cat_bal.trancat_acct_id
+--                     -> accounts FK; (b) FK to tran_type (V008) and
+--                     tran_category (V009) is INTENTIONALLY OMITTED
+--                     because those parent tables are created AFTER
+--                     V005 in the Flyway sequence -- referential
+--                     integrity for the (type, category) pair is
+--                     enforced by TransactionPostingService and
+--                     TransactionAddService at write time via the
+--                     tran_category lookup, consistent with the
+--                     identical decision in V006 tran_cat_bal),
+--             §0.7.3 (Minimal Change Clause -- preserve COBOL semantics
+--                     exactly; do NOT add CHECK constraints or business-
+--                     rule validation that did not exist in the COBOL
+--                     source; the only defense-in-depth additions are
+--                     NOT NULL declarations matching the COBOL fixed-
+--                     width every-byte-present semantic).
+--
+-- Replaces:   IDCAMS DEFINE CLUSTER for AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS
+--             in app/jcl/TRANFILE.jcl:L49-L62. The IDCAMS DEFINE
+--             ALTERNATEINDEX for AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX
+--             KEYS(26 304) NONUNIQUEKEY UPGRADE in
+--             app/jcl/TRANFILE.jcl:L79-L92 is translated to the
+--             PostgreSQL COMPOSITE secondary index
+--             idx_transactions_card_proc_ts on
+--             (tran_card_num, tran_proc_ts) created at the bottom of
+--             this migration. The composite form is AAP-mandated per
+--             §0.6.2 -- it provides BETTER coverage than the original
+--             VSAM AIX (which was on TRAN-PROC-TS alone) by enabling
+--             efficient queries like "find all transactions for card X
+--             within timestamp range Y" used by TransactionListService
+--             (COTRN00C) and the date-windowed transaction report
+--             (CBTRN03C). The IDCAMS DEFINE PATH (L99-L102) and
+--             BLDINDEX (L106-L112) steps have NO PostgreSQL equivalent
+--             -- PostgreSQL indexes are automatically synchronized with
+--             the base table on every INSERT / UPDATE / DELETE (which
+--             mirrors the VSAM UPGRADE attribute semantic). The IDCAMS
+--             REPRO step (app/jcl/TRANFILE.jcl:L67-L75) that loaded
+--             DALYTRAN.PS.INIT into the KSDS is NOT replaced by a
+--             Flyway seed migration -- transaction master data is
+--             ingested for bulk-fact purposes by Spring Batch /
+--             AWS Glue Spark jobs per AAP §0.6.2 / §0.4.1, with the
+-- =============================================================================
+-- COBOL TRAN-RECORD layout (CVTRA05Y.cpy) -> PostgreSQL column mapping
+-- -----------------------------------------------------------------------------
+--   COBOL field            PIC clause       PostgreSQL column         Type
+--   ---------------------- ---------------- ------------------------- ----------------
+--   TRAN-ID                PIC X(16)        tran_id                   VARCHAR(16) (PK)
+--   TRAN-TYPE-CD           PIC X(02)        tran_type_cd              CHAR(2)      NN
+--   TRAN-CAT-CD            PIC 9(04)        tran_cat_cd               NUMERIC(4)   NN
+--   TRAN-SOURCE            PIC X(10)        tran_source               VARCHAR(10)
+--   TRAN-DESC              PIC X(100)       tran_desc                 VARCHAR(100)
+--   TRAN-AMT               PIC S9(09)V99    tran_amt                  NUMERIC(11,2) NN
+--   TRAN-MERCHANT-ID       PIC 9(09)        tran_merchant_id          NUMERIC(9)
+--   TRAN-MERCHANT-NAME     PIC X(50)        tran_merchant_name        VARCHAR(50)
+--   TRAN-MERCHANT-CITY     PIC X(50)        tran_merchant_city        VARCHAR(50)
+--   TRAN-MERCHANT-ZIP      PIC X(10)        tran_merchant_zip         VARCHAR(10)
+--   TRAN-CARD-NUM          PIC X(16)        tran_card_num             VARCHAR(16) NN (FK)
+--   TRAN-ORIG-TS           PIC X(26)        tran_orig_ts              TIMESTAMP(6) NN
+--   TRAN-PROC-TS           PIC X(26)        tran_proc_ts              TIMESTAMP(6) NN
+--   FILLER                 PIC X(20)        OMITTED                   -- (padding)
+--
+-- Total COBOL record length: 16 + 2 + 4 + 10 + 100 + 11 + 9 + 50 + 50 +
+--                            10 + 16 + 26 + 26 + 20 = 350 bytes (per
+--                            LISTCAT MAXLRECL=350 / AVGLRECL=350 for
+--                            AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS).
+--
+-- Total PostgreSQL columns: 13 (all 13 business fields from the copybook
+--                            minus the trailing FILLER, with NO application-
+--                            added version column -- the transactions
+--                            journal is APPEND-ONLY in the COBOL source
+--                            and remains effectively append-only in the
+--                            Java target; no optimistic-lock contention
+--                            exists because rows are never UPDATEd after
+--                            insertion. Reversals are recorded as NEW
+--                            offsetting rows with their own tran_id, not
+--                            as in-place mutations of the original row,
+--                            preserving the COBOL audit-trail semantic
+--                            per AAP §0.7.2).
+--
+-- VSAM primary key position (RKP=0) and key length (KEYLEN=16 per
+-- LISTCAT) map to a VARCHAR(16) PRIMARY KEY on tran_id. The 16-character
+-- transaction-id string is stored as-is (NOT cast to BIGINT) because:
+--   (a) Transaction identifiers in CardDemo are opaque alphanumeric
+--       tokens generated by the application layer (sequence-derived in
+--       the Java target via JPA sequence + zero-padded format; CICS
+--       browse-to-end + increment in the COBOL source) and must
+--       round-trip byte-identical for parallel-run output diff
+--       validation per AAP §0.7.2;
+--   (b) Leading zeros must be preserved -- a tran_id of "0000000000000001"
+--       must NOT collapse to "1" or any other numeric representation;
+--   (c) The Java target Transaction.@Id field is declared as String,
+--       matching the COBOL PIC X(16) alphanumeric type;
+--   (d) The COBOL source's tran_id format pattern is "yyyymmddNNNNNNNN"
+--       (date prefix + sequence suffix in some flows) or pure sequence
+--       in others -- the VARCHAR(16) opaque-string mapping preserves
+--       both forms without imposing a parsing rule.
+--
+-- VSAM alternate-index key position (RKP=304, KEYLEN=26 per
+-- app/jcl/TRANFILE.jcl:L84 -- KEYS(26 304) means 26-byte key starting
+-- at byte offset 304 of the base cluster record) keyed on TRAN-PROC-TS
+-- alone. The COMPOSITE PostgreSQL secondary index
+-- idx_transactions_card_proc_ts on (tran_card_num, tran_proc_ts)
+-- declared below is the AAP-mandated improvement (§0.6.2). Rationale:
+--   - The original VSAM AIX on TRAN-PROC-TS alone supported lookups
+--     like "find all transactions processed in time window T" but
+--     required a separate full-record scan to filter by card.
+--   - The PostgreSQL composite (tran_card_num, tran_proc_ts) supports
+--     BOTH the original time-window scan (when prefixed with a card
+--     IN-list) AND the now-dominant per-card chronological scan
+--     pattern used by TransactionListService (COTRN00C) and the
+--     date-windowed transaction report (CBTRN03C) without a second
+--     index.
+--   - The leading prefix (tran_card_num) provides the same indexability
+--     as a separate by-card index would, so no third index is needed.
+--   - The VSAM NONUNIQUEKEY attribute maps directly to the PostgreSQL
+--     non-unique B-tree (CREATE INDEX without the UNIQUE keyword).
+--   - The VSAM UPGRADE attribute -- which forces the AIX to be
+--     automatically updated when the base cluster is updated -- is
+--     native PostgreSQL behavior; indexes are always kept in sync with
+--     the base table without explicit configuration.
+--
+-- Storage-tier attributes from TRANFILE.jcl that have NO PostgreSQL
+-- equivalent (PostgreSQL handles storage layout automatically and the
+-- RDS Multi-AZ topology supersedes z/OS VSAM characteristics):
+--   - CYLINDERS(1 5)         : z/OS physical allocation; not applicable
+--   - SHAREOPTIONS(2 3)      : VSAM concurrency; replaced by PostgreSQL
+--                              MVCC + JPA @Transactional isolation
+--                              (READ_COMMITTED default; stronger as
+--                              required by TransactionAddService and
+--                              TransactionPostingService boundaries)
+--   - ERASE                  : VSAM data zeroing on DELETE; replaced by
+--                              standard SQL DELETE (PostgreSQL's MVCC
+--                              tombstone is reclaimed by autovacuum).
+--                              In practice, transactions are NEVER
+--                              deleted in normal operation (audit-trail
+--                              preservation per AAP §0.7.2); the ERASE
+--                              attribute had no functional effect on
+--                              the production workload.
+--   - INDEXED                : KSDS = indexed; PostgreSQL B-tree on PK
+--                              provides the same random-access semantic
+--   - CISIZE=18432           : VSAM control-interval size; PostgreSQL
+--                              uses 8 KB pages by default and tuning is
+--                              a parameter-group concern, not a DDL one
+--   - BUFSPACE=37376         : VSAM buffer pool; PostgreSQL shared
+--                              buffers are configured at the cluster /
+--                              parameter-group level
+--   - DEFINE PATH            : VSAM PATH that relates the AIX to the
+--                              base cluster -- PostgreSQL indexes are
+--                              directly associated with the base table
+--                              and require no separate PATH entity
+--   - BLDINDEX               : VSAM AIX build step -- PostgreSQL
+--                              CREATE INDEX populates the B-tree
+--                              automatically at creation time and
+--                              maintains it on every INSERT / UPDATE /
+--                              DELETE
+--
+-- The FILLER PIC X(20) is OMITTED. It is the trailing padding that
+-- brings the COBOL record to its fixed 350-byte VSAM record length
+-- (16 + 2 + 4 + 10 + 100 + 11 + 9 + 50 + 50 + 10 + 16 + 26 + 26 + 20 =
+-- 350). PostgreSQL has no concept of fixed-width records, so this
+-- padding has no relational equivalent and is dropped per AAP §0.6.2
+-- (consistent with the FILLER-omission pattern used in V001 accounts,
+-- V002 cards, V003 customers, V006 tran_cat_bal, and V011
+-- daily_transactions).
+--
+-- The transactions table does NOT carry an application-added version
+-- column for JPA @Version optimistic locking, in deliberate contrast
+-- to V001 accounts and V002 cards. Rationale:
+--   (a) The COBOL source's transactions journal is APPEND-ONLY -- no
+--       paragraph in CBTRN02C, COTRN02C, COBIL00C, CBACT04C, or any
+--       other program updates an existing TRANSACT.VSAM.KSDS record
+--       in place;
+--   (b) Reversals are recorded as NEW offsetting rows with their own
+--       fresh tran_id, NOT as in-place mutations of the original row
+--       -- preserving the audit-trail semantic per AAP §0.7.2;
+--   (c) Without UPDATEs there is no read-modify-write race, so there
+--       is no optimistic-lock contention to detect.
+--   (d) This is the SAME RATIONALE used for V011 daily_transactions
+--       which also omits the version column for the same append-only
+--       semantic.
+-- =============================================================================
+
+
+--             V011 daily_transactions staging table serving as the
+--             intermediate hop between the upstream feed and the
+--             posting pipeline.
+-- =============================================================================
+
+create table transactions (
+    -- TRAN-ID PIC X(16); the primary VSAM KSDS key (RKP=0, KEYLEN=16
+    -- per app/catlg/LISTCAT.txt; KEYS(16 0) per
+    -- app/jcl/TRANFILE.jcl:L53). 16-character transaction-id string.
+    -- Stored as VARCHAR(16) -- NOT cast to BIGINT -- because:
+    --   (a) Transaction identifiers are opaque alphanumeric tokens in
+    --       the COBOL source (some flows use "yyyymmddNNNNNNNN", others
+    --       pure sequence) and must round-trip byte-identical for
+    --       parallel-run output diff per AAP §0.7.2;
+    --   (b) Leading-zero preservation is REQUIRED -- the ID "0000000000000001"
+    --       must NOT collapse to a numeric "1";
+    --   (c) The Java target Transaction.@Id is declared as String to
+    --       match the COBOL PIC X(16) alphanumeric type.
+    -- Spring Data JPA's TransactionRepository uses this as the @Id
+    -- (entity class: Transaction, mapping field tranId : String). The
+    -- PostgreSQL B-tree on this PK satisfies:
+    --   - TransactionDetailService random read by tran_id (COBOL
+    --     COTRN01C EXEC CICS READ DATASET('TRANSACT') RIDFLD(WS-TRAN-ID));
+    --   - InterestCalculationService append insert (COBOL CBACT04C
+    --     EXEC CICS WRITE DATASET('TRANSACT') in primary-key order);
+    --   - TransactionAddService new-row insert with application-generated
+    --     ID (COBOL COTRN02C browse-to-end + increment pattern is
+    --     replaced by a JPA sequence; the resulting ID is zero-padded
+    --     and inserted here);
+    --   - TransactionPostingService bulk insert (COBOL CBTRN02C
+    --     EXEC CICS WRITE DATASET('TRANSACT') per accepted record).
+    tran_id                    varchar(16)   not null,
+
+    -- TRAN-TYPE-CD PIC X(02); 2-character alphanumeric transaction-type
+    -- code. The COBOL source defines 7 valid values (per the
+    -- app/data/ASCII/trantype.txt fixture loaded by V013):
+    --   '01' = Purchase, '02' = Payment, '03' = Credit,
+    --   '04' = Authorization, '05' = Refund, '06' = Reversal,
+    --   '07' = Adjustment.
+    -- Leading zeros are SIGNIFICANT and MUST be preserved -- the code
+    -- is always exactly 2 characters. CHAR(2) is space-padded on read
+    -- by PostgreSQL, but since every value is exactly 2 characters
+    -- there is no padding to trim. CHAR(2) matches the type used by
+    -- V006 tran_cat_bal.trancat_type_cd, V008 tran_type.tran_type, and
+    -- V009 tran_category.tran_type_cd, so application-layer JOINs on
+    -- tran_type_cd will use existing PostgreSQL B-tree indexes
+    -- without an implicit type cast.
+    --
+    -- No SQL FOREIGN KEY to tran_type is declared here. Per AAP §0.4.1
+    -- and the agent_prompt validation checklist, the FK is INTENTIONALLY
+    -- omitted because tran_type is created in V008 and Flyway enforces
+    -- strict V<NNN> execution order (V005 must run before V008, so the
+    -- parent table does not yet exist at V005 apply time). Adding the
+    -- FK later via ALTER TABLE in a follow-on migration is out of scope
+    -- for this 15-migration plan. Referential integrity for the type
+    -- code is enforced by TransactionPostingService and
+    -- TransactionAddService at write time via the tran_type lookup
+    -- (CBTRN02C 4-stage validation cascade per AAP §0.1.1). This is
+    -- the SAME DECISION made in V006 tran_cat_bal.trancat_type_cd.
+    tran_type_cd               char(2)       not null,
+
+    -- TRAN-CAT-CD PIC 9(04); 4-digit unsigned numeric transaction-
+    -- category code (range 0001..9999). The COBOL source defines 18
+    -- valid categories (per the app/data/ASCII/trancatg.txt fixture
+    -- loaded by V014): 5 Purchase categories, 3 Payment categories,
+    -- 3 Credit categories, 3 Authorization categories, 1 Refund
+    -- category, 2 Reversal categories, and 1 Adjustment category --
+    -- joined with tran_type_cd as the (type, category) composite that
+    -- uniquely identifies a transaction-category bucket per V009
+    -- tran_category and V006 tran_cat_bal.
+    --
+    -- NUMERIC(4) precisely captures the COBOL PIC 9(04) semantic --
+    -- 4 digits, no decimal, no sign -- matching the type used by V006
+    -- tran_cat_bal.trancat_cd and V009 tran_category.tran_cat_cd. As
+    -- with tran_type_cd, NO FK is declared here because V009 is
+    -- created after V005; the application enforces the lookup at write
+    -- time via the same 4-stage validation cascade
+    -- (TransactionPostingService).
+    tran_cat_cd                numeric(4)    not null,
+
+    -- TRAN-SOURCE PIC X(10); 10-character free-form origination-source
+    -- indicator (e.g., 'POS TERM  ', 'OPERATOR  ', 'ONLINE    ',
+    -- 'INTEREST  ', 'PAYMENT   '). NOT a foreign key -- the source
+    -- string is a denormalized tag used for downstream reporting and
+    -- audit categorization, not a strict enumeration in the COBOL
+    -- source. Optional in the COBOL record (may be space-filled for
+    -- system-generated rows), so the column is NULLABLE in PostgreSQL
+    -- -- consistent with V011 daily_transactions.dalytran_source which
+    -- shares the same byte position and value space.
+    tran_source                varchar(10),
+
+    -- TRAN-DESC PIC X(100); 100-character free-form human-readable
+    -- transaction description. May include merchant name, free text
+    -- supplied by the upstream feed, or a system-generated description
+    -- for interest charges and adjustments. The COBOL source treats
+    -- this as a display-only field with no parsing rules. NULLABLE
+    -- because the COBOL record may carry an all-space value (which the
+    -- Java ItemReader/ItemProcessor TRIMs before insert; trimmed
+    -- empty-string is then either stored as empty string or NULL
+    -- depending on the importer policy -- both representations are
+    -- preserved without information loss). Consistent with V011
+    -- daily_transactions.dalytran_desc.
+    tran_desc                  varchar(100),
+
+    -- TRAN-AMT PIC S9(09)V99; signed 9-digit integer with 2 implied
+    -- decimal places (e.g., 999999999.99 maximum, -999999999.99
+    -- minimum). The CORE MONETARY FIELD of this table. Stored as
+    -- NUMERIC(11,2) where precision = 9 (digits) + 2 (V99 fractional)
+    -- = 11 and scale = 2 -- per AAP §0.6.1.
+    --
+    -- *** MONETARY FIELD -- BIGDECIMAL ARITHMETIC RULES (AAP §0.6.1) ***
+    -- Banker's rounding (RoundingMode.HALF_EVEN) is enforced at the
+    -- Java service layer (TransactionPostingService,
+    -- TransactionAddService, BillPaymentService,
+    -- InterestCalculationService) per AAP §0.6.1.
+    -- NEVER use DOUBLE PRECISION, REAL, or FLOAT here -- those types
+    -- lose precision on decimal arithmetic and break parity with COBOL.
+    -- NUMERIC is arbitrary-precision exact arithmetic; rounding only
+    -- occurs at explicit scale changes (setScale / @DecimalMax /
+    -- multiply + divide chains).
+    --
+    -- The interest-charge transactions emitted by
+    -- InterestCalculationService (CBACT04C) carry an amount computed
+    -- via the COBOL formula
+    --     interest = (tran_cat_bal * dis_int_rate) / 1200
+    -- preserved verbatim per AAP §0.6.1 -- the divisor 1200 is kept
+    -- as BigDecimal.valueOf(1200) and is NOT algebraically simplified.
+    -- The Java implementation:
+    --     balance.multiply(rate)
+    --            .divide(BigDecimal.valueOf(1200),
+    --                    2, RoundingMode.HALF_EVEN)
+    -- The result (always within NUMERIC(11,2) range for valid input)
+    -- is inserted as the tran_amt of a new transactions row.
+    --
+    -- The tran_amt of V006 tran_cat_bal.tran_cat_bal is also
+    -- NUMERIC(11,2), so per-account category-balance accumulation
+    -- aligned with TransactionPostingService's INSERT-into-transactions
+    -- step shares the same precision and can be added without scale
+    -- promotion or precision loss.
+    --
+    -- ON SIZE ERROR semantics: if a transaction amount would exceed
+    -- the NUMERIC(11,2) range (|value| > 999,999,999.99) the Java
+    -- TransactionPostingService / TransactionAddService throws
+    -- OnSizeErrorException per AAP §0.6.1 (translated to HTTP 422
+    -- Unprocessable Entity by GlobalExceptionHandler for online flows,
+    -- or recorded as a reject for batch flows -- the COBOL CBTRN02C
+    -- reject code semantics 100-109 are preserved per AAP §0.4.1).
+    --
+    -- NOT NULL DEFAULT not provided -- a transaction without an amount
+    -- is meaningless. Every COBOL row carries a populated TRAN-AMT.
+    tran_amt                   numeric(11,2) not null,
+
+    -- TRAN-MERCHANT-ID PIC 9(09); unsigned 9-digit merchant identifier
+    -- (range 000000000..999999999). Logically links to a merchant
+    -- master, but NO merchant table is in scope for this refactor --
+    -- merchant attributes are denormalized onto each transaction row
+    -- (mirrors the COBOL flat-file structure). NULLABLE because the
+    -- COBOL record may carry an all-zero or all-space merchant ID for
+    -- system-generated rows (interest charges, adjustments, internal
+    -- transfers) where no real merchant exists. Stored as NUMERIC(9)
+    -- which precisely captures the COBOL PIC 9(09) semantic --
+    -- 9 digits, no decimal, no sign. Consistent with V011
+    -- daily_transactions.dalytran_merchant_id which shares the same
+    -- byte position and value space.
+    tran_merchant_id           numeric(9),
+
+    -- TRAN-MERCHANT-NAME PIC X(50); 50-character merchant display name
+    -- (e.g., 'AMAZON.COM', 'STARBUCKS', 'SHELL OIL'). NULLABLE for
+    -- system-generated rows. Stored as VARCHAR(50) which allows
+    -- trimming on read without information loss. Read by
+    -- StatementGenerationService when printing monthly statements
+    -- (line item description) and by TransactionDetailService when
+    -- populating the COTRN01.bms transaction-detail screen.
+    tran_merchant_name         varchar(50),
+
+    -- TRAN-MERCHANT-CITY PIC X(50); 50-character merchant city.
+    -- NULLABLE for system-generated rows or for online merchants where
+    -- a physical city is not meaningful.
+    tran_merchant_city         varchar(50),
+
+    -- TRAN-MERCHANT-ZIP PIC X(10); 10-character merchant ZIP/postal
+    -- code. VARCHAR(10) accommodates 5-digit US ZIP, 5+4 hyphenated
+    -- US ZIP (e.g., '78487-7965'), and international postal formats
+    -- per the source fixture. NULLABLE for system-generated rows.
+    tran_merchant_zip          varchar(10),
+
+    -- TRAN-CARD-NUM PIC X(16); 16-character card-number string
+    -- identifying the card on which this transaction was posted.
+    -- Foreign key to cards(card_num) (V002). Stored as VARCHAR(16)
+    -- (NOT BIGINT) for the same reasons as cards.card_num: opaque
+    -- identifier string, leading-zero preservation, Luhn-check / BIN-
+    -- range parsing operates on the string form, parallel-run byte-
+    -- identical output diff per AAP §0.7.2.
+    --
+    -- This column is the LEADING field of the composite secondary
+    -- index idx_transactions_card_proc_ts declared at the bottom of
+    -- this migration. The composite index supports the dominant query
+    -- patterns:
+    --   - per-card transaction list with timestamp ordering
+    --     (TransactionListService for COTRN00.bms 10-row-per-page);
+    --   - date-windowed report by card (TransactionReportService for
+    --     CBTRN03C); and
+    --   - statement-generation chronological scan per card
+    --     (StatementGenerationService for CBSTM03A/03B).
+    --
+    -- *** PCI-DSS CRITICAL NOTE (AAP §0.6.6) ***
+    -- This column contains CARDHOLDER DATA per PCI-DSS scope. The
+    -- application MUST mask tran_card_num in logs by the CloudWatch
+    -- log filter regex that detects PAN-like sequences (per AAP
+    -- §0.6.6). Encryption at rest is delegated to RDS via the customer
+    -- KMS CMK (configured in infrastructure/terraform/rds.tf);
+    -- encryption in transit via 'rds.force_ssl=1' parameter.
+    --
+    -- *** MSK PARTITION KEY NOTE (AAP §0.6.5) ***
+    -- When publishing the transaction.posted MSK event after a
+    -- successful INSERT, KafkaEventPublisher uses tran_card_num as
+    -- the partition key to guarantee per-card ordering across all
+    -- consumers. The account-id partition key would be used instead
+    -- if the upstream event-routing decision were made at the account
+    -- level -- per AAP §0.6.5, the partition strategy is "partition
+    -- by account ID" for account.updated and ledger.balanced events;
+    -- transaction.posted may partition by card or account depending
+    -- on the downstream consumer requirements. The cardinality and
+    -- ordering semantics are identical because every transaction is
+    -- bound to exactly one card and one account through card_xref
+    -- (V004).
+    tran_card_num              varchar(16)   not null,
+
+    -- TRAN-ORIG-TS PIC X(26); 26-character origination timestamp in
+    -- the format 'YYYY-MM-DD HH24:MI:SS.mmmmmm' (exactly matches
+    -- Java's java.time.LocalDateTime ISO_LOCAL_DATE_TIME without the
+    -- 'T' separator -- the format is verified against
+    -- app/data/ASCII/dailytran.txt fixture records, e.g.,
+    -- '2022-06-10 19:27:53.000000'). Stored as TIMESTAMP(6) for
+    -- microsecond precision matching the COBOL .mmmmmm fractional
+    -- suffix exactly.
+    --
+    -- This is the timestamp recorded by the upstream system when the
+    -- transaction was ORIGINATED (e.g., when the cardholder swiped
+    -- the card at a POS terminal, or when an online transaction was
+    -- authorized). It may differ from TRAN-PROC-TS by minutes (online
+    -- flows), hours (overnight settlement), or days (batch ingest of
+    -- offline POS terminal data). Read by StatementGenerationService
+    -- for the statement-line timestamp, by TransactionReportService
+    -- for date-range filtering, and by TransactionDetailService for
+    -- the COTRN01.bms display.
+    --
+    -- NOT NULL because every COBOL row carries a populated TRAN-ORIG-TS
+    -- (the COBOL fixed-width record is always fully populated; an
+    -- all-space value would fail the Java DateValidationService parse
+    -- and would have been rejected by the COBOL data-entry layer).
+    tran_orig_ts               timestamp(6)  not null,
+
+    -- TRAN-PROC-TS PIC X(26); 26-character processing timestamp in
+    -- the same 'YYYY-MM-DD HH24:MI:SS.mmmmmm' format as TRAN-ORIG-TS.
+    -- Stored as TIMESTAMP(6) for microsecond precision.
+    --
+    -- This is the timestamp recorded when the transaction was
+    -- PROCESSED by the posting pipeline (TransactionPostingService /
+    -- CBTRN02C). For online flows (COTRN02C, COBIL00C) this is the
+    -- timestamp of the REST request acceptance; for batch flows this
+    -- is the timestamp of the end-of-day posting job.
+    --
+    -- *** VSAM AIX KEY EQUIVALENT (AAP §0.6.2) ***
+    -- In the COBOL source, this column at byte offset 304 of the
+    -- 350-byte record was the search key of the VSAM alternate index
+    -- AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX (KEYS(26 304) per
+    -- app/jcl/TRANFILE.jcl:L84). The PostgreSQL composite index
+    -- idx_transactions_card_proc_ts on (tran_card_num, tran_proc_ts)
+    -- supersedes the VSAM AIX with BETTER query coverage (see the
+    -- index declaration below for full rationale).
+    --
+    -- NOT NULL because every successfully-posted transaction has a
+    -- processing timestamp (the COBOL CBTRN02C posting paragraph
+    -- always sets TRAN-PROC-TS before the WRITE).
+    tran_proc_ts               timestamp(6)  not null,
+
+    -- The trailing COBOL FILLER PIC X(20) is OMITTED. It is unused
+    -- padding that brings the COBOL record to its fixed 350-byte
+    -- VSAM record length (16 + 2 + 4 + 10 + 100 + 11 + 9 + 50 + 50 +
+    -- 10 + 16 + 26 + 26 + 20 = 350). PostgreSQL has no concept of
+    -- fixed-width records, so this padding has no relational
+    -- equivalent and is dropped per AAP §0.6.2 (consistent with the
+    -- FILLER-omission pattern used in V001 accounts, V002 cards,
+    -- V003 customers, V006 tran_cat_bal, and V011 daily_transactions).
+
+    -- Primary key constraint -- one-to-one with the COBOL VSAM KSDS
+    -- primary key (RKP=0, KEYLEN=16 per app/catlg/LISTCAT.txt;
+    -- KEYS(16 0) per app/jcl/TRANFILE.jcl:L53). Spring Data JPA's
+    -- TransactionRepository uses this as the @Id (entity class:
+    -- Transaction). The PostgreSQL B-tree on this PK satisfies:
+    --   - TransactionDetailService random read by tran_id (COBOL
+    --     COTRN01C EXEC CICS READ DATASET('TRANSACT'));
+    --   - InterestCalculationService append insert (COBOL CBACT04C
+    --     EXEC CICS WRITE DATASET('TRANSACT'));
+    --   - TransactionAddService new-row insert with application-
+    --     generated ID (COBOL COTRN02C browse-to-end + increment
+    --     pattern is replaced by a JPA sequence);
+    --   - TransactionPostingService bulk insert (COBOL CBTRN02C).
+    constraint pk_transactions primary key (tran_id),
+
+    -- Foreign key constraint -- tran_card_num references cards
+    -- (card_num) per AAP §0.6.2 and the agent_prompt directive. ON
+    -- DELETE NO ACTION (PostgreSQL default action, explicitly stated
+    -- here for clarity) is the conservative choice: if an application
+    -- attempts to DELETE a card that still has transactions rows,
+    -- PostgreSQL raises a foreign-key violation, which the
+    -- GlobalExceptionHandler translates to HTTP 409 Conflict. This
+    -- forces the application layer to delete the dependent
+    -- transactions rows (or, more typically per AAP §0.7.2 audit-
+    -- preservation, to NEVER delete them and instead deactivate the
+    -- card) BEFORE deleting the card, preserving the COBOL VSAM
+    -- cascade-delete semantic which required explicit programmatic
+    -- deletion of each related dataset record. There is NO CASCADE
+    -- here: silent cascading deletion of transactions would lose
+    -- audit history and break the AAP §0.7.2 directive that "audit
+    -- trail content -- transaction IDs, timestamps, operator codes,
+    -- and audit fields -- must continue to be emitted with the same
+    -- values and semantics." This is the SAME PATTERN used in V002
+    -- cards.card_acct_id -> accounts FK and V006
+    -- tran_cat_bal.trancat_acct_id -> accounts FK.
+    --
+    -- Note: NO FK to tran_type (V008) or tran_category (V009) is
+    -- declared here. Per AAP §0.4.1 and the agent_prompt note, these
+    -- FKs are INTENTIONALLY OMITTED because V008 and V009 are created
+    -- AFTER V005 in the Flyway sequence and the application enforces
+    -- the lookup at write time via TransactionPostingService and
+    -- TransactionAddService. This is the SAME DECISION made in V006
+    -- tran_cat_bal.
+    constraint fk_transactions_card_num foreign key (tran_card_num)
+        references cards (card_num) on delete no action
+);
+
+
+-- =============================================================================
+-- Composite secondary index idx_transactions_card_proc_ts -- replaces VSAM
+-- AIX AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX KEYS(26 304) NONUNIQUEKEY UPGRADE
+-- (app/jcl/TRANFILE.jcl:L82-L91).
+-- -----------------------------------------------------------------------------
+-- The COBOL VSAM alternate index has the following semantics that map to
+-- this PostgreSQL composite index:
+--   - KEYS(26 304)        : 26-byte key at byte offset 304 of the base
+--                           cluster record. Byte offset 304 corresponds
+--                           to TRAN-PROC-TS PIC X(26) at the trailing
+--                           position of the record's business-field
+--                           section (16 + 2 + 4 + 10 + 100 + 11 + 9 +
+--                           50 + 50 + 10 + 16 + 26 = 304 bytes precede
+--                           TRAN-PROC-TS). In the source the AIX keyed
+--                           on TRAN-PROC-TS ALONE.
+--   - NONUNIQUEKEY        : multiple transactions may share the same
+--                           processing timestamp (e.g., a batch posting
+--                           run timestamps every row to the start-of-
+--                           batch instant). -> PostgreSQL index is NOT
+--                           UNIQUE (CREATE INDEX without the UNIQUE
+--                           keyword).
+--   - UPGRADE             : the AIX is automatically synchronized with
+--                           the base cluster on every base-cluster
+--                           update. -> PostgreSQL native behavior: all
+--                           indexes are automatically maintained on
+--                           every INSERT / UPDATE / DELETE; no explicit
+--                           configuration required.
+--   - RECORDSIZE(350,350) : VSAM AIX record-size attribute, irrelevant
+--                           to PostgreSQL B-tree storage.
+--   - DEFINE PATH         : the VSAM PATH that links the AIX to the
+--                           base cluster. -> PostgreSQL indexes are
+--                           directly associated with the base table via
+--                           the CREATE INDEX ... ON transactions(...)
+--                           clause; no separate PATH entity is required.
+--   - BLDINDEX            : the VSAM step that builds the initial AIX
+--                           contents from the base cluster. ->
+--                           PostgreSQL CREATE INDEX populates the
+--                           B-tree automatically when the table already
+--                           has data (this migration runs against an
+--                           empty table, so the index is created empty
+--                           and populated incrementally on INSERT).
+--
+-- *** AAP-MANDATED IMPROVEMENT OVER THE VSAM AIX ***
+-- Per AAP §0.6.2 and the agent_prompt validation checklist, the
+-- PostgreSQL index is COMPOSITE on (tran_card_num, tran_proc_ts),
+-- NOT a single-column index on tran_proc_ts alone. Rationale:
+--
+--   (a) The dominant query patterns in the Java target are:
+--       - TransactionListService (COTRN00C) -- "list recent
+--         transactions for card X" -- prefix-scans by tran_card_num
+--         then orders by tran_proc_ts. The composite index satisfies
+--         this with a single B-tree seek + range scan.
+--       - TransactionReportService (CBTRN03C) -- "report transactions
+--         for date window W on card X (or all cards)" -- when filtered
+--         by card, uses the composite index leading prefix; when
+--         filtered only by date window, the timestamp-only scan still
+--         benefits from index-order scan (PostgreSQL Bitmap Index Scan
+--         + Recheck Cond is a fallback even when the leading column
+--         is not constrained).
+--       - StatementGenerationService (CBSTM03A/03B) -- "list all
+--         transactions for card X in statement cycle window" --
+--         identical access pattern to TransactionListService at the
+--         batch tier.
+--
+--   (b) A single-column index on tran_proc_ts alone (the literal
+--       translation of the VSAM AIX) would NOT support the per-card
+--       prefix-scan pattern efficiently -- queries would do an
+--       index scan on tran_proc_ts then a heap filter on
+--       tran_card_num, scanning every transaction in the time window
+--       regardless of card.
+--
+--   (c) The composite index on (tran_card_num, tran_proc_ts) provides
+--       a SUPERSET of the original VSAM AIX coverage:
+--       - It supports the original "by tran_proc_ts" pattern via
+--         PostgreSQL's index-order scan with the leading column
+--         unconstrained (slower than a leading-column scan but still
+--         indexed; for the dominant per-card workload this is
+--         optimal).
+--       - It supports the new dominant "by card then by timestamp"
+--         pattern with a single B-tree seek + range scan.
+--       - No second index on tran_card_num alone is needed because
+--         the leading prefix of the composite already provides that
+--         indexability.
+--
+--   (d) The COBOL VSAM AIX explicitly used NONUNIQUEKEY because
+--       multiple transactions may share a processing timestamp; the
+--       PostgreSQL composite is also NON-UNIQUE for the same reason
+--       PLUS to allow multiple transactions on the same card at the
+--       same instant (e.g., split-tender purchases recorded as
+--       separate rows with the same timestamp -- a rare but legitimate
+--       case in the COBOL source). The (tran_card_num, tran_proc_ts)
+--       composite is unique in practice for most realistic data but
+--       MUST NOT be declared UNIQUE to preserve the COBOL flexibility.
+--
+-- Consumers of this index:
+--   - TransactionListService (COBOL COTRN00C) -- paged listing of
+--     transactions for a card; the findByTranCardNumOrderByTranProcTs
+--     derived JPA query method (or a custom @Query) uses this index
+--     for the per-card chronological scan. Pageable size = 10 matches
+--     the COTRN00.bms 10-row-per-page display.
+--   - TransactionReportService (COBOL CBTRN03C report variant) --
+--     date-windowed report generation; the index supports both the
+--     by-card prefix scan and the timestamp-range scan.
+--   - StatementGenerationService (COBOL CBSTM03A/03B) -- monthly
+--     statement generation; iterates per-card transactions in
+--     statement-cycle order using the composite index.
+--   - TransactionPostingService (COBOL CBTRN01C/CBTRN02C) -- the
+--     batch reconciliation pass that compares posted transactions
+--     against the daily_transactions staging table (V011) uses this
+--     index for per-card chronological lookup.
+-- =============================================================================
+create index idx_transactions_card_proc_ts
+    on transactions (tran_card_num, tran_proc_ts);
+
+
+-- =============================================================================
+-- PostgreSQL COMMENT metadata -- discoverable via psql \d+ transactions and
+-- via JDBC DatabaseMetaData (used by Backstage / Glue / auditor tooling).
+-- Inline COMMENT ON statements make the COBOL provenance, the FILLER
+-- omission, the AIX-to-composite-index improvement, the BigDecimal
+-- arithmetic rules, the PCI-DSS card-data warning, and the append-only
+-- audit-trail semantic discoverable from the database catalog itself.
+-- Per AAP §0.7.3 refactor discipline:
+--     "Inline traceability comments: every translated paragraph carries a
+--      // COBOL: <PROGRAM>:<PARAGRAPH> comment."
+-- =============================================================================
+
+comment on table transactions is
+    'Posted transaction journal. Java target for COBOL VSAM cluster '
+    'AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS (source: app/cpy/CVTRA05Y.cpy, '
+    'app/jcl/TRANFILE.jcl, app/catlg/LISTCAT.txt). The central FACT '
+    'table that powers every reporting, statement-generation, interest-'
+    'calculation, and audit flow downstream of the daily transaction '
+    'posting cascade. Read by TransactionListService, '
+    'TransactionDetailService, TransactionReportService, '
+    'StatementGenerationService, InterestCalculationService; written by '
+    'TransactionAddService, TransactionPostingService, BillPaymentService, '
+    'InterestCalculationService. APPEND-ONLY in both the COBOL source and '
+    'the Java target -- reversals are recorded as NEW offsetting rows '
+    'with their own tran_id, never as in-place mutations of the original '
+    'row (preserves the audit-trail semantic per AAP §0.7.2). No JPA '
+    '@Version column because there is no read-modify-write contention '
+    'on append-only data. The COBOL FILLER PIC X(20) is OMITTED -- no '
+    'relational equivalent for fixed-width VSAM padding. The '
+    'TRANSACT.VSAM.AIX KEYS(26 304) NONUNIQUEKEY UPGRADE alternate index '
+    'is replaced by the PostgreSQL composite secondary index '
+    'idx_transactions_card_proc_ts on (tran_card_num, tran_proc_ts) -- '
+    'an AAP-mandated improvement over the VSAM single-key TRAN-PROC-TS '
+    'index, providing better coverage for the dominant per-card '
+    'chronological query patterns. PCI-DSS scope: contains cardholder '
+    'data (tran_card_num) -- column-level masking in logs enforced by '
+    'CloudWatch log filters per AAP §0.6.6; encryption at rest delegated '
+    'to RDS KMS CMK.';
+
+comment on column transactions.tran_id is
+    'COBOL: TRAN-ID PIC X(16). VSAM KSDS primary key (RKP=0, KEYLEN=16 '
+    'per app/catlg/LISTCAT.txt; KEYS(16 0) per app/jcl/TRANFILE.jcl:L53). '
+    '16-character transaction-id string. Stored as VARCHAR(16) (NOT '
+    'BIGINT) because transaction identifiers are opaque alphanumeric '
+    'tokens; leading-zero preservation is required for parallel-run '
+    'byte-identical output diff per AAP §0.7.2. Maps to Transaction.@Id '
+    '(String) in JPA. Application-generated via JPA sequence + '
+    'zero-padded format in the Java target (replaces the COBOL '
+    'COTRN02C browse-to-end + increment pattern).';
+
+comment on column transactions.tran_type_cd is
+    'COBOL: TRAN-TYPE-CD PIC X(02). 2-character alphanumeric '
+    'transaction-type code (01=Purchase, 02=Payment, 03=Credit, '
+    '04=Authorization, 05=Refund, 06=Reversal, 07=Adjustment per V013 '
+    'fixture). Stored as CHAR(2) to match V006 tran_cat_bal.trancat_type_cd, '
+    'V008 tran_type.tran_type, V009 tran_category.tran_type_cd. NO FK '
+    'declared (tran_type V008 is created after V005; application '
+    'enforces lookup at write time via TransactionPostingService).';
+
+comment on column transactions.tran_cat_cd is
+    'COBOL: TRAN-CAT-CD PIC 9(04). 4-digit unsigned transaction-category '
+    'code (range 0001..9999); 18 valid categories per V014 fixture. '
+    'Stored as NUMERIC(4) to match V006 tran_cat_bal.trancat_cd and V009 '
+    'tran_category.tran_cat_cd. NO FK declared (tran_category V009 is '
+    'created after V005; application enforces lookup at write time via '
+    'TransactionPostingService).';
+
+comment on column transactions.tran_source is
+    'COBOL: TRAN-SOURCE PIC X(10). 10-character free-form origination '
+    'source indicator (POS TERM, OPERATOR, ONLINE, INTEREST, PAYMENT, '
+    'etc.). NULLABLE -- system-generated rows may have all-space source. '
+    'Denormalized tag for downstream reporting and audit categorization.';
+
+comment on column transactions.tran_desc is
+    'COBOL: TRAN-DESC PIC X(100). 100-character free-form human-readable '
+    'transaction description. NULLABLE for system-generated rows. Display-'
+    'only field with no COBOL parsing rules.';
+
+comment on column transactions.tran_amt is
+    'COBOL: TRAN-AMT PIC S9(09)V99. Signed 9-digit integer + 2 implied '
+    'decimal places (range -999,999,999.99 .. +999,999,999.99). The '
+    'CORE MONETARY FIELD. Stored as NUMERIC(11,2) per AAP §0.6.1; Java '
+    'BigDecimal with RoundingMode.HALF_EVEN (banker''s rounding) at '
+    'every arithmetic boundary. NEVER use DOUBLE PRECISION / REAL / '
+    'FLOAT. ON SIZE ERROR overflow triggers OnSizeErrorException '
+    '(HTTP 422 for online, reject code for batch -- COBOL CBTRN02C '
+    'reject codes 100-109 preserved per AAP §0.4.1). Interest charges '
+    'computed via (tran_cat_bal * dis_int_rate) / 1200 with literal '
+    '1200 divisor preserved per AAP §0.6.1.';
+
+comment on column transactions.tran_merchant_id is
+    'COBOL: TRAN-MERCHANT-ID PIC 9(09). Unsigned 9-digit merchant '
+    'identifier (range 0..999,999,999). NULLABLE for system-generated '
+    'rows (interest, adjustments, internal transfers). Stored as '
+    'NUMERIC(9). Denormalized link to upstream merchant master -- no '
+    'in-scope merchant table; merchant attributes carried on each '
+    'transaction row.';
+
+comment on column transactions.tran_merchant_name is
+    'COBOL: TRAN-MERCHANT-NAME PIC X(50). 50-character merchant display '
+    'name. NULLABLE. Read by StatementGenerationService (statement line '
+    'description) and TransactionDetailService (COTRN01.bms display).';
+
+comment on column transactions.tran_merchant_city is
+    'COBOL: TRAN-MERCHANT-CITY PIC X(50). 50-character merchant city. '
+    'NULLABLE.';
+
+comment on column transactions.tran_merchant_zip is
+    'COBOL: TRAN-MERCHANT-ZIP PIC X(10). 10-character merchant postal '
+    'code. VARCHAR(10) supports 5-digit US ZIP, 5+4 hyphenated US ZIP '
+    '(e.g., 78487-7965), and international formats. NULLABLE.';
+
+comment on column transactions.tran_card_num is
+    'COBOL: TRAN-CARD-NUM PIC X(16). 16-character card-number string. '
+    'Foreign key to cards(card_num) (V002) with ON DELETE NO ACTION. '
+    'Leading column of the composite index idx_transactions_card_proc_ts '
+    'which replaces the COBOL VSAM TRANSACT.VSAM.AIX (originally keyed '
+    'on TRAN-PROC-TS alone) with an AAP-mandated improvement covering '
+    'the dominant per-card chronological access patterns. PCI-DSS '
+    'cardholder data per AAP §0.6.6 -- MUST be masked in application '
+    'logs by CloudWatch log filter regex; encryption at rest via RDS '
+    'KMS CMK; encryption in transit via rds.force_ssl=1. MSK partition '
+    'key candidate for transaction.posted topic per AAP §0.6.5.';
+
+comment on column transactions.tran_orig_ts is
+    'COBOL: TRAN-ORIG-TS PIC X(26). Origination timestamp in '
+    'YYYY-MM-DD HH24:MI:SS.mmmmmm format (matches Java LocalDateTime '
+    'ISO_LOCAL_DATE_TIME pattern). Stored as TIMESTAMP(6) for '
+    'microsecond precision matching the COBOL .mmmmmm suffix. Recorded '
+    'by the upstream system when the transaction was originated (POS '
+    'swipe, online authorization, etc.) -- may differ from tran_proc_ts '
+    'by minutes (online), hours (overnight settlement), or days (batch '
+    'ingest of offline POS data).';
+
+comment on column transactions.tran_proc_ts is
+    'COBOL: TRAN-PROC-TS PIC X(26). Processing timestamp in '
+    'YYYY-MM-DD HH24:MI:SS.mmmmmm format. Stored as TIMESTAMP(6) for '
+    'microsecond precision. Recorded when the transaction was processed '
+    'by the posting pipeline (TransactionPostingService / CBTRN02C). '
+    'TRAILING column of the composite index idx_transactions_card_proc_ts '
+    'which replaces the COBOL VSAM TRANSACT.VSAM.AIX KEYS(26 304) '
+    'NONUNIQUEKEY UPGRADE -- the AIX byte offset 304 corresponds to '
+    'this column''s position in the source record.';
+
+comment on index idx_transactions_card_proc_ts is
+    'Composite B-tree index on transactions (tran_card_num, '
+    'tran_proc_ts). AAP-mandated improvement (§0.6.2) over the COBOL '
+    'VSAM alternate index AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX with '
+    'KEYS(26 304) NONUNIQUEKEY UPGRADE (app/jcl/TRANFILE.jcl:L82-L91), '
+    'which keyed on TRAN-PROC-TS alone. The composite form on '
+    '(tran_card_num, tran_proc_ts) supports BOTH the original by-'
+    'timestamp scan AND the now-dominant per-card chronological scan '
+    'used by TransactionListService (COTRN00C; 10-row-per-page), '
+    'TransactionReportService (CBTRN03C; date-windowed report), and '
+    'StatementGenerationService (CBSTM03A/03B; statement-cycle scan). '
+    'NON-UNIQUE because multiple transactions may share the same card '
+    'and same processing timestamp (e.g., split-tender purchases or '
+    'batch-posting runs where every row is timestamped to start-of-'
+    'batch). Automatically maintained by PostgreSQL on every INSERT / '
+    'UPDATE / DELETE -- mirrors the VSAM UPGRADE attribute semantic.';
+
+
