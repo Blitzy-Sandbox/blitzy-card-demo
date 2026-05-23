@@ -16,15 +16,11 @@
  */
 package com.awsm2.carddemo.security;
 
-import com.awsm2.carddemo.exception.CardDemoException;
+import com.awsm2.carddemo.adapter.SecretsManagerService;
 import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.JwtException;
-import io.jsonwebtoken.Jws;
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.MalformedJwtException;
 import io.jsonwebtoken.security.Keys;
-import io.jsonwebtoken.security.SignatureException;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,74 +30,93 @@ import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
-import java.util.Collection;
-import java.util.Collections;
 import java.util.Date;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
- * JWT (JSON Web Token) provider — issues and validates signed JWTs for the
- * CardDemo Java target's stateless authentication layer.
+ * Issues and validates HS256-signed JWT bearer tokens for the CardDemo REST API.
  *
- * <p>Per AAP &sect;0.3.4 ("JWT bearer tokens issued by
- * {@code /api/auth/signin}") and AAP &sect;0.7.1 ("Spring Security 6 +
- * JWT + BCrypt"), this component is the single source of truth for token
- * issuance and validation. It is consumed by:</p>
+ * <p>This component replaces the CICS pseudo-conversational identity propagation
+ * model in which the {@code CARDDEMO-COMMAREA} structure (see
+ * {@code app/cpy/COCOM01Y.cpy}) carried the authenticated {@code CDEMO-USER-ID}
+ * and {@code CDEMO-USER-TYPE} between transactions. After successful
+ * authentication in {@code SignonService} (which itself replaces
+ * {@code app/cbl/COSGN00C.cbl}), this provider issues a signed JWT whose claims
+ * set mirrors the identity portion of the COMMAREA:</p>
+ *
  * <ul>
- *   <li>{@code SignonService} (replacing {@code COSGN00C}) &mdash; calls
- *       {@link #generateToken(String, String, java.util.Collection)} after
- *       BCrypt password verification succeeds.</li>
- *   <li>{@link JwtAuthenticationFilter} &mdash; calls
- *       {@link #parseAndValidate(String)} on every incoming HTTP request
- *       to authenticate the bearer.</li>
+ *   <li>{@code sub} (subject) = {@code SEC-USR-ID} (8-character user identifier
+ *       from {@code app/cpy/CSUSR01Y.cpy})</li>
+ *   <li>{@code userType} = {@code SEC-USR-TYPE} (single character: {@code 'A'}
+ *       for admin, {@code 'U'} for user)</li>
+ *   <li>{@code firstName} = {@code SEC-USR-FNAME} (display only; up to 20
+ *       chars)</li>
+ *   <li>{@code lastName} = {@code SEC-USR-LNAME} (display only; up to 20
+ *       chars)</li>
+ *   <li>{@code iss} (issuer) — fixed {@value #ISSUER} so multi-tenant
+ *       deployments can discriminate</li>
+ *   <li>{@code iat} (issued-at) and {@code exp} (expiration) standard claims
+ *       per RFC 7519</li>
  * </ul>
  *
- * <h2>Replaces (AAP &sect;0.1.1)</h2>
- * <p>Replaces: CICS pseudo-conversational COMMAREA state
- * ({@code COCOM01Y.cpy}) + RACF user identity propagation. The COBOL
- * source's user identity flowed through CICS-managed memory; the Java
- * target's identity flows through a signed JWT validated per request.</p>
+ * <h2>Key management (AAP &sect;0.6.4, &sect;0.7.1)</h2>
+ * <p>The HMAC-SHA-256 signing key is fetched at startup from AWS Secrets
+ * Manager via {@link SecretsManagerService#getSecretJsonField(String, String)}.
+ * The key value is never hardcoded, never persisted to {@code application.yml},
+ * and never logged. Only the Secrets Manager ARN is referenced in configuration
+ * &mdash; the ARN itself is non-sensitive (it is a public AWS resource
+ * identifier; the secret value behind the ARN is what is sensitive).</p>
  *
- * <h2>Refresh-scope discipline (AAP &sect;0.6.4)</h2>
- * <p>This bean is {@code @RefreshScope}-annotated so that a Secrets
- * Manager rotation event (handled by {@code SecretsManagerConfig}) triggers
- * a bean re-instantiation, picking up the rotated
- * {@code carddemo.security.jwt.signing-key} on the next token issuance or
- * validation. Existing JWTs issued under the previous key remain valid
- * until expiry &mdash; if the previous key is also still configured (the
- * standard Secrets Manager AWSCURRENT/AWSPREVIOUS pattern), this provider
- * can validate against both.</p>
+ * <p>The bean is annotated {@link RefreshScope &#64;RefreshScope} so that a
+ * Spring Cloud {@code RefreshEvent} (triggered by Secrets Manager key rotation
+ * per AAP &sect;0.6.4) destroys and re-instantiates this bean, picking up the
+ * rotated key on next bean access without restarting the application. Existing
+ * JWTs signed with the previous key will fail validation gracefully after
+ * rotation &mdash; clients re-authenticate via {@code POST /api/auth/signin}.</p>
  *
- * <h2>Key strength (AAP &sect;0.7.1)</h2>
- * <p>HMAC-SHA-256 (HS256) is the chosen algorithm because it is the
- * standard for symmetric-key JWTs in Spring ecosystem; HS512 is an
- * alternative for higher security at the cost of larger signatures.
- * RFC 7518 &sect;3.2 requires HMAC keys to be at least as long as the
- * hash output (256 bits for HS256, 512 bits for HS512). This provider
- * <strong>FAILS FAST</strong> at bean-init time if the configured signing
- * key is shorter than 256 bits (32 bytes), preventing a weak-key
- * misconfiguration from reaching production.</p>
+ * <h2>Algorithm selection (RFC 7518 &sect;3.2)</h2>
+ * <p>HS256 (HMAC-SHA-256) is the chosen JWT signature algorithm. RFC 7518
+ * &sect;3.2 mandates that HS256 keys be at least 256 bits (32 bytes) long.
+ * This provider <strong>fails fast at bean-init time</strong> if the
+ * configured signing key material is shorter than 32 bytes, preventing a
+ * weak-key misconfiguration from reaching production.</p>
  *
- * <h2>Claim set</h2>
+ * <h2>Security hygiene (AAP &sect;0.6.6, &sect;0.7.1)</h2>
  * <ul>
- *   <li>{@code sub} — the user ID (typically {@code A123} for admin or
- *       {@code U123} for regular user, uppercased)</li>
- *   <li>{@code userId} — synonym of {@code sub} for backward
- *       compatibility with consumers that expect the application-level
- *       name</li>
- *   <li>{@code roles} — list of role strings (e.g.,
- *       {@code ["ROLE_ADMIN"]})</li>
- *   <li>{@code userType} — single-character COBOL {@code SEC-USR-TYPE}
- *       value ({@code A}/{@code U}) for downstream traceability</li>
- *   <li>{@code iat} — issued-at timestamp (epoch seconds)</li>
- *   <li>{@code exp} — expiration timestamp (epoch seconds)</li>
- *   <li>{@code iss} — issuer (from {@code carddemo.security.jwt.issuer})</li>
+ *   <li>Signing key bytes are NEVER logged.</li>
+ *   <li>Issued or received tokens are NEVER logged at INFO &mdash; DEBUG only,
+ *       for development tracing.</li>
+ *   <li>Passwords are NEVER seen by this provider &mdash; password verification
+ *       is performed exclusively by
+ *       {@code BCryptPasswordEncoderBean#passwordEncoder().matches(...)} in
+ *       {@code SignonService}.</li>
+ *   <li>Only the ARN <em>suffix</em> (last 12 characters) is logged at INFO
+ *       during startup, to confirm "key loaded from the intended secret"
+ *       without exposing the full path.</li>
  * </ul>
  *
+ * <h2>Adapter isolation (AAP &sect;0.7.1)</h2>
+ * <p>This class NEVER inlines the AWS SDK {@code SecretsManagerClient}.
+ * All Secrets Manager access is delegated to {@link SecretsManagerService},
+ * the dedicated adapter for AWS Secrets Manager per the AAP rule
+ * "isolate all AWS service integrations in dedicated adapter classes &mdash;
+ * never inline AWS SDK calls in business logic".</p>
+ *
+ * <h2>Thread safety</h2>
+ * <p>This class is thread-safe after {@link #initSigningKey()} completes.
+ * The {@link SecretKey} field is assigned once during {@code @PostConstruct}
+ * and never mutated thereafter; the JJWT 0.12.x builder and parser are
+ * thread-safe per their library contract; SLF4J loggers are thread-safe by
+ * the SLF4J specification.</p>
+ *
+ * <p>Replaces: {@code COCOM01Y.cpy CARDDEMO-COMMAREA} identity propagation,
+ * established by {@code COSGN00C.cbl} {@code READ-USER-SEC-FILE} (L209-L246)
+ * on successful signon.</p>
+ *
+ * @see SecretsManagerService
  * @see JwtAuthenticationFilter
  * @see com.awsm2.carddemo.config.SecurityConfig
  */
@@ -109,266 +124,431 @@ import java.util.Objects;
 @RefreshScope
 public class JwtTokenProvider {
 
-    private static final Logger LOG = LoggerFactory.getLogger(JwtTokenProvider.class);
-
-    /** HMAC-SHA-256 minimum key size in bytes (256 bits / 8 = 32). */
-    private static final int MIN_KEY_BYTES = 32;
-
-    /** Reason code for invalid (malformed, unsigned, tampered) tokens. */
-    static final String REASON_CODE_INVALID_TOKEN = "JWT_INVALID";
-    /** Reason code for expired tokens. */
-    static final String REASON_CODE_EXPIRED_TOKEN = "JWT_EXPIRED";
-    /** Reason code for a misconfigured short signing key. */
-    static final String REASON_CODE_WEAK_KEY = "JWT_SIGNING_KEY_TOO_SHORT";
-
-    /** Claim names exposed publicly so other components can match consistently. */
-    public static final String CLAIM_USER_ID = "userId";
-    public static final String CLAIM_USER_TYPE = "userType";
-    public static final String CLAIM_ROLES = "roles";
-
     /**
-     * The signing key string sourced from
-     * {@code carddemo.security.jwt.signing-key}. In production this value
-     * is supplied by AWS Secrets Manager via
-     * {@code spring.config.import: aws-secretsmanager:...}. In local
-     * profile the {@code application.yml} fallback is a non-functional
-     * 64-character development placeholder that nonetheless meets the
-     * 32-byte minimum.
+     * SLF4J logger used for structured operational events. Per AAP
+     * &sect;0.6.6 (PCI-DSS logging discipline), this logger MUST NOT emit
+     * signing key bytes, raw JWT bytes, or full Secrets Manager ARNs at
+     * any level. Token-issuance traces are confined to DEBUG; startup
+     * confirmation is at INFO using only the ARN suffix via
+     * {@link #summarizeArn(String)}.
      */
-    private final String signingKeyValue;
-
-    /** JWT issuer claim (typically {@code "carddemo"}). */
-    private final String issuer;
-
-    /** Token expiration window in seconds (default 1 hour). */
-    private final long expirationSeconds;
-
-    /** Derived signing key after validation; computed in {@link #init()}. */
-    private SecretKey secretKey;
+    private static final Logger log = LoggerFactory.getLogger(JwtTokenProvider.class);
 
     /**
-     * Constructor injection &mdash; Spring resolves the three properties
-     * at startup. The signing key is NOT yet validated here; validation
-     * happens in {@link #init()} via {@link PostConstruct} so a missing
-     * or short key surfaces as an application-startup failure.
+     * JWT claim name carrying the COBOL {@code SEC-USR-TYPE} value ({@code 'A'}
+     * for admin or {@code 'U'} for user). Single character per the original
+     * {@code app/cpy/CSUSR01Y.cpy} {@code PIC X(01)} declaration.
+     */
+    private static final String USER_TYPE_CLAIM = "userType";
+
+    /**
+     * JWT claim name carrying the COBOL {@code SEC-USR-FNAME} value (up to 20
+     * characters per the original {@code app/cpy/CSUSR01Y.cpy}
+     * {@code PIC X(20)} declaration). Display-only; never used for
+     * authorisation decisions.
+     */
+    private static final String FIRST_NAME_CLAIM = "firstName";
+
+    /**
+     * JWT claim name carrying the COBOL {@code SEC-USR-LNAME} value (up to 20
+     * characters per the original {@code app/cpy/CSUSR01Y.cpy}
+     * {@code PIC X(20)} declaration). Display-only; never used for
+     * authorisation decisions.
+     */
+    private static final String LAST_NAME_CLAIM = "lastName";
+
+    /**
+     * Standard JWT {@code iss} claim value embedded in every issued token and
+     * required to match on every validated token. Multi-tenant deployments can
+     * differentiate by overriding this constant via subclassing (out of scope
+     * for the current AAP &mdash; one application, one issuer).
+     */
+    private static final String ISSUER = "carddemo";
+
+    /**
+     * Default JSON field name within the Secrets Manager secret payload that
+     * contains the HS256 signing key material. The field name is overridable
+     * via {@code carddemo.security.jwt.signing-key-secret-field}; default
+     * matches the convention used by the rotation Lambda's secret template.
+     */
+    private static final String DEFAULT_SIGNING_KEY_FIELD = "jwtSigningKey";
+
+    /**
+     * HS256 minimum signing-key length in bytes per RFC 7518 &sect;3.2
+     * (256 bits / 8 bits per byte = 32 bytes). Enforced at startup by
+     * {@link #initSigningKey()} &mdash; a shorter key throws
+     * {@link IllegalStateException} and fails Spring Boot context refresh.
+     */
+    private static final int MIN_HS256_KEY_BYTES = 32;
+
+    /**
+     * AWS Secrets Manager ARN that holds the JSON-encoded signing-key
+     * payload. The ARN itself is not a secret; the value behind it is.
+     * Sourced from {@code carddemo.security.jwt.signing-key-secret-arn}
+     * which in dev/prod is supplied via AWS Systems Manager Parameter
+     * Store or an environment variable on the ECS task definition. No
+     * default &mdash; missing ARN fails Spring Boot startup, which is the
+     * intended behaviour per AAP &sect;0.7.1 "fail fast on missing
+     * credentials configuration".
+     */
+    private final String signingKeySecretArn;
+
+    /**
+     * The JSON field name within the secret payload that holds the actual
+     * key material. Sourced from
+     * {@code carddemo.security.jwt.signing-key-secret-field}; defaults to
+     * {@value #DEFAULT_SIGNING_KEY_FIELD}. The field name is non-sensitive
+     * and may be logged.
+     */
+    private final String signingKeySecretField;
+
+    /**
+     * Configured JWT token time-to-live. Sourced from
+     * {@code carddemo.security.jwt.expiration}; defaults to {@code PT30M}
+     * (30 minutes) per AAP guidance "expiry tuned for security". ISO-8601
+     * duration format (e.g., {@code PT30M}, {@code PT1H}, {@code PT0S} for
+     * test-only zero TTL).
+     */
+    private final Duration expiration;
+
+    /**
+     * Adapter for AWS Secrets Manager. The sole route to Secrets Manager
+     * from this class &mdash; per AAP &sect;0.7.1, the AWS SDK
+     * {@code SecretsManagerClient} is never referenced directly here.
+     */
+    private final SecretsManagerService secretsManagerService;
+
+    /**
+     * The HMAC-SHA-256 signing key derived from the Secrets Manager-fetched
+     * key material at {@code @PostConstruct} time. Volatile is unnecessary
+     * because the field is published via the Spring bean container's
+     * happens-before guarantee and never mutated after init.
      *
-     * @param signingKey         signing key (UTF-8 bytes &ge; 32)
-     * @param issuer             JWT issuer claim
-     * @param expirationSeconds  expiration window in seconds
+     * <p>This key is treated as a secret and is NEVER logged, returned, or
+     * exposed through any public accessor on this class.</p>
+     */
+    private SecretKey signingKey;
+
+    /**
+     * Constructor injection of the Secrets Manager adapter and the three
+     * configuration properties that control signing-key resolution and
+     * token lifetime. Constructor injection is mandated by AAP &sect;0.3.3
+     * (Dependency Injection &mdash; constructor injection for all
+     * {@code @Service}, {@code @Repository}, {@code @Component}, adapter,
+     * and config beans).
+     *
+     * @param secretsManagerService the AWS Secrets Manager adapter used at
+     *                              {@link #initSigningKey()} time and on
+     *                              every {@code @RefreshScope} re-creation
+     *                              following a key rotation event; must
+     *                              not be {@code null}
+     * @param signingKeySecretArn   the AWS Secrets Manager ARN that holds
+     *                              the JSON-encoded signing-key payload;
+     *                              required, no default, fails startup if
+     *                              missing
+     * @param signingKeySecretField the JSON field name within the secret
+     *                              payload that contains the actual key
+     *                              material; defaults to
+     *                              {@value #DEFAULT_SIGNING_KEY_FIELD}
+     * @param expiration            ISO-8601 token TTL; defaults to
+     *                              {@code PT30M} (30 minutes)
      */
     public JwtTokenProvider(
-            @Value("${carddemo.security.jwt.signing-key:}") String signingKey,
-            @Value("${carddemo.security.jwt.issuer:carddemo}") String issuer,
-            @Value("${carddemo.security.jwt.expiration-seconds:3600}") long expirationSeconds) {
+            SecretsManagerService secretsManagerService,
+            @Value("${carddemo.security.jwt.signing-key-secret-arn}") String signingKeySecretArn,
+            @Value("${carddemo.security.jwt.signing-key-secret-field:jwtSigningKey}") String signingKeySecretField,
+            @Value("${carddemo.security.jwt.expiration:PT30M}") Duration expiration) {
         // Replaces: CICS COMMAREA-propagated user identity (COCOM01Y.cpy) +
-        // RACF identity propagation.
-        this.signingKeyValue = (signingKey == null) ? "" : signingKey;
-        this.issuer = (issuer == null || issuer.isBlank()) ? "carddemo" : issuer;
-        this.expirationSeconds = (expirationSeconds > 0L) ? expirationSeconds : 3600L;
+        // RACF identity propagation. Constructor capture only — the actual
+        // Secrets Manager fetch is deferred to @PostConstruct so the bean
+        // factory can complete construction and dependency injection before
+        // any I/O occurs.
+        this.secretsManagerService = Objects.requireNonNull(secretsManagerService, "secretsManagerService");
+        this.signingKeySecretArn = Objects.requireNonNull(signingKeySecretArn, "signingKeySecretArn");
+        this.signingKeySecretField = Objects.requireNonNull(signingKeySecretField, "signingKeySecretField");
+        this.expiration = Objects.requireNonNull(expiration, "expiration");
     }
 
     /**
-     * Validates the configured signing key length and derives the HMAC
-     * {@link SecretKey} used by jjwt for sign / verify. Fail-fast on a
-     * short key: an application startup is preferable to a runtime
-     * vulnerability.
+     * Fetches the HS256 signing key material from AWS Secrets Manager and
+     * derives the {@link SecretKey} used by JJWT for signing and
+     * verification. Invoked once during bean initialisation and again each
+     * time {@link RefreshScope &#64;RefreshScope} re-creates the bean on
+     * Secrets Manager rotation (AAP &sect;0.6.4).
+     *
+     * <p>Validation gates:</p>
+     * <ol>
+     *   <li>The Secrets Manager call MUST resolve the configured field; an
+     *       empty {@link Optional} or blank value fails startup.</li>
+     *   <li>The key material MUST decode to at least 32 bytes
+     *       ({@value #MIN_HS256_KEY_BYTES}) of UTF-8 to satisfy
+     *       RFC 7518 &sect;3.2 for HS256.</li>
+     * </ol>
+     *
+     * <p>Replaces: hardcoded plaintext {@code SEC-USR-PWD} comparison in
+     * {@code COSGN00C.cbl} L223 ({@code IF SEC-USR-PWD = WS-USER-PWD}).
+     * JWT signing material is now centrally rotated by AWS Secrets Manager
+     * and never stored alongside user records.</p>
+     *
+     * @throws IllegalStateException if the configured secret does not yield
+     *                               a key that meets the HS256 length
+     *                               requirement
      */
     @PostConstruct
-    void init() {
-        // Replaces: RFC 7518 §3.2 enforcement that was implicit in CICS
-        // (CICS handled session security; now the application proves key
-        // strength itself).
-        byte[] keyBytes = signingKeyValue.getBytes(StandardCharsets.UTF_8);
-        if (keyBytes.length < MIN_KEY_BYTES) {
-            // PCI-DSS-safe error: byte count only, never the key value.
-            String msg = "JWT signing key is " + keyBytes.length
-                    + " bytes; HS256 requires at least " + MIN_KEY_BYTES + " bytes (256 bits)";
-            LOG.error("JWT key validation FAILED bytes={} required={}",
-                    keyBytes.length, MIN_KEY_BYTES);
-            throw new CardDemoException(REASON_CODE_WEAK_KEY, msg, null);
+    void initSigningKey() {
+        // Replaces: hardcoded plaintext SEC-USR-PWD comparison in
+        // COSGN00C.cbl L223 (IF SEC-USR-PWD = WS-USER-PWD). JWT signing
+        // material is centrally rotated via AWS Secrets Manager and is
+        // never persisted alongside user records.
+        if (signingKeySecretArn.isBlank()) {
+            throw new IllegalStateException(
+                    "carddemo.security.jwt.signing-key-secret-arn must be configured (AWS Secrets Manager ARN)");
         }
-        // hmacShaKeyFor selects HS256/HS384/HS512 based on the input key
-        // size; 32-63 bytes → HS256, 64+ → HS512 capacity.
-        this.secretKey = Keys.hmacShaKeyFor(keyBytes);
-        LOG.info("JWT signing key validated bytes={} issuer={} expirationSeconds={}",
-                keyBytes.length, issuer, expirationSeconds);
+        // SecretsManagerService.getSecretJsonField returns Optional<String>
+        // — Optional.empty() when the JSON field is absent or explicitly
+        // null; Optional.of("") when the field is present but blank. Both
+        // conditions are treated as misconfiguration and fail startup.
+        Optional<String> keyMaterialOpt =
+                secretsManagerService.getSecretJsonField(signingKeySecretArn, signingKeySecretField);
+        if (keyMaterialOpt.isEmpty() || keyMaterialOpt.get().isBlank()) {
+            throw new IllegalStateException(
+                    "JWT signing key not found in Secrets Manager (ARN suffix=" + summarizeArn(signingKeySecretArn)
+                            + ", field=" + signingKeySecretField + ")");
+        }
+        String keyMaterial = keyMaterialOpt.get();
+        byte[] keyBytes = keyMaterial.getBytes(StandardCharsets.UTF_8);
+        if (keyBytes.length < MIN_HS256_KEY_BYTES) {
+            // PCI-DSS-safe error message: byte count only, never the key
+            // bytes themselves. The byte count alone gives operators
+            // enough information to diagnose a misconfiguration without
+            // leaking key material in logs or stack traces.
+            throw new IllegalStateException(
+                    "JWT signing key is too short for HS256 (need at least " + MIN_HS256_KEY_BYTES
+                            + " bytes / 256 bits); got " + keyBytes.length
+                            + " bytes from Secrets Manager (ARN suffix=" + summarizeArn(signingKeySecretArn) + ")");
+        }
+        // Keys.hmacShaKeyFor selects HS256/HS384/HS512 based on the input
+        // key size: 32-47 bytes → HS256, 48-63 → HS384, 64+ → HS512. We
+        // explicitly require >= 32 bytes above and then sign exclusively
+        // with Jwts.SIG.HS256 in issueToken() — the resulting JWA header
+        // will always be {"alg":"HS256","typ":"JWT"}.
+        this.signingKey = Keys.hmacShaKeyFor(keyBytes);
+        // Operational confirmation: ARN suffix only, never the key bytes.
+        // INFO level is acceptable here because (a) the message fires at
+        // most twice per application lifetime (initial start + each
+        // rotation) and (b) the truncated ARN is not sensitive while the
+        // confirmation it carries is valuable for ops correlation.
+        log.info("JwtTokenProvider initialized with HS256 signing key from Secrets Manager (ARN suffix={}, ttl={})",
+                summarizeArn(signingKeySecretArn), expiration);
     }
 
     // ---------------------------------------------------------------------
-    // Public API — generation and validation
+    // Public API — token issuance
     // ---------------------------------------------------------------------
 
     /**
-     * Generates a signed JWT for the supplied principal.
+     * Issues a signed HS256 JWT carrying the supplied identity claims.
      *
-     * @param userId    the user ID (will be uppercased for consistency
-     *                  with the COBOL convention of always-uppercase
-     *                  USRID); must not be {@code null}/blank
-     * @param userType  single-character COBOL {@code SEC-USR-TYPE}
-     *                  ({@code A} or {@code U}); may be {@code null}
-     * @param roles     authorities to embed in the {@code roles} claim;
-     *                  may be {@code null} or empty
-     * @return the signed compact JWT
-     * @throws IllegalArgumentException if {@code userId} is blank
+     * <p>The token's claim set mirrors the COBOL {@code CARDDEMO-COMMAREA}
+     * identity propagation pattern (COCOM01Y.cpy) but is cryptographically
+     * signed rather than carried in CICS-managed memory:</p>
+     *
+     * <ul>
+     *   <li>{@code sub} = {@code userId} (verbatim, no normalisation
+     *       performed here &mdash; the caller is responsible for upper-
+     *       casing to match the COBOL convention; see
+     *       {@code SignonService})</li>
+     *   <li>{@code iss} = {@value #ISSUER}</li>
+     *   <li>{@code iat} = now (UTC)</li>
+     *   <li>{@code exp} = now + configured {@link #expiration}</li>
+     *   <li>{@code userType} = {@code userType}</li>
+     *   <li>{@code firstName} = {@code firstName} or {@code ""} if
+     *       {@code null}</li>
+     *   <li>{@code lastName} = {@code lastName} or {@code ""} if
+     *       {@code null}</li>
+     * </ul>
+     *
+     * @param userId    the 8-character user identifier (COBOL
+     *                  {@code SEC-USR-ID}); must not be {@code null}
+     * @param userType  single-character user type (COBOL
+     *                  {@code SEC-USR-TYPE}: {@code 'A'} admin /
+     *                  {@code 'U'} user); must not be {@code null}
+     * @param firstName the user's first name (COBOL {@code SEC-USR-FNAME},
+     *                  up to 20 chars); may be {@code null} or blank
+     * @param lastName  the user's last name (COBOL {@code SEC-USR-LNAME},
+     *                  up to 20 chars); may be {@code null} or blank
+     * @return the compact JWT bearer token string ready for the
+     *         {@code Authorization: Bearer ...} header
+     * @throws NullPointerException if {@code userId} or {@code userType} is
+     *                              {@code null}
      */
-    public String generateToken(String userId, String userType, Collection<String> roles) {
-        // Replaces: signon success path in COSGN00C — now issues a JWT
-        // instead of populating CICS COMMAREA fields CDEMO-USRID / CDEMO-USRTYPE.
-        if (userId == null || userId.isBlank()) {
-            throw new IllegalArgumentException("userId must not be null/blank");
-        }
-        String normalizedUserId = userId.toUpperCase(java.util.Locale.US);
+    public String issueToken(String userId, String userType, String firstName, String lastName) {
+        Objects.requireNonNull(userId, "userId");
+        Objects.requireNonNull(userType, "userType");
+        // COBOL: COSGN00C.cbl L222-L240 — on successful READ USRSEC + password
+        //        match, populate CDEMO-USER-ID, CDEMO-USER-TYPE in
+        //        CARDDEMO-COMMAREA, then XCTL.
+        //        Java equivalent: build a signed JWT carrying those identity
+        //        claims. The CICS-managed COMMAREA persistence is replaced
+        //        by the cryptographically signed bearer token returned here.
         Instant now = Instant.now();
-        Instant exp = now.plusSeconds(expirationSeconds);
-
-        // Build the claims map up-front so we can include both `sub` and
-        // `userId` consistently and emit `roles` as a real JSON array
-        // (jjwt 0.12 supports List<String> via the addClaims helper).
-        Map<String, Object> claims = new LinkedHashMap<>();
-        claims.put(CLAIM_USER_ID, normalizedUserId);
-        if (userType != null && !userType.isBlank()) {
-            claims.put(CLAIM_USER_TYPE, userType.toUpperCase(java.util.Locale.US));
-        }
-        claims.put(CLAIM_ROLES,
-                (roles == null) ? Collections.emptyList() : List.copyOf(roles));
-
-        return Jwts.builder()
-                .claims(claims)
-                .subject(normalizedUserId)
-                .issuer(issuer)
+        Instant exp = now.plus(expiration);
+        String fname = (firstName == null) ? "" : firstName;
+        String lname = (lastName == null) ? "" : lastName;
+        // JJWT 0.12.x builder API: fluent setters use the unprefixed
+        // standard claim names (issuer, subject, issuedAt, expiration);
+        // custom claims use .claim(name, value). The signing key + algorithm
+        // are supplied together via signWith(key, alg) so JJWT can validate
+        // the key/alg combination at compact() time.
+        String token = Jwts.builder()
+                .issuer(ISSUER)
+                .subject(userId)
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(exp))
-                .signWith(secretKey, Jwts.SIG.HS256)
+                .claim(USER_TYPE_CLAIM, userType)
+                .claim(FIRST_NAME_CLAIM, fname)
+                .claim(LAST_NAME_CLAIM, lname)
+                .signWith(signingKey, Jwts.SIG.HS256)
                 .compact();
+        // PCI-DSS-safe logging: userId + userType are not sensitive on their
+        // own (they appear in audit trails per AAP §0.6.6); the token itself
+        // is NEVER logged. The ttl is logged for ops correlation.
+        log.debug("Issued JWT for user {} (type={}, ttl={})", userId, userType, expiration);
+        return token;
+    }
+
+    // ---------------------------------------------------------------------
+    // Public API — token validation
+    // ---------------------------------------------------------------------
+
+    /**
+     * Parses, verifies the signature, and validates the standard claims of
+     * a JWT bearer token. Returns the parsed {@link Claims} payload on
+     * success. Callers obtain the identity by reading
+     * {@link Claims#getSubject()} for the user ID and
+     * {@link Claims#get(String, Class)} with claim names exposed via the
+     * constants on this class.
+     *
+     * <p>This method throws on any validation failure rather than returning
+     * a status &mdash; the throw-on-fail contract matches the JJWT 0.12.x
+     * API and lets {@link JwtAuthenticationFilter} log the specific
+     * failure type (expired / malformed / signature mismatch).</p>
+     *
+     * <p>Validation gates per JJWT 0.12.x semantics:</p>
+     * <ol>
+     *   <li><strong>Signature</strong> &mdash;
+     *       {@code Jwts.parser().verifyWith(signingKey)} ensures the HMAC
+     *       signature matches the configured key. A mismatched key
+     *       (e.g., a stale token after rotation) yields
+     *       {@code io.jsonwebtoken.security.SignatureException}.</li>
+     *   <li><strong>Issuer</strong> &mdash; {@code .requireIssuer(ISSUER)}
+     *       enforces {@code iss = "carddemo"}.</li>
+     *   <li><strong>Expiration</strong> &mdash; JJWT automatically rejects
+     *       tokens whose {@code exp} is in the past with
+     *       {@link io.jsonwebtoken.ExpiredJwtException}.</li>
+     *   <li><strong>Format</strong> &mdash; malformed compact strings
+     *       (wrong number of dot-separated segments, unparseable JSON,
+     *       etc.) yield {@link io.jsonwebtoken.MalformedJwtException}.</li>
+     * </ol>
+     *
+     * @param token the compact JWT bearer string (without the
+     *              {@code "Bearer "} prefix &mdash; the filter is
+     *              responsible for prefix removal); must not be
+     *              {@code null}
+     * @return the parsed {@link Claims} payload (never {@code null} on
+     *         successful return)
+     * @throws JwtException             on any signature / format /
+     *                                  issuer / expiration validation
+     *                                  failure (this is the JJWT base
+     *                                  type for all token errors)
+     * @throws IllegalArgumentException if {@code token} is empty or
+     *                                  consists only of whitespace (JJWT
+     *                                  rejects with this type before
+     *                                  reaching the parser internals)
+     * @throws NullPointerException     if {@code token} is {@code null}
+     */
+    public Claims validateToken(String token) {
+        Objects.requireNonNull(token, "token");
+        // JJWT 0.12.x parser API:
+        //   .verifyWith(SecretKey)     — supplies the HMAC verification key
+        //   .requireIssuer(String)     — enforces iss claim equality
+        //   .build()                   — finalises the parser
+        //   .parseSignedClaims(token)  — parses, verifies signature, and
+        //                                 returns Jws<Claims>
+        //   .getPayload()              — extracts the Claims payload
+        // ExpiredJwtException is raised by parseSignedClaims when exp < now.
+        return Jwts.parser()
+                .verifyWith(signingKey)
+                .requireIssuer(ISSUER)
+                .build()
+                .parseSignedClaims(token)
+                .getPayload();
     }
 
     /**
-     * Parses and validates a JWT compact string. Verifies the signature
-     * with the configured signing key, checks issuer + expiration, and
-     * returns the parsed claims.
+     * Convenience predicate equivalent to invoking
+     * {@link #validateToken(String)} and returning {@code false} on any
+     * failure. Intended for non-filter callers (tests, ad-hoc validity
+     * checks); production callers should prefer {@link #validateToken}
+     * directly so they can distinguish between expired and malformed
+     * tokens.
      *
-     * @param token  the compact JWT (with or without a leading
-     *               {@code "Bearer "} prefix)
-     * @return the validated claims
-     * @throws CardDemoException with reason
-     *         {@link #REASON_CODE_EXPIRED_TOKEN} when the token's
-     *         {@code exp} is in the past, or
-     *         {@link #REASON_CODE_INVALID_TOKEN} for any other parse /
-     *         signature / format error
+     * @param token the compact JWT bearer string
+     * @return {@code true} if {@code token} is a valid, signed,
+     *         unexpired CardDemo-issued JWT; {@code false} for any
+     *         validation failure or null input
      */
-    public Claims parseAndValidate(String token) {
-        // Replaces: COMMAREA validation in every CICS pseudo-conversational
-        // re-entry — now per-request JWT verification.
-        if (token == null || token.isBlank()) {
-            throw new CardDemoException(REASON_CODE_INVALID_TOKEN,
-                    "JWT token is null or blank", null);
+    public boolean isValid(String token) {
+        if (token == null) {
+            return false;
         }
-        String stripped = stripBearerPrefix(token);
         try {
-            Jws<Claims> jws = Jwts.parser()
-                    .verifyWith(secretKey)
-                    .requireIssuer(issuer)
-                    .build()
-                    .parseSignedClaims(stripped);
-            return jws.getPayload();
-        } catch (ExpiredJwtException e) {
-            // PCI-DSS-safe logging: do not log the token. Log only the
-            // claim subject which is the user ID — useful for ops.
-            String sub = e.getClaims() != null ? e.getClaims().getSubject() : "unknown";
-            LOG.warn("JWT expired sub={} cause={}", sub, e.getMessage());
-            throw new CardDemoException(REASON_CODE_EXPIRED_TOKEN,
-                    "JWT token is expired", e);
-        } catch (SignatureException | MalformedJwtException e) {
-            LOG.warn("JWT signature/format invalid cause={}", e.getMessage());
-            throw new CardDemoException(REASON_CODE_INVALID_TOKEN,
-                    "JWT signature/format invalid", e);
-        } catch (JwtException | IllegalArgumentException e) {
-            LOG.warn("JWT parse failure cause={}", e.getMessage());
-            throw new CardDemoException(REASON_CODE_INVALID_TOKEN,
-                    "JWT could not be parsed", e);
-        }
-    }
-
-    /**
-     * Convenience predicate equivalent to {@code parseAndValidate(token)}
-     * but returns {@code false} for any failure instead of throwing. Used
-     * by {@link JwtAuthenticationFilter} to gate authentication without
-     * the cost of try/catch unwinding in the hot path; the filter follows
-     * up with {@link #parseAndValidate(String)} when valid to extract the
-     * claims.
-     *
-     * @param token the compact JWT
-     * @return {@code true} if the token is signature-valid, issuer-valid,
-     *         and unexpired; {@code false} otherwise
-     */
-    public boolean validateToken(String token) {
-        // Replaces: implicit CICS session validation that happened on every
-        // pseudo-conversational re-entry.
-        try {
-            parseAndValidate(token);
+            validateToken(token);
             return true;
-        } catch (CardDemoException e) {
+        } catch (JwtException | IllegalArgumentException ex) {
+            // Don't log here — isValid() is invoked from hot paths where
+            // log lines per invalid token can saturate CloudWatch. Callers
+            // that want detail invoke validateToken() and catch directly.
             return false;
         }
     }
 
     /**
-     * Reads the {@code roles} claim from a validated token.
+     * Returns the configured token time-to-live. Consumed by
+     * {@code SignonService} when populating {@code SignonResponseDto.expiresAt}
+     * so the client knows when to refresh proactively.
      *
-     * @param claims parsed claims (from {@link #parseAndValidate(String)})
-     * @return immutable list of role strings; never {@code null}
+     * @return the configured ISO-8601 {@link Duration}; never {@code null}
      */
-    @SuppressWarnings("unchecked")
-    public List<String> getRoles(Claims claims) {
-        Objects.requireNonNull(claims, "claims must not be null");
-        Object raw = claims.get(CLAIM_ROLES);
-        if (raw instanceof List<?> list) {
-            // The roles claim is a JSON array of strings; jjwt deserializes
-            // it as List<?> — defensively coerce to List<String>.
-            return ((List<Object>) list).stream()
-                    .filter(Objects::nonNull)
-                    .map(Object::toString)
-                    .toList();
-        }
-        return Collections.emptyList();
-    }
-
-    /**
-     * Reads the {@code userId} claim from a validated token, falling back
-     * to {@code sub} if {@code userId} is absent.
-     *
-     * @param claims parsed claims
-     * @return the user ID, uppercased per COBOL convention; never
-     *         {@code null}/blank if the token was generated by this
-     *         provider
-     */
-    public String getUserId(Claims claims) {
-        Objects.requireNonNull(claims, "claims must not be null");
-        Object userIdClaim = claims.get(CLAIM_USER_ID);
-        if (userIdClaim instanceof String s && !s.isBlank()) {
-            return s.toUpperCase(java.util.Locale.US);
-        }
-        return (claims.getSubject() == null) ? ""
-                : claims.getSubject().toUpperCase(java.util.Locale.US);
+    public Duration getExpiration() {
+        return expiration;
     }
 
     // ---------------------------------------------------------------------
-    // Helpers
+    // Helpers — package-private/private utilities
     // ---------------------------------------------------------------------
 
     /**
-     * Strips the optional {@code "Bearer "} prefix from a token string.
-     * The match is case-insensitive on the {@code "Bearer"} keyword and
-     * tolerates extra whitespace, mirroring the RFC 6750 syntax.
+     * Truncates a Secrets Manager ARN to its last 12 characters for safe
+     * logging. ARNs follow the form
+     * {@code arn:aws:secretsmanager:<region>:<acct>:secret:<name>-<suffix>}
+     * &mdash; the trailing random suffix is sufficient to disambiguate
+     * different secrets in logs without revealing the secret name, account
+     * ID, or region.
+     *
+     * @param arn the full ARN, or {@code null}
+     * @return the last 12 characters prefixed by {@code "..."}, or the
+     *         full ARN if it is 12 characters or fewer, or the literal
+     *         {@code "(null)"} if the input is {@code null}
      */
-    static String stripBearerPrefix(String token) {
-        if (token == null) {
-            return "";
+    private static String summarizeArn(String arn) {
+        // Defensive: arn should never be null at this point (constructor
+        // requireNonNull and @Value would have failed startup), but the
+        // helper is also invoked in error-message construction paths
+        // where a defensive default avoids cascading NPEs.
+        if (arn == null) {
+            return "(null)";
         }
-        String trimmed = token.trim();
-        if (trimmed.length() > 7 && trimmed.substring(0, 7).equalsIgnoreCase("Bearer ")) {
-            return trimmed.substring(7).trim();
-        }
-        return trimmed;
+        return arn.length() <= 12 ? arn : "..." + arn.substring(arn.length() - 12);
     }
 }

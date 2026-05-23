@@ -651,6 +651,20 @@ carddemo:
       expiration-seconds: 3600
       access-token-ttl-minutes: 60
       refresh-token-ttl-minutes: 1440
+      # ----- JwtTokenProvider test profile overrides -----
+      # The ARN is a test-only LocalStack-style placeholder. The actual
+      # SecretsManagerService bean is overridden via @TestConfiguration in
+      # `CardDemoApplicationTests` to return a fixed test key WITHOUT
+      # making any real Secrets Manager API call (AAP §0.7.1 — tests must
+      # not require real Secrets Manager access). Any non-blank value
+      # satisfies the @Value injection on `JwtTokenProvider`; the actual
+      # key material is supplied by the mocked SecretsManagerService.
+      signing-key-secret-arn: arn:aws:secretsmanager:us-east-1:000000000000:secret:carddemo/test/jwt-signing-key-tEsT01
+      signing-key-secret-field: jwtSigningKey
+      # Shorter TTL than production for tests that exercise the expiration
+      # path; the smoke test does not actually issue tokens, so this value
+      # only affects test classes that exercise issueToken() directly.
+      expiration: PT5M
     bcrypt:
       # BCrypt cost factor 4 = 2^4 = 16 rounds (~256× faster than the
       # production strength of 12 = 2^12 = 4096 rounds). This accelerates

@@ -419,6 +419,28 @@ carddemo:
       expiration-seconds: 3600
       access-token-ttl-minutes: 60
       refresh-token-ttl-minutes: 1440
+      # -----------------------------------------------------------------------
+      # JwtTokenProvider (programmatic Secrets Manager fetch via
+      # SecretsManagerService adapter) — LocalStack-backed in the local profile.
+      # -----------------------------------------------------------------------
+      # JwtTokenProvider.initSigningKey() reads the JWT HMAC-SHA256 signing key
+      # at @PostConstruct from AWS Secrets Manager via the
+      # SecretsManagerService adapter. The ARN below targets a LocalStack
+      # endpoint (created by localstack/init/init-aws.sh during local
+      # bootstrap) so that the local dev loop exercises the same code path as
+      # dev/prod without contacting real AWS. The JSON payload at this ARN is
+      # expected to contain a field named `jwtSigningKey` holding a ≥ 32-byte
+      # signing key (e.g.,
+      #   {"jwtSigningKey":"local-development-only-jwt-signing-secret-32-bytes-min-length"}).
+      # When the ARN is unavailable (LocalStack not started or seed not
+      # applied), JwtTokenProvider fails fast at startup with a clear
+      # IllegalStateException — matching the AAP §0.7.1 fail-fast contract
+      # for missing credentials.
+      signing-key-secret-arn: ${JWT_SIGNING_KEY_SECRET_ARN:arn:aws:secretsmanager:us-east-1:000000000000:secret:carddemo/local/jwt-signing-key-lOcAl0}
+      signing-key-secret-field: ${JWT_SIGNING_KEY_SECRET_FIELD:jwtSigningKey}
+      # ISO-8601 token TTL — 60 minutes for local dev so developers do not have
+      # to re-authenticate during a typical local debugging session.
+      expiration: ${JWT_EXPIRATION:PT60M}
 
   # ---------------------------------------------------------------------------
   # Cache TTLs — short for local dev to surface staleness bugs quickly

@@ -558,6 +558,23 @@ carddemo:
       expiration-seconds: 3600
       access-token-ttl-minutes: 60
       refresh-token-ttl-minutes: 1440
+      # ----- JwtTokenProvider (AAP §0.6.4 — programmatic Secrets Manager fetch)
+      # The HS256 signing key is fetched at runtime by
+      # `com.awsm2.carddemo.security.JwtTokenProvider` via the
+      # `SecretsManagerService` adapter. The ARN is non-sensitive (it is a
+      # public AWS resource identifier); only the secret value behind it is
+      # sensitive. The `signing-key-secret-arn` is overridden per profile:
+      #   local  — LocalStack-created test secret (init-aws.sh)
+      #   dev    — real Secrets Manager ARN injected via env var
+      #   prod   — real Secrets Manager ARN injected via env var
+      #   test   — placeholder ARN; SecretsManagerService is mocked
+      # The `signing-key-secret-field` is the JSON field name within the
+      # secret payload (default `jwtSigningKey` per the rotation Lambda
+      # template). The `expiration` is ISO-8601 (default PT30M = 30 min
+      # per AAP guidance "expiry tuned for security").
+      signing-key-secret-arn: ${JWT_SIGNING_KEY_SECRET_ARN:}
+      signing-key-secret-field: ${JWT_SIGNING_KEY_SECRET_FIELD:jwtSigningKey}
+      expiration: ${JWT_EXPIRATION:PT30M}
 
   # ---------------------------------------------------------------------------
   # Cache (Redis cache-aside per AAP §0.7.1)

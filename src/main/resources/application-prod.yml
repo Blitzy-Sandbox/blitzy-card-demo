@@ -568,6 +568,27 @@ carddemo:
       expiration-seconds: 1800
       access-token-ttl-minutes: 30
       refresh-token-ttl-minutes: 720    # 12 hours
+      # -----------------------------------------------------------------------
+      # JwtTokenProvider (programmatic Secrets Manager fetch via
+      # SecretsManagerService adapter) — production profile (AAP §0.6.4 /
+      # §0.6.6 / §0.7.1).
+      # -----------------------------------------------------------------------
+      # JwtTokenProvider.initSigningKey() reads the HMAC-SHA256 signing key at
+      # @PostConstruct from AWS Secrets Manager via the SecretsManagerService
+      # adapter. The ARN is injected at ECS task deployment time and is
+      # non-sensitive (the ARN is a public AWS resource identifier; the
+      # secret VALUE is what is sensitive and lives in KMS-encrypted Secrets
+      # Manager storage per AAP §0.6.4). When a Secrets Manager rotation
+      # Lambda rotates the key, an SNS notification triggers a Spring Cloud
+      # RefreshEvent that destroys this @RefreshScope bean; on next access
+      # the bean is re-instantiated and re-fetches the rotated key — no
+      # application restart required.
+      #
+      # 30-minute production token TTL (matches expiration-seconds above) —
+      # tight window to limit replay risk if a token is intercepted.
+      signing-key-secret-arn: ${JWT_SIGNING_KEY_SECRET_ARN:arn:aws:secretsmanager:${AWS_REGION:us-east-1}:${AWS_ACCOUNT_ID:000000000000}:secret:carddemo/prod/jwt-signing-key}
+      signing-key-secret-field: ${JWT_SIGNING_KEY_SECRET_FIELD:jwtSigningKey}
+      expiration: ${JWT_EXPIRATION:PT30M}
 
   # ---------------------------------------------------------------------------
   # Cache — production-scale Redis cache (cache-aside, AAP §0.7.1)

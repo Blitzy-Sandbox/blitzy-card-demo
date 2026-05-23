@@ -572,6 +572,24 @@ carddemo:
       expiration-seconds: 3600          # 60 minutes
       access-token-ttl-minutes: 60
       refresh-token-ttl-minutes: 1440   # 24 hours
+      # -----------------------------------------------------------------------
+      # JwtTokenProvider (programmatic Secrets Manager fetch via
+      # SecretsManagerService adapter) — dev profile.
+      # -----------------------------------------------------------------------
+      # JwtTokenProvider.initSigningKey() reads the HMAC-SHA256 signing key at
+      # @PostConstruct from AWS Secrets Manager via the SecretsManagerService
+      # adapter (per AAP §0.6.4 / §0.7.1). The ARN below is supplied at
+      # deployment time by the ECS task definition (Terraform-managed) so
+      # that no credential value appears in this YAML — only the ARN, which
+      # is non-sensitive. The same secret backs the `spring.config.import`
+      # auto-import for `signing-key: ${key}` above; both paths converge on
+      # the same Secrets Manager value, but the programmatic path is used by
+      # JwtTokenProvider so that key rotation triggers @RefreshScope
+      # rebuilding without restart (per AAP §0.6.4).
+      signing-key-secret-arn: ${JWT_SIGNING_KEY_SECRET_ARN:arn:aws:secretsmanager:${AWS_REGION:us-east-1}:${AWS_ACCOUNT_ID:000000000000}:secret:carddemo/dev/jwt-signing-key}
+      signing-key-secret-field: ${JWT_SIGNING_KEY_SECRET_FIELD:jwtSigningKey}
+      # ISO-8601 token TTL — 60 minutes for dev (matches expiration-seconds).
+      expiration: ${JWT_EXPIRATION:PT60M}
 
   # ---------------------------------------------------------------------------
   # Cache — Redis cache-aside (AAP §0.7.1)

@@ -16,11 +16,17 @@
  */
 package com.awsm2.carddemo;
 
+import com.awsm2.carddemo.adapter.SecretsManagerService;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.opensearch.client.opensearch.OpenSearchClient;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.test.context.ActiveProfiles;
@@ -32,6 +38,8 @@ import software.amazon.awssdk.services.glue.GlueClient;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import software.amazon.awssdk.services.sfn.SfnClient;
+
+import java.util.Optional;
 
 /**
  * Foundational Spring Boot context-load smoke test for the entire CardDemo
@@ -161,7 +169,76 @@ import software.amazon.awssdk.services.sfn.SfnClient;
 @SpringBootTest
 @ActiveProfiles("test")
 @Testcontainers
+@Import(CardDemoApplicationTests.TestSecretsManagerConfiguration.class)
 class CardDemoApplicationTests {
+
+    // -------------------------------------------------------------------------
+    // @TestConfiguration — stub SecretsManagerService for JwtTokenProvider
+    // -------------------------------------------------------------------------
+    // JwtTokenProvider is annotated @Component @RefreshScope and performs an
+    // eager Secrets Manager fetch in its @PostConstruct lifecycle hook to load
+    // the HS256 signing key. In the production runtime that fetch returns a
+    // KMS-protected key from AWS Secrets Manager; in this smoke test we must
+    // supply a deterministic stub that returns a ≥ 32-byte string so that
+    // Keys.hmacShaKeyFor(...) accepts the material (HS256 requires a 256-bit
+    // / 32-byte symmetric key per RFC 7518).
+    //
+    // Why a @TestConfiguration with @Primary instead of @MockBean:
+    //   * @MockBean would register the mock, but Mockito stubbing happens AFTER
+    //     context refresh (typically inside @BeforeEach), which is too late —
+    //     JwtTokenProvider's @PostConstruct fires DURING context refresh and
+    //     would see an unstubbed mock returning Mockito's default Optional
+    //     (Optional.empty()), causing IllegalStateException at startup.
+    //   * A @TestConfiguration registered via @Import provides the stub at
+    //     bean-definition time, so it is fully configured before
+    //     @PostConstruct fires.
+    //   * @Primary ensures this stub takes precedence over the real
+    //     SecretsManagerService bean registered by component scan in
+    //     com.awsm2.carddemo.adapter.
+    //
+    // No real AWS Secrets Manager call is made — the stub returns a static
+    // test-only key string for any (arn, fieldName) tuple. The key is a
+    // 60-byte ASCII placeholder (well above the 32-byte HS256 minimum) that
+    // is NEVER used for production token issuance.
+    /**
+     * Provides a stubbed {@link SecretsManagerService} bean for the duration
+     * of {@link CardDemoApplicationTests}. The stub returns a deterministic
+     * 60-byte ASCII placeholder for any {@code (secretArn, fieldName)} pair
+     * passed to {@code getSecretJsonField(...)}, which is sufficient to
+     * satisfy {@code JwtTokenProvider}'s HS256 key-length precondition
+     * (32-byte minimum) during context refresh.
+     *
+     * <p>This stub is marked {@link Primary &#64;Primary} so it overrides the
+     * real {@code SecretsManagerService} bean registered by component scan
+     * for the entire test context. No real AWS API calls occur.</p>
+     */
+    @TestConfiguration
+    static class TestSecretsManagerConfiguration {
+
+        /** Test-only placeholder key (60 bytes, well above HS256's 32-byte minimum). */
+        private static final String TEST_SIGNING_KEY =
+                "test-only-jwt-signing-key-for-hs256-context-smoke-test-padded";
+
+        /**
+         * Stub {@link SecretsManagerService} bean. Returns
+         * {@code Optional.of(TEST_SIGNING_KEY)} for any
+         * {@code getSecretJsonField} invocation so that
+         * {@code JwtTokenProvider.initSigningKey()} can satisfy its
+         * {@code @PostConstruct} preconditions during context refresh.
+         *
+         * @return a Mockito mock pre-configured with default-answer stubbing
+         */
+        @Bean
+        @Primary
+        SecretsManagerService secretsManagerService() {
+            SecretsManagerService stub = Mockito.mock(SecretsManagerService.class);
+            Mockito.when(stub.getSecretJsonField(Mockito.anyString(), Mockito.anyString()))
+                    .thenReturn(Optional.of(TEST_SIGNING_KEY));
+            Mockito.when(stub.getSecret(Mockito.anyString()))
+                    .thenReturn(TEST_SIGNING_KEY);
+            return stub;
+        }
+    }
 
     // -------------------------------------------------------------------------
     // Testcontainers — real PostgreSQL 16 for realistic JPA / Flyway validation

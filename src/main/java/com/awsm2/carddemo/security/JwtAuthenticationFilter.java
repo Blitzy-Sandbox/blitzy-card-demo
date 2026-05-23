@@ -17,6 +17,7 @@
 package com.awsm2.carddemo.security;
 
 import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -33,7 +34,6 @@ import org.springframework.util.AntPathMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -92,6 +92,25 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     /** Spring Security role authority prefix used by {@code hasRole(...)}. */
     private static final String ROLE_PREFIX = "ROLE_";
+
+    /**
+     * COBOL {@code SEC-USR-TYPE} value indicating an administrative user
+     * ({@code CDEMO-USRTYP-ADMIN} 88-level VALUE 'A' from
+     * {@code app/cpy/COCOM01Y.cpy} L27). Mapped to Spring Security
+     * authority {@code ROLE_ADMIN}.
+     */
+    private static final String USER_TYPE_ADMIN = "A";
+
+    /**
+     * COBOL {@code SEC-USR-TYPE} value indicating a regular (non-admin)
+     * user ({@code CDEMO-USRTYP-USER} 88-level VALUE 'U' from
+     * {@code app/cpy/COCOM01Y.cpy} L28). Mapped to Spring Security
+     * authority {@code ROLE_USER}.
+     */
+    private static final String USER_TYPE_USER = "U";
+
+    /** JWT claim name carrying the COBOL {@code SEC-USR-TYPE} value. */
+    private static final String USER_TYPE_CLAIM = "userType";
 
     /**
      * URL patterns that bypass JWT processing. Kept in sync with
@@ -161,23 +180,30 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
 
-        // Validate BEFORE populating the security context. We use
-        // parseAndValidate so we can read claims after a successful check;
-        // failure paths are logged at DEBUG to avoid log-flooding from
+        // Validate BEFORE populating the security context. validateToken
+        // throws on any JJWT failure (expired, signature mismatch, malformed,
+        // wrong issuer); we catch and treat as unauthenticated so the request
+        // proceeds and Spring Security authorization decides the outcome.
+        // Failure paths are logged at DEBUG to avoid log-flooding from
         // hostile clients that send garbage tokens.
         try {
-            Claims claims = jwtTokenProvider.parseAndValidate(token);
-            String userId = jwtTokenProvider.getUserId(claims);
+            Claims claims = jwtTokenProvider.validateToken(token);
+            String userId = claims.getSubject();
             if (userId == null || userId.isBlank()) {
-                LOG.debug("JWT validated but subject/userId is empty; leaving unauthenticated");
+                LOG.debug("JWT validated but subject is empty; leaving unauthenticated");
                 chain.doFilter(request, response);
                 return;
             }
-            // Mirror the COBOL convention: USRID is always uppercase A-Z/0-9.
+            // Mirror the COBOL convention: USRID is always uppercase A-Z/0-9
+            // (see COSGN00C.cbl L132-L134 FUNCTION UPPER-CASE).
             String normalizedUserId = userId.toUpperCase(Locale.US);
 
-            List<SimpleGrantedAuthority> authorities = toAuthorities(
-                    jwtTokenProvider.getRoles(claims));
+            // Derive Spring Security authorities from the userType claim
+            // (single character: 'A' for admin, 'U' for user — mirrors the
+            // COBOL CDEMO-USER-TYPE / SEC-USR-TYPE PIC X(01) values from
+            // COCOM01Y.cpy L26-L28 and CSUSR01Y.cpy L22).
+            String userType = claims.get(USER_TYPE_CLAIM, String.class);
+            List<SimpleGrantedAuthority> authorities = toAuthorities(userType);
 
             // Credentials are intentionally NULL — we have already proven
             // the token's authenticity; retaining the token in memory
@@ -193,12 +219,23 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 LOG.debug("Authenticated request user={} authorities={}",
                         normalizedUserId, authorities);
             }
-        } catch (RuntimeException e) {
-            // parseAndValidate throws CardDemoException; getRoles/getUserId
-            // throw IllegalArgumentException on null. Any other runtime
-            // failure here is treated as authentication absence — never as
-            // a 5xx — to avoid leaking JWT internals to clients.
+        } catch (JwtException | IllegalArgumentException e) {
+            // validateToken propagates JJWT validation failures
+            // (ExpiredJwtException, SignatureException, MalformedJwtException,
+            // UnsupportedJwtException — all subclasses of JwtException) as
+            // well as IllegalArgumentException for blank/whitespace tokens.
+            // Any other runtime failure here is treated as authentication
+            // absence — never as a 5xx — to avoid leaking JWT internals to
+            // clients.
             LOG.debug("JWT processing failed; request will proceed unauthenticated cause={}",
+                    e.getMessage());
+            SecurityContextHolder.clearContext();
+        } catch (RuntimeException e) {
+            // Defensive catch-all for any other runtime failure during the
+            // validation / authority-mapping path. Treat as unauthenticated
+            // rather than 5xx so downstream Spring Security authorization
+            // decides the response code.
+            LOG.debug("Unexpected error during JWT validation; request will proceed unauthenticated cause={}",
                     e.getMessage());
             SecurityContextHolder.clearContext();
         }
@@ -231,24 +268,43 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     }
 
     /**
-     * Convert role strings from the JWT claim into Spring Security
-     * authorities. Idempotent against an existing {@code "ROLE_"} prefix
-     * so claims emitted by older issuers continue to work.
+     * Convert the COBOL {@code SEC-USR-TYPE} single-character value
+     * carried in the JWT {@code userType} claim into Spring Security
+     * authorities. The mapping is:
+     * <ul>
+     *   <li>{@code "A"} (admin) &rarr; {@code ROLE_ADMIN}</li>
+     *   <li>{@code "U"} (user)  &rarr; {@code ROLE_USER}</li>
+     *   <li>anything else (including {@code null}/blank) &rarr; no
+     *       authorities; the request will be unauthorized for any
+     *       endpoint requiring a role</li>
+     * </ul>
+     *
+     * <p>This mirrors the COBOL 88-level constants
+     * {@code CDEMO-USRTYP-ADMIN VALUE 'A'} and
+     * {@code CDEMO-USRTYP-USER VALUE 'U'} from
+     * {@code app/cpy/COCOM01Y.cpy} L27-L28.</p>
+     *
+     * @param userType the COBOL user-type character ({@code "A"} /
+     *                 {@code "U"}) from the JWT {@code userType} claim;
+     *                 may be {@code null} or blank
+     * @return immutable list of granted authorities; never {@code null}
      */
-    private List<SimpleGrantedAuthority> toAuthorities(List<String> roles) {
-        if (roles == null || roles.isEmpty()) {
+    private List<SimpleGrantedAuthority> toAuthorities(String userType) {
+        if (userType == null || userType.isBlank()) {
             return List.of();
         }
-        List<SimpleGrantedAuthority> result = new ArrayList<>(roles.size());
-        for (String role : roles) {
-            if (role == null || role.isBlank()) {
-                continue;
-            }
-            String authority = role.startsWith(ROLE_PREFIX)
-                    ? role
-                    : ROLE_PREFIX + role.toUpperCase(Locale.US);
-            result.add(new SimpleGrantedAuthority(authority));
+        String normalized = userType.trim().toUpperCase(Locale.US);
+        if (USER_TYPE_ADMIN.equals(normalized)) {
+            return List.of(new SimpleGrantedAuthority(ROLE_PREFIX + "ADMIN"));
         }
-        return List.copyOf(result);
+        if (USER_TYPE_USER.equals(normalized)) {
+            return List.of(new SimpleGrantedAuthority(ROLE_PREFIX + "USER"));
+        }
+        // Unrecognised userType — log at DEBUG (could indicate a stale
+        // token issued by an older provider) and return no authorities.
+        // The downstream authorization layer will deny based on missing
+        // role rather than 5xx.
+        LOG.debug("Unrecognised userType claim '{}' — no authorities granted", normalized);
+        return List.of();
     }
 }
