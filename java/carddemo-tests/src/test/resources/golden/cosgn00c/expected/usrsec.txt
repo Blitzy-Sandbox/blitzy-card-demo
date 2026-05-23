@@ -1,0 +1,1 @@
+ADMIN001ADMIN               USER                ADMINPWDA                       USER0001JOHN                SMITH               USER0001U                       USER0002JANE                DOE                 PASS0002U                       USER0003ROBERT              JOHNSON             USER0003U                       
