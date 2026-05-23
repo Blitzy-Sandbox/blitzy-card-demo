@@ -8,11 +8,11 @@
  *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
- * either express or implied. See the License for the specific
- * language governing permissions and limitations under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package com.awsm2.carddemo.security;
 
@@ -24,287 +24,397 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpHeaders;
+import org.springframework.lang.NonNull;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
-import org.springframework.util.AntPathMatcher;
+import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
-import java.util.Objects;
 
 /**
- * Filter that authenticates every incoming HTTP request by validating the
- * {@code Authorization: Bearer <jwt>} header, then populates the Spring
- * Security {@link SecurityContextHolder} with the bearer's identity and
- * granted authorities.
+ * Servlet filter that extracts and validates a JWT bearer token from the
+ * {@code Authorization} HTTP header on every incoming request. On successful
+ * validation, populates Spring Security's {@link SecurityContextHolder} with a
+ * {@link UsernamePasswordAuthenticationToken} carrying the authenticated
+ * user's ID and a {@link SimpleGrantedAuthority} derived from the user type
+ * ({@code 'A'} &rarr; {@code ROLE_ADMIN}, anything else &rarr;
+ * {@code ROLE_USER}).
  *
- * <p>Per AAP &sect;0.3.4 and the CP3 checkpoint requirements, this filter:</p>
+ * <p>Replaces CICS pseudo-conversational identity propagation. In the source
+ * mainframe system, every CICS transaction received the
+ * {@code CARDDEMO-COMMAREA} (see {@code app/cpy/COCOM01Y.cpy}) carrying
+ * {@code CDEMO-USER-ID PIC X(08)} and {@code CDEMO-USER-TYPE PIC X(01)}. The
+ * signon program {@code app/cbl/COSGN00C.cbl} populated these fields after a
+ * successful {@code READ USRSEC} (L211-L219) and XCTL'd to the appropriate
+ * downstream program (L230-L240). This filter performs the equivalent role
+ * for the stateless REST API: on every request the JWT is verified and the
+ * caller's identity is established in the {@link SecurityContextHolder}.</p>
+ *
+ * <h2>Authority mapping (AAP &sect;0.4.1)</h2>
+ * <p>The COBOL 88-level constants from {@code app/cpy/COCOM01Y.cpy} L27-L28
+ * are mapped to Spring Security role authorities:</p>
  * <ul>
- *   <li>Extends {@link OncePerRequestFilter} so it runs exactly once per
- *       request even in dispatcher async / forward / include scenarios.</li>
- *   <li>Validates the JWT BEFORE setting the security context &mdash; an
- *       invalid token never grants authority.</li>
- *   <li>Uppercases user IDs with {@link Locale#US} to mirror the COBOL
- *       {@code USRID} convention (all uppercase, single-byte EBCDIC).</li>
- *   <li>Stores {@code null} credentials in the
- *       {@link UsernamePasswordAuthenticationToken} &mdash; the JWT is
- *       not retained in the security context once it has been validated,
- *       satisfying the requirement that credentials never sit in memory.</li>
- *   <li>Maps each role claim to a {@link SimpleGrantedAuthority} with the
- *       {@code "ROLE_"} prefix expected by Spring Security's role-based
- *       checks ({@code hasRole("ADMIN")} matches {@code ROLE_ADMIN}).</li>
- *   <li>Skips JWT processing entirely for the public endpoint patterns
- *       declared in {@link com.awsm2.carddemo.config.SecurityConfig#PUBLIC_PATTERNS},
- *       to avoid the cost of header parsing on health / docs / auth
- *       endpoints.</li>
+ *   <li>{@code CDEMO-USRTYP-ADMIN VALUE 'A'} &rarr; {@code ROLE_ADMIN}</li>
+ *   <li>{@code CDEMO-USRTYP-USER  VALUE 'U'} &rarr; {@code ROLE_USER}</li>
+ * </ul>
+ * <p>Any value other than the exact uppercase character {@code 'A'}
+ * (including {@code 'U'}, {@code null}, and blank) defaults to
+ * {@code ROLE_USER} so that a cryptographically valid token never lands in
+ * the security context with an empty authority list. This matches the
+ * COBOL routing pattern {@code IF CDEMO-USRTYP-ADMIN ... ELSE ...} in
+ * {@code COSGN00C.cbl} L230-L240, where every non-admin user follows the
+ * regular user flow into {@code COMEN01C}.</p>
+ *
+ * <h2>Security hygiene (AAP &sect;0.6.6, &sect;0.7.2 PCI-DSS)</h2>
+ * <ul>
+ *   <li>The raw JWT bytes are NEVER logged at any level &mdash; not on
+ *       success, not on failure. Successful authentications log only the
+ *       authenticated user ID, the COBOL user type, the HTTP method and
+ *       the request URI at DEBUG.</li>
+ *   <li>JWT validation failures log only the request method, request URI
+ *       and the JJWT exception message at WARN &mdash; the token, the
+ *       header value and any signing key material are never emitted.</li>
+ *   <li>Credentials are explicitly set to {@code null} on the
+ *       {@link UsernamePasswordAuthenticationToken} so the raw token is
+ *       not retained in the in-memory security context for the duration
+ *       of the request.</li>
+ *   <li>On any validation failure, {@link SecurityContextHolder#clearContext()}
+ *       is invoked to prevent leaking a stale {@code Authentication} from
+ *       a prior request that may have been processed on the same thread
+ *       (servlet containers reuse worker threads across requests).</li>
+ *   <li>The filter NEVER short-circuits the chain &mdash; it always calls
+ *       {@link FilterChain#doFilter(jakarta.servlet.ServletRequest, jakarta.servlet.ServletResponse)}.
+ *       Translation of an unauthenticated request to an HTTP 401 response
+ *       is the responsibility of Spring Security's authentication entry
+ *       point invoked by downstream authorization filters; translation of
+ *       an authorization failure to an HTTP 403 response is the
+ *       responsibility of {@code GlobalExceptionHandler} in the sibling
+ *       {@code exception/} package.</li>
  * </ul>
  *
- * <h2>Replaces (AAP &sect;0.1.1)</h2>
- * <p>Replaces: CICS sign-on validation flow (COSGN00C) per-request
- * COMMAREA-based identity check. The COBOL pseudo-conversational pattern
- * relied on CICS reading the saved COMMAREA at every pseudo-conversational
- * re-entry; the Java target validates a self-contained signed token
- * instead.</p>
+ * <h2>Replaces (AAP &sect;0.1.1, &sect;0.7.3)</h2>
+ * <p>Replaces: CICS pseudo-conversational identity check at the start of
+ * each transaction. In COBOL the identity context was carried in
+ * {@code CARDDEMO-COMMAREA} ({@code app/cpy/COCOM01Y.cpy}) between
+ * pseudo-conversational re-entries; in the Java target the JWT serves as
+ * the cryptographically signed, self-contained, per-request equivalent of
+ * the COMMAREA's identity fields. Source paragraph chain:
+ * {@code COSGN00C.cbl PROCESS-ENTER-KEY} (L108-L140) &rarr;
+ * {@code READ-USER-SEC-FILE} (L209-L246) &rarr; {@code XCTL} routing
+ * (L230-L240).</p>
  *
- * <h2>Error handling discipline</h2>
- * <p>This filter NEVER throws to short-circuit the chain &mdash; it
- * always invokes {@code chain.doFilter(request, response)}. If the token
- * is missing or invalid, the security context is simply left unauthenticated
- * and downstream Spring Security authorization checks decide how to
- * respond (typically with HTTP 401 via the default
- * {@code Http403ForbiddenEntryPoint} or a configured authentication
- * entry point). This keeps the filter free of CORS / pre-flight side
- * effects.</p>
+ * @see JwtTokenProvider
+ * @see org.springframework.security.web.SecurityFilterChain
  */
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
-    private static final Logger LOG = LoggerFactory.getLogger(JwtAuthenticationFilter.class);
-
-    /** RFC 6750 token type prefix on the {@code Authorization} header. */
-    private static final String BEARER_PREFIX = "Bearer ";
-
-    /** Spring Security role authority prefix used by {@code hasRole(...)}. */
-    private static final String ROLE_PREFIX = "ROLE_";
+    /**
+     * SLF4J logger used for PCI-DSS-compliant security event logging. Per
+     * AAP &sect;0.6.6 the implementation MUST NOT emit raw JWT bytes,
+     * signing key material, or full {@code Authorization} header values at
+     * any level. DEBUG is used for successful authentications, WARN for
+     * validation failures.
+     */
+    private static final Logger log = LoggerFactory.getLogger(JwtAuthenticationFilter.class);
 
     /**
-     * COBOL {@code SEC-USR-TYPE} value indicating an administrative user
-     * ({@code CDEMO-USRTYP-ADMIN} 88-level VALUE 'A' from
-     * {@code app/cpy/COCOM01Y.cpy} L27). Mapped to Spring Security
-     * authority {@code ROLE_ADMIN}.
+     * Name of the HTTP request header carrying the bearer token, per
+     * RFC 7235 &sect;4.2 / RFC 6750 &sect;2.1. Defined here as a constant
+     * rather than referenced via {@code org.springframework.http.HttpHeaders}
+     * to keep the filter's external import surface narrow.
+     */
+    private static final String AUTHORIZATION_HEADER = "Authorization";
+
+    /**
+     * RFC 6750 bearer scheme prefix (trailing space included so the prefix
+     * length corresponds exactly to {@code "Bearer "} for substring
+     * extraction).
+     */
+    private static final String BEARER_PREFIX = "Bearer ";
+
+    /**
+     * Name of the custom JWT claim carrying the COBOL {@code SEC-USR-TYPE}
+     * value from {@code app/cpy/CSUSR01Y.cpy} L22. The claim name matches
+     * the constant published by {@link JwtTokenProvider} so the contract
+     * between token issuance and token validation is symmetric.
+     */
+    private static final String USER_TYPE_CLAIM = "userType";
+
+    /**
+     * COBOL {@code SEC-USR-TYPE} value identifying an administrative user.
+     * Matches the {@code CDEMO-USRTYP-ADMIN VALUE 'A'} 88-level constant
+     * declared in {@code app/cpy/COCOM01Y.cpy} L27. Comparison is
+     * case-sensitive on uppercase {@code 'A'} because the upstream signon
+     * flow ({@code app/cbl/COSGN00C.cbl} L132-L134 and the V015 seed
+     * migration) stores the user type as a single uppercase character.
      */
     private static final String USER_TYPE_ADMIN = "A";
 
     /**
-     * COBOL {@code SEC-USR-TYPE} value indicating a regular (non-admin)
-     * user ({@code CDEMO-USRTYP-USER} 88-level VALUE 'U' from
-     * {@code app/cpy/COCOM01Y.cpy} L28). Mapped to Spring Security
-     * authority {@code ROLE_USER}.
+     * Spring Security role authority granted to administrative users.
+     * Combined with Spring Security's convention that {@code hasRole("ADMIN")}
+     * matches an authority named {@code "ROLE_ADMIN"}.
      */
-    private static final String USER_TYPE_USER = "U";
-
-    /** JWT claim name carrying the COBOL {@code SEC-USR-TYPE} value. */
-    private static final String USER_TYPE_CLAIM = "userType";
+    private static final String ROLE_ADMIN = "ROLE_ADMIN";
 
     /**
-     * URL patterns that bypass JWT processing. Kept in sync with
-     * {@link com.awsm2.carddemo.config.SecurityConfig#PUBLIC_PATTERNS}.
+     * Spring Security role authority granted to regular users and to any
+     * authenticated principal whose {@code userType} claim is not the
+     * exact uppercase character {@code 'A'}. The default-to-USER fallback
+     * mirrors the COBOL pattern {@code IF CDEMO-USRTYP-ADMIN ... ELSE ...}
+     * in {@code COSGN00C.cbl} L230-L240.
      */
-    private static final String[] SKIP_PATTERNS = new String[] {
-            "/api/auth/**",
-            "/actuator/health/**",
-            "/actuator/info",
-            "/v3/api-docs/**",
-            "/swagger-ui/**",
-            "/swagger-ui.html",
-            "/api-docs/**"
-    };
+    private static final String ROLE_USER = "ROLE_USER";
 
+    /**
+     * The {@link JwtTokenProvider} used to verify the bearer token's
+     * signature, expiration and issuer and to return the parsed claim set.
+     * Final so the field is guaranteed to be visible to all servlet
+     * container worker threads after Spring publishes the bean.
+     */
     private final JwtTokenProvider jwtTokenProvider;
-    private final AntPathMatcher pathMatcher = new AntPathMatcher();
 
     /**
-     * @param jwtTokenProvider component that signs / verifies JWTs and
-     *                         reads claims; must not be {@code null}
+     * Constructor injection of the JWT token provider, per AAP &sect;0.3.3
+     * (Dependency Injection &mdash; constructor injection for all
+     * {@code @Component} beans). Field injection via {@code @Autowired} is
+     * deliberately not used.
+     *
+     * @param jwtTokenProvider the JWT validation collaborator; Spring's
+     *                         bean factory enforces non-null injection so
+     *                         an explicit {@code Objects.requireNonNull}
+     *                         is unnecessary
      */
     public JwtAuthenticationFilter(JwtTokenProvider jwtTokenProvider) {
-        // Replaces: COSGN00C pseudo-conversational sign-on flow that
-        // re-read COMMAREA on every CICS RETURN/RECEIVE pair.
-        this.jwtTokenProvider = Objects.requireNonNull(jwtTokenProvider,
-                "jwtTokenProvider must not be null");
+        // Replaces: CICS RETURN TRANSID COMMAREA pseudo-conversational flow
+        // where the saved COMMAREA was the only proof of identity on the
+        // next interaction (COSGN00C.cbl L98-L102, COCOM01Y.cpy L19-L29).
+        this.jwtTokenProvider = jwtTokenProvider;
     }
 
     /**
-     * Suppress JWT processing on public endpoints (auth, health, docs).
-     * Returning {@code true} here causes {@link OncePerRequestFilter} to
-     * skip {@link #doFilterInternal(HttpServletRequest, HttpServletResponse, FilterChain)}.
+     * Main filter entry point invoked exactly once per HTTP request by
+     * {@link OncePerRequestFilter}. Extracts the bearer token, validates
+     * it, populates the {@link SecurityContextHolder} on success, and
+     * always proceeds with the filter chain.
+     *
+     * <p>The method NEVER throws to short-circuit the chain. On JWT
+     * validation failure the security context is cleared and the chain
+     * proceeds, leaving authorization decisions to downstream Spring
+     * Security filters and ultimately to
+     * {@code GlobalExceptionHandler.handleAuthentication(AuthenticationException)}
+     * which returns HTTP 401 with the standard error envelope.</p>
+     *
+     * @param request     the inbound HTTP request; must not be {@code null}
+     * @param response    the outbound HTTP response; must not be
+     *                    {@code null} &mdash; this filter never writes to
+     *                    it directly, response generation is delegated
+     *                    downstream
+     * @param filterChain the remaining filter chain; must not be
+     *                    {@code null}
+     * @throws ServletException if any downstream filter or the dispatched
+     *                          servlet throws
+     * @throws IOException      if any downstream filter or the dispatched
+     *                          servlet performs an I/O operation that
+     *                          fails
      */
     @Override
-    protected boolean shouldNotFilter(HttpServletRequest request) {
-        String uri = request.getServletPath();
-        if (uri == null || uri.isEmpty()) {
-            uri = request.getRequestURI();
-        }
-        if (uri == null) {
-            return false;
-        }
-        for (String pattern : SKIP_PATTERNS) {
-            if (pathMatcher.match(pattern, uri)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Validate the JWT (if present) and populate the security context.
-     */
-    @Override
-    protected void doFilterInternal(HttpServletRequest request,
-                                    HttpServletResponse response,
-                                    FilterChain chain)
+    protected void doFilterInternal(@NonNull HttpServletRequest request,
+                                    @NonNull HttpServletResponse response,
+                                    @NonNull FilterChain filterChain)
             throws ServletException, IOException {
-        // Replaces: CICS RETURN TRANSID COMMAREA flow where the saved
-        // COMMAREA was the only proof of identity on the next interaction.
+        // Replaces: CICS PROCESS-ENTER-KEY -> READ-USER-SEC-FILE -> XCTL
+        // identity establishment pattern in COSGN00C.cbl. The CICS flow ran
+        // once at signon and persisted identity in COMMAREA; the REST flow
+        // re-establishes identity on every request from the signed JWT.
         String token = extractBearerToken(request);
-        if (token == null || token.isBlank()) {
-            // No JWT present — leave the context unauthenticated and let
-            // Spring Security authorization decide the outcome.
-            chain.doFilter(request, response);
+        if (!StringUtils.hasText(token)) {
+            // No bearer token in the request. The endpoint may be public
+            // (in which case shouldNotFilter has already short-circuited
+            // us out before we got here) or it may require authentication
+            // (in which case Spring Security's authorization filters will
+            // emit HTTP 401 downstream). Either way, this filter just
+            // proceeds and lets the chain run.
+            filterChain.doFilter(request, response);
             return;
         }
 
-        // Validate BEFORE populating the security context. validateToken
-        // throws on any JJWT failure (expired, signature mismatch, malformed,
-        // wrong issuer); we catch and treat as unauthenticated so the request
-        // proceeds and Spring Security authorization decides the outcome.
-        // Failure paths are logged at DEBUG to avoid log-flooding from
-        // hostile clients that send garbage tokens.
         try {
+            // COBOL: COSGN00C.cbl L211-L219 -- EXEC CICS READ DATASET (USRSEC)
+            //        ... RIDFLD(WS-USER-ID) ...
+            //        Java equivalent: cryptographically verify the bearer
+            //        token (signature + iss + exp) and read the claims.
             Claims claims = jwtTokenProvider.validateToken(token);
             String userId = claims.getSubject();
-            if (userId == null || userId.isBlank()) {
-                LOG.debug("JWT validated but subject is empty; leaving unauthenticated");
-                chain.doFilter(request, response);
+            if (!StringUtils.hasText(userId)) {
+                // A cryptographically valid token without a subject claim
+                // cannot identify a user. Treat as unauthenticated rather
+                // than throw -- we still proceed so endpoint-level access
+                // rules can decide the outcome.
+                log.warn("JWT validated but subject claim is empty for request {} {}",
+                        request.getMethod(), request.getRequestURI());
+                SecurityContextHolder.clearContext();
+                filterChain.doFilter(request, response);
                 return;
             }
-            // Mirror the COBOL convention: USRID is always uppercase A-Z/0-9
-            // (see COSGN00C.cbl L132-L134 FUNCTION UPPER-CASE).
-            String normalizedUserId = userId.toUpperCase(Locale.US);
-
-            // Derive Spring Security authorities from the userType claim
-            // (single character: 'A' for admin, 'U' for user — mirrors the
-            // COBOL CDEMO-USER-TYPE / SEC-USR-TYPE PIC X(01) values from
-            // COCOM01Y.cpy L26-L28 and CSUSR01Y.cpy L22).
             String userType = claims.get(USER_TYPE_CLAIM, String.class);
-            List<SimpleGrantedAuthority> authorities = toAuthorities(userType);
+            // COBOL: COSGN00C.cbl L227 -- MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE
+            //        Java equivalent: derive Spring Security authorities
+            //        from the userType claim.
+            List<GrantedAuthority> authorities = mapUserTypeToAuthorities(userType);
 
-            // Credentials are intentionally NULL — we have already proven
-            // the token's authenticity; retaining the token in memory
-            // would create a PCI-DSS exposure surface.
+            // Credentials are intentionally NULL: the token has already
+            // been verified above and retaining its bytes in the security
+            // context for the duration of the request would create a
+            // PCI-DSS exposure surface (AAP §0.6.6 / §0.7.2).
             UsernamePasswordAuthenticationToken authentication =
-                    new UsernamePasswordAuthenticationToken(
-                            normalizedUserId, null, authorities);
-            authentication.setDetails(
-                    new WebAuthenticationDetailsSource().buildDetails(request));
-
+                    new UsernamePasswordAuthenticationToken(userId, null, authorities);
+            // Attach standard web request details (remote address, session
+            // ID if any) so downstream audit components (CloudWatch /
+            // OpenSearch per AAP §0.6.6) can resolve the source IP of
+            // every authenticated request.
+            authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
             SecurityContextHolder.getContext().setAuthentication(authentication);
-            if (LOG.isDebugEnabled()) {
-                LOG.debug("Authenticated request user={} authorities={}",
-                        normalizedUserId, authorities);
+            if (log.isDebugEnabled()) {
+                // PCI-DSS-safe DEBUG log: userId and userType are not
+                // sensitive on their own (they appear in audit trails per
+                // AAP §0.6.6); the token bytes are NEVER logged.
+                log.debug("Authenticated user {} with type {} for {} {}",
+                        userId, userType, request.getMethod(), request.getRequestURI());
             }
-        } catch (JwtException | IllegalArgumentException e) {
-            // validateToken propagates JJWT validation failures
-            // (ExpiredJwtException, SignatureException, MalformedJwtException,
-            // UnsupportedJwtException — all subclasses of JwtException) as
-            // well as IllegalArgumentException for blank/whitespace tokens.
-            // Any other runtime failure here is treated as authentication
-            // absence — never as a 5xx — to avoid leaking JWT internals to
-            // clients.
-            LOG.debug("JWT processing failed; request will proceed unauthenticated cause={}",
-                    e.getMessage());
-            SecurityContextHolder.clearContext();
-        } catch (RuntimeException e) {
-            // Defensive catch-all for any other runtime failure during the
-            // validation / authority-mapping path. Treat as unauthenticated
-            // rather than 5xx so downstream Spring Security authorization
-            // decides the response code.
-            LOG.debug("Unexpected error during JWT validation; request will proceed unauthenticated cause={}",
-                    e.getMessage());
+        } catch (JwtException | IllegalArgumentException ex) {
+            // JwtException covers ExpiredJwtException, SignatureException,
+            // MalformedJwtException, UnsupportedJwtException, and any
+            // other JJWT 0.12.x validation failure. IllegalArgumentException
+            // is thrown by JJWT for blank/whitespace tokens before the
+            // parser even runs. Both indicate an unauthenticated client
+            // rather than an internal server fault, so we log at WARN
+            // (auditable but not a 5xx), clear the security context, and
+            // proceed -- Spring Security's authentication entry point
+            // will translate this to HTTP 401 downstream if the endpoint
+            // requires authentication.
+            //
+            // PCI-DSS-safe error log: request method/URI + JJWT exception
+            // message only. The token bytes, the Authorization header
+            // value, and the userId from the token (if any) are NEVER
+            // emitted to the log.
+            log.warn("JWT validation failed for request {} {}: {}",
+                    request.getMethod(), request.getRequestURI(), ex.getMessage());
             SecurityContextHolder.clearContext();
         }
-        chain.doFilter(request, response);
+
+        // Always proceed with the filter chain -- this filter never
+        // short-circuits the request, even on validation failure.
+        filterChain.doFilter(request, response);
+    }
+
+    /**
+     * Skip JWT extraction for clearly-public endpoints. Authoritative
+     * authorization rules are still enforced by
+     * {@code SecurityConfig.securityFilterChain(...)} in the sibling
+     * {@code config/} package &mdash; this filter exclusion is purely a
+     * performance optimisation that avoids parsing the
+     * {@code Authorization} header (and clearing the security context)
+     * for endpoints that never require an authenticated principal.
+     *
+     * @param request the inbound HTTP request; must not be {@code null}
+     * @return {@code true} if the request URI matches one of the public
+     *         endpoint patterns and the filter should be bypassed for
+     *         this request; {@code false} otherwise
+     * @throws ServletException declared on the superclass signature
+     *                          although this implementation never throws
+     */
+    @Override
+    protected boolean shouldNotFilter(@NonNull HttpServletRequest request) throws ServletException {
+        String path = request.getRequestURI();
+        if (path == null) {
+            return false;
+        }
+        // Exact matches first (kept alphabetically for readability), then
+        // prefix matches. The authoritative public-endpoint list lives in
+        // SecurityConfig.PUBLIC_PATTERNS; this filter's list is a strict
+        // subset of those patterns (the patterns here MUST also be
+        // permitAll in SecurityConfig or the filter exclusion is moot).
+        return path.equals("/actuator/health")
+                || path.equals("/actuator/info")
+                || path.equals("/api/auth/signin")
+                || path.equals("/swagger-ui.html")
+                || path.equals("/swagger-ui")
+                || path.equals("/v3/api-docs")
+                || path.startsWith("/swagger-ui/")
+                || path.startsWith("/v3/api-docs/");
     }
 
     // ---------------------------------------------------------------------
-    // Helpers
+    // Private helpers
     // ---------------------------------------------------------------------
 
     /**
-     * Pull the JWT compact string out of the
-     * {@code Authorization: Bearer <token>} header, ignoring case on the
-     * scheme keyword as RFC 7235 mandates.
+     * Extracts the JWT compact string from the {@code Authorization} HTTP
+     * header. Returns {@code null} when the header is absent, blank, or
+     * does not start with the {@code "Bearer "} prefix.
+     *
+     * <p>The returned string is the substring after {@code "Bearer "}
+     * with any surrounding whitespace trimmed. The prefix check is
+     * case-sensitive per RFC 6750 &sect;2.1 (the production scheme name
+     * is {@code Bearer} starting with uppercase {@code B}).</p>
+     *
+     * @param request the inbound HTTP request from which to read the
+     *                {@code Authorization} header
+     * @return the bearer token string with the {@code "Bearer "} prefix
+     *         removed and trimmed of whitespace, or {@code null} if the
+     *         header is missing or not a bearer token
      */
     private String extractBearerToken(HttpServletRequest request) {
-        String header = request.getHeader(HttpHeaders.AUTHORIZATION);
-        if (header == null || header.isBlank()) {
+        String header = request.getHeader(AUTHORIZATION_HEADER);
+        if (!StringUtils.hasText(header) || !header.startsWith(BEARER_PREFIX)) {
             return null;
         }
-        String trimmed = header.trim();
-        if (trimmed.length() > BEARER_PREFIX.length()
-                && trimmed.substring(0, BEARER_PREFIX.length())
-                          .equalsIgnoreCase(BEARER_PREFIX)) {
-            return trimmed.substring(BEARER_PREFIX.length()).trim();
-        }
-        // Not a Bearer scheme — return null so the request passes through
-        // unauthenticated.
-        return null;
+        return header.substring(BEARER_PREFIX.length()).trim();
     }
 
     /**
-     * Convert the COBOL {@code SEC-USR-TYPE} single-character value
-     * carried in the JWT {@code userType} claim into Spring Security
-     * authorities. The mapping is:
+     * Maps the COBOL {@code SEC-USR-TYPE} value carried in the JWT
+     * {@code userType} claim to a single-element immutable list of Spring
+     * Security {@link GrantedAuthority} instances.
+     *
+     * <p>Mapping rules:</p>
      * <ul>
-     *   <li>{@code "A"} (admin) &rarr; {@code ROLE_ADMIN}</li>
-     *   <li>{@code "U"} (user)  &rarr; {@code ROLE_USER}</li>
-     *   <li>anything else (including {@code null}/blank) &rarr; no
-     *       authorities; the request will be unauthorized for any
-     *       endpoint requiring a role</li>
+     *   <li>Exact uppercase {@code "A"} &rarr;
+     *       {@code [ROLE_ADMIN]}</li>
+     *   <li>Anything else &mdash; including {@code "U"}, {@code null},
+     *       blank strings, and any unrecognised value &mdash; defaults to
+     *       {@code [ROLE_USER]}</li>
      * </ul>
      *
-     * <p>This mirrors the COBOL 88-level constants
-     * {@code CDEMO-USRTYP-ADMIN VALUE 'A'} and
-     * {@code CDEMO-USRTYP-USER VALUE 'U'} from
-     * {@code app/cpy/COCOM01Y.cpy} L27-L28.</p>
+     * <p>The default-to-USER fallback ensures a cryptographically valid
+     * token is never accepted with an empty authority list, which would
+     * leave the request neither anonymous nor authorised for any
+     * role-gated endpoint. This mirrors the COBOL routing pattern
+     * {@code IF CDEMO-USRTYP-ADMIN -> XCTL COADM01C ELSE XCTL COMEN01C}
+     * in {@code COSGN00C.cbl} L230-L240, where every non-admin user is
+     * routed through the regular {@code COMEN01C} main-menu flow.</p>
      *
-     * @param userType the COBOL user-type character ({@code "A"} /
-     *                 {@code "U"}) from the JWT {@code userType} claim;
-     *                 may be {@code null} or blank
-     * @return immutable list of granted authorities; never {@code null}
+     * @param userType the COBOL user-type character from the JWT
+     *                 {@code userType} claim; may be {@code null} or
+     *                 blank
+     * @return an immutable single-element list of granted authorities;
+     *         never {@code null}, never empty
      */
-    private List<SimpleGrantedAuthority> toAuthorities(String userType) {
-        if (userType == null || userType.isBlank()) {
-            return List.of();
+    private List<GrantedAuthority> mapUserTypeToAuthorities(String userType) {
+        // COBOL: IF CDEMO-USRTYP-ADMIN -> XCTL COADM01C ELSE XCTL COMEN01C
+        //        (COSGN00C.cbl L230-L240, COCOM01Y.cpy L27-L28).
+        if (USER_TYPE_ADMIN.equals(userType)) {
+            return Collections.singletonList(new SimpleGrantedAuthority(ROLE_ADMIN));
         }
-        String normalized = userType.trim().toUpperCase(Locale.US);
-        if (USER_TYPE_ADMIN.equals(normalized)) {
-            return List.of(new SimpleGrantedAuthority(ROLE_PREFIX + "ADMIN"));
-        }
-        if (USER_TYPE_USER.equals(normalized)) {
-            return List.of(new SimpleGrantedAuthority(ROLE_PREFIX + "USER"));
-        }
-        // Unrecognised userType — log at DEBUG (could indicate a stale
-        // token issued by an older provider) and return no authorities.
-        // The downstream authorization layer will deny based on missing
-        // role rather than 5xx.
-        LOG.debug("Unrecognised userType claim '{}' — no authorities granted", normalized);
-        return List.of();
+        return Collections.singletonList(new SimpleGrantedAuthority(ROLE_USER));
     }
 }
