@@ -1,0 +1,261 @@
+# COCRDSLC TEST-OWNED CICS pseudo-conversation driver -- 12 scenarios
+#
+# Source COBOL program:    app/cbl/COCRDSLC.cbl  (887 lines)
+# PROGRAM-ID:              COCRDSLC                  (line 23)
+# CICS transaction:        CCDL                      (LIT-THISTRANID, line 166)
+# BMS mapset:              COCRDSL                   (LIT-THISMAPSET, line 168)
+# BMS map:                 CCRDSLA                   (LIT-THISMAP, line 170)
+# VSAM file (READ-only):   CARDDAT                   (LIT-CARDFILENAME, line 188)
+# CARD-RECORD layout:      150 bytes per app/cpy/CVACT02Y.cpy
+# Caller list:             COCRDLIC (CCLI) and COMEN01C (CM00)
+#
+# This file is TEST-OWNED. It is the driver consumed by:
+#   - com.blitzy.carddemo.tests.golden.CoCrdSlCGoldenTest (Java side)
+#   - The COBOL baseline capture script (per MIGRATION_NOTES.md section 1.6)
+#
+# The 12 scenarios collectively exercise every branch of:
+#   - 0000-MAIN 5-branch EVALUATE TRUE  (lines 304-381)
+#   - 2200-EDIT-MAP-INPUTS              (lines 608-645)
+#   - 2210-EDIT-ACCOUNT                 (lines 647-683)
+#   - 2220-EDIT-CARD                    (lines 685-724)
+#   - 9100-GETCARD-BYACCTCARD EVALUATE  (lines 752-772)
+#
+# Every scenario ends with EXPECT_CARDDAT_UNCHANGED because COCRDSLC issues
+# only EXEC CICS READ (no UPDATE clause, no REWRITE, no WRITE, no DELETE)
+# against CARDDAT per app/cbl/COCRDSLC.cbl lines 742-750.
+#
+# 16-digit PAN values appear in this driver intentionally; per AAP 0.7.2 the
+# driver is TEST-OWNED and not subject to capture-time masking. The captured
+# bms_output.txt MUST mask all 16-digit CARDSID values to last 4 digits only.
+#
+
+=== SCENARIO 1: First-time entry from CICS transaction CCDL ===
+# EIBCALEN=0 path at lines 268-279. Initializes COMMAREA, sets PGM-ENTER,
+# performs 1000-SEND-MAP, falls through to COMMON-RETURN with NEXT-TRANID=CCDL.
+EIBCALEN 0
+AID DFHENTER
+# No field values; no commarea on first entry.
+EXPECT_FIELD INFOMSGO "Please enter Account and Card Number"
+EXPECT_MSG_COLOR DFHNEUTR
+EXPECT_CURSOR ACCTSID
+EXPECT_CARDDAT_UNCHANGED
+END_SCENARIO
+
+=== SCENARIO 2: ENTER pressed with both ACCTSID and CARDSID blank ===
+# 2200-EDIT-MAP-INPUTS path. Both 2210-EDIT-ACCOUNT and 2220-EDIT-CARD set
+# their respective BLANK flags; 2200 then sets NO-SEARCH-CRITERIA-RECEIVED
+# (line 637-640) which maps WS-RETURN-MSG = 'No input received' (line 143).
+EIBCALEN 2000
+COMMAREA
+  CDEMO-FROM-PROGRAM = "COCRDSLC"
+  CDEMO-FROM-TRANID  = "CCDL"
+  CDEMO-PGM-CONTEXT  = 1
+END_COMMAREA
+AID DFHENTER
+FIELD ACCTSIDI "           "
+FIELD CARDSIDI "                "
+EXPECT_MSG "No input received"
+EXPECT_MSG_COLOR DFHRED
+EXPECT_CURSOR ACCTSID
+EXPECT_CARDDAT_UNCHANGED
+END_SCENARIO
+
+=== SCENARIO 3: ENTER pressed with ACCTSID blank and CARDSID valid ===
+# 2210-EDIT-ACCOUNT lines 651-661 path: empty/zero -> SET INPUT-ERROR,
+# FLG-ACCTFILTER-BLANK, WS-PROMPT-FOR-ACCT.
+# 2220-EDIT-CARD passes validation; 9000-READ-DATA still runs but errors
+# because CC-ACCT-ID is LOW-VALUES while CARD-NUM is valid.
+EIBCALEN 2000
+COMMAREA
+  CDEMO-FROM-PROGRAM = "COCRDSLC"
+  CDEMO-FROM-TRANID  = "CCDL"
+  CDEMO-PGM-CONTEXT  = 1
+END_COMMAREA
+AID DFHENTER
+FIELD ACCTSIDI "           "
+FIELD CARDSIDI "4111111111110001"
+EXPECT_MSG "Account number not provided"
+EXPECT_MSG_COLOR DFHRED
+EXPECT_CURSOR ACCTSID
+EXPECT_CARDDAT_UNCHANGED
+END_SCENARIO
+
+=== SCENARIO 4: ENTER pressed with ACCTSID valid and CARDSID blank ===
+# 2220-EDIT-CARD lines 691-702 path: empty/zero -> SET INPUT-ERROR,
+# FLG-CARDFILTER-BLANK, WS-PROMPT-FOR-CARD.
+EIBCALEN 2000
+COMMAREA
+  CDEMO-FROM-PROGRAM = "COCRDSLC"
+  CDEMO-FROM-TRANID  = "CCDL"
+  CDEMO-PGM-CONTEXT  = 1
+END_COMMAREA
+AID DFHENTER
+FIELD ACCTSIDI "00000000001"
+FIELD CARDSIDI "                "
+EXPECT_MSG "Card number not provided"
+EXPECT_MSG_COLOR DFHRED
+EXPECT_CURSOR CARDSID
+EXPECT_CARDDAT_UNCHANGED
+END_SCENARIO
+
+=== SCENARIO 5: ENTER pressed with non-numeric ACCTSID ===
+# 2210-EDIT-ACCOUNT line 670 verbatim message:
+# 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER'
+# (Note: no space after the comma, all uppercase as in COBOL source.)
+EIBCALEN 2000
+COMMAREA
+  CDEMO-FROM-PROGRAM = "COCRDSLC"
+  CDEMO-FROM-TRANID  = "CCDL"
+  CDEMO-PGM-CONTEXT  = 1
+END_COMMAREA
+AID DFHENTER
+FIELD ACCTSIDI "ABCDEFGHIJK"
+FIELD CARDSIDI "4111111111110001"
+EXPECT_MSG "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER"
+EXPECT_MSG_COLOR DFHRED
+EXPECT_CURSOR ACCTSID
+EXPECT_CARDDAT_UNCHANGED
+END_SCENARIO
+
+=== SCENARIO 6: ENTER pressed with non-numeric CARDSID ===
+# 2220-EDIT-CARD line 711 verbatim message:
+# 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER'
+EIBCALEN 2000
+COMMAREA
+  CDEMO-FROM-PROGRAM = "COCRDSLC"
+  CDEMO-FROM-TRANID  = "CCDL"
+  CDEMO-PGM-CONTEXT  = 1
+END_COMMAREA
+AID DFHENTER
+FIELD ACCTSIDI "00000000001"
+FIELD CARDSIDI "ABCDEFGHIJKLMNOP"
+EXPECT_MSG "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER"
+EXPECT_MSG_COLOR DFHRED
+EXPECT_CURSOR CARDSID
+EXPECT_CARDDAT_UNCHANGED
+END_SCENARIO
+
+=== SCENARIO 7: ENTER with valid ACCT and CARD found in CARDDAT ===
+# 9100-GETCARD-BYACCTCARD lines 752-755 path: WS-RESP-CD = DFHRESP(NORMAL),
+# SET FOUND-CARDS-FOR-ACCOUNT, WS-INFO-MSG = '   Displaying requested details'
+# (3 leading spaces per line 130 in WS-INFO-MSG declaration).
+# 1200-SETUP-SCREEN-VARS lines 482-498 populate CRDNAMEO, CRDSTCDO,
+# EXPMONO, EXPYEARO from CARD-RECORD bytes per CVACT02Y.cpy.
+EIBCALEN 2000
+COMMAREA
+  CDEMO-FROM-PROGRAM = "COCRDSLC"
+  CDEMO-FROM-TRANID  = "CCDL"
+  CDEMO-PGM-CONTEXT  = 1
+END_COMMAREA
+AID DFHENTER
+FIELD ACCTSIDI "00000000001"
+FIELD CARDSIDI "4111111111110001"
+EXPECT_FOUND_CARD
+EXPECT_FIELD INFOMSGO "   Displaying requested details"
+EXPECT_MSG_COLOR DFHNEUTR
+EXPECT_CARDDAT_UNCHANGED
+END_SCENARIO
+
+=== SCENARIO 8: ENTER with valid ACCT and CARD not in CARDDAT ===
+# 9100-GETCARD-BYACCTCARD lines 758-761 path: WS-RESP-CD = DFHRESP(NOTFND),
+# SET INPUT-ERROR, FLG-ACCTFILTER-NOT-OK, FLG-CARDFILTER-NOT-OK; if
+# WS-RETURN-MSG-OFF -> SET DID-NOT-FIND-ACCTCARD-COMBO TO TRUE which maps
+# WS-RETURN-MSG = 'Did not find cards for this search condition' (line 154).
+EIBCALEN 2000
+COMMAREA
+  CDEMO-FROM-PROGRAM = "COCRDSLC"
+  CDEMO-FROM-TRANID  = "CCDL"
+  CDEMO-PGM-CONTEXT  = 1
+END_COMMAREA
+AID DFHENTER
+FIELD ACCTSIDI "00000000099"
+FIELD CARDSIDI "4111111111119999"
+EXPECT_MSG "Did not find cards for this search condition"
+EXPECT_MSG_COLOR DFHRED
+EXPECT_CARDDAT_UNCHANGED
+END_SCENARIO
+
+=== SCENARIO 9: PF3 pressed with EIBCALEN=0 ===
+# 0000-MAIN lines 304-318 PFK03 branch. Without CDEMO-FROM-PROGRAM in
+# commarea, XCTL routes to LIT-MENUPGM (COMEN01C, transaction CM00, line 180).
+EIBCALEN 0
+AID DFHPF3
+EXPECT_XCTL COMEN01C
+EXPECT_CARDDAT_UNCHANGED
+END_SCENARIO
+
+=== SCENARIO 10: PF3 pressed returning to COCRDLIC caller ===
+# 0000-MAIN PFK03 branch with CDEMO-FROM-PROGRAM = COCRDLIC. XCTL transfers
+# control back to the card-list program (LIT-CCLISTPGM, line 172).
+EIBCALEN 2000
+COMMAREA
+  CDEMO-FROM-PROGRAM = "COCRDLIC"
+  CDEMO-FROM-TRANID  = "CCLI"
+  CDEMO-PGM-CONTEXT  = 1
+END_COMMAREA
+AID DFHPF3
+EXPECT_XCTL COCRDLIC
+EXPECT_CARDDAT_UNCHANGED
+END_SCENARIO
+
+=== SCENARIO 11: Auto-trigger from COCRDLIC pre-validated read ===
+# 0000-MAIN lines 339-348 branch:
+#   WHEN CDEMO-PGM-ENTER AND CDEMO-FROM-PROGRAM = LIT-CCLISTPGM
+# Sets INPUT-OK, copies CDEMO-ACCT-ID/CDEMO-CARD-NUM into CC-ACCT-ID-N /
+# CC-CARD-NUM-N, performs 9000-READ-DATA bypassing 2000-PROCESS-INPUTS
+# (no RECEIVE-MAP). On successful read, SEND MAP with FOUND-CARDS-FOR-ACCOUNT.
+EIBCALEN 2000
+COMMAREA
+  CDEMO-FROM-PROGRAM = "COCRDLIC"
+  CDEMO-FROM-TRANID  = "CCLI"
+  CDEMO-PGM-CONTEXT  = 0
+  CDEMO-ACCT-ID      = 1
+  CDEMO-CARD-NUM     = "4111111111110002"
+END_COMMAREA
+AID DFHENTER
+EXPECT_FOUND_CARD
+EXPECT_FIELD INFOMSGO "   Displaying requested details"
+EXPECT_MSG_COLOR DFHNEUTR
+EXPECT_CARDDAT_UNCHANGED
+END_SCENARIO
+
+=== SCENARIO 12: Invalid PFK PF04 remapped to ENTER ===
+# Lines 291-299: only DFHENTER and DFHPF3 are valid AIDs. All others fall
+# into the PFK-INVALID branch which SETS CCARD-AID-ENTER TO TRUE, so PF04
+# is silently coerced to ENTER. With empty fields, this reproduces scenario 2
+# behavior: NO-SEARCH-CRITERIA-RECEIVED -> 'No input received'.
+EIBCALEN 2000
+COMMAREA
+  CDEMO-FROM-PROGRAM = "COCRDSLC"
+  CDEMO-FROM-TRANID  = "CCDL"
+  CDEMO-PGM-CONTEXT  = 1
+END_COMMAREA
+AID DFHPF4
+FIELD ACCTSIDI "           "
+FIELD CARDSIDI "                "
+EXPECT_MSG "No input received"
+EXPECT_MSG_COLOR DFHRED
+EXPECT_CURSOR ACCTSID
+EXPECT_CARDDAT_UNCHANGED
+END_SCENARIO
+
+#
+# End of 12 scenarios.
+#
+# Verbatim COBOL message catalog (source = app/cbl/COCRDSLC.cbl):
+#   line 130: '   Displaying requested details'         (3 leading spaces)
+#   line 132: 'Please enter Account and Card Number'
+#   line 137: 'PF03 pressed.Exiting              '      (14 trailing spaces)
+#   line 139: 'Account number not provided'
+#   line 141: 'Card number not provided'
+#   line 143: 'No input received'
+#   line 154: 'Did not find cards for this search condition'
+#   line 670: 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER'
+#   line 711: 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER'
+#   line 377: 'UNEXPECTED DATA SCENARIO'                (WHEN OTHER ABEND)
+#   line 860: 'UNEXPECTED ABEND OCCURRED.'              (ABEND-ROUTINE)
+#
+# CARDDAT no-modification invariant: COCRDSLC issues only EXEC CICS READ
+# (lines 742-750, no UPDATE clause). The post-run carddata.txt MUST be
+# byte-identical to the pre-run carddata.txt. Every scenario asserts this
+# via EXPECT_CARDDAT_UNCHANGED.
