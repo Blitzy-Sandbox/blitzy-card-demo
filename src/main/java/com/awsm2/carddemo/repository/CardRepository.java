@@ -65,9 +65,9 @@ import java.util.List;
  *
  * <p>This repository operates over the PAN (Primary Account Number) primary
  * key. All callers <strong>MUST NOT</strong> log the {@code cardNum} value
- * directly; instead, the {@link Card#maskCardNumber()} helper produces the
+ * directly; instead, the {@link Card#toString()} helper produces the
  * PCI-DSS v4.0 Requirement 3.4.1 compliant
- * {@code ****-****-****-1234} format which is safe for logging. The
+ * {@code ****-****-****-1234} masked format which is safe for logging. The
  * repository itself emits no SQL trace logs in production profiles per
  * {@code application.yml} (the {@code org.hibernate.SQL} logger is set to
  * {@code WARN} or higher outside the {@code local} profile). Encryption at
@@ -180,7 +180,7 @@ public interface CardRepository extends JpaRepository<Card, String> {
      *      ORDER BY c.cardNum ASC
      * </pre>
      * <p>which, executed against PostgreSQL, uses the
-     * {@code idx_cards_card_acct_id} secondary index declared by V002 to
+     * {@code idx_cards_acct_id} secondary index declared by V002 to
      * locate the matching rows, then returns up to
      * {@code pageable.getPageSize()} rows.</p>
      *
