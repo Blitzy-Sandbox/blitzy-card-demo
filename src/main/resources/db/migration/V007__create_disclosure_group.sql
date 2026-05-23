@@ -208,14 +208,17 @@ create table disclosure_group (
     -- DIS-TRAN-CAT-CD PIC 9(04); third column of the COBOL composite key
     -- (bytes 13-16 of the 16-byte VSAM key). 4-digit numeric transaction-
     -- category code matching tran_category.tran_cat_cd (V009). Stored as
-    -- an integer (NUMERIC(4), 0-9999) NOT as a zero-padded string;
-    -- COBOL's PIC 9(04) "0001" becomes the integer 1, mirroring the
-    -- convention used by V012 (seed rows reference cat 1, 2, 3, 4) and
-    -- V014 (tran_category.tran_cat_cd). NUMERIC(4) with precision=4 and
-    -- implicit scale=0 stores values exactly in PostgreSQL (no float
-    -- approximation). Java @Embeddable field: disTranCatCd
+    -- an INTEGER (4-byte signed integer, range -2^31..2^31-1) which fully
+    -- contains the COBOL PIC 9(04) range (0..9999); COBOL's PIC 9(04)
+    -- "0001" becomes the integer 1, mirroring the convention used by
+    -- V012 (seed rows reference cat 1, 2, 3, 4) and V014
+    -- (tran_category.tran_cat_cd). INTEGER is chosen over NUMERIC(4)
+    -- to match the Java Integer mapping in DisclosureGroup.disTranCatCd;
+    -- Hibernate's schema-validation requires the JDBC type to match the
+    -- Java type (Integer -> INTEGER, not NUMERIC). Java @Embeddable
+    -- field: disTranCatCd
     -- (@Column(name = "dis_tran_cat_cd", precision = 4, scale = 0)).
-    dis_tran_cat_cd      numeric(4)     not null,
+    dis_tran_cat_cd      integer        not null,
 
     -- DIS-INT-RATE PIC S9(04)V99; signed 4-digit integer with 2 implied
     -- decimal places = APR percentage (e.g., 15.00 = 15.00% APR, 25.00 =

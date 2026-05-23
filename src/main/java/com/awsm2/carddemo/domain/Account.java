@@ -21,6 +21,8 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.io.Serializable;
 import java.math.BigDecimal;
@@ -368,6 +370,7 @@ public class Account implements Serializable {
      */
     // COBOL: CVACT01Y.cpy:L6 ACCT-ACTIVE-STATUS PIC X(01)
     // -- 'Y' active / 'N' inactive (CHECK constraint enforced at DB)
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "acct_active_status", nullable = false, length = 1, columnDefinition = "CHAR(1)")
     private String acctActiveStatus;
 

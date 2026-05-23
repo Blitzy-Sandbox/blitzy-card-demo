@@ -20,6 +20,8 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.io.Serializable;
 import java.util.Objects;
@@ -212,6 +214,7 @@ public class TransactionType implements Serializable {
     // COBOL: CVTRA03Y.cpy:L5 TRAN-TYPE PIC X(02) -- primary key
     // (CHAR(2) for fixed-width matching with the COBOL/PostgreSQL column)
     @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "tran_type", nullable = false, length = 2, columnDefinition = "CHAR(2)")
     private String tranType;
 

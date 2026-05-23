@@ -21,6 +21,8 @@ import jakarta.persistence.Embeddable;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.io.Serializable;
 import java.math.BigDecimal;
@@ -661,6 +663,7 @@ public class DisclosureGroup implements Serializable {
         // COBOL: CVTRA02Y.cpy:L7 DIS-TRAN-TYPE-CD PIC X(02)
         // -- 2-char transaction-type code; CHAR(2) for fixed-width matching
         // with V008 tran_type.tran_type (same value space).
+        @JdbcTypeCode(SqlTypes.CHAR)
         @Column(name = "dis_tran_type_cd", nullable = false, length = 2,
                 columnDefinition = "CHAR(2)")
         private String disTranTypeCd;

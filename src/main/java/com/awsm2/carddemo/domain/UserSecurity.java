@@ -20,6 +20,8 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.io.Serializable;
 import java.util.Objects;
@@ -308,6 +310,7 @@ public class UserSecurity implements Serializable {
      * matches V010's {@code char(1)} column type exactly so Hibernate
      * {@code ddl-auto: validate} accepts this entity.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "sec_usr_type", nullable = false, length = 1, columnDefinition = "CHAR(1)")
     private String secUsrType;
 

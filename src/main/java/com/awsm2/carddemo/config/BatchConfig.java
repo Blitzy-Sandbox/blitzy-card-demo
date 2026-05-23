@@ -131,7 +131,10 @@ public class BatchConfig {
     }
 
     /**
-     * Configures the Spring Batch 5 {@link TaskExecutorJobLauncher}.
+     * Configures the Spring Batch 5 {@link TaskExecutorJobLauncher} as a
+     * named bean {@code asyncJobLauncher} to coexist with Spring Boot's
+     * auto-configured default {@code jobLauncher} (which uses a
+     * {@link org.springframework.core.task.SyncTaskExecutor}).
      *
      * <p>Replaces the deprecated {@code SimpleJobLauncher} from Spring
      * Batch 4. The TaskExecutorJobLauncher delegates job execution to the
@@ -139,15 +142,44 @@ public class BatchConfig {
      * for Step Functions / Lambda triggers and blocking launches when the
      * caller chooses to {@code Future.get()} on the returned execution.</p>
      *
+     * <h2>Bean naming &mdash; intentional coexistence with auto-config</h2>
+     * <p>This bean is explicitly named {@code asyncJobLauncher} rather
+     * than the default {@code jobLauncher} so it can <em>coexist</em>
+     * with Spring Boot's auto-configured {@code jobLauncher} bean
+     * registered by
+     * {@link org.springframework.boot.autoconfigure.batch.BatchAutoConfiguration}.
+     * Spring Boot's default launcher uses a
+     * {@link org.springframework.core.task.SyncTaskExecutor} which blocks
+     * the calling thread until job completion &mdash; appropriate for
+     * AWS Batch container invocations where the container exits with the
+     * job's exit code (Step Functions reads the container exit code as
+     * the Task outcome). The custom {@code asyncJobLauncher} bean below
+     * provides the async variant for REST-triggered fire-and-forget
+     * launches (e.g., {@code ReportController.submit()}).</p>
+     *
+     * <p>Consumers explicitly choose the launcher to use by injecting by
+     * bean name (e.g.,
+     * {@code @Qualifier("asyncJobLauncher") JobLauncher launcher}) or
+     * by type (which resolves to the auto-configured default
+     * {@code jobLauncher} unless this bean is also marked
+     * {@code @Primary}).</p>
+     *
+     * <p>This naming strategy is required because the application sets
+     * {@code spring.main.allow-bean-definition-overriding=false} in
+     * {@code application.yml} (per AAP &sect;0.7.1 strict bean definition
+     * discipline); reusing the {@code jobLauncher} name would cause a
+     * {@code BeanDefinitionOverrideException} at context refresh.</p>
+     *
      * @param jobRepository the Spring Batch metadata repository (auto-
      *                      configured by Spring Boot from the JPA
-     *                      DataSource — see {@link JpaConfig})
-     * @return the configured JobLauncher
-     * @throws Exception if the launcher's afterPropertiesSet validation fails
-     *                   (e.g., the JobRepository is null)
+     *                      DataSource &mdash; see {@link JpaConfig})
+     * @return the configured async JobLauncher (named
+     *         {@code asyncJobLauncher})
+     * @throws Exception if the launcher's afterPropertiesSet validation
+     *                   fails (e.g., the JobRepository is null)
      */
-    @Bean
-    public JobLauncher jobLauncher(JobRepository jobRepository) throws Exception {
+    @Bean(name = "asyncJobLauncher")
+    public JobLauncher asyncJobLauncher(JobRepository jobRepository) throws Exception {
         // Replaces: $S JOBNAME (JES job-submission command). The Java target
         // launches a Job via this bean's run() method; Step Functions / AWS
         // Batch are the upstream callers in production, but this bean also
@@ -156,8 +188,10 @@ public class BatchConfig {
         launcher.setJobRepository(jobRepository);
         launcher.setTaskExecutor(batchTaskExecutor());
         launcher.afterPropertiesSet();
-        LOG.info("Spring Batch JobLauncher configured (TaskExecutorJobLauncher) — "
-                + "Flyway owns batch schema (spring.batch.jdbc.initialize-schema=never)");
+        LOG.info("Spring Batch async JobLauncher configured (TaskExecutorJobLauncher, "
+                + "bean name 'asyncJobLauncher') — coexists with auto-configured "
+                + "'jobLauncher' (SyncTaskExecutor). Flyway owns batch schema "
+                + "(spring.batch.jdbc.initialize-schema=never).");
         return launcher;
     }
 }

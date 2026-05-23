@@ -319,6 +319,20 @@ spring:
           max-idle: 4
           min-idle: 1
           max-wait: 100ms
+      # Disable Spring Data Redis KeyValue repository support in tests.
+      # The CardDemo application has ZERO @RedisHash entities or
+      # @EnableRedisRepositories declarations -- Redis is used SOLELY as a
+      # cache-aside layer via RedisTemplate / CacheManager (AAP §0.7.1).
+      # However, spring-boot-starter-data-redis on the classpath unconditionally
+      # activates RedisRepositoriesAutoConfiguration, which constructs a
+      # `redisKeyValueAdapter` bean that calls RedisTemplate.getConnectionFactory().
+      # When tests @MockBean the RedisTemplate, the mocked getConnectionFactory()
+      # returns null and the adapter's afterPropertiesSet() throws
+      # IllegalArgumentException("ConnectionFactory must not be null").
+      # Disabling repositories here turns off the KeyValue adapter entirely
+      # for the test profile; production (`prod` profile) leaves this enabled.
+      repositories:
+        enabled: false
   cache:
     type: redis
     redis:

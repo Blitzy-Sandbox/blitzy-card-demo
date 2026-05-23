@@ -93,7 +93,7 @@
 -- -----------------------------------------------------------------------------
 --   COBOL field                PIC clause     PostgreSQL column         Type
 --   -------------------------- -------------- ------------------------- ------------
---   CUST-ID                    PIC 9(09)      cust_id                   NUMERIC(9)  (PK)
+--   CUST-ID                    PIC 9(09)      cust_id                   BIGINT      (PK)
 --   CUST-FIRST-NAME            PIC X(25)      cust_first_name           VARCHAR(25) NN
 --   CUST-MIDDLE-NAME           PIC X(25)      cust_middle_name          VARCHAR(25)
 --   CUST-LAST-NAME             PIC X(25)      cust_last_name            VARCHAR(25) NN
@@ -105,12 +105,12 @@
 --   CUST-ADDR-ZIP              PIC X(10)      cust_addr_zip             VARCHAR(10) NN
 --   CUST-PHONE-NUM-1           PIC X(15)      cust_phone_num_1          VARCHAR(15)
 --   CUST-PHONE-NUM-2           PIC X(15)      cust_phone_num_2          VARCHAR(15)
---   CUST-SSN                   PIC 9(09)      cust_ssn                  NUMERIC(9)  NN (PII)
+--   CUST-SSN                   PIC 9(09)      cust_ssn                  BIGINT      NN (PII)
 --   CUST-GOVT-ISSUED-ID        PIC X(20)      cust_govt_issued_id       VARCHAR(20)
 --   CUST-DOB-YYYY-MM-DD        PIC X(10)      cust_dob_yyyy_mm_dd       DATE        NN
 --   CUST-EFT-ACCOUNT-ID        PIC X(10)      cust_eft_account_id       VARCHAR(10)
 --   CUST-PRI-CARD-HOLDER-IND   PIC X(01)      cust_pri_card_holder_ind  CHAR(1)     NN
---   CUST-FICO-CREDIT-SCORE     PIC 9(03)      cust_fico_credit_score    NUMERIC(3)  NN
+--   CUST-FICO-CREDIT-SCORE     PIC 9(03)      cust_fico_credit_score    INTEGER     NN
 --   FILLER                     PIC X(168)     OMITTED                   --
 --
 -- COBOL record byte budget (per CVCUS01Y.cpy / LISTCAT MAXLRECL=500):
@@ -168,11 +168,15 @@ create table customers (
     -- CUST-ID PIC 9(09); 9-digit unsigned numeric customer identifier.
     -- VSAM KSDS primary key (RKP=0, KEYLEN=9 per
     -- app/catlg/LISTCAT.txt / app/jcl/CUSTFILE.jcl:L50 "KEYS(9 0)").
-    -- Stored as NUMERIC(9) to preserve the COBOL unsigned 9-digit
-    -- range (0..999,999,999). Maps to Customer.@Id (Long) in JPA.
-    -- Referenced as a foreign key by card_xref.xref_cust_id (FK
-    -- added in V004__create_cardxref.sql).
-    cust_id                     numeric(9)   not null,
+    -- Stored as BIGINT (8-byte signed integer, range -2^63..2^63-1)
+    -- which fully contains the COBOL unsigned 9-digit range
+    -- (0..999,999,999). BIGINT is chosen over NUMERIC(9) to match the
+    -- Java Long mapping in Customer.@Id and to align with the V001
+    -- acct_id BIGINT pattern; Hibernate's schema-validation requires
+    -- the JDBC type to match the Java type (Long -> BIGINT, not
+    -- NUMERIC). Referenced as a foreign key by card_xref.xref_cust_id
+    -- (FK added in V004__create_cardxref.sql).
+    cust_id                     bigint       not null,
 
     -- CUST-FIRST-NAME PIC X(25); customer first name. 25-character
     -- fixed-width in COBOL, stored TRIMMED of trailing padding spaces
@@ -276,11 +280,14 @@ create table customers (
     --      AAP §0.6.6 architectural decision -- encryption is a
     --      storage-layer concern, not a schema-layer concern.
     --   6. Per AAP §0.7.3 refactor discipline, the column is stored
-    --      as NUMERIC(9) to preserve COBOL semantics; reformatting
-    --      (e.g., to '###-##-####') is an application-layer concern.
+    --      as BIGINT to preserve the COBOL 9-digit unsigned range
+    --      (0..999,999,999, fully contained in BIGINT's 8-byte signed
+    --      range) while matching the Java Long mapping in
+    --      Customer.custSsn; reformatting (e.g., to '###-##-####') is
+    --      an application-layer concern.
     -- See the COMMENT ON COLUMN customers.cust_ssn statement below
     -- for the catalog-discoverable PII annotation.
-    cust_ssn                    numeric(9)   not null,
+    cust_ssn                    bigint       not null,
 
     -- CUST-GOVT-ISSUED-ID PIC X(20); government-issued identifier
     -- (driver's-license number, passport number, state-ID number,
@@ -327,8 +334,13 @@ create table customers (
     cust_pri_card_holder_ind    char(1)      not null,
 
     -- CUST-FICO-CREDIT-SCORE PIC 9(03); 3-digit FICO credit score.
-    -- Stored as NUMERIC(3). NOT NULL -- required for account credit-
-    -- limit decisions and disclosure-group lookup.
+    -- Stored as INTEGER (4-byte signed integer, range -2^31..2^31-1)
+    -- which fully contains the COBOL PIC 9(03) range (0..999).
+    -- INTEGER is chosen over NUMERIC(3) to match the Java Integer
+    -- mapping in Customer.custFicoCreditScore; Hibernate's schema-
+    -- validation requires the JDBC type to match the Java type
+    -- (Integer -> INTEGER, not NUMERIC). NOT NULL -- required for
+    -- account credit-limit decisions and disclosure-group lookup.
     --
     -- The CHECK constraint `cust_fico_credit_score BETWEEN 300 AND 850`
     -- restricts the value to the canonical FICO credit-score range as
@@ -342,7 +354,7 @@ create table customers (
     -- now enforces this invariant deterministically). The same Java
     -- application-layer validation in the Customer JPA entity / DTO
     -- still applies as a first line of defense before INSERT/UPDATE.
-    cust_fico_credit_score      numeric(3)   not null,
+    cust_fico_credit_score      integer      not null,
     constraint ck_customers_cust_fico_credit_score
         check (cust_fico_credit_score between 300 and 850),
 

@@ -19,8 +19,11 @@ package com.awsm2.carddemo.config;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
+import org.springframework.boot.autoconfigure.jdbc.JdbcConnectionDetails;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.jdbc.DataSourceBuilder;
 import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -161,21 +164,75 @@ public class JpaConfig {
      * profiles. The driver class is auto-detected from the URL when not
      * explicitly set.</p>
      *
+     * <h3>Spring Boot 3.1+ {@link JdbcConnectionDetails} interoperability</h3>
+     * <p>This method ALSO consumes an {@link ObjectProvider} of
+     * {@link JdbcConnectionDetails}. When present in the application
+     * context (typically supplied by a Testcontainers
+     * {@code @ServiceConnection} on a {@code PostgreSQLContainer}, by
+     * Spring Cloud AWS RDS auto-detection, or by any other
+     * {@code ConnectionDetailsFactory}), the {@code JdbcConnectionDetails}
+     * bean takes precedence over the
+     * {@link DataSourceProperties}-driven values. This mirrors the
+     * behavior of Spring Boot's own
+     * {@code DataSourceConfiguration.Hikari} auto-config &mdash; which
+     * we cannot rely on here because we deliberately overrode that
+     * auto-config with the {@code @Primary @RefreshScope} bean above
+     * (AAP &sect;0.6.4 rotation requirement).</p>
+     *
+     * <p>This explicit consumer is necessary because Spring Boot's
+     * companion {@code HikariJdbcConnectionDetailsBeanPostProcessor}
+     * does NOT process {@code @RefreshScope} HikariDataSource beans when
+     * they are eagerly resolved during {@code jobRegistryBeanPostProcessor}
+     * initialization (a known Spring Batch + Spring Cloud Context
+     * interaction). Without this fallback path, integration tests using
+     * {@code @ServiceConnection} would connect Hibernate to a different
+     * container than Flyway, producing spurious "missing table" errors
+     * after migrations ran successfully.</p>
+     *
      * @param props the refresh-scoped properties bean produced above
+     * @param connectionDetailsProvider an {@link ObjectProvider} of
+     *        {@link JdbcConnectionDetails}; when present its values
+     *        (URL, username, password, driver class) override the
+     *        DataSourceProperties values. When absent (production
+     *        default), the DataSourceProperties path is used.
      * @return a fully-configured HikariCP {@link DataSource}
      */
     @Bean
     @Primary
     @RefreshScope
     @ConfigurationProperties("spring.datasource.hikari")
-    public DataSource dataSource(DataSourceProperties props) {
+    public DataSource dataSource(DataSourceProperties props,
+                                 ObjectProvider<JdbcConnectionDetails> connectionDetailsProvider) {
         // Replaces: VSAM OPEN / CLOSE handles in COBOL batch programs and
         // the per-CICS-region connection pool to VSAM. Backing store for
         // every @Repository in com.awsm2.carddemo.repository.
-        LOG.debug("Building refresh-scoped HikariCP DataSource for url={}", props.getUrl());
-        HikariDataSource ds = props.initializeDataSourceBuilder()
-                .type(HikariDataSource.class)
-                .build();
+        JdbcConnectionDetails details = connectionDetailsProvider.getIfAvailable();
+        HikariDataSource ds;
+        if (details != null) {
+            // Spring Boot 3.1+ JdbcConnectionDetails path (Testcontainers
+            // @ServiceConnection, Spring Cloud AWS RDS detection, etc.).
+            // Takes precedence over yml-derived DataSourceProperties so
+            // that integration tests connect to the SAME container that
+            // Flyway and other ConnectionDetails-consuming beans use.
+            LOG.debug("Building refresh-scoped HikariCP DataSource from JdbcConnectionDetails url={}",
+                    details.getJdbcUrl());
+            ds = (HikariDataSource) DataSourceBuilder.create()
+                    .type(HikariDataSource.class)
+                    .driverClassName(details.getDriverClassName())
+                    .url(details.getJdbcUrl())
+                    .username(details.getUsername())
+                    .password(details.getPassword())
+                    .build();
+        } else {
+            // Production path: build from DataSourceProperties (which
+            // sources URL/credentials from spring.datasource.* in the
+            // active application*.yml, including any AWS Secrets Manager
+            // imports resolved via spring.config.import).
+            LOG.debug("Building refresh-scoped HikariCP DataSource for url={}", props.getUrl());
+            ds = props.initializeDataSourceBuilder()
+                    .type(HikariDataSource.class)
+                    .build();
+        }
         // Pool name simplifies log analysis and CloudWatch dashboard
         // configuration; intentionally not configurable per environment
         // so dashboards work uniformly across local/dev/prod.

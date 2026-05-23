@@ -501,6 +501,22 @@
             <artifactId>spring-kafka-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <!--
+                 Spring Boot 3.1+ Testcontainers integration — supplies the
+                 @ServiceConnection annotation that auto-wires Spring Boot
+                 DataSource / KafkaConnectionDetails / RedisConnectionDetails
+                 from a running Testcontainers instance, eliminating the
+                 need for static @DynamicPropertySource boilerplate in
+                 every @SpringBootTest. Required by
+                 src/test/java/com/awsm2/carddemo/CardDemoApplicationTests.java
+                 per AAP §0.5.1 and §0.7.2 (test infrastructure dependency).
+                 Version managed by spring-boot-starter-parent BOM (3.3.5).
+            -->
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
 
         <!-- Testcontainers modules — versions from BOM -->
         <dependency>

@@ -101,11 +101,11 @@
 --   --------------------- ---------------- ------------------------- -----------
 --   DALYTRAN-ID           PIC X(16)        dalytran_id               VARCHAR(16)
 --   DALYTRAN-TYPE-CD      PIC X(02)        dalytran_type_cd          CHAR(2)
---   DALYTRAN-CAT-CD       PIC 9(04)        dalytran_cat_cd           NUMERIC(4)
+--   DALYTRAN-CAT-CD       PIC 9(04)        dalytran_cat_cd           INTEGER
 --   DALYTRAN-SOURCE       PIC X(10)        dalytran_source           VARCHAR(10)
 --   DALYTRAN-DESC         PIC X(100)       dalytran_desc             VARCHAR(100)
 --   DALYTRAN-AMT          PIC S9(09)V99    dalytran_amt              NUMERIC(11,2)
---   DALYTRAN-MERCHANT-ID  PIC 9(09)        dalytran_merchant_id      NUMERIC(9)
+--   DALYTRAN-MERCHANT-ID  PIC 9(09)        dalytran_merchant_id      BIGINT
 --   DALYTRAN-MERCHANT-NM  PIC X(50)        dalytran_merchant_name    VARCHAR(50)
 --   DALYTRAN-MERCHANT-CY  PIC X(50)        dalytran_merchant_city    VARCHAR(50)
 --   DALYTRAN-MERCHANT-ZP  PIC X(10)        dalytran_merchant_zip     VARCHAR(10)
@@ -132,11 +132,16 @@
 --   - dalytran_type_cd is CHAR(2) (e.g., '01') -- always exactly 2
 --     characters with significant leading zeros. The same value space as
 --     tran_type (V008/V013).
---   - dalytran_cat_cd is NUMERIC(4) -- the integer category code (e.g.,
+--   - dalytran_cat_cd is INTEGER -- the integer category code (e.g.,
 --     1, 5, 7) joined with dalytran_type_cd as the tran_category composite
---     key in V009/V014.
---   - dalytran_merchant_id is NUMERIC(9) (PIC 9(09) is UNSIGNED in COBOL;
---     no sign reserve needed).
+--     key in V009/V014. INTEGER (4-byte signed) is chosen over NUMERIC(4)
+--     to align with the Java Integer mapping in DailyTransaction.dalytranCatCd
+--     (Hibernate schema-validation requires Integer -> INTEGER, not NUMERIC).
+--   - dalytran_merchant_id is BIGINT (8-byte signed integer) which fully
+--     contains the COBOL PIC 9(09) unsigned range (0..999,999,999). BIGINT
+--     is chosen over NUMERIC(9) to align with the Java Long mapping in
+--     DailyTransaction.dalytranMerchantId (Hibernate schema-validation
+--     requires Long -> BIGINT, not NUMERIC).
 --   - String columns (VARCHAR) store trimmed values without trailing
 --     padding spaces (idiomatic relational storage; the Java entity uses
 --     String and Spring Data JPA will TRIM during read where needed for
@@ -157,7 +162,12 @@ create table daily_transactions (
     -- DALYTRAN-CAT-CD PIC 9(04); transaction-category code (1..9999).
     -- Joined with dalytran_type_cd as the composite key referenced by
     -- tran_category (V009/V014). FK omitted per staging-table policy.
-    dalytran_cat_cd          numeric(4)      not null,
+    -- Stored as INTEGER (4-byte signed integer) which fully contains
+    -- the COBOL PIC 9(04) range (0..9999); INTEGER chosen over
+    -- NUMERIC(4) to match the Java Integer mapping in
+    -- DailyTransaction.dalytranCatCd (Hibernate schema-validation
+    -- requires Integer -> INTEGER, not NUMERIC).
+    dalytran_cat_cd          integer         not null,
 
     -- DALYTRAN-SOURCE PIC X(10); origination source (e.g., 'POS TERM',
     -- 'OPERATOR', 'ONLINE'). Free-form 10-char alphanumeric per fixture.
@@ -180,7 +190,12 @@ create table daily_transactions (
     -- Logically links to a merchant master, but no merchant table is in
     -- scope for this refactor -- the merchant attributes are denormalized
     -- onto each transaction row (mirrors the COBOL flat-file structure).
-    dalytran_merchant_id     numeric(9),
+    -- Stored as BIGINT (8-byte signed integer) which fully contains the
+    -- COBOL PIC 9(09) range (0..999,999,999); BIGINT chosen over
+    -- NUMERIC(9) to match the Java Long mapping in
+    -- DailyTransaction.dalytranMerchantId (Hibernate schema-validation
+    -- requires Long -> BIGINT, not NUMERIC).
+    dalytran_merchant_id     bigint,
 
     -- DALYTRAN-MERCHANT-NAME PIC X(50); merchant display name.
     dalytran_merchant_name   varchar(50),

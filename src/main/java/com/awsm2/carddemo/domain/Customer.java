@@ -20,6 +20,8 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.io.Serializable;
 import java.time.LocalDate;
@@ -375,6 +377,7 @@ public class Customer implements Serializable {
      * {@code char(2)} column type exactly so Hibernate
      * {@code ddl-auto: validate} accepts this entity.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_addr_state_cd", nullable = false, length = 2, columnDefinition = "CHAR(2)")
     private String custAddrStateCd;
 
@@ -389,6 +392,7 @@ public class Customer implements Serializable {
      * {@code columnDefinition = "CHAR(3)"} matches V003's
      * {@code char(3)} column type exactly.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_addr_country_cd", nullable = false, length = 3, columnDefinition = "CHAR(3)")
     private String custAddrCountryCd;
 
@@ -553,6 +557,7 @@ public class Customer implements Serializable {
      * {@code char(1)} column type exactly so Hibernate
      * {@code ddl-auto: validate} accepts this entity.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "cust_pri_card_holder_ind", nullable = false, length = 1, columnDefinition = "CHAR(1)")
     private String custPriCardHolderInd;
 
