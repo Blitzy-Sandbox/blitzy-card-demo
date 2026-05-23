@@ -1,0 +1,82 @@
+# COUSR00C (User List, CICS transaction CU00) - Golden-Record Scenario Script
+# 12 scenarios exercising read-only browse-with-pagination across 22 USRSEC users
+# Authority: AAP section 0.6.11 (PR gate); see expected/README.md for full contract
+#
+# Fixture inputs:
+#   - usrsec.txt: 22 users (1 admin + 21 regular), sorted ascending by SEC-USR-ID
+#   - This file: 12 sequential simulated 3270 interactions
+#
+# All directives are processed in strict order. Each EXPECT_* assertion is
+# evaluated by CoUsr00CGoldenTest after the corresponding SEND MAP has occurred.
+
+# Scenario 1: Initial display (admin signed on; first invocation)
+COMMAREA CDEMO-USER-TYPE=A
+COMMAREA CDEMO-PGM-REENTER=0
+AID DFHENTER
+EXPECT_PAGE 00000001
+END_SCENARIO
+
+# Scenario 2: PF8 forward to page 2
+AID DFHPF8
+EXPECT_PAGE 00000002
+END_SCENARIO
+
+# Scenario 3: PF8 forward to page 3 (partial; bottom reached)
+AID DFHPF8
+EXPECT_PAGE 00000003
+EXPECT_MSG 'You have reached the bottom of the page...'
+END_SCENARIO
+
+# Scenario 4: PF8 at last page (bottom boundary message)
+AID DFHPF8
+EXPECT_PAGE 00000003
+EXPECT_MSG 'You are already at the bottom of the page...'
+END_SCENARIO
+
+# Scenario 5: PF7 backward to page 2
+AID DFHPF7
+EXPECT_PAGE 00000002
+END_SCENARIO
+
+# Scenario 6: PF7 backward to page 1
+AID DFHPF7
+EXPECT_PAGE 00000001
+END_SCENARIO
+
+# Scenario 7: PF7 at page 1 (top boundary message)
+AID DFHPF7
+EXPECT_PAGE 00000001
+EXPECT_MSG 'You are already at the top of the page...'
+END_SCENARIO
+
+# Scenario 8: ENTER with 'U' selection on row 5 (USER0004) -> XCTL COUSR02C
+FIELD SEL0005I=U
+AID DFHENTER
+EXPECT_XCTL COUSR02C
+ASSERT_USRSEC_UNCHANGED
+END_SCENARIO
+
+# Scenario 9: ENTER with 'D' selection on row 3 (USER0002) -> XCTL COUSR03C
+# NOTE: This scenario is run from a fresh page-1 state (see harness reset semantics).
+FIELD SEL0003I=D
+AID DFHENTER
+EXPECT_XCTL COUSR03C
+ASSERT_USRSEC_UNCHANGED
+END_SCENARIO
+
+# Scenario 10: ENTER with invalid selection 'X' on row 1 -> verbatim error
+FIELD SEL0001I=X
+AID DFHENTER
+EXPECT_MSG 'Invalid selection. Valid values are U and D'
+END_SCENARIO
+
+# Scenario 11: USRIDIN search positioning + ENTER -> reposition page at USER0015
+FIELD USRIDINI=USER0015
+AID DFHENTER
+END_SCENARIO
+
+# Scenario 12: PF3 back to admin menu -> XCTL COADM01C
+AID DFHPF3
+EXPECT_XCTL COADM01C
+ASSERT_USRSEC_UNCHANGED
+END_SCENARIO
