@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    java/carddemo-tests/src/test/resources/logback-test.xml
+    ============================================================================
+    Test-scope Logback Classic configuration (version 1.5.12 per AAP §0.5.1).
+
+    AUTO-LOADED by SLF4J + Logback during JUnit test execution because Logback's
+    lookup scans for `logback-test.xml` BEFORE `logback.xml`. This file lives on
+    the test classpath of carddemo-tests ONLY; production shaded jars in
+    carddemo-app consume their own logback.xml (java/carddemo-app/src/main/
+    resources/logback.xml).
+
+    Levels:
+      com.blitzy.carddemo -> INFO  (project-wide application/test code)
+      everything else     -> WARN  (3rd-party libraries, JDK internals)
+
+    Layout: structured JSON via stock Logback PatternLayoutEncoder — the same
+    encoder mechanism the production logback.xml uses, satisfying the JSON
+    layout requirement of AAP §0.6.12 without adding any third-party encoder
+    artefact outside the AAP §0.5.1 dependency inventory.
+
+    Architectural constraints enforced (see AAP §0.1.1, §0.6.12, §0.7.4):
+    only stock Logback elements are used — no application-framework extensions,
+    no third-party encoders, no disk-bound appenders, no metric or trace
+    exporter references, no JMX or filter hooks.
+
+    References: AAP §0.5.1, §0.6.6, §0.6.12, §0.7.2, §0.7.4.
+-->
+<configuration>
+
+    <!--
+        Console appender, JSON pattern. One log event = one single-line JSON
+        object. %mdc dumps any keys promoted from ScopedValue<BatchRunContext>
+        (AAP §0.6.6); %replace(...){'"', '\\"'} escapes embedded double quotes
+        in dynamic content so the surrounding JSON stays parseable.
+    -->
+    <appender name="STDOUT_JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <charset>UTF-8</charset>
+            <pattern>{"timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"%level","logger":"%logger{40}","thread":"%thread","message":"%replace(%message){'"', '\\"'}","mdc":{%mdc},"exception":"%replace(%ex{full}){'"', '\\"'}"}%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Project code at INFO; additivity="false" avoids double emission. -->
+    <logger name="com.blitzy.carddemo" level="INFO" additivity="false">
+        <appender-ref ref="STDOUT_JSON"/>
+    </logger>
+
+    <!-- Everything else (3rd-party, JDK) at WARN to keep test logs uncluttered. -->
+    <root level="WARN">
+        <appender-ref ref="STDOUT_JSON"/>
+    </root>
+
+</configuration>
