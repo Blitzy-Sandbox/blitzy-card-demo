@@ -31,7 +31,7 @@ Repository ITs run real JPA queries against Testcontainers PostgreSQL 16 with Fl
 
 ### 2.3 Baseline Parity Integration Tests
 
-Each of the 5 Spring Batch jobs has a dedicated `*BaselineParityIT` class that produces an output file and calls `BaselineDiffUtil.assertByteEqual(actualPath, expectedPath)` against the captured COBOL reference output under `src/test/resources/baseline/expected/`. Zero delta is required — a single byte difference (a trailing whitespace character, a sign-overpunch mismatch, or a one-digit drift caused by `RoundingMode.HALF_UP` instead of `RoundingMode.HALF_EVEN`) causes the IT to fail. Until COBOL capture occurs, expected-output files carry a `BASELINE_CAPTURE_PENDING_<NAME>` marker on their first line and `BaselineDiffUtil` recognises that marker, failing loudly with a "baseline capture pending" diagnostic so green builds against unpopulated baselines are impossible. See [`baseline-parity.md`](baseline-parity.md) for the full capture and refresh procedure.
+Each of the 5 Spring Batch jobs has a dedicated `*BaselineParityIT` class that produces an output file and calls `BaselineDiffUtil.assertByteEqual(actualPath, expectedPath)` against the captured COBOL reference output under `src/test/resources/baseline/expected/`. Zero delta is required — a single byte difference (a trailing whitespace character, a sign-overpunch mismatch, or a one-digit drift caused by `RoundingMode.HALF_UP` instead of `RoundingMode.HALF_EVEN`) causes the IT to fail. `BaselineDiffUtil` also recognises a defensive `BASELINE_CAPTURE_PENDING_<NAME>` placeholder marker (described in [`baseline-parity.md`](baseline-parity.md) §7) and fails loudly with a "baseline capture pending" diagnostic if any expected file is ever left as a placeholder, so green builds against unpopulated baselines are impossible. See [`baseline-parity.md`](baseline-parity.md) for the full capture and refresh procedure.
 
 **Byte-diff call-site inventory (12 in total).** `BaselineDiffUtil.assertByteEqual(...)` is invoked at exactly 12 sites across the suite:
 
@@ -47,7 +47,7 @@ Each of the 5 Spring Batch jobs has a dedicated `*BaselineParityIT` class that p
 
 The first six call sites (across the 5 parity ITs) prove **isolated-stage** parity. The remaining six (across `BatchPipelineE2EIT` stages) prove **composed-pipeline** parity (POSTTRAN → INTCALC → COMBTRAN → CREASTMT ∥ TRANREPT) where each stage's output feeds the next stage's input.
 
-**Current execution state.** All five `*BaselineParityIT` classes and `BatchPipelineE2EIT` are annotated `@Disabled` pending authentic COBOL baseline capture. The committed expected fixtures under `src/test/resources/baseline/expected/` are `BASELINE_CAPTURE_PENDING_<NAME>` placeholders. When the capture environment is available, the procedure in [`baseline-parity.md`](baseline-parity.md) §5 replaces the placeholders with authentic captures and the same change removes the six `@Disabled` annotations so the 12 byte-diff assertions fire under Failsafe.
+**Current execution state.** Authentic COBOL reference outputs have been captured and committed under `src/test/resources/baseline/expected/`. None of the five `*BaselineParityIT` classes nor the capstone `BatchPipelineE2EIT` is annotated `@Disabled` — they all execute under Failsafe (`mvn verify`), and the 12 byte-diff assertions fire on every CI run. The `BASELINE_CAPTURE_PENDING_<NAME>` placeholder marker remains a defensive contract recognised by `BaselineDiffUtil` (see [`baseline-parity.md`](baseline-parity.md) §7 for the convention and §5 for the capture procedure if a re-capture cycle is ever required).
 
 ### 2.4 End-to-End Tests
 
@@ -178,22 +178,46 @@ The framework choice is restated verbatim from AAP §0.10.7:
 
 ### 7.2 Example Skeleton
 
+The skeleton below mirrors the actual `AuthenticationService` API in `src/main/java/com/aws/carddemo/service/AuthenticationService.java`: the public method is `authenticate(AuthenticationRequest request)` returning an `AuthenticationResult` (success → populated `UserSession` and welcome message; failure → null session and reject message). Test methods inside `AuthenticationServiceTest` live under `@Nested` groups (`HappyPath`, `RejectPath`, etc.) — when invoking a single method from the CLI, see [Section 10](#10-execution-commands) for the shell-escaping of the outer-class/`@Nested`-class boundary.
+
 ```java
 @ExtendWith(MockitoExtension.class)
 class AuthenticationServiceTest {
 
     @Mock private UserSecurityRepository userSecurityRepository;
-    @Mock private Clock clock;
-    @InjectMocks private AuthenticationService authenticationService;
+    private PasswordEncoder passwordEncoder; // real BCrypt at DEFAULT_STRENGTH per §9.3
+    private Clock clock;                     // fixed for deterministic timestamps
+    private AuthenticationService authenticationService;
 
-    @Test
-    void authenticate_validUserValidPassword_returnsUserSession() {
-        // arrange — stub the boundary
-        when(userSecurityRepository.findById("USRTST01")).thenReturn(Optional.of(fixtureUser));
-        // act — invoke the real production class
-        var session = authenticationService.authenticate("USRTST01", "TESTPASS");
-        // assert — observable outcome
-        assertThat(session.userId()).isEqualTo("USRTST01");
+    @BeforeEach
+    void setUp() {
+        passwordEncoder = new BCryptPasswordEncoder();
+        clock = Clock.fixed(Instant.parse("2024-01-15T00:00:00Z"), ZoneOffset.UTC);
+        authenticationService = new AuthenticationService(userSecurityRepository, passwordEncoder, clock);
+    }
+
+    @Nested
+    class HappyPath {
+        @Test
+        void authenticate_validUserValidPassword_returnsUserSession() {
+            // arrange — build a fixture SecurityUser with a pre-hashed BCrypt password
+            String bcryptHash = passwordEncoder.encode("TESTPASS");
+            SecurityUser fixtureUser = new SecurityUser();
+            fixtureUser.setUserId("USRTST01");
+            fixtureUser.setPassword(bcryptHash);
+            fixtureUser.setUserType("U");
+            fixtureUser.setLocked(false);
+            when(userSecurityRepository.findById("USRTST01")).thenReturn(Optional.of(fixtureUser));
+
+            // act — construct the request DTO and invoke the real production class
+            AuthenticationRequest request = new AuthenticationRequest("USRTST01", "TESTPASS");
+            AuthenticationResult result = authenticationService.authenticate(request);
+
+            // assert — observable outcome via the AuthenticationResult / UserSession contract
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.getSession()).isNotNull();
+            assertThat(result.getSession().getUserId()).isEqualTo("USRTST01");
+        }
     }
 }
 ```
@@ -230,10 +254,59 @@ Coverage percentage is necessary but not sufficient. The following qualitative c
 - Test class names mirror production class names: `Foo` → `FooTest` / `FooIT`.
 - Magic numbers are extracted to `TestFixtures` constants; magic strings to `@CsvFileSource` files.
 - AssertJ chains are preferred over multiple separate `assertThat` calls when asserting on a single object.
-- BCrypt is used at real strength (`BCryptPasswordEncoder.DEFAULT_STRENGTH = 10`) in service unit tests; tests remain sub-second because each test sees only a handful of hash operations.
+- BCrypt is used at real strength (`BCryptPasswordEncoder.DEFAULT_STRENGTH = 10`) in service unit tests; tests remain sub-second because each test sees only a handful of hash operations. Detailed coverage of authentication and credential-handling test patterns is in [Section 9](#9-security-and-pii-redaction).
 - All time-dependent code is driven by an injected `Clock`; tests inject `Clock.fixed(Instant.parse("2024-01-15T00:00:00Z"), ZoneOffset.UTC)`.
 
-## 9. Execution Commands
+## 9. Security and PII Redaction
+
+The CardDemo migration must not write financial data, credentials, or other regulated personal information into log output at any severity. The two user directives below are restated verbatim from AAP §0.10.5:
+
+> - No financial data written to logs at any level
+> - No plaintext credentials in any configuration file
+
+These directives are NON-NEGOTIABLE. They are enforced by three coordinated controls — a Logback masking chain in the test-time configuration, a dedicated test class that asserts the masking actually fires for every category of sensitive data, and a real-strength BCrypt usage pattern in service tests so plaintext-credential drift is impossible.
+
+### 9.1 Logback Masking Chain (`src/test/resources/logback-test.xml`)
+
+The test-time Logback configuration carries a defence-in-depth `%replace` chain on the `CONSOLE` appender's pattern layout. Five Logback `%replace` conversion words are chained — innermost-to-outermost — to mask any substring resembling sensitive data BEFORE the line is emitted to `System.out`:
+
+| Pattern | Regex | Mask | Examples Matched |
+| ------- | ----- | ---- | ---------------- |
+| `BCRYPT_REGEX` | `\$2[abxy]\$\d{2}\$[A-Za-z0-9./]{53}` | `****BCRYPT-HASH-MASKED****` | `$2a$10$abc...` BCrypt hashes |
+| `CARD_NUMBER_REGEX` | `\b\d{13,19}\b` | `****CARD-MASKED****` | 13–19 digit PANs (covers Visa/MC/Amex/Discover lengths) |
+| `CVV_REGEX` | `(?i)\b(cvv2?\|cvc2?\|csc\|cid\|card-cvv\|cardcvv)\s*[:=]?\s*\d{3,4}\b` | `<label>=****CVV-MASKED****` | `CVV=123`, `cvc2: 4567`, `CSC=890` |
+| `ACCOUNT_NUMBER_REGEX` | `\b\d{11}\b` | `****ACCT-MASKED****` | 11-digit CardDemo account IDs |
+| `BALANCE_REGEX` | `(?i)(balance\|amount)\s*[:=]?\s*[-]?\d+\.\d{2}` | `<label>=****AMT-MASKED****` | `balance: 1500.00`, `amount=-32.50` |
+
+The chain ordering is deliberate: BCrypt hashes run first because they contain digit runs that would otherwise be matched by the card-number or account-number regex. Card numbers run next because they are the largest single category of regulated data. CVVs require a preceding label to disambiguate from arbitrary 3–4 digit numerics. Account numbers run after CVVs so a labelled CVV value (`CVV=123`) is not mis-masked as an account ID. Balances/amounts run last because they require a `balance|amount` label and only mask the labelled token.
+
+The pattern is configured once at the `CONSOLE` appender; every log line that reaches the appender — regardless of `Level` (TRACE through ERROR) — is masked. This satisfies the "at any level" clause of the user directive.
+
+### 9.2 Redaction Verification (`LoggingPiiRedactionTest`)
+
+`src/test/java/com/aws/carddemo/logging/LoggingPiiRedactionTest.java` is the dedicated unit test that proves the Logback chain actually masks. The test pattern:
+
+1. Reach into the running `LoggerContext` and read the configured `CONSOLE` appender's encoder pattern.
+2. Attach a programmatic `OutputStreamAppender` with the SAME pattern to a dedicated test logger, capturing rendered output into a `ByteArrayOutputStream`.
+3. Emit a log line containing a known PAN, account ID, CVV, BCrypt hash, and labelled balance.
+4. Assert via AssertJ that the captured bytes contain the mask tokens (`****CARD-MASKED****`, `****ACCT-MASKED****`, etc.) and do NOT contain the original sensitive substrings.
+
+Because the test reads the production-test config's encoder pattern (rather than duplicating regexes inside the test body), any drift in `logback-test.xml` is detected automatically. This is the same "test the production class, not the test author's understanding" discipline applied throughout the suite (AAP §0.10.1 — the [Require Test Coverage rule](#4-the-require-test-coverage-rule)).
+
+The test is structured around the five regex categories above; each category has at least one test method asserting both the positive case (the mask is present in the rendered line) and the negative case (the original sensitive token is absent).
+
+### 9.3 Plaintext-Credential Avoidance
+
+- **No plaintext passwords in production properties.** `src/main/resources/application.properties` carries no `spring.security.user.password=` or similar plaintext credential. Authenticated users are loaded from the `usersec` table where passwords are stored as BCrypt hashes (`$2a$10$...`).
+- **No plaintext passwords in test properties.** `src/test/resources/application-test.properties` similarly carries no plaintext credentials. Test fixtures construct `SecurityUser` instances with pre-hashed BCrypt values produced by `BCryptPasswordEncoder` at the same default strength as production.
+- **BCrypt at real strength in unit tests.** `BCryptPasswordEncoder.DEFAULT_STRENGTH = 10` is used in service unit tests for `AuthenticationService`. The test class `AuthenticationServiceTest` injects a real `PasswordEncoder` bean — never a Mockito mock that would allow the assertion to pass regardless of actual hash correctness — and asserts the production code calls `passwordEncoder.matches(plaintext, hash)` for verification. Tests remain sub-second because each test triggers only a handful of hash operations.
+- **`AuthenticationRequest` overrides `toString()`.** The `AuthenticationRequest` record's generated `toString()` would have included the plaintext password verbatim; the migrated record overrides `toString()` to redact the password field, preventing accidental credential disclosure when an `AuthenticationRequest` is passed to a logger.
+
+### 9.4 Cross-Reference to AAP
+
+The three controls in this section collectively satisfy AAP §0.10.5 "Security Constraints (NON-NEGOTIABLE)". The same coordinates appear in the explicit banner inside `logback-test.xml` so the security intent stays attached to the configuration that enforces it.
+
+## 10. Execution Commands
 
 The canonical Maven invocations below are restated from AAP §0.9.1. Surefire 3.x runs `**/*Test.java` in the `test` phase; Failsafe 3.x runs `**/*IT.java` in the `integration-test` / `verify` phases; the `jacoco` profile gates the coverage rule.
 
@@ -243,31 +316,34 @@ The canonical Maven invocations below are restated from AAP §0.9.1. Surefire 3.
 | Build + all tests (unit + integration) | `mvn clean verify` |
 | Build + all tests + coverage | `mvn clean verify -Pjacoco` |
 | Single unit test class | `mvn -Dtest=AuthenticationServiceTest test` |
-| Single unit test method | `mvn -Dtest=AuthenticationServiceTest#authenticate_validUserValidPassword_returnsUserSession test` |
+| Single unit test method (non-nested example) | `mvn -Dtest=DateValidationServiceTest#validate_bothInputsNull_returnsRejectResult test` |
+| Single unit test method nested under a `@Nested` group | `mvn '-Dtest=AuthenticationServiceTest$HappyPath#authenticate_validUserValidPassword_returnsUserSession' test` (the `$` between outer-class and `@Nested`-class names MUST be shell-escaped — single-quote the whole `-Dtest=...` argument as shown, otherwise the shell expands `$HappyPath` to empty and Surefire silently reports `Tests run: 0`) |
 | Single integration test class | `mvn -Dit.test=TransactionPostingBaselineParityIT verify` |
 | Skip integration tests | `mvn test -DskipITs` |
-| Generate coverage report only | `mvn jacoco:report` |
+| Generate coverage report only (re-runs the report goal against the existing `target/jacoco.exec` from a prior `mvn test` / `mvn verify`) | `mvn -Pjacoco jacoco:report` |
 | Run tests by tag | `mvn test -Dgroups="batch"` |
 | Debug a single test | `mvn -Dmaven.surefire.debug -Dtest=ClassName test` (listens on port 5005) |
 
-### 9.1 Environment Prerequisites
+The `-Pjacoco` activation is required because the `jacoco-maven-plugin` declaration lives inside the `jacoco` profile in `pom.xml`; without the profile, Maven cannot resolve the `jacoco:` goal prefix. The full coverage workflow remains `mvn clean verify -Pjacoco`, which produces both `target/site/jacoco/index.html` and `target/site/jacoco/jacoco.xml`.
+
+### 10.1 Environment Prerequisites
 
 - Java 17 LTS on `PATH` (verify with `java -version`).
 - Maven 3.8+ on `PATH` (verify with `mvn -version`).
 - Docker running and accessible to Testcontainers (verify with `docker info`).
 - `TESTCONTAINERS_RYUK_DISABLED=true` may be set in constrained environments where the Ryuk reaper container cannot run.
 
-## 10. Fixtures and Test Data
+## 11. Fixtures and Test Data
 
 Test data is organised under three roots inside `src/test/resources/`, all of which trace back to AAP §0.4.4.
 
-### 10.1 Baseline Inputs
+### 11.1 Baseline Inputs
 
 `src/test/resources/baseline/input/` holds canonical golden inputs (one-for-one copies, or documented PAN-converted variants, of `app/data/ASCII/*.txt`):
 
 - `acctdata.txt` (50 records, ~15 KB) — drives `AccountRepository` / `AccountFileProcessor` tests.
 - `carddata.txt` (50 records, ~7.5 KB) — drives `CardRepository` / `CardFileProcessor` tests.
-- `cardxref.txt` (50 records, ~1.8 KB) — drives `CardXrefRepository` tests.
+- `cardxref.txt` (50 records, 50 chars each, ~2.5 KB) — drives `CardXrefRepository` tests.
 - `custdata.txt` (50 records, ~25 KB) — drives `CustomerRepository` tests.
 - `dailytran.txt` (~105 KB) — drives posting / validation / report processors.
 - `discgrp.txt` (51 records including `DEFAULT` and `ZEROAPR`) — drives interest-calculator branches.
@@ -275,11 +351,11 @@ Test data is organised under three roots inside `src/test/resources/`, all of wh
 - `trancatg.txt` (18 categories) — reference data for category-key validation.
 - `trantype.txt` (7 types) — reference data for type-key validation.
 
-### 10.2 Baseline Expected Outputs
+### 11.2 Baseline Expected Outputs
 
 `src/test/resources/baseline/expected/` holds golden outputs captured from the COBOL baseline before the migration begins. Each `*BaselineParityIT` consumes one expected file as the right-hand operand of `BaselineDiffUtil.assertByteEqual(actualPath, expectedPath)`. See [`baseline-parity.md`](baseline-parity.md) for the capture procedure and for how `BaselineDiffUtil` handles unpopulated baselines.
 
-### 10.3 Edge-Case CSV Fixtures
+### 11.3 Edge-Case CSV Fixtures
 
 `src/test/resources/fixtures/edge/` holds curated CSV files for `@ParameterizedTest` data-driven edge cases (one CSV per edge-case category):
 
@@ -294,7 +370,7 @@ Test data is organised under three roots inside `src/test/resources/`, all of wh
 - `overflow_boundary.csv`
 - `lookup_invalid_keys.csv`
 
-### 10.4 Shared Test Utilities
+### 11.4 Shared Test Utilities
 
 `src/test/java/com/aws/carddemo/testsupport/` holds shared test utilities used across the suite:
 
@@ -304,13 +380,13 @@ Test data is organised under three roots inside `src/test/resources/`, all of wh
 - `AbstractBatchIT` — base class with `@SpringBatchTest` + Testcontainers PostgreSQL boilerplate.
 - `AbstractRepositoryIT` — base class with `@DataJpaTest` + Testcontainers PostgreSQL boilerplate.
 
-### 10.5 Test Database State Management
+### 11.5 Test Database State Management
 
 - **Unit tests** use no database — Mockito-stubbed repositories.
 - **Repository ITs** use Testcontainers PostgreSQL 16 with `@DataJpaTest` + `@AutoConfigureTestDatabase(replace = NONE)`. Flyway-applied schema and seed data; transactional rollback after each `@Test`.
 - **Batch ITs and end-to-end ITs** use Testcontainers PostgreSQL 16 shared per test class via Spring's context cache. `JobRepositoryTestUtils.removeJobExecutions()` runs between tests to reset Spring Batch metadata.
 
-## 11. Out of Scope
+## 12. Out of Scope
 
 The following are explicitly excluded from the test work, drawn from AAP §0.8.2:
 
@@ -327,7 +403,7 @@ The following are explicitly excluded from the test work, drawn from AAP §0.8.2
 - **Infrastructure / CI/CD configuration.** Jenkins/GitHub Actions/Cloud Build pipelines, Helm charts, Terraform, Dockerfiles — all out of scope. The local Maven build (`mvn verify`) is the single source of truth for test execution.
 - **Java 25 or any non-Java-17 runtime.** The user mandate is Java 17 LTS; prior tech spec references to Java 25 are **superseded** for this work.
 
-## 12. References
+## 13. References
 
 Authoritative companion documents and library references:
 
@@ -347,5 +423,5 @@ Authoritative companion documents and library references:
 
 - **Spring Batch Test** (BOM-managed): `@SpringBatchTest`, `JobLauncherTestUtils`, `JobRepositoryTestUtils`.
 - **Spring Security Test** (BOM-managed): `@WithMockUser`, `SecurityMockMvcConfigurers`.
-- **Testcontainers** (BOM 1.20.3): `@Testcontainers`, `@Container`, `PostgreSQLContainer<?>`, `LocalStackContainer`.
+- **Testcontainers** (BOM 1.20.4): `@Testcontainers`, `@Container`, `PostgreSQLContainer<?>`, `LocalStackContainer`.
 - **JaCoCo Maven plugin 0.8.11+**: line / branch coverage instrumentation and rule enforcement.

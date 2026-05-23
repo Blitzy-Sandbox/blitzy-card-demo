@@ -58,7 +58,7 @@ src/test/resources/
 │   ├── input/                          # Canonical golden inputs (copies of app/data/ASCII/*.txt)
 │   │   ├── acctdata.txt                # 50 records, 300 chars each (15 KB)
 │   │   ├── carddata.txt                # 50 records, 150 chars each (7.5 KB)
-│   │   ├── cardxref.txt                # 50 records, 36 chars each (1.8 KB)
+│   │   ├── cardxref.txt                # 50 records, 50 chars each (2.5 KB)
 │   │   ├── custdata.txt                # 50 records, 500 chars each (25 KB)
 │   │   ├── dailytran.txt               # 300 records, 350 chars each (105 KB)
 │   │   ├── discgrp.txt                 # 51 records including DEFAULT and ZEROAPR (2.6 KB)
@@ -96,21 +96,21 @@ Important notes on each subtree:
 
 The authoritative mapping between each Spring Batch job, its COBOL provenance, the canonical input fixtures, and the captured expected-output file is:
 
-| Spring Batch Job (Java) | JCL Source | COBOL Source | Test Class | Input Fixture(s) | Expected Output File |
+| Spring Batch Job (`@Bean` method on `BatchJobConfig`) | JCL Source | COBOL Source | Test Class | Input Fixture(s) | Expected Output File |
 | ----------------------- | ---------- | ------------ | ---------- | ---------------- | -------------------- |
-| `TransactionPostingJob` | `POSTTRAN.jcl` | `CBTRN02C.cbl` | `TransactionPostingBaselineParityIT` | `dailytran.txt`, `acctdata.txt`, `carddata.txt`, `cardxref.txt` (seeded via Flyway) | `posted.txt` |
-| `InterestCalculationJob` | `INTCALC.jcl` | `CBACT04C.cbl` | `InterestCalculationBaselineParityIT` | `tcatbal.txt`, `discgrp.txt`, `acctdata.txt` (seeded via Flyway) | `tcatbal_after_interest.txt` |
-| `CombineTransactionsJob` | `COMBTRAN.jcl` | (DFSORT, no COBOL program) | `CombineTransactionsBaselineParityIT` | `dailytran.txt` + interest output (chained) | `combined.txt` |
-| `StatementGenerationJob` | `CREASTMT.JCL` | `CBSTM03A.CBL`, `CBSTM03B.CBL` | `StatementGenerationBaselineParityIT` | `acctdata.txt`, `custdata.txt`, `carddata.txt`, `cardxref.txt`, transaction history | `statements_text.txt` + `statements_html.txt` |
-| `TransactionReportJob` | `TRANREPT.jcl` | `CBTRN03C.cbl` | `TransactionReportBaselineParityIT` | `dailytran.txt`, `trancatg.txt`, `trantype.txt` | `transaction_report.txt` |
+| `transactionPostingJob` | `POSTTRAN.jcl` | `CBTRN02C.cbl` | `TransactionPostingBaselineParityIT` | `dailytran.txt`, `acctdata.txt`, `carddata.txt`, `cardxref.txt` (seeded via Flyway) | `posted.txt` |
+| `interestCalculationJob` | `INTCALC.jcl` | `CBACT04C.cbl` | `InterestCalculationBaselineParityIT` | `tcatbal.txt`, `discgrp.txt`, `acctdata.txt` (seeded via Flyway) | `tcatbal_after_interest.txt` |
+| `combineTransactionsJob` | `COMBTRAN.jcl` | (DFSORT, no COBOL program) | `CombineTransactionsBaselineParityIT` | `dailytran.txt` + interest output (chained) | `combined.txt` |
+| `statementGenerationJob` | `CREASTMT.JCL` | `CBSTM03A.CBL`, `CBSTM03B.CBL` | `StatementGenerationBaselineParityIT` | `acctdata.txt`, `custdata.txt`, `carddata.txt`, `cardxref.txt`, transaction history | `statements_text.txt` + `statements_html.txt` |
+| `transactionReportJob` | `TRANREPT.jcl` | `CBTRN03C.cbl` | `TransactionReportBaselineParityIT` | `dailytran.txt`, `trancatg.txt`, `trantype.txt` | `transaction_report.txt` |
 
 Several special cases require explicit attention:
 
-- The `StatementGenerationJob` test asserts byte-identity against **both** the text output (`statements_text.txt`) and the HTML output (`statements_html.txt`). Both files are captured from a single `CREASTMT.JCL` execution; the test calls `BaselineDiffUtil.assertByteEqual` twice — once per output.
-- The `CombineTransactionsJob` is the only job whose source has no COBOL program. It is a pure DFSORT/IDCAMS step migrated to a Spring Batch `CombineTransactionsProcessor` that uses a Java `Comparator` to reproduce the SORT FIELDS ordering documented in `COMBTRAN.jcl`. The expected output (`combined.txt`) is captured by running the DFSORT step against the canonical inputs.
+- The `statementGenerationJob` test asserts byte-identity against **both** the text output (`statements_text.txt`) and the HTML output (`statements_html.txt`). Both files are captured from a single `CREASTMT.JCL` execution; the test calls `BaselineDiffUtil.assertByteEqual` twice — once per output.
+- The `combineTransactionsJob` is the only job whose source has no COBOL program. It is a pure DFSORT/IDCAMS step migrated to a Spring Batch `CombineTransactionsProcessor` that uses a Java `Comparator` to reproduce the SORT FIELDS ordering documented in `COMBTRAN.jcl`. The expected output (`combined.txt`) is captured by running the DFSORT step against the canonical inputs.
 - Date stamps baked into output records — for example, `2022-07-18` derived from the `INTCALC.jcl` `PARM='2022071800'` — must be deterministic. Tests pin the JCL PARM through Spring Batch `JobParameters` and inject a fixed `Clock` so the produced output is reproducible bit-for-bit. The migrated Java code must never call `LocalDate.now()` directly; it must derive the run date from the injected `Clock` or from a job parameter passed in by the test.
-- The `TransactionReportJob` parses two date PARMs from the `DATEPARM` DD card (`PARM-START-DATE`, `PARM-END-DATE` in `TRANREPT.jcl`); tests pin these via `JobParameters` exactly as the COBOL job would have received them at submission time.
-- The `TransactionPostingJob` consumes four input fixtures simultaneously (one PS file plus three VSAM KSDS files); Flyway test migrations seed the KSDS-equivalent tables before the test runs.
+- The `transactionReportJob` parses two date PARMs from the `DATEPARM` DD card (`PARM-START-DATE`, `PARM-END-DATE` in `TRANREPT.jcl`); tests pin these via `JobParameters` exactly as the COBOL job would have received them at submission time.
+- The `transactionPostingJob` consumes four input fixtures simultaneously (one PS file plus three VSAM KSDS files); Flyway test migrations seed the KSDS-equivalent tables before the test runs.
 
 ## 5. Capturing or Refreshing a Baseline
 
@@ -166,7 +166,7 @@ After capture but before committing, run a brief verification pass:
    cd src/test/resources/baseline/expected
    sha256sum *.txt > .checksums.sha256
    ```
-2. **Visual inspection.** Open each file in a hex viewer (e.g., `xxd <file> | head -20` for the header, `xxd <file> | tail -20` for the trailer) and confirm:
+2. **Visual inspection.** Open each file in a hex viewer (e.g., `hexdump -C <file> | head -20` for the header, `hexdump -C <file> | tail -20` for the trailer — `hexdump` ships with util-linux on every Ubuntu/Debian/RHEL image; `xxd` from the `xxd` package is an equivalent alternative if installed) and confirm:
    - **Record count** matches the COBOL job's expected output (e.g., 300 records for `posted.txt` if 300 daily transactions were posted).
    - **Record width** matches the COBOL `RECLN` declared by the originating copybook (e.g., `LRECL=430` for `DALYREJS`, `LRECL=350` for `TRANSACT`, `LRECL=133` for `TRANREPT`, `LRECL=80` for `STMTFILE`, `LRECL=100` for `HTMLFILE`).
    - **No unexpected binary bytes.** Every byte should be `0x00`–`0x7F` ASCII unless sign-overpunch characters are present at the rightmost digit position of signed numeric fields (`{` for +0, `A`–`I` for +1..+9, `}` for -0, `J`–`R` for -1..-9).
@@ -199,7 +199,7 @@ The `BaselineDiffUtil` test utility is the single assertion entry point for ever
 
 The utility's documented behaviour:
 
-- Reads both files via `Files.readAllBytes(Path)`. The largest reference output (`transaction_report.txt`) is well under 1 MB, so in-memory comparison is acceptable.
+- Reads both files via `Files.readAllBytes(Path)`. The largest reference output (`combined.txt` at ~35 KB) is well under 1 MB, so in-memory comparison is acceptable.
 - Compares byte arrays via `Arrays.equals(byte[], byte[])`. No charset decoding occurs during the comparison — this preserves single-byte differences such as a sign-overpunch character mismatch (`A` for +1 vs `J` for -1) that would otherwise be normalised by a `String` comparison.
 - **On byte-equal:** returns normally. The assertion passes silently; no logging, no side effects.
 - **On byte-inequal:** throws `AssertionError` with a structured message that includes:
@@ -264,27 +264,27 @@ What happens when `BaselineDiffUtil.assertByteEqual` encounters a placeholder fi
 
 This behaviour is intentional. The parity IT MUST fail loudly when the baseline is missing rather than silently passing. A silent-pass behaviour would create a false sense of parity during migration phases when expected outputs are stubs — exactly the situation in which a regression would be most likely to slip through unnoticed.
 
-### 7.1 Current Disabled State of Parity ITs
+### 7.1 Current Execution State of Parity ITs
 
-During the period when the captured COBOL reference outputs are unavailable, the five `*BaselineParityIT` classes **and** the capstone `BatchPipelineE2EIT` are marked `@Disabled` so they appear as `skipped` in the Failsafe report rather than failing the build with the "baseline capture pending" diagnostic on every CI run. This is a deliberate trade-off: the `@Disabled` annotations document the dependency on authentic COBOL capture without blocking unrelated work, while the `BASELINE_CAPTURE_PENDING_<JOB_TAG>` placeholders ensure that if the `@Disabled` annotations are removed before the captures are committed, `BaselineDiffUtil` will surface the missing baseline immediately.
+Authentic COBOL reference outputs have been captured and committed under `src/test/resources/baseline/expected/`. The five `*BaselineParityIT` classes and the capstone `BatchPipelineE2EIT` are NOT annotated `@Disabled` — they execute under Failsafe on every `mvn verify` run, and all 12 `BaselineDiffUtil.assertByteEqual(...)` call sites enforce zero-byte parity against the committed reference outputs.
 
-When the captures land, the same change that publishes the authentic expected fixtures **must** also remove the six `@Disabled` annotations:
+The currently-active parity test classes:
 
-- `TransactionPostingBaselineParityIT`
-- `InterestCalculationBaselineParityIT`
-- `CombineTransactionsBaselineParityIT`
-- `StatementGenerationBaselineParityIT`
-- `TransactionReportBaselineParityIT`
-- `BatchPipelineE2EIT`
+- `TransactionPostingBaselineParityIT` — diffs against `posted.txt`
+- `InterestCalculationBaselineParityIT` — diffs against `tcatbal_after_interest.txt`
+- `CombineTransactionsBaselineParityIT` — diffs against `combined.txt`
+- `StatementGenerationBaselineParityIT` — diffs against `statements_text.txt` and `statements_html.txt` (two call sites)
+- `TransactionReportBaselineParityIT` — diffs against `transaction_report.txt`
+- `BatchPipelineE2EIT` — diffs against all six expected files at the corresponding pipeline stages (six call sites)
 
-After that change, all 12 `BaselineDiffUtil.assertByteEqual(...)` call sites fire under Failsafe (`mvn verify`), each enforcing zero-byte parity between the migrated Java output and the COBOL reference output.
+The `BASELINE_CAPTURE_PENDING_<JOB_TAG>` placeholder convention described in Section 7 above remains a defensive contract: `BaselineDiffUtil` continues to detect the marker, and the [Section 7](#7-placeholder-recognition) procedure governs how to introduce a placeholder if a future re-capture cycle ever leaves an expected file temporarily empty. No expected file currently carries the marker, so no parity IT currently surfaces the "baseline capture pending" diagnostic.
 
 ## 8. When Tests Fail
 
 When a `*BaselineParityIT` test class fails, work through the triage steps below in order. The goal is to distinguish the categories of failure (placeholder, size mismatch, content mismatch, localised hunk) quickly so you can apply the right remediation.
 
 1. **Read the `AssertionError` message.** `BaselineDiffUtil` produces a structured message with the two file paths, both byte sizes, the first differing byte offset, and a unified-diff snippet (up to 20 lines). Read all four — they almost always pinpoint the failure category.
-2. **Distinguish placeholder vs. true diff.** If the message mentions `BASELINE_CAPTURE_PENDING_`, the expected file is still a placeholder — follow [Section 5](#5-capturing-or-refreshing-a-baseline) to capture the real baseline and re-run the IT. Do not interpret a placeholder failure as a code defect.
+2. **Distinguish placeholder vs. true diff.** If the message mentions `BASELINE_CAPTURE_PENDING_`, the expected file is a placeholder (a state that should not occur in the current codebase — no expected file currently carries the marker, see [Section 7.1](#71-current-execution-state-of-parity-its)) — follow [Section 5](#5-capturing-or-refreshing-a-baseline) to capture the real baseline and re-run the IT. Do not interpret a placeholder failure as a code defect.
 3. **If the byte sizes differ**, the migrated Java code is emitting either too many or too few records, or a different record width. Likely causes:
    - A record skipped that shouldn't have been (e.g., off-by-one in the EOF check on a `FlatFileItemReader`).
    - A header or footer that should not be in the output (or vice versa — the COBOL job emits a footer the Java job has not yet emulated).
@@ -301,9 +301,12 @@ When the cause is unclear, dump both files to hex and visually inspect the byte 
 
 ```bash
 # Inspect the expected file around the first differing offset
-xxd -s 4100 -l 80 src/test/resources/baseline/expected/posted.txt
+hexdump -C -s 4100 -n 80 src/test/resources/baseline/expected/posted.txt
 # Inspect the actual file at the same offset
-xxd -s 4100 -l 80 target/test-output/posted.txt
+hexdump -C -s 4100 -n 80 target/test-output/posted.txt
+# Equivalent invocation with xxd (only if xxd is installed):
+#   xxd -s 4100 -l 80 src/test/resources/baseline/expected/posted.txt
+#   xxd -s 4100 -l 80 target/test-output/posted.txt
 ```
 
 The two hex dumps make sign-overpunch, padding, and line-ending divergences immediately visible. A `0x41` byte (`A`) where you expect a `0x7B` byte (`{`) is a sign-overpunch table issue. A `0x20` byte (` `) where you expect a `0x30` byte (`0`) is a left-pad-with-zero issue. A `0x0D` byte (`\r`) where you expect nothing is a CRLF normalisation issue.
@@ -324,7 +327,7 @@ The table below enumerates the failure modes the team is most likely to encounte
 | Localised-hunk diff | A few records differ, others match. | Identify the input records that produce the differing output records; write a narrower unit test against those records. |
 | `UncheckedIOException` on read | File-system error before comparison. | Check the file path, permissions, and that the expected file exists in `baseline/expected/`. |
 | Character-encoding mismatch | First differing byte is in the `0x80`–`0xFF` range; values look "garbled". | Verify the captured baseline was converted from EBCDIC (`IBM-1047`) to ASCII (`UTF-8`) record-by-record without introducing multi-byte UTF-8 sequences where the COBOL emitted single-byte `0x00`–`0x7F` characters. |
-| Off-by-one record ordering | The output is correct overall but a pair of adjacent records is swapped. | Verify the migrated `Comparator` (typically for `CombineTransactionsJob`) matches the JCL `SORT FIELDS=` column ordering and tie-breaker convention. |
+| Off-by-one record ordering | The output is correct overall but a pair of adjacent records is swapped. | Verify the migrated `Comparator` (typically for `combineTransactionsJob`) matches the JCL `SORT FIELDS=` column ordering and tie-breaker convention. |
 | Missing or extra blank trailer line | Last byte of expected is `0x0A` (LF) while actual is EOF, or vice versa. | Verify the migrated `FlatFileItemWriter` configuration of `setShouldDeleteIfEmpty` and any `LineAggregator` newline behaviour matches the COBOL `WRITE`/`CLOSE` convention. |
 | Job parameter not pinned | Date or numeric fields drift between runs of the same test. | Verify Spring Batch `JobParameters` include every PARM the JCL pins (`INTCALC.jcl` `PARM='2022071800'`; `TRANREPT.jcl` `PARM-START-DATE`/`PARM-END-DATE`) and that the migrated code never reads `LocalDate.now()` or `System.currentTimeMillis()` directly. |
 
@@ -335,11 +338,11 @@ The authoritative sources and adjacent artefacts referenced by this runbook are:
 - **Companion document:** [`test-strategy.md`](test-strategy.md) — overall four-layer test pyramid, coverage targets, framework constraints, the Require Test Coverage rule, financial-precision rules, and execution commands.
 - **Anchor blueprint:** [`../technical-specifications.md`](../technical-specifications.md) — the broader migration blueprint that this runbook complements.
 - **Top-level project README:** [`../../README.md`](../../README.md) — repository overview, getting-started commands, and the "Testing" section that links here.
-- **Production code under test** (created by the REFACTOR-flavor migration in its own assignment slice):
-  - `com.aws.carddemo.batch.TransactionPostingJob` ← `app/jcl/POSTTRAN.jcl` ← `app/cbl/CBTRN02C.cbl`
-  - `com.aws.carddemo.batch.InterestCalculationJob` ← `app/jcl/INTCALC.jcl` ← `app/cbl/CBACT04C.cbl`
-  - `com.aws.carddemo.batch.CombineTransactionsJob` ← `app/jcl/COMBTRAN.jcl` (DFSORT — no COBOL program)
-  - `com.aws.carddemo.batch.StatementGenerationJob` ← `app/jcl/CREASTMT.JCL` ← `app/cbl/CBSTM03A.CBL`, `app/cbl/CBSTM03B.CBL`
-  - `com.aws.carddemo.batch.TransactionReportJob` ← `app/jcl/TRANREPT.jcl` ← `app/cbl/CBTRN03C.cbl`
+- **Production code under test** (created by the REFACTOR-flavor migration in its own assignment slice). Each Spring Batch `Job` is exposed as an `@Bean` factory method on the single configuration class `com.aws.carddemo.batch.config.BatchJobConfig` — they are not standalone classes. The bean names (and their JCL/COBOL provenance) are:
+  - `BatchJobConfig#transactionPostingJob` `@Bean` ← `app/jcl/POSTTRAN.jcl` ← `app/cbl/CBTRN02C.cbl`
+  - `BatchJobConfig#interestCalculationJob` `@Bean` ← `app/jcl/INTCALC.jcl` ← `app/cbl/CBACT04C.cbl`
+  - `BatchJobConfig#combineTransactionsJob` `@Bean` ← `app/jcl/COMBTRAN.jcl` (DFSORT — no COBOL program)
+  - `BatchJobConfig#statementGenerationJob` `@Bean` ← `app/jcl/CREASTMT.JCL` ← `app/cbl/CBSTM03A.CBL`, `app/cbl/CBSTM03B.CBL`
+  - `BatchJobConfig#transactionReportJob` `@Bean` ← `app/jcl/TRANREPT.jcl` ← `app/cbl/CBTRN03C.cbl`
 - **Test utility:** `src/test/java/com/aws/carddemo/testsupport/BaselineDiffUtil.java` — implementation of the contract documented in [Section 6](#6-the-baselinediffutil-contract).
 - **Test fixtures:** `app/data/ASCII/*.txt` (source) ↔ `src/test/resources/baseline/input/*.txt` (copies); `src/test/resources/baseline/expected/*.txt` (captured COBOL reference outputs); `src/test/resources/fixtures/edge/*.csv` (curated edge-case CSVs for `@ParameterizedTest`).
