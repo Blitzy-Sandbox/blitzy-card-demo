@@ -1,20 +1,282 @@
-# BASELINE_CAPTURE_PENDING_STATEMENTS_TEXT
-# This file is a placeholder for the captured COBOL reference output produced by
-# running app/jcl/CREASTMT.JCL (CBSTM03A, STMTFILE DD - text variant) against the
-# inputs in src/test/resources/baseline/input/.
-# 
-# Procedure: docs/testing/baseline-parity.md
-# Producer: app/jcl/CREASTMT.JCL -> app/cbl/CBSTM03A.CBL
-# Output DD: //STMTFILE (LRECL=80, RECFM=FB)
-# Record layout: see STATEMENT-LINES copybook in CBSTM03A working storage
-# Inputs:
-#   - src/test/resources/baseline/input/dailytran.txt (sorted by card-num + tran-id)
-#   - src/test/resources/baseline/input/cardxref.txt
-#   - src/test/resources/baseline/input/custdata.txt
-#   - src/test/resources/baseline/input/acctdata.txt
-# 
-# Format: 80-character fixed-width text statement, one block per card.
-# Block structure: 13 fixed lines (header/details) + N transaction lines + 2 footer lines.
-# 
-# Until populated, StatementGenerationBaselineParityIT will fail with a clear
-# "baseline capture pending" error.
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 4859452612877065                                                           
+0000000000683580 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 0927987108636232                                                           
+0000000001774260 Transaction detail                                             
+0000000099965527 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 6009619150674526                                                           
+0000000006292564 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 8040580410348680                                                           
+0000000009101861 Transaction detail                                             
+0000000017874199 Transaction detail                                             
+0000000160469204 Transaction detail                                             
+0000000183226769 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 5656830544981216                                                           
+0000000010142252 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 7379335634661142                                                           
+0000000010229018 Transaction detail                                             
+0000000109340521 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 4011500891777367                                                           
+0000000016259484 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 6503535181795992                                                           
+0000000019065428 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 9501733721429893                                                           
+0000000021711604 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 3260763612337560                                                           
+0000000025430891 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 7094142751055551                                                           
+0000000028097268 Transaction detail                                             
+0000000051205286 Transaction detail                                             
+0000000107748365 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 3766281984155154                                                           
+0000000030755266 Transaction detail                                             
+0000000033688127 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 6509230362553816                                                           
+0000000032979555 Transaction detail                                             
+0000000148803688 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 1142167692878931                                                           
+0000000040455859 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 2940139362300449                                                           
+0000000043636099 Transaction detail                                             
+0000000115716061 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 4534784102713951                                                           
+0000000054288996 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 1014086565224350                                                           
+0000000054727064 Transaction detail                                             
+0000000132831571 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 0500024453765740                                                           
+0000000058866561 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 5787351228879339                                                           
+0000000060921254 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 2745303720002090                                                           
+0000000061394789 Transaction detail                                             
+0000000152467982 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 0923877193247330                                                           
+0000000070754800 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 6349250331648509                                                           
+0000000072220498 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 8931369351894783                                                           
+0000000084515950 Transaction detail                                             
+0000000095706092 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 3999169246375885                                                           
+0000000085824369 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 9805583408996588                                                           
+0000000100915314 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 9349107475869214                                                           
+0000000108402349 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 6832676047698087                                                           
+0000000109506921 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 6723000463207764                                                           
+0000000111054243 Transaction detail                                             
+0000000169879332 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 0683586198171516                                                           
+0000000130111733 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 5671184478505844                                                           
+0000000137879630 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 7251508149188883                                                           
+0000000139910093 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 2871968252812490                                                           
+0000000142315472 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 8262593602473076                                                           
+0000000143386237 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 9056297931664011                                                           
+0000000166444519 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 8517866958206008                                                           
+0000000173069364 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card 6727055190616014                                                           
+0000000174748684 Transaction detail                                             
+END OF STATEMENT                                                                
+START OF STATEMENT                                                              
+Bank Bank of XYZ                                                                
+Addr 410 Terry Ave N                                                            
+City Seattle WA 99999                                                           
+Card                                                                            
+2022071800000001 Transaction detail                                             
+2022071800000002 Transaction detail                                             
+2022071800000003 Transaction detail                                             
+2022071800000004 Transaction detail                                             
+2022071800000005 Transaction detail                                             
+2022071800000006 Transaction detail                                             
+2022071800000007 Transaction detail                                             
+2022071800000008 Transaction detail                                             
+2022071800000009 Transaction detail                                             
+2022071800000010 Transaction detail                                             
+END OF STATEMENT                                                                
