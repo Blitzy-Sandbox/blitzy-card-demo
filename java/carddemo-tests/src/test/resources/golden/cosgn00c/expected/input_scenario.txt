@@ -1,0 +1,112 @@
+# COSGN00C (Signon, CICS transaction CC00) - Golden-Record Scenario Script
+# 12 scenarios exercising the signon flow against the 4-record usrsec.txt fixture
+# Authority: AAP section 0.6.11 (PR gate); see expected/README.md for full contract
+#
+# Fixture inputs:
+#   - usrsec.txt: 4 users (1 admin ADMIN001 + 3 regular users USER0001-USER0003)
+#   - This file: 12 sequential simulated 3270 interactions
+#
+# All directives are processed in strict order. Each EXPECT_* assertion is
+# evaluated by CoSgn00CGoldenTest after the corresponding SEND MAP / SEND TEXT / XCTL.
+#
+# SECURITY: per AAP section 0.7.2, scenarios 6, 7, 10, 11 include
+# ASSERT_NO_PASSWORD_IN_OUTPUT to verify NO password value appears in captured output.
+
+# Scenario 1: Initial display (EIBCALEN=0; first connection)
+EIBCALEN 0
+AID DFHENTER
+EXPECT_MSG ''
+END_SCENARIO
+
+# Scenario 2: ENTER with empty USERID -> 'Please enter User ID ...'
+AID DFHENTER
+EXPECT_MSG 'Please enter User ID ...'
+END_SCENARIO
+
+# Scenario 3: ENTER with USERID filled, empty PASSWORD -> 'Please enter Password ...'
+FIELD USERIDI=ADMIN001
+AID DFHENTER
+EXPECT_MSG 'Please enter Password ...'
+END_SCENARIO
+
+# Scenario 4: ENTER with non-existent USERID -> 'User not found. Try again ...'
+FIELD USERIDI=NOSUCH99
+FIELD PASSWDI=ANYPASS
+AID DFHENTER
+EXPECT_MSG 'User not found. Try again ...'
+END_SCENARIO
+
+# Scenario 5: ENTER with valid USERID, wrong PASSWORD -> 'Wrong Password. Try again ...'
+FIELD USERIDI=USER0002
+FIELD PASSWDI=WRONGPWD
+AID DFHENTER
+EXPECT_MSG 'Wrong Password. Try again ...'
+END_SCENARIO
+
+# Scenario 6: ENTER with valid admin signon -> XCTL COADM01C
+FIELD USERIDI=ADMIN001
+FIELD PASSWDI=ADMINPWD
+AID DFHENTER
+EXPECT_XCTL COADM01C
+EXPECT_COMMAREA_FIELD CDEMO-USER-ID=ADMIN001
+EXPECT_COMMAREA_FIELD CDEMO-USER-TYPE=A
+EXPECT_COMMAREA_FIELD CDEMO-FROM-PROGRAM=COSGN00C
+EXPECT_COMMAREA_FIELD CDEMO-FROM-TRANID=CC00
+ASSERT_USRSEC_UNCHANGED
+ASSERT_NO_PASSWORD_IN_OUTPUT
+END_SCENARIO
+
+# Scenario 7: ENTER with valid regular user signon -> XCTL COMEN01C
+FIELD USERIDI=USER0001
+FIELD PASSWDI=USER0001
+AID DFHENTER
+EXPECT_XCTL COMEN01C
+EXPECT_COMMAREA_FIELD CDEMO-USER-ID=USER0001
+EXPECT_COMMAREA_FIELD CDEMO-USER-TYPE=U
+EXPECT_COMMAREA_FIELD CDEMO-FROM-PROGRAM=COSGN00C
+EXPECT_COMMAREA_FIELD CDEMO-FROM-TRANID=CC00
+ASSERT_USRSEC_UNCHANGED
+ASSERT_NO_PASSWORD_IN_OUTPUT
+END_SCENARIO
+
+# Scenario 8: PF3 exit -> SEND-PLAIN-TEXT thank-you + CICS RETURN (session terminates)
+AID DFHPF3
+EXPECT_SEND_TEXT 'Thank you for using CardDemo application...      '
+EXPECT_RETURN
+ASSERT_USRSEC_UNCHANGED
+END_SCENARIO
+
+# Scenario 9: Invalid AID key (PF1) -> CCDA-MSG-INVALID-KEY
+AID DFHPF1
+EXPECT_MSG 'Invalid key pressed. Please see below...         '
+END_SCENARIO
+
+# Scenario 10: lower-case credentials -> upper-cased via FUNCTION UPPER-CASE -> admin XCTL
+FIELD USERIDI=admin001
+FIELD PASSWDI=adminpwd
+AID DFHENTER
+EXPECT_XCTL COADM01C
+EXPECT_COMMAREA_FIELD CDEMO-USER-ID=ADMIN001
+EXPECT_COMMAREA_FIELD CDEMO-USER-TYPE=A
+ASSERT_USRSEC_UNCHANGED
+ASSERT_NO_PASSWORD_IN_OUTPUT
+END_SCENARIO
+
+# Scenario 11: mixed-case credentials -> upper-cased -> admin XCTL
+FIELD USERIDI=AdMiN001
+FIELD PASSWDI=AdMiNpWd
+AID DFHENTER
+EXPECT_XCTL COADM01C
+EXPECT_COMMAREA_FIELD CDEMO-USER-ID=ADMIN001
+EXPECT_COMMAREA_FIELD CDEMO-USER-TYPE=A
+ASSERT_USRSEC_UNCHANGED
+ASSERT_NO_PASSWORD_IN_OUTPUT
+END_SCENARIO
+
+# Scenario 12: simulated I/O error (WHEN OTHER RESP) -> 'Unable to verify the User ...'
+FIELD USERIDI=ERR_USER
+FIELD PASSWDI=ANYPASS
+SIMULATE_READ_FAULT 99
+AID DFHENTER
+EXPECT_MSG 'Unable to verify the User ...'
+END_SCENARIO
