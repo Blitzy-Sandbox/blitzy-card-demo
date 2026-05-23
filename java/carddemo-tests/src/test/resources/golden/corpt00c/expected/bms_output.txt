@@ -1,0 +1,17 @@
+# bms_output.txt - placeholder for captured BMS SEND MAP frame bytes for CORPT00C.
+# Status: PLACEHOLDER (awaiting COBOL capture per java/MIGRATION_NOTES.md section 1.6).
+# Test class com.blitzy.carddemo.tests.golden.CoRpt00CGoldenTest is annotated
+#   @Disabled("Awaiting COBOL capture per java/MIGRATION_NOTES.md section 1.6") per AAP section 0.6.11.
+# CORPT00C emits frames from SEND-TRNRPT-SCREEN at app/cbl/CORPT00C.cbl:L556-L578: a single
+#   BMS SEND of map CORPT0A in mapset CORPT00 (24x80, app/bms/CORPT00.bms) using buffer
+#   CORPT0AO REDEFINES CORPT0AI (app/cpy-bms/CORPT00.CPY:L121-L224). The paragraph has a
+#   dual ERASE/no-ERASE branch: SEND-ERASE-YES (initial display) emits the 3270 ERASE order;
+#   SEND-ERASE-NO (in-conversation) omits it; both branches build the same buffer.
+# Expected frame cardinality across 15 scenarios in input_scenario.txt: 12 SEND frames total
+#   (3 XCTL scenarios first_time_entry, pf3_to_main_menu, ... produce no SEND); of the 12,
+#   exactly 1 uses ERASE=YES (initial_display) and the other 11 use ERASE=NO.
+# Determinism (per AAP section 0.6.4): POPULATE-HEADER-INFO at app/cbl/CORPT00C.cbl:L611 invokes
+#   FUNCTION CURRENT-DATE to fill CURDATEO/CURTIMEO; scenarios MUST bind a fixed java.time.Clock
+#   via ScopedValue (per AAP section 0.6.6) so the captured frames are reproducible.
+# Capture procedure: see java/MIGRATION_NOTES.md section 1.6 (per AAP section 0.7.5).
+# DO NOT modify without re-running golden capture (per AAP section 0.7.5).
