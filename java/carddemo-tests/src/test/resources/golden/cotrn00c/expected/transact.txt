@@ -1,0 +1,13 @@
+# COTRN00C TRANSACT VSAM KSDS initial-state fixture -- PENDING COBOL baseline capture
+# See java/MIGRATION_NOTES.md section 1.6 for the capture procedure.
+# Until captured, the consuming test class CoTrn00CGoldenTest is @Disabled
+# per AAP section 0.6.11.
+#
+# This fixture is read by CoTrn00CGoldenTest.auxiliaryInputs() as the initial
+# TRANSACT state and re-validated by expectedOutputs() unchanged after the run
+# (COTRN00C is READ-ONLY: STARTBR / READNEXT / READPREV / ENDBR only; no WRITE, no REWRITE, no DELETE, no UNLOCK at any line in app/cbl/COTRN00C.cbl).
+#
+# Record format: 350-byte fixed-width per app/cpy/CVTRA05Y.cpy (16+2+4+10+100+11+9+50+50+10+16+26+26+20).
+# Sort order: TRAN-ID ascending (bytes 1-16 of each record); preserve verbatim.
+# Required cardinality: at least 21 records (page 1 + page 2 + boundary).
+# Encoding: ASCII transcoded from EBCDIC IBM-1047 per app/data/ASCII convention.
