@@ -456,23 +456,34 @@ public class MenuService {
     }
 
     /**
-     * Validates a user-supplied option number and returns the target
-     * program identifier (the original COBOL {@code XCTL PROGRAM} value)
-     * for the selected menu option.
+     * Validates a user-supplied option number and returns the resolved
+     * {@link MenuOptionDto} (carrying the original COBOL target-program
+     * identifier, the REST target endpoint, the option label, and the
+     * user-type gate) for the selected menu option.
      *
      * <p>COBOL: {@code COMEN01C.cbl:PROCESS-ENTER-KEY} and
      * {@code COADM01C.cbl:PROCESS-ENTER-KEY} both implement the same
-     * three-stage validation cascade against the selected option number:</p>
+     * four-stage validation cascade against the selected option number:</p>
      * <ol>
+     *   <li><b>Numeric check</b> — verify the supplied option number is
+     *       numeric ({@code IF WS-OPTION IS NOT NUMERIC} from
+     *       {@code COMEN01C.cbl:127}). The original program normalises
+     *       the raw BMS input by replacing spaces with zeros
+     *       ({@code INSPECT WS-OPTION-X REPLACING ALL ' ' BY '0'}). The
+     *       Java equivalent parses the input {@code String} into an
+     *       integer via {@link Integer#parseInt(String)}, treating any
+     *       {@link NumberFormatException} (including {@code null} input)
+     *       as an out-of-range failure. A {@link ValidationException}
+     *       carrying the {@link #ERR_INVALID_OPTION_FORMAT} message is
+     *       thrown (mapped to HTTP 400 by
+     *       {@code GlobalExceptionHandler}).</li>
      *   <li><b>Bounds check</b> — verify the supplied option number is
-     *       numeric, non-zero, and within the option-table count
-     *       ({@code IF WS-OPTION IS NOT NUMERIC OR WS-OPTION > COUNT OR
-     *       WS-OPTION = ZEROS}). Failure emits the verbatim "Please enter
-     *       a valid option number..." message and re-renders the menu
-     *       screen. The Java equivalent throws a
-     *       {@link ValidationException} carrying the
-     *       {@link #ERR_INVALID_OPTION_FORMAT} message (mapped to
-     *       HTTP 400 by {@code GlobalExceptionHandler}).</li>
+     *       non-zero and within the option-table count
+     *       ({@code IF WS-OPTION > COUNT OR WS-OPTION = ZEROS} from
+     *       {@code COMEN01C.cbl:128-129}). Failure emits the verbatim
+     *       "Please enter a valid option number..." message and re-renders
+     *       the menu screen. The Java equivalent throws a
+     *       {@link ValidationException} with the same message format.</li>
      *   <li><b>Admin-only gate</b> — only present in {@code COMEN01C}
      *       (the admin-menu options are admin-only by construction so
      *       {@code COADM01C} skips this check): if the caller is a regular
@@ -494,71 +505,109 @@ public class MenuService {
      *       without code modification.</li>
      * </ol>
      *
-     * <p>On successful validation, the method returns the original COBOL
-     * target-program identifier (e.g., {@code "COACTVWC"} or
-     * {@code "COUSR00C"}). The actual routing to the next REST endpoint
-     * is performed by the caller (typically {@code MenuController}), which
-     * may resolve the target program to an internal Java service or to a
-     * REST endpoint via the {@link MenuOptionDto#targetEndpoint()} value.
-     * Returning the program identifier (rather than the endpoint) preserves
-     * parallel-run traceability against the original mainframe behavior
-     * (AAP §0.7.3) and keeps the service layer free of HTTP/URL concerns
-     * (AAP §0.3.3 "Layered Architecture").</p>
+     * <p>On successful validation, the method returns the full
+     * {@link MenuOptionDto} for the selected option (option number,
+     * label, original COBOL target program, REST target endpoint, and
+     * user-type gate). The caller (typically {@code MenuController}) then
+     * wraps the DTO in an {@code ApiResponse} envelope and returns it to
+     * the client. Clients use the embedded
+     * {@link MenuOptionDto#targetEndpoint()} for REST navigation;
+     * {@link MenuOptionDto#targetProgram()} is preserved verbatim from the
+     * COBOL literal-storage table for parallel-run traceability and
+     * audit-readiness per AAP §0.7.3.</p>
      *
+     * <p><b>Parameter type rationale.</b> The {@code option} parameter is
+     * typed as {@code String} (rather than {@code int}) to:</p>
+     * <ul>
+     *   <li>Mirror the raw COBOL {@code OPTIONI} input read from the BMS
+     *       map ({@code WS-OPTION-X PIC X(02)} before normalisation) and
+     *       defer numeric validation into this single method (it is the
+     *       canonical site of the COBOL numeric check).</li>
+     *   <li>Match the wire contract carried by
+     *       {@code MenuController.MenuResolveRequest.option()} (validated
+     *       at the controller boundary by
+     *       {@code @Pattern(regexp = "^[0-9]{1,2}$")}) so the controller
+     *       never has to parse on behalf of the service. Sticking with
+     *       the wire contract preserves the layered-architecture
+     *       discipline from AAP §0.3.3 (controllers transform HTTP into
+     *       service inputs; services own domain validation).</li>
+     * </ul>
+     *
+     * @param option      the user-supplied option number as a {@code String}
+     *                    (1-or-2-digit numeric expected, leading zeros
+     *                    permitted &mdash; matches the COBOL
+     *                    {@code WS-OPTION-X PIC X(02)} layout). Parsed
+     *                    into an integer internally; a non-numeric value
+     *                    or a value outside {@code 1 <= n <= size}
+     *                    triggers a {@link ValidationException} with the
+     *                    verbatim COBOL "invalid option" message.
+     *                    {@code null} is treated as invalid input
+     *                    (does not raise {@link NullPointerException})
      * @param userType    the authenticated caller's user-type discriminator
      *                    ({@code "A"} or {@code "U"}); used only to gate
      *                    admin-only options when {@code isAdminMenu} is
-     *                    {@code false}. May be {@code null} for unauthenticated
-     *                    callers (the controller's authentication gate
-     *                    will have already rejected them — but the service
-     *                    handles the null gracefully)
+     *                    {@code false}. May be {@code null} (the
+     *                    controller's authentication gate will have
+     *                    already rejected unauthenticated callers, but
+     *                    the service handles the null gracefully)
      * @param isAdminMenu {@code true} to select the admin menu's option
      *                    table ({@code COADM02Y.cpy}), {@code false} to
      *                    select the main menu's option table
      *                    ({@code COMEN02Y.cpy})
-     * @param option      the user-supplied option number (1-based as in
-     *                    the original BMS screen); must satisfy
-     *                    {@code 1 <= option <= options.size()}
-     * @return the original COBOL target-program identifier for the
-     *         selected option (e.g., {@code "COACTVWC"}); never
-     *         {@code null} (option entries in {@code COMEN02Y.cpy} and
-     *         {@code COADM02Y.cpy} all carry a non-empty
-     *         {@code PGMNAME PIC X(08)} value)
+     * @return the resolved {@link MenuOptionDto} for the selected option;
+     *         never {@code null} (option entries in {@code COMEN02Y.cpy}
+     *         and {@code COADM02Y.cpy} all carry the full set of fields,
+     *         including a non-empty {@code PGMNAME PIC X(08)} value)
      * @throws ValidationException with the verbatim
      *                             {@link #ERR_INVALID_OPTION_FORMAT}
-     *                             message when {@code option} is out of
-     *                             range; with the verbatim
-     *                             {@link #ERR_ADMIN_ONLY} message when a
-     *                             regular user attempts an admin-only
-     *                             option; or with the verbatim
-     *                             {@link #ERR_COMING_SOON_FORMAT} message
-     *                             when the selected option's target
-     *                             program is prefixed {@code "DUMMY"}.
-     *                             All three are mapped by
-     *                             {@code GlobalExceptionHandler} to
+     *                             message when {@code option} is
+     *                             non-numeric or out of range; with the
+     *                             verbatim {@link #ERR_ADMIN_ONLY}
+     *                             message when a regular user attempts
+     *                             an admin-only option; or with the
+     *                             verbatim {@link #ERR_COMING_SOON_FORMAT}
+     *                             message when the selected option's
+     *                             target program is prefixed
+     *                             {@code "DUMMY"}. All three are mapped
+     *                             by {@code GlobalExceptionHandler} to
      *                             HTTP 400 Bad Request
      */
-    public String resolveMenuTarget(int option, String userType, boolean isAdminMenu) {
+    public MenuOptionDto resolveMenuTarget(String option, String userType, boolean isAdminMenu) {
         // COBOL: COMEN01C:PROCESS-ENTER-KEY -- pick the table whose key the user just pressed
         List<MenuOptionDto> options = isAdminMenu ? ADMIN_MENU_OPTIONS : MAIN_MENU_OPTIONS;
 
-        // COBOL: COMEN01C:VALIDATE-OPTION -- IF WS-OPTION IS NOT NUMERIC OR > COUNT OR = ZEROS
-        if (option < 1 || option > options.size()) {
-            LOG.warn("Rejected menu option out of range (option={}, isAdminMenu={}, "
-                    + "validRange=1..{})", option, isAdminMenu, options.size());
+        // COBOL: COMEN01C:VALIDATE-OPTION -- IF WS-OPTION IS NOT NUMERIC (line 127).
+        // The COBOL program first INSPECTs WS-OPTION-X replacing spaces with zeros
+        // (line 123) and then implicitly converts via MOVE WS-OPTION-X TO WS-OPTION
+        // (PIC 9(02)). The Java equivalent rejects non-numeric input (including null
+        // and blank) up-front so subsequent bounds-check logic operates on a clean int.
+        int optionNumber;
+        try {
+            optionNumber = Integer.parseInt(option);
+        } catch (NumberFormatException | NullPointerException ex) {
+            LOG.warn("Rejected non-numeric menu option (option={}, isAdminMenu={})",
+                    option, isAdminMenu);
             throw new ValidationException(
-                    String.format(ERR_INVALID_OPTION_FORMAT, option));
+                    String.format(ERR_INVALID_OPTION_FORMAT, 0));
+        }
+
+        // COBOL: COMEN01C:VALIDATE-OPTION -- IF WS-OPTION > COUNT OR = ZEROS (lines 128-129).
+        if (optionNumber < 1 || optionNumber > options.size()) {
+            LOG.warn("Rejected menu option out of range (option={}, isAdminMenu={}, "
+                    + "validRange=1..{})", optionNumber, isAdminMenu, options.size());
+            throw new ValidationException(
+                    String.format(ERR_INVALID_OPTION_FORMAT, optionNumber));
         }
 
         // PIC 9(02) is 1-based; Java List is 0-based, so subtract 1 for the index lookup.
-        MenuOptionDto selected = options.get(option - 1);
+        MenuOptionDto selected = options.get(optionNumber - 1);
 
         // COBOL: COMEN01C:PROCESS-ENTER-KEY -- IF CDEMO-USRTYP-USER AND CDEMO-MENU-OPT-USRTYPE = 'A'
         if (USER_TYPE_USER.equals(userType)
                 && USER_TYPE_ADMIN.equals(selected.userType())) {
             LOG.warn("Rejected admin-only menu option for regular user "
                     + "(option={}, targetProgram={}, userType={})",
-                    option, selected.targetProgram(), userType);
+                    optionNumber, selected.targetProgram(), userType);
             throw new ValidationException(ERR_ADMIN_ONLY);
         }
 
@@ -567,16 +616,19 @@ public class MenuService {
                 && selected.targetProgram().startsWith("DUMMY")) {
             LOG.info("Selected menu option is not yet implemented "
                     + "(option={}, targetProgram={}, label={})",
-                    option, selected.targetProgram(), selected.label());
+                    optionNumber, selected.targetProgram(), selected.label());
             throw new ValidationException(
-                    String.format(ERR_COMING_SOON_FORMAT, option));
+                    String.format(ERR_COMING_SOON_FORMAT, optionNumber));
         }
 
         // COBOL: COMEN01C:PROCESS-ENTER-KEY -- EXEC CICS XCTL PROGRAM(CDEMO-MENU-OPT-PGMNAME)
-        // The Java target performs cross-service routing at the controller layer (REST navigation),
-        // so we return the original COBOL program identifier here for the controller to dispatch.
+        // The Java target performs cross-service routing at the controller layer
+        // (REST navigation). Returning the full MenuOptionDto here lets the controller
+        // emit ApiResponse<MenuOptionDto> (including the targetEndpoint URL and the
+        // original COBOL targetProgram identifier preserved for parallel-run
+        // traceability per AAP §0.7.3).
         LOG.debug("Resolved menu target (option={}, isAdminMenu={}, targetProgram={})",
-                option, isAdminMenu, selected.targetProgram());
-        return selected.targetProgram();
+                optionNumber, isAdminMenu, selected.targetProgram());
+        return selected;
     }
 }
