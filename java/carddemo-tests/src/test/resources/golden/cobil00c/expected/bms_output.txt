@@ -1,0 +1,13 @@
+# golden/cobil00c/expected/bms_output.txt
+# Status: PLACEHOLDER -- replace with byte-perfect BMS SEND MAP frame captures from COBIL00C execution
+# Format: one BMS frame per scenario, 1920 bytes (24 rows x 80 cols) per frame, framed by markers
+# Frame markers: '=== SCENARIO <n>: <name> ===' before frame; '=== END_SCENARIO <n> ===' after frame
+# Determinism: CURDATE field (1,71) and CURTIME field (2,71) populated from fixed java.time.Clock
+#   injected via ScopedValue<Clock> per AAP Sec 0.6.6; NEVER from system clock during test runs
+# Field positions per app/bms/COBIL00.bms: TRNNAME(1,7)='CB00', PGMNAME(2,7)='COBIL00C',
+#   TITLE01(1,21), TITLE02(2,21), CURDATE(1,71), CURTIME(2,71), Bill Payment(4,35),
+#   Enter Acct ID:(6,6) ACTIDIN(6,21) len 11, CURBAL(11,32) len 14, CONFIRM(15,60) len 1,
+#   ERRMSG(23,1) len 78, footer(24,1)='ENTER=Continue  F3=Back  F4=Clear'
+# 14 BMS frames expected total -- one per scenario in input_scenario.txt
+# Capture procedure: see java/MIGRATION_NOTES.md Sec 1.6 (COBOL run path under z/OS or Hercules)
+# Until capture: associated assertions in CoBil00CGoldenTest MUST be @Disabled per AAP Sec 0.6.11
