@@ -1,0 +1,350 @@
+# =====================================================================
+# COACTUPC (Account Update; CICS transaction CAUP) Golden-Record
+# Scenario Driver Script
+# =====================================================================
+#
+# Purpose: scenario specification consumed by the JUnit 5 test class
+# com.blitzy.carddemo.tests.golden.CoActUpCGoldenTest. Each SCENARIO
+# block simulates one CICS pseudo-conversation cycle (RECEIVE MAP ->
+# process -> SEND MAP) against the Java translation of COBOL program
+# app/cbl/COACTUPC.cbl. The harness asserts byte-for-byte parity with
+# captured COBOL outputs in sibling files acctdata.txt, custdata.txt,
+# bms_output.txt, stdout.txt.
+#
+# This is a SPECIFICATION. Mock READ/REWRITE records and commarea hex
+# bytes are '<...>' placeholders to be captured per the procedure in
+# java/MIGRATION_NOTES.md section 1.6. Until captures are committed,
+# CoActUpCGoldenTest is @Disabled per AAP section 0.6.11.
+#
+# Authority:
+#   AAP 0.1.1  -- byte-for-byte parity mandate
+#   AAP 0.4.1  -- COACTUPC translation; SYNCPOINT ROLLBACK
+#                 IMPLEMENTATION DECISION (try/finally + compensating
+#                 writes)
+#   AAP 0.6.11 -- golden-record harness PR gate; @Disabled until
+#                 captures committed
+#   AAP 0.7.1  -- Minimal Change Clause; verbatim message preservation
+#   AAP 0.7.2  -- PAN masking in logs: '************<last4>'
+#   AAP 0.7.5  -- capture procedure in
+#                 java/MIGRATION_NOTES.md section 1.6
+#
+# Behavior recap: COACTUPC services CICS transaction CAUP via BMS
+# mapset COACTUP / map CACTUPA (app/bms/COACTUP.bms). 7-state ACUP
+# machine (ACUP-DETAILS-NOT-FETCHED, ACUP-SHOW-DETAILS, ACUP-CHANGES-
+# MADE, ACUP-CHANGES-NOT-OK, ACUP-CHANGES-OK-NOT-CONFIRMED, ACUP-
+# CHANGES-OKAYED-AND-DONE, ACUP-CHANGES-OKAYED-BUT-FAILED). 4 valid
+# AIDs (L905-L916): ENTER (always), PF03 (always; XCTL to LIT-MENUPGM
+# 'COMEN01C'), PF05 (ACUP-CHANGES-OK-NOT-CONFIRMED only), PF12 (NOT
+# ACUP-DETAILS-NOT-FETCHED); others coerced to ENTER via 'SET CCARD-
+# AID-ENTER TO TRUE'. 9000-READ-ACCT chain: CXACAIX (50B) -> ACCTDAT
+# (300B) -> CUSTDAT (500B). PF5 save: paired EXEC CICS REWRITE on
+# ACCTDAT (L4066) and CUSTDAT (L4086); on CUSTDAT failure (L4095-
+# L4103) EXEC CICS SYNCPOINT ROLLBACK fires at L4100 -- the SOLE-IN-
+# CODEBASE ROLLBACK across all 28 COBOL programs, pinned down by
+# scenario 9 below. 9700-CHECK-CHANGE-IN-REC (L4109+) is the
+# optimistic-concurrency guard.
+#
+# Directive Reference (parser grammar in CoActUpCGoldenTest):
+#   SCENARIO:        <id>                  Begin scenario block (snake_case)
+#   DESCRIPTION:     <text>                One-line human description
+#   STATE: <commarea-state-id>  -- entry | none |
+#       reentry_details_not_fetched | reentry_show_details |
+#       reentry_changes_ok_not_confirmed |
+#       reentry_changes_okayed_and_done | reentry_changes_failed
+#   EIBCALEN: <int>             -- DFHCOMMAREA length; 0 = fresh entry
+#   COMMAREA_HEX: <hex>         -- Inbound commarea; cont lines start '+'
+#   MAP_INPUT: <FIELD> <VALUE>  -- One BMS field; quote VALUE if spaces;
+#                                  empty VALUE = LOW-VALUES (not sent)
+#   AID: <key>                  -- ENTER | PF1..PF24 | CLEAR | PA1 | PA2
+#                                  | PA3
+#   MOCK_READ: <file> <key> <resp> <resp2> [<hex-record>]
+#                                  file in {CXACAIX, ACCTDAT, CUSTDAT};
+#                                  resp in {NORMAL, NOTFND, IOERR,
+#                                  LENGERR}; hex required when NORMAL
+#   MOCK_REWRITE: <file> <resp> <resp2>
+#                                  file in {ACCTDAT, CUSTDAT}; resp in
+#                                  {NORMAL, NOTOPEN, INVREQ, IOERR}
+#   EXPECT_XCTL: <program>      -- Assert XCTL was issued
+#   EXPECT_SEND_MAP: <map> <mapset>
+#                                  Assert SEND MAP was issued
+#   EXPECT_CURSOR: <field>      -- Assert cursor field
+#   EXPECT_FIELD: <FIELD> <VALUE> <ATTR>
+#                                  ATTR is a comma-separated set like
+#                                  BRT,RED,FSET,UNPROT,UNDERLINE
+#   EXPECT_MSG: INFOMSG|ERRMSG <text>     Quote text with "..."
+#   EXPECT_INFOMSG_ATTR: DRK | BRT        Assert INFOMSGA attribute
+#   EXPECT_RESP: NORMAL | ABCODE_9999     Assert program RESP code
+#   EXPECT_ABCODE: <4-char>     -- Assert EXEC CICS ABEND
+#   EXPECT_READ: <file> <count> -- Assert plain READ count
+#   EXPECT_READ_UPDATE: <file> <count>    Assert READ UPDATE count
+#   EXPECT_REWRITE: <file> <count>        Assert REWRITE count
+#   EXPECT_SYNCPOINT: COMMIT|ROLLBACK <count>
+#                                  ROLLBACK sole-in-codebase; scenario
+#                                  9 only
+#   EXPECT_ACCTDAT_UNCHANGED    -- acctdata bytes == source fixture
+#   EXPECT_CUSTDAT_UNCHANGED    -- custdata bytes == source fixture
+#   EXPECT_ACCTDAT_CHANGED: <recno> <off> <len> <hex>  In-place change
+#   EXPECT_CUSTDAT_CHANGED: <recno> <off> <len> <hex>  In-place change
+#   EXPECT_RETURN_COMMAREA_HEX: <hex>     Outbound commarea bytes
+#   MASKED_PAN_LAST4: <lastfour>          PAN logged as
+#                                         '************<lastfour>'
+#   END_SCENARIO                          Explicit scenario end
+#
+# Encoding: ASCII only (no Unicode em-dash, ellipsis, curly quotes).
+# LF line endings only. Spaces only (no tabs). Single LF at EOF. Hex
+# strings use lowercase a-f without 0x prefix. Placeholder '<...>'
+# marks values to be captured per java/MIGRATION_NOTES.md section 1.6.
+
+SCENARIO: first_time_entry_no_commarea
+DESCRIPTION: Cold-start; EIBCALEN=0 -> INITIALIZE both commareas; PERFORM 3000-SEND-MAP; display empty form.
+STATE: none
+EIBCALEN: 0
+AID: ENTER
+EXPECT_SEND_MAP: CACTUPA COACTUP
+EXPECT_CURSOR: ACCTSID
+EXPECT_FIELD: TRNNAME "CAUP" ASKIP,FSET,NORM,BLUE
+EXPECT_FIELD: PGMNAME "COACTUPC" ASKIP,NORM,BLUE
+EXPECT_FIELD: ACCTSID "" IC,UNPROT,UNDERLINE
+EXPECT_FIELD: FKEYS "ENTER=Process F3=Exit" ASKIP,NORM,YELLOW
+EXPECT_FIELD: FKEY05 "F5=Save" ASKIP,DRK,YELLOW
+EXPECT_FIELD: FKEY12 "F12=Cancel" ASKIP,DRK,YELLOW
+EXPECT_MSG: INFOMSG ""
+EXPECT_MSG: ERRMSG ""
+EXPECT_READ: CXACAIX 0
+EXPECT_READ: ACCTDAT 0
+EXPECT_READ: CUSTDAT 0
+EXPECT_REWRITE: ACCTDAT 0
+EXPECT_REWRITE: CUSTDAT 0
+EXPECT_SYNCPOINT: ROLLBACK 0
+EXPECT_ACCTDAT_UNCHANGED
+EXPECT_CUSTDAT_UNCHANGED
+END_SCENARIO
+
+SCENARIO: enter_with_blank_acctsid
+DESCRIPTION: ENTER pressed with blank ACCTSID; SET WS-PROMPT-FOR-ACCT TO TRUE; ERRMSG 'Account number not provided'.
+STATE: reentry_details_not_fetched
+EIBCALEN: <commarea-length>
+COMMAREA_HEX: <inbound-commarea-bytes>
+MAP_INPUT: ACCTSID ""
+AID: ENTER
+EXPECT_SEND_MAP: CACTUPA COACTUP
+EXPECT_CURSOR: ACCTSID
+EXPECT_MSG: ERRMSG "Account number not provided"
+EXPECT_MSG: INFOMSG "Enter or update id of account to update"
+EXPECT_FIELD: ACCTSID "" IC,UNPROT,BRT,RED,UNDERLINE
+EXPECT_READ: CXACAIX 0
+EXPECT_REWRITE: ACCTDAT 0
+EXPECT_SYNCPOINT: ROLLBACK 0
+EXPECT_ACCTDAT_UNCHANGED
+EXPECT_CUSTDAT_UNCHANGED
+END_SCENARIO
+
+SCENARIO: enter_with_nonnumeric_acctsid
+DESCRIPTION: ACCTSID 'ABCDEFGHIJK' fails IS NUMERIC; SET SEARCHED-ACCT-NOT-NUMERIC; standard non-numeric error.
+STATE: reentry_details_not_fetched
+EIBCALEN: <commarea-length>
+COMMAREA_HEX: <inbound-commarea-bytes>
+MAP_INPUT: ACCTSID "ABCDEFGHIJK"
+AID: ENTER
+EXPECT_MSG: ERRMSG "Account number must be a non zero 11 digit number"
+EXPECT_FIELD: ACCTSID "ABCDEFGHIJK" IC,UNPROT,BRT,RED,UNDERLINE
+EXPECT_READ: CXACAIX 0
+EXPECT_SYNCPOINT: ROLLBACK 0
+EXPECT_ACCTDAT_UNCHANGED
+EXPECT_CUSTDAT_UNCHANGED
+END_SCENARIO
+
+SCENARIO: enter_valid_full_chain_success
+DESCRIPTION: ACCTSID '00000000001' -> 9000-READ-ACCT chain (CXACAIX->ACCTDAT->CUSTDAT) succeeds; SET ACUP-SHOW-DETAILS.
+STATE: reentry_details_not_fetched
+EIBCALEN: <commarea-length>
+COMMAREA_HEX: <inbound-commarea-bytes>
+MAP_INPUT: ACCTSID "00000000001"
+AID: ENTER
+MOCK_READ: CXACAIX 00000000001 NORMAL 0 <50-byte-hex-from-cardxref-acctid-1>
+MOCK_READ: ACCTDAT 00000000001 NORMAL 0 <300-byte-hex-from-acctdata-record-1>
+MOCK_READ: CUSTDAT <cust-id-from-xref> NORMAL 0 <500-byte-hex-from-custdata>
+EXPECT_READ: CXACAIX 1
+EXPECT_READ: ACCTDAT 1
+EXPECT_READ: CUSTDAT 1
+EXPECT_REWRITE: ACCTDAT 0
+EXPECT_REWRITE: CUSTDAT 0
+EXPECT_MSG: INFOMSG "Details of selected account shown above"
+EXPECT_MSG: ERRMSG ""
+EXPECT_FIELD: ACCTSID "00000000001" ASKIP,NORM,GREEN
+EXPECT_FIELD: ACSTTUS "Y" UNPROT,UNDERLINE
+EXPECT_FIELD: ACRDLIM "+00000020200.00" FSET,UNPROT,UNDERLINE
+EXPECT_FIELD: FKEY05 "F5=Save" ASKIP,DRK,YELLOW
+EXPECT_FIELD: FKEY12 "F12=Cancel" ASKIP,BRT,YELLOW
+EXPECT_SYNCPOINT: ROLLBACK 0
+EXPECT_ACCTDAT_UNCHANGED
+EXPECT_CUSTDAT_UNCHANGED
+MASKED_PAN_LAST4: <last4>
+END_SCENARIO
+
+SCENARIO: enter_valid_notfnd_in_cxacaix
+DESCRIPTION: ACCTSID '99999999999' not in CXACAIX; 9200-GETCARDXREF-BYACCT returns NOTFND; 9300/9400 skipped.
+STATE: reentry_details_not_fetched
+EIBCALEN: <commarea-length>
+COMMAREA_HEX: <inbound-commarea-bytes>
+MAP_INPUT: ACCTSID "99999999999"
+AID: ENTER
+MOCK_READ: CXACAIX 99999999999 NOTFND 13
+EXPECT_READ: CXACAIX 1
+EXPECT_READ: ACCTDAT 0
+EXPECT_READ: CUSTDAT 0
+EXPECT_MSG: ERRMSG "Did not find this account in account card xref file"
+EXPECT_FIELD: ACCTSID "99999999999" IC,UNPROT,BRT,RED,UNDERLINE
+EXPECT_ACCTDAT_UNCHANGED
+EXPECT_CUSTDAT_UNCHANGED
+END_SCENARIO
+
+SCENARIO: enter_valid_notfnd_in_acctdat
+DESCRIPTION: ACCTSID found in CXACAIX but missing from ACCTDAT; SET DID-NOT-FIND-ACCT-IN-ACCTDAT.
+STATE: reentry_details_not_fetched
+EIBCALEN: <commarea-length>
+COMMAREA_HEX: <inbound-commarea-bytes>
+MAP_INPUT: ACCTSID "00000000099"
+AID: ENTER
+MOCK_READ: CXACAIX 00000000099 NORMAL 0 <50-byte-hex-cardxref-acctid-99>
+MOCK_READ: ACCTDAT 00000000099 NOTFND 13
+EXPECT_READ: CXACAIX 1
+EXPECT_READ: ACCTDAT 1
+EXPECT_READ: CUSTDAT 0
+EXPECT_MSG: ERRMSG "Did not find this account in account master file"
+EXPECT_FIELD: ACCTSID "00000000099" IC,UNPROT,BRT,RED,UNDERLINE
+EXPECT_ACCTDAT_UNCHANGED
+EXPECT_CUSTDAT_UNCHANGED
+END_SCENARIO
+
+SCENARIO: pf03_exit_to_menu
+DESCRIPTION: PF3 (always valid); EVALUATE CCARD-AID-PFK03 branch at L927-L959; SYNCPOINT (commit) + XCTL to LIT-MENUPGM 'COMEN01C'.
+STATE: reentry_show_details
+EIBCALEN: <commarea-length>
+COMMAREA_HEX: <inbound-commarea-bytes>
+AID: PF3
+EXPECT_XCTL: COMEN01C
+EXPECT_SYNCPOINT: COMMIT 1
+EXPECT_SYNCPOINT: ROLLBACK 0
+EXPECT_MSG: ERRMSG "PF03 pressed.Exiting              "
+EXPECT_READ: CXACAIX 0
+EXPECT_READ: ACCTDAT 0
+EXPECT_READ: CUSTDAT 0
+EXPECT_REWRITE: ACCTDAT 0
+EXPECT_REWRITE: CUSTDAT 0
+EXPECT_ACCTDAT_UNCHANGED
+EXPECT_CUSTDAT_UNCHANGED
+END_SCENARIO
+
+SCENARIO: pf05_save_success_rewrite_both
+DESCRIPTION: PF5 save (3-pass flow Pass-3); 9600-WRITE-PROCESSING; READ UPDATE both files; 9700 passes; REWRITE ACCTDAT L4066 + CUSTDAT L4086 both NORMAL.
+STATE: reentry_changes_ok_not_confirmed
+EIBCALEN: <commarea-length>
+COMMAREA_HEX: <inbound-commarea-bytes-with-pre-edit-snapshot>
+# Only the changed field plus the search key need to be listed; all
+# other BMS fields default to LOW-VALUES per the directive grammar.
+# 9700-CHECK-CHANGE-IN-REC compares the inbound commarea pre-edit
+# snapshot to the re-read disk values, not to MAP_INPUT directly.
+MAP_INPUT: ACCTSID "00000000001"
+MAP_INPUT: ACSTTUS "N"
+AID: PF5
+MOCK_READ: ACCTDAT 00000000001 NORMAL 0 <300-byte-hex-from-acctdata-record-1>
+MOCK_READ: CUSTDAT <cust-id> NORMAL 0 <500-byte-hex-from-custdata>
+MOCK_REWRITE: ACCTDAT NORMAL 0
+MOCK_REWRITE: CUSTDAT NORMAL 0
+EXPECT_READ_UPDATE: ACCTDAT 1
+EXPECT_READ_UPDATE: CUSTDAT 1
+EXPECT_REWRITE: ACCTDAT 1
+EXPECT_REWRITE: CUSTDAT 1
+EXPECT_SYNCPOINT: ROLLBACK 0
+EXPECT_MSG: INFOMSG "Changes committed to database"
+EXPECT_MSG: ERRMSG ""
+EXPECT_ACCTDAT_CHANGED: 1 11 1 4e
+EXPECT_CUSTDAT_UNCHANGED
+MASKED_PAN_LAST4: <last4>
+END_SCENARIO
+
+SCENARIO: pf05_save_rollback_on_custdat_fail
+DESCRIPTION: CRITICAL - SOLE COBOL SYNCPOINT ROLLBACK at L4100. ACCTDAT REWRITE L4066 succeeds; CUSTDAT REWRITE L4086 fails; SET LOCKED-BUT-UPDATE-FAILED L4099; SYNCPOINT ROLLBACK L4100; Java must issue compensating REWRITE to restore ACCTDAT.
+STATE: reentry_changes_ok_not_confirmed
+EIBCALEN: <commarea-length>
+COMMAREA_HEX: <inbound-commarea-bytes-with-pre-edit-snapshot>
+# Same MAP_INPUT shape as scenario 8; only the changed field (ACSTTUS)
+# and the search key (ACCTSID) are listed. The CUSTDAT REWRITE
+# failure is injected via the MOCK_REWRITE directive below.
+MAP_INPUT: ACCTSID "00000000001"
+MAP_INPUT: ACSTTUS "N"
+AID: PF5
+MOCK_READ: ACCTDAT 00000000001 NORMAL 0 <300-byte-hex-from-acctdata-record-1>
+MOCK_READ: CUSTDAT <cust-id> NORMAL 0 <500-byte-hex-from-custdata>
+MOCK_REWRITE: ACCTDAT NORMAL 0
+MOCK_REWRITE: CUSTDAT IOERR 80
+EXPECT_READ_UPDATE: ACCTDAT 1
+EXPECT_READ_UPDATE: CUSTDAT 1
+EXPECT_REWRITE: ACCTDAT 2
+EXPECT_REWRITE: CUSTDAT 1
+EXPECT_SYNCPOINT: ROLLBACK 1
+EXPECT_MSG: INFOMSG "Changes unsuccessful. Please try again"
+EXPECT_MSG: ERRMSG "Update of record failed"
+EXPECT_ACCTDAT_UNCHANGED
+EXPECT_CUSTDAT_UNCHANGED
+MASKED_PAN_LAST4: <last4>
+END_SCENARIO
+
+SCENARIO: pf12_cancel_after_changes_ok_not_confirmed
+DESCRIPTION: PF12 valid only when NOT ACUP-DETAILS-NOT-FETCHED; 2000-DECIDE-ACTION WHEN CCARD-AID-PFK12 reloads original via 9000-READ-ACCT; state returns to ACUP-SHOW-DETAILS; no REWRITE.
+STATE: reentry_changes_ok_not_confirmed
+EIBCALEN: <commarea-length>
+COMMAREA_HEX: <inbound-commarea-bytes-with-edits>
+MAP_INPUT: ACCTSID "00000000001"
+MAP_INPUT: ACSTTUS "N"
+AID: PF12
+MOCK_READ: CXACAIX 00000000001 NORMAL 0 <50-byte-hex-from-cardxref-acctid-1>
+MOCK_READ: ACCTDAT 00000000001 NORMAL 0 <300-byte-hex-from-acctdata-record-1>
+MOCK_READ: CUSTDAT <cust-id> NORMAL 0 <500-byte-hex-from-custdata>
+EXPECT_READ: CXACAIX 1
+EXPECT_READ: ACCTDAT 1
+EXPECT_READ: CUSTDAT 1
+EXPECT_READ_UPDATE: ACCTDAT 0
+EXPECT_READ_UPDATE: CUSTDAT 0
+EXPECT_REWRITE: ACCTDAT 0
+EXPECT_REWRITE: CUSTDAT 0
+EXPECT_SYNCPOINT: ROLLBACK 0
+EXPECT_MSG: INFOMSG "Details of selected account shown above"
+EXPECT_MSG: ERRMSG ""
+EXPECT_FIELD: ACSTTUS "Y" UNPROT,UNDERLINE
+EXPECT_ACCTDAT_UNCHANGED
+EXPECT_CUSTDAT_UNCHANGED
+END_SCENARIO
+
+SCENARIO: invalid_aid_pfk04_coerced_to_enter
+DESCRIPTION: PF4 not in {ENTER,PF3,PF5,PF12}; L905-L916 SET CCARD-AID-ENTER TO TRUE; dispatch proceeds as ENTER.
+STATE: reentry_details_not_fetched
+EIBCALEN: <commarea-length>
+COMMAREA_HEX: <inbound-commarea-bytes>
+MAP_INPUT: ACCTSID "00000000001"
+AID: PF4
+MOCK_READ: CXACAIX 00000000001 NORMAL 0 <50-byte-hex-from-cardxref-acctid-1>
+MOCK_READ: ACCTDAT 00000000001 NORMAL 0 <300-byte-hex-from-acctdata-record-1>
+MOCK_READ: CUSTDAT <cust-id> NORMAL 0 <500-byte-hex-from-custdata>
+EXPECT_READ: CXACAIX 1
+EXPECT_READ: ACCTDAT 1
+EXPECT_READ: CUSTDAT 1
+EXPECT_MSG: INFOMSG "Details of selected account shown above"
+EXPECT_ACCTDAT_UNCHANGED
+EXPECT_CUSTDAT_UNCHANGED
+END_SCENARIO
+
+# Footer
+# ------
+# Scenarios are independent; each runs with a fresh in-memory copy of
+# app/data/ASCII/acctdata.txt and custdata.txt. Mock READ/REWRITE
+# records and commarea bytes are '<...>' placeholders populated by the
+# capture procedure in java/MIGRATION_NOTES.md section 1.6 (log row
+# in section 1.6.2). PAN-masking format per AAP section 0.7.2:
+# '************<lastfour>' (12 asterisks + 4 digits). Scenario 9's
+# EXPECT_SYNCPOINT ROLLBACK 1 + EXPECT_REWRITE ACCTDAT 2 +
+# EXPECT_ACCTDAT_UNCHANGED is the unique pin-down of the Java
+# try/finally compensating-write implementation of the SOLE-IN-CODEBASE
+# EXEC CICS SYNCPOINT ROLLBACK at L4100 of app/cbl/COACTUPC.cbl, per
+# AAP section 0.4.1 and java/MIGRATION_NOTES.md section 1.3.1.
