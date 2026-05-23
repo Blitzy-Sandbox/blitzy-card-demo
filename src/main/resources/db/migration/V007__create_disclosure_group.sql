@@ -73,7 +73,7 @@
 --   ---------------------- --------------- ------------------- ----------------
 --   DIS-ACCT-GROUP-ID      PIC X(10)       dis_acct_group_id   VARCHAR(10)  (PK1)
 --   DIS-TRAN-TYPE-CD       PIC X(02)       dis_tran_type_cd    CHAR(2)      (PK2)
---   DIS-TRAN-CAT-CD        PIC 9(04)       dis_tran_cat_cd     NUMERIC(4)   (PK3)
+--   DIS-TRAN-CAT-CD        PIC 9(04)       dis_tran_cat_cd     INTEGER      (PK3)
 --   DIS-INT-RATE           PIC S9(04)V99   dis_int_rate        NUMERIC(6,2)
 --   FILLER                 PIC X(28)       OMITTED             --
 --

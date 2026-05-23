@@ -67,7 +67,7 @@
 --   COBOL field         PIC clause    PostgreSQL column     Type
 --   ------------------- ------------- --------------------- ----------------------
 --   TRAN-TYPE-CD        PIC X(02)     tran_type_cd          CHAR(2)      (PK part 1)
---   TRAN-CAT-CD         PIC 9(04)     tran_cat_cd           NUMERIC(4)   (PK part 2)
+--   TRAN-CAT-CD         PIC 9(04)     tran_cat_cd           INTEGER      (PK part 2)
 --   TRAN-CAT-TYPE-DESC  PIC X(50)     tran_cat_type_desc    VARCHAR(50)  NOT NULL
 --   FILLER              PIC X(04)     OMITTED               --
 --
@@ -155,14 +155,19 @@ create table tran_category (
     -- TRAN-CAT-CD PIC 9(04); the next 4 bytes of the 6-byte composite VSAM
     -- key. 4-digit unsigned numeric category code (range 0001-9999 per
     -- COBOL PIC 9(04) semantics; the source fixture uses 0001..0005 only).
-    -- Stored as NUMERIC(4) -- integer values 1..9999, NOT a zero-padded
+    -- Stored as INTEGER -- integer values 1..9999, NOT a zero-padded
     -- string. The COBOL PIC 9(04) "0001" becomes the integer 1 in
     -- PostgreSQL (e.g., (tran_type_cd, tran_cat_cd) = ('01', 1) maps to
-    -- the COBOL VSAM key bytes '010001'). Application-layer formatting
-    -- in TransactionReportService re-pads to 4 digits when emitting
-    -- regulatory-format output, preserving byte-for-byte parity with the
-    -- COBOL source.
-    tran_cat_cd           numeric(4)   not null,
+    -- the COBOL VSAM key bytes '010001'). INTEGER is chosen over NUMERIC(4)
+    -- to align with the Java TransactionCategoryId.tranCatCd : Integer
+    -- mapping per AAP §0.6.1, and to match V005 transactions.tran_cat_cd,
+    -- V006 tran_cat_bal.trancat_cd, V007 disclosure_group.dis_tran_cat_cd,
+    -- and V011 daily_transactions.dalytran_cat_cd -- ensuring uniform
+    -- JOIN semantics with no implicit type casting. Application-layer
+    -- formatting in TransactionReportService re-pads to 4 digits when
+    -- emitting regulatory-format output, preserving byte-for-byte parity
+    -- with the COBOL source.
+    tran_cat_cd           integer      not null,
 
     -- TRAN-CAT-TYPE-DESC PIC X(50); human-readable description of the
     -- transaction category. The COBOL source pads each description to 50
@@ -273,10 +278,12 @@ comment on column tran_category.tran_type_cd is
 comment on column tran_category.tran_cat_cd is
     'COBOL: TRAN-CAT-CD PIC 9(04). Last 4 bytes of the 6-byte composite '
     'VSAM KSDS primary key. Unsigned 4-digit numeric category code stored '
-    'as NUMERIC(4) integer (e.g., 1, 2, 3) -- NOT a zero-padded string. '
+    'as INTEGER (e.g., 1, 2, 3) -- NOT a zero-padded string. '
     'Source fixture range is 0001..0005 (with up to 5 categories per type) '
-    'though the PIC clause permits 0001..9999. Application-layer formatting '
-    're-pads to 4 digits when emitting regulatory-format output. Maps to '
+    'though the PIC clause permits 0001..9999. INTEGER aligns with the '
+    'Java Integer mapping and matches V005, V006, V007, V011 category-code '
+    'columns. Application-layer formatting re-pads to 4 digits when '
+    'emitting regulatory-format output. Maps to '
     'TransactionCategoryId.tranCatCd in JPA.';
 
 comment on column tran_category.tran_cat_type_desc is

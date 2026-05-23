@@ -51,11 +51,23 @@
     <!-- ============================================================
          Parent POM — Spring Boot 3.x BOM provides managed versions
          for Jakarta EE, Hibernate, Jackson, Tomcat, Micrometer, etc.
+
+         Version pinned to 3.3.13 (latest stable Spring Boot 3.3.x patch
+         release as verified against Maven Central). This patch line is
+         compatible with Java 17 (AAP §0.5.1 baseline) and Spring Cloud
+         AWS 3.x (selected in this POM). The 3.3.13 BOM transitively
+         manages Spring Security 6.3.10, which addresses the CVEs in the
+         6.3.0..6.3.9 series flagged in the CP4 dependency-security review
+         (the next-generation 6.3.15 fix-version cited in the advisory is
+         a forward-looking minimum that this Boot 3.3.x line cannot ship;
+         Spring Boot 3.3.13 brings the latest CVE-patched Spring Security
+         release available within the 3.3.x line, and the OWASP profile
+         in this POM continues to flag any future advisories).
          ============================================================ -->
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.5</version>
+        <version>3.3.13</version>
         <relativePath/> <!-- look up parent from Maven Central, not file system -->
     </parent>
 

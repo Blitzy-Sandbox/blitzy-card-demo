@@ -547,13 +547,17 @@ carddemo:
       # surprises when staff move between profiles. 2^12 = 4096 rounds.
       strength: 12
     jwt:
-      # NON-FUNCTIONAL DEVELOPMENT PLACEHOLDER — local profile only.
-      # Real signing key is sourced from AWS Secrets Manager via
-      # `spring.config.import: aws-secretsmanager:carddemo/jwt-signing-key`
-      # in the dev / prod overlays. The 64-char fallback below is purely
-      # so local startup does not fail; it is rotated to a real value the
-      # moment any environment past `local` is selected.
-      signing-key: ${JWT_SIGNING_KEY:DEVELOPMENT_ONLY_JWT_SIGNING_KEY_MIN_256_BITS_FOR_HS256_ALGORITHM}
+      # AAP §0.7.1 / §0.7.2 / CP4 Rules Compliance:
+      # NEVER hardcode JWT signing-key material in application.yml. The
+      # value below is left intentionally EMPTY when no environment
+      # variable is set; the active signing key is ALWAYS fetched at
+      # runtime by JwtTokenProvider via SecretsManagerService using the
+      # `signing-key-secret-arn` below. The `JWT_SIGNING_KEY` env var
+      # exists only so that integration tests (which run against a
+      # LocalStack-created secret) can bypass the Secrets Manager path
+      # when explicitly configured. Production startup MUST fail-fast if
+      # neither the secret ARN nor the env var resolves to a 256-bit key.
+      signing-key: ${JWT_SIGNING_KEY:}
       issuer: carddemo
       expiration-seconds: 3600
       access-token-ttl-minutes: 60

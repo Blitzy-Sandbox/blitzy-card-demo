@@ -176,7 +176,7 @@
 --   TRAN-CAT-KEY (group)   17-byte group    -- (decomposed into 3 columns below)
 --    + TRANCAT-ACCT-ID     PIC 9(11)        trancat_acct_id        BIGINT       NN
 --    + TRANCAT-TYPE-CD     PIC X(02)        trancat_type_cd        CHAR(2)      NN
---    + TRANCAT-CD          PIC 9(04)        trancat_cd             NUMERIC(4)   NN
+--    + TRANCAT-CD          PIC 9(04)        trancat_cd             INTEGER      NN
 --   TRAN-CAT-BAL           PIC S9(09)V99    tran_cat_bal           NUMERIC(11,2) NN
 --   FILLER                 PIC X(22)        OMITTED                -- (padding)
 --
@@ -311,16 +311,24 @@ create table tran_cat_bal (
     -- Authorization categories, 1 Refund category, 2 Reversal
     -- categories, and 1 Adjustment category.
     --
-    -- NUMERIC(4) precisely captures the COBOL PIC 9(04) semantic --
-    -- 4 digits, no decimal, no sign -- matching the type used by V009
-    -- tran_category.tran_cat_cd. As with trancat_type_cd, no FK is
-    -- declared here because V009 tran_category is created after V006;
-    -- the application enforces the lookup at write time.
+    -- INTEGER precisely captures the COBOL PIC 9(04) semantic --
+    -- 4 digits, no decimal, no sign -- and aligns with the Java
+    -- TransactionCategoryBalanceId.trancatCd : Integer field per
+    -- AAP §0.6.1 (Hibernate schema validation requires the JDBC type
+    -- to match the Java type; INTEGER maps cleanly to int4 / Integer
+    -- whereas NUMERIC(4) maps to BigDecimal). This is the SAME type
+    -- used by V005 transactions.tran_cat_cd, V007 disclosure_group.
+    -- dis_tran_cat_cd, V009 tran_category.tran_cat_cd, and V011
+    -- daily_transactions.dalytran_cat_cd, ensuring uniform JOIN
+    -- semantics across all category-keyed tables. As with
+    -- trancat_type_cd, no FK is declared here because V009
+    -- tran_category is created after V006; the application enforces
+    -- the lookup at write time.
     --
     -- This is the TRAILING column of the composite primary key; it
     -- provides the finest-grained partitioning of an account's balance
     -- across the (type, category) Cartesian product.
-    trancat_cd                 numeric(4)    not null,
+    trancat_cd                 integer       not null,
 
     -- TRAN-CAT-BAL PIC S9(09)V99; the per-(account, type, category)
     -- running balance in account currency. Signed 9-digit integer +
@@ -497,9 +505,12 @@ comment on column tran_cat_bal.trancat_cd is
     '0001..9999) that classifies the balance bucket within the given '
     'transaction-type. The 18 canonical categories are loaded into '
     'tran_category (V009) from app/data/ASCII/trancatg.txt by V014. '
-    'NUMERIC(4) matches the type used by tran_category.tran_cat_cd '
-    '(V009). No SQL FOREIGN KEY declared because tran_category (V009) '
-    'is created after V006 -- the (type, category) lookup is enforced '
+    'Stored as INTEGER to align with the Java Integer mapping and to '
+    'match V005 transactions.tran_cat_cd, V007 disclosure_group.'
+    'dis_tran_cat_cd, V009 tran_category.tran_cat_cd, and V011 '
+    'daily_transactions.dalytran_cat_cd. No SQL FOREIGN KEY declared '
+    'because tran_category (V009) is created after V006 -- the '
+    '(type, category) lookup is enforced '
     'by the application layer via TransactionPostingService.';
 
 comment on column tran_cat_bal.tran_cat_bal is

@@ -633,11 +633,14 @@ public class TransactionCategory implements Serializable {
          * arithmetic effect.</p>
          */
         // COBOL: CVTRA04Y.cpy:L7 TRAN-CAT-CD PIC 9(04)
-        // -- 4-digit numeric category code; columnDefinition = "NUMERIC(4)"
-        // aligns Hibernate's schema validator with V009's numeric(4) column
-        // (V009:L165) -- both sides report Types.NUMERIC after this directive.
-        @Column(name = "tran_cat_cd", nullable = false, precision = 4,
-                columnDefinition = "NUMERIC(4)")
+        // -- 4-digit numeric category code. Mapped as plain INTEGER per
+        // AAP §0.6.1 so the Hibernate JDBC type aligns with V009's
+        // INTEGER column (V009:L165) -- both sides report Types.INTEGER
+        // after schema validation. This is the SAME decision used by
+        // V005, V006, V007, V011 category-code columns; switching to
+        // INTEGER eliminates the implicit BigDecimal <-> Integer cast
+        // that the previous NUMERIC(4) columnDefinition forced.
+        @Column(name = "tran_cat_cd", nullable = false)
         private Integer tranCatCd;
 
         // ---------------------------------------------------------------------

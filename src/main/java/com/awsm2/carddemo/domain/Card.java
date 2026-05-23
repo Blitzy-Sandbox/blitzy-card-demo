@@ -848,10 +848,14 @@ public class Card implements Serializable {
      * Masks a 16-character card number for PCI-DSS-safe logging.
      *
      * <p>Returns a string of the form
-     * {@code "************XXXX"} where {@code XXXX} are the last 4
-     * characters of the input. For {@code null} or short inputs
-     * (length &lt; 4), returns {@code "****"} as a defensive
-     * fallback &mdash; never returning the raw value.</p>
+     * {@code "****-****-****-XXXX"} where {@code XXXX} are the last
+     * 4 characters of the input. The hyphenated 4-4-4-4 grouping
+     * mirrors the human-readable rendering of a typical 16-digit PAN
+     * and is the exact format mandated by the CP4 checklist for
+     * masked-PAN display per AAP &sect;0.6.6 (PCI-DSS v4.0
+     * Requirement 3.4.1). For {@code null} or short inputs (length
+     * &lt; 4), returns {@code "****"} as a defensive fallback
+     * &mdash; never returning the raw value.
      *
      * <p>The PAN-masking pattern matches PCI-DSS v4.0 Requirement
      * 3.4.1 (a maximum of the first 6 and last 4 digits may be
@@ -859,14 +863,18 @@ public class Card implements Serializable {
      * to be conservative).</p>
      *
      * @param card the 16-character card number (may be {@code null})
-     * @return a masked representation with only the last 4 digits
-     *         visible, or {@code "****"} for {@code null} / short
-     *         inputs
+     * @return a masked representation in the form
+     *         {@code "****-****-****-XXXX"} with only the last 4
+     *         digits visible, or {@code "****"} for {@code null} /
+     *         short inputs
      */
     private static String maskCardNumber(String card) {
         if (card == null || card.length() < 4) {
             return "****";
         }
-        return "************" + card.substring(card.length() - 4);
+        // PCI-DSS v4.0 Requirement 3.4.1 (AAP §0.6.6): mask all but the
+        // last four digits of the PAN. The hyphenated 4-4-4-4 grouping
+        // is the spec-mandated rendering and matches the CP4 checklist.
+        return "****-****-****-" + card.substring(card.length() - 4);
     }
 }

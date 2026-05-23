@@ -751,17 +751,15 @@ public class TransactionCategoryBalance implements Serializable {
          * product.</p>
          */
         // COBOL: CVTRA01Y.cpy:L8 TRANCAT-CD PIC 9(04)
-        // -- 4-digit numeric category code; columnDefinition = "NUMERIC(4)"
-        // is REQUIRED so that Hibernate's ddl-auto: validate consults
-        // Types.NUMERIC (matching PostgreSQL's 'numeric' reported type)
-        // rather than the default Types.INTEGER that Hibernate otherwise
-        // infers for an Integer field. Without this attribute, schema
-        // validation fails with "found [numeric (Types#NUMERIC)], but
-        // expecting [integer (Types#INTEGER)]". This matches the
-        // established project convention used by sibling entity
-        // TransactionCategory.tranCatCd for the analogous V009 column.
-        @Column(name = "trancat_cd", nullable = false, precision = 4,
-                columnDefinition = "NUMERIC(4)")
+        // -- 4-digit numeric category code. Mapped as plain INTEGER per
+        // AAP §0.6.1 to align with V006's INTEGER column (V006:L323)
+        // and the SAME decision used by V005 transactions.tran_cat_cd,
+        // V007 disclosure_group.dis_tran_cat_cd, V009 tran_category.
+        // tran_cat_cd, and V011 daily_transactions.dalytran_cat_cd.
+        // Both Hibernate and PostgreSQL report Types.INTEGER after this
+        // mapping, so ddl-auto: validate passes without an implicit
+        // BigDecimal <-> Integer cast.
+        @Column(name = "trancat_cd", nullable = false)
         private Integer trancatCd;
 
         // ---------------------------------------------------------------------

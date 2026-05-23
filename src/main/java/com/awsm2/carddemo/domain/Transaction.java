@@ -68,10 +68,14 @@ import java.util.Objects;
  * <ul>
  *   <li>{@code TransactionAddService} (COBOL {@code COTRN02C})
  *       &mdash; online insertion of a single new transaction via
- *       {@code POST /api/transactions}. Uses JPA sequence ID
- *       generation as the replacement for the COBOL browse-to-end
- *       pattern; publishes {@code transaction.posted} to MSK
- *       partitioned by account ID per AAP &sect;0.6.5.</li>
+ *       {@code POST /api/transactions}. Translates the COBOL
+ *       {@code STARTBR}/{@code READPREV}/{@code ADD 1} browse-to-end
+ *       pattern (see {@code app/cbl/COTRN02C.cbl} L444-L451) to
+ *       {@link com.awsm2.carddemo.repository.TransactionRepository#findMaxTranId()}
+ *       (MAX-TRAN-ID query) + numeric increment + zero-padded
+ *       16-character formatting per AAP &sect;0.6.2; publishes
+ *       {@code transaction.posted} to MSK partitioned by account ID
+ *       per AAP &sect;0.6.5.</li>
  *   <li>{@code TransactionListService} (COBOL {@code COTRN00C})
  *       &mdash; paginated browse of recent transactions for a card or
  *       account; the {@code COTRN00.bms} 10-row-per-page list screen.
@@ -292,10 +296,18 @@ public class Transaction implements Serializable {
      * <p>{@code @Id} is on the field (per JPA best practice for
      * single-PK string keys); no {@code @GeneratedValue} because the
      * identifier is application-generated &mdash; in the Java target
-     * via JPA sequence + zero-padded format (replacing the COBOL
-     * {@code COTRN02C} browse-to-end + increment pattern), and in
-     * existing data carries the verbatim value loaded from the
-     * mainframe via the parallel-run period.</p>
+     * via the MAX-TRAN-ID + 1 pattern translated from the COBOL
+     * source. {@code TransactionAddService} (and {@code BillPaymentService})
+     * invoke
+     * {@link com.awsm2.carddemo.repository.TransactionRepository#findMaxTranId()}
+     * to retrieve the current maximum 16-character transaction
+     * identifier, increment it numerically, and zero-pad the result
+     * back to exactly 16 characters &mdash; mirroring the COBOL
+     * {@code STARTBR}/{@code READPREV}/{@code ADD 1 TO WS-TRAN-ID-N}
+     * pattern at {@code app/cbl/COTRN02C.cbl} L444-L451 and
+     * {@code app/cbl/COBIL00C.cbl} L209-L217 (per AAP &sect;0.7.3
+     * Minimal Change Clause). Existing data carries the verbatim
+     * value loaded from the mainframe via the parallel-run period.</p>
      */
     @Id
     @Column(name = "tran_id", nullable = false, length = 16)
@@ -348,7 +360,7 @@ public class Transaction implements Serializable {
     private String tranTypeCd;
 
     // COBOL: CVTRA05Y.cpy:L7 TRAN-CAT-CD PIC 9(04) - tran-category code
-    // Maps to V005 column: tran_cat_cd NUMERIC(4) NOT NULL
+    // Maps to V005 column: tran_cat_cd INTEGER NOT NULL
     /**
      * 4-digit unsigned numeric transaction-category code (range
      * {@code 0001..9999}). 18 valid categories per the V014 fixture
@@ -359,18 +371,21 @@ public class Transaction implements Serializable {
      *
      * <p>Joined with {@link #tranTypeCd} as the composite logical key
      * into {@code tran_category} (V009) and {@code tran_cat_bal}
-     * (V006). Stored as {@code NUMERIC(4)} on PostgreSQL and mapped
-     * to a Java {@link Integer} (the COBOL {@code PIC 9(04)} fits in
-     * a primitive {@code int} but {@code Integer} permits null-safe
-     * semantics during partial DTO &rarr; entity mapping and
-     * Optional/null-safe lookups).</p>
+     * (V006). Stored as {@code INTEGER} on PostgreSQL and mapped to
+     * a Java {@link Integer} &mdash; the COBOL {@code PIC 9(04)} fits
+     * cleanly in a 32-bit signed integer (max value 9999); {@code
+     * Integer} permits null-safe semantics during partial DTO &rarr;
+     * entity mapping. Per AAP &sect;0.6.1, the JDBC type aligns with
+     * the Java type so that Hibernate's schema validation passes
+     * without an implicit cast (this is the SAME decision as V006/V007/
+     * V009/V011 category-code columns).</p>
      *
      * <p>As with {@link #tranTypeCd}, NO FK is declared because V009
      * is created after V005; the application enforces the lookup at
      * write time via {@code TransactionPostingService} and
      * {@code TransactionAddService}.</p>
      */
-    @Column(name = "tran_cat_cd", nullable = false, precision = 4, columnDefinition = "NUMERIC(4)")
+    @Column(name = "tran_cat_cd", nullable = false)
     private Integer tranCatCd;
 
     // COBOL: CVTRA05Y.cpy:L8 TRAN-SOURCE PIC X(10) - origination source

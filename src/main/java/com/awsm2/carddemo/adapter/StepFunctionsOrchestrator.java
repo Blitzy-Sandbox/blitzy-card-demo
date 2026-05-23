@@ -161,20 +161,26 @@ public class StepFunctionsOrchestrator {
      * {@link CardDemoException} with reason code
      * {@value #CONFIG_ERROR_REASON_CODE}.
      */
-    @Value("${carddemo.stepfunctions.eod-pipeline-arn:}")
+    @Value("${carddemo.aws.stepfunctions.eod-batch-pipeline-arn:}")
     private String eodPipelineArn;
 
     /**
-     * ARN of the report pipeline state machine triggered by
-     * {@code CORPT00C}-equivalent service publications to the MSK topic
-     * {@code report.requested}. Externalised via Spring Cloud AWS
-     * Parameter Store per AAP §0.7.1. May be blank in profiles where the
-     * report pipeline is not provisioned;
+     * ARN of the file/data provisioning state machine
+     * ({@code file-provisioning.asl.json}) used as the destination of
+     * {@code report.requested}-triggered orchestration in profiles that
+     * route report generation through Step Functions. Externalised via
+     * Spring Cloud AWS Parameter Store per AAP §0.7.1. May be blank in
+     * profiles where the pipeline is not provisioned;
      * {@link #startReportPipeline(String)} then throws
      * {@link CardDemoException} with reason code
      * {@value #CONFIG_ERROR_REASON_CODE}.
+     *
+     * <p>The property key matches
+     * {@code carddemo.aws.stepfunctions.file-provisioning-arn} declared
+     * in {@code application.yml} so that the same ARN is consumed by
+     * this adapter and by {@code KafkaEventConsumer}.</p>
      */
-    @Value("${carddemo.stepfunctions.report-pipeline-arn:}")
+    @Value("${carddemo.aws.stepfunctions.file-provisioning-arn:}")
     private String reportPipelineArn;
 
     /**
@@ -348,7 +354,7 @@ public class StepFunctionsOrchestrator {
      * @return the execution ARN returned by Step Functions
      * @throws CardDemoException        with reason code
      *                                  {@value #CONFIG_ERROR_REASON_CODE}
-     *                                  if {@code carddemo.stepfunctions.eod-pipeline-arn}
+     *                                  if {@code carddemo.aws.stepfunctions.eod-batch-pipeline-arn}
      *                                  is not configured for the active
      *                                  profile (typically a developer
      *                                  environment without provisioned
@@ -364,7 +370,7 @@ public class StepFunctionsOrchestrator {
             // propagated by GlobalExceptionHandler into the API response.
             throw new CardDemoException(
                     CONFIG_ERROR_REASON_CODE,
-                    "carddemo.stepfunctions.eod-pipeline-arn not configured",
+                    "carddemo.aws.stepfunctions.eod-batch-pipeline-arn not configured",
                     null);
         }
         // Build a minimal JSON object {"batchRunDate":"<value>"} — even when
@@ -402,7 +408,7 @@ public class StepFunctionsOrchestrator {
      * @return the execution ARN returned by Step Functions
      * @throws CardDemoException        with reason code
      *                                  {@value #CONFIG_ERROR_REASON_CODE}
-     *                                  if {@code carddemo.stepfunctions.report-pipeline-arn}
+     *                                  if {@code carddemo.aws.stepfunctions.file-provisioning-arn}
      *                                  is not configured
      * @throws SfnException             on any Step Functions service error
      *                                  (propagated unchanged per AAP §0.7.1)
@@ -416,7 +422,7 @@ public class StepFunctionsOrchestrator {
         if (reportPipelineArn == null || reportPipelineArn.isBlank()) {
             throw new CardDemoException(
                     CONFIG_ERROR_REASON_CODE,
-                    "carddemo.stepfunctions.report-pipeline-arn not configured",
+                    "carddemo.aws.stepfunctions.file-provisioning-arn not configured",
                     null);
         }
         LOG.info("Starting report pipeline arn={}", reportPipelineArn);
