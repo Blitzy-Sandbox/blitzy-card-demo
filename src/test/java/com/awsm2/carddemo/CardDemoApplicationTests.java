@@ -30,6 +30,8 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -245,13 +247,41 @@ class CardDemoApplicationTests {
     // -------------------------------------------------------------------------
     // The container is declared `static` so it is started exactly once per test
     // class lifecycle (managed by @Testcontainers) rather than per test method.
-    // @ServiceConnection auto-configures the following Spring properties from
-    // the running container, eliminating the need for a manual
-    // @DynamicPropertySource callback:
-    //   * spring.datasource.url        (jdbc:postgresql://<host>:<port>/<db>)
-    //   * spring.datasource.username   (container start-up credential)
-    //   * spring.datasource.password   (container start-up credential)
-    //   * spring.datasource.driver-class-name  (org.postgresql.Driver)
+    //
+    // Two complementary mechanisms bind this container to the Spring context:
+    //
+    //   1. @ServiceConnection registers a Flyway-specific
+    //      `FlywayContainerConnectionDetailsFactory$FlywayContainerConnectionDetails`
+    //      so that Spring Boot's `FlywayAutoConfiguration` builds the Flyway
+    //      instance against THIS container's URL (rather than the
+    //      `jdbc:tc://` fallback in application-test.yml).
+    //
+    //   2. @DynamicPropertySource (overrideDataSourceUrl below) pushes the
+    //      container's randomly assigned URL/credentials/driver into the
+    //      Spring `Environment` under `spring.datasource.*` so that the
+    //      @Primary @RefreshScope DataSource bean declared by
+    //      `JpaConfig.dataSource(DataSourceProperties)` is constructed
+    //      against the SAME container that Flyway uses.
+    //
+    // Why @DynamicPropertySource is required even though @ServiceConnection
+    // exists: per AAP §0.6.4 (Secrets Manager dynamic rotation), `JpaConfig`
+    // declares its own `@Primary @RefreshScope HikariDataSource` bean. This
+    // bean is constructed from `DataSourceProperties` (which Spring resolves
+    // from `spring.datasource.*` in the Environment). Because the bean is
+    // user-declared rather than auto-configured, Spring Boot's companion
+    // `HikariJdbcConnectionDetailsBeanPostProcessor` does NOT activate to
+    // re-write the HikariDataSource's `jdbcUrl` from JdbcConnectionDetails
+    // — that post-processor is conditional on
+    // `DataSourceConfiguration$Hikari` auto-config being active, which it
+    // is not when a custom @Primary DataSource is present (AAP §0.6.4
+    // single-parameter constraint on `dataSource(DataSourceProperties)`).
+    //
+    // Without @DynamicPropertySource the DataSource would silently fall back
+    // to the `jdbc:tc:postgresql:16-alpine:///carddemo_test` URL in
+    // application-test.yml (which spins up its OWN, separate, empty
+    // container), while Flyway would correctly migrate the @ServiceConnection
+    // container — yielding the diagnostic "Schema-validation: missing table
+    // [accounts]" at Hibernate startup.
     //
     // Replaces (operationally): VSAM cluster definitions (IDCAMS DEFINE
     // CLUSTER) per AAP §0.6.2 — the same Flyway migrations that build the
@@ -265,17 +295,79 @@ class CardDemoApplicationTests {
      * test method runs and stops after the last test method completes
      * (managed by {@link Testcontainers &#64;Testcontainers}).</p>
      *
-     * <p>The {@link ServiceConnection &#64;ServiceConnection} annotation
-     * (Spring Boot 3.1+) automatically binds Spring Boot's
-     * {@code DataSource} to this container at context-refresh time,
-     * removing the need for a manual {@code @DynamicPropertySource} callback
-     * that would otherwise be required to push the container's randomly
-     * mapped JDBC URL into the Spring {@code Environment}.</p>
+     * <p>This container is bound to the Spring context through TWO
+     * complementary mechanisms:</p>
+     * <ol>
+     *   <li>{@link ServiceConnection &#64;ServiceConnection} &mdash; binds
+     *       Spring Boot's {@code FlywayConnectionDetails} so that Flyway
+     *       migrations are applied to this container at context-refresh
+     *       time (Spring Boot 3.1+ feature).</li>
+     *   <li>{@link DynamicPropertySource &#64;DynamicPropertySource} via
+     *       {@link #overrideDataSourceUrl(DynamicPropertyRegistry)} &mdash;
+     *       pushes the container's URL, credentials, and driver-class-name
+     *       into the Spring {@code Environment} under
+     *       {@code spring.datasource.*} so that the {@code @Primary
+     *       @RefreshScope DataSource} bean declared in
+     *       {@link com.awsm2.carddemo.config.JpaConfig JpaConfig} connects
+     *       to this SAME container (AAP &sect;0.6.4 dynamic rotation
+     *       pattern).</li>
+     * </ol>
      */
     @Container
     @ServiceConnection
     static final PostgreSQLContainer<?> postgres =
             new PostgreSQLContainer<>("postgres:16-alpine");
+
+    // -------------------------------------------------------------------------
+    // @DynamicPropertySource — bind PostgreSQL container to spring.datasource.*
+    // -------------------------------------------------------------------------
+    // Per AAP §0.6.4, the application's @Primary HikariDataSource bean is
+    // constructed by JpaConfig.dataSource(DataSourceProperties), which reads
+    // the spring.datasource.url/username/password/driver-class-name
+    // properties from the Spring Environment. Because this bean is
+    // user-declared rather than auto-configured, Spring Boot's companion
+    // HikariJdbcConnectionDetailsBeanPostProcessor does not activate to
+    // re-write the HikariDataSource's jdbcUrl from JdbcConnectionDetails
+    // (registered by @ServiceConnection). To bridge this gap we explicitly
+    // copy the @Container's connection details into the Spring Environment
+    // before any bean is constructed, so the @Primary DataSource and
+    // Flyway both connect to the same Testcontainers PostgreSQL instance.
+    //
+    // The callback runs AFTER the @Container is started (Testcontainers
+    // guarantees container start before @DynamicPropertySource resolution)
+    // and BEFORE Spring beans are instantiated, so the URL is available at
+    // bean-construction time.
+    //
+    // Replaces (operationally): hardcoded JDBC URL in
+    // application-test.yml's `jdbc:tc:postgresql:16-alpine:///carddemo_test`
+    // fallback — superseded by the actual @ServiceConnection container's URL.
+    /**
+     * Binds the running PostgreSQL Testcontainer's connection details into
+     * the Spring {@code Environment} under {@code spring.datasource.*}
+     * so the {@code @Primary @RefreshScope DataSource} bean declared in
+     * {@link com.awsm2.carddemo.config.JpaConfig JpaConfig} connects to the
+     * SAME container that Flyway migrates via
+     * {@link ServiceConnection &#64;ServiceConnection}.
+     *
+     * <p>Without this override the application's
+     * {@code spring.datasource.url} would resolve to the
+     * {@code jdbc:tc:postgresql:16-alpine:///carddemo_test} fallback in
+     * {@code application-test.yml}, which would create a SECOND, separate
+     * (and empty) PostgreSQL container &mdash; causing Hibernate's
+     * {@code ddl-auto=validate} startup probe to fail with
+     * "{@code Schema-validation: missing table [accounts]}".</p>
+     *
+     * @param registry the Spring test {@link DynamicPropertyRegistry} that
+     *                 accepts {@code (key, supplier)} pairs to override
+     *                 properties at context-refresh time
+     */
+    @DynamicPropertySource
+    static void overrideDataSourceUrl(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.username", postgres::getUsername);
+        registry.add("spring.datasource.password", postgres::getPassword);
+        registry.add("spring.datasource.driver-class-name", postgres::getDriverClassName);
+    }
 
     // -------------------------------------------------------------------------
     // AWS SDK v2 client mocks — prevent real AWS credential lookups
