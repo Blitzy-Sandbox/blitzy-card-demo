@@ -1,0 +1,4 @@
+# placeholder until COBOL capture; see java/MIGRATION_NOTES.md section 1.6
+# expected captured content: empty (COADM01C contains no DISPLAY statements; all 12 scenarios produce zero stdout output)
+# until this file is replaced with the captured artifact, CoAdm01CGoldenTest remains @Disabled per AAP section 0.6.11
+# NEVER include any password value, user-id value, or other sensitive content per AAP section 0.7.2
