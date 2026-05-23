@@ -1,0 +1,8 @@
+# COCRDLIC golden-record stdout.txt -- PLACEHOLDER
+# Source: app/cbl/COCRDLIC.cbl (1459 lines), CICS transaction CCLI.
+# COCRDLIC contains ZERO DISPLAY verbs (verified L1-L1459 via grep -n DISPLAY).
+# The captured COBOL baseline stdout is therefore EMPTY.
+#
+# After COBOL baseline capture (see java/MIGRATION_NOTES.md Sec 1.6),
+# replace this file with the captured (empty) stdout per AAP Sec 0.6.11.
+# Authority: AAP Sec 0.4.1, Sec 0.6.11, Sec 0.7.1, Sec 0.7.2 (PAN masking).
