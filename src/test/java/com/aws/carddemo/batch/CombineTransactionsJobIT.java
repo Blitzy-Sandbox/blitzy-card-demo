@@ -34,20 +34,21 @@ package com.aws.carddemo.batch;
 //     §0.4.4 mandates for batch ITs.
 //
 //   * FixtureLoader — static utility consumed by the private
-//     stageExpectedFixture() helper to load classpath fixture files
-//     (baseline/expected/posted.txt, baseline/expected/tcatbal_after_interest.txt)
+//     stageIntermediateFixture() helper to load classpath fixture files
+//     (baseline/intermediate/posted.txt,
+//      baseline/intermediate/tcatbal_after_interest.txt)
 //     as raw byte arrays before they are written to the JUnit @TempDir for
 //     the Spring Batch job to read via its FlatFileItemReader. Per AAP §0.5.5
 //     (test utilities reuse — FixtureLoader serves every batch IT and
 //     baseline-parity IT).
 //
 //   * TestFixtures — pure-constants class providing the classpath path
-//     constant (CLASSPATH_BASELINE_EXPECTED_DIR) and the expected-output
-//     filenames (EXPECTED_POSTED, EXPECTED_TCATBAL_AFTER_INTEREST,
-//     EXPECTED_COMBINED) used to compose classpath lookups and the
-//     output-file simple basename. Centralising the literals here avoids
-//     scattered string constants across the test (AAP §0.5.5 — TestFixtures
-//     constants).
+//     constants (CLASSPATH_BASELINE_INTERMEDIATE_DIR for inputs and
+//     EXPECTED_COMBINED basename for the produced output) and the
+//     intermediate-fixture filenames (INTERMEDIATE_POSTED,
+//     INTERMEDIATE_TCATBAL_AFTER_INTEREST). Centralising the literals here
+//     avoids scattered string constants across the test (AAP §0.5.5 —
+//     TestFixtures constants).
 // ---------------------------------------------------------------------------
 import com.aws.carddemo.testsupport.AbstractBatchIT;
 import com.aws.carddemo.testsupport.FixtureLoader;
@@ -212,7 +213,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * downstream {@code STEP10 EXEC PGM=IDCAMS} REPRO step then loads the
  * combined file into the {@code TRANSACT.VSAM.KSDS} master file (out of
  * scope for this IT &mdash; the REPRO step is exercised end-to-end by
- * {@code BatchPipelineE2ETest} per AAP §0.5.1).
+ * {@code BatchPipelineE2EIT} per AAP §0.5.1).
  *
  * <h2>CVTRA05Y record layout reference</h2>
  *
@@ -284,15 +285,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * original JCL data definitions:
  * <ul>
  *   <li>{@code input.posted.path} &mdash; the first SORTIN DD
- *       ({@code AWS.M2.CARDDEMO.TRANSACT.BKUP(0)}), i.e. the captured
- *       COBOL reference output of POSTTRAN.jcl staged under
- *       {@code baseline/expected/posted.txt}. This is the daily-posted
- *       transactions backup that the POSTTRAN.jcl pipeline produces.</li>
+ *       ({@code AWS.M2.CARDDEMO.TRANSACT.BKUP(0)}), i.e. the
+ *       plausibly-shaped Java-derived POSTTRAN output staged under
+ *       {@code baseline/intermediate/posted.txt}. This is the daily-posted
+ *       transactions backup that the POSTTRAN.jcl pipeline produces. The
+ *       intermediate fixture is used (not {@code baseline/expected/})
+ *       because the expected file is a {@code BASELINE_CAPTURE_PENDING_*}
+ *       placeholder pending authentic COBOL capture per AAP §0.10.4.</li>
  *   <li>{@code input.systran.path} &mdash; the second SORTIN DD
- *       ({@code AWS.M2.CARDDEMO.SYSTRAN(0)}), i.e. the captured COBOL
- *       reference output of INTCALC.jcl staged under
- *       {@code baseline/expected/tcatbal_after_interest.txt}. This is the
- *       system-generated transactions file (interest postings) that the
+ *       ({@code AWS.M2.CARDDEMO.SYSTRAN(0)}), i.e. the plausibly-shaped
+ *       Java-derived INTCALC output staged under
+ *       {@code baseline/intermediate/tcatbal_after_interest.txt}. This is
+ *       the system-generated transactions file (interest postings) that the
  *       INTCALC.jcl pipeline produces.</li>
  *   <li>{@code output.transact.path} &mdash; the SORTOUT DD
  *       ({@code AWS.M2.CARDDEMO.TRANSACT.COMBINED(+1)}); the combined,
@@ -574,17 +578,21 @@ class CombineTransactionsJobIT extends AbstractBatchIT {
         // classpath resources directly).
         //
         // The two inputs correspond to the two JES-concatenated SORTIN DDs:
-        //   * baseline/expected/posted.txt           = AWS.M2.CARDDEMO.TRANSACT.BKUP(0)
-        //     (output of POSTTRAN.jcl / CBTRN02C posting step)
-        //   * baseline/expected/tcatbal_after_interest.txt = AWS.M2.CARDDEMO.SYSTRAN(0)
-        //     (output of INTCALC.jcl / CBACT04C interest calculation)
+        //   * baseline/intermediate/posted.txt           = AWS.M2.CARDDEMO.TRANSACT.BKUP(0)
+        //     (Java-derived plausibly-shaped POSTTRAN output)
+        //   * baseline/intermediate/tcatbal_after_interest.txt = AWS.M2.CARDDEMO.SYSTRAN(0)
+        //     (Java-derived plausibly-shaped INTCALC output)
+        //
+        // Intermediate fixtures are used here (not baseline/expected/)
+        // because the expected files are BASELINE_CAPTURE_PENDING_*
+        // placeholders pending authentic COBOL capture per AAP §0.10.4.
         //
         // This IT exercises COMBTRAN.jcl in isolation: the upstream POSTTRAN
         // and INTCALC pipelines are pre-baked into the staged inputs. The
         // end-to-end integration of all three pipelines is the responsibility
-        // of BatchPipelineE2ETest per AAP §0.5.1.
-        final Path stagedPosted = stageExpectedFixture(TestFixtures.Paths.EXPECTED_POSTED);
-        final Path stagedInterest = stageExpectedFixture(TestFixtures.Paths.EXPECTED_TCATBAL_AFTER_INTEREST);
+        // of BatchPipelineE2EIT per AAP §0.5.1.
+        final Path stagedPosted = stageIntermediateFixture(TestFixtures.Paths.INTERMEDIATE_POSTED);
+        final Path stagedInterest = stageIntermediateFixture(TestFixtures.Paths.INTERMEDIATE_TCATBAL_AFTER_INTEREST);
         // Destination path for the produced SORTOUT output. Just a resolve()
         // against the @TempDir — Spring Batch's FlatFileItemWriter creates the
         // file lazily when the Step opens its writer (no pre-existence
@@ -708,10 +716,22 @@ class CombineTransactionsJobIT extends AbstractBatchIT {
     // =========================================================================
 
     /**
-     * Loads a captured baseline-expected fixture from the test classpath
-     * ({@code src/test/resources/baseline/expected/}) and writes it to the
-     * {@link #workDir} {@link TempDir} so the Spring Batch Job's
+     * Loads an intermediate fixture from the test classpath
+     * ({@code src/test/resources/baseline/intermediate/}) and writes it to
+     * the {@link #workDir} {@link TempDir} so the Spring Batch Job's
      * {@code FlatFileItemReader} can consume it from a real filesystem path.
+     *
+     * <p>Intermediate fixtures are Java-derived plausibly-shaped data
+     * representing the upstream batch jobs' outputs (POSTTRAN, INTCALC). They
+     * are NOT authentic COBOL reference outputs &mdash; the
+     * {@code baseline/expected/} directory holds those (currently
+     * {@code BASELINE_CAPTURE_PENDING_*} placeholders awaiting authentic
+     * COBOL capture per AAP §0.10.4). Intermediate fixtures exist solely so
+     * downstream Job ITs (this class plus {@code StatementGenerationJobIT}
+     * and {@code TransactionReportJobIT}) have valid input data to exercise
+     * their Spring Batch wiring (FlatFileItemReader configuration,
+     * JobLauncherTestUtils orchestration, Testcontainers PostgreSQL
+     * integration) without depending on the placeholder expected files.
      *
      * <p>The helper exists because {@code FlatFileItemReader} expects a
      * {@link java.nio.file.Path} or {@code Resource} backed by a real
@@ -721,26 +741,16 @@ class CombineTransactionsJobIT extends AbstractBatchIT {
      * {@code TransactionReportJobIT} and {@code StatementGenerationJobIT}).
      *
      * <p>Byte-level write (not character-level) preserves the original
-     * fixed-width COBOL record byte layout including any trailing whitespace
+     * fixed-width record byte layout including any trailing whitespace
      * and the original line-ending convention; AAP §0.10.4 ("Input and
      * output file formats and record layouts MUST remain identical") forbids
      * any charset / line-ending normalisation in the test harness.
      *
-     * <p>Both COMBTRAN.jcl SORTIN inputs (the daily-posted transactions
-     * backup and the system-generated transactions from interest calc) are
-     * sourced from {@code baseline/expected/} because they represent the
-     * captured outputs of the <em>upstream</em> POSTTRAN.jcl and INTCALC.jcl
-     * pipeline steps. Per AAP §0.4.4 (Fixture Organization Strategy):
-     * canonical golden inputs live under {@code baseline/input/}, captured
-     * COBOL reference outputs live under {@code baseline/expected/}, and an
-     * IT pipeline that exercises a downstream-only step (like this one)
-     * consumes the upstream steps' expected outputs as its inputs.
-     *
-     * @param filename simple basename of the expected-output fixture (e.g.
+     * @param filename simple basename of the intermediate fixture (e.g.
      *                 {@code "posted.txt"} or
      *                 {@code "tcatbal_after_interest.txt"}) &mdash; must be
-     *                 one of the captured reference outputs under
-     *                 {@link TestFixtures.Paths#CLASSPATH_BASELINE_EXPECTED_DIR}
+     *                 one of the Java-derived intermediate fixtures under
+     *                 {@link TestFixtures.Paths#CLASSPATH_BASELINE_INTERMEDIATE_DIR}
      * @return absolute {@link Path} to the staged copy inside
      *         {@link #workDir} ready to be passed as a Spring Batch
      *         {@code JobParameters} string value
@@ -749,9 +759,9 @@ class CombineTransactionsJobIT extends AbstractBatchIT {
      *                              {@link TempDir} root has been removed
      *                              externally)
      */
-    private Path stageExpectedFixture(String filename) throws java.io.IOException {
+    private Path stageIntermediateFixture(String filename) throws java.io.IOException {
         final byte[] bytes = FixtureLoader.loadAsBytes(
-                TestFixtures.Paths.CLASSPATH_BASELINE_EXPECTED_DIR + filename);
+                TestFixtures.Paths.CLASSPATH_BASELINE_INTERMEDIATE_DIR + filename);
         final Path staged = workDir.resolve(filename);
         Files.write(staged, bytes);
         return staged;

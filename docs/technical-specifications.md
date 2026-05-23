@@ -483,7 +483,7 @@ Target: carddemo-java/
 │           │   ├── batch/                                (Spring Batch integration tests)
 │           │   └── aws/                                  (LocalStack integration tests)
 │           └── e2e/
-│               ├── BatchPipelineE2ETest.java             (Full pipeline with real data)
+│               ├── BatchPipelineE2EIT.java               (Full pipeline with real data; Failsafe IT)
 │               ├── OnlineTransactionE2ETest.java         (REST API end-to-end)
 │               └── GateVerificationTest.java             (Validation gate evidence)
 ```

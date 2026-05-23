@@ -33,20 +33,21 @@ package com.aws.carddemo.batch;
 //     container lifecycle that AAP §0.4.4 mandates for batch ITs.
 //
 //   * FixtureLoader — static utility consumed by the private
-//     stageBaselineInput() / stageExpectedFixture() helpers to load
+//     stageBaselineInput() / stageIntermediateFixture() helpers to load
 //     classpath fixture files (cardxref.txt, custdata.txt, acctdata.txt,
-//     baseline/expected/combined.txt) as raw byte arrays before they are
-//     written to the JUnit @TempDir for the Spring Batch job to read. Per
-//     AAP §0.5.5 (test utilities reuse — FixtureLoader serves every batch
-//     IT and baseline-parity IT). The byte-level write preserves the
+//     baseline/intermediate/combined.txt) as raw byte arrays before they
+//     are written to the JUnit @TempDir for the Spring Batch job to read.
+//     Per AAP §0.5.5 (test utilities reuse — FixtureLoader serves every
+//     batch IT and baseline-parity IT). The byte-level write preserves the
 //     original fixed-width COBOL record byte layout (AAP §0.10.4 Immutable
 //     Boundaries — "Input and output file formats and record layouts MUST
 //     remain identical").
 //
 //   * TestFixtures — pure-constants class providing the classpath path
-//     constants (CLASSPATH_BASELINE_INPUT_DIR, CLASSPATH_BASELINE_EXPECTED_DIR)
-//     and fixture / expected filenames (FIXTURE_CARDXREF, FIXTURE_CUSTDATA,
-//     FIXTURE_ACCTDATA, EXPECTED_COMBINED, EXPECTED_STATEMENTS_TEXT,
+//     constants (CLASSPATH_BASELINE_INPUT_DIR,
+//     CLASSPATH_BASELINE_INTERMEDIATE_DIR) and fixture filenames
+//     (FIXTURE_CARDXREF, FIXTURE_CUSTDATA, FIXTURE_ACCTDATA,
+//     INTERMEDIATE_COMBINED, EXPECTED_STATEMENTS_TEXT,
 //     EXPECTED_STATEMENTS_HTML) used to compose classpath lookups and
 //     compute target output paths in the @TempDir workDir without
 //     hardcoding any magic strings in the test body. Mirrors the sibling
@@ -280,7 +281,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * STEP010 DFSORT step produces, so feeding {@code combined.txt}
  * directly preserves the same record contract. The integration of the
  * upstream COMBTRAN-equivalent step and this statement step end-to-end
- * is the responsibility of {@code BatchPipelineE2ETest} per AAP §0.5.1.
+ * is the responsibility of {@code BatchPipelineE2EIT} per AAP §0.5.1.
  *
  * <h2>Why this class is currently {@code @Disabled}</h2>
  *
@@ -573,16 +574,20 @@ class StatementGenerationJobIT extends AbstractBatchIT {
         // from real filesystem paths (FlatFileItemReader does NOT consume
         // classpath resources directly). The XREFFILE / CUSTFILE / ACCTFILE
         // are loaded from the canonical baseline/input/ directory; the
-        // TRNXFILE is loaded from baseline/expected/combined.txt which
-        // represents the output of the upstream COMBTRAN-equivalent step
-        // (see the class Javadoc "Why combined.txt is the TRNXFILE input"
-        // section). This IT runs only the CREASTMT STEP040 statement-
-        // formatting step, so the upstream STEP010 (SORT) and STEP020
-        // (REPRO) are pre-baked into the input fixture.
+        // TRNXFILE is loaded from baseline/intermediate/combined.txt which
+        // represents the plausibly-shaped Java-derived output of the
+        // upstream COMBTRAN-equivalent step (see the class Javadoc
+        // "Why combined.txt is the TRNXFILE input" section). Intermediate
+        // fixtures are used (not baseline/expected/) because the expected
+        // files are BASELINE_CAPTURE_PENDING_* placeholders pending
+        // authentic COBOL capture per AAP §0.10.4.
+        // This IT runs only the CREASTMT STEP040 statement-formatting step,
+        // so the upstream STEP010 (SORT) and STEP020 (REPRO) are pre-baked
+        // into the input fixture.
         final Path stagedCardxref = stageBaselineInput(TestFixtures.Paths.FIXTURE_CARDXREF);
         final Path stagedCustdata = stageBaselineInput(TestFixtures.Paths.FIXTURE_CUSTDATA);
         final Path stagedAcctdata = stageBaselineInput(TestFixtures.Paths.FIXTURE_ACCTDATA);
-        final Path stagedTransact = stageExpectedFixture(TestFixtures.Paths.EXPECTED_COMBINED);
+        final Path stagedTransact = stageIntermediateFixture(TestFixtures.Paths.INTERMEDIATE_COMBINED);
 
         // Destination paths for the produced STMTFILE (LRECL=80, text) and
         // HTMLFILE (LRECL=100, HTML) outputs. Just resolve() calls against
@@ -806,25 +811,23 @@ class StatementGenerationJobIT extends AbstractBatchIT {
     }
 
     /**
-     * Loads a captured baseline-expected fixture from the test classpath
-     * ({@code src/test/resources/baseline/expected/}) and writes it to the
-     * {@link #workDir} {@link TempDir}.
+     * Loads an intermediate fixture from the test classpath
+     * ({@code src/test/resources/baseline/intermediate/}) and writes it to
+     * the {@link #workDir} {@link TempDir}.
      *
      * <p>Used to stage the {@code combined.txt} fixture as the TRNXFILE
-     * input for this IT; that fixture is the captured output of the
-     * upstream COMBTRAN.jcl pipeline step (see
-     * {@code CombineTransactionsBaselineParityIT}) and represents what the
-     * migrated DFSORT-equivalent step produces when given the canonical
-     * daily transactions in {@code dailytran.txt}.
+     * input for this IT; that fixture is the Java-derived plausibly-shaped
+     * output of the upstream COMBTRAN.jcl pipeline step. Intermediate
+     * fixtures are used (not {@code baseline/expected/}) because the
+     * expected files are {@code BASELINE_CAPTURE_PENDING_*} placeholders
+     * awaiting authentic COBOL capture per AAP §0.10.4. The
+     * {@code baseline/intermediate/} directory holds Java-derived
+     * upstream-job outputs that downstream Job ITs consume as plausibly
+     * -shaped inputs, semantically distinct from {@code baseline/expected/}
+     * (parity comparison targets).
      *
      * <p>Identical mechanism to {@link #stageBaselineInput(String)} but
-     * sourced from a different classpath root. The split between
-     * baseline-input fixtures and baseline-expected fixtures matches AAP
-     * §0.4.4 (Fixture Organization Strategy): canonical golden inputs live
-     * under {@code baseline/input/}, captured COBOL reference outputs live
-     * under {@code baseline/expected/}, and an IT pipeline that exercises a
-     * downstream-only step (like this one) consumes the upstream step's
-     * expected output as its input.
+     * sourced from a different classpath root.
      *
      * <p>The {@code combined.txt} fixture's record layout matches the
      * {@code app/cbl/CBSTM03B.cbl} FD declaration for {@code TRNX-FILE}
@@ -833,10 +836,10 @@ class StatementGenerationJobIT extends AbstractBatchIT {
      * COMBTRAN-equivalent step is responsible for producing exactly that
      * layout from the daily transactions input.
      *
-     * @param filename simple basename of the expected-output fixture (e.g.
-     *                 {@code "combined.txt"}) — must be one of the captured
-     *                 reference outputs under
-     *                 {@link TestFixtures.Paths#CLASSPATH_BASELINE_EXPECTED_DIR}
+     * @param filename simple basename of the intermediate fixture (e.g.
+     *                 {@code "combined.txt"}) — must be one of the
+     *                 Java-derived intermediate fixtures under
+     *                 {@link TestFixtures.Paths#CLASSPATH_BASELINE_INTERMEDIATE_DIR}
      * @return absolute {@link Path} to the staged copy inside
      *         {@link #workDir} ready to be passed as a Spring Batch
      *         {@code JobParameters} string value
@@ -845,9 +848,9 @@ class StatementGenerationJobIT extends AbstractBatchIT {
      *                              {@link TempDir} root has been removed
      *                              externally)
      */
-    private Path stageExpectedFixture(String filename) throws java.io.IOException {
+    private Path stageIntermediateFixture(String filename) throws java.io.IOException {
         final byte[] bytes = FixtureLoader.loadAsBytes(
-                TestFixtures.Paths.CLASSPATH_BASELINE_EXPECTED_DIR + filename);
+                TestFixtures.Paths.CLASSPATH_BASELINE_INTERMEDIATE_DIR + filename);
         final Path staged = workDir.resolve(filename);
         Files.write(staged, bytes);
         return staged;

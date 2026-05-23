@@ -63,7 +63,7 @@ import org.springframework.context.ApplicationContext;
 // inherited Spring Batch Job beans, the Testcontainers-wired DataSource,
 // the Flyway-applied schema, and the JobRepository are all available for
 // the 11 documented subclasses (5 batch ITs + 5 baseline-parity ITs +
-// BatchPipelineE2ETest).
+// BatchPipelineE2EIT).
 import org.springframework.boot.test.context.SpringBootTest;
 
 // Spring TestContext infrastructure (AAP §0.6.1 -- spring-test).
@@ -97,7 +97,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * environment before context startup.
  *
  * <p>Subclasses (one per Spring Batch job, plus baseline-parity ITs and the
- * {@code BatchPipelineE2ETest} -- 11 in total per AAP §0.5.1):
+ * {@code BatchPipelineE2EIT} -- 11 in total per AAP §0.5.1):
  * <ul>
  *   <li>{@code TransactionPostingJobIT} (POSTTRAN.jcl / CBTRN02C)</li>
  *   <li>{@code TransactionPostingBaselineParityIT} (POSTTRAN.jcl byte-equal diff)</li>
@@ -109,7 +109,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  *   <li>{@code StatementGenerationBaselineParityIT} (CREASTMT.jcl byte-equal diff)</li>
  *   <li>{@code TransactionReportJobIT} (TRANREPT.jcl / CBTRN03C)</li>
  *   <li>{@code TransactionReportBaselineParityIT} (TRANREPT.jcl byte-equal diff)</li>
- *   <li>{@code BatchPipelineE2ETest} (POSTTRAN -&gt; INTCALC -&gt; COMBTRAN -&gt; CREASTMT &#8741; TRANREPT)</li>
+ *   <li>{@code BatchPipelineE2EIT} (POSTTRAN -&gt; INTCALC -&gt; COMBTRAN -&gt; CREASTMT &#8741; TRANREPT)</li>
  * </ul>
  *
  * <p>Subclasses need only:

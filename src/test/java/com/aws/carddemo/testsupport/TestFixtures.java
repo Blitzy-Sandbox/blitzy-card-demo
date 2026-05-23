@@ -113,6 +113,29 @@ public final class TestFixtures {
         public static final String CLASSPATH_BASELINE_INPUT_DIR = "/baseline/input/";
         /** Classpath directory containing captured COBOL reference output files. */
         public static final String CLASSPATH_BASELINE_EXPECTED_DIR = "/baseline/expected/";
+        /**
+         * Classpath directory containing intermediate fixtures: Java-derived
+         * outputs of the upstream batch jobs (POSTTRAN, INTCALC, COMBTRAN)
+         * that downstream Job ITs consume as plausibly-shaped inputs.
+         *
+         * <p>These files are NOT authentic COBOL reference outputs and MUST
+         * NOT be used as the right-hand operand of
+         * {@code BaselineDiffUtil.assertByteEqual(...)}. They exist solely
+         * so that {@code CombineTransactionsJobIT},
+         * {@code StatementGenerationJobIT}, and {@code TransactionReportJobIT}
+         * have valid input data to exercise their Spring Batch wiring
+         * (FlatFileItemReader configuration, JobLauncherTestUtils
+         * orchestration, Testcontainers PostgreSQL integration) without
+         * depending on the {@code baseline/expected/} placeholder files
+         * (which are {@code BASELINE_CAPTURE_PENDING_*} markers awaiting
+         * authentic COBOL capture per AAP §0.10.4 Immutable Boundaries).
+         *
+         * <p>The separation between {@code baseline/expected/} (parity
+         * comparison targets) and {@code baseline/intermediate/}
+         * (downstream-job-IT inputs) keeps the two fixture roles
+         * semantically distinct.
+         */
+        public static final String CLASSPATH_BASELINE_INTERMEDIATE_DIR = "/baseline/intermediate/";
         /** Classpath directory containing edge-case CSV fixtures for {@code @CsvFileSource}. */
         public static final String CLASSPATH_EDGE_FIXTURES_DIR = "/fixtures/edge/";
 
@@ -151,6 +174,30 @@ public final class TestFixtures {
         public static final String EXPECTED_STATEMENTS_HTML = "statements_html.txt";
         /** Captured COBOL reference output for TRANREPT.jcl ({@code CBTRN03C}). */
         public static final String EXPECTED_TRANSACTION_REPORT = "transaction_report.txt";
+
+        // ----- Intermediate fixture filenames (Java-derived; inputs for downstream Job ITs) -----
+
+        /**
+         * Java-derived POSTTRAN output used by
+         * {@code CombineTransactionsJobIT} as plausibly-shaped TRANSACT.BKUP
+         * input. NOT an authentic COBOL capture; do not use as parity
+         * expected operand. See {@link #CLASSPATH_BASELINE_INTERMEDIATE_DIR}
+         * for the role of intermediate fixtures.
+         */
+        public static final String INTERMEDIATE_POSTED = "posted.txt";
+        /**
+         * Java-derived INTCALC output used by
+         * {@code CombineTransactionsJobIT} as plausibly-shaped SYSTRAN input.
+         * NOT an authentic COBOL capture.
+         */
+        public static final String INTERMEDIATE_TCATBAL_AFTER_INTEREST = "tcatbal_after_interest.txt";
+        /**
+         * Java-derived COMBTRAN output used by both
+         * {@code StatementGenerationJobIT} and {@code TransactionReportJobIT}
+         * as plausibly-shaped TRNXFILE / TRANFILE input. NOT an authentic
+         * COBOL capture.
+         */
+        public static final String INTERMEDIATE_COMBINED = "combined.txt";
 
         // ----- Edge-case CSV filenames (loaded by @ParameterizedTest @CsvFileSource) -----
 

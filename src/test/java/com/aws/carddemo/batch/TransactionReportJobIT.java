@@ -32,18 +32,19 @@ package com.aws.carddemo.batch;
 //     that AAP §0.4.4 mandates for batch ITs.
 //
 //   * FixtureLoader — static utility consumed by the private
-//     stageBaselineInput() / stageExpectedFixture() helpers to load
+//     stageBaselineInput() / stageIntermediateFixture() helpers to load
 //     classpath fixture files (cardxref.txt, trantype.txt, trancatg.txt,
-//     baseline/expected/combined.txt) as raw byte arrays before they are
-//     written to the JUnit @TempDir for the Spring Batch job to read. Per
-//     AAP §0.5.5 (test utilities reuse — FixtureLoader serves every batch
-//     IT and baseline-parity IT).
+//     baseline/intermediate/combined.txt) as raw byte arrays before they
+//     are written to the JUnit @TempDir for the Spring Batch job to read.
+//     Per AAP §0.5.5 (test utilities reuse — FixtureLoader serves every
+//     batch IT and baseline-parity IT).
 //
 //   * TestFixtures — pure-constants class providing the classpath path
-//     constants (CLASSPATH_BASELINE_INPUT_DIR, CLASSPATH_BASELINE_EXPECTED_DIR)
-//     and fixture / expected filenames (FIXTURE_CARDXREF, FIXTURE_TRANTYPE,
-//     FIXTURE_TRANCATG, EXPECTED_COMBINED, EXPECTED_TRANSACTION_REPORT) used
-//     to compose classpath lookups, plus the date PARM constants
+//     constants (CLASSPATH_BASELINE_INPUT_DIR,
+//     CLASSPATH_BASELINE_INTERMEDIATE_DIR) and fixture filenames
+//     (FIXTURE_CARDXREF, FIXTURE_TRANTYPE, FIXTURE_TRANCATG,
+//     INTERMEDIATE_COMBINED, EXPECTED_TRANSACTION_REPORT) used to compose
+//     classpath lookups, plus the date PARM constants
 //     (Dates.REPORT_START_DATE = "2022-01-01", REPORT_END_DATE = "2022-07-06")
 //     mirroring the TRANREPT.jcl SYMNAMES PARM-START-DATE / PARM-END-DATE
 //     literals so the migrated Job receives the same date window as the
@@ -281,7 +282,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code CombineTransactionsBaselineParityIT}) and is fed directly to
  * the report job as its TRANFILE input. The integration of the two
  * steps end-to-end is the responsibility of
- * {@code BatchPipelineE2ETest} per AAP §0.5.1.
+ * {@code BatchPipelineE2EIT} per AAP §0.5.1.
  *
  * <h2>Why this class is currently {@code @Disabled}</h2>
  *
@@ -508,11 +509,25 @@ class TransactionReportJobIT extends AbstractBatchIT {
         // Stage every TRANREPT.jcl DD-mapped input file into the @TempDir so the
         // Spring Batch Job's FlatFileItemReader instances can read them from
         // real filesystem paths (FlatFileItemReader does NOT consume classpath
-        // resources directly). The transact file is the captured "combined"
-        // file (output of the migrated COMBTRAN.jcl) — this IT runs only the
+        // resources directly). The transact file is staged from the
+        // baseline/intermediate/combined.txt fixture — this IT runs only the
         // STEP10R formatting step, so the upstream STEP05R DFSORT filter is
         // pre-baked into the input.
-        final Path stagedTransact = stageExpectedFixture(TestFixtures.Paths.EXPECTED_COMBINED);
+        //
+        // NOTE: The combined.txt staged here is the Java-derived intermediate
+        // fixture under src/test/resources/baseline/intermediate/, NOT the
+        // authoritative COBOL parity expected output (which lives under
+        // baseline/expected/combined.txt and currently holds the
+        // BASELINE_CAPTURE_PENDING_COMBINE placeholder until the captured
+        // COMBTRAN.jcl baseline is committed). The intermediate fixture
+        // preserves the exact COBOL 350-byte fixed-width record layout from
+        // CVTRA05Y.cpy so the FlatFileItemReader can parse it as plausibly
+        // shaped input rows, allowing this Job IT to verify Spring Batch
+        // execution semantics (BatchStatus.COMPLETED, REPTFILE existence,
+        // structural anchors) without coupling to byte-identical COBOL
+        // parity (which is the dedicated responsibility of
+        // TransactionReportBaselineParityIT).
+        final Path stagedTransact = stageIntermediateFixture(TestFixtures.Paths.INTERMEDIATE_COMBINED);
         final Path stagedCardxref = stageBaselineInput(TestFixtures.Paths.FIXTURE_CARDXREF);
         final Path stagedTrantype = stageBaselineInput(TestFixtures.Paths.FIXTURE_TRANTYPE);
         final Path stagedTrancatg = stageBaselineInput(TestFixtures.Paths.FIXTURE_TRANCATG);
@@ -706,30 +721,58 @@ class TransactionReportJobIT extends AbstractBatchIT {
     }
 
     /**
-     * Loads a captured baseline-expected fixture from the test classpath
-     * ({@code src/test/resources/baseline/expected/}) and writes it to the
-     * {@link #workDir} {@link TempDir}.
+     * Loads a Java-derived intermediate fixture from the test classpath
+     * ({@code src/test/resources/baseline/intermediate/}) and writes it to
+     * the {@link #workDir} {@link TempDir}.
      *
      * <p>Used to stage the {@code combined.txt} fixture as the TRANFILE
-     * input for this IT; that fixture is the captured output of the
-     * upstream COMBTRAN.jcl pipeline step (see
-     * {@code CombineTransactionsBaselineParityIT}) and represents what the
-     * migrated DFSORT-equivalent step produces when given the canonical
-     * daily transactions in {@code dailytran.txt}.
+     * input for this IT. The intermediate fixture preserves the COBOL
+     * 350-byte fixed-width transaction record layout from
+     * {@code CVTRA05Y.cpy} so the {@code FlatFileItemReader} can parse it
+     * as plausibly shaped input rows, allowing this Job IT to verify
+     * Spring Batch execution semantics (status, output file presence,
+     * structural anchors) without coupling to byte-identical COBOL parity.
      *
-     * <p>Identical mechanism to {@link #stageBaselineInput(String)} but
-     * sourced from a different classpath root. The split between
-     * baseline-input fixtures and baseline-expected fixtures matches AAP
-     * §0.4.4 (Fixture Organization Strategy): canonical golden inputs live
-     * under {@code baseline/input/}, captured COBOL reference outputs live
-     * under {@code baseline/expected/}, and an IT pipeline that exercises a
-     * downstream-only step (like this one) consumes the upstream step's
-     * expected output as its input.
+     * <p><strong>Fixture role separation (AAP §0.4.4, §0.10.4).</strong>
+     * The {@code baseline/} directory tree splits fixtures into three
+     * semantically distinct roles to resolve a structural conflict
+     * surfaced during the deferred-capture period:
+     * <ul>
+     *   <li>{@code baseline/input/} — canonical golden inputs (one-for-one
+     *       copies of {@code app/data/ASCII/*.txt}). Consumed by both
+     *       Job ITs and baseline-parity ITs as the upstream-most input
+     *       layer. Loaded by {@link #stageBaselineInput(String)}.</li>
+     *   <li>{@code baseline/expected/} — captured COBOL reference outputs
+     *       (right-hand operand of
+     *       {@code BaselineDiffUtil.assertByteEqual} in the 5
+     *       {@code *BaselineParityIT} classes and the 6
+     *       {@code BatchPipelineE2EIT} stages). Currently holds
+     *       {@code BASELINE_CAPTURE_PENDING_*} placeholders awaiting an
+     *       authentic capture of the original COBOL/JCL programs against
+     *       canonical input fixtures. NEVER consumed as a Job IT
+     *       input — placeholder content would fail {@code
+     *       FlatFileItemReader} parsing.</li>
+     *   <li>{@code baseline/intermediate/} — Java-derived plausibly-shaped
+     *       inputs for downstream Job ITs (this IT,
+     *       {@code CombineTransactionsJobIT}, and
+     *       {@code StatementGenerationJobIT}). NOT authentic COBOL
+     *       captures; NOT used as parity comparison operands. Loaded by
+     *       this method.</li>
+     * </ul>
+     * The intermediate split exists because the same logical record
+     * payload (e.g., the output of COMBTRAN.jcl) plays two incompatible
+     * roles during the deferred-capture period: (a) the immutable parity
+     * target that must remain a placeholder until COBOL capture, AND
+     * (b) a structurally-valid input that downstream Job ITs need to
+     * exercise the migrated Spring Batch DAG. Splitting the file into
+     * two classpath roots removes the role conflict without losing test
+     * coverage.
      *
-     * @param filename simple basename of the expected-output fixture (e.g.
-     *                 {@code "combined.txt"}) — must be one of the captured
-     *                 reference outputs under
-     *                 {@link TestFixtures.Paths#CLASSPATH_BASELINE_EXPECTED_DIR}
+     * @param filename simple basename of the intermediate fixture (e.g.
+     *                 {@code "combined.txt"}) — must be one of the
+     *                 {@code INTERMEDIATE_*} filename constants declared
+     *                 in {@link TestFixtures.Paths}, sourced from
+     *                 {@link TestFixtures.Paths#CLASSPATH_BASELINE_INTERMEDIATE_DIR}
      * @return absolute {@link Path} to the staged copy inside
      *         {@link #workDir} ready to be passed as a Spring Batch
      *         {@code JobParameters} string value
@@ -738,9 +781,9 @@ class TransactionReportJobIT extends AbstractBatchIT {
      *                              {@link TempDir} root has been removed
      *                              externally)
      */
-    private Path stageExpectedFixture(String filename) throws java.io.IOException {
+    private Path stageIntermediateFixture(String filename) throws java.io.IOException {
         final byte[] bytes = FixtureLoader.loadAsBytes(
-                TestFixtures.Paths.CLASSPATH_BASELINE_EXPECTED_DIR + filename);
+                TestFixtures.Paths.CLASSPATH_BASELINE_INTERMEDIATE_DIR + filename);
         final Path staged = workDir.resolve(filename);
         Files.write(staged, bytes);
         return staged;

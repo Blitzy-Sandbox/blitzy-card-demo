@@ -673,7 +673,7 @@ class InterestCalculationJobIT extends AbstractBatchIT {
      * code declares a {@code @Primary} or named clock bean, this test
      * configuration's bean will be overridden by Spring's standard
      * autowiring rules — that case is documented in the
-     * {@code BatchPipelineE2ETest} class Javadoc and is acceptable.
+     * {@code BatchPipelineE2EIT} class Javadoc and is acceptable.
      *
      * <p>Scope: this configuration is wired into the IT's Spring context
      * via the class-level {@link Import @Import} annotation rather than

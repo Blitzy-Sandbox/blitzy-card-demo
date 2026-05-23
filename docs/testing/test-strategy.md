@@ -33,6 +33,22 @@ Repository ITs run real JPA queries against Testcontainers PostgreSQL 16 with Fl
 
 Each of the 5 Spring Batch jobs has a dedicated `*BaselineParityIT` class that produces an output file and calls `BaselineDiffUtil.assertByteEqual(actualPath, expectedPath)` against the captured COBOL reference output under `src/test/resources/baseline/expected/`. Zero delta is required — a single byte difference (a trailing whitespace character, a sign-overpunch mismatch, or a one-digit drift caused by `RoundingMode.HALF_UP` instead of `RoundingMode.HALF_EVEN`) causes the IT to fail. Until COBOL capture occurs, expected-output files carry a `BASELINE_CAPTURE_PENDING_<NAME>` marker on their first line and `BaselineDiffUtil` recognises that marker, failing loudly with a "baseline capture pending" diagnostic so green builds against unpopulated baselines are impossible. See [`baseline-parity.md`](baseline-parity.md) for the full capture and refresh procedure.
 
+**Byte-diff call-site inventory (12 in total).** `BaselineDiffUtil.assertByteEqual(...)` is invoked at exactly 12 sites across the suite:
+
+| Layer | Call sites | Test class |
+| ----- | ---------- | ---------- |
+| Parity IT | 1 | `TransactionPostingBaselineParityIT` |
+| Parity IT | 1 | `InterestCalculationBaselineParityIT` |
+| Parity IT | 1 | `CombineTransactionsBaselineParityIT` |
+| Parity IT | 2 | `StatementGenerationBaselineParityIT` (dual text + HTML output) |
+| Parity IT | 1 | `TransactionReportBaselineParityIT` |
+| Pipeline E2E | 6 | `BatchPipelineE2EIT` (one per stage 1-5, with stage 4 contributing two for the dual statement output) |
+| **Total** | **12** | |
+
+The first six call sites (across the 5 parity ITs) prove **isolated-stage** parity. The remaining six (across `BatchPipelineE2EIT` stages) prove **composed-pipeline** parity (POSTTRAN → INTCALC → COMBTRAN → CREASTMT ∥ TRANREPT) where each stage's output feeds the next stage's input.
+
+**Current execution state.** All five `*BaselineParityIT` classes and `BatchPipelineE2EIT` are annotated `@Disabled` pending authentic COBOL baseline capture. The committed expected fixtures under `src/test/resources/baseline/expected/` are `BASELINE_CAPTURE_PENDING_<NAME>` placeholders. When the capture environment is available, the procedure in [`baseline-parity.md`](baseline-parity.md) §5 replaces the placeholders with authentic captures and the same change removes the six `@Disabled` annotations so the 12 byte-diff assertions fire under Failsafe.
+
 ### 2.4 End-to-End Tests
 
 End-to-end ITs orchestrate multiple components in sequence to verify user journeys and batch pipelines that span more than one controller, service, or job. The two canonical journeys are: online sign-on → main menu → operation → logout; and the batch pipeline `POSTTRAN → INTCALC → COMBTRAN → CREASTMT ∥ TRANREPT`. Tests use `@SpringBootTest(webEnvironment = RANDOM_PORT)` + `TestRestTemplate` and share a Testcontainers PostgreSQL instance with seeded fixtures so multi-step workflows can assert on accumulated state. The suite holds ~28 such tests; they are the slowest layer and are kept few by design. (Cross-reference AAP §0.4.1.)

@@ -185,9 +185,9 @@ After capture but before committing, run a brief verification pass:
 4. **Update the optional `.checksums.sha256` sidecar** in the same commit if you maintain one.
 5. **Run the full parity IT suite** locally before opening the PR to confirm no other baseline was inadvertently affected:
    ```bash
-   mvn -Dit.test='*BaselineParityIT' verify
+   mvn -Dit.test='*BaselineParityIT,BatchPipelineE2EIT' verify
    ```
-   All five baseline-parity ITs must pass before the PR is opened.
+   All five baseline-parity ITs **and** the capstone `BatchPipelineE2EIT` must pass before the PR is opened. Together they exercise 12 `BaselineDiffUtil.assertByteEqual(...)` call sites: 6 across the 5 parity ITs (the statement IT contributes 2 — one for text, one for HTML) and 6 across the 5 pipeline stages of `BatchPipelineE2EIT` (stage 4 contributes 2 for the same reason).
 
 ## 6. The `BaselineDiffUtil` Contract
 
@@ -263,6 +263,21 @@ What happens when `BaselineDiffUtil.assertByteEqual` encounters a placeholder fi
   - Instructs the developer to capture the baseline per [Section 5](#5-capturing-or-refreshing-a-baseline) of this document.
 
 This behaviour is intentional. The parity IT MUST fail loudly when the baseline is missing rather than silently passing. A silent-pass behaviour would create a false sense of parity during migration phases when expected outputs are stubs — exactly the situation in which a regression would be most likely to slip through unnoticed.
+
+### 7.1 Current Disabled State of Parity ITs
+
+During the period when the captured COBOL reference outputs are unavailable, the five `*BaselineParityIT` classes **and** the capstone `BatchPipelineE2EIT` are marked `@Disabled` so they appear as `skipped` in the Failsafe report rather than failing the build with the "baseline capture pending" diagnostic on every CI run. This is a deliberate trade-off: the `@Disabled` annotations document the dependency on authentic COBOL capture without blocking unrelated work, while the `BASELINE_CAPTURE_PENDING_<JOB_TAG>` placeholders ensure that if the `@Disabled` annotations are removed before the captures are committed, `BaselineDiffUtil` will surface the missing baseline immediately.
+
+When the captures land, the same change that publishes the authentic expected fixtures **must** also remove the six `@Disabled` annotations:
+
+- `TransactionPostingBaselineParityIT`
+- `InterestCalculationBaselineParityIT`
+- `CombineTransactionsBaselineParityIT`
+- `StatementGenerationBaselineParityIT`
+- `TransactionReportBaselineParityIT`
+- `BatchPipelineE2EIT`
+
+After that change, all 12 `BaselineDiffUtil.assertByteEqual(...)` call sites fire under Failsafe (`mvn verify`), each enforcing zero-byte parity between the migrated Java output and the COBOL reference output.
 
 ## 8. When Tests Fail
 

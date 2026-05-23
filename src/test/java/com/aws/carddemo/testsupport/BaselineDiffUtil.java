@@ -46,7 +46,7 @@ import java.util.List;
  * reference output. This utility encapsulates that comparison as a single method:
  * {@link #assertByteEqual(Path, Path)}.
  *
- * <p>Consumed by all five baseline-parity ITs and by {@code BatchPipelineE2ETest}:
+ * <p>Consumed by all five baseline-parity ITs and by {@code BatchPipelineE2EIT}:
  * <ul>
  *   <li>{@code TransactionPostingBaselineParityIT} — parity for
  *       {@code app/jcl/POSTTRAN.jcl} / {@code app/cbl/CBTRN02C.cbl}</li>

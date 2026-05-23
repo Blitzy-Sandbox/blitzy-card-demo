@@ -104,6 +104,7 @@ import com.aws.carddemo.testsupport.TestFixtures;
 //     canonical JUnit 5 mechanism for test-scoped filesystem isolation
 //     per AAP §0.10.9 (test isolation requirements).
 // ---------------------------------------------------------------------------
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -393,6 +394,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  *      BaselineDiffUtil parity gate).
  */
 @DisplayName("CREASTMT.JCL baseline parity (byte-identical text + HTML statement outputs)")
+@Disabled("Awaits authentic COBOL baseline capture for CREASTMT.JCL / CBSTM03A + CBSTM03B. "
+        + "Per AAP §0.10.4 (Immutable Boundaries) this dual byte-identical parity gate must "
+        + "compare Java output to COBOL-produced STMTFILE (LRECL=80) + HTMLFILE (LRECL=100) "
+        + "references; src/test/resources/baseline/expected/statements_text.txt and "
+        + "statements_html.txt are committed as BASELINE_CAPTURE_PENDING_STATEMENTS "
+        + "placeholders until the COBOL/JCL runtime is available to capture the reference "
+        + "outputs. The captured baseline must preserve the full ST-LINE0..ST-LINE15 layout, "
+        + "hardcoded bank branding, and HTML table/color structure. "
+        + "See docs/testing/baseline-parity.md §5 for the 7-step capture procedure. "
+        + "Remove this annotation when the authentic COBOL references are committed.")
 class StatementGenerationBaselineParityIT extends AbstractBatchIT {
 
     /**
