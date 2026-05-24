@@ -139,13 +139,6 @@ public final class CoBil00C {
 
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("MM/dd/yy");
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
-    /**
-     * DB2 TIMESTAMP(6) format used to populate TRAN-ORIG-TS / TRAN-PROC-TS.
-     * Matches COBOL {@code FORMATTIME} output with 6-digit fractional second
-     * precision (mapping yyyy-MM-dd HH:mm:ss.SSSSSS).
-     */
-    private static final DateTimeFormatter TIMESTAMP_FORMATTER =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
 
     private static final BigDecimal ZERO_AMT = new BigDecimal("0.00");
     private static final int MONETARY_SCALE = 2;
@@ -367,9 +360,9 @@ public final class CoBil00C {
                                               CoBil00Output.FieldColor.RED), commarea);
         }
 
-        // Generate timestamp (AAP §0.6.4: 6-digit microsecond precision)
+        // Generate timestamp (AAP §0.6.4: 6-digit microsecond precision,
+        // wall-clock LocalDateTime per the PIC X(26) timestamp mapping).
         LocalDateTime now = LocalDateTime.now().withNano((LocalDateTime.now().getNano() / 1000) * 1000);
-        String timestamp = TIMESTAMP_FORMATTER.format(now);
 
         // Build TRAN-RECORD — INITIALIZE then MOVE per COBOL lines 209-227
         TranRecord newTran = new TranRecord(
@@ -384,9 +377,9 @@ public final class CoBil00C {
                 MERCHANT_CITY,
                 MERCHANT_ZIP,
                 cardNum,
-                timestamp,                              // TRAN-ORIG-TS
-                timestamp,                              // TRAN-PROC-TS
-                new byte[TranRecord.LEN_FILLER]);
+                now,                                    // TRAN-ORIG-TS
+                now,                                    // TRAN-PROC-TS
+                TranRecord.emptyFiller());
 
         // WRITE-TRANSACT-FILE
         try {

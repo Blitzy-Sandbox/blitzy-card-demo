@@ -337,7 +337,10 @@ public final class CbAct04C {
         // STRING 'Int. for a/c ', ACCT-ID DELIMITED BY SIZE INTO TRAN-DESC
         String tranDesc = "Int. for a/c " + String.format("%011d", currentAccount.acctId());
 
-        String dbTs = formatDb2Timestamp(LocalDateTime.now());
+        // AAP §0.6.4: PIC X(26) timestamps map to java.time.LocalDateTime.
+        // The COBOL DB2 CURRENT-TIMESTAMP-26 yields a wall-clock value
+        // (no time zone) — LocalDateTime is the matching java.time type.
+        LocalDateTime dbTs = LocalDateTime.now();
         TranRecord tx = new TranRecord(
                 tranId,
                 INTEREST_TRAN_TYPE_CD,

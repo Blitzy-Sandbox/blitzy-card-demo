@@ -213,9 +213,16 @@ public final class CbTrn03C {
         //    AND TRAN-PROC-TS (1:10) <= WS-END-DATE
         //    CONTINUE
         // ELSE NEXT SENTENCE
-        String procTs10 = record.tranProcTs().length() >= 10
-                ? record.tranProcTs().substring(0, 10)
-                : record.tranProcTs();
+        //
+        // AAP §0.6.4: TRAN-PROC-TS is LocalDateTime. The COBOL slice
+        // (1:10) corresponds to the ISO date prefix "yyyy-MM-dd". A null
+        // procTs (COBOL all-spaces sentinel) is treated as outside any
+        // window (matches the COBOL lexicographic behavior: " "*10 sorts
+        // before any "yyyy-MM-dd" value).
+        if (record.tranProcTs() == null) {
+            return;
+        }
+        String procTs10 = record.tranProcTs().toLocalDate().toString();
         if (procTs10.compareTo(startDate) < 0 || procTs10.compareTo(endDate) > 0) {
             return; // outside reporting window
         }

@@ -342,7 +342,10 @@ public final class CbTrn02C {
      * three update paragraphs (TCATBAL, ACCT, TRANSACT).
      */
     private void postTransaction(DalyTranRecord record) {
-        String procTs = formatDb2Timestamp(LocalDateTime.now());
+        // AAP §0.6.4: PIC X(26) timestamps map to LocalDateTime in the
+        // TranRecord schema. The DalyTranRecord still carries the
+        // timestamp as a String; convert via TranRecord.parseTimestamp.
+        LocalDateTime procTs = LocalDateTime.now();
 
         // MOVE DALYTRAN-... TO TRAN-... (field-by-field MOVE)
         TranRecord tran = new TranRecord(
@@ -357,8 +360,8 @@ public final class CbTrn02C {
                 record.dalytranMerchantCity(),
                 record.dalytranMerchantZip(),
                 record.dalytranCardNum(),
-                record.dalytranOrigTs(),  // TRAN-ORIG-TS = DALYTRAN-ORIG-TS
-                procTs,                   // TRAN-PROC-TS = DB2-FORMAT-TS
+                TranRecord.parseTimestamp(record.dalytranOrigTs()),  // TRAN-ORIG-TS = DALYTRAN-ORIG-TS
+                procTs,                                              // TRAN-PROC-TS = DB2-FORMAT-TS
                 TranRecord.emptyFiller());
 
         // PERFORM 2700-UPDATE-TCATBAL

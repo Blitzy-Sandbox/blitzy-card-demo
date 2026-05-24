@@ -205,8 +205,11 @@ public final class CoTrn01C {
                     tran.tranSource(),
                     tran.tranDesc(),
                     formatTranAmount(tran.tranAmt()),
-                    tran.tranOrigTs(),
-                    tran.tranProcTs(),
+                    // AAP §0.6.4: TRAN-ORIG-TS / TRAN-PROC-TS are
+                    // LocalDateTime; render to the canonical PIC X(26)
+                    // string for the BMS detail row (null sentinel -> spaces).
+                    TranRecord.formatTimestamp(tran.tranOrigTs()),
+                    TranRecord.formatTimestamp(tran.tranProcTs()),
                     String.format("%09d", tran.tranMerchantId()),
                     tran.tranMerchantName(),
                     tran.tranMerchantCity(),

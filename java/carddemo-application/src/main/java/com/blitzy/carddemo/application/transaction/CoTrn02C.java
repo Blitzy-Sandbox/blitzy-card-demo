@@ -374,9 +374,12 @@ public final class CoTrn02C {
                 input.merchantCity(),
                 input.merchantZip(),
                 input.cardNumber(),
-                input.origDate(),
-                input.procDate(),
-                new byte[TranRecord.LEN_FILLER]
+                // AAP §0.6.4: PIC X(26) timestamps map to LocalDateTime
+                // in the TranRecord schema. The BMS input still carries
+                // them as Strings (entry-contract DTO); convert here.
+                TranRecord.parseTimestamp(input.origDate()),
+                TranRecord.parseTimestamp(input.procDate()),
+                TranRecord.emptyFiller()
         );
 
         try {
@@ -443,8 +446,11 @@ public final class CoTrn02C {
                 last.tranSource(),
                 last.tranDesc(),
                 formatTranAmount(last.tranAmt()),
-                last.tranOrigTs(),
-                last.tranProcTs(),
+                // AAP §0.6.4: TRAN-ORIG-TS / TRAN-PROC-TS are
+                // LocalDateTime; render to the canonical PIC X(26)
+                // string for the BMS detail row (null sentinel -> spaces).
+                TranRecord.formatTimestamp(last.tranOrigTs()),
+                TranRecord.formatTimestamp(last.tranProcTs()),
                 String.format("%09d", last.tranMerchantId()),
                 last.tranMerchantName(),
                 last.tranMerchantCity(),

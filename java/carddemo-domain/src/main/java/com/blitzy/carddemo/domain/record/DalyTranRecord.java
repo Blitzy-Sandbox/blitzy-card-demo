@@ -169,12 +169,27 @@ public record DalyTranRecord(
         return buffer;
     }
 
-    /** Converts this daily transaction record to a permanent TranRecord. */
+    /**
+     * Converts this daily transaction record to a permanent {@link TranRecord}.
+     *
+     * <p>The {@code DALYTRAN-ORIG-TS} and {@code DALYTRAN-PROC-TS} fields
+     * (held here as {@link String} for legacy reasons) are converted to
+     * {@link java.time.LocalDateTime} via {@link TranRecord#parseTimestamp(String)}
+     * to satisfy the {@code TranRecord} schema (AAP &sect;0.6.4 mandates
+     * {@code java.time.LocalDateTime} for {@code PIC X(26)} timestamps).
+     * Blank or null timestamps map to {@code null} (the COBOL all-spaces
+     * sentinel for an unset timestamp).
+     *
+     * @return a {@link TranRecord} with the same business values
+     */
     public TranRecord toTranRecord() {
         return new TranRecord(
                 dalytranId, dalytranTypeCd, dalytranCatCd, dalytranSource, dalytranDesc,
                 dalytranAmt, dalytranMerchantId, dalytranMerchantName, dalytranMerchantCity,
-                dalytranMerchantZip, dalytranCardNum, dalytranOrigTs, dalytranProcTs, filler);
+                dalytranMerchantZip, dalytranCardNum,
+                TranRecord.parseTimestamp(dalytranOrigTs),
+                TranRecord.parseTimestamp(dalytranProcTs),
+                filler);
     }
 
     private static String orEmpty(String s) {

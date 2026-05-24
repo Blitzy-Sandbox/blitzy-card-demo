@@ -114,7 +114,6 @@ public final class CoTrn00C {
 
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("MM/dd/yy");
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
-    private static final DateTimeFormatter TS_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
     private final TransactionRepository transactions;
     private final ProgramRegistry programRegistry;
@@ -487,13 +486,17 @@ public final class CoTrn00C {
         return a.compareTo(b);
     }
 
-    private static String formatTimestampAsDate(String ts) {
-        if (ts == null || ts.length() < 10) return "";
+    /**
+     * Formats the date portion of a {@link java.time.LocalDateTime}
+     * timestamp as {@code MM/DD/YY} for the BMS detail rows. A
+     * {@code null} timestamp (the COBOL all-spaces sentinel) is rendered
+     * as an empty string. AAP &sect;0.6.4 mandates {@link java.time}
+     * types so the conversion path is direct (no string substring).
+     */
+    private static String formatTimestampAsDate(java.time.LocalDateTime ts) {
+        if (ts == null) return "";
         try {
-            // ts is yyyy-MM-dd HH:mm:ss.SSSSSS — convert date portion to MM/DD/YY
-            String datePart = ts.substring(0, 10);
-            java.time.LocalDate d = java.time.LocalDate.parse(datePart, TS_DATE_FORMATTER);
-            return d.format(DATE_FORMATTER);
+            return ts.toLocalDate().format(DATE_FORMATTER);
         } catch (RuntimeException ignored) {
             return "";
         }
