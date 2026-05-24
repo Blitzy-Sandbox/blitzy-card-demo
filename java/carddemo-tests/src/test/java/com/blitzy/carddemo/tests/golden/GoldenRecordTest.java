@@ -9,6 +9,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -275,16 +277,37 @@ public abstract class GoldenRecordTest {
      * Maven, or any descendant when launched by an IDE) until an
      * {@code app/data/ASCII} directory is found.</p>
      *
+     * <p><strong>Path-traversal guard (CWE-22)</strong>: {@code fileName}
+     * must be a simple file name with no separators and no
+     * {@code ".."} segments. The resolved path is normalised and
+     * verified to remain underneath {@code <repo-root>/app/data/ASCII}
+     * before being returned. This blocks any future subclass from
+     * accidentally escaping the fixture sandbox via a hostile
+     * {@code fileName} such as {@code "../../etc/passwd"}.</p>
+     *
      * @param fileName the simple file name (e.g.&nbsp;{@code "acctdata.txt"})
      * @return absolute {@link Path} to
      *         {@code <repo-root>/app/data/ASCII/<fileName>}
+     * @throws IllegalArgumentException if {@code fileName} contains a
+     *         path separator, is {@code ".."}, or otherwise resolves
+     *         to a location outside the ASCII fixtures directory
      */
     protected Path resolveAppDataPath(String fileName) {
-        return repositoryRoot()
+        requireSimpleFileName(fileName, "fileName");
+        Path base = repositoryRoot()
             .resolve("app")
             .resolve("data")
             .resolve("ASCII")
-            .resolve(fileName);
+            .normalize()
+            .toAbsolutePath();
+        Path resolved = base.resolve(fileName).normalize().toAbsolutePath();
+        if (!resolved.startsWith(base)) {
+            throw new IllegalArgumentException(
+                "fileName '" + fileName + "' resolves outside the ASCII "
+                    + "fixtures directory (" + base + "); resolved to "
+                    + resolved);
+        }
+        return resolved;
     }
 
     /**
@@ -297,6 +320,15 @@ public abstract class GoldenRecordTest {
      * {@code input_scenario.txt} for an online-CICS test that injects a
      * synthetic BMS event stream).</p>
      *
+     * <p><strong>Path-traversal guard (CWE-22)</strong>: both
+     * {@code programDir} and {@code fileName} must be simple names
+     * (no separators, no {@code ".."}). The resolved path is
+     * normalised and verified to remain underneath
+     * {@code <module-root>/src/test/resources/golden} before being
+     * returned. This blocks any future subclass from reading or
+     * writing files outside the golden fixture tree via a hostile
+     * argument such as {@code programDir = "../../../etc"}.</p>
+     *
      * @param programDir the program directory name
      *                   (e.g.&nbsp;{@code "cbact01c"}, {@code "cbtrn02c"});
      *                   must be lowercase to match the
@@ -306,16 +338,69 @@ public abstract class GoldenRecordTest {
      *                 {@code "input_scenario.txt"})
      * @return absolute {@link Path} to
      *         {@code <module-root>/src/test/resources/golden/<programDir>/expected/<fileName>}
+     * @throws IllegalArgumentException if either {@code programDir} or
+     *         {@code fileName} contains a path separator, equals
+     *         {@code ".."}, or otherwise resolves to a location
+     *         outside the golden fixture tree
      */
     protected Path resolveExpectedOutputPath(String programDir, String fileName) {
-        return moduleRoot()
+        requireSimpleFileName(programDir, "programDir");
+        requireSimpleFileName(fileName, "fileName");
+        Path base = moduleRoot()
             .resolve("src")
             .resolve("test")
             .resolve("resources")
             .resolve("golden")
+            .normalize()
+            .toAbsolutePath();
+        Path resolved = base
             .resolve(programDir)
             .resolve("expected")
-            .resolve(fileName);
+            .resolve(fileName)
+            .normalize()
+            .toAbsolutePath();
+        if (!resolved.startsWith(base)) {
+            throw new IllegalArgumentException(
+                "programDir/fileName resolve outside the golden fixture "
+                    + "tree (" + base + "); programDir='" + programDir
+                    + "', fileName='" + fileName + "', resolved=" + resolved);
+        }
+        return resolved;
+    }
+
+    /**
+     * Validates that a caller-supplied path component is a simple
+     * relative name: non-null, non-empty, free of any path separator
+     * (either {@code '/'} or {@code '\\'}), and not equal to
+     * {@code "."} or {@code ".."}. Used by both
+     * {@link #resolveAppDataPath(String)} and
+     * {@link #resolveExpectedOutputPath(String, String)} to block
+     * CWE-22 path traversal before the resolved path is even
+     * computed (a defence-in-depth layer in addition to the
+     * {@code normalize() + startsWith(base)} containment check).
+     *
+     * @param value the candidate component
+     * @param paramName the caller's parameter name, used only in the
+     *                  exception message for diagnostic clarity
+     * @throws IllegalArgumentException if {@code value} is not a
+     *         simple relative file name
+     */
+    private static void requireSimpleFileName(String value, String paramName) {
+        if (value == null) {
+            throw new IllegalArgumentException(paramName + " must not be null");
+        }
+        if (value.isEmpty()) {
+            throw new IllegalArgumentException(paramName + " must not be empty");
+        }
+        if (value.indexOf('/') >= 0 || value.indexOf('\\') >= 0) {
+            throw new IllegalArgumentException(
+                paramName + " must not contain path separators; got '"
+                    + value + "'");
+        }
+        if (".".equals(value) || "..".equals(value)) {
+            throw new IllegalArgumentException(
+                paramName + " must not be '.' or '..'; got '" + value + "'");
+        }
     }
 
     /**
@@ -394,10 +479,163 @@ public abstract class GoldenRecordTest {
             }
             byte[] expectedBytes = Files.readAllBytes(expected.path());
             byte[] actualBytes = Files.readAllBytes(actualPath);
+
+            // AAP §0.6.11 structured-record diff hook: if the subclass
+            // declared any MaskedRange for this output (e.g. for embedded
+            // timestamps in report files that legitimately vary), zero
+            // those byte ranges in both buffers before comparison. Strict
+            // byte equality is preserved for every other byte. The default
+            // hook returns an empty list, so subclasses that did not
+            // override maskedRanges() continue to receive exact byte
+            // equality (the non-negotiable PR gate behaviour).
+            List<MaskedRange> masks = maskedRanges(expected.name());
+            if (masks != null && !masks.isEmpty()) {
+                expectedBytes = applyMasks(expectedBytes, masks);
+                actualBytes = applyMasks(actualBytes, masks);
+            }
+
             assertThat(actualBytes)
                 .as("Byte-for-byte parity for output '%s' (program: %s)",
                     expected.name(), programClass().getSimpleName())
                 .isEqualTo(expectedBytes);
+        }
+    }
+
+    /**
+     * Declares zero or more byte ranges that should be masked (replaced
+     * with {@code 0x00}) in both the expected and the actual output
+     * before byte equality is asserted. Returning an empty list (the
+     * default) keeps {@link #byteForByteParity()} in its strictest mode:
+     * every single byte of every single output must match the COBOL
+     * capture exactly.
+     *
+     * <p><strong>When to override this method</strong>: per AAP &sect;0.6.11
+     * "where fixed-width byte equality is insufficient (e.g., for report
+     * files with embedded timestamps that legitimately vary), the harness
+     * also provides a field-by-field comparison mode that masks
+     * known-variable fields." A canonical example is a report header
+     * carrying a print timestamp such as {@code "PRINT TIME: 14:32:07"}
+     * that varies every run; mask the 8 bytes at the timestamp offset
+     * rather than disabling the entire test.
+     *
+     * <p><strong>What this hook does NOT do</strong>: it does NOT
+     * implement field-aware comparison (parsing a record layout and
+     * comparing field-by-field with type-aware predicates); it implements
+     * byte-range masking, which is sufficient for the AAP §0.6.11
+     * use case (suppressing variable substrings) and avoids dragging in
+     * a record-layout descriptor language. If a future requirement
+     * genuinely needs field-aware diff (e.g. masking a BigDecimal whose
+     * encoding length depends on the value), introduce a separate hook
+     * that returns a higher-level comparator and document the rationale
+     * in {@code MIGRATION_NOTES.md}.
+     *
+     * <p><strong>Mask semantics</strong>:
+     * <ul>
+     *   <li>The hook returns a {@link List} of {@link MaskedRange}; each
+     *       range covers {@code [offset, offset + length)} (half-open
+     *       interval).</li>
+     *   <li>Both the expected and the actual byte arrays are mutated in
+     *       parallel before the AssertJ {@code isEqualTo} call: every
+     *       byte in any declared range is overwritten with {@code 0x00}
+     *       in both arrays, so a mismatch in any other position is still
+     *       detected.</li>
+     *   <li>Ranges that overlap, are out of order, or extend past
+     *       end-of-buffer are tolerated (clamped to buffer bounds; the
+     *       overlap simply zeros the same byte twice).</li>
+     *   <li>Returning {@code null} is treated as an empty list (no
+     *       masking).</li>
+     * </ul>
+     *
+     * <p><strong>Default behaviour</strong>: returns an immutable empty
+     * list. Subclasses that need masking override and return their own
+     * list. The hook is called once per {@link ExpectedOutput} in
+     * {@link #byteForByteParity()}; the {@code outputName} argument lets
+     * a single subclass declare different masks for different outputs
+     * (e.g. a {@code "report.txt"} output may have masked timestamps
+     * while a {@code "audit.txt"} output is fully byte-equal).
+     *
+     * @param outputName the {@link ExpectedOutput#name()} of the output
+     *                   currently being compared; never {@code null}
+     * @return list of byte ranges to mask in both expected and actual
+     *         bytes for this output; never {@code null} (return
+     *         {@link Collections#emptyList()} to opt out of masking)
+     */
+    protected List<MaskedRange> maskedRanges(String outputName) {
+        return Collections.emptyList();
+    }
+
+    /**
+     * Applies the supplied byte-range masks to a copy of {@code buffer}
+     * and returns the masked copy. Every byte in any declared range is
+     * overwritten with {@code 0x00}. Ranges are clamped to
+     * {@code [0, buffer.length)} so overlong masks do not throw
+     * {@link ArrayIndexOutOfBoundsException}; this lets the harness
+     * tolerate masks declared for the COBOL capture length when the
+     * Java output happens to be shorter (a real mismatch is still
+     * detected by the subsequent length comparison inside
+     * {@code isEqualTo}).
+     *
+     * <p>This helper deliberately returns a new buffer rather than
+     * mutating the input so that subsequent failure messages and AssertJ
+     * descriptions can still reference the original (unmasked) bytes
+     * via the local variables in {@link #byteForByteParity()} if
+     * needed in a future revision (e.g., reporting the first masked
+     * byte's original value for diagnostics).
+     *
+     * @param buffer the bytes to mask
+     * @param masks  the byte ranges to overwrite with {@code 0x00}
+     * @return a masked copy of {@code buffer}; never the same array
+     */
+    private static byte[] applyMasks(byte[] buffer, List<MaskedRange> masks) {
+        byte[] copy = Arrays.copyOf(buffer, buffer.length);
+        for (MaskedRange m : masks) {
+            int start = Math.max(0, m.offset());
+            int end = Math.min(copy.length, m.offset() + m.length());
+            for (int i = start; i < end; i++) {
+                copy[i] = 0;
+            }
+        }
+        return copy;
+    }
+
+    /**
+     * A half-open byte range {@code [offset, offset + length)} to be
+     * zeroed in both expected and actual outputs before byte equality
+     * is asserted by {@link #byteForByteParity()}. Used by subclasses
+     * to mask known-variable bytes (e.g. embedded run timestamps,
+     * generated batch run IDs, environment-specific paths) without
+     * disabling the entire byte-for-byte parity contract.
+     *
+     * <p>Construction validates that {@code offset >= 0} and
+     * {@code length >= 0} via the compact constructor (JEP 513
+     * Flexible Constructor Bodies); a {@code length} of {@code 0} is
+     * legal but a no-op (declares an empty range).
+     *
+     * <p><strong>Example</strong>: a 14-byte ISO-8601 timestamp at
+     * offset 1024 of a report file is masked via
+     * {@code List.of(new MaskedRange(1024, 14))}.
+     *
+     * @param offset the starting byte offset (inclusive); must be
+     *               non-negative
+     * @param length the number of bytes in the range; must be
+     *               non-negative
+     */
+    public record MaskedRange(int offset, int length) {
+        /**
+         * Compact constructor validating non-negative bounds. JEP 513
+         * Flexible Constructor Bodies permits the validation to run
+         * before the canonical field bindings, matching the AAP
+         * &sect;0.6.3 COBOL-style "validate before bind" pattern.
+         */
+        public MaskedRange {
+            if (offset < 0) {
+                throw new IllegalArgumentException(
+                    "MaskedRange offset must be >= 0; got " + offset);
+            }
+            if (length < 0) {
+                throw new IllegalArgumentException(
+                    "MaskedRange length must be >= 0; got " + length);
+            }
         }
     }
 
@@ -454,12 +692,15 @@ public abstract class GoldenRecordTest {
      *       {@code /tmp/run-001/transact.txt}).</li>
      * </ol>
      *
-     * <p><em>Structured-record diff fallback</em>: per AAP &sect;0.6.11, a
-     * future revision will add a {@code protected boolean isMaskedField(int
-     * byteOffset, int byteLength)} hook for report files with embedded
-     * timestamps that legitimately vary. This is documented for forward
-     * compatibility but is NOT implemented in this initial version; all 28
-     * subclasses currently rely on strict byte equality.</p>
+     * <p><em>Structured-record diff hook</em>: per AAP &sect;0.6.11,
+     * subclasses can override {@link #maskedRanges(String)} to declare
+     * byte ranges that should be zeroed in both expected and actual
+     * outputs before byte equality is asserted (for example, to mask
+     * embedded run timestamps in report files that legitimately vary).
+     * The default implementation returns an empty list, so all 28
+     * subclasses inherit strict byte equality unless they explicitly
+     * opt in to masking. See {@link #maskedRanges(String)} and
+     * {@link MaskedRange} for details.</p>
      *
      * @param programClass    the class under test (passed verbatim from
      *                        {@link #programClass()})

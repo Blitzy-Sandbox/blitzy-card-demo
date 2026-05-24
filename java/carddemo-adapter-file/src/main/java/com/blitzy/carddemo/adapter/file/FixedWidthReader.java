@@ -152,16 +152,19 @@ import java.util.stream.StreamSupport;
  * ownership of the underlying channel to the returned {@link Stream}; callers
  * MUST close the stream (via try-with-resources) to release the channel.
  *
- * <p><strong>NOTFND parity:</strong> A missing file (i.e.,
- * {@link Files#exists(Path, java.nio.file.LinkOption...)
- * Files.exists(file) == false}) is treated as functionally equivalent to a
- * populated file in which no record matches the given key:
+ * <p><strong>NOTFND parity:</strong> A missing file is treated as functionally
+ * equivalent to a populated file in which no record matches the given key:
  * {@link #findByKey(byte[], int) findByKey} returns {@link Optional#empty()};
  * {@link #streamSequential() streamSequential} returns {@link Stream#empty()};
  * {@link #streamFromKey(byte[], int) streamFromKey} returns
  * {@link Stream#empty()}. This matches COBOL {@code READ} on an empty or
  * missing dataset where the program checks FILE STATUS '23' (NOTFND) or '10'
- * (EOF) and treats both as "no data".
+ * (EOF) and treats both as "no data". The check is implemented race-safely
+ * (CWE-367 TOCTOU hardening): missing files are detected by catching
+ * {@link java.nio.file.NoSuchFileException} from
+ * {@link Files#newByteChannel(Path, java.nio.file.OpenOption...)}, never by
+ * a separate {@code Files.exists(...)} pre-check, so concurrent rename or
+ * unlink between two filesystem calls cannot break the NOTFND contract.
  *
  * <p><strong>Truncated record detection:</strong> If end-of-file is reached
  * mid-record, an {@link IOException} is thrown. This is stricter than COBOL,
@@ -306,29 +309,49 @@ public final class FixedWidthReader {
      */
     public Optional<byte[]> findByKey(byte[] key, int keyOffset) throws IOException {
         Objects.requireNonNull(key, "key");
+        // Overflow-safe key bounds validation (CWE-20 + CWE-190 hardening).
+        // The naive form `keyOffset + key.length > recordLength` is incorrect
+        // when keyOffset is large enough that `keyOffset + key.length` overflows
+        // a 32-bit signed int and wraps to a negative value, which would pass
+        // the > recordLength comparison. Validate the key length against the
+        // record length first (so `recordLength - key.length` is non-negative
+        // and overflow-free), then compare `keyOffset` against that subtracted
+        // form, which can never overflow because both operands are non-negative.
         if (keyOffset < 0) {
             throw new IllegalArgumentException(
                 "keyOffset must be >= 0; got " + keyOffset);
         }
-        if (keyOffset + key.length > recordLength) {
+        if (key.length < 0 || key.length > recordLength) {
+            throw new IllegalArgumentException(
+                "key.length (" + key.length + ") exceeds recordLength ("
+                    + recordLength + ")");
+        }
+        if (keyOffset > recordLength - key.length) {
             throw new IllegalArgumentException(
                 "keyOffset (" + keyOffset + ") + key.length (" + key.length
                     + ") exceeds recordLength (" + recordLength + ")");
         }
-        if (!Files.exists(file)) {
-            // NOTFND parity: a missing file is functionally equivalent to a
-            // populated file with no matching key. COBOL programs check FILE
-            // STATUS = '23' (record not found) or '10' (end-of-file) and
-            // treat both as "no data" here.
+        // Race-safe missing-file handling (CWE-367 TOCTOU hardening). Replacing
+        // an exists-check + open pair with a single open + NoSuchFileException
+        // catch eliminates the window in which a concurrent rename, unlink, or
+        // replace could change the file between the check and the open. NOTFND
+        // parity is preserved: a missing file still yields Optional.empty().
+        final SeekableByteChannel ch;
+        try {
+            ch = Files.newByteChannel(file, StandardOpenOption.READ);
+        } catch (java.nio.file.NoSuchFileException missing) {
+            // Missing file is functionally equivalent to a populated file with
+            // no matching key. COBOL programs check FILE STATUS = '23' (record
+            // not found) or '10' (end-of-file) and treat both as "no data".
             return Optional.empty();
         }
-        try (SeekableByteChannel ch = Files.newByteChannel(file, StandardOpenOption.READ)) {
+        try (SeekableByteChannel auto = ch) {
             ByteBuffer buf = ByteBuffer.allocate(recordLength);
             while (true) {
                 buf.clear();
                 int total = 0;
                 while (total < recordLength) {
-                    int r = ch.read(buf);
+                    int r = auto.read(buf);
                     if (r < 0) {
                         if (total == 0) {
                             // Clean EOF on a record boundary => not found.
@@ -337,6 +360,9 @@ public final class FixedWidthReader {
                         // EOF mid-record => the file is malformed (its length
                         // is not a whole multiple of recordLength). Surface
                         // this immediately rather than silently truncating.
+                        // Per MIGRATION_NOTES.md §1.4.x this is a DEVIATION:
+                        // COBOL VSAM may silently process partial records,
+                        // whereas the Java translation refuses to lose data.
                         throw new IOException(
                             "Truncated record in " + file + " (read " + total
                                 + " bytes; expected " + recordLength + ")");
@@ -390,16 +416,24 @@ public final class FixedWidthReader {
      * @throws IOException on file open errors other than file-not-found
      */
     public Stream<byte[]> streamSequential() throws IOException {
-        if (!Files.exists(file)) {
+        // Race-safe missing-file handling (CWE-367 TOCTOU hardening). Open the
+        // channel directly and translate NoSuchFileException into an empty
+        // stream; this eliminates the exists-check + open window in which a
+        // concurrent rename, unlink, or replace could change the file between
+        // the check and the open call.
+        //
+        // The channel is captured in a final local because the onClose
+        // Runnable below must be able to release it after the caller exhausts
+        // or explicitly closes the returned Stream. Ownership of this channel
+        // transfers to the returned Stream's onClose lifecycle hook.
+        final SeekableByteChannel ch;
+        try {
+            ch = Files.newByteChannel(file, StandardOpenOption.READ);
+        } catch (java.nio.file.NoSuchFileException missing) {
             // NOTFND parity: a missing file is functionally equivalent to a
             // populated but empty file. Both yield zero records.
             return Stream.empty();
         }
-        // Channel is captured in a final local because the onClose Runnable
-        // below must be able to release it after the caller exhausts or
-        // explicitly closes the returned Stream. Ownership of this channel
-        // transfers to the returned Stream's onClose lifecycle hook.
-        final SeekableByteChannel ch = Files.newByteChannel(file, StandardOpenOption.READ);
         Iterator<byte[]> it = new Iterator<byte[]>() {
             // Holds a one-record look-ahead computed by hasNext(); consumed by
             // next(). null when no look-ahead is buffered.
@@ -510,11 +544,21 @@ public final class FixedWidthReader {
      */
     public Stream<byte[]> streamFromKey(byte[] startKey, int keyOffset) throws IOException {
         Objects.requireNonNull(startKey, "startKey");
+        // Overflow-safe key bounds validation (CWE-20 + CWE-190 hardening),
+        // matching the form used by findByKey above. Both validations follow
+        // the same pattern: check `key.length` against `recordLength` first
+        // so subtraction is non-negative, then compare `keyOffset` against
+        // `recordLength - key.length`, which can never overflow.
         if (keyOffset < 0) {
             throw new IllegalArgumentException(
                 "keyOffset must be >= 0; got " + keyOffset);
         }
-        if (keyOffset + startKey.length > recordLength) {
+        if (startKey.length < 0 || startKey.length > recordLength) {
+            throw new IllegalArgumentException(
+                "startKey.length (" + startKey.length
+                    + ") exceeds recordLength (" + recordLength + ")");
+        }
+        if (keyOffset > recordLength - startKey.length) {
             throw new IllegalArgumentException(
                 "keyOffset (" + keyOffset + ") + startKey.length ("
                     + startKey.length + ") exceeds recordLength ("

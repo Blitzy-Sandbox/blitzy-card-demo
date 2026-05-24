@@ -1,0 +1,17 @@
+# COCRDUPC (Card Update Online Transaction (CICS, BMS CCUP)) -- expected/carddata_after.txt.
+# SOURCE: app/cbl/COCRDUPC.cbl -- the COBOL reference program being translated.
+# OUTPUT KIND: Online program output captured from CICS pseudo-conversation execution.
+# EXPECTED CONTENT: Updated CARD-RECORD (CVACT02Y, 150-byte records) state after card-update REWRITE.
+#
+# PLACEHOLDER PENDING COBOL CAPTURE per java/MIGRATION_NOTES.md section 1.6.
+# DO NOT modify without paired COBOL re-capture per AAP section 0.6.11.
+# AUTHORITY: AAP section 0.6.11 (golden-record harness PR gate) +
+#            AAP section 0.7.1 (verbatim preservation) +
+#            AAP section 0.7.2 (no full PAN, no plaintext password in capture output;
+#                               capture script MUST apply masking before commit).
+#
+# Test harness behavior until capture lands:
+#   com.blitzy.carddemo.tests.golden.<ProgramClass>GoldenTest is annotated
+#   @Disabled("Awaiting COBOL capture per java/MIGRATION_NOTES.md section 1.6")
+#   so this placeholder content does NOT cause CI failures.
+# END.

@@ -439,60 +439,132 @@ portion. **The security property "no more than the last 4 digits are
 visible in logs" is preserved for every supported PAN length.** Only
 the visual length of the asterisk run varies.
 
-**Trade-off 2: `%msg`-only scope**. The encoder pattern applies
-`%replace(...)` only to the `%msg` conversion word (the message body
-passed to `Logger.info(...)`, `Logger.error(...)`, etc.). Stack traces
-(`%ex`), MDC values (`%X{...}`), logger names, and thread names are NOT
-filtered. This is a deliberate scope choice with two implications:
+**Trade-off 2: scope of `%replace` (UPGRADED in Checkpoint 2 review fix
+to apply to all event surfaces)**. The encoder pattern now wraps
+`%replace(...)` around the ENTIRE event surface, not just `%msg`. This
+means PAN masking applies uniformly to:
 
-1. **Defensive coding requirement**: application code MUST NOT place
-   raw card PANs into exception messages, MDC values, or logger names.
-   Code that throws an exception with a PAN in the message
-   (`throw new IllegalArgumentException("Bad card: " + cardNumber)`)
-   would leak the PAN through the `%ex` rendering. The convention
-   for the Java translation is to mask before throwing: callers must
-   use `Decimals.maskPan(cardNumber)` (or a future equivalent helper
-   on the domain layer) before constructing exception messages or MDC
-   entries. Any deviation discovered in downstream translation passes
-   must be flagged as a defect and fixed at the call site, not by
-   widening the Logback regex.
+- the message body (`%msg`)
+- MDC values (`%X{batchRunId}`, `%X{processingDate}`, and any caller-
+  provided MDC fields)
+- the thread name (`%thread`)
+- the logger name (`%logger{36}`)
+- exception output (`%ex`, including "Caused by" chains and every
+  stack-trace frame)
 
-2. **Alternative considered and rejected**: wrapping the entire
-   pattern in `%replace(...)` was considered:
-   `%replace(<full layout including %ex>){'<regex>','<replacement>'}`.
-   This was rejected because it would also mask digit sequences in
-   timestamps, thread names, and logger names that happen to fall in
-   the 13–19 digit range (e.g., a thread named `pool-2-thread-1234567890123`
-   would have its trailing digits partially masked). The narrower
-   `%msg` scope provides cleaner output for non-PAN diagnostics at the
-   cost of requiring discipline at exception-message construction
-   sites.
+The previous configuration narrowed `%replace` to `%msg` alone, on the
+theory that thread/logger names could legitimately contain digit runs
+that would be over-masked. In practice (a) carddemo never names threads
+or loggers with 13–19 consecutive digits, and (b) any over-masking of a
+thread-name digit run is far preferable to leaking a PAN through an
+exception stack trace.
 
-**Why this is a DEVIATION rather than an IMPLEMENTATION DECISION**: a
-strict idiom-for-idiom translation of the PCI masking requirement would
-yield a mask whose asterisk count equals the original PAN's length, and
-would apply to every surface where a PAN might appear (message body,
-exception trace, MDC). The Java translation provides this guarantee
-fully only for the 16-digit message-body case. The remaining cases
-(13/15/19-digit PANs in the message body, and any PAN length in stack
-traces / MDC) are handled by best-effort regex masking + a coding
-convention rather than by Logback alone. The deviation is documented
-here so downstream code-generation agents (a) do not "fix" the regex
-under the assumption it is buggy, and (b) treat the masking helper at
-the application layer as the primary defence, not the logging layer.
+The Logback `%replace` conversion is fully nestable and the PAN regex
+uses `\b` word boundaries plus a `{9,15}{4}` length bound (13–19
+digits total), so the fixed structural prefix of the layout
+(timestamp, level, brackets) cannot accidentally match: the
+millisecond precision in `%d{yyyy-MM-dd HH:mm:ss.SSS}` is only 3
+trailing digits after the dot, which is below the lower bound.
+
+**Defensive coding requirement (still applies even with wider mask)**:
+application code should still avoid placing raw card PANs into
+exception messages, MDC values, or logger names. The Logback regex is
+defence-in-depth, not the primary control. The primary control is
+masking at the throw / log site using an application-layer helper.
+This belt-and-braces approach mirrors AAP §0.7.2's "no card PAN logged
+in full" mandate at two layers: at the producer (the code that emits
+the value) and at the formatter (the Logback configuration).
+
+**Why this is now closer to RESOLVED than DEVIATION**: a strict
+idiom-for-idiom translation of the PCI masking requirement requires
+masking everywhere a PAN might appear. The Java translation now
+satisfies that requirement at the Logback layer for every event
+surface; the 13/15/19-digit length variance in the *number of
+asterisks* remains the only residual deviation (the last 4 digits are
+always correct; the asterisk-prefix length is fixed at 12). The
+asterisk-count deviation is acceptable because PCI DSS §3.3 mandates
+suppression of all but the last 4 digits, not preservation of the
+unmasked-prefix length; the dominant 16-digit Visa/MasterCard case is
+length-correct.
 
 **Action items for downstream translation**:
 
 1. When translating any program that logs card numbers (most likely
-   `COCRDLIC`, `COCRDSLC`, `COCRDUPC`, `CBTRN02C`, `COBIL00C`), use the
-   application-layer masking helper before passing the value to the
-   logger. Do not rely on Logback alone.
+   `COCRDLIC`, `COCRDSLC`, `COCRDUPC`, `CBTRN02C`, `COBIL00C`), still
+   use an application-layer masking helper before passing the value
+   to the logger. The Logback layer is defence-in-depth.
 2. When translating exception sites that include a PAN in the message,
-   mask at the throw site, not at the catch site.
+   mask at the throw site so that the mask is consistent across
+   logging surfaces (file, console, JSON, downstream aggregators) that
+   may apply different formatting policies.
 3. If a future Java 25 release adds a Logback feature for
    back-reference-length-aware replacement, revisit this section and
-   consider tightening the regex; the entry should then be updated
-   from DEVIATION to RESOLVED.
+   consider tightening the regex; the entry should then be updated to
+   RESOLVED.
+
+### 1.4.8 FixedWidthReader / FixedWidthWriter truncated-record EOF behaviour
+
+**Where**: `java/carddemo-adapter-file/src/main/java/com/blitzy/carddemo/
+adapter/file/FixedWidthReader.java` and the sibling `FixedWidthWriter.java`.
+Both classes form the foundational record-IO surface for every
+`File*Repository` implementation in this package.
+
+**Behaviour**: when reading a fixed-width data file (`recordLength` bytes
+per record), if end-of-file is reached after some bytes of a record have
+been read but before the full `recordLength` bytes are accumulated, both
+classes throw `IOException("Truncated record in <path> (read N bytes;
+expected M bytes)")`. The same error surfaces from
+`FixedWidthReader.findByKey(...)`, `FixedWidthReader.streamSequential()`,
+`FixedWidthReader.streamFromKey(...)`, and from the internal
+`readAllRecords()` helper used by every mutating method of
+`FixedWidthWriter`.
+
+**COBOL baseline**: VSAM KSDS / sequential reads under z/OS may silently
+process partial records or surface them with FILE STATUS '46' (no next
+logical record present) or '30' (permanent error), depending on the file
+organisation and access mode. COBOL programs typically check FILE STATUS
+after each READ and treat any non-zero / non-'10' value as a fatal
+condition that leads to `ABEND-CONDITIONS-INIT` (see e.g.
+`app/cbl/CBACT01C.cbl` paragraph `9999-ABEND-PROGRAM`). In practice,
+production VSAM datasets are guaranteed to contain only whole records
+because IDCAMS verifies record-length conformance at LOAD time
+(`[app/jcl/ACCTFILE.jcl:§REPRO]`); the partial-record case is an
+operational error, not a routine outcome.
+
+**Java translation**: rather than silently returning the partial bytes
+or guessing the intended record boundary, the Java translation surfaces
+the truncation immediately. This preserves the byte-for-byte round-trip
+invariant required by AAP §0.6.5 — `parse(record).encode()` MUST equal
+the original buffer — by refusing to lose data. The IOException maps
+conceptually to the COBOL FILE STATUS '46' / '30' fatal condition and
+should be caught at the application layer where it can be translated to
+a sealed FileStatus.IoError exception or an ABEND equivalent per the
+program's existing error-handling paragraph.
+
+**Why this is a DEVIATION rather than an IMPLEMENTATION DECISION**: the
+exact byte boundary at which COBOL surfaces a partial record varies by
+file organisation (VSAM KSDS vs. RECFM=FB sequential), access mode
+(SEQUENTIAL vs. RANDOM), and the JCL-time LRECL declaration. A faithful
+1-to-1 translation would require modelling each of these surfaces
+separately; the Java translation uses a single, stricter contract that
+the foundational primitives enforce uniformly. Per AAP §0.6.5 the
+byte-for-byte invariant takes precedence over silent-truncation
+compatibility.
+
+**Action items for downstream translation**:
+
+1. When translating any program that reads fixed-width files, catch
+   `IOException` at the application layer and translate it to the
+   appropriate COBOL FILE STATUS equivalent (typically '30' for I/O
+   errors, mapped to a sealed `FileStatus.IoError(int, String)`).
+2. Treat truncated-record exceptions as fatal at the JCL-step
+   equivalent (matching the COBOL `9999-ABEND-PROGRAM` paragraph) —
+   do NOT swallow them or attempt partial-record recovery, which
+   would diverge from the byte-for-byte invariant.
+3. If a captured COBOL run is ever observed to produce a truncated
+   trailing record on a known-good VSAM dataset, treat that as a
+   fixture-capture defect rather than a parity bug, and document the
+   capture procedure correction in `§1.6 Capture procedure` below.
 
 ---
 
@@ -723,11 +795,32 @@ Items that remain open at the conclusion of the initial migration pass.
 Each must be closed before the migration can be declared complete.
 
 - **OPEN — TPS baseline**: actual measured COBOL TPS for the benchmark
-  workload is not yet captured. The JFR-based regression test
-  `JfrBaseline.java` cannot enforce its 10 % regression band until a
-  baseline is committed under
+  workload is not yet captured. JFR-based regression testing
+  (`JfrBaseline.java` and its `src/test/resources/perf/baseline-*.properties`
+  fixture files) is deferred to a future checkpoint per the Checkpoint 2
+  review scope-control finding; the test scaffold was reverted in this
+  checkpoint because it had been merged outside its intended milestone.
+  When the JFR baseline returns, the 10 % regression band cannot be
+  enforced until a baseline is committed under
   `java/carddemo-tests/src/test/resources/perf/baseline.jfr` and the
   measured throughput is recorded here. (References Section 1.2 row 4.)
+- **OPEN — adapter-file unit-test coverage**: comprehensive JUnit 5
+  coverage for `EbcdicTranscoder` (constants, both constructors,
+  `charsetFor`, `defaultCharset`, `isEbcdic`, and the
+  `ebcdicToAscii` / `asciiToEbcdic` transcoding methods added by the
+  Checkpoint 2 review fix) is deferred to a future checkpoint per the
+  Checkpoint 2 review scope-control finding; the test class was
+  reverted in this checkpoint because it had been merged outside its
+  intended milestone. When re-introduced, the test class must exercise
+  the strict `CodingErrorAction.REPORT` policy for malformed and
+  unmappable bytes (round-trip + unmappable-character paths).
+- **OPEN — adapter-db package skeleton**: the optional JDBC adapter
+  package (`com.blitzy.carddemo.adapter.db`) was reverted from a
+  Javadoc-only `package-info.java` to an empty source tree per the
+  Checkpoint 2 review scope-control finding. The module pom.xml
+  remains (Checkpoint 1 in-scope) and produces an empty JAR by
+  default; concrete JDBC repositories are introduced only if a
+  source-side embedded SQL requirement surfaces, per AAP §0.6.12.
 - **OPEN — Golden-record fixture captures**: per AAP §0.6.11 every
   translated program needs a captured COBOL expected-output set. Until
   the captures are committed, the corresponding tests are `@Disabled`.

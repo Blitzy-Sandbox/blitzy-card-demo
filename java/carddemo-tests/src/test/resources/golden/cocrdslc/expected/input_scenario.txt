@@ -1,5 +1,15 @@
 # COCRDSLC TEST-OWNED CICS pseudo-conversation driver -- 12 scenarios
 #
+# ----------------------------------------------------------------------------
+# NON-SENSITIVE SYNTHETIC TEST DATA (Checkpoint 2 review fix)
+# ----------------------------------------------------------------------------
+# Every card-number-shaped sequence in this file is a clearly synthetic
+# token of the form 00000000000000NN. NO real PAN, NO BIN prefix, and
+# NO Luhn-valid test PAN (e.g., 4111-1111-1111-1111) appears here. The
+# 16-digit width is preserved only because BMS CARDSIDI is PIC X(16).
+# Per AAP §0.7.2 the production Logback PAN-masking regex still applies
+# at log time to these tokens as defence in depth.
+#
 # Source COBOL program:    app/cbl/COCRDSLC.cbl  (887 lines)
 # PROGRAM-ID:              COCRDSLC                  (line 23)
 # CICS transaction:        CCDL                      (LIT-THISTRANID, line 166)
@@ -73,7 +83,7 @@ COMMAREA
 END_COMMAREA
 AID DFHENTER
 FIELD ACCTSIDI "           "
-FIELD CARDSIDI "4111111111110001"
+FIELD CARDSIDI "0000000000000001"
 EXPECT_MSG "Account number not provided"
 EXPECT_MSG_COLOR DFHRED
 EXPECT_CURSOR ACCTSID
@@ -110,7 +120,7 @@ COMMAREA
 END_COMMAREA
 AID DFHENTER
 FIELD ACCTSIDI "ABCDEFGHIJK"
-FIELD CARDSIDI "4111111111110001"
+FIELD CARDSIDI "0000000000000001"
 EXPECT_MSG "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER"
 EXPECT_MSG_COLOR DFHRED
 EXPECT_CURSOR ACCTSID
@@ -149,7 +159,7 @@ COMMAREA
 END_COMMAREA
 AID DFHENTER
 FIELD ACCTSIDI "00000000001"
-FIELD CARDSIDI "4111111111110001"
+FIELD CARDSIDI "0000000000000001"
 EXPECT_FOUND_CARD
 EXPECT_FIELD INFOMSGO "   Displaying requested details"
 EXPECT_MSG_COLOR DFHNEUTR
@@ -169,7 +179,7 @@ COMMAREA
 END_COMMAREA
 AID DFHENTER
 FIELD ACCTSIDI "00000000099"
-FIELD CARDSIDI "4111111111119999"
+FIELD CARDSIDI "0000000000009999"
 EXPECT_MSG "Did not find cards for this search condition"
 EXPECT_MSG_COLOR DFHRED
 EXPECT_CARDDAT_UNCHANGED
@@ -210,7 +220,7 @@ COMMAREA
   CDEMO-FROM-TRANID  = "CCLI"
   CDEMO-PGM-CONTEXT  = 0
   CDEMO-ACCT-ID      = 1
-  CDEMO-CARD-NUM     = "4111111111110002"
+  CDEMO-CARD-NUM     = "0000000000000002"
 END_COMMAREA
 AID DFHENTER
 EXPECT_FOUND_CARD

@@ -466,7 +466,15 @@ This directory contains exactly five fixture files (including this README):
    plus 3 regular-user records. Sorted ascending by SEC-USR-ID for VSAM KSDS
    convention. Plaintext passwords preserved in storage per AAP §0.1.3
    (storage and logging are separate surfaces; storage retains plaintext per
-   behavior parity).
+   behavior parity). **Password values are non-secret synthetic test
+   sentinels following the `PW<role><suffix>` convention** (Checkpoint 2
+   review fix): `PWADMN00` for `ADMIN001`, `PWUSR001`/`PWUSR002`/`PWUSR003`
+   for the three regular users. These sentinels do NOT correspond to any
+   real user, default credential, system password, or environment variable,
+   and break the prior "password == user id" anti-pattern.
+   `input_scenario.txt` scenarios 6, 7, 10, 11 reference these sentinel
+   values verbatim so that the harness exercises the COBOL byte-equality
+   compare at `[app/cbl/COSGN00C.cbl:L194,L214]`.
 
 3. **`input_scenario.txt`** (CREATED): 12-scenario harness directive script.
    Format: line-oriented; one directive per line; comments start with `#`.

@@ -5,6 +5,21 @@
 # Scenario count: 14 scenarios, version 1.0 (initial)
 # Authority: AAP Sec 0.4.1, Sec 0.6.11, Sec 0.7.1, Sec 0.7.2 (PAN masking),
 #            Sec 0.6.6 (ScopedValue<Clock>), Sec 0.6.5 (java.nio.file).
+#
+# ----------------------------------------------------------------------------
+# NON-SENSITIVE SYNTHETIC TEST DATA (Checkpoint 2 review fix)
+# ----------------------------------------------------------------------------
+# Every card-number-shaped sequence in this file is a clearly synthetic
+# token derived from the COBOL fixture sequence (WS-CA-FIRST-CARDKEY,
+# WS-CA-LAST-CARDKEY) which uses leading-zero numeric IDs of the form
+# 00000000000000NN. NO real PAN, NO Visa/MasterCard/Amex/Discover BIN
+# prefix, and NO Luhn-valid test PAN (e.g., 4111-1111-1111-1111) appears
+# in this file. The 16-digit length is preserved only because the BMS
+# CARDSIDI field is PIC X(16); the leading zeros + small trailing
+# integer convention makes the synthetic origin unambiguous. Per AAP
+# §0.7.2 these synthetic tokens are also safe to log unmasked because
+# the production Logback PAN-masking regex applies only at log time, not
+# at fixture-parse time.
 # Java test class: com.blitzy.carddemo.tests.golden.CoCrdLiCGoldenTest
 # Java program under test: com.blitzy.carddemo.application.card.CoCrdLiC
 # COBOL BMS map: COCRDLI / CCRDLIA (mapset / map)
@@ -88,7 +103,7 @@ COMMAREA
 END_COMMAREA
 AID=ENTER
 FIELD ACCTSIDI=
-FIELD CARDSIDI=4111111111110001
+FIELD CARDSIDI=0000000000000001
 EXPECT_RETURN=CCLI
 EXPECT_PAGENO=001
 EXPECT_MSG=TYPE S FOR DETAIL, U TO UPDATE ANY RECORD
@@ -105,7 +120,7 @@ COMMAREA
 END_COMMAREA
 AID=ENTER
 FIELD ACCTSIDI=00000000001
-FIELD CARDSIDI=4111111111110001
+FIELD CARDSIDI=0000000000000001
 EXPECT_RETURN=CCLI
 EXPECT_PAGENO=001
 EXPECT_MSG=TYPE S FOR DETAIL, U TO UPDATE ANY RECORD
@@ -237,7 +252,7 @@ FIELD ACCTSIDI=
 FIELD CARDSIDI=
 FIELD CRDSEL1I=S
 EXPECT_XCTL=COCRDSLC
-EXPECT_FIELD CDEMO-CARD-NUM=4111111111110001
+EXPECT_FIELD CDEMO-CARD-NUM=0000000000000001
 EXPECT_FIELD CDEMO-ACCT-ID=00000000001
 EXPECT_CARDDAT_UNCHANGED
 END_SCENARIO
@@ -254,7 +269,7 @@ FIELD ACCTSIDI=
 FIELD CARDSIDI=
 FIELD CRDSEL3I=U
 EXPECT_XCTL=COCRDUPC
-EXPECT_FIELD CDEMO-CARD-NUM=4111111111110003
+EXPECT_FIELD CDEMO-CARD-NUM=0000000000000003
 EXPECT_FIELD CDEMO-ACCT-ID=00000000003
 EXPECT_CARDDAT_UNCHANGED
 END_SCENARIO

@@ -70,15 +70,16 @@ import module java.base;
  *   <li>Translated COBOL program: {@code app/cbl/COUSR01C.cbl}
  *       ({@code PROGRAM-ID COUSR01C}, {@code WS-TRANID 'CU01'},
  *       {@code WS-USRSEC-FILE 'USRSEC  '}). The {@code EVALUATE EIBAID}
- *       block at lines 90&ndash;103 enumerates the AID keys handled by
- *       the program: {@code DFHENTER} (add user), {@code DFHPF3} (back to
- *       admin menu), {@code DFHPF4} (clear), and {@code OTHER} (invalid
- *       key error). The BMS footer additionally advertises {@code F12=Exit}
- *       which the COBOL routes through {@code WHEN OTHER}; the
- *       {@link AidKey} enum below exposes a dedicated
- *       {@link AidKey#PF12_EXIT} constant so the translated controller can
- *       implement the user-visible F12 affordance without resorting to
- *       the catch-all branch.</li>
+ *       block at lines 90&ndash;103 enumerates exactly three AID keys
+ *       handled by the program: {@code DFHENTER} (add user),
+ *       {@code DFHPF3} (back to admin menu), and {@code DFHPF4} (clear).
+ *       Every other AID key &mdash; including {@code DFHPF12}, despite
+ *       the BMS footer at {@code app/bms/COUSR01.bms} line 159 advertising
+ *       {@code F12=Exit} &mdash; routes through the {@code WHEN OTHER}
+ *       arm and displays the invalid-key error. The {@link AidKey} enum
+ *       below preserves that mismatch byte-for-byte (idiom-for-idiom
+ *       translation per AAP &sect;0.7.1): PF12 maps to {@link AidKey#OTHER},
+ *       NOT to a dedicated enum constant.</li>
  *   <li>USRSEC layout: {@code app/cpy/CSUSR01Y.cpy} (group
  *       {@code 01 SEC-USER-DATA}). The five operator-supplied input
  *       fields map one-to-one onto the corresponding {@code SEC-USR-*}
@@ -287,25 +288,31 @@ public record CoUsr01Input(
      *   <li>{@link #PF04_CLEAR} &mdash; {@code DFHPF4}: reset the form
      *       to its initial state (paragraph
      *       {@code CLEAR-CURRENT-SCREEN}).</li>
-     *   <li>{@link #PF12_EXIT}  &mdash; {@code DFHPF12}: exit and return
-     *       to the admin menu ({@code COADM01C}) without saving. The
-     *       BMS footer at line 159 of {@code app/bms/COUSR01.bms}
-     *       advertises this affordance; the COBOL program currently
-     *       routes PF12 through the {@code WHEN OTHER} branch (i.e.
-     *       displays the invalid-key error). The translated Java
-     *       controller honors the advertised affordance via this
-     *       dedicated constant rather than dispatching it through
-     *       {@link #OTHER}.</li>
      *   <li>{@link #OTHER}      &mdash; {@code WHEN OTHER}: any other
-     *       AID key; the controller surfaces the
+     *       AID key (including {@code DFHPF12}, which the COBOL program
+     *       does NOT enumerate as a distinct branch &mdash; see
+     *       {@code EVALUATE EIBAID} at {@code app/cbl/COUSR01C.cbl}
+     *       lines 90&ndash;103); the controller surfaces the
      *       {@code CCDA-MSG-INVALID-KEY} system message (lines
      *       98&ndash;102 of {@code COUSR01C.cbl}).</li>
      * </ul>
      *
+     * <p><strong>PF12 mapping &mdash; preserve-as-is (AAP &sect;0.7.1)</strong>:
+     * the BMS footer at {@code app/bms/COUSR01.bms} line 159 advertises
+     * a {@code "F12=Exit"} affordance, but the COBOL controller's
+     * {@code EVALUATE EIBAID} block enumerates only {@code DFHENTER},
+     * {@code DFHPF3}, and {@code DFHPF4} explicitly &mdash; every other
+     * AID key (including {@code DFHPF12}) falls through to the
+     * {@code WHEN OTHER} arm and displays the invalid-key message. This
+     * mismatch between the BMS footer and the controller is preserved
+     * byte-for-byte under idiom-for-idiom translation: PF12 maps to
+     * {@link #OTHER}, NOT to a dedicated enum constant. Repairing the
+     * footer/controller discrepancy is an intentional enhancement
+     * outside the scope of this migration and is documented in
+     * {@code java/MIGRATION_NOTES.md}.
+     *
      * <p>The enum order mirrors the lexical order of the COBOL
-     * {@code EVALUATE EIBAID} branches (with {@link #PF12_EXIT} inserted
-     * between {@link #PF04_CLEAR} and {@link #OTHER} to honor the BMS
-     * footer's advertised affordance); downstream pattern-matching
+     * {@code EVALUATE EIBAID} branches; downstream pattern-matching
      * switches should rely on exhaustiveness checking and must not
      * include a {@code default} branch (AAP &sect;0.7.3 mandate &mdash;
      * &ldquo;no {@code default} branches that hide missing cases&rdquo;).
@@ -317,9 +324,13 @@ public record CoUsr01Input(
         PF03_BACK,
         /** {@code DFHPF4}: clear the form and re-render. */
         PF04_CLEAR,
-        /** {@code DFHPF12}: exit to the admin menu without saving. */
-        PF12_EXIT,
-        /** {@code WHEN OTHER}: any unmapped AID key (invalid key error). */
+        /**
+         * {@code WHEN OTHER}: any unmapped AID key, including
+         * {@code DFHPF12} (the BMS footer advertises {@code "F12=Exit"}
+         * but the COBOL controller does not enumerate it as a distinct
+         * branch &mdash; see {@code app/cbl/COUSR01C.cbl} lines
+         * 90&ndash;103). Triggers the invalid-key error message.
+         */
         OTHER
     }
 

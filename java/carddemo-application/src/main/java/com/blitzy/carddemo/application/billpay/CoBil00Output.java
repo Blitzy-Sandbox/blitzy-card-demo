@@ -25,6 +25,13 @@ package com.blitzy.carddemo.application.billpay;
 // without further import statements, per AAP §0.6.7 and §0.7.3.
 import module java.base;
 
+// AAP §0.7.1 traceability mandate: every translated artifact must cite its
+// original COBOL source via the @CobolProgram annotation declared in the
+// carddemo-domain module. carddemo-application declares carddemo-domain as a
+// direct dependency in its pom.xml, so the annotation is on the classpath
+// and resolvable here.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
+
 /**
  * Immutable output DTO for the {@code COBIL00C} bill payment program
  * (CICS transaction {@code CB00}, COBOL source
@@ -210,6 +217,15 @@ import module java.base;
  * @see <a href="https://www.ibm.com/docs/en/cics-ts">CICS/TS BMS reference</a>
  * @since 1.0.0
  */
+@CobolProgram(
+        value = "COBIL00",
+        sourcePath = "app/bms/COBIL00.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (output side); symbolic copybook 01 COBIL0AO "
+                + "REDEFINES COBIL0AI in app/cpy-bms/COBIL00.CPY (lines 79-180). Driven "
+                + "by online program app/cbl/COBIL00C.cbl (transaction CB00); xC color "
+                + "overlays and xL cursor-hint overlays carried alongside xO value leaves."
+)
 public record CoBil00Output(
         String transactionName,
         String title01,

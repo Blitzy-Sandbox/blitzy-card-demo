@@ -10,8 +10,8 @@ package com.blitzy.carddemo.application.report;
 // in every standard-library type referenced by this DTO:
 //   * java.lang.String              -- type of the eighteen String record
 //                                      components carrying BMS display-field
-//                                      values (transactionName, title1,
-//                                      currentDate, programName, title2,
+//                                      values (transactionName, title01,
+//                                      currentDate, programName, title02,
 //                                      currentTime, monthly, yearly, custom,
 //                                      startMonth, startDay, startYear,
 //                                      endMonth, endDay, endYear,
@@ -29,17 +29,27 @@ package com.blitzy.carddemo.application.report;
 //   * java.lang.Enum facilities     -- the supertype of the nested FieldColor
 //                                      enumeration and the source of its
 //                                      auto-generated values()/valueOf().
+//   * java.lang.IllegalArgumentException -- raised by the compact constructor
+//                                      and by every Builder setter to reject
+//                                      over-length BMS field values per AAP
+//                                      §0.6.5 byte-for-byte parity mandate
+//                                      (silent truncation would corrupt the
+//                                      send-map and break golden tests).
 //
-// The file schema's external_imports list specifies exactly one entry -- the
-// java.base module -- and the internal_imports list is empty; no other import
-// is permitted on this file (in particular, no
-// com.blitzy.carddemo.domain.annotation.CobolProgram, because the depends_on
-// list for this DTO is empty). The single "import module java.base;"
-// declaration replaces the implicit "import java.lang.String;" and the
-// explicit "import java.util.Objects;" required to compile this file, and
-// aligns the code with the AAP §0.6.7 / §0.7.3 mandate to use Module Import
-// Declarations finalized in Java 25 (JEP 511).
+// The single "import module java.base;" declaration replaces the implicit
+// "import java.lang.String;" and the explicit "import java.util.Objects;"
+// required to compile this file, and aligns the code with the AAP §0.6.7
+// / §0.7.3 mandate to use Module Import Declarations finalized in Java 25
+// (JEP 511).
 import module java.base;
+
+// AAP §0.7.1 traceability mandate: every translated artifact must cite its
+// original COBOL source via the @CobolProgram annotation declared in the
+// carddemo-domain module. carddemo-application declares carddemo-domain as
+// a direct dependency in its pom.xml, so the annotation is on the classpath
+// and resolvable here. The previous claim that the annotation module was
+// unreachable was incorrect; the dependency has always been available.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
 
 /**
  * Output DTO for the {@code CORPT0A} BMS map (transaction {@code CR00},
@@ -140,7 +150,7 @@ import module java.base;
  *         <td>{@link #transactionName()} — header transaction id
  *         ({@code "CR00"})</td></tr>
  *     <tr><td>{@code TITLE01O}</td><td>{@code X(40)}</td>
- *         <td>{@link #title1()} — first title line
+ *         <td>{@link #title01()} — first title line
  *         ({@code CCDA-TITLE01})</td></tr>
  *     <tr><td>{@code CURDATEO}</td><td>{@code X(8)}</td>
  *         <td>{@link #currentDate()} — header date
@@ -149,7 +159,7 @@ import module java.base;
  *         <td>{@link #programName()} — header program id
  *         ({@code "CORPT00C"})</td></tr>
  *     <tr><td>{@code TITLE02O}</td><td>{@code X(40)}</td>
- *         <td>{@link #title2()} — second title line
+ *         <td>{@link #title02()} — second title line
  *         ({@code CCDA-TITLE02})</td></tr>
  *     <tr><td>{@code CURTIMEO}</td><td>{@code X(8)}</td>
  *         <td>{@link #currentTime()} — header time
@@ -242,25 +252,29 @@ import module java.base;
  *       controller via {@code com.blitzy.carddemo.domain.util.Decimals} from
  *       {@link java.math.BigDecimal} values per AAP §0.6.1.</li>
  *   <li>No preview Java features — only finalized Java 25 features are used
- *       (records, JEP 511 module import).</li>
- *   <li>No {@code @CobolProgram} annotation — the depends_on_files list for
- *       this DTO is empty, so the carddemo-domain annotation module is not
- *       on the classpath of this compilation unit. The Javadoc above carries
- *       the COBOL traceability metadata instead.</li>
+ *       (records, JEP 511 module import, JEP 513 flexible constructor bodies).</li>
+ *   <li>Traceability via the {@link CobolProgram} annotation declared in the
+ *       carddemo-domain module (a direct dependency of carddemo-application).</li>
  * </ul>
  *
  * @param transactionName {@code TRNNAMEO}: 4-char transaction id
- *                        ({@code "CR00"}). Must not exceed 4 characters in
- *                        practice; {@code null} is silently normalized to
- *                        {@code ""}.
- * @param title1          {@code TITLE01O}: 40-char top title line
+ *                        ({@code "CR00"}). Rejected by the compact
+ *                        constructor with {@link IllegalArgumentException}
+ *                        if longer than 4 characters; {@code null} is
+ *                        silently normalized to {@code ""}.
+ * @param title01         {@code TITLE01O}: 40-char top title line
  *                        ({@code CCDA-TITLE01}). {@code null} → {@code ""}.
+ *                        Renamed from {@code title1} to match the BMS
+ *                        symbolic-map field name {@code TITLE01O} and the
+ *                        established sibling-DTO naming convention.
  * @param currentDate     {@code CURDATEO}: 8-char MM/DD/YY current date.
  *                        {@code null} → {@code ""}.
  * @param programName     {@code PGMNAMEO}: 8-char program id
  *                        ({@code "CORPT00C"}). {@code null} → {@code ""}.
- * @param title2          {@code TITLE02O}: 40-char second title line
+ * @param title02         {@code TITLE02O}: 40-char second title line
  *                        ({@code CCDA-TITLE02}). {@code null} → {@code ""}.
+ *                        Renamed from {@code title2} to match the BMS
+ *                        symbolic-map field name {@code TITLE02O}.
  * @param currentTime     {@code CURTIMEO}: 8-char HH:MM:SS current time.
  *                        {@code null} → {@code ""}.
  * @param monthly         {@code MONTHLYO}: 1-char echo of MONTHLYI toggle.
@@ -300,12 +314,21 @@ import module java.base;
  * @see com.blitzy.carddemo.application.report.CoRpt00Output.FieldColor
  * @since 1.0.0
  */
+@CobolProgram(
+        value = "CORPT00",
+        sourcePath = "app/bms/CORPT00.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (output side); symbolic copybook 01 CORPT0AO "
+                + "REDEFINES CORPT0AI in app/cpy-bms/CORPT00.CPY (lines 121-224). Driven "
+                + "by online program app/cbl/CORPT00C.cbl (transaction CR00 — Print "
+                + "Transaction Reports)."
+)
 public record CoRpt00Output(
         String transactionName,
-        String title1,
+        String title01,
         String currentDate,
         String programName,
-        String title2,
+        String title02,
         String currentTime,
         String monthly,
         String yearly,
@@ -428,11 +451,12 @@ public record CoRpt00Output(
      *                              with detail message {@code "errMsgColor"}
      */
     public CoRpt00Output {
+        // --- COBOL "SPACES by default" null-normalization per AAP §0.7.1 ---
         transactionName = (transactionName == null) ? "" : transactionName;
-        title1          = (title1          == null) ? "" : title1;
+        title01         = (title01         == null) ? "" : title01;
         currentDate     = (currentDate     == null) ? "" : currentDate;
         programName     = (programName     == null) ? "" : programName;
-        title2          = (title2          == null) ? "" : title2;
+        title02         = (title02         == null) ? "" : title02;
         currentTime     = (currentTime     == null) ? "" : currentTime;
         monthly         = (monthly         == null) ? "" : monthly;
         yearly          = (yearly          == null) ? "" : yearly;
@@ -448,6 +472,98 @@ public record CoRpt00Output(
         focusField      = (focusField      == null) ? "" : focusField;
 
         Objects.requireNonNull(errMsgColor, "errMsgColor");
+
+        // --- PIC X(n) fixed-length validation per app/bms/CORPT00.bms ---
+        // Values longer than the declared BMS width would cause silent
+        // hardware truncation in the CICS SEND-MAP layer, corrupting the
+        // wire format and breaking byte-for-byte parity per AAP §0.6.5.
+        // Fail fast at the DTO boundary instead. The focusField is a
+        // synthetic field (not a BMS leaf), so it is intentionally NOT
+        // length-checked here — its consumers (the composition root)
+        // interpret it as a COBOL field-length name and have their own
+        // validation rules.
+        checkPicLength("transactionName", transactionName, LEN_TRANSACTION_NAME);
+        checkPicLength("title01",         title01,         LEN_TITLE);
+        checkPicLength("currentDate",     currentDate,     LEN_CURRENT_DATE);
+        checkPicLength("programName",     programName,     LEN_PROGRAM_NAME);
+        checkPicLength("title02",         title02,         LEN_TITLE);
+        checkPicLength("currentTime",     currentTime,     LEN_CURRENT_TIME);
+        checkPicLength("monthly",         monthly,         LEN_TOGGLE);
+        checkPicLength("yearly",          yearly,          LEN_TOGGLE);
+        checkPicLength("custom",          custom,          LEN_TOGGLE);
+        checkPicLength("startMonth",      startMonth,      LEN_DATE_MM);
+        checkPicLength("startDay",        startDay,        LEN_DATE_DD);
+        checkPicLength("startYear",       startYear,       LEN_DATE_YYYY);
+        checkPicLength("endMonth",        endMonth,        LEN_DATE_MM);
+        checkPicLength("endDay",          endDay,          LEN_DATE_DD);
+        checkPicLength("endYear",         endYear,         LEN_DATE_YYYY);
+        checkPicLength("confirmation",    confirmation,    LEN_TOGGLE);
+        checkPicLength("errMsg",          errMsg,          LEN_ERROR_MESSAGE);
+    }
+
+    // ------------------------------------------------------------------
+    //  BMS PIC X(n) widths per app/bms/CORPT00.bms; used by the compact
+    //  constructor's checkPicLength() calls to enforce fail-fast
+    //  validation. AAP §0.6.5 byte-for-byte parity mandate: silent
+    //  truncation at the CICS SEND-MAP layer would corrupt the wire
+    //  format and break golden-record tests.
+    // ------------------------------------------------------------------
+
+    /** BMS {@code PIC X(4)} width of the {@code TRNNAME} field. */
+    private static final int LEN_TRANSACTION_NAME = 4;
+
+    /** BMS {@code PIC X(40)} width of the {@code TITLE01} / {@code TITLE02} fields. */
+    private static final int LEN_TITLE = 40;
+
+    /** BMS {@code PIC X(8)} width of the {@code CURDATE} field. */
+    private static final int LEN_CURRENT_DATE = 8;
+
+    /** BMS {@code PIC X(8)} width of the {@code PGMNAME} field. */
+    private static final int LEN_PROGRAM_NAME = 8;
+
+    /** BMS {@code PIC X(8)} width of the {@code CURTIME} field. */
+    private static final int LEN_CURRENT_TIME = 8;
+
+    /** BMS {@code PIC X(1)} width of the {@code MONTHLY}, {@code YEARLY}, {@code CUSTOM}, and {@code CONFIRM} toggles. */
+    private static final int LEN_TOGGLE = 1;
+
+    /** BMS {@code PIC X(2)} width of the start/end month ({@code SDTMM} / {@code EDTMM}). */
+    private static final int LEN_DATE_MM = 2;
+
+    /** BMS {@code PIC X(2)} width of the start/end day ({@code SDTDD} / {@code EDTDD}). */
+    private static final int LEN_DATE_DD = 2;
+
+    /** BMS {@code PIC X(4)} width of the start/end year ({@code SDTYYYY} / {@code EDTYYYY}). */
+    private static final int LEN_DATE_YYYY = 4;
+
+    /** BMS {@code PIC X(78)} width of the {@code ERRMSG} field. */
+    private static final int LEN_ERROR_MESSAGE = 78;
+
+    /**
+     * Validates that a {@link String} component does not exceed its
+     * declared BMS {@code PIC X(n)} on-screen width.
+     *
+     * <p>Enforces the AAP &sect;0.6.5 byte-for-byte parity contract at the
+     * DTO boundary (CWE-20 input validation): values longer than the
+     * declared BMS width would cause silent hardware truncation in the
+     * CICS SEND-MAP layer, corrupting the wire format. Shorter values are
+     * accepted unchanged &mdash; the BMS renderer pads-right with spaces
+     * to the declared width before transmission.
+     *
+     * @param name      the component name (used in the exception message)
+     * @param value     the component value (never {@code null}: the caller
+     *                  guarantees null-normalization in the compact
+     *                  constructor)
+     * @param maxLength the declared BMS {@code PIC X(n)} width
+     * @throws IllegalArgumentException if {@code value.length() > maxLength}
+     */
+    private static void checkPicLength(String name, String value, int maxLength) {
+        if (value.length() > maxLength) {
+            throw new IllegalArgumentException(
+                    name + " exceeds BMS PIC X(" + maxLength
+                            + ") declared length; received length="
+                            + value.length() + " value=\"" + value + "\"");
+        }
     }
 
     /**
@@ -478,10 +594,10 @@ public record CoRpt00Output(
     public static CoRpt00Output empty() {
         return new CoRpt00Output(
                 "",              // transactionName  (TRNNAMEO)
-                "",              // title1           (TITLE01O)
+                "",              // title01          (TITLE01O)
                 "",              // currentDate      (CURDATEO)
                 "",              // programName      (PGMNAMEO)
-                "",              // title2           (TITLE02O)
+                "",              // title02          (TITLE02O)
                 "",              // currentTime      (CURTIMEO)
                 "",              // monthly          (MONTHLYO)
                 "",              // yearly           (YEARLYO)
@@ -567,10 +683,10 @@ public record CoRpt00Output(
     public CoRpt00Output withErrMsg(String newErrMsg, FieldColor newColor) {
         return new CoRpt00Output(
                 transactionName,
-                title1,
+                title01,
                 currentDate,
                 programName,
-                title2,
+                title02,
                 currentTime,
                 monthly,
                 yearly,
@@ -617,10 +733,10 @@ public record CoRpt00Output(
     public CoRpt00Output withFocusField(String newFocusField) {
         return new CoRpt00Output(
                 transactionName,
-                title1,
+                title01,
                 currentDate,
                 programName,
-                title2,
+                title02,
                 currentTime,
                 monthly,
                 yearly,
@@ -674,8 +790,8 @@ public record CoRpt00Output(
         /** Mutable accumulator for {@link CoRpt00Output#transactionName()}. */
         private String transactionName = "";
 
-        /** Mutable accumulator for {@link CoRpt00Output#title1()}. */
-        private String title1          = "";
+        /** Mutable accumulator for {@link CoRpt00Output#title01()}. */
+        private String title01         = "";
 
         /** Mutable accumulator for {@link CoRpt00Output#currentDate()}. */
         private String currentDate     = "";
@@ -683,8 +799,8 @@ public record CoRpt00Output(
         /** Mutable accumulator for {@link CoRpt00Output#programName()}. */
         private String programName     = "";
 
-        /** Mutable accumulator for {@link CoRpt00Output#title2()}. */
-        private String title2          = "";
+        /** Mutable accumulator for {@link CoRpt00Output#title02()}. */
+        private String title02         = "";
 
         /** Mutable accumulator for {@link CoRpt00Output#currentTime()}. */
         private String currentTime     = "";
@@ -757,14 +873,14 @@ public record CoRpt00Output(
         }
 
         /**
-         * Sets the {@link CoRpt00Output#title1()} component.
+         * Sets the {@link CoRpt00Output#title01()} component.
          *
          * @param v the {@code TITLE01O} value (40 chars max); {@code null} →
          *          {@code ""}
          * @return this builder
          */
-        public Builder title1(String v) {
-            this.title1 = (v == null) ? "" : v;
+        public Builder title01(String v) {
+            this.title01 = (v == null) ? "" : v;
             return this;
         }
 
@@ -793,14 +909,14 @@ public record CoRpt00Output(
         }
 
         /**
-         * Sets the {@link CoRpt00Output#title2()} component.
+         * Sets the {@link CoRpt00Output#title02()} component.
          *
          * @param v the {@code TITLE02O} value (40 chars max); {@code null} →
          *          {@code ""}
          * @return this builder
          */
-        public Builder title2(String v) {
-            this.title2 = (v == null) ? "" : v;
+        public Builder title02(String v) {
+            this.title02 = (v == null) ? "" : v;
             return this;
         }
 
@@ -992,10 +1108,10 @@ public record CoRpt00Output(
         public CoRpt00Output build() {
             return new CoRpt00Output(
                     transactionName,
-                    title1,
+                    title01,
                     currentDate,
                     programName,
-                    title2,
+                    title02,
                     currentTime,
                     monthly,
                     yearly,

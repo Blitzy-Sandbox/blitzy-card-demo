@@ -120,27 +120,34 @@ import module java.base;
  * width; the compact constructor enforces that no component exceeds its
  * declared width.
  * <ul>
- *   <li>{@code TRNNAMEO} &mdash; PIC X(4)  &mdash; {@link #tranName()}     &mdash; echoed transaction id, typically {@code "CU00"}</li>
- *   <li>{@code TITLE01O} &mdash; PIC X(40) &mdash; {@link #title01()}      &mdash; primary screen title</li>
- *   <li>{@code CURDATEO} &mdash; PIC X(8)  &mdash; {@link #currentDate()}  &mdash; current date {@code mm/dd/yy}</li>
- *   <li>{@code PGMNAMEO} &mdash; PIC X(8)  &mdash; {@link #pgmName()}      &mdash; echoed program name, typically {@code "COUSR00C"}</li>
- *   <li>{@code TITLE02O} &mdash; PIC X(40) &mdash; {@link #title02()}      &mdash; secondary screen title (e.g. {@code "Admin User List"})</li>
- *   <li>{@code CURTIMEO} &mdash; PIC X(8)  &mdash; {@link #currentTime()}  &mdash; current time {@code hh:mm:ss}</li>
- *   <li>{@code PAGENUMO} &mdash; PIC X(8)  &mdash; {@link #pageNum()}      &mdash; page number (space-padded; caller formats)</li>
- *   <li>{@code (group)}  &mdash; List(10) &mdash; {@link #rows()}         &mdash; 10 fixed-size {@link UserRow} slots</li>
- *   <li>{@code ERRMSGO}  &mdash; PIC X(78) &mdash; {@link #errorMessage()} &mdash; error/info message line</li>
+ *   <li>{@code TRNNAMEO} &mdash; PIC X(4)  &mdash; {@link #tranName()}        &mdash; echoed transaction id, typically {@code "CU00"}</li>
+ *   <li>{@code TITLE01O} &mdash; PIC X(40) &mdash; {@link #title01()}         &mdash; primary screen title</li>
+ *   <li>{@code CURDATEO} &mdash; PIC X(8)  &mdash; {@link #currentDate()}     &mdash; current date {@code mm/dd/yy}</li>
+ *   <li>{@code PGMNAMEO} &mdash; PIC X(8)  &mdash; {@link #pgmName()}         &mdash; echoed program name, typically {@code "COUSR00C"}</li>
+ *   <li>{@code TITLE02O} &mdash; PIC X(40) &mdash; {@link #title02()}         &mdash; secondary screen title (e.g. {@code "Admin User List"})</li>
+ *   <li>{@code CURTIMEO} &mdash; PIC X(8)  &mdash; {@link #currentTime()}     &mdash; current time {@code hh:mm:ss}</li>
+ *   <li>{@code PAGENUMO} &mdash; PIC X(8)  &mdash; {@link #pageNum()}         &mdash; page number (space-padded; caller formats)</li>
+ *   <li>{@code USRIDINO} &mdash; PIC X(8)  &mdash; {@link #userIdInputEcho()} &mdash; echoed user-id input field (search/filter)</li>
+ *   <li>{@code (group)}  &mdash; List(10) &mdash; {@link #rows()}             &mdash; 10 fixed-size {@link UserRow} slots</li>
+ *   <li>{@code ERRMSGO}  &mdash; PIC X(78) &mdash; {@link #errorMessage()}    &mdash; error/info message line</li>
  * </ul>
  *
- * @param tranName     echoed transaction id ({@code CU00}), PIC X(4)
- * @param title01      title line 1, PIC X(40)
- * @param currentDate  current date ({@code mm/dd/yy}), PIC X(8)
- * @param pgmName      program name ({@code COUSR00C}), PIC X(8)
- * @param title02      title line 2 ({@code "Admin User List"}), PIC X(40)
- * @param currentTime  current time ({@code hh:mm:ss}), PIC X(8)
- * @param pageNum      page number (space-padded by caller), PIC X(8)
- * @param rows         exactly 10 user rows after construction (padded or
- *                     truncated as needed); never {@code null} elements
- * @param errorMessage error or info message text, PIC X(78)
+ * @param tranName        echoed transaction id ({@code CU00}), PIC X(4)
+ * @param title01         title line 1, PIC X(40)
+ * @param currentDate     current date ({@code mm/dd/yy}), PIC X(8)
+ * @param pgmName         program name ({@code COUSR00C}), PIC X(8)
+ * @param title02         title line 2 ({@code "Admin User List"}), PIC X(40)
+ * @param currentTime     current time ({@code hh:mm:ss}), PIC X(8)
+ * @param pageNum         page number (space-padded by caller), PIC X(8)
+ * @param userIdInputEcho echoed user-id input field (search/filter), PIC X(8)
+ *                        &mdash; the COBOL {@code USRIDINO} output leaf at
+ *                        {@code app/cpy-bms/COUSR00.CPY} line 422; mirrors
+ *                        the input-side {@code USRIDINI} field so the user
+ *                        sees their previously-entered filter on subsequent
+ *                        renders.
+ * @param rows            exactly 10 user rows after construction (padded or
+ *                        truncated as needed); never {@code null} elements
+ * @param errorMessage    error or info message text, PIC X(78)
  *
  * @see com.blitzy.carddemo.application.user.CoUsr00C
  * @see com.blitzy.carddemo.application.user.CoUsr00Input
@@ -158,6 +165,10 @@ public record CoUsr00Output(
 
         // ----- Row 4 (page indicator) -----
         String pageNum,             // PAGENUMO  PIC X(8)   — page number
+
+        // ----- Row 6 (user-id input echo) -----
+        String userIdInputEcho,     // USRIDINO  PIC X(8)   — echoed search/filter
+                                    //                       per app/cpy-bms/COUSR00.CPY:L422
 
         // ----- 10 fixed user-list rows (rows 10-19 on the 3270) -----
         List<UserRow> rows,
@@ -209,6 +220,13 @@ public record CoUsr00Output(
     /** BMS {@code PIC X(8)} width of the {@code PAGENUM} field. */
     private static final int LEN_PAGE_NUM = 8;
 
+    /**
+     * BMS {@code PIC X(8)} width of the {@code USRIDIN} field (the
+     * search/filter input echoed back on the output side as the
+     * {@code USRIDINO} leaf at {@code app/cpy-bms/COUSR00.CPY} line 422).
+     */
+    private static final int LEN_USER_ID_INPUT = 8;
+
     /** BMS {@code PIC X(78)} width of the {@code ERRMSG} field. */
     private static final int LEN_ERROR_MESSAGE = 78;
 
@@ -254,26 +272,28 @@ public record CoUsr00Output(
      */
     public CoUsr00Output {
         // --- COBOL "SPACES by default" normalization on every PIC X scalar ---
-        tranName     = orEmpty(tranName);
-        title01      = orEmpty(title01);
-        currentDate  = orEmpty(currentDate);
-        pgmName      = orEmpty(pgmName);
-        title02      = orEmpty(title02);
-        currentTime  = orEmpty(currentTime);
-        pageNum      = orEmpty(pageNum);
-        errorMessage = orEmpty(errorMessage);
+        tranName        = orEmpty(tranName);
+        title01         = orEmpty(title01);
+        currentDate     = orEmpty(currentDate);
+        pgmName         = orEmpty(pgmName);
+        title02         = orEmpty(title02);
+        currentTime     = orEmpty(currentTime);
+        pageNum         = orEmpty(pageNum);
+        userIdInputEcho = orEmpty(userIdInputEcho);
+        errorMessage    = orEmpty(errorMessage);
 
         // --- PIC X(n) fixed-length validation per app/bms/COUSR00.bms ---
         // Values longer than the declared width would cause silent hardware
         // truncation in the CICS SEND-MAP layer; fail fast here instead.
-        checkPicLength("tranName",     tranName,     LEN_TRAN_NAME);
-        checkPicLength("title01",      title01,      LEN_TITLE_01);
-        checkPicLength("currentDate",  currentDate,  LEN_CURRENT_DATE);
-        checkPicLength("pgmName",      pgmName,      LEN_PGM_NAME);
-        checkPicLength("title02",      title02,      LEN_TITLE_02);
-        checkPicLength("currentTime",  currentTime,  LEN_CURRENT_TIME);
-        checkPicLength("pageNum",      pageNum,      LEN_PAGE_NUM);
-        checkPicLength("errorMessage", errorMessage, LEN_ERROR_MESSAGE);
+        checkPicLength("tranName",        tranName,        LEN_TRAN_NAME);
+        checkPicLength("title01",         title01,         LEN_TITLE_01);
+        checkPicLength("currentDate",     currentDate,     LEN_CURRENT_DATE);
+        checkPicLength("pgmName",         pgmName,         LEN_PGM_NAME);
+        checkPicLength("title02",         title02,         LEN_TITLE_02);
+        checkPicLength("currentTime",     currentTime,     LEN_CURRENT_TIME);
+        checkPicLength("pageNum",         pageNum,         LEN_PAGE_NUM);
+        checkPicLength("userIdInputEcho", userIdInputEcho, LEN_USER_ID_INPUT);
+        checkPicLength("errorMessage",    errorMessage,    LEN_ERROR_MESSAGE);
 
         // --- Fixed 10-row layout normalization ---
         // The COBOL map allocates 10 fixed row slots regardless of how
@@ -306,38 +326,54 @@ public record CoUsr00Output(
     }
 
     /**
-     * One row of the user-list display, translating four sibling BMS
+     * One row of the user-list display, translating five sibling BMS
      * leaves from {@code app/cpy-bms/COUSR00.CPY} (for row index
      * {@code n} = 1..10):
      * <ul>
-     *   <li>{@code USRID0nO}  &mdash; PIC X(8)  &mdash; {@link #userId()}     &mdash; user id</li>
-     *   <li>{@code FNAME0nO}  &mdash; PIC X(20) &mdash; {@link #firstName()}  &mdash; first name</li>
-     *   <li>{@code LNAME0nO}  &mdash; PIC X(20) &mdash; {@link #lastName()}   &mdash; last name</li>
-     *   <li>{@code UTYPE0nO}  &mdash; PIC X(1)  &mdash; {@link #userType()}   &mdash; user type ({@code 'A'}=Admin, {@code 'U'}=User, or space)</li>
+     *   <li>{@code SEL000nO} &mdash; PIC X(1)  &mdash; {@link #selection()} &mdash; per-row selection column
+     *       ({@code 'U'}=Update / {@code 'D'}=Delete / space=no action)
+     *       at {@code app/cpy-bms/COUSR00.CPY} lines 428, 458, 488, 518,
+     *       548, 578, 608, 638, 668, 698 for {@code n}=1..10</li>
+     *   <li>{@code USRID0nO}  &mdash; PIC X(8)  &mdash; {@link #userId()}    &mdash; user id</li>
+     *   <li>{@code FNAME0nO}  &mdash; PIC X(20) &mdash; {@link #firstName()} &mdash; first name</li>
+     *   <li>{@code LNAME0nO}  &mdash; PIC X(20) &mdash; {@link #lastName()}  &mdash; last name</li>
+     *   <li>{@code UTYPE0nO}  &mdash; PIC X(1)  &mdash; {@link #userType()}  &mdash; user type ({@code 'A'}=Admin, {@code 'U'}=User, or space)</li>
      * </ul>
      *
      * <p>Each PIC X(n) width is enforced at construction time; values
      * exceeding the declared width raise an
      * {@link IllegalArgumentException}.
      *
+     * <p>The selection column drives the COUSR00C controller's branch to
+     * {@code COUSR02C} (update) or {@code COUSR03C} (delete) after ENTER.
+     * On the output side the field is typically blank (the operator
+     * supplies the value on the input side), but is preserved here for
+     * field-for-field symbolic-map parity so that on a SEND-MAP after a
+     * validation error the previously-entered selection is echoed back.
+     *
      * <p>Blank rows (trailing slots when fewer than 10 users were loaded,
      * or when no users were loaded at all) are represented by
-     * {@link #empty()}, which carries empty strings in all four
+     * {@link #empty()}, which carries empty strings in all five
      * components. The COBOL {@code INITIALIZE-USER-DATA} paragraph
      * ({@code app/cbl/COUSR00C.cbl} lines 446-501) renders these as
      * spaces on the 3270 terminal.
      *
+     * @param selection per-row selection column ({@code SEL000nO}), PIC X(1)
      * @param userId    user id (8 chars max), {@code USRID0nO} PIC X(8)
      * @param firstName first name (20 chars max), {@code FNAME0nO} PIC X(20)
      * @param lastName  last name (20 chars max), {@code LNAME0nO} PIC X(20)
      * @param userType  user type (1 char), {@code UTYPE0nO} PIC X(1)
      */
     public record UserRow(
+            String selection,        // SEL000nO  PIC X(1)
             String userId,           // USRID0nO  PIC X(8)
             String firstName,        // FNAME0nO  PIC X(20)
             String lastName,         // LNAME0nO  PIC X(20)
             String userType          // UTYPE0nO  PIC X(1)
     ) {
+
+        /** BMS {@code PIC X(1)} width of the {@code SEL000n} field. */
+        private static final int LEN_SELECTION = 1;
 
         /** BMS {@code PIC X(8)} width of the {@code USRID0n} field. */
         private static final int LEN_USER_ID = 8;
@@ -354,17 +390,19 @@ public record CoUsr00Output(
         /**
          * Compact (canonical) constructor enforcing
          * &ldquo;SPACES by default&rdquo; semantics and PIC X(n) width
-         * validation on each of the four row leaves.
+         * validation on each of the five row leaves.
          *
          * @throws IllegalArgumentException if any component exceeds its
          *                                  declared BMS width
          */
         public UserRow {
+            selection = orEmpty(selection);
             userId    = orEmpty(userId);
             firstName = orEmpty(firstName);
             lastName  = orEmpty(lastName);
             userType  = orEmpty(userType);
 
+            checkPicLength("selection", selection, LEN_SELECTION);
             checkPicLength("userId",    userId,    LEN_USER_ID);
             checkPicLength("firstName", firstName, LEN_FIRST_NAME);
             checkPicLength("lastName",  lastName,  LEN_LAST_NAME);
@@ -381,14 +419,14 @@ public record CoUsr00Output(
          * <p>The empty-string contract mirrors the COBOL
          * {@code INITIALIZE-USER-DATA} paragraph ({@code app/cbl/COUSR00C.cbl}
          * lines 446-501), which performs {@code MOVE SPACES TO USRID0nI,
-         * FNAME0nI, LNAME0nI, UTYPE0nI} before the next SEND-MAP. The
-         * 3270 terminal renders these as spaces.
+         * FNAME0nI, LNAME0nI, UTYPE0nI, SEL000nI} before the next SEND-MAP.
+         * The 3270 terminal renders these as spaces.
          *
-         * @return a {@code UserRow} with all four components set to
+         * @return a {@code UserRow} with all five components set to
          *         the empty string {@code ""}
          */
         public static UserRow empty() {
-            return new UserRow("", "", "", "");
+            return new UserRow("", "", "", "", "");
         }
     }
 
@@ -406,8 +444,9 @@ public record CoUsr00Output(
      * {@code POPULATE-HEADER-INFO} before returning to the SEND-MAP
      * equivalent layer.
      *
-     * @return a {@code CoUsr00Output} with all 8 PIC X string fields
-     *         set to {@code ""} and 10 blank rows
+     * @return a {@code CoUsr00Output} with all 9 PIC X string fields
+     *         (including {@code userIdInputEcho}) set to {@code ""} and
+     *         10 blank rows
      */
     public static CoUsr00Output blank() {
         List<UserRow> emptyRows = new ArrayList<>(ROW_COUNT);
@@ -422,6 +461,7 @@ public record CoUsr00Output(
                 "",          // title02
                 "",          // currentTime
                 "",          // pageNum
+                "",          // userIdInputEcho (USRIDINO)
                 emptyRows,   // rows
                 ""           // errorMessage
         );

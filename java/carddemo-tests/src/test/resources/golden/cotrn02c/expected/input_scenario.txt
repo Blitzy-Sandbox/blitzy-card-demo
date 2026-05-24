@@ -19,6 +19,34 @@
 #  - No PAN values from app/data/ASCII/cardxref.txt appear; test-account
 #    00000000010 is used for valid-key lookups (MIGRATION_NOTES.md s1.6).
 #  - Scenario 26 <NEXT_TRAN_ID> placeholder is replaced by the capture script.
+#
+# ============================================================================
+# NON-SENSITIVE SYNTHETIC TEST DATA (Checkpoint 2 review fix)
+# ============================================================================
+# Per AAP s0.7.2 and the Checkpoint 2 PAN-data finding, this file contains
+# ONLY synthetic, clearly non-real test data:
+#
+#   * No real PAN appears.
+#   * No real-world card-network BIN prefix (e.g., 4xxx Visa, 5xxx MasterCard,
+#     34xx/37xx Amex, 6xxx Discover) appears.
+#   * No Luhn-valid test PAN appears.
+#   * 16-digit field widths are preserved because the BMS CARDNINI field is
+#     PIC X(16); the synthetic token convention is 0000000000000000-style
+#     leading-zero placeholders, matching cocrdlic/cocrdslc fixture files.
+#   * Scenarios 6 and 7 use deliberately alphabetic-prefixed test inputs
+#     ("ABC12345678", "ABC1234567890123") to exercise non-numeric input
+#     handling paths in COTRN02C; these strings cannot be confused with real
+#     PANs (the leading "ABC" prevents \b\d{n}\b PAN-regex matches and is
+#     visibly synthetic).
+#   * Scenario 9 uses 0000000000009999 as a clearly synthetic 16-digit
+#     placeholder for a "format-OK but not-in-CCXREF" lookup; the trailing
+#     four digits 9999 preserve the original mnemonic value.
+#
+# Per AAP s0.7.2, the production Logback configuration applies a PAN-masking
+# regex to all log event surfaces (message, MDC, thread, logger, exception),
+# providing defence-in-depth even if any synthetic 16-digit token in this
+# file is ever emitted into a log line.
+# ============================================================================
 
 # Scenario 1: source [app/cbl/COTRN02C.cbl:L115-L117]
 SCENARIO 1 "First-time entry, EIBCALEN=0, XCTL to COSGN00C"
@@ -104,12 +132,12 @@ EXPECT_TRANSACT_UNCHANGED
 END_SCENARIO
 
 # Scenario 9: source [app/cbl/COTRN02C.cbl:L624-L629]
-SCENARIO 9 "CARDNINI numeric format OK but not in CCXREF (synthetic 9999...)"
+SCENARIO 9 "CARDNINI numeric format OK but not in CCXREF (synthetic 0000...9999)"
 EIBCALEN 256
 COMMAREA CDEMO-PGM-REENTER=1
 AID DFHENTER
 FIELD ACTIDINI=''
-FIELD CARDNINI=9999999999999999
+FIELD CARDNINI=0000000000009999
 EXPECT_MSG "Card Number NOT found..."
 EXPECT_MSG_COLOR RED
 EXPECT_TRANSACT_UNCHANGED

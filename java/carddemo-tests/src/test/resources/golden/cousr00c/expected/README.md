@@ -426,7 +426,16 @@ and the scenario script via the `inputFile()` override.
    Auxiliary input — the harness wires it into a tmp-dir and
    configures the file-backed `UserSecurityRepository` to read from
    it. COUSR00C is READ-ONLY so `usrsec.txt` is byte-identical
-   pre- and post-run.
+   pre- and post-run. **Password values are non-secret synthetic test
+   sentinels following the `PW<role><suffix>` convention**
+   (Checkpoint 2 review fix): `PWADMN00` for `ADMIN001` and
+   `PWUSR001`…`PWUSR021` for the 21 regular users. These sentinels do
+   NOT correspond to any real user, default credential, system
+   password, or environment variable. COUSR00C does NOT reference
+   password values in any scenario (it browses USRSEC for IDs/names
+   only); the synthetic convention is shared with `cosgn00c/` purely
+   to maintain a single non-secret password vocabulary across all
+   USRSEC-consuming fixtures.
 
 3. **`stdout.txt`** (placeholder CREATED). The captured stdout from
    the COBOL reference run. Expected content under the 12-scenario

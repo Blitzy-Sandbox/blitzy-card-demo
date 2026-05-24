@@ -23,6 +23,13 @@ package com.blitzy.carddemo.application.user;
 // Replaces individual package imports per AAP §0.7.3 mandate.
 import module java.base;
 
+// AAP §0.7.1 traceability mandate: every translated artifact must cite its
+// original COBOL source via the @CobolProgram annotation declared in the
+// carddemo-domain module. carddemo-application declares carddemo-domain as a
+// direct dependency in its pom.xml, so the annotation is on the classpath
+// and resolvable here.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
+
 /**
  * BMS input record for the {@code COUSR03 / COUSR3A} delete-user map
  * (COBOL transaction {@code CU03}, program {@code COUSR03C}).
@@ -156,6 +163,14 @@ import module java.base;
  * @see com.blitzy.carddemo.application.user.CoUsr03C
  * @see com.blitzy.carddemo.application.user.CoUsr03Output
  */
+@CobolProgram(
+        value = "COUSR03",
+        sourcePath = "app/bms/COUSR03.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (input side); symbolic copybook 01 COUSR3AI in "
+                + "app/cpy-bms/COUSR03.CPY. Driven by online program "
+                + "app/cbl/COUSR03C.cbl (transaction CU03 — delete user)."
+)
 public record CoUsr03Input(
         String userId,       // USRIDINI  PIC X(8)  — only editable field
         String firstName,    // FNAMEI    PIC X(20) — ASKIP, populated by program

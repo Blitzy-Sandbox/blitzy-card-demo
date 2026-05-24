@@ -19,6 +19,26 @@
     layout requirement of AAP §0.6.12 without adding any third-party encoder
     artefact outside the AAP §0.5.1 dependency inventory.
 
+    ============================================================================
+    PAN MASKING (resolves Checkpoint 2 review finding for
+    java/carddemo-tests/src/test/resources/logback-test.xml:40)
+    ============================================================================
+    Test fixtures committed under java/carddemo-tests/src/test/resources/golden
+    may contain card-number-shaped values; without masking, those values would
+    propagate verbatim into CI logs through test-run trace output and via the
+    application code under test. To satisfy AAP §0.7.2 (PAN must be masked in
+    logs and error messages), this configuration applies the same PAN masking
+    regex used by production logback.xml to:
+        - %message (the message body)
+        - %mdc     (MDC fields from ScopedValue<BatchRunContext>)
+        - %ex{full} (full stack-trace output including "Caused by" chains)
+        - %thread  (the thread name)
+        - %logger  (the logger name)
+    The regex matches 13–19 consecutive digits at word boundaries (covering
+    Visa/MasterCard/Discover/Amex PAN lengths) and substitutes a fixed
+    12-asterisk prefix followed by the last 4 digits, mirroring the production
+    masking.
+
     Architectural constraints enforced (see AAP §0.1.1, §0.6.12, §0.7.4):
     only stock Logback elements are used — no application-framework extensions,
     no third-party encoders, no disk-bound appenders, no metric or trace
@@ -29,15 +49,26 @@
 <configuration>
 
     <!--
+        Shared PAN masking properties. Identical regex and replacement to the
+        production logback.xml so test and production behave the same.
+    -->
+    <property name="PAN_REGEX" value="\b(\d{9,15})(\d{4})\b"/>
+    <property name="PAN_REPLACEMENT" value="************$2"/>
+
+    <!--
         Console appender, JSON pattern. One log event = one single-line JSON
         object. %mdc dumps any keys promoted from ScopedValue<BatchRunContext>
-        (AAP §0.6.6); %replace(...){'"', '\\"'} escapes embedded double quotes
-        in dynamic content so the surrounding JSON stays parseable.
+        (AAP §0.6.6); embedded double quotes in dynamic content are escaped so
+        the surrounding JSON stays parseable. PAN masking is applied to every
+        dynamic field (message, MDC, exception, thread, logger) by wrapping the
+        affected conversion in %replace; the JSON-quote escaping is then
+        applied on the masked result so masked stars never collide with the
+        quote-escape pass.
     -->
     <appender name="STDOUT_JSON" class="ch.qos.logback.core.ConsoleAppender">
         <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
             <charset>UTF-8</charset>
-            <pattern>{"timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"%level","logger":"%logger{40}","thread":"%thread","message":"%replace(%message){'"', '\\"'}","mdc":{%mdc},"exception":"%replace(%ex{full}){'"', '\\"'}"}%n</pattern>
+            <pattern>{"timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}","level":"%level","logger":"%replace(%logger{40}){'${PAN_REGEX}','${PAN_REPLACEMENT}'}","thread":"%replace(%thread){'${PAN_REGEX}','${PAN_REPLACEMENT}'}","message":"%replace(%replace(%message){'${PAN_REGEX}','${PAN_REPLACEMENT}'}){'"','\\"'}","mdc":{%replace(%mdc){'${PAN_REGEX}','${PAN_REPLACEMENT}'}},"exception":"%replace(%replace(%ex{full}){'${PAN_REGEX}','${PAN_REPLACEMENT}'}){'"','\\"'}"}%n</pattern>
         </encoder>
     </appender>
 

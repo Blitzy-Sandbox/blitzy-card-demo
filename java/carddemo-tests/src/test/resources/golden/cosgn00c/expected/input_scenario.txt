@@ -11,6 +11,26 @@
 #
 # SECURITY: per AAP section 0.7.2, scenarios 6, 7, 10, 11 include
 # ASSERT_NO_PASSWORD_IN_OUTPUT to verify NO password value appears in captured output.
+#
+# ============================================================================
+# NON-SENSITIVE SYNTHETIC TEST CREDENTIALS (Checkpoint 2 review fix)
+# ============================================================================
+# Per AAP s0.7.2 and the Checkpoint 2 secrets-hygiene finding, password values
+# in this file and in the paired usrsec.txt fixture have been replaced with
+# clearly synthetic test sentinels that follow the PW<role><suffix> convention:
+#
+#   ADMIN001 -> password PWADMN00 (was ADMINPWD)
+#   USER0001 -> password PWUSR001 (was USER0001 - identical-to-UID pattern)
+#   USER0002 -> password PWUSR002 (was PASS0002)
+#   USER0003 -> password PWUSR003 (was USER0003 - identical-to-UID pattern)
+#
+# These are TEST-ONLY non-secret sentinels chosen to break the "password ==
+# user id" anti-pattern that the original synthesized fixture inadvertently
+# carried. They do NOT correspond to any real user, system, environment, or
+# default credential. Scenarios 10 and 11 deliberately use lower- and
+# mixed-case variants ("pwadmn00", "PwAdMn00") to exercise the COBOL
+# FUNCTION UPPER-CASE normalisation [app/cbl/COSGN00C.cbl:L180].
+# ============================================================================
 
 # Scenario 1: Initial display (EIBCALEN=0; first connection)
 EIBCALEN 0
@@ -45,7 +65,7 @@ END_SCENARIO
 
 # Scenario 6: ENTER with valid admin signon -> XCTL COADM01C
 FIELD USERIDI=ADMIN001
-FIELD PASSWDI=ADMINPWD
+FIELD PASSWDI=PWADMN00
 AID DFHENTER
 EXPECT_XCTL COADM01C
 EXPECT_COMMAREA_FIELD CDEMO-USER-ID=ADMIN001
@@ -58,7 +78,7 @@ END_SCENARIO
 
 # Scenario 7: ENTER with valid regular user signon -> XCTL COMEN01C
 FIELD USERIDI=USER0001
-FIELD PASSWDI=USER0001
+FIELD PASSWDI=PWUSR001
 AID DFHENTER
 EXPECT_XCTL COMEN01C
 EXPECT_COMMAREA_FIELD CDEMO-USER-ID=USER0001
@@ -83,7 +103,7 @@ END_SCENARIO
 
 # Scenario 10: lower-case credentials -> upper-cased via FUNCTION UPPER-CASE -> admin XCTL
 FIELD USERIDI=admin001
-FIELD PASSWDI=adminpwd
+FIELD PASSWDI=pwadmn00
 AID DFHENTER
 EXPECT_XCTL COADM01C
 EXPECT_COMMAREA_FIELD CDEMO-USER-ID=ADMIN001
@@ -94,7 +114,7 @@ END_SCENARIO
 
 # Scenario 11: mixed-case credentials -> upper-cased -> admin XCTL
 FIELD USERIDI=AdMiN001
-FIELD PASSWDI=AdMiNpWd
+FIELD PASSWDI=PwAdMn00
 AID DFHENTER
 EXPECT_XCTL COADM01C
 EXPECT_COMMAREA_FIELD CDEMO-USER-ID=ADMIN001

@@ -66,8 +66,33 @@
       Logback's %replace conversion uses java.util.regex and supports
       back-references in the replacement string. The variables ${PAN_REGEX}
       and ${PAN_REPLACEMENT} are resolved here at configuration load time
-      and the resulting literal strings are then compiled into the encoder
-      pattern as the second/third arguments of %replace(...) below.
+      and then compiled into the encoder pattern below.
+
+      ========================================================================
+      ALL-EVENT-SURFACE MASKING (resolves Checkpoint 2 review finding for
+      java/carddemo-app/src/main/resources/logback.xml:72-73, 86-97)
+      ========================================================================
+      The pattern below wraps %replace around the ENTIRE event surface,
+      not just %msg. This guarantees PAN masking applies uniformly to:
+        - the message (%msg)
+        - MDC values (%X{batchRunId} and %X{processingDate} via the
+          [batchRunId/processingDate] segment; also caller-provided MDC
+          fields appended later if any)
+        - the thread name (%thread)
+        - the logger name (%logger{36})
+        - any exception output (%ex %wEx %xEx %rEx %xThrowable),
+          which is included inside the outer %replace via %ex
+      The %replace function in Logback is a fully-qualified conversion that
+      can wrap arbitrarily complex sub-patterns; nesting it around the entire
+      structural pattern (rather than just the message) ensures no PAN can
+      slip through a stack trace, an MDC value, a thread name (e.g., a
+      virtual-thread name carrying a card-id), or a logger name.
+
+      The fixed structural prefix (timestamp + level + brackets) does not
+      contain digits long enough to match the PAN_REGEX, so it is safe to
+      apply the regex to the whole pattern; the regex's \b word-boundary
+      anchors and the {9,15}{4} = 13-19 length bound prevent false positives
+      on millisecond timestamps (only 3 trailing digits after the dot).
     -->
     <property name="PAN_REGEX" value="\b(\d{9,15})(\d{4})\b"/>
     <property name="PAN_REPLACEMENT" value="************$2"/>
@@ -83,7 +108,7 @@
         %logger{36}                  Logger name truncated to 36 chars
         %X{batchRunId:-}             Batch run ID from MDC (empty if not set)
         %X{processingDate:-}         Processing date from MDC (empty if not set)
-        %replace(%msg){'r','t'}      Regex replacement on the message body
+        %msg                         The message body
         %n                           Platform-appropriate line separator
         %ex                          Stack trace if the event carries a Throwable
 
@@ -92,9 +117,16 @@
       ScopedValue.where(...).run(...) scope (per AAP §0.6.6, JEP 506). If they
       are absent (online / interactive use), the slots degrade gracefully to
       an empty string between the brackets.
+
+      The %replace wraps the entire formatted event so that PAN masking
+      covers messages, MDC fields, thread names, and exception output
+      (including any "Caused by" chains and stack-trace frames). The %n
+      newline is emitted INSIDE the wrap because Logback's regex engine
+      treats the input as a single multi-line string; the regex's \b
+      anchors ensure newlines do not interfere with PAN detection.
     -->
     <property name="LOG_PATTERN"
-              value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [%X{batchRunId:-}/%X{processingDate:-}] %replace(%msg){'${PAN_REGEX}','${PAN_REPLACEMENT}'}%n%ex"/>
+              value="%replace(%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [%X{batchRunId:-}/%X{processingDate:-}] %msg%n%ex){'${PAN_REGEX}','${PAN_REPLACEMENT}'}"/>
 
     <!--
       ========================================================================
