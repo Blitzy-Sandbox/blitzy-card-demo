@@ -10,7 +10,7 @@ import com.blitzy.carddemo.application.ProgramRegistry;
 import com.blitzy.carddemo.domain.annotation.CobolProgram;
 import com.blitzy.carddemo.domain.commarea.CardDemoCommarea;
 import com.blitzy.carddemo.domain.menu.MainMenuTable;
-import com.blitzy.carddemo.domain.menu.MainMenuTable.MainOption;
+import com.blitzy.carddemo.domain.menu.MainMenuTable.MainMenuEntry;
 import com.blitzy.carddemo.domain.status.PgmContext;
 import com.blitzy.carddemo.domain.status.UserType;
 import com.blitzy.carddemo.domain.text.CcWorkAreas.AidKey;
@@ -218,25 +218,35 @@ public final class CoMen01C {
             return Result.sendMap(sendMenuScreen(commarea, MSG_INVALID_OPTION), commarea);
         }
 
-        Optional<MainOption> chosen = MainMenuTable.findByNum(option);
+        Optional<MainMenuEntry> chosen = MainMenuTable.ENTRIES.stream()
+                .filter(e -> e.optionNumber() == option)
+                .findFirst();
         if (chosen.isEmpty()) {
             return Result.sendMap(sendMenuScreen(commarea, MSG_INVALID_OPTION), commarea);
         }
-        MainOption mainOption = chosen.get();
+        MainMenuEntry mainOption = chosen.get();
 
         // IF CDEMO-USRTYP-USER AND CDEMO-MENU-OPT-USRTYPE(WS-OPTION) = 'A'
+        // NB: callerType is com.blitzy.carddemo.domain.status.UserType (from
+        // the commarea); mainOption.userType() is
+        // com.blitzy.carddemo.domain.commarea.UserType (from the menu table,
+        // per the AAP §0.6.10 / file-schema mandate). Both are sealed
+        // hierarchies with identical Admin/User permits; the {@code instanceof}
+        // checks are package-scoped and use the fully-qualified permit name on
+        // the menu side to avoid ambiguity with the imported status type.
         UserType callerType = commarea.generalInfo().userType();
-        if (callerType instanceof UserType.User && mainOption.requiredType() instanceof UserType.Admin) {
+        if (callerType instanceof UserType.User
+                && mainOption.userType() instanceof com.blitzy.carddemo.domain.commarea.UserType.Admin) {
             return Result.sendMap(sendMenuScreen(commarea, MSG_NO_ACCESS), commarea);
         }
 
         // IF CDEMO-MENU-OPT-PGMNAME(WS-OPTION)(1:5) NOT = 'DUMMY'  → XCTL
         // ELSE                                                       → "coming soon"
-        String pgmName = mainOption.pgmName().trim();
+        String pgmName = mainOption.programName().trim();
         if (pgmName.length() >= 5 && pgmName.regionMatches(0, "DUMMY", 0, 5)) {
             // COBOL DELIMITED BY SPACE on CDEMO-MENU-OPT-NAME → only the first
             // whitespace-delimited word of the menu name is emitted.
-            String firstWord = firstSpaceDelimitedToken(mainOption.optName());
+            String firstWord = firstSpaceDelimitedToken(mainOption.optionName());
             String msg = MSG_COMING_SOON_PREFIX + firstWord + MSG_COMING_SOON_SUFFIX;
             return Result.sendMap(sendMenuScreen(commarea, msg), commarea);
         }
@@ -275,10 +285,10 @@ public final class CoMen01C {
         for (int i = 0; i < MAX_OPTION_SLOTS; i++) {
             slots[i] = "";
         }
-        var options = MainMenuTable.options();
+        var options = MainMenuTable.ENTRIES;
         for (int i = 0; i < options.size() && i < MAX_OPTION_SLOTS; i++) {
-            MainOption opt = options.get(i);
-            slots[i] = String.format("%02d. %s", opt.optNum(), opt.optName());
+            MainMenuEntry opt = options.get(i);
+            slots[i] = String.format("%02d. %s", opt.optionNumber(), opt.optionName());
         }
 
         // COBOL `COMEN01C` lines 152-154:
