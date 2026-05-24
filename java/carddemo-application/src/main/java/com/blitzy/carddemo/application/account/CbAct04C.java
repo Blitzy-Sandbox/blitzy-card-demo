@@ -190,7 +190,7 @@ public final class CbAct04C {
         // DISPLAY TRAN-CAT-BAL-RECORD (preserved verbatim)
         displayWholeRecord(record);
 
-        long acctId = record.key().acctId();
+        long acctId = record.tranCatKey().trancatAcctId();
         if (acctId != lastAcctNum) {
             if (!firstTime) {
                 // 1050-UPDATE-ACCOUNT for the PRIOR account
@@ -207,8 +207,8 @@ public final class CbAct04C {
         }
 
         // 1200-GET-INTEREST-RATE (with default fallback to DEFAULT group)
-        BigDecimal disIntRate = getInterestRate(record.key().typeCd(),
-                record.key().catCd());
+        BigDecimal disIntRate = getInterestRate(record.tranCatKey().trancatTypeCd(),
+                record.tranCatKey().trancatCd());
 
         if (disIntRate.compareTo(BigDecimal.ZERO) != 0) {
             // 1300-COMPUTE-INTEREST
