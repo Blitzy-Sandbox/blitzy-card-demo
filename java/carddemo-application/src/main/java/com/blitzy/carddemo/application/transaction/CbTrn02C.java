@@ -140,7 +140,7 @@ public final class CbTrn02C {
      * datasets; in the Java port the DALYTRAN reader and the DALYREJS
      * sink are exposed through the same {@link DailyTransactionRepository}
      * port (the COBOL FD-REJS-RECORD is layered onto DalyTranRecord via
-     * {@link DailyTransactionRepository#appendReject(DalyTranRecord, String)}).
+     * {@link DailyTransactionRepository#appendReject(DalyTranRecord, int, String)}).
      *
      * @param dailyTransactionRepository      port for DALYTRAN sequential reads and DALYREJS sequential writes
      * @param transactionRepository           port for TRANSACT sequential writes
@@ -402,32 +402,32 @@ public final class CbTrn02C {
      * Mirrors {@code 2500-WRITE-REJECT-REC}: writes the DALYTRAN record
      * plus the validation trailer (reason code + description, total 80
      * bytes) to the DALYREJS file.
+     *
+     * <p>COBOL paragraph at {@code app/cbl/CBTRN02C.cbl:L446-L465}:
+     * <pre>{@code
+     *   MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA
+     *   MOVE WS-VALIDATION-TRAILER TO VALIDATION-TRAILER
+     *   WRITE FD-REJS-RECORD FROM REJECT-RECORD
+     * }</pre>
+     *
+     * <p>The {@link DailyTransactionRepository#appendReject(DalyTranRecord, int, String)}
+     * port accepts the reason code and description as separate
+     * parameters and is responsible for the 430-byte byte layout
+     * (350-byte DALYTRAN-RECORD image + 4-byte zero-padded reason +
+     * 76-byte right-space-padded description) per
+     * {@code WS-VALIDATION-TRAILER} at
+     * {@code app/cbl/CBTRN02C.cbl:L180-L182}.
      */
     private void writeRejectRec(DalyTranRecord record, ValidationResult result) {
-        // COBOL: MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA
-        //        MOVE WS-VALIDATION-TRAILER TO VALIDATION-TRAILER
-        // We carry the reason code in the trailer string passed to the port.
-        // The port-level adapter is responsible for the byte layout
-        // (4-byte reason + 76-byte description per WS-VALIDATION-TRAILER).
-        String trailer = formatTrailer(result);
         try {
-            dailyTransactionRepository.appendReject(record, trailer);
+            dailyTransactionRepository.appendReject(record,
+                    result.reason(),
+                    result.description());
         } catch (RuntimeException e) {
             log.error("ERROR WRITING TO REJECTS FILE");
             displayIoStatus("12");
             abendProgram(e);
         }
-    }
-
-    /**
-     * Builds the 80-byte validation trailer: 4-byte zero-padded reason
-     * code followed by the 76-byte space-padded description, matching
-     * {@code WS-VALIDATION-TRAILER} in COBOL.
-     */
-    private static String formatTrailer(ValidationResult result) {
-        String desc = result.description() == null ? "" : result.description();
-        String descPadded = (desc + " ".repeat(76)).substring(0, 76);
-        return String.format("%04d%s", result.reason(), descPadded);
     }
 
     // ---------------------------------------------------------------- 2700 TCATBAL
