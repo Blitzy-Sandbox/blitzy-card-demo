@@ -29,6 +29,9 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -36,6 +39,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -91,13 +95,33 @@ import java.util.Objects;
  *
  * <p><b>Card number representation (AAP &sect;0.6.6 PCI-DSS):</b> card
  * numbers are 16-digit strings ({@code CARD-NUM PIC X(16)} from
- * {@code app/cpy/CVACT02Y.cpy}). In response payloads, card numbers may
- * be masked (PAN tokenization) to protect cardholder data per PCI-DSS
- * Requirement 3; the service layer is responsible for emitting the
- * masked form (e.g., {@code "************1234"}). The controller layer
- * accepts the full 16-digit string as a path variable for lookups; the
- * value is logged only at TRACE level (not DEBUG / INFO) because even
- * the full PAN appears in URL access logs only briefly.</p>
+ * {@code app/cpy/CVACT02Y.cpy}). In response payloads, card numbers are
+ * masked (PAN tokenization) by the DTO layer's {@code toString()} to
+ * protect cardholder data per PCI-DSS Requirement 3. The controller
+ * layer accepts the full 16-digit string as a path variable for lookups
+ * but NEVER logs the full PAN: every log statement emits only the last
+ * 4 digits prefixed with {@code "****"} (using
+ * {@code cardNumber.substring(12)}, which is safe because the
+ * {@link Pattern @Pattern(regexp = "^[0-9]{16}$")} validator
+ * guarantees the input is exactly 16 characters before the handler
+ * body executes). Structured logs flow through Logback +
+ * logstash-logback-encoder to CloudWatch Logs (AAP &sect;0.6.6).</p>
+ *
+ * <p><b>Bean Validation (AAP &sect;0.3.4):</b> the class-level
+ * {@link Validated @Validated} annotation activates Jakarta Bean
+ * Validation on {@code @RequestParam} and {@code @PathVariable}
+ * arguments &mdash; without it, the {@link Pattern @Pattern},
+ * {@link NotBlank @NotBlank}, and {@link Min @Min} annotations on
+ * individual parameters would be ignored. Cascading validation into
+ * the {@code @RequestBody CardUpdateDto} is triggered separately by
+ * the parameter-level {@link Valid @Valid} annotation. Constraint
+ * violations bubble up as
+ * {@code jakarta.validation.ConstraintViolationException} (for path /
+ * query) or
+ * {@code org.springframework.web.bind.MethodArgumentNotValidException}
+ * (for the request body) and are translated by
+ * {@code GlobalExceptionHandler} into the standardized
+ * {@link ApiResponse} envelope with HTTP 400 status.</p>
  *
  * <p><b>Layered architecture compliance:</b> thin Spring MVC fa&ccedil;ade;
  * no business state, no I/O, no repository or AWS-adapter access.
@@ -117,17 +141,22 @@ import java.util.Objects;
  */
 @RestController
 @RequestMapping("/api/cards")
-@Tag(name = "Cards",
+@Tag(name = "Card",
         description = "Card list, detail, and maintenance. Replaces CICS "
                 + "COCRDLIC (Tran-ID CCLI), COCRDSLC (Tran-ID CCDL), and "
                 + "COCRDUPC (Tran-ID CCUP).")
+@Validated
 public class CardController {
 
     /**
      * SLF4J facade for structured JSON logging. Per AAP &sect;0.7.2.
-     * PCI-DSS discipline (AAP &sect;0.6.6): card numbers are never
-     * logged at DEBUG / INFO / WARN / ERROR; account IDs and page
-     * indices are non-sensitive and may be logged.
+     * PCI-DSS discipline (AAP &sect;0.6.6): full card numbers are
+     * NEVER logged at any level; only the last 4 digits prefixed with
+     * {@code "****"} (via {@code cardNumber.substring(12)}) are
+     * emitted, and only after the
+     * {@link Pattern @Pattern(regexp = "^[0-9]{16}$")} validator on
+     * the path variable has guaranteed length == 16. Account IDs and
+     * page indices are non-sensitive and may be logged unmasked.
      */
     private static final Logger LOG = LoggerFactory.getLogger(CardController.class);
 
@@ -196,12 +225,14 @@ public class CardController {
      * endpoint &mdash; the source of truth for the caller's role is
      * the JWT-populated {@code SecurityContext}.</p>
      *
-     * @param accountFilter optional 11-digit account ID to narrow the
-     *                      result to cards bound to that account. May
-     *                      be {@code null}; if {@code null} and caller
-     *                      is non-admin, the service throws
-     *                      {@code ValidationException}
-     * @param page          0-based page index; defaults to 0
+     * @param accountId optional 11-digit account ID to narrow the
+     *                  result to cards bound to that account. May
+     *                  be {@code null}; if {@code null} and caller
+     *                  is non-admin, the service throws
+     *                  {@code ValidationException}
+     * @param page      0-based page index; defaults to 0. Rejected via
+     *                  {@link Min @Min(0)} when negative
+     *                  (HTTP 400 via {@code GlobalExceptionHandler}).
      * @return {@link ResponseEntity} with HTTP 200 and the
      *         {@link CardListDto} wrapped in {@link ApiResponse}
      */
@@ -209,9 +240,11 @@ public class CardController {
     @Operation(
             summary = "List cards (paginated, 7 rows per page)",
             description = "Returns a paginated card list with optional "
-                    + "account-filter narrowing. Admin callers see all cards "
-                    + "(across all accounts); non-admin callers must supply "
-                    + "an account filter and see only that account's cards. "
+                    + "account-filter narrowing. Default page size is 7 "
+                    + "(matches CICS COCRDLI.bms layout). Admin callers see "
+                    + "all cards (across all accounts); non-admin callers "
+                    + "must supply an account filter and see only that "
+                    + "account's cards (enforced server-side). "
                     + "Replaces CICS COCRDLIC / Tran-ID CCLI (card list)."
     )
     @ApiResponses({
@@ -220,7 +253,8 @@ public class CardController {
                     description = "Card list returned successfully"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
                     responseCode = "400",
-                    description = "Validation failure (e.g., non-admin call without account filter)"),
+                    description = "Validation failure (e.g., non-admin call without "
+                            + "account filter, or negative page index)"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
                     responseCode = "401",
                     description = "JWT missing or invalid"),
@@ -230,20 +264,34 @@ public class CardController {
     })
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
     public ResponseEntity<ApiResponse<CardListDto>> listCards(
-            @Parameter(description = "11-digit account ID filter (required for non-admin users)")
-            @RequestParam(value = "account", required = false) Long accountFilter,
-            @Parameter(description = "0-based page index")
-            @RequestParam(value = "page", defaultValue = "0") int page) {
+            @RequestParam(name = "accountId", required = false)
+            @Parameter(
+                    description = "Optional 11-digit account filter (COBOL ACCT-ID); "
+                            + "required for non-admin callers",
+                    example = "10000000001")
+            Long accountId,
+
+            @RequestParam(name = "page", required = false, defaultValue = "0")
+            @Min(value = 0, message = "page must be >= 0")
+            @Parameter(
+                    description = "0-based page index; defaults to 0 when omitted",
+                    example = "0")
+            int page) {
         // COBOL: COCRDLIC / Tran-ID CCLI -- 0000-MAIN paginated browse
         //   (delegates to CardListService which preserves the COBOL
-        //   PAGE_SIZE=7 and role-driven narrowing per AAP §0.4.1).
+        //   PAGE_SIZE=7 from WS-MAX-SCREEN-LINES and role-driven
+        //   narrowing per AAP §0.4.1).
         // Derive the isAdmin flag from the authenticated principal's
         // authorities (NOT from any request body/query field). This is
-        // the principal-of-truth approach mandated by the CP5 review.
+        // the principal-of-truth approach mandated by the CP5 review
+        // and replaces the COBOL CDEMO-USRTYPE-ADMIN COMMAREA check.
         final boolean isAdmin = currentCallerIsAdmin();
-        LOG.debug("Card list requested: accountFilter={} isAdmin={} page={}",
-                accountFilter, isAdmin, page);
-        CardListDto cardList = cardListService.listCards(accountFilter, isAdmin, page);
+        // PCI-DSS-safe traceability log (AAP §0.6.6 / §0.7.2): only
+        // non-sensitive account ID + page index emitted; no card number
+        // leaks into operational logs.
+        LOG.debug("Card list requested: accountId={} isAdmin={} page={}",
+                accountId, isAdmin, page);
+        CardListDto cardList = cardListService.listCards(accountId, isAdmin, page);
         return ResponseEntity.ok(ApiResponse.success(cardList));
     }
 
@@ -259,20 +307,29 @@ public class CardController {
      * no cache; AAP &sect;0.6.5 introduces caching as a performance
      * non-functional improvement permitted by the migration).</p>
      *
+     * <p><b>Input validation:</b> the path variable is rejected with
+     * HTTP 400 ({@code ConstraintViolationException} &rarr;
+     * {@code GlobalExceptionHandler}) when blank
+     * ({@link NotBlank @NotBlank}) or not exactly 16 digits
+     * ({@link Pattern @Pattern(regexp = "^[0-9]{16}$")}). When the
+     * path is well-formed but no card exists, the service layer
+     * throws {@code RecordNotFoundException} &rarr; HTTP 404.</p>
+     *
      * @param cardNumber the 16-digit card number
      *                   ({@code CARD-NUM PIC X(16)} from
      *                   {@code app/cpy/CVACT02Y.cpy})
      * @return {@link ResponseEntity} with HTTP 200 and the
      *         {@link CardDetailDto} wrapped in {@link ApiResponse}.
-     *         HTTP 404 ({@code RecordNotFoundException}) if no card
+     *         HTTP 400 on malformed input; HTTP 404
+     *         ({@code RecordNotFoundException}) if no card
      *         exists for the supplied number
      */
     @GetMapping("/{cardNumber}")
     @Operation(
             summary = "Get card detail by 16-digit card number",
-            description = "Returns card detail (cardholder name, expiration, "
-                    + "active status, account binding). Replaces CICS COCRDSLC "
-                    + "/ Tran-ID CCDL (card detail)."
+            description = "Returns a single card record with PAN masked (last 4 "
+                    + "digits only). Replaces CICS COCRDSLC / Tran-ID CCDL "
+                    + "(card detail)."
     )
     @ApiResponses({
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
@@ -280,7 +337,7 @@ public class CardController {
                     description = "Card detail returned successfully"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
                     responseCode = "400",
-                    description = "Validation failure (e.g., card number not 16 digits)"),
+                    description = "Validation failure (card number not 16 digits)"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
                     responseCode = "401",
                     description = "JWT missing or invalid"),
@@ -292,17 +349,25 @@ public class CardController {
                     description = "Card not found")
     })
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
-    public ResponseEntity<ApiResponse<CardDetailDto>> getCardDetail(
-            @PathVariable("cardNumber") String cardNumber) {
-        // COBOL: COCRDSLC / Tran-ID CCDL -- 9000-READ-CARDDATA
-        //   (delegates to CardDetailService which performs cache-aside
-        //    via ElastiCache Redis per AAP §0.6.5; PCI-DSS-safe
-        //    masked PAN in logs/responses per AAP §0.6.6).
-        // PCI-DSS: do NOT log full PAN at DEBUG. The service applies
-        // masking before emitting structured logs; the controller-level
-        // trace below is intentionally TRACE so production INFO logs
-        // never carry the full card number.
-        LOG.trace("Card detail requested for cardNumber={}", cardNumber);
+    public ResponseEntity<ApiResponse<CardDetailDto>> getCard(
+            @PathVariable("cardNumber")
+            @NotBlank(message = "cardNumber is required")
+            @Pattern(regexp = "^[0-9]{16}$",
+                    message = "cardNumber must be exactly 16 digits")
+            @Parameter(
+                    description = "16-digit card number (COBOL CARD-NUM PIC X(16))",
+                    example = "4111111111111111")
+            String cardNumber) {
+        // COBOL: COCRDSLC / Tran-ID CCDL -- 9000-READ-CARDDATA single
+        //   keyed read of CARDDAT (delegates to CardDetailService which
+        //   performs cache-aside via ElastiCache Redis per AAP §0.6.5).
+        // PCI-DSS (AAP §0.6.6, §0.7.2): NEVER log the full PAN. Emit
+        // only the last 4 digits prefixed with "****" so operational
+        // logs are safe for CloudWatch + OpenSearch ingestion. The
+        // @Pattern validator above guarantees length == 16, so the
+        // substring(12) slice is always safe.
+        LOG.debug("Card detail requested for cardNumber=****{}",
+                cardNumber.substring(12));
         CardDetailDto detail = cardDetailService.getCardDetail(cardNumber);
         return ResponseEntity.ok(ApiResponse.success(detail));
     }
@@ -376,25 +441,44 @@ public class CardController {
     })
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
     public ResponseEntity<ApiResponse<CardDetailDto>> updateCard(
-            @PathVariable("cardNumber") String cardNumber,
+            @PathVariable("cardNumber")
+            @NotBlank(message = "cardNumber is required")
+            @Pattern(regexp = "^[0-9]{16}$",
+                    message = "cardNumber must be exactly 16 digits")
+            @Parameter(
+                    description = "16-digit card number (COBOL CARD-NUM PIC X(16)); "
+                            + "must equal the cardNumber field in the request body",
+                    example = "4111111111111111")
+            String cardNumber,
             @Valid @RequestBody CardUpdateDto request) {
         // COBOL: COCRDUPC / Tran-ID CCUP -- 9500-WRITE-PROCESSING +
         //   DATA-WAS-CHANGED-BEFORE-UPDATE branch (delegates to
         //   CardUpdateService which uses JPA @Version for optimistic
-        //   locking per AAP §0.4.1).
+        //   locking per AAP §0.4.1, replacing COBOL before/after image
+        //   comparison and the CICS REWRITE verb on the CARDDAT VSAM
+        //   cluster).
         //
-        // Path/body consistency check — prevents IDOR confusion.
-        // Card numbers are strings (16-digit numeric, may have leading
-        // zeros); compare via Objects.equals to honour null-safety.
+        // Path/body consistency check — prevents IDOR confusion (a
+        // client must not be able to PUT against /api/cards/A with a
+        // body carrying cardNumber=B). Card numbers are 16-digit
+        // strings (may have leading zeros); compare via Objects.equals
+        // to honour null-safety. CardUpdateService also performs this
+        // defensive check, but rejecting at the controller boundary is
+        // cheaper and surfaces a clearer error to the caller.
         if (!Objects.equals(cardNumber, request.cardNumber())) {
             LOG.warn("Card update rejected: path cardNumber differs from body");
             throw new ValidationException(
                     "CARD_NUMBER_MISMATCH",
                     "Path card number must match request body cardNumber");
         }
-        // PCI-DSS: do NOT log full PAN at DEBUG; only mask-safe metadata.
-        LOG.trace("Card update requested for cardNumber={}", cardNumber);
+        // PCI-DSS (AAP §0.6.6, §0.7.2): NEVER log the full PAN. The
+        // @Pattern validator guarantees length == 16, so substring(12)
+        // is always safe.
+        LOG.info("Card update requested for cardNumber=****{}",
+                cardNumber.substring(12));
         CardDetailDto updated = cardUpdateService.updateCard(cardNumber, request);
+        LOG.info("Card update successful for cardNumber=****{}",
+                cardNumber.substring(12));
         return ResponseEntity.ok(ApiResponse.success(updated,
                 "Card updated successfully"));
     }
