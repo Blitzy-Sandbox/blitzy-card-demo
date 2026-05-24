@@ -177,6 +177,28 @@
            "cvv=123" / "cvc: 4567" lexical hints already covered by the
            JSON appender.
 
+           Outermost %replace : 12 digit sequences ("oversize-acct" =
+                             invalid-but-still-leakable ID gap between
+                             the 11 digit ACCT and 13 to 19 digit PAN
+                             windows).  Regex: (?&lt;!\d)\d{8}(\d{4})(?!\d)
+                             ==> "********LAST4" (eight asterisks +
+                             last 4 digits).
+                             QA Checkpoint 3 Issue #5 rationale: when an
+                             invalid account ID like 100000000000
+                             (12 digits, one more than the 11 digit
+                             ACCT-ID PIC 9(11) contract) is rejected by
+                             the controller's @Min validation, the
+                             rejected value flows through DEBUG / WARN
+                             logs unmasked because neither the 11 digit
+                             ACCT regex nor the 13 to 19 digit PAN regex
+                             matches a length of exactly 12. This
+                             outermost layer closes that gap. It runs
+                             AFTER the PAN and ACCT layers below
+                             precisely so that already-masked output
+                             (which contains asterisks instead of
+                             contiguous digits) cannot match this
+                             regex - the digit look-arounds guarantee
+                             non-interference with prior layers.
            Outer  %replace : 13 to 19 digit sequences (PAN-like) ==>
                              "****-****-****-LAST4" (preserves last 4 for
                              traceability via regex back reference $1).
@@ -227,7 +249,7 @@
          ==================================================================== -->
     <appender name="CONSOLE_HUMAN" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [%X{traceId:-},%X{spanId:-}] %cyan(%logger{36}) - %replace(%replace(%replace(%msg%n%wEx){'(?i)(card_cvv_cd\s*=\s*\(?[^,\s)]{0,4}|\bc(?:vv|vc|vv2)\s*[:=]\s*\d{3,4}\b)', 'cvv=***'}){'(?&lt;!\d)\d{9,15}(\d{4})(?!\d)', '****-****-****-$1'}){'(?&lt;!\d)\d{7}(\d{4})(?!\d)', '*******$1'}</pattern>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [%X{traceId:-},%X{spanId:-}] %cyan(%logger{36}) - %replace(%replace(%replace(%replace(%msg%n%wEx){'(?i)(card_cvv_cd\s*=\s*\(?[^,\s)]{0,4}|\bc(?:vv|vc|vv2)\s*[:=]\s*\d{3,4}\b)', 'cvv=***'}){'(?&lt;!\d)\d{9,15}(\d{4})(?!\d)', '****-****-****-$1'}){'(?&lt;!\d)\d{7}(\d{4})(?!\d)', '*******$1'}){'(?&lt;!\d)\d{8}(\d{4})(?!\d)', '********$1'}</pattern>
             <charset>UTF-8</charset>
         </encoder>
     </appender>
@@ -385,6 +407,23 @@
                 <valueMask>
                     <value>(?&lt;!\d)\d{11}(?!\d)</value>
                     <mask>***********</mask>
+                </valueMask>
+
+                <!--
+                    QA Checkpoint 3 Issue #5: Mask any 12 digit sequence
+                    (over-sized account ID, e.g., the malformed
+                    100000000000 used in the QA reproduction step).
+                    The 11 digit and 13 to 19 digit value masks above
+                    leave a gap at length 12; this entry closes it so a
+                    rejected-but-still-logged invalid ID is masked
+                    uniformly with the same shape as a valid 11 digit
+                    ACCT mask (defense in depth). The negative
+                    look-around guarantees this regex never matches the
+                    inner of a previously masked 13 to 19 digit PAN.
+                -->
+                <valueMask>
+                    <value>(?&lt;!\d)\d{12}(?!\d)</value>
+                    <mask>************</mask>
                 </valueMask>
 
                 <!--

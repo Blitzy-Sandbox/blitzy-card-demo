@@ -283,7 +283,14 @@ class AccountUpdateServiceTest {
         // rejection override this stub.
         lenient().when(validationLookupService.isValidAreaCode(anyString()))
                 .thenReturn(true);
-        lenient().when(dateValidationService.validate(anyString()))
+        // QA Checkpoint 3 Issue #1 fix: the service now calls
+        // dateValidationService.validate(date, "YYYY-MM-DD") (two-arg form
+        // matching LocalDate.toString()'s ISO-8601 output). The previous
+        // one-arg form defaulted to "YYYYMMDD" which rejected every valid
+        // ISO date at index 4. The unit-test stub must match the new
+        // call signature so this mock continues to intercept the actual
+        // validate(...) calls made by the service.
+        lenient().when(dateValidationService.validate(anyString(), anyString()))
                 .thenReturn(DateValidationService.DateValidationResult.VALID);
     }
 
@@ -455,12 +462,15 @@ class AccountUpdateServiceTest {
         @DisplayName("rejects invalid LocalDate from DateValidationService")
         void updateAccount_invalidDate_throwsValidation() {
             // Arrange — date validation service returns an invalid
-            // result for ANY date in the request
+            // result for ANY date in the request.
+            // QA Checkpoint 3 Issue #1 fix: the service now calls
+            // dateValidationService.validate(date, "YYYY-MM-DD") (two-arg
+            // form) so this stub must match the two-arg signature.
             when(validationLookupService.isValidStateCode(anyString()))
                     .thenReturn(true);
             when(validationLookupService.isValidStateZipCombination(
                     anyString(), anyString())).thenReturn(true);
-            when(dateValidationService.validate(anyString()))
+            when(dateValidationService.validate(anyString(), anyString()))
                     .thenReturn(DateValidationService.DateValidationResult.invalid(
                             "E001", "Date is in the future"));
 
@@ -479,6 +489,52 @@ class AccountUpdateServiceTest {
             // — passing a null DTO triggers NPE before any other work.
             assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, null))
                     .isInstanceOf(NullPointerException.class);
+        }
+
+        @Test
+        @DisplayName("calls DateValidationService with YYYY-MM-DD mask matching ISO-8601 (QA CP3 Issue #1)")
+        void updateAccount_passesYYYYMMDDMaskToDateValidationService() {
+            // QA Checkpoint 3 Issue #1 regression test — locks the
+            // contract that the service passes the explicit
+            // "YYYY-MM-DD" format mask to dateValidationService.validate
+            // so that LocalDate.toString() (ISO-8601 hyphenated form,
+            // e.g., "2020-01-15") parses successfully. The original
+            // defect was a single-argument validate(String) call that
+            // defaulted to the "YYYYMMDD" mask (no separators), causing
+            // every PUT /api/accounts/{id} request to fail at index 4
+            // (the first hyphen) with "Text '2020-01-15' could not be
+            // parsed at index 4".
+            //
+            // Without this assertion, a future refactor that swaps the
+            // two-arg form back to the single-arg overload would not be
+            // detected at unit test time — because the existing stub
+            // (lenient validate(anyString(), anyString())) does not
+            // intercept the single-arg call. This test pins the mask.
+            //
+            // The validRequest fixture has reissueDate=null (the 8th
+            // positional argument of the AccountUpdateDto constructor),
+            // and validateDate() short-circuits on null per the
+            // "not supplied" contract — so the validate call count is 3
+            // (openDate, expirationDate, dateOfBirth) for this fixture.
+            stubHappyPathRepositories();
+            stubValidationServices();
+            stubKafkaPublishSuccess();
+
+            service.updateAccount(ACCOUNT_ID, validRequest);
+
+            // Assert: the service called the two-arg form with the
+            // explicit "YYYY-MM-DD" mask for each of the 3 non-null
+            // date fields (openDate, expirationDate, dateOfBirth).
+            // The reissueDate is null in validRequest and the
+            // short-circuit branch of validateDate() bypasses the
+            // service call entirely.
+            ArgumentCaptor<String> maskCaptor = ArgumentCaptor.forClass(String.class);
+            verify(dateValidationService, times(3)).validate(
+                    anyString(), maskCaptor.capture());
+            assertThat(maskCaptor.getAllValues())
+                    .as("all date validations use the YYYY-MM-DD mask matching LocalDate.toString()")
+                    .hasSize(3)
+                    .allMatch("YYYY-MM-DD"::equals);
         }
     }
 

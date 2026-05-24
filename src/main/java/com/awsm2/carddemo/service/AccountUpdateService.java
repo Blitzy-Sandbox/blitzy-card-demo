@@ -209,6 +209,40 @@ public class AccountUpdateService {
      *  contract pins the actor to {@code "system"}. */
     private static final String AUDIT_ACTOR = "system";
 
+    /**
+     * Date-format mask passed to {@link DateValidationService} for
+     * validating ISO-8601 date strings ({@code yyyy-MM-dd}).
+     *
+     * <p>The {@link AccountUpdateDto} declares its date fields
+     * ({@code openDate}, {@code expirationDate}, {@code reissueDate},
+     * {@code dateOfBirth}) as {@link LocalDate}, whose
+     * {@link LocalDate#toString()} produces a stable
+     * {@code "yyyy-MM-dd"} representation (e.g., {@code "2020-01-15"}).
+     * The {@link DateValidationService} accepts the COBOL-style mask
+     * {@code "YYYY-MM-DD"} (translated internally to the
+     * {@link java.time.format.DateTimeFormatter} pattern
+     * {@code "uuuu-MM-dd"} via
+     * {@link DateValidationService#toJavaPattern(String)}) and applies
+     * the same century check and STRICT-resolver semantics that the
+     * COBOL LE {@code CEEDAYS} cascade enforces per AAP &sect;0.5.2.</p>
+     *
+     * <p><b>Why this constant exists.</b> The default
+     * {@link DateValidationService#DEFAULT_FORMAT_MASK} is
+     * {@code "YYYYMMDD"} (no separators), which matches the COBOL
+     * {@code CSUTLDWY.cpy:L58-L59} default. Calling
+     * {@code dateValidationService.validate(localDate.toString())}
+     * (single-argument overload) would pass an ISO-hyphenated string
+     * to the no-separator default mask, producing a
+     * {@code DateTimeParseException} at index 4 (the first hyphen) on
+     * every valid date. This constant pins the explicit two-argument
+     * call to the matching ISO mask. The exact same pattern is used
+     * by {@link ReportSubmissionService} (constant declared at line
+     * 205 of that file) so all services that validate
+     * {@link LocalDate#toString()}-derived strings share one
+     * consistent mask convention.</p>
+     */
+    private static final String DATE_FORMAT_MASK = "YYYY-MM-DD";
+
     // ------------------------------------------------------------------
     // Injected collaborators (final fields populated by constructor
     // injection; no field-level @Autowired — per AAP §0.3.3
@@ -688,21 +722,47 @@ public class AccountUpdateService {
      * source uses LE {@code CEEDAYS} via {@code CSUTLDTC.cbl} to verify
      * that the date is a real calendar date (correct month, valid day,
      * leap-year aware) and within plausible bounds. The Java target
-     * delegates to {@link DateValidationService#validate(String)}
-     * which performs the same checks using {@code java.time.LocalDate}.
+     * delegates to
+     * {@link DateValidationService#validate(String, String)} which
+     * performs the same checks using {@code java.time.LocalDate}.
+     *
+     * <p><b>Format-mask contract.</b> The {@link AccountUpdateDto}
+     * declares its date fields as {@link LocalDate}, whose
+     * {@link LocalDate#toString()} produces a stable ISO-8601
+     * representation ({@code "yyyy-MM-dd"}, e.g.,
+     * {@code "2020-01-15"}). The validation call passes the explicit
+     * mask {@link #DATE_FORMAT_MASK} ({@code "YYYY-MM-DD"}) so the
+     * service's STRICT-resolver {@link java.time.format.DateTimeFormatter}
+     * accepts the hyphenated form. The single-argument
+     * {@code validate(String)} convenience overload defaults to
+     * {@link DateValidationService#DEFAULT_FORMAT_MASK}
+     * ({@code "YYYYMMDD"}, no separators) which would fail at index 4
+     * (the first hyphen) for every valid ISO date. This service
+     * therefore uses the two-argument form exclusively &mdash;
+     * mirroring the established pattern in
+     * {@link ReportSubmissionService} (which validates the same kind
+     * of {@link LocalDate#toString()}-derived strings).</p>
      *
      * <p>A {@code null} date is treated as "not supplied"; the DTO's
      * Jakarta {@code @NotNull} on mandatory dates handles the
      * presence check.</p>
      */
+    // COBOL: COACTUPC.cbl :1265-EDIT-DATE-OPEN, :1266-EDIT-DATE-EXP,
+    //                    :1267-EDIT-DATE-REIS, :1268-EDIT-DATE-DOB
+    //        (each calling CSUTLDTC with a YYYY-MM-DD format literal)
     private void validateDate(List<ValidationException.FieldError> errors,
                               LocalDate date,
                               String fieldName) {
         if (date == null) {
             return;
         }
+        // CRITICAL: pass the explicit YYYY-MM-DD mask. LocalDate.toString()
+        // produces an ISO-8601 hyphenated string; the default mask
+        // (YYYYMMDD, no separators) would reject every valid date at
+        // index 4 (the first hyphen) — a defect captured by QA Checkpoint 3
+        // Issue #1 and fixed here.
         DateValidationService.DateValidationResult result =
-                dateValidationService.validate(date.toString());
+                dateValidationService.validate(date.toString(), DATE_FORMAT_MASK);
         if (!result.isValid()) {
             errors.add(new ValidationException.FieldError(
                     fieldName,
