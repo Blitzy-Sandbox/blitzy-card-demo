@@ -392,7 +392,7 @@ public final class CoTrn02C {
         );
 
         try {
-            transactions.append(newTran);
+            transactions.save(newTran);
             // Success: COBOL STRING construct preserves the double space:
             // 'Transaction added successfully. ' DELIMITED BY SIZE
             // ' Your Tran ID is ' DELIMITED BY SIZE

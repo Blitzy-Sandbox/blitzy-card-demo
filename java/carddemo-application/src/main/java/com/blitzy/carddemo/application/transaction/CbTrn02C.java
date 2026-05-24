@@ -568,7 +568,7 @@ public final class CbTrn02C {
      */
     private void writeTransactionFile(TranRecord tran) {
         try {
-            transactionRepository.append(tran);
+            transactionRepository.save(tran);
         } catch (RuntimeException e) {
             log.error("ERROR WRITING TO TRANSACTION FILE");
             displayIoStatus("12");

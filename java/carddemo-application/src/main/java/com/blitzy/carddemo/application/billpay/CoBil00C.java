@@ -383,7 +383,7 @@ public final class CoBil00C {
 
         // WRITE-TRANSACT-FILE
         try {
-            transactions.append(newTran);
+            transactions.save(newTran);
         } catch (IllegalStateException dup) {
             log.warn("CoBil00C: TRANSACT WRITE duplicate for tranId={}", nextTranId, dup);
             return Result.sendMap(buildScreen(input, MSG_TRAN_DUPLICATE,

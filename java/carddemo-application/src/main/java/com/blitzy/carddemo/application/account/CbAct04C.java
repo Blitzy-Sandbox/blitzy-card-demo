@@ -354,7 +354,7 @@ public final class CbAct04C {
                 dbTs,                              // TRAN-ORIG-TS
                 dbTs,                              // TRAN-PROC-TS
                 TranRecord.emptyFiller());
-        transactionRepository.append(tx);
+        transactionRepository.save(tx);
     }
 
     /**
