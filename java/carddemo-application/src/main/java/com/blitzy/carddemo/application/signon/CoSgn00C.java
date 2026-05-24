@@ -361,7 +361,7 @@ public final class CoSgn00C {
     private CoSgn00Output sendPlainText(String message) {
         return new CoSgn00Output(
                 TRANSACTION_ID, TITLE_01, todayDate(), PROGRAM_ID, TITLE_02, nowTime(),
-                applId, sysId, "", "", message, CoSgn00Output.FieldColor.RED);
+                applId, sysId, "", "", message == null ? "" : message, "R");
     }
 
     /**
@@ -383,9 +383,7 @@ public final class CoSgn00C {
                 userId == null ? "" : userId,
                 password == null ? "" : password,
                 message == null ? "" : message,
-                message == null || message.isBlank()
-                        ? CoSgn00Output.FieldColor.GREEN
-                        : CoSgn00Output.FieldColor.RED
+                message == null || message.isBlank() ? "G" : "R"
         );
     }
 

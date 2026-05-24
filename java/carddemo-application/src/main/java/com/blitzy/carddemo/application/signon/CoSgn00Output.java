@@ -16,321 +16,460 @@
  */
 package com.blitzy.carddemo.application.signon;
 
-// JEP 511 (finalized in Java 25): brings java.lang.String and
-// java.lang.Override into scope.
-import module java.base;
-
 import com.blitzy.carddemo.domain.annotation.CobolProgram;
 
+import java.util.Objects;
+
 /**
- * Immutable output DTO for the {@code COSGN00C} signon online program
- * (CICS transaction {@code CC00}, COBOL source
- * {@code app/cbl/COSGN00C.cbl}).
+ * Entry-contract DTO record representing the OUTPUT side of the
+ * {@code COSGN00} BMS map (symbolic map {@code COSGN0AO}).
  *
- * <h2>Source artifacts</h2>
- * <ul>
- *   <li>BMS map definition: {@code app/bms/COSGN00.bms}.</li>
- *   <li>Symbolic map copybook: {@code app/cpy-bms/COSGN00.CPY},
- *       output group {@code 01 COSGN0AO REDEFINES COSGN0AI}
- *       (lines 88-160).</li>
- * </ul>
+ * <p>This record translates the symbolic output view of the BMS map
+ * definition at {@code app/bms/COSGN00.bms} and the symbolic copybook
+ * at {@code app/cpy-bms/COSGN00.CPY} (group {@code 01 COSGN0AO REDEFINES
+ * COSGN0AI}, lines L85-L152). It carries the values the signon program
+ * writes to the screen via {@code EXEC CICS SEND MAP}, plus the
+ * dynamic {@code ERRMSGC} color attribute byte controlled at runtime.
  *
- * <h2>Role &mdash; entry-contract DTO (output side)</h2>
- * <p>Per AAP &sect;0.4.1, this record is the Java analog of the output
- * view of the BMS symbolic structure {@code COSGN0AO}: it carries the
- * field values that {@code COSGN00C} writes back to the 3270 screen
- * via {@code EXEC CICS SEND MAP}. The BMS output structure REDEFINES
- * the input, so the same memory region is reinterpreted &mdash; each
- * input {@code -I} leaf becomes a quartet of three protocol bytes
- * ({@code -C} color, {@code -P} PS, {@code -H} highlight, {@code -V}
- * validation) followed by an output payload {@code -O}.
+ * <h2>Translation of {@code EXEC CICS SEND MAP}</h2>
+ * <p>The COBOL construct
+ * {@code EXEC CICS SEND MAP('COSGN0A') MAPSET('COSGN00')}
+ * is translated to a Java method that returns an instance of this
+ * record from {@link CoSgn00C}. The BMS adapter then renders the
+ * instance to the 3270 wire (or its modern equivalent).
  *
- * <h2>Field selection &mdash; output payloads plus error color</h2>
- * <p>This DTO models the eleven {@code -O} value leaves plus the
- * single {@code ERRMSGC} color byte (the only 3270 attribute byte that
- * {@code COSGN00C} overrides &mdash; from default to {@code DFHRED} on
- * "invalid credentials"). All other {@code -C}, {@code -P},
- * {@code -H}, and {@code -V} attribute bytes inherit their
- * compile-time defaults from the BMS map definition and are not
- * surfaced here.
+ * <h2>Source artifact mapping</h2>
+ * <p>For the OUTPUT side, the symbolic copybook redefines the input
+ * area. Each input {@code -I} leaf becomes a quartet of three
+ * attribute bytes ({@code -C} color, {@code -P} PS, {@code -H}
+ * highlight, {@code -V} validation) followed by an output payload
+ * {@code -O}. This DTO captures:
+ * <ol>
+ *   <li>All eleven output value fields ({@code -O} suffix) as
+ *       {@link String}.</li>
+ *   <li>One additional field, {@link #errMsgColor()}, representing the
+ *       dynamically-settable {@code ERRMSGC} color attribute. Per
+ *       {@code EXTATT=YES} on the BMS {@code DFHMSD}, attributes can
+ *       be sent dynamically; this drives the field color (e.g.,
+ *       {@code "R"} for RED on validation errors, blank for the BMS
+ *       compile-time default).</li>
+ * </ol>
+ * <p>The {@code -C}, {@code -P}, {@code -H}, and {@code -V} attribute
+ * bytes for the other fields are NOT captured because {@code COSGN00C}
+ * does not dynamically modify them &mdash; they are statically defined
+ * in the BMS map ({@code COLOR=YELLOW} for titles, {@code COLOR=BLUE}
+ * for header labels, etc.). Only {@code ERRMSG} has its color modified
+ * at runtime.
  *
- * <h2>Password handling on the output side</h2>
- * <p>The BMS map declares {@code PASSWDO} as a 8-char field with the
- * {@code DRK} (non-display) attribute so the 3270 controller suppresses
- * it from the rendered screen. {@code COSGN00C} clears the field with
- * {@code MOVE SPACES TO PASSWDO} on every {@code SEND MAP} so that no
- * cleartext is ever transmitted, even though the field exists in the
- * symbolic map. For byte-symmetric fidelity (AAP &sect;0.4.1) this DTO
- * surfaces the field, and for defence-in-depth against accidental
- * logging it <strong>masks</strong> the password component in the
- * overridden {@link #toString()} &mdash; matching the symmetric
- * input-side mask in {@link CoSgn00Input#toString()} (see also AAP
- * &sect;0.7.2 PAN-masking mandate extended to passwords by parity).
- *
- * <h2>Component inventory</h2>
+ * <h2>Field inventory</h2>
  * <table border="1" summary="BMS-to-record component mapping">
  *   <thead>
- *     <tr><th>BMS field</th><th>BMS attrs / position</th>
+ *     <tr><th>BMS field</th><th>Symbolic name</th><th>Width</th>
  *         <th>Record component</th></tr>
  *   </thead>
  *   <tbody>
- *     <tr><td>{@code TRNNAMEO}</td><td>4 chars, (1,7)</td>
- *         <td>{@link #transactionName()}</td></tr>
- *     <tr><td>{@code TITLE01O}</td><td>40 chars, (1,21)</td>
+ *     <tr><td>TRNNAME</td><td>TRNNAMEO</td><td>4</td>
+ *         <td>{@link #trnName()}</td></tr>
+ *     <tr><td>TITLE01</td><td>TITLE01O</td><td>40</td>
  *         <td>{@link #title01()}</td></tr>
- *     <tr><td>{@code CURDATEO}</td><td>8 chars (mm/dd/yy), (1,71)</td>
- *         <td>{@link #currentDate()}</td></tr>
- *     <tr><td>{@code PGMNAMEO}</td><td>8 chars, (2,7)</td>
- *         <td>{@link #programName()}</td></tr>
- *     <tr><td>{@code TITLE02O}</td><td>40 chars, (2,21)</td>
+ *     <tr><td>CURDATE</td><td>CURDATEO</td><td>8</td>
+ *         <td>{@link #curDate()}</td></tr>
+ *     <tr><td>PGMNAME</td><td>PGMNAMEO</td><td>8</td>
+ *         <td>{@link #pgmName()}</td></tr>
+ *     <tr><td>TITLE02</td><td>TITLE02O</td><td>40</td>
  *         <td>{@link #title02()}</td></tr>
- *     <tr><td>{@code CURTIMEO}</td><td>9 chars (hh:mm:ss), (2,71)</td>
- *         <td>{@link #currentTime()}</td></tr>
- *     <tr><td>{@code APPLIDO}</td><td>8 chars</td>
+ *     <tr><td>CURTIME</td><td>CURTIMEO</td><td>9</td>
+ *         <td>{@link #curTime()}</td></tr>
+ *     <tr><td>APPLID</td><td>APPLIDO</td><td>8</td>
  *         <td>{@link #applId()}</td></tr>
- *     <tr><td>{@code SYSIDO}</td><td>8 chars</td>
+ *     <tr><td>SYSID</td><td>SYSIDO</td><td>8</td>
  *         <td>{@link #sysId()}</td></tr>
- *     <tr><td>{@code USERIDO}</td><td>8 chars</td>
+ *     <tr><td>USERID</td><td>USERIDO</td><td>8</td>
  *         <td>{@link #userId()}</td></tr>
- *     <tr><td>{@code PASSWDO}</td><td>8 chars, DRK</td>
- *         <td>{@link #password()} &mdash; masked in
- *             {@link #toString()}; conventionally SPACES on
- *             SEND MAP</td></tr>
- *     <tr><td>{@code ERRMSGO}</td><td>78 chars, (23,1)</td>
- *         <td>{@link #errorMessage()}</td></tr>
- *     <tr><td>{@code ERRMSGC}</td><td>1 attribute byte</td>
+ *     <tr><td>PASSWD</td><td>PASSWDO</td><td>8</td>
+ *         <td>{@link #passwd()} &mdash; conventionally SPACES on SEND</td></tr>
+ *     <tr><td>ERRMSG</td><td>ERRMSGO</td><td>78</td>
+ *         <td>{@link #errMsg()}</td></tr>
+ *     <tr><td>(attribute)</td><td>ERRMSGC</td><td>1</td>
  *         <td>{@link #errMsgColor()}</td></tr>
  *   </tbody>
  * </table>
  *
- * <h2>Null and over-length tolerance</h2>
- * <p>Every {@link String} is normalised in the compact canonical
- * constructor: {@code null} becomes {@code ""}, over-long values are
- * truncated from the right (COBOL {@code MOVE} semantics). The
- * {@link #errMsgColor()} cannot be {@code null}; the constructor
- * substitutes {@link FieldColor#NONE} if the caller passes
- * {@code null}.
+ * <h2>Password handling on the output side</h2>
+ * <p>The BMS map declares {@code PASSWDO} with the {@code DRK}
+ * (non-display) attribute so the 3270 controller suppresses it from
+ * the rendered screen. The COBOL convention in {@code COSGN00C} is to
+ * clear the field with {@code MOVE SPACES TO PASSWDO} on every
+ * {@code SEND MAP} so that no cleartext is ever transmitted. Java
+ * application code replicates that by sending an empty string via
+ * {@link #passwd()} (typically {@code ""} or
+ * {@link #withPasswd(String)} with blanks).
+ *
+ * <h2>Null-safety contract</h2>
+ * <p>All twelve components are required (non-null). The compact
+ * canonical constructor enforces this via
+ * {@link Objects#requireNonNull(Object, String)}; passing
+ * {@code null} for any component throws {@link NullPointerException}.
+ * Use {@link #empty()} to construct a fully-blank instance, then mutate
+ * via the {@code with*} methods to build up the rendered output
+ * incrementally.
+ *
+ * <h2>Build-up pattern</h2>
+ * <pre>{@code
+ * CoSgn00Output out = CoSgn00Output.empty()
+ *         .withTrnName("CC00")
+ *         .withTitle01("AWS Mainframe Modernization")
+ *         .withTitle02("CardDemo")
+ *         .withCurDate("12/31/25")
+ *         .withCurTime("23:59:59")
+ *         .withApplId("APP00001")
+ *         .withSysId("SYS00001")
+ *         .withPgmName("COSGN00C")
+ *         .withUserId("USER0001")
+ *         .withErrMsg("Wrong Password. Try again ...")
+ *         .withErrMsgColor("R");
+ * }</pre>
  *
  * <h2>Immutability and concurrency</h2>
  * <p>Records, final components, no setters &mdash; safe to share
  * across threads including virtual-thread workers per AAP &sect;0.6.6.
  *
  * <h2>Non-goals (AAP &sect;0.7.4)</h2>
- * <p>No Spring, Lombok, Bean Validation, {@code java.util.Date},
- * {@code double}, {@code float}, or preview features.
+ * <p>No Spring, Hibernate/JPA, Lombok, or framework annotations.
+ * No {@code ThreadLocal}, no preview features
+ * (JEP 502/505/507/512), no {@code double}/{@code float},
+ * no {@code java.util.Date}/{@code Calendar}, no
+ * {@code java.io.File}, no reflection.
  *
- * @param transactionName  TRNNAMEO &mdash; 4-char transaction code echo
- * @param title01          TITLE01O &mdash; 40-char line-1 title bar
- * @param currentDate      CURDATEO &mdash; 8-char date {@code "mm/dd/yy"}
- * @param programName      PGMNAMEO &mdash; 8-char program-id echo
- * @param title02          TITLE02O &mdash; 40-char line-2 title bar
- * @param currentTime      CURTIMEO &mdash; 9-char time {@code "hh:mm:ss"}
- * @param applId           APPLIDO &mdash; 8-char CICS APPLID echo
- * @param sysId            SYSIDO &mdash; 8-char CICS SYSID echo
- * @param userId           USERIDO &mdash; 8-char user-id echo
- * @param password         PASSWDO &mdash; 8-char password field
- *                         (conventionally SPACES on SEND;
- *                         <strong>masked</strong> in
- *                         {@link #toString()})
- * @param errorMessage     ERRMSGO &mdash; 78-char error message
- * @param errMsgColor      ERRMSGC override
- *                         ({@link FieldColor#NONE} = no override)
+ * @param trnName     TRNNAMEO &mdash; 4-char transaction code echo
+ * @param title01     TITLE01O &mdash; 40-char line-1 title bar
+ * @param curDate     CURDATEO &mdash; 8-char date {@code "MM/DD/YY"}
+ * @param pgmName     PGMNAMEO &mdash; 8-char program-id echo
+ * @param title02     TITLE02O &mdash; 40-char line-2 title bar
+ * @param curTime     CURTIMEO &mdash; 9-char time {@code "HH:MM:SS"}
+ *                    (BMS {@code INITIAL='Ahh:mm:ss'} reserves one
+ *                    leading byte; the modern Java translation
+ *                    surfaces 9 characters total)
+ * @param applId      APPLIDO &mdash; 8-char CICS APPLID echo
+ * @param sysId       SYSIDO &mdash; 8-char CICS SYSID echo
+ * @param userId      USERIDO &mdash; 8-char user-id echo
+ * @param passwd      PASSWDO &mdash; 8-char password field
+ *                    (conventionally SPACES on SEND because the BMS
+ *                    {@code DRK} attribute makes the wire
+ *                    representation invisible regardless)
+ * @param errMsg      ERRMSGO &mdash; 78-char error message
+ * @param errMsgColor ERRMSGC &mdash; 1-byte color attribute override
+ *                    (e.g., {@code "R"} for RED, {@code "G"} for
+ *                    GREEN, {@code ""} for the BMS compile-time
+ *                    default)
  *
  * @see CoSgn00Input
- * @see <a href="https://www.ibm.com/docs/en/cics-ts">CICS/TS BMS reference</a>
+ * @see CoSgn00C
  * @since 1.0.0
  */
 @CobolProgram(
         value = "COSGN00",
-        sourcePath = "app/bms/COSGN00.bms",
-        translationDate = "2025-10-15",
-        notes = "BMS entry-contract DTO (output side); symbolic copybook 01 COSGN0AO "
-                + "REDEFINES COSGN0AI in app/cpy-bms/COSGN00.CPY (lines 88-160). Driven "
-                + "by online program app/cbl/COSGN00C.cbl (signon, transaction CC00). "
-                + "PASSWDO is masked in toString() per AAP §0.7.2 no-credential-in-logs "
-                + "mandate; the BMS map applies DRK (non-display) on the 3270 wire."
+        sourcePath = "app/cpy-bms/COSGN00.CPY",
+        notes = "BMS output map COSGN0AO fields plus dynamic ERRMSG color attribute "
+                + "(ERRMSGC). Translated from BMS symbolic structure in COSGN00.CPY "
+                + "and BMS map definition in COSGN00.bms."
 )
 public record CoSgn00Output(
-        String transactionName,
+        String trnName,
         String title01,
-        String currentDate,
-        String programName,
+        String curDate,
+        String pgmName,
         String title02,
-        String currentTime,
+        String curTime,
         String applId,
         String sysId,
         String userId,
-        String password,
-        String errorMessage,
-        FieldColor errMsgColor
+        String passwd,
+        String errMsg,
+        String errMsgColor
 ) {
 
-    /** Length of {@link #transactionName()} per BMS map {@code TRNNAMEO} &mdash; 4 chars. */
-    public static final int TRANSACTION_NAME_LENGTH = 4;
+    // ====================================================================
+    // BMS field width constants (per app/bms/COSGN00.bms LEN= attributes
+    // and app/cpy-bms/COSGN00.CPY PIC X(n) widths)
+    // ====================================================================
 
-    /** Length of {@link #title01()} per BMS map {@code TITLE01O} &mdash; 40 chars. */
-    public static final int TITLE_01_LENGTH = 40;
+    /** BMS {@code LEN=4} for {@code TRNNAME} field. */
+    public static final int TRN_NAME_WIDTH = 4;
 
-    /** Length of {@link #currentDate()} per BMS map {@code CURDATEO} &mdash; 8 chars (mm/dd/yy). */
-    public static final int CURRENT_DATE_LENGTH = 8;
+    /** BMS {@code LEN=40} for {@code TITLE01} and {@code TITLE02} fields. */
+    public static final int TITLE_WIDTH = 40;
 
-    /** Length of {@link #programName()} per BMS map {@code PGMNAMEO} &mdash; 8 chars. */
-    public static final int PROGRAM_NAME_LENGTH = 8;
+    /** BMS {@code LEN=8} for {@code CURDATE} field (MM/DD/YY format). */
+    public static final int DATE_WIDTH = 8;
 
-    /** Length of {@link #title02()} per BMS map {@code TITLE02O} &mdash; 40 chars. */
-    public static final int TITLE_02_LENGTH = 40;
+    /** BMS {@code LEN=8} for {@code PGMNAME} field. */
+    public static final int PGM_NAME_WIDTH = 8;
 
     /**
-     * Length of {@link #currentTime()} per BMS map {@code CURTIMEO}
-     * &mdash; <strong>9</strong> chars on the signon map.
+     * BMS {@code LEN=9} for {@code CURTIME} field
+     * (HH:MM:SS with leading 'A' attribute byte per
+     * {@code INITIAL='Ahh:mm:ss'}).
      */
-    public static final int CURRENT_TIME_LENGTH = 9;
+    public static final int TIME_WIDTH = 9;
 
-    /** Length of {@link #applId()} per BMS map {@code APPLIDO} &mdash; 8 chars. */
-    public static final int APPL_ID_LENGTH = 8;
+    /** BMS {@code LEN=8} for {@code APPLID} field. */
+    public static final int APPL_ID_WIDTH = 8;
 
-    /** Length of {@link #sysId()} per BMS map {@code SYSIDO} &mdash; 8 chars. */
-    public static final int SYS_ID_LENGTH = 8;
+    /** BMS {@code LEN=8} for {@code SYSID} field. */
+    public static final int SYS_ID_WIDTH = 8;
 
-    /** Length of {@link #userId()} per BMS map {@code USERIDO} &mdash; 8 chars. */
-    public static final int USER_ID_LENGTH = 8;
+    /** BMS {@code LEN=8} for {@code USERID} field. */
+    public static final int USER_ID_WIDTH = 8;
 
-    /** Length of {@link #password()} per BMS map {@code PASSWDO} &mdash; 8 chars. */
-    public static final int PASSWORD_LENGTH = 8;
+    /** BMS {@code LEN=8} for {@code PASSWD} field. */
+    public static final int PASSWD_WIDTH = 8;
 
-    /** Length of {@link #errorMessage()} per BMS map {@code ERRMSGO} &mdash; 78 chars. */
-    public static final int ERROR_MESSAGE_LENGTH = 78;
-
-    /** Fixed mask for {@link #password()} in {@link #toString()}. */
-    private static final String PASSWORD_MASK = "********";
+    /** BMS {@code LEN=78} for {@code ERRMSG} field. */
+    public static final int ERRMSG_WIDTH = 78;
 
     /**
-     * Compact canonical constructor (JEP 513 Flexible Constructor
-     * Bodies). Every {@link String} is normalised; {@code null
-     * errMsgColor} is substituted with {@link FieldColor#NONE}.
+     * Width of the BMS color attribute byte ({@code ERRMSGC}).
+     * Per {@code EXTATT=YES} on the {@code DFHMSD}, the program may
+     * dynamically override the field color via this 1-byte attribute.
+     */
+    public static final int COLOR_ATTR_WIDTH = 1;
+
+    /**
+     * Compact canonical constructor enforcing the non-null contract on
+     * every component (JEP 513 Flexible Constructor Bodies pattern).
+     *
+     * <p>The validation runs before the canonical field assignments and
+     * throws {@link NullPointerException} for the first {@code null}
+     * component encountered. Callers must supply non-null strings;
+     * use {@link #empty()} as a baseline and the {@code with*} methods
+     * to populate fields incrementally.
+     *
+     * @throws NullPointerException if any of the twelve components is
+     *                              {@code null}
      */
     public CoSgn00Output {
-        transactionName = normalize(transactionName, TRANSACTION_NAME_LENGTH);
-        title01         = normalize(title01,         TITLE_01_LENGTH);
-        currentDate     = normalize(currentDate,     CURRENT_DATE_LENGTH);
-        programName     = normalize(programName,     PROGRAM_NAME_LENGTH);
-        title02         = normalize(title02,         TITLE_02_LENGTH);
-        currentTime     = normalize(currentTime,     CURRENT_TIME_LENGTH);
-        applId          = normalize(applId,          APPL_ID_LENGTH);
-        sysId           = normalize(sysId,           SYS_ID_LENGTH);
-        userId          = normalize(userId,          USER_ID_LENGTH);
-        password        = normalize(password,        PASSWORD_LENGTH);
-        errorMessage    = normalize(errorMessage,    ERROR_MESSAGE_LENGTH);
-        if (errMsgColor == null) {
-            errMsgColor = FieldColor.NONE;
-        }
+        Objects.requireNonNull(trnName, "trnName");
+        Objects.requireNonNull(title01, "title01");
+        Objects.requireNonNull(curDate, "curDate");
+        Objects.requireNonNull(pgmName, "pgmName");
+        Objects.requireNonNull(title02, "title02");
+        Objects.requireNonNull(curTime, "curTime");
+        Objects.requireNonNull(applId, "applId");
+        Objects.requireNonNull(sysId, "sysId");
+        Objects.requireNonNull(userId, "userId");
+        Objects.requireNonNull(passwd, "passwd");
+        Objects.requireNonNull(errMsg, "errMsg");
+        Objects.requireNonNull(errMsgColor, "errMsgColor");
     }
 
+    // ====================================================================
+    // Factory methods
+    // ====================================================================
+
     /**
-     * Returns a fully-blank output record: every {@link String}
-     * component is {@code ""} and {@link #errMsgColor()} is
-     * {@link FieldColor#NONE}.
+     * Returns an instance with all twelve fields set to empty strings
+     * ({@code ""}).
      *
-     * @return a fresh empty {@code CoSgn00Output} (never {@code null})
+     * <p>Used as a starting point that the application class can mutate
+     * via the {@code with*} methods to build up the rendered
+     * {@code SEND MAP} output. This mirrors the COBOL pattern of
+     * {@code INITIALIZE COSGN0AO} followed by individual
+     * {@code MOVE} statements that populate each field.
+     *
+     * @return an Output record with all twelve fields equal to
+     *         {@code ""} (never {@code null})
      */
     public static CoSgn00Output empty() {
         return new CoSgn00Output(
-                "", "", "", "", "", "", "", "", "", "", "",
-                FieldColor.NONE
+                "", "", "", "", "", "",
+                "", "", "", "", "", ""
         );
     }
 
+    // ====================================================================
+    // Wither methods (one per component, in declaration order)
+    // ====================================================================
+
     /**
-     * Returns a copy of this output with {@link #errorMessage()} and
-     * {@link #errMsgColor()} set together; the colour is forced to
-     * {@link FieldColor#RED} to match the BMS convention for error
-     * highlighting.
+     * Returns a copy of this record with {@link #trnName()} replaced.
      *
-     * @param newErrorMessage the replacement error text
-     * @return a new {@code CoSgn00Output} with the error pair replaced
+     * @param v the new value for the {@code trnName} component (must be
+     *          non-null; pass {@code ""} to clear the field)
+     * @return a new {@code CoSgn00Output} with all other fields
+     *         unchanged
+     * @throws NullPointerException if {@code v} is {@code null}
      */
-    public CoSgn00Output withErrorMessage(String newErrorMessage) {
-        return new CoSgn00Output(
-                transactionName,
-                title01,
-                currentDate,
-                programName,
-                title02,
-                currentTime,
-                applId,
-                sysId,
-                userId,
-                password,
-                newErrorMessage,
-                FieldColor.RED
-        );
+    public CoSgn00Output withTrnName(String v) {
+        return new CoSgn00Output(v, title01, curDate, pgmName, title02, curTime,
+                applId, sysId, userId, passwd, errMsg, errMsgColor);
     }
 
     /**
-     * Returns a string representation that masks the {@link #password()}
-     * component with {@value #PASSWORD_MASK}. See
-     * {@link CoSgn00Input#toString()} for the rationale; this output
-     * DTO is masked symmetrically with the input so a partial copy or
-     * a logged round-trip cannot leak a password through this side
-     * either.
+     * Returns a copy of this record with {@link #title01()} replaced.
      *
-     * @return a {@link String} that never contains the cleartext
-     *         password value
+     * @param v the new value for the {@code title01} component (must be
+     *          non-null; pass {@code ""} to clear the field)
+     * @return a new {@code CoSgn00Output} with all other fields
+     *         unchanged
+     * @throws NullPointerException if {@code v} is {@code null}
      */
-    @Override
-    public String toString() {
-        return "CoSgn00Output["
-                + "transactionName=" + transactionName
-                + ", title01=" + title01
-                + ", currentDate=" + currentDate
-                + ", programName=" + programName
-                + ", title02=" + title02
-                + ", currentTime=" + currentTime
-                + ", applId=" + applId
-                + ", sysId=" + sysId
-                + ", userId=" + userId
-                + ", password=" + PASSWORD_MASK
-                + ", errorMessage=" + errorMessage
-                + ", errMsgColor=" + errMsgColor
-                + "]";
+    public CoSgn00Output withTitle01(String v) {
+        return new CoSgn00Output(trnName, v, curDate, pgmName, title02, curTime,
+                applId, sysId, userId, passwd, errMsg, errMsgColor);
     }
 
     /**
-     * Sealed enumeration of 3270 field colour overrides emitted on the
-     * single attribute byte that {@code COSGN00C} actually changes
-     * ({@code ERRMSGC}). Mirrors the CICS BMS constants from copybook
-     * {@code DFHBMSCA} but locally scoped to the signon DTO.
+     * Returns a copy of this record with {@link #curDate()} replaced.
+     *
+     * @param v the new value for the {@code curDate} component (must be
+     *          non-null; pass {@code ""} to clear the field)
+     * @return a new {@code CoSgn00Output} with all other fields
+     *         unchanged
+     * @throws NullPointerException if {@code v} is {@code null}
      */
-    public enum FieldColor {
-        /** Sentinel: leave the field at the BMS map's compile-time {@code COLOR=} default. */
-        NONE,
-        /** {@code DFHRED} &mdash; used for error messages. */
-        RED,
-        /** {@code DFHGREEN} &mdash; used for success messages. */
-        GREEN,
-        /** {@code DFHYELLOW}. */
-        YELLOW,
-        /** {@code DFHBLUE}. */
-        BLUE,
-        /** {@code DFHPINK}. */
-        PINK,
-        /** {@code DFHTURQ}. */
-        TURQUOISE,
-        /** {@code DFHNEUTR}. */
-        NEUTRAL
+    public CoSgn00Output withCurDate(String v) {
+        return new CoSgn00Output(trnName, title01, v, pgmName, title02, curTime,
+                applId, sysId, userId, passwd, errMsg, errMsgColor);
     }
 
     /**
-     * Normalises per COBOL {@code MOVE}: {@code null} becomes
-     * {@code ""}; over-long values are truncated from the right.
+     * Returns a copy of this record with {@link #pgmName()} replaced.
+     *
+     * @param v the new value for the {@code pgmName} component (must be
+     *          non-null; pass {@code ""} to clear the field)
+     * @return a new {@code CoSgn00Output} with all other fields
+     *         unchanged
+     * @throws NullPointerException if {@code v} is {@code null}
      */
-    private static String normalize(String value, int maxLen) {
-        if (value == null) {
-            return "";
-        }
-        if (value.length() > maxLen) {
-            return value.substring(0, maxLen);
-        }
-        return value;
+    public CoSgn00Output withPgmName(String v) {
+        return new CoSgn00Output(trnName, title01, curDate, v, title02, curTime,
+                applId, sysId, userId, passwd, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #title02()} replaced.
+     *
+     * @param v the new value for the {@code title02} component (must be
+     *          non-null; pass {@code ""} to clear the field)
+     * @return a new {@code CoSgn00Output} with all other fields
+     *         unchanged
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoSgn00Output withTitle02(String v) {
+        return new CoSgn00Output(trnName, title01, curDate, pgmName, v, curTime,
+                applId, sysId, userId, passwd, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #curTime()} replaced.
+     *
+     * @param v the new value for the {@code curTime} component (must be
+     *          non-null; pass {@code ""} to clear the field)
+     * @return a new {@code CoSgn00Output} with all other fields
+     *         unchanged
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoSgn00Output withCurTime(String v) {
+        return new CoSgn00Output(trnName, title01, curDate, pgmName, title02, v,
+                applId, sysId, userId, passwd, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #applId()} replaced.
+     *
+     * @param v the new value for the {@code applId} component (must be
+     *          non-null; pass {@code ""} to clear the field)
+     * @return a new {@code CoSgn00Output} with all other fields
+     *         unchanged
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoSgn00Output withApplId(String v) {
+        return new CoSgn00Output(trnName, title01, curDate, pgmName, title02, curTime,
+                v, sysId, userId, passwd, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #sysId()} replaced.
+     *
+     * @param v the new value for the {@code sysId} component (must be
+     *          non-null; pass {@code ""} to clear the field)
+     * @return a new {@code CoSgn00Output} with all other fields
+     *         unchanged
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoSgn00Output withSysId(String v) {
+        return new CoSgn00Output(trnName, title01, curDate, pgmName, title02, curTime,
+                applId, v, userId, passwd, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #userId()} replaced.
+     *
+     * @param v the new value for the {@code userId} component (must be
+     *          non-null; pass {@code ""} to clear the field)
+     * @return a new {@code CoSgn00Output} with all other fields
+     *         unchanged
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoSgn00Output withUserId(String v) {
+        return new CoSgn00Output(trnName, title01, curDate, pgmName, title02, curTime,
+                applId, sysId, v, passwd, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #passwd()} replaced.
+     *
+     * <p>The BMS map declares {@code PASSWDO} with the {@code DRK}
+     * attribute (non-display). The COBOL convention is to send SPACES
+     * via this field so that no cleartext is ever transmitted on the
+     * wire; the Java translation typically uses {@code ""}.
+     *
+     * @param v the new value for the {@code passwd} component (must be
+     *          non-null; pass {@code ""} to clear the field)
+     * @return a new {@code CoSgn00Output} with all other fields
+     *         unchanged
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoSgn00Output withPasswd(String v) {
+        return new CoSgn00Output(trnName, title01, curDate, pgmName, title02, curTime,
+                applId, sysId, userId, v, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #errMsg()} replaced.
+     *
+     * @param v the new value for the {@code errMsg} component (must be
+     *          non-null; pass {@code ""} to clear the field)
+     * @return a new {@code CoSgn00Output} with all other fields
+     *         unchanged
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoSgn00Output withErrMsg(String v) {
+        return new CoSgn00Output(trnName, title01, curDate, pgmName, title02, curTime,
+                applId, sysId, userId, passwd, v, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #errMsgColor()}
+     * replaced.
+     *
+     * <p>Per {@code EXTATT=YES} on the BMS {@code DFHMSD}, the program
+     * may dynamically override the {@code ERRMSG} color through this
+     * 1-byte attribute. Common values: {@code "R"} for RED (used for
+     * validation/auth errors), {@code "G"} for GREEN (used for
+     * informational/success messages), {@code ""} to inherit the BMS
+     * compile-time default.
+     *
+     * @param v the new value for the {@code errMsgColor} component
+     *          (must be non-null; pass {@code ""} to clear the
+     *          override)
+     * @return a new {@code CoSgn00Output} with all other fields
+     *         unchanged
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoSgn00Output withErrMsgColor(String v) {
+        return new CoSgn00Output(trnName, title01, curDate, pgmName, title02, curTime,
+                applId, sysId, userId, passwd, errMsg, v);
     }
 }

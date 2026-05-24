@@ -94,7 +94,7 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
  * verify that the user-id exists in {@code USRSEC} or that the
  * password matches &mdash; those are business validations performed
  * by the signon program and reported via
- * {@link CoSgn00Output#errorMessage()}.
+ * {@link CoSgn00Output#errMsg()}.
  *
  * <h2>Trailing-space preservation</h2>
  * <p>The normaliser does <strong>not</strong> trim trailing spaces.
