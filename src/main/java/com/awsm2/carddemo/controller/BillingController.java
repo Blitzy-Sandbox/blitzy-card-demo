@@ -210,7 +210,7 @@ public class BillingController {
         // PCI-DSS: do NOT log balance/amount fields. Only the
         // non-sensitive accountId metadata is logged.
         LOG.debug("Bill payment requested for accountId={}", request.accountId());
-        BillPaymentDto result = billPaymentService.payBill(request);
+        BillPaymentDto result = billPaymentService.processBillPayment(request);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(ApiResponse.success(result, "Bill payment successful"));
     }

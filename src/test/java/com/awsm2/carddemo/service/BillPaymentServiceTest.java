@@ -21,7 +21,6 @@ import com.awsm2.carddemo.adapter.CacheService;
 import com.awsm2.carddemo.adapter.KafkaEventPublisher;
 import com.awsm2.carddemo.domain.Account;
 import com.awsm2.carddemo.domain.CardCrossReference;
-import com.awsm2.carddemo.domain.Customer;
 import com.awsm2.carddemo.domain.Transaction;
 import com.awsm2.carddemo.dto.AccountUpdateDto;
 import com.awsm2.carddemo.dto.BillPaymentDto;
@@ -31,7 +30,6 @@ import com.awsm2.carddemo.exception.RecordNotFoundException;
 import com.awsm2.carddemo.exception.ValidationException;
 import com.awsm2.carddemo.repository.AccountRepository;
 import com.awsm2.carddemo.repository.CardCrossReferenceRepository;
-import com.awsm2.carddemo.repository.CustomerRepository;
 import com.awsm2.carddemo.repository.TransactionRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -44,7 +42,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -57,6 +54,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -67,19 +65,20 @@ import static org.mockito.Mockito.when;
  *
  * <p><b>COBOL provenance.</b> {@link BillPaymentService} translates
  * {@code app/cbl/COBIL00C.cbl} (CICS transaction id {@code CB00},
- * file {@code 'ACCTDAT' + 'TRANSACT'}). The COBOL source assigns the
- * next transaction ID, posts a payment record with TYPE-CD='02',
- * subtracts the current balance, and rewrites the account row.</p>
+ * file {@code 'ACCTDAT' + 'CARDXREF' + 'TRANSACT'}). The COBOL source
+ * reads the account, optionally reads the card cross-reference,
+ * assigns the next transaction ID, posts a payment record with
+ * TYPE-CD='02', subtracts the current balance, and rewrites the
+ * account row.</p>
  *
  * <p><b>Behavioural invariants locked by this suite.</b></p>
  * <ol>
- *   <li><b>Deterministic XREF selection</b> &mdash; the service calls
- *       {@link CardCrossReferenceRepository#findByXrefAcctIdOrderByXrefCardNumAsc(Long)}
- *       (not the unordered method); the chosen card number is the
- *       lexicographically smallest one for the account. This is the
- *       CP5 regression invariant flagged for multi-card accounts.</li>
- *   <li><b>MAX-TRAN-ID + 1 generator</b> &mdash; matching
- *       {@code TransactionAddService}'s generator (CP5 review item).</li>
+ *   <li><b>Schema-mandated XREF method</b> &mdash; the service calls
+ *       {@link CardCrossReferenceRepository#findByXrefAcctId(Long)}
+ *       per the file schema {@code internal_imports} contract.</li>
+ *   <li><b>MAX-TRAN-ID + 1 generator</b> &mdash; reads
+ *       {@link TransactionRepository#findTopByOrderByTranIdDesc()} and
+ *       generates the next 16-digit zero-padded ID.</li>
  *   <li><b>Balance arithmetic</b> &mdash; new balance is
  *       {@code current.subtract(amountPaid)} with
  *       {@code RoundingMode.HALF_EVEN} at scale 2. Verified to be
@@ -87,20 +86,27 @@ import static org.mockito.Mockito.when;
  *   <li><b>OnSizeError</b> &mdash; balance that would overflow
  *       {@code PIC S9(10)V99} triggers
  *       {@link OnSizeErrorException}.</li>
- *   <li><b>Confirmation gate</b> &mdash; {@code confirm != 'Y'}
- *       blocks persistence.</li>
+ *   <li><b>Confirm-flag dispatch</b> &mdash;
+ *       {@code Y/y} processes, {@code N/n} returns a cancellation
+ *       DTO, blank returns a preview DTO with the current balance,
+ *       any other value throws the verbatim COBOL message
+ *       <em>"Invalid value. Valid values are (Y/N)..."</em>.</li>
+ *   <li><b>Verbatim COBOL strings preserved</b> &mdash; per the AAP
+ *       &sect;0.7.3 Minimal Change Clause:
+ *       {@code "Acct ID can NOT be empty..."},
+ *       {@code "Invalid value. Valid values are (Y/N)..."}.</li>
  *   <li><b>RecordNotFound mapping</b> &mdash; missing account or
  *       missing XREF resolves to HTTP 404 via
  *       {@link RecordNotFoundException}.</li>
  *   <li><b>Cache-aside post-write invalidation</b> &mdash; account
- *       cache entry is evicted under namespace {@code account-view}
- *       (see {@link AccountViewService#CACHE_NS}) with key =
- *       zero-padded 11-digit account ID.</li>
+ *       cache entry is evicted under namespace
+ *       {@link AccountViewService#CACHE_NS} with key = zero-padded
+ *       11-digit account ID.</li>
  *   <li><b>Dual MSK publish</b> &mdash; both
  *       {@code transaction.posted} and {@code account.updated} are
- *       partitioned by owning account ID (AAP §0.6.5).</li>
- *   <li><b>Audit emission</b> &mdash; {@code bill.paid} carries
- *       PCI-DSS-safe payload (no PAN).</li>
+ *       partitioned by owning account ID (AAP &sect;0.6.5).</li>
+ *   <li><b>Audit emission</b> &mdash; {@code BILL_PAID} event carries
+ *       PCI-DSS-safe payload (PAN last-four only, never full PAN).</li>
  * </ol>
  *
  * <p>External AWS interactions are fully mocked through
@@ -125,7 +131,6 @@ class BillPaymentServiceTest {
     // Mocks and SUT
     // ==================================================================
     @Mock private AccountRepository accountRepository;
-    @Mock private CustomerRepository customerRepository;
     @Mock private CardCrossReferenceRepository cardCrossReferenceRepository;
     @Mock private TransactionRepository transactionRepository;
     @Mock private KafkaEventPublisher kafkaEventPublisher;
@@ -139,7 +144,6 @@ class BillPaymentServiceTest {
     // ==================================================================
     private BillPaymentDto validRequest;
     private Account existingAccount;
-    private Customer existingCustomer;
 
     @BeforeEach
     void setUp() {
@@ -155,11 +159,6 @@ class BillPaymentServiceTest {
         existingAccount.setAcctId(ACCOUNT_ID);
         existingAccount.setAcctCurrBal(STARTING_BALANCE);
         existingAccount.setAcctActiveStatus("Y");
-
-        existingCustomer = new Customer();
-        existingCustomer.setCustId(ACCOUNT_ID);
-        existingCustomer.setCustFirstName("ALICE");
-        existingCustomer.setCustLastName("DOE");
     }
 
     private BillPaymentDto buildRequestWithConfirm(String confirm) {
@@ -173,9 +172,9 @@ class BillPaymentServiceTest {
     }
 
     /**
-     * Stub a happy-path account + customer + XREF + transaction save.
+     * Stub a happy-path account + XREF + transaction save.
      * Uses {@code lenient()} on each so individual tests can verify
-     * absence of side effects.
+     * absence of side effects without strict-stubbing complaints.
      */
     private void stubHappyPathRepositories(BigDecimal openingBalance,
                                            List<CardCrossReference> xrefRows) {
@@ -185,14 +184,12 @@ class BillPaymentServiceTest {
         lenient().when(accountRepository.save(any(Account.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
         lenient().when(cardCrossReferenceRepository
-                        .findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                        .findByXrefAcctId(ACCOUNT_ID))
                 .thenReturn(xrefRows);
         lenient().when(transactionRepository.findTopByOrderByTranIdDesc())
                 .thenReturn(Optional.empty());
         lenient().when(transactionRepository.save(any(Transaction.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
-        lenient().when(customerRepository.findById(ACCOUNT_ID))
-                .thenReturn(Optional.of(existingCustomer));
         lenient().when(kafkaEventPublisher.publishTransactionPosted(
                         anyLong(), any(TransactionAddDto.class)))
                 .thenReturn(CompletableFuture.completedFuture(null));
@@ -206,45 +203,41 @@ class BillPaymentServiceTest {
     // ==================================================================
 
     @Nested
-    @DisplayName("Deterministic XREF selection (CP5 — multi-card account)")
-    class DeterministicXref {
+    @DisplayName("XREF lookup (schema-mandated findByXrefAcctId)")
+    class XrefLookup {
 
         @Test
-        @DisplayName("uses ordered AIX (findByXrefAcctIdOrderByXrefCardNumAsc) — not the unordered method")
-        void payBill_callsOrderedXrefMethod() {
-            // Arrange — multi-card account; ordered repository returns
-            // smaller card number first.
+        @DisplayName("uses findByXrefAcctId (per file schema contract)")
+        void processBillPayment_callsSchemaXrefMethod() {
+            // Arrange — single-card account; method returns one row.
             List<CardCrossReference> xrefs = List.of(
-                    new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID),
-                    new CardCrossReference(CARD_HIGH, 999_999L, ACCOUNT_ID));
+                    new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
             stubHappyPathRepositories(STARTING_BALANCE, xrefs);
 
             // Act
-            service.payBill(validRequest);
+            service.processBillPayment(validRequest);
 
-            // Assert — service called the ORDERED method (CP5 regression
-            // contract verified through repository method invocation).
+            // Assert — service called findByXrefAcctId (per schema).
             verify(cardCrossReferenceRepository)
-                    .findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID);
-            // The unordered method must NEVER be called.
-            verify(cardCrossReferenceRepository, never())
-                    .findByXrefAcctId(anyLong());
+                    .findByXrefAcctId(ACCOUNT_ID);
         }
 
         @Test
-        @DisplayName("posts transaction with lexicographically smallest card number")
-        void payBill_picksLexicographicallySmallestCard() {
-            // Arrange — ordered method returns the LOW card first
-            // (validates the CP5 deterministic-selection invariant).
+        @DisplayName("posts transaction with first card from XREF result")
+        void processBillPayment_picksFirstCard() {
+            // Arrange — first card in result list is selected
+            // (matches the COBOL READ-CXACAIX-FILE first-row semantic;
+            // CARDDEMO data has 1:1 acct:card mapping).
             List<CardCrossReference> xrefs = List.of(
                     new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID),
                     new CardCrossReference(CARD_HIGH, 999_999L, ACCOUNT_ID));
             stubHappyPathRepositories(STARTING_BALANCE, xrefs);
 
             // Act
-            service.payBill(validRequest);
+            service.processBillPayment(validRequest);
 
-            // Assert — captured Transaction carries the LOW card
+            // Assert — captured Transaction carries the LOW card (first
+            // element)
             ArgumentCaptor<Transaction> txCaptor =
                     ArgumentCaptor.forClass(Transaction.class);
             verify(transactionRepository).save(txCaptor.capture());
@@ -259,14 +252,14 @@ class BillPaymentServiceTest {
 
         @Test
         @DisplayName("subtracts payment from current balance (BigDecimal HALF_EVEN)")
-        void payBill_subtractsPaymentFromBalance() {
+        void processBillPayment_subtractsPaymentFromBalance() {
             // Arrange — balance 250.75 → 0.00 after full payment
             List<CardCrossReference> xrefs = List.of(
                     new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
             stubHappyPathRepositories(STARTING_BALANCE, xrefs);
 
             // Act
-            BillPaymentDto response = service.payBill(validRequest);
+            BillPaymentDto response = service.processBillPayment(validRequest);
 
             // Assert — response carries the new balance (0.00) and the
             // captured account save reflects the same amount.
@@ -285,47 +278,61 @@ class BillPaymentServiceTest {
         }
 
         @Test
-        @DisplayName("rejects non-positive balance with NOTHING_TO_PAY")
-        void payBill_zeroBalance_throwsValidation() {
-            List<CardCrossReference> xrefs = List.of(
-                    new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
-            stubHappyPathRepositories(BigDecimal.ZERO, xrefs);
+        @DisplayName("returns 'nothing to pay' DTO when balance is zero (no exception)")
+        void processBillPayment_zeroBalance_returnsNothingToPayDto() {
+            // Arrange — zero balance: COBOL "IF ACCT-CURR-BAL <= ZEROS"
+            // returns an informational DTO per agent_prompt; no
+            // transaction is posted.
+            lenient().when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(existingAccount));
+            existingAccount.setAcctCurrBal(BigDecimal.ZERO);
 
-            assertThatThrownBy(() -> service.payBill(validRequest))
-                    .isInstanceOf(ValidationException.class)
-                    .hasMessageContaining("nothing to pay");
+            // Act
+            BillPaymentDto response = service.processBillPayment(validRequest);
 
+            // Assert — DTO returned with current balance, no write paths
+            // exercised.
+            assertThat(response).isNotNull();
+            assertThat(response.currentBalance())
+                    .isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(response.transactionId()).isNull();
+            assertThat(response.amountPaid()).isNull();
             verify(transactionRepository, never()).save(any());
             verify(accountRepository, never()).save(any());
             verify(kafkaEventPublisher, never())
                     .publishTransactionPosted(anyLong(), any());
+            verify(kafkaEventPublisher, never())
+                    .publishAccountUpdated(anyLong(), any());
         }
 
         @Test
-        @DisplayName("rejects negative balance with NOTHING_TO_PAY")
-        void payBill_negativeBalance_throwsValidation() {
-            List<CardCrossReference> xrefs = List.of(
-                    new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
-            stubHappyPathRepositories(new BigDecimal("-1.00"), xrefs);
+        @DisplayName("returns 'nothing to pay' DTO when balance is negative")
+        void processBillPayment_negativeBalance_returnsNothingToPayDto() {
+            // Negative balance also short-circuits ("<= ZEROS" semantic).
+            lenient().when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(existingAccount));
+            existingAccount.setAcctCurrBal(new BigDecimal("-1.00"));
 
-            assertThatThrownBy(() -> service.payBill(validRequest))
-                    .isInstanceOf(ValidationException.class)
-                    .hasMessageContaining("nothing to pay");
+            BillPaymentDto response = service.processBillPayment(validRequest);
+
+            assertThat(response).isNotNull();
+            assertThat(response.transactionId()).isNull();
+            verify(transactionRepository, never()).save(any());
         }
 
         @Test
         @DisplayName("preserves BigDecimal scale (no float/double conversion)")
-        void payBill_preservesBigDecimalScale() {
-            // Arrange — balance value with a sub-cent fraction MUST be
-            // handled through BigDecimal arithmetic only (the service
-            // uses HALF_EVEN + scale 2 to match COBOL PIC S9(10)V99).
+        void processBillPayment_preservesBigDecimalScale() {
+            // Arrange — balance value MUST flow through BigDecimal
+            // arithmetic only (HALF_EVEN + scale 2 to match COBOL PIC
+            // S9(10)V99).
             BigDecimal balance = new BigDecimal("123.45");
             List<CardCrossReference> xrefs = List.of(
                     new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
             stubHappyPathRepositories(balance, xrefs);
 
             // Act
-            BillPaymentDto response = service.payBill(validRequest);
+            BillPaymentDto response = service.processBillPayment(validRequest);
 
             // Assert — amount paid carries the EXACT precision
             assertThat(response.amountPaid()).isEqualByComparingTo(balance);
@@ -339,78 +346,139 @@ class BillPaymentServiceTest {
     class ValidationGates {
 
         @Test
-        @DisplayName("rejects null accountId")
-        void payBill_nullAccountId_throwsValidation() {
+        @DisplayName("rejects null accountId with verbatim COBOL message")
+        void processBillPayment_nullAccountId_throwsValidation() {
             BillPaymentDto request = buildRequestWithAccountId(null);
 
-            assertThatThrownBy(() -> service.payBill(request))
+            assertThatThrownBy(() -> service.processBillPayment(request))
                     .isInstanceOf(ValidationException.class)
-                    .hasMessageContaining("accountId is required");
+                    .hasMessageContaining("Acct ID can NOT be empty");
 
             verify(accountRepository, never()).findById(anyLong());
         }
 
         @Test
-        @DisplayName("rejects blank accountId")
-        void payBill_blankAccountId_throwsValidation() {
+        @DisplayName("rejects blank accountId with verbatim COBOL message")
+        void processBillPayment_blankAccountId_throwsValidation() {
             BillPaymentDto request = buildRequestWithAccountId("   ");
 
-            assertThatThrownBy(() -> service.payBill(request))
+            assertThatThrownBy(() -> service.processBillPayment(request))
                     .isInstanceOf(ValidationException.class)
-                    .hasMessageContaining("accountId is required");
+                    .hasMessageContaining("Acct ID can NOT be empty");
         }
 
         @Test
-        @DisplayName("rejects non-numeric accountId")
-        void payBill_nonNumericAccountId_throwsValidation() {
+        @DisplayName("rejects non-numeric accountId with verbatim COBOL message")
+        void processBillPayment_nonNumericAccountId_throwsValidation() {
             BillPaymentDto request = buildRequestWithAccountId("ABC12345678");
 
-            assertThatThrownBy(() -> service.payBill(request))
+            assertThatThrownBy(() -> service.processBillPayment(request))
                     .isInstanceOf(ValidationException.class)
-                    .hasMessageContaining("1 to 11 digits");
+                    .hasMessageContaining("Acct ID can NOT be empty");
         }
 
         @Test
-        @DisplayName("rejects 12-digit accountId")
-        void payBill_overlongAccountId_throwsValidation() {
-            BillPaymentDto request = buildRequestWithAccountId("123456789012");
+        @DisplayName("rejects accountId with leading sign as non-digit")
+        void processBillPayment_signedAccountId_throwsValidation() {
+            BillPaymentDto request = buildRequestWithAccountId("-1234567890");
 
-            assertThatThrownBy(() -> service.payBill(request))
+            assertThatThrownBy(() -> service.processBillPayment(request))
                     .isInstanceOf(ValidationException.class)
-                    .hasMessageContaining("1 to 11 digits");
+                    .hasMessageContaining("Acct ID can NOT be empty");
         }
 
         @Test
-        @DisplayName("rejects confirm != 'Y'")
-        void payBill_confirmN_throwsValidation() {
+        @DisplayName("rejects zero accountId (PIC 9(11) effective-empty)")
+        void processBillPayment_zeroAccountId_throwsValidation() {
+            BillPaymentDto request = buildRequestWithAccountId("00000000000");
+
+            assertThatThrownBy(() -> service.processBillPayment(request))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("Acct ID can NOT be empty");
+        }
+
+        @Test
+        @DisplayName("cancellation: confirm='N' returns DTO (no exception, no write)")
+        void processBillPayment_confirmN_returnsCancellationDto() {
             BillPaymentDto request = buildRequestWithConfirm("N");
 
-            assertThatThrownBy(() -> service.payBill(request))
+            BillPaymentDto response = service.processBillPayment(request);
+
+            assertThat(response).isNotNull();
+            assertThat(response.confirm()).isEqualTo("N");
+            assertThat(response.transactionId()).isNull();
+            verify(accountRepository, never()).findById(anyLong());
+            verify(transactionRepository, never()).save(any());
+            verify(kafkaEventPublisher, never())
+                    .publishTransactionPosted(anyLong(), any());
+        }
+
+        @Test
+        @DisplayName("cancellation: confirm='n' (lowercase) returns DTO")
+        void processBillPayment_confirmLowercaseN_returnsCancellationDto() {
+            BillPaymentDto request = buildRequestWithConfirm("n");
+
+            BillPaymentDto response = service.processBillPayment(request);
+
+            assertThat(response).isNotNull();
+            verify(transactionRepository, never()).save(any());
+        }
+
+        @Test
+        @DisplayName("preview: null confirm returns DTO with current balance after account load")
+        void processBillPayment_nullConfirm_returnsPreviewDto() {
+            // Blank confirm reads the account for display but does not
+            // post (COBOL WHEN SPACES/LOW-VALUES at L182-L184).
+            lenient().when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(existingAccount));
+            BillPaymentDto request = buildRequestWithConfirm(null);
+
+            BillPaymentDto response = service.processBillPayment(request);
+
+            assertThat(response).isNotNull();
+            assertThat(response.currentBalance())
+                    .isEqualByComparingTo(STARTING_BALANCE);
+            assertThat(response.transactionId()).isNull();
+            verify(transactionRepository, never()).save(any());
+            verify(accountRepository, never()).save(any());
+        }
+
+        @Test
+        @DisplayName("preview: blank confirm returns DTO with current balance")
+        void processBillPayment_blankConfirm_returnsPreviewDto() {
+            lenient().when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(existingAccount));
+            BillPaymentDto request = buildRequestWithConfirm("");
+
+            BillPaymentDto response = service.processBillPayment(request);
+
+            assertThat(response).isNotNull();
+            verify(transactionRepository, never()).save(any());
+        }
+
+        @Test
+        @DisplayName("rejects invalid confirm value with verbatim COBOL message")
+        void processBillPayment_invalidConfirm_throwsValidation() {
+            BillPaymentDto request = buildRequestWithConfirm("X");
+
+            assertThatThrownBy(() -> service.processBillPayment(request))
                     .isInstanceOf(ValidationException.class)
-                    .hasMessageContaining("did not confirm");
+                    .hasMessageContaining(
+                            "Invalid value. Valid values are (Y/N)");
 
             verify(accountRepository, never()).findById(anyLong());
         }
 
         @Test
-        @DisplayName("rejects null confirm")
-        void payBill_nullConfirm_throwsValidation() {
-            BillPaymentDto request = buildRequestWithConfirm(null);
-
-            assertThatThrownBy(() -> service.payBill(request))
-                    .isInstanceOf(ValidationException.class);
-        }
-
-        @Test
-        @DisplayName("accepts lowercase 'y' (case-insensitive)")
-        void payBill_confirmLowercaseY_succeeds() {
+        @DisplayName("accepts lowercase 'y' (case-insensitive Y match)")
+        void processBillPayment_confirmLowercaseY_succeeds() {
             List<CardCrossReference> xrefs = List.of(
                     new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
             stubHappyPathRepositories(STARTING_BALANCE, xrefs);
             BillPaymentDto request = buildRequestWithConfirm("y");
 
             // Act
-            BillPaymentDto response = service.payBill(request);
+            BillPaymentDto response = service.processBillPayment(request);
 
             // Assert
             assertThat(response).isNotNull();
@@ -418,9 +486,9 @@ class BillPaymentServiceTest {
         }
 
         @Test
-        @DisplayName("rejects null request")
-        void payBill_nullRequest_throwsNpe() {
-            assertThatThrownBy(() -> service.payBill(null))
+        @DisplayName("rejects null request with NullPointerException")
+        void processBillPayment_nullRequest_throwsNpe() {
+            assertThatThrownBy(() -> service.processBillPayment(null))
                     .isInstanceOf(NullPointerException.class);
         }
     }
@@ -431,33 +499,115 @@ class BillPaymentServiceTest {
 
         @Test
         @DisplayName("throws RecordNotFoundException when account missing")
-        void payBill_accountMissing_throwsRecordNotFound() {
+        void processBillPayment_accountMissing_throwsRecordNotFound() {
             when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.empty());
 
-            assertThatThrownBy(() -> service.payBill(validRequest))
+            assertThatThrownBy(() -> service.processBillPayment(validRequest))
                     .isInstanceOf(RecordNotFoundException.class)
-                    .hasMessageContaining("Account not found");
+                    .hasMessageContaining("Account");
 
             verify(transactionRepository, never()).save(any());
             verify(accountRepository, never()).save(any());
         }
 
         @Test
-        @DisplayName("throws RecordNotFoundException when XREF empty")
-        void payBill_xrefEmpty_throwsRecordNotFound() {
+        @DisplayName("throws RecordNotFoundException when XREF list empty")
+        void processBillPayment_xrefEmpty_throwsRecordNotFound() {
             when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.of(existingAccount));
-            when(cardCrossReferenceRepository
-                    .findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+            when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
                     .thenReturn(List.of());
 
-            assertThatThrownBy(() -> service.payBill(validRequest))
+            assertThatThrownBy(() -> service.processBillPayment(validRequest))
                     .isInstanceOf(RecordNotFoundException.class)
-                    .hasMessageContaining("No card cross-reference");
+                    .hasMessageContaining("CardCrossReference");
 
             verify(transactionRepository, never()).save(any());
             verify(accountRepository, never()).save(any());
+        }
+    }
+
+    @Nested
+    @DisplayName("Transaction record construction (verbatim COBOL literals)")
+    class TransactionConstruction {
+
+        @Test
+        @DisplayName("generates 16-digit zero-padded transaction ID starting at 1 for empty journal")
+        void processBillPayment_seedsTranIdWhenJournalEmpty() {
+            List<CardCrossReference> xrefs = List.of(
+                    new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
+            stubHappyPathRepositories(STARTING_BALANCE, xrefs);
+            // No transactions exist yet
+            when(transactionRepository.findTopByOrderByTranIdDesc())
+                    .thenReturn(Optional.empty());
+
+            service.processBillPayment(validRequest);
+
+            ArgumentCaptor<Transaction> txCaptor =
+                    ArgumentCaptor.forClass(Transaction.class);
+            verify(transactionRepository).save(txCaptor.capture());
+            assertThat(txCaptor.getValue().getTranId())
+                    .isEqualTo("0000000000000001");
+        }
+
+        @Test
+        @DisplayName("MAX-TRAN-ID + 1 idiom produces next sequential ID")
+        void processBillPayment_incrementsExistingMaxTranId() {
+            List<CardCrossReference> xrefs = List.of(
+                    new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
+            stubHappyPathRepositories(STARTING_BALANCE, xrefs);
+            Transaction existing = new Transaction();
+            existing.setTranId("0000000000000042");
+            when(transactionRepository.findTopByOrderByTranIdDesc())
+                    .thenReturn(Optional.of(existing));
+
+            service.processBillPayment(validRequest);
+
+            ArgumentCaptor<Transaction> txCaptor =
+                    ArgumentCaptor.forClass(Transaction.class);
+            verify(transactionRepository).save(txCaptor.capture());
+            assertThat(txCaptor.getValue().getTranId())
+                    .isEqualTo("0000000000000043");
+        }
+
+        @Test
+        @DisplayName("transaction carries verbatim COBOL literals (type, cat, source, desc, merchant)")
+        void processBillPayment_carriesVerbatimCobolLiterals() {
+            List<CardCrossReference> xrefs = List.of(
+                    new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
+            stubHappyPathRepositories(STARTING_BALANCE, xrefs);
+
+            service.processBillPayment(validRequest);
+
+            ArgumentCaptor<Transaction> txCaptor =
+                    ArgumentCaptor.forClass(Transaction.class);
+            verify(transactionRepository).save(txCaptor.capture());
+            Transaction tx = txCaptor.getValue();
+
+            // COBOL: MOVE '02' TO TRAN-TYPE-CD (L220)
+            assertThat(tx.getTranTypeCd()).isEqualTo("02");
+            // COBOL: MOVE 2 TO TRAN-CAT-CD (L221) — Integer
+            assertThat(tx.getTranCatCd()).isEqualTo(2);
+            // COBOL: MOVE 'POS TERM' TO TRAN-SOURCE (L222)
+            assertThat(tx.getTranSource()).isEqualTo("POS TERM");
+            // COBOL: MOVE 'BILL PAYMENT - ONLINE' TO TRAN-DESC (L223)
+            assertThat(tx.getTranDesc()).isEqualTo("BILL PAYMENT - ONLINE");
+            // COBOL: MOVE 999999999 TO TRAN-MERCHANT-ID (L226)
+            assertThat(tx.getTranMerchantId()).isEqualTo(999_999_999L);
+            // COBOL: MOVE 'BILL PAYMENT' TO TRAN-MERCHANT-NAME (L227)
+            assertThat(tx.getTranMerchantName()).isEqualTo("BILL PAYMENT");
+            // COBOL: MOVE 'N/A' TO TRAN-MERCHANT-CITY/ZIP (L228-L229)
+            assertThat(tx.getTranMerchantCity()).isEqualTo("N/A");
+            assertThat(tx.getTranMerchantZip()).isEqualTo("N/A");
+            // COBOL: MOVE XREF-CARD-NUM TO TRAN-CARD-NUM (L225)
+            assertThat(tx.getTranCardNum()).isEqualTo(CARD_LOW);
+            // COBOL: MOVE ACCT-CURR-BAL TO TRAN-AMT (L224)
+            assertThat(tx.getTranAmt())
+                    .isEqualByComparingTo(STARTING_BALANCE);
+            // Timestamps populated (L230, L249-L267 → LocalDateTime.now())
+            assertThat(tx.getTranOrigTs()).isNotNull();
+            assertThat(tx.getTranProcTs()).isNotNull();
         }
     }
 
@@ -467,12 +617,12 @@ class BillPaymentServiceTest {
 
         @Test
         @DisplayName("publishes transaction.posted partitioned by account ID")
-        void payBill_publishesTransactionPostedByAcctId() {
+        void processBillPayment_publishesTransactionPostedByAcctId() {
             List<CardCrossReference> xrefs = List.of(
                     new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
             stubHappyPathRepositories(STARTING_BALANCE, xrefs);
 
-            service.payBill(validRequest);
+            service.processBillPayment(validRequest);
 
             ArgumentCaptor<Long> partitionKeyCaptor =
                     ArgumentCaptor.forClass(Long.class);
@@ -483,12 +633,12 @@ class BillPaymentServiceTest {
 
         @Test
         @DisplayName("publishes account.updated partitioned by account ID")
-        void payBill_publishesAccountUpdatedByAcctId() {
+        void processBillPayment_publishesAccountUpdatedByAcctId() {
             List<CardCrossReference> xrefs = List.of(
                     new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
             stubHappyPathRepositories(STARTING_BALANCE, xrefs);
 
-            service.payBill(validRequest);
+            service.processBillPayment(validRequest);
 
             ArgumentCaptor<Long> partitionKeyCaptor =
                     ArgumentCaptor.forClass(Long.class);
@@ -498,25 +648,29 @@ class BillPaymentServiceTest {
         }
 
         @Test
-        @DisplayName("audit payload contains accountId, amountPaid, newBalance (no PAN)")
-        void payBill_auditPayloadPciDssSafe() {
+        @DisplayName("logTransactionEvent invoked with BILL_PAID event type and PCI-DSS-safe payload")
+        void processBillPayment_emitsBillPaidAuditEvent() {
             List<CardCrossReference> xrefs = List.of(
                     new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
             stubHappyPathRepositories(STARTING_BALANCE, xrefs);
 
-            service.payBill(validRequest);
+            service.processBillPayment(validRequest);
 
             @SuppressWarnings("unchecked")
             ArgumentCaptor<Map<String, Object>> payloadCaptor =
                     ArgumentCaptor.forClass(Map.class);
-            verify(auditLogService).auditEvent(
-                    eq("bill.paid"), eq("system"), payloadCaptor.capture());
+            verify(auditLogService).logTransactionEvent(
+                    anyString(),                    // transactionId
+                    eq(ACCOUNT_ID),                 // accountId
+                    eq("system"),                   // operatorCode
+                    eq("BILL_PAID"),                // eventType
+                    isNull(),                       // reasonCode
+                    payloadCaptor.capture(),        // payload
+                    isNull());                      // correlationId
 
             Map<String, Object> payload = payloadCaptor.getValue();
-            assertThat(payload).containsEntry("accountId", ACCOUNT_ID);
-            assertThat(payload).containsKey("transactionId");
-            assertThat(payload).containsKey("amountPaid");
-            assertThat(payload).containsKey("newBalance");
+            assertThat(payload).containsKey("amount");
+            assertThat(payload).containsEntry("cardLast4", LAST4_LOW);
 
             // PCI-DSS — no key or value carries the full PAN
             for (Map.Entry<String, Object> entry : payload.entrySet()) {
@@ -534,6 +688,34 @@ class BillPaymentServiceTest {
                 }
             }
         }
+
+        @Test
+        @DisplayName("TransactionAddDto event payload carries verbatim transaction fields")
+        void processBillPayment_eventPayloadCarriesTransactionFields() {
+            List<CardCrossReference> xrefs = List.of(
+                    new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
+            stubHappyPathRepositories(STARTING_BALANCE, xrefs);
+
+            service.processBillPayment(validRequest);
+
+            ArgumentCaptor<TransactionAddDto> dtoCaptor =
+                    ArgumentCaptor.forClass(TransactionAddDto.class);
+            verify(kafkaEventPublisher).publishTransactionPosted(
+                    anyLong(), dtoCaptor.capture());
+
+            TransactionAddDto evt = dtoCaptor.getValue();
+            assertThat(evt.accountId()).isEqualTo(ACCOUNT_ID_STR);
+            assertThat(evt.cardNumber()).isEqualTo(CARD_LOW);
+            assertThat(evt.transactionType()).isEqualTo("02");
+            assertThat(evt.transactionCategory()).isEqualTo(2);
+            assertThat(evt.source()).isEqualTo("POS TERM");
+            assertThat(evt.description()).isEqualTo("BILL PAYMENT - ONLINE");
+            assertThat(evt.amount()).isEqualByComparingTo(STARTING_BALANCE);
+            assertThat(evt.merchantId()).isEqualTo(999_999_999L);
+            assertThat(evt.merchantName()).isEqualTo("BILL PAYMENT");
+            assertThat(evt.merchantCity()).isEqualTo("N/A");
+            assertThat(evt.merchantZip()).isEqualTo("N/A");
+        }
     }
 
     @Nested
@@ -541,32 +723,30 @@ class BillPaymentServiceTest {
     class CacheAside {
 
         @Test
-        @DisplayName("evicts accountView cache entry under zero-padded acct key")
-        void payBill_evictsAccountViewCache() {
+        @DisplayName("evicts account-view cache entry under zero-padded acct key")
+        void processBillPayment_evictsAccountViewCache() {
             List<CardCrossReference> xrefs = List.of(
                     new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
             stubHappyPathRepositories(STARTING_BALANCE, xrefs);
 
-            service.payBill(validRequest);
+            service.processBillPayment(validRequest);
 
-            verify(cacheService).evict(eq(AccountViewService.CACHE_NS), eq(ACCOUNT_ID_STR));
+            verify(cacheService).evict(
+                    eq(AccountViewService.CACHE_NS), eq(ACCOUNT_ID_STR));
         }
 
         @Test
-        @DisplayName("cache eviction failure is non-fatal")
-        void payBill_cacheEvictFails_stillSucceeds() {
+        @DisplayName("cache eviction is invoked after account save")
+        void processBillPayment_evictsAfterSave() {
             List<CardCrossReference> xrefs = List.of(
                     new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
             stubHappyPathRepositories(STARTING_BALANCE, xrefs);
-            org.mockito.Mockito.doThrow(new RuntimeException("Redis down"))
-                    .when(cacheService).evict(anyString(), anyString());
 
-            BillPaymentDto response = service.payBill(validRequest);
+            BillPaymentDto response = service.processBillPayment(validRequest);
 
             assertThat(response).isNotNull();
-            // Audit still emitted
-            verify(auditLogService).auditEvent(
-                    eq("bill.paid"), eq("system"), anyMap());
+            verify(accountRepository).save(any(Account.class));
+            verify(cacheService).evict(anyString(), anyString());
         }
     }
 
@@ -576,21 +756,60 @@ class BillPaymentServiceTest {
 
         @Test
         @DisplayName("response includes transactionId, postedAt, amountPaid, currentBalance")
-        void payBill_responseShape() {
+        void processBillPayment_responseShape() {
             List<CardCrossReference> xrefs = List.of(
                     new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
             stubHappyPathRepositories(STARTING_BALANCE, xrefs);
 
-            BillPaymentDto response = service.payBill(validRequest);
+            BillPaymentDto response = service.processBillPayment(validRequest);
 
             assertThat(response).isNotNull();
             assertThat(response.accountId()).isEqualTo(ACCOUNT_ID_STR);
             assertThat(response.confirm()).isEqualTo("Y");
             assertThat(response.transactionId()).isNotBlank();
+            assertThat(response.transactionId()).hasSize(16);
             assertThat(response.postedAt()).isNotNull();
             assertThat(response.amountPaid()).isNotNull();
             assertThat(response.currentBalance())
                     .isEqualByComparingTo(BigDecimal.ZERO);
+        }
+
+        @Test
+        @DisplayName("response accountId is zero-padded to 11 digits")
+        void processBillPayment_responseAccountIdZeroPadded() {
+            // Build a request with a numerically valid but shorter
+            // account ID
+            Long smallAcctId = 1L;
+            existingAccount.setAcctId(smallAcctId);
+            existingAccount.setAcctCurrBal(STARTING_BALANCE);
+            BillPaymentDto request = new BillPaymentDto(
+                    "00000000001",
+                    STARTING_BALANCE,
+                    "Y",
+                    null, null, null);
+            List<CardCrossReference> xrefs = List.of(
+                    new CardCrossReference(CARD_LOW, 999_999L, smallAcctId));
+            lenient().when(accountRepository.findById(smallAcctId))
+                    .thenReturn(Optional.of(existingAccount));
+            lenient().when(accountRepository.save(any(Account.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            lenient().when(cardCrossReferenceRepository.findByXrefAcctId(smallAcctId))
+                    .thenReturn(xrefs);
+            lenient().when(transactionRepository.findTopByOrderByTranIdDesc())
+                    .thenReturn(Optional.empty());
+            lenient().when(transactionRepository.save(any(Transaction.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            lenient().when(kafkaEventPublisher.publishTransactionPosted(
+                            anyLong(), any(TransactionAddDto.class)))
+                    .thenReturn(CompletableFuture.completedFuture(null));
+            lenient().when(kafkaEventPublisher.publishAccountUpdated(
+                            anyLong(), any(AccountUpdateDto.class)))
+                    .thenReturn(CompletableFuture.completedFuture(null));
+
+            BillPaymentDto response = service.processBillPayment(request);
+
+            assertThat(response.accountId()).isEqualTo("00000000001");
+            assertThat(response.accountId()).hasSize(11);
         }
     }
 }
