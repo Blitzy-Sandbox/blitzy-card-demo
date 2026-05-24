@@ -67,19 +67,25 @@ import static org.mockito.Mockito.when;
  * {@link StatementGenerationService}.
  *
  * <p><b>COBOL provenance.</b> {@link StatementGenerationService}
- * translates {@code app/cbl/CBSTM03A.CBL} (text statement generation)
- * and {@code app/cbl/CBSTM03B.CBL} (HTML statement variant). The COBOL
- * source iterates every account, joins with customer and card-cross-
- * reference records, aggregates per-card transactions, and emits two
- * output files: a fixed-width text statement (LRECL=80) and an HTML
- * statement (LRECL=100).</p>
+ * translates {@code app/cbl/CBSTM03A.CBL} (text + HTML statement
+ * generator) plus its file-service subroutine
+ * {@code app/cbl/CBSTM03B.CBL}. The COBOL source iterates every
+ * account, joins with customer and card-cross-reference records,
+ * aggregates per-card transactions, and emits two output files: a
+ * fixed-width text statement (LRECL=80) and an HTML statement
+ * (LRECL=100).</p>
  *
  * <p><b>Behavioural invariants locked by this suite.</b></p>
  * <ol>
+ *   <li><b>Schema-mandated API</b> &mdash;
+ *       {@code generateStatements(LocalDate statementDate)} returning
+ *       a {@link StatementGenerationService.StatementResult} with
+ *       {@code textCount() / htmlCount() / errorCount()} accessors
+ *       per the AAP exports schema.</li>
  *   <li><b>Deterministic XREF selection</b> &mdash; uses the ORDERED
  *       {@link CardCrossReferenceRepository#findByXrefAcctIdOrderByXrefCardNumAsc(Long)}
  *       method to guarantee reproducible customer-id selection across
- *       executions and query-plan changes (CP5 review regression).</li>
+ *       executions and query-plan changes.</li>
  *   <li><b>Dual-format output</b> &mdash; each statement is written to
  *       S3 twice (text + .html). Text width = 80 chars; HTML width =
  *       100 chars (per CBSTM03A/CBSTM03B LRECL).</li>
@@ -108,7 +114,8 @@ class StatementGenerationServiceTest {
     // ==================================================================
     // Test constants
     // ==================================================================
-    private static final String BATCH_RUN_ID = "BATCH-STMT-20250131";
+    private static final LocalDate STATEMENT_DATE = LocalDate.of(2025, 1, 31);
+    private static final String STATEMENT_DATE_STR = "2025-01-31";
     private static final Long ACCOUNT_ID = 10_000_000_001L;
     private static final Long CUSTOMER_ID = 999_888_777L;
     private static final String CARD_LOW = "4000000000000001";
@@ -118,8 +125,8 @@ class StatementGenerationServiceTest {
     // Mocks and SUT
     // ==================================================================
     @Mock private AccountRepository accountRepository;
-    @Mock private CustomerRepository customerRepository;
     @Mock private CardCrossReferenceRepository xrefRepository;
+    @Mock private CustomerRepository customerRepository;
     @Mock private TransactionRepository transactionRepository;
     @Mock private S3OutputService s3OutputService;
     @Mock private AuditLogService auditLogService;
@@ -153,17 +160,17 @@ class StatementGenerationServiceTest {
         customer.setCustAddrStateCd("NY");
         customer.setCustAddrZip("10001");
         customer.setCustAddrCountryCd("USA");
+        customer.setCustFicoCreditScore(720);
     }
 
     private Transaction buildTransaction(String tranId, String cardNum,
                                           BigDecimal amount, String desc) {
-        Transaction tx = new Transaction(
+        return new Transaction(
                 tranId, "01", 5, "POS TERM", desc, amount,
                 999_999_999L, "Merchant", "City", "12345",
                 cardNum,
                 LocalDateTime.of(2025, 1, 15, 12, 0),
                 LocalDateTime.of(2025, 1, 15, 12, 0));
-        return tx;
     }
 
     private CardCrossReference buildXref(String cardNum) {
@@ -172,8 +179,8 @@ class StatementGenerationServiceTest {
 
     /**
      * Provides a lenient happy-path stub set: 1 account with 1 card
-     * having 1 transaction. Used as a base by tests that override only
-     * specific behaviour.
+     * having {@code txs.size()} transactions. Used as a base by tests
+     * that override only specific behaviour.
      */
     private void stubHappyPathSingleAccount(List<Transaction> txs) {
         lenient().when(accountRepository.findAll())
@@ -183,7 +190,6 @@ class StatementGenerationServiceTest {
                 .thenReturn(List.of(buildXref(CARD_LOW)));
         lenient().when(customerRepository.findById(CUSTOMER_ID))
                 .thenReturn(Optional.of(customer));
-        // Page<Transaction> stub — wrap in PageImpl
         Page<Transaction> page = new PageImpl<>(txs);
         lenient().when(transactionRepository.findByTranCardNumAndTranProcTsBetween(
                 eq(CARD_LOW), any(LocalDateTime.class),
@@ -196,48 +202,40 @@ class StatementGenerationServiceTest {
     // ==================================================================
 
     @Nested
-    @DisplayName("Input validation (batchRunId)")
+    @DisplayName("Input validation (statementDate)")
     class InputValidation {
 
         @Test
-        @DisplayName("null batchRunId throws IllegalArgumentException")
-        void generateStatements_nullBatchRunId_throws() {
+        @DisplayName("null statementDate throws IllegalArgumentException")
+        void generateStatements_nullStatementDate_throws() {
             assertThatThrownBy(() -> service.generateStatements(null))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("batchRunId");
+                    .hasMessageContaining("statementDate");
         }
 
         @Test
-        @DisplayName("blank batchRunId throws IllegalArgumentException")
-        void generateStatements_blankBatchRunId_throws() {
-            assertThatThrownBy(() -> service.generateStatements("   "))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("batchRunId");
-        }
-
-        @Test
-        @DisplayName("empty account list produces zero statements")
+        @DisplayName("empty account list produces zero statements + emits summary")
         void generateStatements_noAccounts_emitsBatchSummaryOnly() {
             when(accountRepository.findAll()).thenReturn(new ArrayList<>());
 
-            StatementGenerationService.Result result =
-                    service.generateStatements(BATCH_RUN_ID);
+            StatementGenerationService.StatementResult result =
+                    service.generateStatements(STATEMENT_DATE);
 
-            assertThat(result.accountsProcessed()).isEqualTo(0);
-            assertThat(result.statementsGenerated()).isEqualTo(0);
-            assertThat(result.totalAmount())
-                    .isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(result.textCount()).isEqualTo(0);
+            assertThat(result.htmlCount()).isEqualTo(0);
+            assertThat(result.errorCount()).isEqualTo(0);
             // Run-summary audit is still emitted (1 call total)
             verify(auditLogService, times(1)).logAuditEvent(
                     eq("statement.generated"), eq("BATCH_RUN"),
-                    eq(BATCH_RUN_ID), anyString(), anyMap(), eq(BATCH_RUN_ID));
+                    eq(STATEMENT_DATE_STR), anyString(), anyMap(),
+                    eq(STATEMENT_DATE_STR));
             // No S3 writes
             verify(s3OutputService, never()).writeReport(anyString(), any());
         }
     }
 
     @Nested
-    @DisplayName("Deterministic XREF selection (CP5 — multi-card account)")
+    @DisplayName("Deterministic XREF selection (multi-card account)")
     class DeterministicXref {
 
         @Test
@@ -245,7 +243,7 @@ class StatementGenerationServiceTest {
         void generateStatements_callsOrderedXrefMethod() {
             stubHappyPathSingleAccount(List.of());
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
             verify(xrefRepository)
                     .findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID);
@@ -274,7 +272,7 @@ class StatementGenerationServiceTest {
                             any(LocalDateTime.class), any(Pageable.class)))
                     .thenReturn(empty);
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
             // Verify only CUSTOMER_ID (from CARD_LOW) was looked up
             verify(customerRepository).findById(CUSTOMER_ID);
@@ -284,7 +282,6 @@ class StatementGenerationServiceTest {
         @Test
         @DisplayName("aggregates transactions for every card linked to the account")
         void generateStatements_aggregatesAllCards() {
-            // Two cards linked to one account
             CardCrossReference x1 = new CardCrossReference(CARD_LOW, CUSTOMER_ID, ACCOUNT_ID);
             CardCrossReference x2 = new CardCrossReference(CARD_HIGH, CUSTOMER_ID, ACCOUNT_ID);
 
@@ -308,9 +305,8 @@ class StatementGenerationServiceTest {
                             eq(CARD_HIGH), any(), any(), any(Pageable.class)))
                     .thenReturn(p2);
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
-            // Both cards queried
             verify(transactionRepository).findByTranCardNumAndTranProcTsBetween(
                     eq(CARD_LOW), any(), any(), any(Pageable.class));
             verify(transactionRepository).findByTranCardNumAndTranProcTsBetween(
@@ -322,7 +318,7 @@ class StatementGenerationServiceTest {
             verify(auditLogService).logAuditEvent(
                     eq("statement.generated"), eq("STATEMENT"),
                     anyString(), eq("BATCH"), payloadCaptor.capture(),
-                    eq(BATCH_RUN_ID));
+                    eq(STATEMENT_DATE_STR));
             assertThat(((BigDecimal) payloadCaptor.getValue().get("total")))
                     .isEqualByComparingTo(new BigDecimal("300.00"));
         }
@@ -340,11 +336,12 @@ class StatementGenerationServiceTest {
             when(xrefRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
                     .thenReturn(List.of());
 
-            StatementGenerationService.Result result =
-                    service.generateStatements(BATCH_RUN_ID);
+            StatementGenerationService.StatementResult result =
+                    service.generateStatements(STATEMENT_DATE);
 
-            assertThat(result.accountsProcessed()).isEqualTo(1);
-            assertThat(result.statementsGenerated()).isEqualTo(0);
+            assertThat(result.textCount()).isEqualTo(0);
+            assertThat(result.htmlCount()).isEqualTo(0);
+            assertThat(result.errorCount()).isEqualTo(0);
             verify(s3OutputService, never()).writeReport(anyString(), any());
             verify(customerRepository, never()).findById(anyLong());
         }
@@ -360,11 +357,12 @@ class StatementGenerationServiceTest {
             when(customerRepository.findById(CUSTOMER_ID))
                     .thenReturn(Optional.empty());
 
-            StatementGenerationService.Result result =
-                    service.generateStatements(BATCH_RUN_ID);
+            StatementGenerationService.StatementResult result =
+                    service.generateStatements(STATEMENT_DATE);
 
-            assertThat(result.accountsProcessed()).isEqualTo(1);
-            assertThat(result.statementsGenerated()).isEqualTo(0);
+            assertThat(result.textCount()).isEqualTo(0);
+            assertThat(result.htmlCount()).isEqualTo(0);
+            assertThat(result.errorCount()).isEqualTo(0);
             verify(s3OutputService, never()).writeReport(anyString(), any());
             verify(transactionRepository, never())
                     .findByTranCardNumAndTranProcTsBetween(anyString(), any(), any(), any());
@@ -388,17 +386,18 @@ class StatementGenerationServiceTest {
                             any(LocalDateTime.class), any(Pageable.class)))
                     .thenReturn(empty);
 
-            StatementGenerationService.Result result =
-                    service.generateStatements(BATCH_RUN_ID);
+            StatementGenerationService.StatementResult result =
+                    service.generateStatements(STATEMENT_DATE);
 
-            // 2 accounts in list, 1 produced statement
-            assertThat(result.accountsProcessed()).isEqualTo(2);
-            assertThat(result.statementsGenerated()).isEqualTo(1);
+            // 2 accounts in list, only 1 produces a statement
+            assertThat(result.textCount()).isEqualTo(1);
+            assertThat(result.htmlCount()).isEqualTo(1);
+            assertThat(result.errorCount()).isEqualTo(0);
         }
     }
 
     @Nested
-    @DisplayName("Dual-format S3 output (CBSTM03A text + CBSTM03B HTML)")
+    @DisplayName("Dual-format S3 output (CBSTM03A text + HTML)")
     class DualFormatOutput {
 
         @Test
@@ -407,7 +406,7 @@ class StatementGenerationServiceTest {
             stubHappyPathSingleAccount(List.of(buildTransaction(
                     "T1", CARD_LOW, new BigDecimal("99.99"), "Tx1")));
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
             ArgumentCaptor<String> nameCaptor =
                     ArgumentCaptor.forClass(String.class);
@@ -428,7 +427,7 @@ class StatementGenerationServiceTest {
         void statementIdFormat() {
             stubHappyPathSingleAccount(List.of());
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
             ArgumentCaptor<String> nameCaptor =
                     ArgumentCaptor.forClass(String.class);
@@ -438,7 +437,6 @@ class StatementGenerationServiceTest {
             // stmt-<11-digit acct>-<14-char ts>
             // total length: 5 ("stmt-") + 11 + 1 ("-") + 14 = 31
             assertThat(textName).hasSize(31);
-            // Pattern: stmt-NNNNNNNNNNN-yyyyMMddHHmmss
             assertThat(textName).matches("^stmt-\\d{11}-\\d{14}$");
         }
     }
@@ -453,7 +451,7 @@ class StatementGenerationServiceTest {
             stubHappyPathSingleAccount(List.of(buildTransaction(
                     "T1", CARD_LOW, new BigDecimal("100.00"), "Test Tx")));
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
             ArgumentCaptor<byte[]> bytesCaptor =
                     ArgumentCaptor.forClass(byte[].class);
@@ -461,18 +459,17 @@ class StatementGenerationServiceTest {
                     .writeReport(anyString(), bytesCaptor.capture());
             String text = new String(bytesCaptor.getAllValues().get(0),
                     StandardCharsets.US_ASCII);
-            // Each line including padding must be <= 80 chars wide
             for (String line : text.split("\n")) {
                 assertThat(line.length()).isLessThanOrEqualTo(80);
             }
         }
 
         @Test
-        @DisplayName("includes START OF STATEMENT banner")
-        void containsStartBanner() {
+        @DisplayName("includes START / END OF STATEMENT banners")
+        void containsStartEndBanners() {
             stubHappyPathSingleAccount(List.of());
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
             ArgumentCaptor<byte[]> bytesCaptor =
                     ArgumentCaptor.forClass(byte[].class);
@@ -489,7 +486,7 @@ class StatementGenerationServiceTest {
         void containsCustomerAndAccount() {
             stubHappyPathSingleAccount(List.of());
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
             ArgumentCaptor<byte[]> bytesCaptor =
                     ArgumentCaptor.forClass(byte[].class);
@@ -501,7 +498,6 @@ class StatementGenerationServiceTest {
             assertThat(text).contains("Doe");
             assertThat(text).contains(String.valueOf(CUSTOMER_ID));
             assertThat(text).contains(String.valueOf(ACCOUNT_ID));
-            assertThat(text).contains("STANDARD".substring(0, 0)); // just a sanity
             assertThat(text).contains("TRANSACTIONS:");
             assertThat(text).contains("TOTAL:");
         }
@@ -512,7 +508,7 @@ class StatementGenerationServiceTest {
             stubHappyPathSingleAccount(List.of(buildTransaction(
                     "T1", CARD_LOW, new BigDecimal("100.00"), "Test")));
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
             ArgumentCaptor<byte[]> bytesCaptor =
                     ArgumentCaptor.forClass(byte[].class);
@@ -527,7 +523,7 @@ class StatementGenerationServiceTest {
     }
 
     @Nested
-    @DisplayName("HTML statement content (LRECL=100)")
+    @DisplayName("HTML statement content")
     class HtmlStatementContent {
 
         @Test
@@ -535,7 +531,7 @@ class StatementGenerationServiceTest {
         void htmlStructure() {
             stubHappyPathSingleAccount(List.of());
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
             ArgumentCaptor<byte[]> bytesCaptor =
                     ArgumentCaptor.forClass(byte[].class);
@@ -550,12 +546,36 @@ class StatementGenerationServiceTest {
         }
 
         @Test
+        @DisplayName("HTML preserves verbatim COBOL constants (Bank of XYZ + colors)")
+        void htmlPreservesCobolConstants() {
+            stubHappyPathSingleAccount(List.of());
+
+            service.generateStatements(STATEMENT_DATE);
+
+            ArgumentCaptor<byte[]> bytesCaptor =
+                    ArgumentCaptor.forClass(byte[].class);
+            verify(s3OutputService, times(2))
+                    .writeReport(anyString(), bytesCaptor.capture());
+            String html = new String(bytesCaptor.getAllValues().get(1),
+                    StandardCharsets.US_ASCII);
+            // Verbatim CBSTM03A.CBL HTML constants
+            assertThat(html).contains("Bank of XYZ");
+            assertThat(html).contains("410 Terry Ave N");
+            assertThat(html).contains("Seattle WA 99999");
+            // Verbatim color palette
+            assertThat(html).contains("#1d1d96b3");
+            assertThat(html).contains("#FFAF33");
+            assertThat(html).contains("#33FF5E");
+            assertThat(html).contains("#f2f2f2");
+        }
+
+        @Test
         @DisplayName("HTML statement masks PAN in transaction rows")
         void htmlMasksPan() {
             stubHappyPathSingleAccount(List.of(buildTransaction(
                     "T1", CARD_LOW, new BigDecimal("100.00"), "Test")));
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
             ArgumentCaptor<byte[]> bytesCaptor =
                     ArgumentCaptor.forClass(byte[].class);
@@ -574,7 +594,7 @@ class StatementGenerationServiceTest {
                     "T1", CARD_LOW, new BigDecimal("100.00"),
                     "<script>alert('XSS')</script>")));
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
             ArgumentCaptor<byte[]> bytesCaptor =
                     ArgumentCaptor.forClass(byte[].class);
@@ -599,14 +619,14 @@ class StatementGenerationServiceTest {
                     buildTransaction("T2", CARD_LOW, new BigDecimal("50.25"), "B"),
                     buildTransaction("T3", CARD_LOW, new BigDecimal("-25.00"), "C")));
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
             ArgumentCaptor<Map<String, Object>> payloadCaptor =
                     ArgumentCaptor.forClass(Map.class);
             verify(auditLogService).logAuditEvent(
                     eq("statement.generated"), eq("STATEMENT"),
                     anyString(), eq("BATCH"),
-                    payloadCaptor.capture(), eq(BATCH_RUN_ID));
+                    payloadCaptor.capture(), eq(STATEMENT_DATE_STR));
             BigDecimal total = (BigDecimal) payloadCaptor.getValue().get("total");
             // 100 + 50.25 + (-25) = 125.25
             assertThat(total).isEqualByComparingTo(new BigDecimal("125.25"));
@@ -624,14 +644,14 @@ class StatementGenerationServiceTest {
                     LocalDateTime.of(2025, 1, 15, 12, 0));
             stubHappyPathSingleAccount(List.of(txWithNullAmt));
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
             ArgumentCaptor<Map<String, Object>> payloadCaptor =
                     ArgumentCaptor.forClass(Map.class);
             verify(auditLogService).logAuditEvent(
                     eq("statement.generated"), eq("STATEMENT"),
                     anyString(), eq("BATCH"),
-                    payloadCaptor.capture(), eq(BATCH_RUN_ID));
+                    payloadCaptor.capture(), eq(STATEMENT_DATE_STR));
             assertThat(((BigDecimal) payloadCaptor.getValue().get("total")))
                     .isEqualByComparingTo(BigDecimal.ZERO);
         }
@@ -647,14 +667,14 @@ class StatementGenerationServiceTest {
             stubHappyPathSingleAccount(List.of(buildTransaction(
                     "T1", CARD_LOW, new BigDecimal("100.00"), "Tx")));
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
             ArgumentCaptor<Map<String, Object>> payloadCaptor =
                     ArgumentCaptor.forClass(Map.class);
             verify(auditLogService).logAuditEvent(
                     eq("statement.generated"), eq("STATEMENT"),
                     anyString(), eq("BATCH"),
-                    payloadCaptor.capture(), eq(BATCH_RUN_ID));
+                    payloadCaptor.capture(), eq(STATEMENT_DATE_STR));
             Map<String, Object> payload = payloadCaptor.getValue();
             assertThat(payload).containsEntry("accountId", ACCOUNT_ID);
             assertThat(payload).containsEntry("customerId", CUSTOMER_ID);
@@ -662,22 +682,24 @@ class StatementGenerationServiceTest {
         }
 
         @Test
-        @DisplayName("run-summary audit emitted once with accountsProcessed and statementsGenerated")
+        @DisplayName("run-summary audit emitted once with counters")
         void runSummaryAuditEmitted() {
             stubHappyPathSingleAccount(List.of());
 
-            service.generateStatements(BATCH_RUN_ID);
+            service.generateStatements(STATEMENT_DATE);
 
             ArgumentCaptor<Map<String, Object>> payloadCaptor =
                     ArgumentCaptor.forClass(Map.class);
             verify(auditLogService).logAuditEvent(
                     eq("statement.generated"), eq("BATCH_RUN"),
-                    eq(BATCH_RUN_ID), eq("BATCH"),
-                    payloadCaptor.capture(), eq(BATCH_RUN_ID));
+                    eq(STATEMENT_DATE_STR), eq("BATCH"),
+                    payloadCaptor.capture(), eq(STATEMENT_DATE_STR));
             Map<String, Object> payload = payloadCaptor.getValue();
             assertThat(payload).containsEntry("accountsProcessed", 1);
-            assertThat(payload).containsEntry("statementsGenerated", 1);
-            assertThat(payload).containsEntry("batchRunId", BATCH_RUN_ID);
+            assertThat(payload).containsEntry("textCount", 1);
+            assertThat(payload).containsEntry("htmlCount", 1);
+            assertThat(payload).containsEntry("errorCount", 0);
+            assertThat(payload).containsEntry("batchRunId", STATEMENT_DATE_STR);
         }
     }
 
@@ -696,9 +718,70 @@ class StatementGenerationServiceTest {
                     buildTransaction("T2", CARD_LOW,
                             new BigDecimal("200000000.00"), "B")));
 
-            assertThatThrownBy(() -> service.generateStatements(BATCH_RUN_ID))
+            assertThatThrownBy(() -> service.generateStatements(STATEMENT_DATE))
                     .isInstanceOf(OnSizeErrorException.class)
                     .hasMessageContaining("WS-TOTAL-AMT");
+        }
+    }
+
+    @Nested
+    @DisplayName("StatementResult record contract")
+    class StatementResultContract {
+
+        @Test
+        @DisplayName("StatementResult exposes textCount/htmlCount/errorCount accessors")
+        void resultAccessors() {
+            StatementGenerationService.StatementResult result =
+                    new StatementGenerationService.StatementResult(3, 3, 1);
+            assertThat(result.textCount()).isEqualTo(3);
+            assertThat(result.htmlCount()).isEqualTo(3);
+            assertThat(result.errorCount()).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("generateStatementForAccount returns true on success, false on skip")
+        void generateStatementForAccountReturnsBoolean() {
+            lenient().when(xrefRepository
+                            .findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(List.of(buildXref(CARD_LOW)));
+            lenient().when(customerRepository.findById(CUSTOMER_ID))
+                    .thenReturn(Optional.of(customer));
+            Page<Transaction> empty = new PageImpl<>(List.of());
+            lenient().when(transactionRepository.findByTranCardNumAndTranProcTsBetween(
+                            eq(CARD_LOW), any(LocalDateTime.class),
+                            any(LocalDateTime.class), any(Pageable.class)))
+                    .thenReturn(empty);
+
+            boolean produced =
+                    service.generateStatementForAccount(account, STATEMENT_DATE);
+            assertThat(produced).isTrue();
+        }
+
+        @Test
+        @DisplayName("generateStatementForAccount returns false when xref empty")
+        void generateStatementForAccountReturnsFalseWhenXrefEmpty() {
+            when(xrefRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(List.of());
+
+            boolean produced =
+                    service.generateStatementForAccount(account, STATEMENT_DATE);
+            assertThat(produced).isFalse();
+        }
+
+        @Test
+        @DisplayName("generateStatementForAccount throws on null account")
+        void generateStatementForAccountThrowsOnNullAccount() {
+            assertThatThrownBy(() ->
+                    service.generateStatementForAccount(null, STATEMENT_DATE))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("generateStatementForAccount throws on null statementDate")
+        void generateStatementForAccountThrowsOnNullDate() {
+            assertThatThrownBy(() ->
+                    service.generateStatementForAccount(account, null))
+                    .isInstanceOf(IllegalArgumentException.class);
         }
     }
 }
