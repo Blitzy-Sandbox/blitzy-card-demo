@@ -330,7 +330,7 @@ public final class CbStm03A {
         // MOVE WS-M03B-FLDT TO TRNX-RECORD
         currentTrnx = decodeTrnxFromFldt();
         // MOVE TRNX-CARD-NUM TO WS-SAVE-CARD
-        wsSaveCard = currentTrnx.key().trnxCardNum();
+        wsSaveCard = currentTrnx.trnxKey().trnxCardNum();
         // MOVE 1 TO CR-CNT; MOVE 0 TO TR-CNT
         crCnt = 1;
         trCnt = 0;
@@ -400,7 +400,7 @@ public final class CbStm03A {
         while (true) {
             // IF WS-SAVE-CARD = TRNX-CARD-NUM ADD 1 TO TR-CNT
             // ELSE MOVE TR-CNT TO WS-TRCT(CR-CNT) ; ADD 1 TO CR-CNT ; MOVE 1 TO TR-CNT
-            String cardNum = currentTrnx.key().trnxCardNum();
+            String cardNum = currentTrnx.trnxKey().trnxCardNum();
             if (wsSaveCard.equals(cardNum)) {
                 trCnt++;
             } else {
@@ -787,7 +787,7 @@ public final class CbStm03A {
         // MOVE TRNX-ID TO ST-TRANID  (PIC X(16))
         // MOVE TRNX-DESC TO ST-TRANDT (PIC X(49))
         // MOVE TRNX-AMT TO ST-TRANAMT (PIC Z(9).99-)
-        String stTranId = pad(trx.key().trnxId(), 16);
+        String stTranId = pad(trx.trnxKey().trnxId(), 16);
         String stTranDt = pad(trx.trnxDesc(), 49);
         String stTranAmt = formatPicZN9DotN9(trx.trnxAmt());
 
@@ -896,7 +896,7 @@ public final class CbStm03A {
     }
 
     private void appendTransaction(TrnxRecord trx) {
-        String cardNum = trx.key().trnxCardNum();
+        String cardNum = trx.trnxKey().trnxCardNum();
         // Ensure crCnt-th slot exists; COBOL: MOVE TRNX-CARD-NUM TO WS-CARD-NUM(CR-CNT)
         while (wsTrnxTable.size() < crCnt) {
             if (wsTrnxTable.size() == MAX_CARDS) {
