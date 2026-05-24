@@ -94,11 +94,13 @@ import static org.mockito.Mockito.when;
  *       PCI-DSS v4.0 Requirement 3.4.1).</li>
  *   <li><b>PCI-DSS: CVV exclusion</b> &mdash; {@link CardDetailDto}
  *       MUST NOT carry the CVV as a record component (verified via
- *       reflection over the record components); the
- *       {@link Card#getCardCvvCd()} value MUST NOT appear anywhere
- *       in {@link CardDetailDto#toString()} (AAP &sect;0.6.6 PCI-DSS
- *       v4.0 Requirement 3.2 &mdash; Sensitive Authentication Data
- *       MUST NEVER be exposed).</li>
+ *       reflection over the record components); no CVV value MUST
+ *       appear anywhere in {@link CardDetailDto#toString()}. As of
+ *       QA finding DB1 the CVV is no longer stored on the
+ *       {@link Card} entity at all (PCI-DSS v4.0 Requirement 3.2);
+ *       these tests therefore double as a defense-in-depth check
+ *       against future regressions that might reintroduce a
+ *       CVV-bearing accessor.</li>
  *   <li><b>Cache-aside hit</b> &mdash; a cache hit short-circuits the
  *       database read; {@link CardRepository#findById} is NEVER
  *       invoked (AAP &sect;0.7.1).</li>
@@ -243,10 +245,12 @@ class CardDetailServiceTest {
         card.setCardNum(CARD_NUMBER);
         // COBOL: CVACT02Y.cpy:L6 CARD-ACCT-ID PIC 9(11) — FK to accounts
         card.setCardAcctId(ACCOUNT_ID);
-        // COBOL: CVACT02Y.cpy:L7 CARD-CVV-CD PIC 9(03) — SAD per PCI-DSS;
-        // included on fixture so the CVV-exclusion tests have a real value
-        // to detect should the service ever leak it into the DTO/audit.
-        card.setCardCvvCd(CVV);
+        // COBOL: CVACT02Y.cpy:L7 CARD-CVV-CD PIC 9(03) — intentionally
+        // NOT stored on the Card entity per PCI-DSS v4.0 Requirement 3.2
+        // (QA finding DB1). The CVV-exclusion tests below assert that
+        // no CVV-bearing key (cvv / cardCvv / cardCvvCd) ever appears in
+        // the DTO or audit payload; that assertion is now intrinsic to
+        // the data model because the entity has no CVV accessor.
         // COBOL: CVACT02Y.cpy:L8 CARD-EMBOSSED-NAME PIC X(50)
         card.setCardEmbossedName(EMBOSSED_NAME);
         // COBOL: CVACT02Y.cpy:L9 CARD-EXPIRAION-DATE PIC X(10) —
@@ -308,11 +312,22 @@ class CardDetailServiceTest {
 
             // Assert — non-null DTO with every business field present
             assertThat(result).isNotNull();
-            assertThat(result.cardNumber()).isEqualTo(CARD_NUMBER);
+            // QA finding D2: cardNumber is pre-masked at the producer
+            // (CardDetailService) so the wire payload never carries
+            // the unmasked PAN. The masked form is the canonical
+            // representation on the DTO; the original 16-digit PAN
+            // is never exposed past the service boundary.
+            assertThat(result.cardNumber()).isEqualTo(MASKED_PAN);
             assertThat(result.accountId()).isEqualTo(ACCOUNT_ID);
             assertThat(result.embossedName()).isEqualTo(EMBOSSED_NAME);
             assertThat(result.expirationDate()).isEqualTo(EXPIRATION_DATE);
             assertThat(result.activeStatus()).isEqualTo(ACTIVE_STATUS);
+            // QA finding U2: the JPA @Version token MUST be projected
+            // onto the DTO so REST clients can round-trip it into a
+            // subsequent PUT request body for optimistic-lock
+            // enforcement without round-tripping to the detail
+            // endpoint a second time.
+            assertThat(result.version()).isEqualTo(card.getVersion());
         }
 
         /**
@@ -457,9 +472,14 @@ class CardDetailServiceTest {
         @DisplayName("cache hit returns cached DTO without repository call")
         void getCardDetail_cacheHit_returnsFromCache() {
             // Arrange — pre-built DTO stored "in cache"
+            // QA finding U2: CardDetailDto now carries the JPA @Version
+            // token as its 6th component so REST clients can use the GET
+            // response to drive an optimistic-lock-safe PUT without a
+            // round-trip. The cached fixture supplies version=0L to
+            // mirror a freshly-persisted row.
             CardDetailDto cachedDto = new CardDetailDto(
                     CARD_NUMBER, ACCOUNT_ID, EMBOSSED_NAME,
-                    EXPIRATION_DATE, ACTIVE_STATUS);
+                    EXPIRATION_DATE, ACTIVE_STATUS, 0L);
             when(cacheService.get(eq(CACHE_NAMESPACE), eq(CARD_NUMBER),
                     eq(CardDetailDto.class))).thenReturn(Optional.of(cachedDto));
 
@@ -506,9 +526,11 @@ class CardDetailServiceTest {
             // Act
             CardDetailDto result = service.getCardDetail(CARD_NUMBER);
 
-            // Assert — DTO returned has the expected field values
+            // Assert — DTO returned has the expected field values.
+            // QA finding D2: cardNumber is pre-masked at the producer
+            // and therefore appears in the masked form on the DTO.
             assertThat(result).isNotNull();
-            assertThat(result.cardNumber()).isEqualTo(CARD_NUMBER);
+            assertThat(result.cardNumber()).isEqualTo(MASKED_PAN);
             assertThat(result.accountId()).isEqualTo(ACCOUNT_ID);
 
             // Assert — the repository was invoked (cache miss path)
@@ -592,6 +614,35 @@ class CardDetailServiceTest {
                     .isInstanceOf(RecordNotFoundException.class)
                     .hasMessageContaining(MASKED_PAN)
                     .hasMessageNotContaining(CARD_NUMBER);
+        }
+
+        /**
+         * QA finding D3 (Non-standard error code for not-found):
+         * the {@link RecordNotFoundException} produced by the
+         * not-found path MUST carry the standardized reason code
+         * {@code CARD_NOT_FOUND} rather than the bare entity name
+         * {@code "Card"} which produced the inconsistent client-facing
+         * error envelope reported in the QA test report ("code:
+         * 'Card'"). The reason code is what {@code GlobalExceptionHandler}
+         * surfaces as the {@code code} field on the JSON error
+         * envelope, so this assertion locks the client-facing contract.
+         */
+        // COBOL: AAP §0.7.1 — exception hierarchy mapping
+        @Test
+        @DisplayName("not-found exception uses standardized CARD_NOT_FOUND reason code (QA D3)")
+        void getCardDetail_cardNotFound_reasonCodeIsCardNotFound() {
+            // Arrange — cache miss + repository miss
+            when(cacheService.get(eq(CACHE_NAMESPACE), eq(CARD_NUMBER),
+                    eq(CardDetailDto.class))).thenReturn(Optional.empty());
+            when(cardRepository.findById(CARD_NUMBER))
+                    .thenReturn(Optional.empty());
+
+            // Act + Assert — reasonCode equals "CARD_NOT_FOUND" (the
+            // standardized code), NOT "Card" (the bare entity name).
+            assertThatThrownBy(() -> service.getCardDetail(CARD_NUMBER))
+                    .isInstanceOf(RecordNotFoundException.class)
+                    .extracting("reasonCode")
+                    .isEqualTo("CARD_NOT_FOUND");
         }
     }
 

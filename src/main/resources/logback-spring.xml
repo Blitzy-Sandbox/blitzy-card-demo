@@ -149,29 +149,85 @@
            %highlight(%-5level)             colorized log level
            [%X{traceId:-},%X{spanId:-}]     Micrometer Tracing IDs
            %cyan(%logger{36})               truncated logger name
-           %replace(...)                    PCI DSS PII masking layer
+           %replace(...)                    PCI DSS PII masking layer (applied
+                                            to message AND throwable stack
+                                            trace, see below)
            %n                               line separator
-           %wEx                             whitespace padded exception
 
          PCI DSS masking (AAP Section 0.7.2, defense in depth):
-           Outer  %replace : 13 to 19 digit sequences (PAN like) ==>
+           Hibernate batch error logs include the offending SQL UPDATE /
+           INSERT statement with bound parameter values inlined (e.g.,
+           "update cards set card_acct_id=('123'::int8), ...,
+            card_num=('4111111111111111') ..."). These appear both in
+           the message (%msg) and, when wrapped in a SQLException, in
+           the stack-trace (%wEx). The QA test report (Issues DB2, E1)
+           specifically called out that the original pattern masked
+           only %msg, leaving %wEx unmasked so the full PAN and account
+           ID surfaced via the exception chain.
+
+           The mitigation below moves all three layers of regex masking
+           into a single %replace chain that wraps an inline "%msg %wEx"
+           composite. Logback's %replace operator accepts any nested
+           conversion word as its argument, so the same outer/inner
+           regexes are now applied to the message body AND the
+           exception chain (Caused by, stack frames, suppressed,
+           bound-parameter dumps). The CVV-shaped layer is new and
+           specifically targets Hibernate's
+           "card_cvv_cd=('123'::int4)" output as well as the simpler
+           "cvv=123" / "cvc: 4567" lexical hints already covered by the
+           JSON appender.
+
+           Outer  %replace : 13 to 19 digit sequences (PAN-like) ==>
                              "****-****-****-LAST4" (preserves last 4 for
                              traceability via regex back reference $1).
-                             Regex: (?<!\d)\d{9,15}(\d{4})(?!\d)
+                             Regex: (?&lt;!\d)\d{9,15}(\d{4})(?!\d)
                              Bounded by negative look behind / look ahead
-                             so 20+ digit strings are NOT matched (avoids
-                             accidentally masking IDs that aren't card
-                             numbers).
-           Inner  %replace : 11 digit sequences (ACCT ID like) ==>
+                             so 20+ digit strings are NOT matched
+                             (avoids accidentally masking IDs that
+                             aren't card numbers).
+           Mid    %replace : 11 digit sequences (ACCT-ID-like) ==>
                              "*******LAST4" (preserves last 4).
-                             Regex: (?<!\d)\d{7}(\d{4})(?!\d)
-                             Bounded by digit look around so it does NOT
-                             match the inner of a PAN (which has already
-                             been masked by the outer %replace).
+                             Regex: (?&lt;!\d)\d{7}(\d{4})(?!\d)
+                             Bounded by digit look-around so it does
+                             NOT re-match the inner of a PAN (which has
+                             already been masked by the outer replace).
+           Inner  %replace : CVV-shaped lexical patterns (defense in
+                             depth; CVV is no longer stored after the
+                             V017 migration but masking is retained for
+                             any value that ever appears in a log line
+                             through a constructed string or older
+                             snapshot). Matches:
+                              * "cvv=123" / "CVV: 4567" / "cvv2 = 999"
+                              * Hibernate "card_cvv_cd=('123'::int4)"
+                              * Hibernate "card_cvv_cd = ?" placeholders
+                             Output: "cvv=***" — fully masked.
+
+                             Regex implementation notes: Logback's
+                             %replace operator uses single-quote
+                             characters as its pattern/replacement
+                             delimiters and does NOT support embedded
+                             escaped single quotes inside those
+                             delimiters. To match Hibernate's quoted
+                             SQL value form ('123' wrapped in
+                             apostrophes) WITHOUT putting a literal
+                             apostrophe inside the regex string, we
+                             use a negated character class
+                             [^,\s)]{0,4} after the optional opening
+                             parenthesis. This class absorbs any 0 to
+                             4 non delimiter characters following the
+                             "=" sign — covering apostrophes, digits,
+                             and the leading quote of the cast suffix
+                             alike — and therefore reliably masks
+                             card_cvv_cd=('123'::int4) without needing
+                             to encode "'" inside the regex.
+
+                             Regex (alternation):
+                               (?i)(card_cvv_cd\s*=\s*\(?[^,\s)]{0,4}
+                                |\bc(?:vv|vc|vv2)\s*[:=]\s*\d{3,4}\b)
          ==================================================================== -->
     <appender name="CONSOLE_HUMAN" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [%X{traceId:-},%X{spanId:-}] %cyan(%logger{36}) - %replace(%replace(%msg){'(?&lt;!\d)\d{9,15}(\d{4})(?!\d)', '****-****-****-$1'}){'(?&lt;!\d)\d{7}(\d{4})(?!\d)', '*******$1'}%n%wEx</pattern>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [%X{traceId:-},%X{spanId:-}] %cyan(%logger{36}) - %replace(%replace(%replace(%msg%n%wEx){'(?i)(card_cvv_cd\s*=\s*\(?[^,\s)]{0,4}|\bc(?:vv|vc|vv2)\s*[:=]\s*\d{3,4}\b)', 'cvv=***'}){'(?&lt;!\d)\d{9,15}(\d{4})(?!\d)', '****-****-****-$1'}){'(?&lt;!\d)\d{7}(\d{4})(?!\d)', '*******$1'}</pattern>
             <charset>UTF-8</charset>
         </encoder>
     </appender>
@@ -340,6 +396,25 @@
                 <valueMask>
                     <value>(?i)\b(?:cvv|cvc|cvv2)\s*[:=]\s*\d{3,4}\b</value>
                     <mask>cvv=***</mask>
+                </valueMask>
+
+                <!--
+                    Mask Hibernate batch-error column patterns of the
+                    form "card_cvv_cd=('123'::int4)" or
+                    "card_cvv_cd = ?" (bound-parameter placeholder).
+                    QA test report (Issue DB2) demonstrated that the
+                    original \b(?:cvv|cvc|cvv2)\b boundary did NOT
+                    match "card_cvv_cd" because the underscore after
+                    "cvv" is a word character and the \b after "cvv"
+                    therefore did not anchor. This explicit pattern
+                    covers the Hibernate output unambiguously.
+                    Service code already avoids logging CVV; this
+                    remains defense-in-depth and survives the V017
+                    migration that removed the underlying column.
+                -->
+                <valueMask>
+                    <value>(?i)card_cvv_cd\s*=\s*\(?[^,\s)]{0,4}</value>
+                    <mask>card_cvv_cd=***</mask>
                 </valueMask>
 
             </jsonGeneratorDecorator>

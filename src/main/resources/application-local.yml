@@ -447,6 +447,29 @@ carddemo:
       # ISO-8601 token TTL — 60 minutes for local dev so developers do not have
       # to re-authenticate during a typical local debugging session.
       expiration: ${JWT_EXPIRATION:PT60M}
+    # -------------------------------------------------------------------------
+    # CORS — local-development allow-list (QA finding C1 remediation)
+    # -------------------------------------------------------------------------
+    # The base profile's wildcard `:*` fallback is replaced here by an
+    # explicit local allow-list that names the standard local UI dev
+    # servers. This eliminates the inherited `*` advertised by the dev
+    # Spring container before any explicit override was supplied (QA
+    # test report §"Issue C1: Wildcard CORS origin on authenticated
+    # API").
+    #
+    # Local development typically runs a Vite/Next.js dev server on
+    # http://localhost:3000 (and occasionally http://localhost:5173 for
+    # Vite default). Additional origins can be appended via the
+    # CORS_ALLOWED_ORIGINS environment variable without code changes.
+    # NOTE: even in the local profile, the configured allow-list does
+    # NOT include `*` — defense in depth so that a developer who copies
+    # the local profile into a non-local environment never inadvertently
+    # exposes `*` to the public internet.
+    cors:
+      allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000}
+      allowed-methods: ${CORS_ALLOWED_METHODS:GET,POST,PUT,DELETE,OPTIONS}
+      allowed-headers: ${CORS_ALLOWED_HEADERS:Authorization,Content-Type,X-Requested-With,Accept}
+      max-age: ${CORS_MAX_AGE:3600}
 
   # ---------------------------------------------------------------------------
   # Cache TTLs — short for local dev to surface staleness bugs quickly

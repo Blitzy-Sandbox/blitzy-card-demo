@@ -115,7 +115,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <tr><td>{@code DISPLAY CARD-RECORD} (L78)</td>
  *       <td>{@link #displayCardRecord(Card)} (SLF4J INFO) &mdash;
  *           PAN masked per PCI-DSS Req 3.4 (last-4 only); CVV
- *           never emitted</td></tr>
+ *           never stored (QA finding DB1; PCI-DSS Req 3.2)</td></tr>
  *   <tr><td>{@code 9000-CARDFILE-CLOSE} (L136&ndash;L152)</td>
  *       <td>(automatic by Spring) &mdash; JDBC connection returned
  *           to HikariCP pool at method exit</td></tr>
@@ -155,17 +155,15 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <li><b>{@code CARD-CVV-CD}</b> &mdash; the Card Verification
  *       Value. Classified as &quot;sensitive authentication data&quot;
  *       (SAD) per PCI-DSS v4.0 Requirement 3.2. SAD <b>MUST NOT be
- *       persisted post-authorization</b> in a real payment-card
- *       environment; CardDemo persists it ONLY because the COBOL
- *       source persists it ({@code CVACT02Y.cpy:L7}) and the Minimal
- *       Change Clause forbids removing fields from the COBOL record
- *       layout. The Java target <b>never reads {@code cardCvvCd} from
- *       the entity nor logs it under any circumstance</b>; the
- *       {@link #displayCardRecord(Card)} method emits the literal
- *       string {@code "cvv=***"} in place of the value (rule 6 of
- *       the agent prompt). Production hardening (out of scope for
- *       this migration) would replace the column with column-level
- *       pgcrypto encryption or remove it entirely.</li>
+ *       persisted post-authorization</b> in a payment-card
+ *       environment. Per QA finding DB1 (Checkpoint 2 runtime
+ *       testing) the {@code card_cvv_cd} column has been REMOVED
+ *       from the {@code cards} table and from the {@link Card}
+ *       entity; no Java accessor for the CVV exists. The
+ *       {@link #displayCardRecord(Card)} method consequently does
+ *       not emit any CVV placeholder. See
+ *       {@code V017__drop_card_cvv_column.sql} for the
+ *       reconciliation migration.</li>
  * </ul>
  *
  * <h2>Implementation notes (AAP &sect;0.7.1 / &sect;0.7.3)</h2>
@@ -470,12 +468,13 @@ public class CardFileReaderService {
      *
      * <p><b>PCI-DSS guarantee:</b> every per-record log line emitted
      * by {@link #displayCardRecord(Card)} masks the PAN via
-     * {@link #maskPan(String)} and emits {@code "cvv=***"} as the
-     * CVV placeholder. Neither the full PAN nor any digit of the
-     * CVV ever appears in this service's log output. Reviewing
-     * developers MUST NOT introduce any log statement here that
-     * emits {@code card.getCardNum()} unmasked or
-     * {@code card.getCardCvvCd()} in any form.</p>
+     * {@link #maskPan(String)}. The CVV is no longer stored on the
+     * {@link Card} entity (QA finding DB1; PCI-DSS v4.0 Requirement
+     * 3.2 prohibits CVV persistence post-authorization) so no CVV
+     * placeholder is needed. Reviewing developers MUST NOT
+     * introduce any log statement here that emits
+     * {@code card.getCardNum()} unmasked, nor reintroduce any
+     * CVV-related accessor.</p>
      *
      * @return a {@link ReadResult} carrying the COBOL program ID
      *         ({@code "CBACT02C"}) and the number of card rows
@@ -548,7 +547,7 @@ public class CardFileReaderService {
                 // COBOL: CBACT02C:1000-CARDFILE-GET-NEXT (L92–L116) +
                 // DISPLAY CARD-RECORD (L78) — emit the per-row
                 // structured log line with PCI-DSS-mandated PAN
-                // masking and CVV omission.
+                // masking (CVV is no longer stored — QA finding DB1).
                 displayCardRecord(card);
                 count.incrementAndGet();
             }
@@ -654,12 +653,12 @@ public class CardFileReaderService {
      *   </tr>
      *   <tr>
      *     <td>{@code CARD-CVV-CD}</td>
-     *     <td><b>Literal {@code "***"}</b> &mdash; never read,
-     *         never logged</td>
-     *     <td>PCI-DSS v4.0 Req 3.2 (SAD); CVV must never appear
-     *         in any log under any circumstance. The {@link Card}
-     *         field accessor {@code getCardCvvCd()} is
-     *         intentionally never invoked here.</td>
+     *     <td><b>Not stored</b> &mdash; the
+     *         {@code card_cvv_cd} column was removed (QA finding
+     *         DB1); no placeholder is emitted</td>
+     *     <td>PCI-DSS v4.0 Req 3.2 (SAD); CVV must never be
+     *         persisted post-authorization. The {@link Card} entity
+     *         has no CVV accessor.</td>
      *   </tr>
      *   <tr>
      *     <td>{@code CARD-EMBOSSED-NAME}</td>
@@ -708,14 +707,14 @@ public class CardFileReaderService {
             LOG.info("CARD-RECORD: (null record)");
             return;
         }
-        // PCI-DSS (AAP §0.6.6): mask the PAN; never log the CVV in
-        // any form. The CVV placeholder is the literal string
-        // "***" rather than card.getCardCvvCd() — the entity
-        // accessor is intentionally never invoked here. Field
-        // order mirrors the CVACT02Y.cpy declaration order so a
-        // downstream log-parser can correlate positions with the
-        // COBOL record layout.
-        LOG.info("CARD-RECORD: cardNum={} acctId={} cvv=*** name={} expiry={} status={}",
+        // PCI-DSS (AAP §0.6.6 + QA finding DB1): mask the PAN; the
+        // CVV is no longer stored on the Card entity per PCI-DSS v4.0
+        // Requirement 3.2 so no CVV placeholder is needed in the log
+        // line. Field order otherwise mirrors the CVACT02Y.cpy
+        // declaration order (minus CARD-CVV-CD) so a downstream
+        // log-parser can correlate positions with the COBOL record
+        // layout.
+        LOG.info("CARD-RECORD: cardNum={} acctId={} name={} expiry={} status={}",
                 maskPan(card.getCardNum()),
                 card.getCardAcctId(),
                 card.getCardEmbossedName(),

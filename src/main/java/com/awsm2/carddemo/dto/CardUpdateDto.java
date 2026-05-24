@@ -193,7 +193,18 @@ import java.time.LocalDate;
  *                       field {@code CRDNAME PIC X(50)} on the
  *                       {@code COCRDUP} screen.  Validated by the
  *                       {@code FLG-CARDNAME-ISVALID} 88-level in
- *                       {@code COCRDUPC.cbl}.
+ *                       {@code COCRDUPC.cbl}.  Per QA finding V1, the
+ *                       Java target additionally enforces the physical
+ *                       card-embossing character class
+ *                       {@code [A-Z0-9 \-'.]+} via {@code @Pattern}, so
+ *                       that markup, scripts, or any character the
+ *                       COBOL source could never have produced is
+ *                       rejected at the DTO boundary.  This eliminates
+ *                       a stored-XSS surface and aligns the Java
+ *                       contract with the physical card-stock domain
+ *                       (capital letters, digits, hyphen, apostrophe,
+ *                       period, and space &mdash; the only characters
+ *                       reproducible on a card embosser).
  * @param expirationDate card expiration date (ISO 8601 yyyy-MM-dd).
  *                       Maps to {@code CARD-EXPIRAION-DATE PIC X(10)}
  *                       in {@code app/cpy/CVACT02Y.cpy} (line 9; COBOL
@@ -264,12 +275,20 @@ public record CardUpdateDto(
         @NotBlank(message = "Embossed name is required")
         @Size(max = 50,
                 message = "Embossed name must be at most 50 characters")
+        @Pattern(regexp = "^[A-Z0-9 \\-'.]+$",
+                message = "Embossed name must contain only uppercase letters, "
+                        + "digits, spaces, hyphens, apostrophes, and periods")
         @Schema(description = "Name as embossed on the physical card.  Maps to "
                         + "CARD-EMBOSSED-NAME PIC X(50) in CVACT02Y.cpy and BMS "
                         + "field CRDNAME PIC X(50).  Validated by COBOL 88-level "
-                        + "FLG-CARDNAME-ISVALID in COCRDUPC.cbl.",
+                        + "FLG-CARDNAME-ISVALID in COCRDUPC.cbl. Per QA finding "
+                        + "V1, restricted to the physical card-embossing character "
+                        + "set [A-Z0-9 \\-'.] to prevent stored XSS via "
+                        + "scripts/markup characters that the COBOL source could "
+                        + "never have produced.",
                 example = "JOHN DOE",
                 maxLength = 50,
+                pattern = "^[A-Z0-9 \\-'.]+$",
                 requiredMode = Schema.RequiredMode.REQUIRED)
         @JsonProperty("embossedName")
         String embossedName,

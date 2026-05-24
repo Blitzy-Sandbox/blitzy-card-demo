@@ -111,11 +111,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       (parent {@code accounts} table — required by the
  *       {@code fk_cards_acct} foreign-key constraint) and
  *       {@code src/main/resources/db/migration/V002__create_card.sql}
- *       create the 7-column {@code cards} table
+ *       create the 6-column {@code cards} table
  *       ({@code card_num VARCHAR(16) PK},
  *       {@code card_acct_id BIGINT NOT NULL} with FK to
  *       {@code accounts(acct_id)},
- *       {@code card_cvv_cd NUMERIC(3) NOT NULL},
  *       {@code card_embossed_name VARCHAR(50) NOT NULL},
  *       {@code card_expiration_date DATE NOT NULL} [the typo-corrected
  *       column], {@code card_active_status CHAR(1) NOT NULL} with
@@ -158,16 +157,17 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * </ol>
  *
  * <h2>PCI-DSS posture (AAP &sect;0.6.6)</h2>
- * <p>The {@link Card} entity holds two PCI-DSS-classified data elements:
+ * <p>The {@link Card} entity holds one PCI-DSS-classified data element:
  * {@link Card#getCardNum() cardNum} (cardholder data per PCI-DSS v4.0
- * Requirement 3.4) and {@link Card#getCardCvvCd() cardCvvCd} (sensitive
- * authentication data per PCI-DSS v4.0 Requirement 3.2). This test
+ * Requirement 3.4). The {@code card_cvv_cd} column was removed (QA
+ * finding DB1; PCI-DSS v4.0 Requirement 3.2 prohibits storage of
+ * sensitive authentication data post-authorization). This test
  * uses synthetic fixture values that resemble real card numbers but
  * are NOT real PANs (the standard PCI test-PAN {@code 4111111111111111}
  * is documented by every payment processor as a non-routable test
  * value). The {@link Card#toString()} method enforces masking to the
- * last 4 digits and intentionally omits the CVV &mdash; any AssertJ
- * failure message that prints a {@link Card} will display the masked
+ * last 4 digits &mdash; any AssertJ failure message that prints a
+ * {@link Card} will display the masked
  * form, never the full PAN or the CVV.</p>
  *
  * <h2>Transactional boundary &mdash; what this test does NOT cover</h2>
@@ -343,8 +343,8 @@ class CardRepositoryTest {
         c.setCardNum(cardNum);
         // COBOL: CVACT02Y.cpy:L6 CARD-ACCT-ID PIC 9(11) -> BIGINT NN; FK to accounts.acct_id (V002); indexed by idx_cards_acct_id
         c.setCardAcctId(acctId);
-        // COBOL: CVACT02Y.cpy:L7 CARD-CVV-CD PIC 9(03) -> NUMERIC(3) NN; PCI-sensitive (omitted from toString)
-        c.setCardCvvCd(123);
+        // COBOL: CVACT02Y.cpy:L7 CARD-CVV-CD PIC 9(03) -- intentionally NOT stored
+        // per PCI-DSS v4.0 Requirement 3.2 (QA finding DB1); no JPA setter exists.
         // COBOL: CVACT02Y.cpy:L8 CARD-EMBOSSED-NAME PIC X(50) -> VARCHAR(50) NN
         c.setCardEmbossedName(embossedName);
         // COBOL: CVACT02Y.cpy:L9 CARD-EXPIRAION-DATE [typo] PIC X(10) -> DATE NN (typo corrected to "expiration" per AAP §0.4.1)

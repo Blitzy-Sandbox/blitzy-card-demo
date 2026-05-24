@@ -309,8 +309,12 @@ public class CacheService {
      * <ul>
      *   <li>The full Primary Account Number (PAN) — cache only a masked
      *       form ({@code ************XXXX}) or omit the field entirely.</li>
-     *   <li>The Card Verification Value (CVV / {@code Integer cardCvvCd}
-     *       on {@link com.awsm2.carddemo.domain.Card}).</li>
+     *   <li>The Card Verification Value (CVV / CVV2 / CVC2 / CID). Note
+     *       that CVV is no longer persisted on the
+     *       {@link com.awsm2.carddemo.domain.Card} entity as of QA
+     *       finding DB1 (PCI-DSS v4.0 Requirement 3.2), so it should
+     *       never appear in cacheable payloads in practice; this
+     *       guard-rail is retained as defense-in-depth.</li>
      *   <li>Plaintext passwords or BCrypt password hashes.</li>
      *   <li>Unmasked Social Security Numbers (SSNs).</li>
      * </ul>

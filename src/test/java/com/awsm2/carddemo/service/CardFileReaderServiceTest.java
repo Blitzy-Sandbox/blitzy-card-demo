@@ -124,15 +124,14 @@ import static org.mockito.Mockito.when;
  *   <li><b>CVV never emitted</b> (CRITICAL &mdash; PCI-DSS v4.0
  *       Requirement 3.2) &mdash; {@code CARD-CVV-CD} is
  *       "sensitive authentication data" (SAD); SAD MUST NOT be
- *       persisted post-authorization in a real payment-card
- *       environment. CardDemo persists it ONLY because the COBOL
- *       source persists it ({@code CVACT02Y.cpy:L7}) and the
- *       Minimal Change Clause (AAP &sect;0.7.3) forbids removing
- *       fields. The Java target NEVER reads
- *       {@code card.getCardCvvCd()} when emitting log lines or
- *       audit events. This test class verifies the invariant
- *       that NO CVV value or {@code cardCvvCd} key ever appears
- *       in any captured audit payload.</li>
+ *       persisted post-authorization in a payment-card
+ *       environment. Per QA finding DB1 (Checkpoint 2 runtime
+ *       testing) the {@code card_cvv_cd} column has been REMOVED
+ *       from the {@code cards} table and from the {@link Card}
+ *       entity; no {@code getCardCvvCd()} accessor exists. This
+ *       test class verifies the invariant that NO CVV value or
+ *       {@code cardCvvCd} key ever appears in any captured audit
+ *       payload as defense-in-depth.</li>
  *   <li><b>Read-only contract</b> &mdash; the COBOL source opens
  *       the VSAM cluster with {@code OPEN INPUT} (read-only) and
  *       never issues a {@code REWRITE}, {@code WRITE}, or
@@ -318,17 +317,18 @@ class CardFileReaderServiceTest {
     private static final String TEST_PAN_AMEX = "378282246310005";
 
     /**
-     * A fictitious 3-digit CVV value attached to the test
-     * fixtures. The PCI-DSS-safety assertion in the
-     * {@link PanMasking} nested class verifies that this value
-     * NEVER appears in the captured audit payload &mdash; the
-     * CVV is "sensitive authentication data" (SAD) per PCI-DSS
-     * v4.0 Requirement 3.2 and the Java target MUST never read
-     * {@code card.getCardCvvCd()} when emitting log lines or
-     * audit events. Note: 123 is the most common "test" CVV
-     * but ANY non-null CVV would suffice for the assertion;
-     * 123 is preferred so log-grep diagnostics show an
-     * unambiguous leak.
+     * A fictitious 3-digit CVV value historically attached to
+     * the test fixtures. Retained as a marker integer for the
+     * PCI-DSS-safety assertion in the {@link PanMasking} nested
+     * class which verifies that this value NEVER appears in the
+     * captured audit payload (defense-in-depth: even though the
+     * CVV is no longer stored on the {@link Card} entity per
+     * PCI-DSS v4.0 Requirement 3.2 / QA finding DB1, the
+     * assertion still proves that the audit payload would not
+     * surface such a value if a regression ever reintroduced it).
+     * The {@code buildCardFixture(String, Integer)} helper now
+     * IGNORES this parameter; it is retained only to preserve
+     * the existing test call sites.
      */
     private static final Integer TEST_CVV = 123;
 
@@ -431,30 +431,39 @@ class CardFileReaderServiceTest {
      *
      * @param cardNum 16-character PAN (or 15-digit for Amex);
      *                must not be {@code null}
-     * @param cvv     3-digit CVV; must not be {@code null}
+     * @param cvv     historical CVV parameter retained ONLY for
+     *                backwards-compatible call sites that previously
+     *                supplied a {@link #TEST_CVV} value; the value
+     *                is intentionally IGNORED because the CVV is no
+     *                longer stored on the {@link Card} entity
+     *                (QA finding DB1; PCI-DSS v4.0 Requirement 3.2)
      * @return a fully-populated {@link Card} fixture
      */
     private Card buildCardFixture(String cardNum, Integer cvv) {
         // CARD-NUM PIC X(16) (PCI-sensitive PAN)            — primary key
         // CARD-ACCT-ID PIC 9(11)                            — FK to accounts.acct_id
-        // CARD-CVV-CD PIC 9(03) (PCI-sensitive SAD)         — CVV
+        // CARD-CVV-CD PIC 9(03) (PCI-sensitive SAD)         — intentionally NOT stored
+        //                                                     per PCI-DSS v4.0 Req 3.2
+        //                                                     (QA finding DB1); the
+        //                                                     `cvv` parameter is
+        //                                                     therefore ignored.
         // CARD-EMBOSSED-NAME PIC X(50)                      — cardholder name
         // CARD-EXPIRAION-DATE PIC X(10) (typo in COBOL!)    — corrected to expiration
         // CARD-ACTIVE-STATUS PIC X(01)                      — 'Y' active / 'N' inactive
         return new Card(
                 cardNum,
                 12345678901L,
-                cvv,
                 "TEST CARDHOLDER",
                 LocalDate.of(2030, 12, 31),
                 "Y");
     }
 
     /**
-     * Convenience overload that produces a fixture with the
-     * default {@link #TEST_CVV} CVV value. Used by the
-     * {@link SequentialScan} and {@link ReadOnly} nested tests
-     * that do not depend on a specific CVV.
+     * Convenience overload that produces a fixture without an
+     * explicit CVV argument. Used by the {@link SequentialScan}
+     * and {@link ReadOnly} nested tests that do not depend on a
+     * specific CVV (and which no longer exists on the entity
+     * anyway -- see QA finding DB1).
      *
      * @param cardNum 16-character PAN; must not be {@code null}
      * @return a fully-populated {@link Card} fixture
@@ -1019,11 +1028,12 @@ class CardFileReaderServiceTest {
          *
          * <p>This test is the negative counterpart to the
          * full-PAN-absence assertion: where PAN is masked, CVV
-         * is OMITTED ENTIRELY. The SUT's
-         * {@code displayCardRecord} private method emits the
-         * literal string {@code "cvv=***"} in place of the value
-         * and the entity accessor {@code getCardCvvCd()} is
-         * intentionally never invoked.</p>
+         * is OMITTED ENTIRELY. As of QA finding DB1 the CVV is
+         * also no longer stored on the {@link Card} entity, so
+         * there is no {@code getCardCvvCd()} accessor for the
+         * SUT to (mis)invoke; this test remains as
+         * defense-in-depth against any future regression that
+         * might reintroduce a CVV-bearing accessor.</p>
          */
         @SuppressWarnings("unchecked")
         @Test

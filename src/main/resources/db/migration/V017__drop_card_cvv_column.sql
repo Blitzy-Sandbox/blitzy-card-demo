@@ -1,0 +1,65 @@
+-- =============================================================================
+-- AWS CardDemo -- Flyway V017: drop card_cvv_cd column for PCI-DSS compliance
+-- =============================================================================
+--
+-- QA finding DB1 (CRITICAL, PCI-DSS Requirement 3.2):
+--   The cards.card_cvv_cd column previously stored the 3-digit Card
+--   Verification Value (CVV/CVC/CVV2). PCI-DSS v4.0 Requirement 3.2 mandates:
+--   "Do not store sensitive authentication data (SAD) after authorization
+--   (even if encrypted)." SAD explicitly includes the Card Verification Value.
+--
+--   The QA Testing Execution Agent verified that 15 production-shaped records
+--   already had non-NULL CVV values persisted; this constitutes a non-
+--   negotiable PCI-DSS violation that prevents PCI assessment certification
+--   regardless of other compensating controls (encryption, access control,
+--   logging masks).
+--
+-- Resolution:
+--   Remove the column entirely. The previously stored values are dropped
+--   alongside the column (Postgres ALTER TABLE DROP COLUMN deletes all data
+--   in the column atomically). No application code consumes the CVV after
+--   this migration -- the entity, services, DTOs, and tests are updated in
+--   the same change set so that the schema and the JPA mapping remain in
+--   lock-step (Hibernate ddl-auto=validate runs at startup).
+--
+-- COBOL provenance preserved:
+--   The V002 migration and Card.java entity retain documentation references
+--   to the COBOL source field CVACT02Y.cpy:L7 CARD-CVV-CD PIC 9(03) for
+--   audit/traceability. The Java target consciously diverges from the COBOL
+--   schema on this single field because:
+--     1. The AAP § 0.7.1 PCI-DSS rules explicitly mandate at-rest protection
+--        for credential and authentication data
+--     2. The AAP § 0.6.6 PCI-DSS posture forbids persisting SAD post-authn
+--     3. The Minimal Change Clause (AAP § 0.7.3) yields to non-negotiable
+--        security mandates when the two conflict (security mandate wins)
+--
+-- Idempotence:
+--   IF EXISTS guards make the migration safely re-runnable. The DROP COLUMN
+--   inherently cascades the NOT NULL constraint and any column-level
+--   COMMENT ON COLUMN documentation attached by V002.
+--
+-- Application Coordination (out of band, in this change set):
+--   - src/main/java/com/awsm2/carddemo/domain/Card.java: cardCvvCd field
+--     removed, getter/setter removed, all-args constructor arity reduced
+--     from 6 -> 5 business fields.
+--   - src/main/resources/db/migration/V002__create_card.sql: kept verbatim
+--     for environments that started before V002 was patched; the new V017
+--     reconciles the schema for environments that ran the original V002.
+--   - Tests under src/test/java/.../service/Card*ServiceTest.java and
+--     src/test/java/.../repository/CardRepositoryTest.java: setCardCvvCd
+--     calls removed; the V002 schema patch removes the NOT NULL CVV
+--     requirement so persisted Card entities no longer need to provide
+--     a placeholder value.
+--
+-- Compatibility note:
+--   Existing rows lose their CVV values. This is the intended outcome of
+--   the PCI-DSS remediation -- the values were never supposed to be stored.
+--   No transactional integrity is impacted; the column was never referenced
+--   by any FK or business-critical query.
+--
+-- AAP refs: § 0.6.6 (PCI-DSS posture), § 0.7.1 (PCI-DSS rules),
+--           § 0.7.3 (Minimal Change Clause -- security mandate exception),
+--           QA Testing Report Checkpoint 2 finding DB1.
+-- =============================================================================
+
+ALTER TABLE cards DROP COLUMN IF EXISTS card_cvv_cd;

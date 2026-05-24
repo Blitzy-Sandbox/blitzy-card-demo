@@ -152,10 +152,10 @@ import java.util.Optional;
  * {@code CARDSID} field. The DTO's overridden {@link CardDetailDto#toString()}
  * masks the PAN to the last 4 digits ({@code ************XXXX}) for
  * log-safe output; the unmasked PAN exists only in memory for the
- * duration of a single REST request. The CVV
- * ({@code card_cvv_cd} on the {@link Card} entity) is <b>NEVER</b>
- * exposed by this DTO &mdash; the record type omits a CVV component,
- * matching PCI-DSS v4.0 Requirement 3.2.</p>
+ * duration of a single REST request. The CVV is not stored on the
+ * {@link Card} entity at all (QA finding DB1; PCI-DSS v4.0
+ * Requirement 3.2 prohibits CVV persistence post-authorization) and
+ * therefore cannot be exposed by this DTO.</p>
  *
  * <p>This service NEVER logs the unmasked PAN. Every diagnostic log
  * statement uses the private {@link #maskPan(String)} helper to render
@@ -405,7 +405,13 @@ public class CardDetailService {
                     // safe to ship to CloudWatch Logs / OpenSearch.
                     LOG.debug("CardDetailService card not found cardNumber={}",
                             maskPan(trimmed));
-                    return new RecordNotFoundException("Card",
+                    // QA finding D3: use the standardized reason code
+                    // "CARD_NOT_FOUND" (matching CardUpdateService's
+                    // not-found error code) rather than the bare entity
+                    // name "Card" which produced the misleading
+                    // {"code":"Card",...} envelope flagged in CP2 QA
+                    // testing. The error message is unchanged.
+                    return new RecordNotFoundException("CARD_NOT_FOUND",
                             "cardNumber=" + maskPan(trimmed));
                 });
 
@@ -415,12 +421,23 @@ public class CardDetailService {
         // canonical record constructor (no static of(Card) factory is
         // exposed on the CardDetailDto record type). The constructor
         // argument order matches the record component declaration order.
+        //
+        // QA finding D2 (PCI-DSS): mask the PAN at the producer so the
+        // GET /api/cards/{cardNumber} response body never carries the
+        // unmasked 16-digit PAN. This matches the masking that the list
+        // endpoint already applies in CardListService.toRow().
+        //
+        // QA finding U2 (API contract): expose the JPA @Version token
+        // on the response so clients can issue PUT requests carrying a
+        // known-good version (the value previously had no REST-visible
+        // surface and clients were forced to guess version=0).
         CardDetailDto dto = new CardDetailDto(
-                card.getCardNum(),
+                maskPan(card.getCardNum()),
                 card.getCardAcctId(),
                 card.getCardEmbossedName(),
                 card.getCardExpirationDate(),
-                card.getCardActiveStatus());
+                card.getCardActiveStatus(),
+                card.getVersion());
 
         // Cache-aside (AAP §0.3.3, §0.7.1): on miss, populate the cache
         // for subsequent reads. TTL = 5 minutes (consistent with

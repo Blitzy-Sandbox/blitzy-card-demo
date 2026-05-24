@@ -307,6 +307,22 @@ public class CardController {
      * no cache; AAP &sect;0.6.5 introduces caching as a performance
      * non-functional improvement permitted by the migration).</p>
      *
+     * <p><b>Authorization (QA finding D1):</b> restricted to callers
+     * holding the {@code ADMIN} role. PCI-DSS v4.0 Requirement 7.1
+     * mandates access restriction by business need-to-know; in the
+     * COBOL source code the USER role accessed card detail only via
+     * implicit CICS COMMAREA navigation context which the REST
+     * surface cannot reproduce. Because the {@link com.awsm2.carddemo.domain.UserSecurity}
+     * entity has no user-to-customer/account binding (USR records
+     * model bank employees, not cardholders), per-card ownership
+     * cannot be enforced at the row level without a data-model
+     * change that is out of scope for the migration. Restricting
+     * the endpoint to administrators preserves operational parity
+     * (employees in the COBOL system could reach any card through
+     * navigation) while closing the IDOR vulnerability. Non-admin
+     * callers receive HTTP 403 from Spring Security via
+     * {@link com.awsm2.carddemo.exception.GlobalExceptionHandler#handleAccessDenied}.</p>
+     *
      * <p><b>Input validation:</b> the path variable is rejected with
      * HTTP 400 ({@code ConstraintViolationException} &rarr;
      * {@code GlobalExceptionHandler}) when blank
@@ -320,15 +336,17 @@ public class CardController {
      *                   {@code app/cpy/CVACT02Y.cpy})
      * @return {@link ResponseEntity} with HTTP 200 and the
      *         {@link CardDetailDto} wrapped in {@link ApiResponse}.
-     *         HTTP 400 on malformed input; HTTP 404
+     *         HTTP 400 on malformed input; HTTP 403 when the caller
+     *         does not hold the {@code ADMIN} role; HTTP 404
      *         ({@code RecordNotFoundException}) if no card
      *         exists for the supplied number
      */
     @GetMapping("/{cardNumber}")
     @Operation(
-            summary = "Get card detail by 16-digit card number",
-            description = "Returns a single card record with PAN masked (last 4 "
-                    + "digits only). Replaces CICS COCRDSLC / Tran-ID CCDL "
+            summary = "Get card detail by 16-digit card number (ADMIN-only)",
+            description = "Returns a single card record. Restricted to ADMIN role "
+                    + "per PCI-DSS v4.0 Requirement 7.1 (QA finding D1 -- IDOR "
+                    + "remediation). Replaces CICS COCRDSLC / Tran-ID CCDL "
                     + "(card detail)."
     )
     @ApiResponses({
@@ -343,12 +361,19 @@ public class CardController {
                     description = "JWT missing or invalid"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
                     responseCode = "403",
-                    description = "Forbidden"),
+                    description = "Forbidden -- caller does not hold ADMIN role"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
                     responseCode = "404",
                     description = "Card not found")
     })
-    @PreAuthorize("hasAnyRole('USER','ADMIN')")
+    // QA finding D1 (Checkpoint 2): restricted to ADMIN role to remediate
+    // the Insecure Direct Object Reference (IDOR) vulnerability that
+    // allowed any authenticated USER to fetch any card by its number.
+    // PCI-DSS v4.0 Requirement 7.1 mandates need-to-know access; USER
+    // (bank-employee) records have no user-to-cardholder binding so
+    // row-level ownership checks are not possible without a data-model
+    // change that exceeds migration scope. See V017 / DB1 fix narrative.
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<CardDetailDto>> getCard(
             @PathVariable("cardNumber")
             @NotBlank(message = "cardNumber is required")
@@ -413,11 +438,13 @@ public class CardController {
      */
     @PutMapping("/{cardNumber}")
     @Operation(
-            summary = "Update card details with optimistic locking",
+            summary = "Update card details with optimistic locking (ADMIN-only)",
             description = "Applies validated updates (cardholder name, "
                     + "expiration, active status) with JPA @Version optimistic "
-                    + "locking. Replaces CICS COCRDUPC / Tran-ID CCUP (card "
-                    + "update) including the DATA-WAS-CHANGED-BEFORE-UPDATE branch."
+                    + "locking. Restricted to ADMIN role per PCI-DSS v4.0 "
+                    + "Requirement 7.1 (QA finding U1 -- IDOR remediation). "
+                    + "Replaces CICS COCRDUPC / Tran-ID CCUP (card update) "
+                    + "including the DATA-WAS-CHANGED-BEFORE-UPDATE branch."
     )
     @ApiResponses({
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
@@ -431,7 +458,7 @@ public class CardController {
                     description = "JWT missing or invalid"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
                     responseCode = "403",
-                    description = "Forbidden"),
+                    description = "Forbidden -- caller does not hold ADMIN role"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
                     responseCode = "404",
                     description = "Card not found"),
@@ -439,7 +466,14 @@ public class CardController {
                     responseCode = "409",
                     description = "Optimistic-lock conflict (card changed since GET)")
     })
-    @PreAuthorize("hasAnyRole('USER','ADMIN')")
+    // QA finding U1 (Checkpoint 2): restricted to ADMIN role to remediate
+    // the Insecure Direct Object Reference (IDOR) vulnerability that
+    // allowed any authenticated USER to modify any card (including
+    // deactivation of cards belonging to other customers). PCI-DSS v4.0
+    // Requirement 7.1 mandates need-to-know access for state-modifying
+    // operations on cardholder data. See D1 remediation rationale on
+    // getCard above.
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<CardDetailDto>> updateCard(
             @PathVariable("cardNumber")
             @NotBlank(message = "cardNumber is required")

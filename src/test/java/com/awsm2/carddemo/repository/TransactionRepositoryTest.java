@@ -475,16 +475,18 @@ class TransactionRepositoryTest {
      *                {@code accounts} via {@link #persistAccount(Long)})
      */
     private void persistCard(String cardNum, Long acctId) {
-        // V002__create_card.sql NOT NULL columns:
-        //   card_num, card_acct_id, card_cvv_cd, card_embossed_name,
+        // V002__create_card.sql NOT NULL columns (post-V017, which
+        // dropped card_cvv_cd per PCI-DSS v4.0 Requirement 3.2 -- QA
+        // finding DB1):
+        //   card_num, card_acct_id, card_embossed_name,
         //   card_expiration_date, card_active_status, version.
         entityManager.getEntityManager().createNativeQuery(
             "INSERT INTO cards ("
-            + "    card_num, card_acct_id, card_cvv_cd, "
+            + "    card_num, card_acct_id, "
             + "    card_embossed_name, card_expiration_date, "
             + "    card_active_status, version"
             + ") VALUES ("
-            + "    ?, ?, 123, "
+            + "    ?, ?, "
             + "    'JOHN Q PUBLIC', DATE '2027-12-31', "
             + "    'Y', 0"
             + ")"

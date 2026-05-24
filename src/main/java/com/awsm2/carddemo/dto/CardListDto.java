@@ -383,6 +383,17 @@ public record CardListDto(
      *   <li>{@link #activeStatus()} &harr;
      *       {@code CARD-ACTIVE-STATUS PIC X(01)} ({@code "Y"} = active,
      *       {@code "N"} = inactive)</li>
+     *   <li>{@link #version()} &harr; <b>no COBOL provenance</b> &mdash;
+     *       this is the JPA {@code @Version} token from the
+     *       {@code Card} entity, surfaced on the list response per QA
+     *       finding U2 so that REST clients can use a row from the list
+     *       response as the basis for a subsequent PUT optimistic-lock
+     *       update <b>without</b> first round-tripping to the detail
+     *       endpoint.  In the COBOL source, before/after image comparison
+     *       in {@code COCRDUPC.cbl} relied on the operator viewing the
+     *       full record on the 3270 screen; the JPA {@code @Version}
+     *       column plus this DTO field replace that mechanism per AAP
+     *       &sect;0.4.1 and QA finding U2.</li>
      * </ul>
      *
      * <p><b>Intentionally excluded from this row (per PCI-DSS / record
@@ -419,6 +430,15 @@ public record CardListDto(
      *                       {@code "Y"} = active, {@code "N"} = inactive;
      *                       sourced from
      *                       {@code CARD-ACTIVE-STATUS PIC X(01)}
+     * @param version        the JPA {@code @Version} optimistic-lock
+     *                       token for this card; the legacy COBOL
+     *                       source did not expose a discrete version
+     *                       field on the 3270 list screen, but the QA
+     *                       finding U2 mandates that the version be
+     *                       surfaced on every read path so REST clients
+     *                       can construct an optimistic-lock-safe PUT
+     *                       request from a list-response entry without
+     *                       a round-trip to the detail endpoint
      */
     @Schema(name = "CardListDto.CardRow",
             description = "Single card row in the paged list. Mirrors one "
@@ -480,7 +500,22 @@ public record CardListDto(
                     allowableValues = {"Y", "N"},
                     maxLength = 1)
             @JsonProperty("activeStatus")
-            String activeStatus
+            String activeStatus,
+
+            @Schema(description = "Optimistic-lock version token. Echo "
+                    + "this value on the subsequent PUT request body so "
+                    + "the server can detect concurrent modification. "
+                    + "Surfaced on the list response per QA finding U2 "
+                    + "so REST clients can perform an optimistic-lock-"
+                    + "safe PUT directly from a list-response entry "
+                    + "without a round-trip to the detail endpoint. "
+                    + "No COBOL provenance: the JPA @Version mechanism "
+                    + "replaces the before/after image comparison in "
+                    + "COCRDUPC.cbl per AAP \u00a70.4.1.",
+                    example = "0",
+                    minimum = "0")
+            @JsonProperty("version")
+            Long version
     ) {
 
         /**
@@ -556,6 +591,7 @@ public record CardListDto(
                     + ", embossedName=" + embossedName
                     + ", expirationDate=" + expirationDate
                     + ", activeStatus=" + activeStatus
+                    + ", version=" + version
                     + "]";
         }
     }

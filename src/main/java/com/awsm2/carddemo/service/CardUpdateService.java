@@ -147,9 +147,12 @@ import java.util.Set;
  *   <li>never includes the full PAN in {@link AuditLogService}
  *       payloads &mdash; the audit payload carries {@code cardLast4}
  *       only;</li>
- *   <li>excludes the CVV ({@code cardCvvCd} on {@link Card}) from the
- *       update flow entirely &mdash; sensitive authentication data is
- *       not modifiable through this endpoint.</li>
+ *   <li>does not handle the CVV at all &mdash; the COBOL
+ *       {@code CARD-CVV-CD PIC 9(03)} field is intentionally NOT
+ *       projected onto any column of the {@code cards} table per
+ *       PCI-DSS v4.0 Requirement 3.2 (QA finding DB1); sensitive
+ *       authentication data is therefore not modifiable through this
+ *       endpoint nor anywhere else in the system.</li>
  * </ul>
  *
  * @see CardRepository
@@ -408,10 +411,10 @@ public class CardUpdateService {
         //
         // Per the COBOL refactor discipline (AAP §0.7.3), only the
         // fields exposed on the BMS map are mutated. The card-number
-        // primary key is preserved verbatim; the CVV is intentionally
-        // NOT carried on CardUpdateDto and is therefore NOT mutated
-        // here (PCI-DSS Requirement 3.2 — sensitive authentication data
-        // must not be writable via this endpoint).
+        // primary key is preserved verbatim; the CVV is not present on
+        // the Card entity at all (PCI-DSS v4.0 Requirement 3.2; QA
+        // finding DB1) so there is nothing to mutate even if a malicious
+        // client attempted to inject one via mass assignment.
         // ---------------------------------------------------------------
         applyEdits(card, request);
 
@@ -427,10 +430,22 @@ public class CardUpdateService {
         // the domain ConcurrentModificationException (FQCN per agent
         // prompt). This is the JPA-idiomatic replacement for the COBOL
         // LOCKED-BUT-UPDATE-FAILED branch (lines 1488-1492).
+        //
+        // CRITICAL: We use saveAndFlush() rather than save() so the
+        // SQL UPDATE is executed *immediately* within this transaction
+        // boundary. Hibernate increments the @Version field on the
+        // managed entity at flush time (not at save() return time). If
+        // we used a deferred-flush save() the audit payload at Step 8
+        // and the response DTO at Step 9 would observe the *pre-update*
+        // version value (stale read), while the database — flushed at
+        // commit *after* the response is built — would hold the
+        // *post-update* version. This stale-read regression was
+        // captured by the QA fix verification for finding U2 and the
+        // explicit flush here is the authoritative remedy.
         // ---------------------------------------------------------------
         Card saved;
         try {
-            saved = cardRepository.save(card);
+            saved = cardRepository.saveAndFlush(card);
         } catch (OptimisticLockingFailureException olfe) {
             LOG.warn(
                     "Card optimistic-lock save failed cardLast4={} requestVersion={}",
@@ -676,11 +691,11 @@ public class CardUpdateService {
      * <p>Only the editable fields are mutated. The card-number primary
      * key is preserved verbatim &mdash; the COBOL source also forbids
      * primary-key changes during update (the {@code CARDSID} field on
-     * the BMS map is keyed for lookup only). The CVV
-     * ({@link Card#getCardCvvCd()}) is intentionally NOT carried on
-     * {@link CardUpdateDto} and is therefore NOT mutated here, per
-     * AAP &sect;0.6.6 PCI-DSS Requirement 3.2 (sensitive authentication
-     * data must not be modifiable through this endpoint).</p>
+     * the BMS map is keyed for lookup only). The CVV is intentionally
+     * NOT carried on {@link CardUpdateDto} and is not stored on the
+     * {@link Card} entity at all, per AAP &sect;0.6.6 PCI-DSS v4.0
+     * Requirement 3.2 (QA finding DB1; sensitive authentication data
+     * must not be persisted post-authorization).</p>
      *
      * @param card    the managed JPA entity loaded by
      *                {@link CardRepository#findById(Object)}
@@ -711,8 +726,19 @@ public class CardUpdateService {
      * Build the {@link CardDetailDto} response envelope from a
      * persisted {@link Card}. The DTO mirrors the {@code COCRDSL.bms}
      * card-detail screen contract (per the source mapset and per
-     * {@link CardDetailDto}'s class Javadoc) with the PAN masked in
-     * {@link CardDetailDto#toString()}.
+     * {@link CardDetailDto}'s class Javadoc).
+     *
+     * <p><b>QA finding D2 (PCI-DSS PAN masking):</b> the
+     * {@code cardNumber} component on the response DTO is masked
+     * here at the producer to match the consistent masking applied
+     * by the list endpoint, so the response body never carries
+     * the unmasked 16-digit PAN.</p>
+     *
+     * <p><b>QA finding U2 (optimistic-lock token visibility):</b>
+     * the freshly-incremented JPA {@code @Version} value is echoed
+     * on the response so the client can use it as the
+     * {@code version} payload of the next PUT without having to
+     * GET first.</p>
      *
      * @param card the just-persisted card entity (non-null, version
      *             freshly incremented by Hibernate)
@@ -720,11 +746,35 @@ public class CardUpdateService {
      */
     private CardDetailDto toDetailDto(Card card) {
         return new CardDetailDto(
-                card.getCardNum(),
+                maskPan(card.getCardNum()),
                 card.getCardAcctId(),
                 card.getCardEmbossedName(),
                 card.getCardExpirationDate(),
-                card.getCardActiveStatus());
+                card.getCardActiveStatus(),
+                card.getVersion());
+    }
+
+    /**
+     * Masks a 16-digit Primary Account Number (PAN) for inclusion in
+     * outbound REST response bodies per PCI-DSS v4.0 Requirement
+     * 3.4 (AAP &sect;0.6.6). Returns
+     * {@code "************" + last4} for inputs of length &gt;= 4;
+     * returns the 12-asterisk literal {@code "************"} for
+     * shorter or {@code null} inputs as a defensive fallback.
+     *
+     * <p>This helper is the SOLE PAN-rendering path for response
+     * DTOs built by this service.</p>
+     *
+     * @param pan the candidate Primary Account Number (may be
+     *            {@code null} or shorter than 4 characters)
+     * @return the masked PAN suitable for the
+     *         {@link CardDetailDto#cardNumber()} component
+     */
+    private String maskPan(String pan) {
+        if (pan == null || pan.length() < 4) {
+            return "************";
+        }
+        return "************" + pan.substring(pan.length() - 4);
     }
 
     /**

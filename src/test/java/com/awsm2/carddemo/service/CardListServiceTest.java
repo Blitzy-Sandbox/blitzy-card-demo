@@ -330,12 +330,12 @@ class CardListServiceTest {
      * Test-fixture builder for a {@link Card} entity.
      *
      * <p>Populates every field that the COBOL {@code CARD-RECORD}
-     * record carries (per {@code app/cpy/CVACT02Y.cpy}) so that the
-     * resulting fixture is shape-identical to a freshly hydrated JPA
-     * entity off the {@code cards} table. The
-     * {@link Card#setCardCvvCd(Integer)} setter is invoked with
-     * {@link #TEST_CVV_MARKER} so the PCI-DSS CVV-absence assertion
-     * has a recognisable leak target.</p>
+     * record carries (per {@code app/cpy/CVACT02Y.cpy}) <em>except</em>
+     * the {@code CARD-CVV-CD} field, which is intentionally NOT
+     * stored on the {@link Card} entity per PCI-DSS v4.0 Requirement
+     * 3.2 (QA finding DB1). The resulting fixture is therefore
+     * shape-identical to a freshly hydrated JPA entity off the
+     * post-V017 {@code cards} table.</p>
      *
      * <p>The {@code cardActiveStatus} is set to {@code "Y"} (active)
      * by default; tests that need an inactive card may construct
@@ -350,7 +350,10 @@ class CardListServiceTest {
         Card c = new Card();
         c.setCardNum(cardNum);
         c.setCardAcctId(TEST_ACCOUNT_ID);
-        c.setCardCvvCd(TEST_CVV_MARKER);
+        // CARD-CVV-CD: not stored on the entity per PCI-DSS v4.0 Req
+        // 3.2 (QA finding DB1); the CVV-absence assertions below
+        // continue to verify the DTO/serialisation layer cannot expose
+        // a CVV value as defense-in-depth.
         c.setCardEmbossedName(embossedName);
         // COBOL: CARD-EXPIRAION-DATE (typo in source preserved at
         // copybook level; Java field corrected to expirationDate per
@@ -943,6 +946,15 @@ class CardListServiceTest {
             assertThat(row.activeStatus())
                     .as("activeStatus projects verbatim from CARD-ACTIVE-STATUS")
                     .isEqualTo(singleCardFixture.getCardActiveStatus());
+            // QA finding U2 — the JPA @Version optimistic-lock token is
+            // now surfaced on every list-response row so REST clients
+            // can drive an optimistic-lock-safe PUT directly from a
+            // list-response entry without a round-trip to the detail
+            // endpoint. The row's version() MUST project verbatim from
+            // the Card.getVersion() field.
+            assertThat(row.version())
+                    .as("version projects verbatim from JPA @Version (QA U2)")
+                    .isEqualTo(singleCardFixture.getVersion());
         }
     }
 

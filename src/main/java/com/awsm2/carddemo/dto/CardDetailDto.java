@@ -39,16 +39,22 @@ import java.time.LocalDate;
  * returns this DTO as the JSON response body of
  * {@code GET /api/cards/{cardNumber}}.
  *
- * <p><b>Read-only view (no optimistic-lock version):</b>  Unlike
- * {@link CardUpdateDto} which carries a {@code version} field for JPA
- * {@code @Version}-based optimistic locking, this DTO is the read-only
- * response of {@code GET /api/cards/{cardNumber}} and therefore omits the
- * version component &mdash; mutations to the card are performed through the
- * separate {@code CardUpdateDto} contract handled by {@code COCRDUPC.cbl}'s
- * Java equivalent ({@code CardUpdateService}).  This mirrors the COBOL
- * source's strict separation between the read-only {@code COCRDSLC.cbl}
- * (view) program and the read-update-rewrite {@code COCRDUPC.cbl} (update)
- * program.
+ * <p><b>Optimistic-locking version exposed (QA finding U2):</b>  This
+ * DTO carries a {@code version} component that mirrors the JPA
+ * {@code @Version} value on the underlying {@code Card} entity. This
+ * was added as part of the Checkpoint 2 QA remediation: the prior
+ * design forced first-time clients to guess {@code version=0} when
+ * issuing a PUT and receive HTTP 409 on mismatch with no way to
+ * discover the current value. By echoing the version on every GET
+ * response (and the GET response embedded in the PUT response), the
+ * REST contract supports the standard optimistic-concurrency
+ * round-trip: client GETs to observe the current state and the
+ * {@code version}, then sends that same {@code version} on the
+ * subsequent PUT. Server-side enforcement is unchanged -- the
+ * primary mechanism is the JPA {@code @Version}-decorated column
+ * which Hibernate adds to the {@code UPDATE ... WHERE} clause and
+ * raises {@link org.springframework.dao.OptimisticLockingFailureException}
+ * (translated to HTTP 409) on a stale write.
  *
  * <p><b>Field-contract preservation (BMS &harr; JSON contract):</b>  The
  * BMS {@code COCRDSL} map renders the expiration date as <i>segmented</i>
@@ -161,6 +167,17 @@ import java.time.LocalDate;
  *                       {@code app/cpy/CVACT02Y.cpy} (line 10) and BMS
  *                       field {@code CRDSTCD PIC X(01)} on the
  *                       {@code COCRDSL} screen at position {@code (13,25)}.
+ * @param version        current JPA {@code @Version} value on the
+ *                       underlying {@code Card} row. Added per QA
+ *                       finding U2 to expose the optimistic-lock
+ *                       token in GET responses so clients can issue
+ *                       PUT requests carrying a known-good version.
+ *                       Has no COBOL equivalent -- the source used
+ *                       implicit before/after image comparison on
+ *                       CICS {@code READ UPDATE}/{@code REWRITE}.
+ *                       Initially {@code 0L} for a freshly persisted
+ *                       row; incremented by Hibernate on every
+ *                       successful UPDATE.
  *
  * @see <a href=
  *      "https://github.com/aws-samples/aws-mainframe-modernization-carddemo">
@@ -261,7 +278,29 @@ public record CardDetailDto(
                 maxLength = 1,
                 allowableValues = {"Y", "N"})
         @JsonProperty("activeStatus")
-        String activeStatus
+        String activeStatus,
+
+        /**
+         * Current JPA {@code @Version} value on the underlying {@code Card}
+         * row. Added per QA finding U2 to expose the optimistic-lock token
+         * in GET responses so clients can issue PUT requests carrying a
+         * known-good version. {@code 0L} for a freshly persisted row;
+         * incremented by Hibernate on every successful UPDATE.
+         *
+         * <p>Type is the boxed {@link Long} (not the primitive {@code long})
+         * so that DTOs built from entities where the version was not
+         * hydrated (e.g., a JPA detached instance) render the field as
+         * {@code null} rather than silently emitting {@code 0}. In normal
+         * read paths the field is always populated.
+         */
+        @Schema(description = "Optimistic-lock version token. Echo this "
+                        + "value on the subsequent PUT request body so the "
+                        + "server can detect and reject stale writes "
+                        + "(HTTP 409 DATA_CHANGED_BEFORE_UPDATE).",
+                example = "0",
+                minimum = "0")
+        @JsonProperty("version")
+        Long version
 ) {
 
     /**

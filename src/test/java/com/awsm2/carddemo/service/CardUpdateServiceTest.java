@@ -120,7 +120,9 @@ class CardUpdateServiceTest {
     private static final String ACTIVE_STATUS = "Y";
     private static final LocalDate EXPIRATION_DATE = LocalDate.of(2028, 12, 31);
     private static final Long VERSION = 5L;
-    private static final Integer EXISTING_CVV = 123;
+    // CARD-CVV-CD is intentionally not stored on the Card entity per
+    // PCI-DSS v4.0 Requirement 3.2 (QA finding DB1); no CVV constant
+    // is therefore required for fixtures.
 
     // ==================================================================
     // Mocks and SUT
@@ -147,10 +149,13 @@ class CardUpdateServiceTest {
                 ACTIVE_STATUS,
                 VERSION);
 
+        // CARD-CVV-CD is intentionally NOT a field on the Card entity
+        // (QA finding DB1; PCI-DSS v4.0 Requirement 3.2 prohibits CVV
+        // persistence post-authorization). The all-args constructor
+        // omits the CVV parameter.
         existingCard = new Card(
                 CARD_NUMBER,
                 ACCOUNT_ID,
-                EXISTING_CVV,
                 "ORIG NAME",
                 LocalDate.of(2025, 6, 30),
                 "N");
@@ -166,7 +171,12 @@ class CardUpdateServiceTest {
     private void stubHappyPathRepositories() {
         when(cardRepository.findById(CARD_NUMBER))
                 .thenReturn(Optional.of(existingCard));
-        lenient().when(cardRepository.save(any(Card.class)))
+        // CardUpdateService delegates to saveAndFlush() (not save())
+        // so the @Version increment is materialised on the entity
+        // instance *before* the audit payload and response DTO are
+        // constructed. Mocking saveAndFlush() instead of save() keeps
+        // the test fixture aligned with production behaviour (QA U2).
+        lenient().when(cardRepository.saveAndFlush(any(Card.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
     }
 
@@ -229,7 +239,7 @@ class CardUpdateServiceTest {
                     .isInstanceOf(ValidationException.class)
                     .hasMessageContaining("Version");
 
-            verify(cardRepository, never()).save(any());
+            verify(cardRepository, never()).saveAndFlush(any());
             verify(cacheService, never()).evict(anyString(), anyString());
             verify(auditLogService, never())
                     .auditEvent(anyString(), anyString(), anyMap());
@@ -250,7 +260,7 @@ class CardUpdateServiceTest {
                     .isInstanceOf(ConcurrentModificationException.class)
                     .hasMessageContaining("modified by another transaction");
 
-            verify(cardRepository, never()).save(any());
+            verify(cardRepository, never()).saveAndFlush(any());
             verify(cacheService, never()).evict(anyString(), anyString());
             verify(auditLogService, never())
                     .auditEvent(anyString(), anyString(), anyMap());
@@ -264,7 +274,7 @@ class CardUpdateServiceTest {
             // writer between the SELECT and the UPDATE).
             when(cardRepository.findById(CARD_NUMBER))
                     .thenReturn(Optional.of(existingCard));
-            when(cardRepository.save(any(Card.class)))
+            when(cardRepository.saveAndFlush(any(Card.class)))
                     .thenThrow(new OptimisticLockingFailureException(
                             "Row was updated by another transaction"));
 
@@ -295,7 +305,7 @@ class CardUpdateServiceTest {
                     .isInstanceOf(RecordNotFoundException.class)
                     .hasMessageContaining("Card not found");
 
-            verify(cardRepository, never()).save(any());
+            verify(cardRepository, never()).saveAndFlush(any());
             verify(cacheService, never()).evict(anyString(), anyString());
             verify(auditLogService, never())
                     .auditEvent(anyString(), anyString(), anyMap());
@@ -362,7 +372,7 @@ class CardUpdateServiceTest {
                     .hasMessageContaining("does not match");
 
             verify(cardRepository, never()).findById(anyString());
-            verify(cardRepository, never()).save(any());
+            verify(cardRepository, never()).saveAndFlush(any());
         }
 
         @Test
@@ -482,25 +492,40 @@ class CardUpdateServiceTest {
             CardDetailDto response =
                     service.updateCard(CARD_NUMBER, validRequest);
 
-            // Assert — response carries the new values
+            // Assert — response carries the new values.
+            // QA finding D2: cardNumber on the response DTO is now
+            // pre-masked at the producer (CardUpdateService.toDetailDto)
+            // so the wire payload never carries the unmasked PAN.
             assertThat(response).isNotNull();
-            assertThat(response.cardNumber()).isEqualTo(CARD_NUMBER);
+            assertThat(response.cardNumber()).isEqualTo("************"
+                    + CARD_NUMBER.substring(CARD_NUMBER.length() - 4));
             assertThat(response.accountId()).isEqualTo(ACCOUNT_ID);
             assertThat(response.embossedName()).isEqualTo(EMBOSSED_NAME);
             assertThat(response.expirationDate()).isEqualTo(EXPIRATION_DATE);
             assertThat(response.activeStatus()).isEqualTo(ACTIVE_STATUS);
+            // QA finding U2: the JPA @Version optimistic-lock token
+            // MUST be projected onto the response DTO so the client
+            // can chain a subsequent PUT without round-tripping to GET
+            // /api/cards/{cardNumber}. The response carries the post-
+            // save version which Hibernate increments by 1 over the
+            // request payload's version.
+            assertThat(response.version()).isNotNull();
 
-            // Verify save was called and the entity carries the request
-            // version (drives Hibernate UPDATE ... WHERE version = ?)
+            // Verify saveAndFlush was called and the entity carries the
+            // request version (drives Hibernate UPDATE ... WHERE
+            // version = ?). saveAndFlush forces immediate flush so the
+            // @Version increment materialises before the response DTO
+            // and audit payload are built (QA U2 remediation).
             ArgumentCaptor<Card> savedCaptor = ArgumentCaptor.forClass(Card.class);
-            verify(cardRepository).save(savedCaptor.capture());
+            verify(cardRepository).saveAndFlush(savedCaptor.capture());
             Card saved = savedCaptor.getValue();
             assertThat(saved.getCardEmbossedName()).isEqualTo(EMBOSSED_NAME);
             assertThat(saved.getCardActiveStatus()).isEqualTo(ACTIVE_STATUS);
             assertThat(saved.getCardExpirationDate()).isEqualTo(EXPIRATION_DATE);
             assertThat(saved.getCardAcctId()).isEqualTo(ACCOUNT_ID);
-            // CVV is preserved unchanged (PCI-DSS Requirement 3.2)
-            assertThat(saved.getCardCvvCd()).isEqualTo(EXISTING_CVV);
+            // CVV is intentionally NOT a field on the Card entity (QA
+            // finding DB1; PCI-DSS v4.0 Requirement 3.2) so there is no
+            // CVV state to preserve through the update flow.
 
             // Cache eviction (cache-aside post-write invariant)
             verify(cacheService).evict(eq("card-detail"), eq(CARD_NUMBER));
@@ -592,10 +617,16 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("audit payload contains the new version (post-save)")
         void updateCard_auditCarriesPostSaveVersion() {
-            // Arrange — emulate Hibernate incrementing the version on save
+            // Arrange — emulate Hibernate incrementing the @Version
+            // column when saveAndFlush() forces the UPDATE within the
+            // transaction. This emulation is critical: production
+            // CardUpdateService now uses saveAndFlush() (QA U2 fix) so
+            // the audit payload is built from the *post-flush* entity
+            // and therefore reflects the new version value, not the
+            // stale pre-increment value.
             when(cardRepository.findById(CARD_NUMBER))
                     .thenReturn(Optional.of(existingCard));
-            when(cardRepository.save(any(Card.class))).thenAnswer(inv -> {
+            when(cardRepository.saveAndFlush(any(Card.class))).thenAnswer(inv -> {
                 Card c = inv.getArgument(0);
                 c.setVersion(c.getVersion() + 1L);
                 return c;
@@ -631,14 +662,14 @@ class CardUpdateServiceTest {
 
             // Side effects must be zero
             verify(cardRepository, never()).findById(anyString());
-            verify(cardRepository, never()).save(any());
+            verify(cardRepository, never()).saveAndFlush(any());
             verify(cacheService, never()).evict(anyString(), anyString());
             verify(auditLogService, never())
                     .auditEvent(anyString(), anyString(), anyMap());
         }
 
         @Test
-        @DisplayName("only one save call, never repository.findAll or others")
+        @DisplayName("only one saveAndFlush call, never repository.findAll or others")
         void updateCard_singleSave() {
             // Arrange
             stubHappyPathRepositories();
@@ -648,7 +679,7 @@ class CardUpdateServiceTest {
 
             // Assert
             verify(cardRepository).findById(CARD_NUMBER);
-            verify(cardRepository).save(any(Card.class));
+            verify(cardRepository).saveAndFlush(any(Card.class));
         }
     }
 }

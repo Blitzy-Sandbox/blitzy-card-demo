@@ -596,6 +596,32 @@ carddemo:
       signing-key-secret-arn: ${JWT_SIGNING_KEY_SECRET_ARN:arn:aws:secretsmanager:${AWS_REGION:us-east-1}:${AWS_ACCOUNT_ID:000000000000}:secret:carddemo/prod/jwt-signing-key}
       signing-key-secret-field: ${JWT_SIGNING_KEY_SECRET_FIELD:jwtSigningKey}
       expiration: ${JWT_EXPIRATION:PT30M}
+    # -------------------------------------------------------------------------
+    # CORS — production allow-list (QA finding C1 remediation)
+    # -------------------------------------------------------------------------
+    # The QA test report (§"Issue C1: Wildcard CORS origin on authenticated
+    # API") flagged the absence of an explicit production CORS allow-list
+    # as MEDIUM severity. PCI-DSS-bearing card APIs MUST advertise only
+    # known, vetted origins as `Access-Control-Allow-Origin`. The base
+    # profile's `:*` fallback would otherwise be inherited into production
+    # if the operator forgot to supply `CORS_ALLOWED_ORIGINS` at deployment
+    # time.
+    #
+    # No wildcard default is permitted in production: the
+    # `CORS_ALLOWED_ORIGINS` environment variable is REQUIRED at ECS task
+    # definition time and is sourced from Parameter Store (per AAP
+    # §0.7.1) so the value can be rotated per release. If the operator
+    # forgets to supply a value, Spring will throw at bean-construction
+    # time (`SecurityConfig` resolves `${...}` with no default) — failing
+    # fast at startup is preferable to silently widening the CORS
+    # surface to `*`. Documented operational expectation: the value
+    # is set to the canonical UI host(s) only (for example,
+    # `https://card-demo-ui.example.com,https://card-demo-admin.example.com`).
+    cors:
+      allowed-origins: ${CORS_ALLOWED_ORIGINS}
+      allowed-methods: ${CORS_ALLOWED_METHODS:GET,POST,PUT,DELETE,OPTIONS}
+      allowed-headers: ${CORS_ALLOWED_HEADERS:Authorization,Content-Type,X-Requested-With,Accept}
+      max-age: ${CORS_MAX_AGE:3600}
 
   # ---------------------------------------------------------------------------
   # Cache — production-scale Redis cache (cache-aside, AAP §0.7.1)

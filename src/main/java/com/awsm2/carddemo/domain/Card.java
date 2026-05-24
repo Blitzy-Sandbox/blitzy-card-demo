@@ -44,11 +44,15 @@ import java.util.Objects;
  * {@link Account} row via the {@link #cardAcctId} foreign key, but a
  * single account may have multiple cards (the COBOL VSAM AIX is
  * {@code NONUNIQUEKEY}). The card row carries the 16-character primary
- * card number (PAN), the 3-digit CVV, the embossed name, the expiration
- * date, and the {@code 'Y'} / {@code 'N'} active-status flag &mdash;
- * exactly the seven fields from the COBOL copybook minus the trailing
+ * card number (PAN), the embossed name, the expiration date, and the
+ * {@code 'Y'} / {@code 'N'} active-status flag &mdash; the business
+ * fields from the COBOL copybook minus the trailing
  * {@code FILLER PIC X(59)} (omitted per AAP &sect;0.6.2 because
- * PostgreSQL has no concept of fixed-width record padding).
+ * PostgreSQL has no concept of fixed-width record padding) and minus
+ * the {@code CARD-CVV-CD PIC 9(03)} field (intentionally NOT projected
+ * onto a column per PCI-DSS v4.0 Requirement 3.2 -- QA finding DB1;
+ * see {@code V002__create_card.sql} header and
+ * {@code V017__drop_card_cvv_column.sql}).
  *
  * <h2>Consumers (Java services that read from / write to this table)</h2>
  * <ul>
@@ -136,7 +140,7 @@ import java.util.Objects;
  * declaration.
  *
  * <h2>PCI-DSS scope (AAP &sect;0.6.6)</h2>
- * <p>This entity holds two PCI-DSS-classified data elements:
+ * <p>This entity holds one PCI-DSS-classified data element:
  * <ul>
  *   <li><b>{@link #cardNum}</b> &mdash; "cardholder data" (CHD) per
  *       PCI-DSS v4.0 Requirement 3.4. The full 16-digit PAN MUST be
@@ -148,18 +152,22 @@ import java.util.Objects;
  *       customer KMS CMK (configured in
  *       {@code infrastructure/terraform/rds.tf}); encryption in
  *       transit via the {@code rds.force_ssl=1} parameter.</li>
- *   <li><b>{@link #cardCvvCd}</b> &mdash; "sensitive authentication
- *       data" (SAD) per PCI-DSS v4.0 Requirement 3.2. SAD <b>MUST
- *       NOT be persisted post-authorization</b> in a real payment-
- *       card environment. CardDemo persists it ONLY because the
- *       COBOL source persists it ({@code CVACT02Y.cpy:L7}) and the
- *       Minimal Change Clause (AAP &sect;0.7.3) forbids removing
- *       fields that exist in the COBOL source. The
- *       {@link #toString()} method on this class <b>intentionally
- *       omits the CVV</b>; application code MUST NOT log it under
- *       any circumstance and MUST NOT return it in any API response
- *       outside of card-update flows that explicitly require it.</li>
  * </ul>
+ *
+ * <p><b>SAD (sensitive authentication data) NOT stored.</b> The COBOL
+ * source ({@code CVACT02Y.cpy:L7}) defines a {@code CARD-CVV-CD PIC
+ * 9(03)} field. PCI-DSS v4.0 Requirement 3.2 PROHIBITS persistence of
+ * sensitive authentication data (which explicitly includes CVV / CVV2
+ * / CVC2 / CID) after authorization, even if encrypted. Per QA
+ * finding DB1 (Checkpoint 2 runtime testing), the {@code card_cvv_cd}
+ * column has been REMOVED from this entity and from the
+ * {@code cards} table. The PCI-DSS requirement takes precedence over
+ * the AAP Minimal Change Clause (AAP &sect;0.7.3) because the Clause
+ * explicitly subordinates itself to the security and compliance
+ * directives in AAP &sect;0.6.6 and &sect;0.7.1. See
+ * {@code V017__drop_card_cvv_column.sql} for the reconciliation
+ * migration that drops the column from databases provisioned at an
+ * earlier baseline.
  *
  * <h2>Source provenance (per AAP &sect;0.7.3 refactor discipline)</h2>
  * <ul>
@@ -352,50 +360,30 @@ public class Card implements Serializable {
     @Column(name = "card_acct_id", nullable = false)
     private Long cardAcctId;
 
-    /**
-     * 3-digit Card Verification Value (CVV2 / CVC2 / CID).
-     *
-     * <p>Maps to the COBOL field {@code 05 CARD-CVV-CD PIC 9(03)} in
-     * {@code app/cpy/CVACT02Y.cpy} (line 7) and to the V002
-     * {@code card_cvv_cd NUMERIC(3) NOT NULL} column.</p>
-     *
-     * <p>Stored as {@link Integer} (NOT {@link String}) because the
-     * COBOL source declares the field as {@code PIC 9(03)} (numeric),
-     * not as {@code PIC X(03)} (alphanumeric). Leading-zero
-     * preservation is native to PostgreSQL {@code NUMERIC} &mdash;
-     * numeric values are stored without any string-representation
-     * padding, and the {@code precision = 3} attribute enforces the
-     * 3-digit maximum.</p>
-     *
-     * <p><b>*** PCI-DSS CRITICAL (AAP &sect;0.6.6) ***</b>
-     * The CVV is "sensitive authentication data" (SAD) per PCI-DSS
-     * v4.0 Requirement 3.2 and <b>MUST NOT be persisted post-
-     * authorization</b> in a real payment-card environment.
-     * CardDemo persists it ONLY because the COBOL source persists
-     * it ({@code CVACT02Y.cpy:L7}) and the Minimal Change Clause
-     * (AAP &sect;0.7.3) forbids removing fields that exist in the
-     * COBOL source. The application <b>MUST NOT log this field</b>
-     * under any circumstance and <b>MUST NOT return it in any API
-     * response</b> outside of card-update flows that explicitly
-     * require it. The {@link #toString()} method on this class
-     * <b>intentionally omits the CVV entirely</b>. Production
-     * hardening (out of scope for this migration) would replace
-     * this column with column-level pgcrypto encryption, HSM-managed
-     * key derivation, or removal of the column entirely.</p>
-     */
-    // COBOL: CVACT02Y.cpy:L7 CARD-CVV-CD PIC 9(03)
-    // -- PCI-sensitive (NEVER include in toString or logs; encrypted at rest via RDS KMS CMK).
-    // columnDefinition = "NUMERIC(3)" aligns Hibernate's schema
-    // validator with V002's numeric(3) column type. Without this
-    // explicit columnDefinition, Hibernate maps Integer to SQL INTEGER
-    // by default, causing "wrong column type encountered in column
-    // [card_cvv_cd] in table [cards]; found [numeric (Types#NUMERIC)],
-    // but expecting [integer (Types#INTEGER)]" at ddl-auto: validate.
-    // Same pattern as TransactionCategory.tranCatCd (V009 NUMERIC(4)
-    // PK mapped via Integer + columnDefinition = "NUMERIC(4)").
-    @Column(name = "card_cvv_cd", nullable = false, precision = 3,
-            columnDefinition = "NUMERIC(3)")
-    private Integer cardCvvCd;
+    // ---------------------------------------------------------------------
+    // CARD-CVV-CD field INTENTIONALLY NOT PROJECTED onto a JPA column
+    // (QA finding DB1; PCI-DSS v4.0 Requirement 3.2).
+    //
+    // The COBOL source ({@code CVACT02Y.cpy:L7 CARD-CVV-CD PIC 9(03)})
+    // defines a 3-digit Card Verification Value field. PCI-DSS v4.0
+    // Requirement 3.2 PROHIBITS storage of sensitive authentication data
+    // (SAD), which explicitly includes CVV/CVV2/CVC2/CID, after
+    // authorization. Even encryption does not lift the prohibition.
+    //
+    // The {@code card_cvv_cd} column has therefore been REMOVED from the
+    // {@code cards} table (see V002__create_card.sql header notes and
+    // V017__drop_card_cvv_column.sql reconciliation migration). No
+    // {@code cardCvvCd} field is declared on this entity, no getter or
+    // setter is generated, and the all-args constructor does NOT accept
+    // a CVV argument. Code paths that previously consumed CVV (test
+    // fixtures, file readers, audit allow-lists) have been updated in
+    // the same commit.
+    //
+    // The PCI-DSS requirement takes precedence over the AAP Minimal
+    // Change Clause (AAP §0.7.3) because the Clause explicitly
+    // subordinates itself to the security and compliance directives in
+    // AAP §0.6.6 (PCI-DSS) and §0.7.1 (PCI-DSS PAN/SAD rules).
+    // ---------------------------------------------------------------------
 
     /**
      * 50-character cardholder name as embossed / printed on the
@@ -561,26 +549,25 @@ public class Card implements Serializable {
     }
 
     /**
-     * All-arguments constructor covering the 6 COBOL business
-     * fields. The {@link #version} field is intentionally excluded:
-     * JPA manages it on save.
+     * All-arguments constructor covering the 5 COBOL business
+     * fields that are projected onto JPA columns. The {@link #version}
+     * field is intentionally excluded (JPA manages it on save), and the
+     * COBOL {@code CARD-CVV-CD} field is intentionally excluded per
+     * PCI-DSS v4.0 Requirement 3.2 (QA finding DB1).
      *
      * @param cardNum            the 16-character card-number string (primary key)
      * @param cardAcctId         the 11-digit account identifier (foreign key)
-     * @param cardCvvCd          the 3-digit Card Verification Value
      * @param cardEmbossedName   the cardholder name embossed on the card
      * @param cardExpirationDate the card expiration date
      * @param cardActiveStatus   the {@code 'Y'} / {@code 'N'} active-status flag
      */
     public Card(String cardNum,
                 Long cardAcctId,
-                Integer cardCvvCd,
                 String cardEmbossedName,
                 LocalDate cardExpirationDate,
                 String cardActiveStatus) {
         this.cardNum = cardNum;
         this.cardAcctId = cardAcctId;
-        this.cardCvvCd = cardCvvCd;
         this.cardEmbossedName = cardEmbossedName;
         this.cardExpirationDate = cardExpirationDate;
         this.cardActiveStatus = cardActiveStatus;
@@ -638,29 +625,13 @@ public class Card implements Serializable {
         this.cardAcctId = cardAcctId;
     }
 
-    /**
-     * Returns the 3-digit CVV.
-     *
-     * <p><b>*** PCI-DSS CRITICAL ***</b> &mdash; callers receiving
-     * this value MUST NOT log it, store it in any audit trail, or
-     * return it in any API response outside of card-update flows
-     * that explicitly require it. The CVV is "sensitive
-     * authentication data" per PCI-DSS v4.0 Requirement 3.2.</p>
-     *
-     * @return the {@code card_cvv_cd} value
-     */
-    public Integer getCardCvvCd() {
-        return cardCvvCd;
-    }
-
-    /**
-     * Sets the 3-digit CVV.
-     *
-     * @param cardCvvCd the new {@code card_cvv_cd} value
-     */
-    public void setCardCvvCd(Integer cardCvvCd) {
-        this.cardCvvCd = cardCvvCd;
-    }
+    // ---------------------------------------------------------------------
+    // CVV accessor methods INTENTIONALLY REMOVED (QA finding DB1; PCI-DSS
+    // v4.0 Requirement 3.2). The {@code card_cvv_cd} column no longer
+    // exists, so no getter / setter is provided. Code that previously
+    // invoked {@code getCardCvvCd()} or {@code setCardCvvCd(Integer)}
+    // has been updated in the same commit.
+    // ---------------------------------------------------------------------
 
     /**
      * Returns the 50-character embossed cardholder name.
@@ -770,9 +741,9 @@ public class Card implements Serializable {
     // toString() returns a PCI-DSS-safe human-readable representation:
     //   - cardNum is MASKED (last 4 digits visible, leading 12 replaced
     //     by asterisks);
-    //   - cardCvvCd is INTENTIONALLY OMITTED (sensitive authentication
-    //     data per PCI-DSS v4.0 Requirement 3.2 -- MUST NOT be logged
-    //     under any circumstance);
+    //   - the COBOL CARD-CVV-CD field is NOT stored on this entity per
+    //     PCI-DSS v4.0 Requirement 3.2 (QA finding DB1) and therefore
+    //     does not appear in toString() output either;
     //   - all other fields are shown as-is.
     // -------------------------------------------------------------------------
 
@@ -820,10 +791,11 @@ public class Card implements Serializable {
      *       digits are visible; the leading 12 characters are
      *       replaced by asterisks (
      *       {@code "************1234"}).</li>
-     *   <li>{@link #cardCvvCd} is <b>INTENTIONALLY OMITTED</b>
-     *       &mdash; the CVV is "sensitive authentication data" per
-     *       PCI-DSS v4.0 Requirement 3.2 and MUST NOT be logged
-     *       under any circumstance.</li>
+     *   <li>The COBOL {@code CARD-CVV-CD} field is <b>NOT stored on
+     *       this entity</b> (QA finding DB1; PCI-DSS v4.0 Requirement
+     *       3.2 prohibits storing sensitive authentication data after
+     *       authorization) and therefore cannot appear in
+     *       {@code toString()} output.</li>
      *   <li>All other fields are shown as-is.</li>
      * </ul>
      *
@@ -838,9 +810,6 @@ public class Card implements Serializable {
                 + ", cardExpirationDate=" + cardExpirationDate
                 + ", cardActiveStatus='" + cardActiveStatus + '\''
                 + ", version=" + version
-                // NOTE: cardCvvCd is intentionally omitted per PCI-DSS
-                // v4.0 Requirement 3.2 (AAP §0.6.6). Sensitive
-                // authentication data MUST NOT appear in logs.
                 + '}';
     }
 

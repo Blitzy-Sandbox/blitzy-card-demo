@@ -577,9 +577,22 @@ public class CardListService {
      * the full 16-digit card number in a list response, in alignment
      * with AAP &sect;0.6.6 PCI-DSS discipline. The CVV is
      * intentionally <b>not</b> included on the row by design (the
-     * {@link CardListDto.CardRow} record has no CVV component); the
+     * {@link CardListDto.CardRow} record has no CVV component, and
+     * the underlying {@link Card} JPA entity no longer carries CVV
+     * after the V017 migration that removed {@code card_cvv_cd} per
+     * PCI-DSS v4.0 Requirement 3.2 and QA finding DB1); the
      * embossed name and expiration date are surfaced for richer
      * client rendering as documented in {@link CardListDto}.</p>
+     *
+     * <p><b>QA finding U2 (optimistic-lock token visibility on list
+     * responses):</b> the JPA {@code @Version} value carried on the
+     * {@link Card} entity is propagated to the
+     * {@link CardListDto.CardRow#version()} component so that clients
+     * iterating the list can submit an optimistic-lock-safe PUT for
+     * any row <b>without</b> first round-tripping to the detail
+     * endpoint to obtain the version. The version is monotonically
+     * non-decreasing and is incremented by Hibernate on every
+     * successful UPDATE per AAP &sect;0.4.1.</p>
      *
      * <p>Defensive masking is also applied inside
      * {@link CardListDto.CardRow#toString()} (as documented in
@@ -592,7 +605,8 @@ public class CardListService {
      *             {@code null} (the {@link Page#getContent()} stream
      *             never contains {@code null} elements)
      * @return a non-{@code null} {@link CardListDto.CardRow} with the
-     *         PAN masked
+     *         PAN masked and the JPA {@code @Version} carried on
+     *         {@link CardListDto.CardRow#version()}
      */
     private CardListDto.CardRow toRow(Card card) {
         // COBOL: COCRDLIC:per-row screen build (BMS field set:
@@ -604,12 +618,20 @@ public class CardListService {
         // response for richer client rendering per the CardListDto
         // contract (AAP §0.7.3 information enrichment, not behavior
         // change).
+        //
+        // QA finding U2: the JPA @Version token is carried on the
+        // row so REST clients can submit an optimistic-lock-safe PUT
+        // directly from a list-response entry without a round-trip
+        // to the detail endpoint. The version field has no COBOL
+        // provenance — it is the JPA replacement for the COBOL
+        // before/after image comparison in COCRDUPC.cbl.
         return new CardListDto.CardRow(
                 maskPan(card.getCardNum()),       // PCI-DSS PAN masking
                 card.getCardAcctId(),
                 card.getCardEmbossedName(),
                 card.getCardExpirationDate(),
-                card.getCardActiveStatus());
+                card.getCardActiveStatus(),
+                card.getVersion());
     }
 
     /**

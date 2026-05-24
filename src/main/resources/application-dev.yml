@@ -595,6 +595,32 @@ carddemo:
       signing-key-secret-field: ${JWT_SIGNING_KEY_SECRET_FIELD:jwtSigningKey}
       # ISO-8601 token TTL — 60 minutes for dev (matches expiration-seconds).
       expiration: ${JWT_EXPIRATION:PT60M}
+    # -------------------------------------------------------------------------
+    # CORS — explicit allow-list (QA finding C1 remediation)
+    # -------------------------------------------------------------------------
+    # The base profile in `application.yml` does not declare a value, which
+    # made `SecurityConfig.allowedOrigins` fall back to its `:*` literal
+    # default. The QA test report (§"Issue C1: Wildcard CORS origin on
+    # authenticated API") flagged that wildcard as MEDIUM severity because
+    # an authenticated card-data API must NEVER advertise `*` as an
+    # Access-Control-Allow-Origin header in any deployed environment.
+    #
+    # The `dev` profile is intended for shared developer environments
+    # (Compose stack on a developer workstation, ephemeral feature
+    # environments, an AWS dev account) — values below are environment-
+    # variable driven so that operators can extend the allow-list per
+    # environment without code changes, but the BUILT-IN default is
+    # restricted to `http://localhost:3000` (the standard local UI dev
+    # server). Wildcard origins are never selected by default in dev.
+    #
+    # Allowed methods, headers, and max-age inherit from SecurityConfig
+    # defaults (GET/POST/PUT/DELETE/OPTIONS; Authorization/Content-Type/...;
+    # 3600 s) which match the documented controller surface.
+    cors:
+      allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
+      allowed-methods: ${CORS_ALLOWED_METHODS:GET,POST,PUT,DELETE,OPTIONS}
+      allowed-headers: ${CORS_ALLOWED_HEADERS:Authorization,Content-Type,X-Requested-With,Accept}
+      max-age: ${CORS_MAX_AGE:3600}
 
   # ---------------------------------------------------------------------------
   # Cache — Redis cache-aside (AAP §0.7.1)

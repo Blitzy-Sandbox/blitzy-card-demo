@@ -24,6 +24,7 @@ import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -1149,6 +1150,122 @@ public class GlobalExceptionHandler {
      *         and the standardized envelope; the body never echoes
      *         {@code ex.getMessage()} or the exception class name
      */
+    /**
+     * Handles {@link DataIntegrityViolationException} raised by Spring
+     * Data JPA when a database constraint (foreign key, unique, check,
+     * not-null) is violated by the persisted state. Returns HTTP 422
+     * Unprocessable Entity so the caller can distinguish a server bug
+     * from a request that references invalid identifiers.
+     *
+     * <p><b>QA finding E2 (FK violation returns HTTP 500 instead of
+     * 400/422).</b> Before this handler, a {@code PUT /api/cards/{n}}
+     * carrying an {@code accountId} that does not exist in the
+     * {@code accounts} table would propagate as
+     * {@code DataIntegrityViolationException} (a {@link DataAccessException}
+     * subclass) and be caught by
+     * {@link #handleDataAccessException(DataAccessException, HttpServletRequest)}
+     * which maps generically to HTTP 500. That made it impossible for
+     * clients to distinguish a referential-integrity bug in the request
+     * payload from an internal server failure. The QA test report
+     * &sect;"Issue E2" specifically called this out as a contract
+     * defect: <i>"Invalid input that references non-existent FK should
+     * return 400 (Bad Request) or 422 (Unprocessable Entity), not
+     * 500."</i> This handler implements the recommended remediation
+     * (422 with a domain-meaningful reason code), without affecting any
+     * other {@link DataAccessException} subclass &mdash; Spring's
+     * {@code @ExceptionHandler} resolver picks the most-specific match
+     * by class hierarchy.</p>
+     *
+     * <p><b>Reason-code mapping (best-effort, defensively bounded).</b>
+     * The handler inspects the underlying SQLState / constraint name
+     * carried by the root cause to produce a meaningful reason code
+     * when the violated constraint is recognized. If the cause cannot
+     * be classified, the handler returns the generic reason code
+     * {@code DATA_INTEGRITY_VIOLATION} with HTTP 422 (the
+     * recommendation in the QA test report). Specifically:</p>
+     * <ul>
+     *   <li>Constraint name containing {@code "fk_cards_acct"} (the
+     *       foreign-key constraint declared in V002 from
+     *       {@code cards.card_acct_id} to {@code accounts.acct_id})
+     *       maps to {@code ACCOUNT_NOT_FOUND} per the QA test report
+     *       remediation note.</li>
+     *   <li>Any other constraint name maps to the generic reason code
+     *       {@code DATA_INTEGRITY_VIOLATION}.</li>
+     * </ul>
+     *
+     * <p><b>PCI-DSS / security discipline.</b> The response body
+     * NEVER echoes the underlying exception message, SQL fragment, or
+     * stack trace &mdash; only the standardized envelope with a
+     * deterministic reason code and a generic message. The full
+     * exception (including SQL state, constraint name, and stack
+     * trace) IS captured at WARN level so operators can correlate via
+     * the {@code correlationId}.</p>
+     *
+     * <p><b>Resolver precedence.</b> Because
+     * {@link DataIntegrityViolationException} extends
+     * {@link DataAccessException}, Spring's resolver MUST be able to
+     * pick this handler in preference to
+     * {@link #handleDataAccessException(DataAccessException, HttpServletRequest)}.
+     * Spring's
+     * {@code ExceptionHandlerMethodResolver.getMappedMethod(...)}
+     * implements this by walking the exception type up the
+     * inheritance chain and choosing the closest hop, which is this
+     * handler. The physical declaration order is not load-bearing,
+     * but this handler is placed immediately before the generic
+     * {@link #handleDataAccessException(DataAccessException, HttpServletRequest)}
+     * handler for readability.</p>
+     *
+     * @param ex      the data-integrity violation
+     * @param request the HTTP request (for path logging)
+     * @return {@link ResponseEntity} with HTTP 422 Unprocessable Entity
+     *         and the standardized envelope
+     */
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiResponse<Object>> handleDataIntegrityViolationException(
+            DataIntegrityViolationException ex, HttpServletRequest request) {
+        // QA finding E2 (FK violation returns HTTP 500 instead of 422):
+        //   The card_acct_id column on the cards table has a foreign-key
+        //   constraint fk_cards_acct to accounts(acct_id) (declared in
+        //   V002__create_card.sql). A PUT /api/cards/{n} carrying an
+        //   accountId that does not exist now correctly maps to HTTP 422
+        //   with reason code ACCOUNT_NOT_FOUND rather than HTTP 500
+        //   DATA_ACCESS_ERROR.
+        String correlationId = generateCorrelationId();
+        // Inspect the root cause for a recognized constraint name. The
+        // root cause walk is bounded to 10 hops as a defense against
+        // pathological cause chains.
+        Throwable cause = ex;
+        String constraintName = null;
+        for (int hop = 0; hop < 10 && cause != null; hop++) {
+            String msg = cause.getMessage();
+            if (msg != null) {
+                String lower = msg.toLowerCase();
+                if (lower.contains("fk_cards_acct")) {
+                    constraintName = "fk_cards_acct";
+                    break;
+                }
+            }
+            cause = cause.getCause();
+        }
+        String reasonCode;
+        String message;
+        if ("fk_cards_acct".equals(constraintName)) {
+            reasonCode = "ACCOUNT_NOT_FOUND";
+            message = "The referenced account does not exist.";
+        } else {
+            reasonCode = "DATA_INTEGRITY_VIOLATION";
+            message = "A data integrity constraint was violated.";
+        }
+        LOG.warn("[{}] DataIntegrityViolationException at {}: constraint={}, "
+                        + "type={}, message={}",
+                correlationId, request.getRequestURI(), constraintName,
+                ex.getClass().getSimpleName(), ex.getMessage(), ex);
+        // PCI-DSS-safe envelope — never echoes raw exception details.
+        ApiResponse<Object> body = ApiResponse.error(
+                reasonCode, message, correlationId);
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(body);
+    }
+
     @ExceptionHandler(DataAccessException.class)
     public ResponseEntity<ApiResponse<Object>> handleDataAccessException(
             DataAccessException ex, HttpServletRequest request) {
