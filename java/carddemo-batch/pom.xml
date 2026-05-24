@@ -4,10 +4,68 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
+    <!--
+        carddemo-batch — batch orchestration layer of the hexagonal architecture
+        (AAP §0.3.1, §0.3.6).
+
+        Contents:
+          * BatchRunContext record + ScopedValue<BatchRunContext> declaration —
+            propagates run ID, processing date, and tenant through the entire
+            dynamic call scope including child virtual threads, replacing the
+            ThreadLocal idiom entirely (AAP §0.6.6, §0.6.7; JEP 506 Final).
+          * Batch driver classes that compose use cases from carddemo-application:
+              - PostTransactionsBatch       (composes CbTrn02C — POSTTRAN JCL)
+              - InterestCalculationBatch    (composes CbAct04C — INTCALC JCL)
+              - DailyRejectsBatch           (composes CbTrn02C rejects — DALYREJS JCL)
+              - PrintTcatBalBatch           (composes account/category dump — PRTCATBL JCL)
+              - CombineTransactionsBatch    (composes CbTrn01C — COMBTRAN JCL)
+              - CreateStatementsBatch       (composes CbStm03A — CREASTMT JCL)
+            (AAP §0.3.1 layout, §0.4.1 file-by-file plan)
+          * Virtual-thread fan-out via Executors.newVirtualThreadPerTaskExecutor()
+            ONLY where per-record work is provably independent and reordering
+            does NOT change observable output. Sort orders and record sequencing
+            are preserved (AAP §0.1.3, §0.6.6).
+
+        Architectural rule (AAP §0.3.6, §0.6.12):
+          * This module depends on carddemo-application (use-case ring) and
+            transitively on carddemo-domain (innermost ring).
+          * This module is depended on by carddemo-app (composition root) — never
+            the reverse.
+          * The composition root (carddemo-app) wires file/db adapters at startup
+            and invokes batch drivers in this module; this module must NOT depend
+            on carddemo-adapter-file, carddemo-adapter-db, carddemo-app, or
+            carddemo-tests.
+
+        Forbidden here (AAP §0.1.1 architectural override, §0.6.7, §0.6.12, §0.7.4):
+          * Spring Batch — AAP §0.6.12 explicit override (the previously planned
+            Spring Batch 5.x architecture documented in docs/technical-specifications.md
+            is REPLACED by plain Java drivers with virtual-thread fan-out and
+            ScopedValue propagation).
+          * Spring / Spring Boot / Spring Data / Spring Security / Spring MVC /
+            Spring Cloud AWS — plain constructor injection only.
+          * Hibernate / JPA / jakarta.persistence / javax.persistence
+          * Lombok — Java 25 records replace it.
+          * JDBC drivers (PostgreSQL, MySQL, DB2, H2) — those belong to
+            carddemo-adapter-db.
+          * Flyway, Liquibase, Testcontainers, LocalStack
+          * Micrometer, Prometheus, OpenTelemetry, Jaeger
+          * jqwik (property tests live in carddemo-tests per AAP §0.3.1)
+          * maven-shade-plugin — shading is configured per-executable in
+            carddemo-app/pom.xml only (AAP §0.4.1).
+          * The "enable-preview" JVM flag (AAP §0.7.4 — finalized JEPs only:
+            JEP 506 ScopedValue, JEP 510 KDF, JEP 511 Module Import, JEP 513
+            Flexible Constructor Bodies, JEP 519 Compact Headers, JEP 521
+            Generational Shenandoah). ThreadLocal is FORBIDDEN; ScopedValue
+            replaces it entirely per AAP §0.6.6.
+          * &lt;source&gt;/&lt;target&gt; tags — the parent POM's &lt;release&gt;25&lt;/release&gt;
+            is the single source of truth for the Java language level.
+    -->
+
     <parent>
         <groupId>com.blitzy.carddemo</groupId>
         <artifactId>carddemo-parent</artifactId>
         <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
     </parent>
 
     <artifactId>carddemo-batch</artifactId>
@@ -15,25 +73,139 @@
 
     <name>CardDemo Batch</name>
     <description>
-        Batch drivers that compose use cases from carddemo-application.
-        Virtual-thread fan-out for per-record work that is provably reorder-safe.
-        ScopedValue propagates batch-run context (run ID, processing date, tenant)
-        per AAP §0.6.6 — ThreadLocal is forbidden in new code.
+        Batch orchestration layer of the hexagonal architecture: composes use
+        cases from carddemo-application, applies virtual-thread fan-out where
+        reordering does NOT change observable output, and declares
+        ScopedValue&lt;BatchRunContext&gt; for batch-run context propagation
+        (run ID, processing date, tenant). NO Spring Batch, NO framework —
+        plain Java drivers per AAP §0.6.12 architectural override. ThreadLocal
+        is FORBIDDEN; ScopedValue (JEP 506 Final) replaces it entirely per
+        AAP §0.6.6 and §0.6.7. Depends on carddemo-application (which
+        transitively depends on carddemo-domain).
     </description>
 
     <dependencies>
+        <!--
+            Internal dependency: carddemo-application — the core use-case layer.
+            Provides one Java class per COBOL PROGRAM-ID from app/cbl/ that this
+            batch module composes and orchestrates:
+              * CbTrn02C — full posting engine (composed by PostTransactionsBatch
+                and DailyRejectsBatch, driven by POSTTRAN/DALYREJS JCL)
+              * CbAct04C — interest calculation engine (composed by
+                InterestCalculationBatch, driven by INTCALC JCL)
+              * CbStm03A — statement generation (composed by
+                CreateStatementsBatch, driven by CREASTMT JCL)
+              * CbStm03B — callable file-services subroutine (utility for
+                statement generation)
+              * CbTrn01C — daily transaction loader (composed by
+                CombineTransactionsBatch, driven by COMBTRAN JCL)
+              * CbTrn03C — paginated transaction detail report writer
+              * CbAct01C / CbAct02C / CbAct03C / CbCus01C — sequential
+                file readers used by dump and verification batch flows
+              * ProgramRegistry — dynamic CALL routing for COBOL CALL with a
+                variable program name (AAP §0.3.2)
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT).
+            This is the core internal dependency of this orchestration layer
+            per AAP §0.4.1 and §0.6.12.
+        -->
         <dependency>
             <groupId>com.blitzy.carddemo</groupId>
             <artifactId>carddemo-application</artifactId>
         </dependency>
+
+        <!--
+            Internal dependency: carddemo-domain — innermost ring of the
+            hexagonal architecture. Although reachable TRANSITIVELY through
+            carddemo-application above, declared explicitly per AAP §0.4.1 and
+            the file's agent_prompt §1.2 for intent clarity to readers and
+            tooling.
+            Provides:
+              * Java records (AccountRecord, TranRecord, DalyTranRecord,
+                CardDemoCommarea, TranCatBalRecord, etc.) used by batch drivers
+                for run-context records, fan-out parameter records, and
+                reject-record encoding (AAP §0.6.9)
+              * Sealed types (UserType, PgmContext, AidKey, FileStatus, etc.)
+                from REDEFINES and 88-level value-space taxonomies (AAP §0.6.10)
+              * Repository port interfaces (AccountRepository, CardRepository,
+                TransactionRepository, DailyTransactionRepository, etc.) —
+                ports the batch drivers wire to adapter implementations at the
+                composition root (AAP §0.3.1)
+              * Decimals utility — BigDecimal facade with MathContext.DECIMAL128
+                and RoundingMode selection used for any monetary aggregation in
+                batch drivers (AAP §0.3.3, §0.6.1)
+              * @CobolProgram traceability annotation cited in Javadoc on every
+                translated class (AAP §0.2.1)
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT).
+        -->
+        <dependency>
+            <groupId>com.blitzy.carddemo</groupId>
+            <artifactId>carddemo-domain</artifactId>
+        </dependency>
+
+        <!--
+            Production dependency: SLF4J API only (compile scope).
+            Used by batch drivers in this module to emit structured log
+            messages for:
+              * Run start/end events (BatchRunContext binding/unbinding)
+              * Fan-out parameters (record counts, parallelism degree,
+                virtual-thread executor lifecycle events)
+              * FILE STATUS-equivalent exception summaries (sealed
+                FileStatus hierarchy mapped to typed exceptions per AAP §0.6.10)
+              * Reject-counter snapshots (rejected vs posted transaction counts
+                from CbTrn02C DALYREJS flow)
+              * ScopedValue<BatchRunContext> bindings (run ID, processing date,
+                tenant) per AAP §0.6.6 and §0.6.12
+              * PAN-masking enforcement (mask all but last 4 digits per
+                AAP §0.7.2)
+            The runtime implementation (logback-classic) is supplied by the
+            composition root (carddemo-app); this module depends only on the
+            API, keeping the orchestration layer free of concrete logging
+            dependencies per AAP §0.6.12.
+            Version is inherited from the parent POM's dependencyManagement
+            (slf4j-api 2.0.16 per AAP §0.5.1).
+        -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
         </dependency>
 
+        <!--
+            Test dependencies (test scope only).
+            Versions are inherited from the parent POM's dependencyManagement:
+              * junit-jupiter            via junit-bom 5.13.1 (AAP §0.5.1) —
+                                            unit tests for batch drivers asserting
+                                            virtual-thread fan-out invariants
+                                            (preserved sort order, no record
+                                            reordering), ScopedValue<BatchRunContext>
+                                            binding/get behavior, batch composition
+                                            wiring, and reject-vs-post counter
+                                            assertions per AAP §0.6.6
+              * junit-platform-launcher  1.13.1 — required minimum for
+                                            JUnit Platform native discovery by
+                                            maven-surefire-plugin 3.5.2 and
+                                            aligns with jqwik 1.9.3's minimum
+                                            platform requirement to ensure
+                                            consistent JUnit Platform version
+                                            across the multi-module build
+                                            (AAP §0.5.1)
+              * assertj-core             3.26.3 — fluent assertions for
+                                            batch-run counter values,
+                                            reject-record lists, and
+                                            ScopedValue propagation outcomes
+                                            (AAP §0.5.1)
+            Note: jqwik is NOT declared here — property-based tests for the
+            Decimals utility live in carddemo-tests per AAP §0.3.1.
+        -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -42,4 +214,33 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+                maven-compiler-plugin — activated for this module so the parent's
+                pluginManagement (version 3.13.0, &lt;release&gt;25&lt;/release&gt;, no
+                preview flag per AAP §0.7.4, -parameters for record component
+                names) applies during the compile phase. The Java language
+                level is set ONCE in the parent POM; this child must not
+                redeclare &lt;source&gt;, &lt;target&gt;, or &lt;release&gt;.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+
+            <!--
+                maven-surefire-plugin — activated for this module so the parent's
+                pluginManagement (version 3.5.2, JUnit Platform native discovery,
+                no "enable-preview" argLine per AAP §0.7.4) applies during the
+                test phase. Test classes are discovered by the standard
+                **/*Test.java and **/*Tests.java patterns.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
 </project>
