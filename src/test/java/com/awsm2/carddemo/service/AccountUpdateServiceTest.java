@@ -47,6 +47,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
@@ -627,6 +628,48 @@ class AccountUpdateServiceTest {
             assertThat(captor.getValue().getAcctCurrCycDebit())
                     .isEqualByComparingTo(BigDecimal.ZERO);
         }
+
+        @Test
+        @DisplayName("accepts negative current balance (COBOL PIC S9(10)V99 signed semantics)")
+        void updateAccount_negativeBalance_isAccepted() {
+            // The COBOL source declares ACCT-CURR-BAL as PIC S9(10)V99 (signed)
+            // and the online program COACTUPC.cbl does NOT enforce a positive-
+            // balance constraint on the input field ACURBAL — administrators
+            // are permitted to record credits/overpayments as negative
+            // balances. The Java target must preserve this behavior per the
+            // Minimal Change Clause (AAP §0.7.3). The DTO's @Digits constraint
+            // on currentBalance permits signed values; the service must NOT
+            // reject a negative value.
+            //
+            // This test pins the contract by passing a negative balance
+            // through the full validation cascade and asserting the saved
+            // entity carries that negative value verbatim.
+            // COBOL: COACTUPC.cbl ACURBAL field — signed PIC S9(10)V99
+            final BigDecimal negativeBalance = new BigDecimal("-100.00");
+            AccountUpdateDto request = new AccountUpdateDto(
+                    ACCOUNT_ID, "Y", negativeBalance, CREDIT_LIMIT,
+                    new BigDecimal("1000.00"), OPEN_DATE, EXPIRATION_DATE, null,
+                    BigDecimal.ZERO, BigDecimal.ZERO,
+                    ZIP_CODE, "001",
+                    CUSTOMER_ID, "JOHN", "Q", "DOE", 123456789L,
+                    "5551234567", null, "123 MAIN ST", null, null,
+                    STATE_CODE, COUNTRY_CODE, ZIP_CODE,
+                    LocalDate.of(1980, 5, 15), "GOV12345", "EFT12345",
+                    "Y", 720, VERSION);
+            stubHappyPathRepositories();
+            stubValidationServices();
+            stubKafkaPublishSuccess();
+
+            // Act — no rejection; service proceeds to save
+            service.updateAccount(ACCOUNT_ID, request);
+
+            // Assert — saved account carries the negative balance verbatim
+            ArgumentCaptor<Account> captor = ArgumentCaptor.forClass(Account.class);
+            verify(accountRepository).save(captor.capture());
+            assertThat(captor.getValue().getAcctCurrBal())
+                    .as("negative balance preserved per COBOL signed-PIC contract")
+                    .isEqualByComparingTo(negativeBalance);
+        }
     }
 
     @Nested
@@ -699,6 +742,221 @@ class AccountUpdateServiceTest {
             // applyAccountEdits with the request value
             assertThat(response.currentBalance())
                     .isEqualByComparingTo(CURRENT_BALANCE);
+        }
+    }
+
+    @Nested
+    @DisplayName("Transactional boundary and rollback (COACTUPC SYNCPOINT ROLLBACK)")
+    class TransactionalBoundaryAndRollback {
+
+        /**
+         * COACTUPC.cbl is the ONLY COBOL program in the CardDemo source
+         * tree that issues an explicit {@code SYNCPOINT ROLLBACK} (per
+         * AAP §0.1.1). The Java target replaces this single transactional
+         * boundary with
+         * {@code @Transactional(rollbackFor = Exception.class, isolation =
+         * Isolation.READ_COMMITTED)} on
+         * {@link AccountUpdateService#updateAccount(Long, AccountUpdateDto)}.
+         *
+         * <p>True rollback semantics (i.e., the database row never being
+         * mutated after a customer-save failure) can only be verified by an
+         * integration test with a real transaction manager and persistence
+         * layer. This unit-level test verifies the necessary
+         * <em>precondition</em>: when the customer-save throws, the
+         * exception propagates out of the service method unchanged so that
+         * Spring's transaction interceptor can perform the rollback. If the
+         * service ever started swallowing this exception, the
+         * {@code @Transactional} rollback would not fire and partial
+         * writes could leak — exactly the failure mode COACTUPC's
+         * SYNCPOINT ROLLBACK was designed to prevent.</p>
+         *
+         * <p>COBOL: COACTUPC:9700-REWRITE-ACCTDAT-FILE +
+         * 9800-REWRITE-CUSTDAT-FILE bracketed by SYNCPOINT ROLLBACK
+         * (line 4100 of the source).</p>
+         */
+        @Test
+        @DisplayName("propagates RuntimeException from customer.save so @Transactional rolls back")
+        void updateAccount_customerSaveFails_propagatesExceptionForRollback() {
+            // Arrange — account save succeeds, but customer save throws
+            // RuntimeException (e.g., a constraint violation or downstream
+            // database error). Spring @Transactional configured with
+            // rollbackFor = Exception.class must then roll back the
+            // account write — that rollback is the integration-test
+            // responsibility. Here we lock the precondition: the
+            // exception must propagate unchanged out of the service.
+            stubValidationServices();
+            when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(existingAccount));
+            when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of(existingXref));
+            when(customerRepository.findById(CUSTOMER_ID))
+                    .thenReturn(Optional.of(existingCustomer));
+            when(accountRepository.save(any(Account.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(customerRepository.save(any(Customer.class)))
+                    .thenThrow(new RuntimeException(
+                            "Simulated customer-save failure for rollback test"));
+
+            // Act + Assert — the RuntimeException propagates unchanged.
+            // The service does NOT catch it; Spring @Transactional will
+            // therefore roll back the account save in production.
+            assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, validRequest))
+                    .isInstanceOf(RuntimeException.class)
+                    .hasMessageContaining("Simulated customer-save failure");
+
+            // Assert — side effects MUST NOT fire on a failed transaction.
+            // No cache invalidation, no MSK publish, no audit emission —
+            // any of these would observe state that the rollback erases.
+            verify(cacheService, never()).evict(anyString(), anyString());
+            verify(kafkaEventPublisher, never())
+                    .publishAccountUpdated(anyLong(), any());
+            verify(auditLogService, never())
+                    .auditEvent(anyString(), anyString(), anyMap());
+        }
+    }
+
+    @Nested
+    @DisplayName("Audit payload PII masking (AAP §0.7.2 — PCI-DSS)")
+    class FieldMaskingInAuditLog {
+
+        /**
+         * AAP §0.7.2 mandates that no plaintext card or account PII appears
+         * in audit logs. Specifically, the SSN (CUST-SSN PIC 9(09) in
+         * CVCUS01Y.cpy) is regulated PII that must never be logged in the
+         * clear — the {@code AccountUpdateDto.toString()} masks it as
+         * {@code ***-**-XXXX} for accidental log capture, and the
+         * {@code AuditLogService.logAuditEvent(...)} payload must NOT
+         * contain it at all.
+         *
+         * <p>This test captures the {@code Map<String, Object>} payload
+         * passed to {@code auditLogService.auditEvent(...)} via Mockito's
+         * {@link ArgumentCaptor} and asserts that no key in the captured
+         * map contains the test SSN (123456789) as a value — neither under
+         * the obvious key name "custSsn"/"ssn"/"customerSsn" nor anywhere
+         * else in the map's value set. This locks the PCI-DSS contract:
+         * if a future refactor accidentally adds SSN to the audit payload,
+         * this test fails.</p>
+         *
+         * <p>COBOL: COACTUPC writes audit trail via DISPLAY of selected
+         * fields — never SSN. The Java target preserves this verbatim.</p>
+         */
+        @Test
+        @DisplayName("audit payload does NOT contain SSN (custSsn / customerSsn / ssn keys absent)")
+        void updateAccount_auditPayload_doesNotContainSsn() {
+            stubHappyPathRepositories();
+            stubValidationServices();
+            stubKafkaPublishSuccess();
+
+            // Act
+            service.updateAccount(ACCOUNT_ID, validRequest);
+
+            // Capture the audit-event payload — the Map<String,Object>
+            // passed as the third argument of auditLogService.auditEvent.
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<Map<String, Object>> payloadCaptor =
+                    ArgumentCaptor.forClass(Map.class);
+            verify(auditLogService).auditEvent(
+                    eq("account.updated"), eq("system"), payloadCaptor.capture());
+            Map<String, Object> payload = payloadCaptor.getValue();
+
+            assertThat(payload)
+                    .as("audit payload must not expose any SSN-related key per AAP §0.7.2")
+                    .doesNotContainKey("custSsn")
+                    .doesNotContainKey("customerSsn")
+                    .doesNotContainKey("ssn")
+                    .doesNotContainKey("CUST-SSN");
+
+            // Defensive check: even if a future refactor introduced a key
+            // we don't recognize, the SSN VALUE itself must not be present
+            // anywhere in the map's values (123456789L = Long, but also
+            // check the masked string form and the integer form).
+            assertThat(payload.values())
+                    .as("audit payload must not contain SSN value 123456789 in any form")
+                    .doesNotContain(123456789L)
+                    .doesNotContain(123456789)
+                    .doesNotContain("123456789")
+                    .doesNotContain("123-45-6789");
+        }
+
+        /**
+         * AAP §0.7.2 also forbids plaintext card / Primary Account Number
+         * (PAN) data in logs. While COACTUPC itself doesn't mutate card
+         * numbers — the card_xref lookup is read-only — the test asserts
+         * the audit payload does NOT contain any of the test cardholder
+         * fixture's card number (which lives on {@link CardCrossReference}
+         * with the value {@code "4111111111111111"}, a well-known Visa
+         * test PAN). This locks the contract: even though the service
+         * reads the xref row to resolve the customer ID, the card number
+         * must not bleed into the audit payload.
+         */
+        @Test
+        @DisplayName("audit payload does NOT contain full card number")
+        void updateAccount_auditPayload_doesNotContainFullCardNumber() {
+            stubHappyPathRepositories();
+            stubValidationServices();
+            stubKafkaPublishSuccess();
+
+            // Act
+            service.updateAccount(ACCOUNT_ID, validRequest);
+
+            // Capture audit payload via ArgumentCaptor.
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<Map<String, Object>> payloadCaptor =
+                    ArgumentCaptor.forClass(Map.class);
+            verify(auditLogService).auditEvent(
+                    eq("account.updated"), eq("system"), payloadCaptor.capture());
+            Map<String, Object> payload = payloadCaptor.getValue();
+
+            assertThat(payload)
+                    .as("audit payload must not expose card-number-related keys per AAP §0.7.2")
+                    .doesNotContainKey("cardNumber")
+                    .doesNotContainKey("cardNum")
+                    .doesNotContainKey("xrefCardNum")
+                    .doesNotContainKey("CARD-NUM");
+
+            // Defensive check on the value side: the test card number
+            // "4111111111111111" must NOT appear anywhere in the payload.
+            assertThat(payload.values())
+                    .as("audit payload must not contain card number value")
+                    .doesNotContain("4111111111111111");
+        }
+
+        /**
+         * Positive control test — verifies that the audit payload DOES
+         * carry the AAP-mandated non-PII fields (accountId, customerId,
+         * version). Without this, the previous two negative tests could
+         * pass trivially if the payload were empty. This test asserts
+         * the service emits a substantive but PII-clean audit envelope.
+         */
+        @Test
+        @DisplayName("audit payload carries accountId, customerId, and version (non-PII only)")
+        void updateAccount_auditPayload_carriesNonPiiFieldsOnly() {
+            stubHappyPathRepositories();
+            stubValidationServices();
+            stubKafkaPublishSuccess();
+
+            // Act
+            service.updateAccount(ACCOUNT_ID, validRequest);
+
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<Map<String, Object>> payloadCaptor =
+                    ArgumentCaptor.forClass(Map.class);
+            verify(auditLogService).auditEvent(
+                    eq("account.updated"), eq("system"), payloadCaptor.capture());
+            Map<String, Object> payload = payloadCaptor.getValue();
+
+            // The service builds the payload with three non-PII fields
+            // (per AccountUpdateService lines 512-516):
+            //   accountId (cacheKey — 11-digit zero-padded string)
+            //   customerId (Long)
+            //   version (post-update entity version)
+            assertThat(payload)
+                    .as("audit payload should contain accountId, customerId, version")
+                    .containsKey("accountId")
+                    .containsKey("customerId")
+                    .containsKey("version");
+            assertThat(payload.get("accountId")).isEqualTo(CACHE_KEY);
+            assertThat(payload.get("customerId")).isEqualTo(CUSTOMER_ID);
         }
     }
 
