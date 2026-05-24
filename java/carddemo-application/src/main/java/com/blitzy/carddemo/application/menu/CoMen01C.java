@@ -111,6 +111,19 @@ public final class CoMen01C {
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
     private static final int MAX_OPTION_SLOTS = 12;
 
+    /**
+     * ERRMSGC color attribute byte values as single-character strings,
+     * matching the BMS extended-attribute codepoints from copybook
+     * {@code DFHBMSCA}. Stored on {@link CoMen01Output#errMsgColor()}
+     * as a 1-character {@link String} per AAP &sect;0.6.10 (entry-contract
+     * DTO with String-only fields to preserve BMS PIC X semantics).
+     */
+    private static final String ERRMSG_COLOR_NONE  = "";        // BMS map default (no override)
+    /** DFHRED (X'02') &mdash; error condition. */
+    private static final String ERRMSG_COLOR_RED   = "\u0002";
+    /** DFHGREEN (X'04') &mdash; "coming soon" / success condition. */
+    private static final String ERRMSG_COLOR_GREEN = "\u0004";
+
     private final ProgramRegistry programRegistry;
 
     public CoMen01C(ProgramRegistry programRegistry) {
@@ -268,9 +281,19 @@ public final class CoMen01C {
             slots[i] = String.format("%02d. %s", opt.optNum(), opt.optName());
         }
 
-        CoMen01Output.FieldColor color = (message == null || message.isBlank())
-                ? CoMen01Output.FieldColor.NONE
-                : CoMen01Output.FieldColor.RED;
+        // COBOL `COMEN01C` lines 152-154:
+        //   IF WS-MESSAGE NOT = SPACES
+        //       MOVE WS-MESSAGE TO ERRMSGO OF COMEN1AO
+        //       MOVE DFHGREEN  TO ERRMSGC OF COMEN1AO  (set during "coming
+        //                                              soon" path; default is
+        //                                              the BMS map's RED)
+        // The presence-vs-absence-of-text branch is preserved here. We
+        // emit DFHRED (X'02') for any non-blank message and leave the
+        // color empty for no message. The DFHGREEN override is only set
+        // by the "coming soon" path in {@link #processEnterKey}.
+        String color = (message == null || message.isBlank())
+                ? ERRMSG_COLOR_NONE
+                : ERRMSG_COLOR_RED;
 
         return new CoMen01Output(
                 TRANSACTION_ID,

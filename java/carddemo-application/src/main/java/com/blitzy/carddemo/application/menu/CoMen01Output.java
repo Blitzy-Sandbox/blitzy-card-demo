@@ -16,313 +16,642 @@
  */
 package com.blitzy.carddemo.application.menu;
 
-// JEP 511 (finalized in Java 25): brings java.lang.String into scope.
-import module java.base;
-
 import com.blitzy.carddemo.domain.annotation.CobolProgram;
 
+import java.util.Objects;
+
 /**
- * Immutable output DTO for the {@code COMEN01C} main menu online program
- * (CICS transaction {@code CM00}, COBOL source
- * {@code app/cbl/COMEN01C.cbl}).
+ * Output DTO for the main menu BMS map ({@code COMEN1AO}). Translates the
+ * output-side symbolic structure from {@code app/cpy-bms/COMEN01.CPY}
+ * (the {@code 01 COMEN1AO REDEFINES COMEN1AI} group at lines 139-260) and
+ * the field declarations in the BMS map source {@code app/bms/COMEN01.bms}.
  *
- * <h2>Source artifacts</h2>
+ * <p>Conceptually corresponds to {@code EXEC CICS SEND MAP('COMEN1A')
+ * MAPSET('COMEN01') FROM(COMEN1AO)} in {@code app/cbl/COMEN01C.cbl}. The
+ * Java translation does not actually transmit to a terminal; the record
+ * value is the contract between the application class ({@link CoMen01C})
+ * and any presentation adapter (e.g., a test harness, a 3270 emulator
+ * integration, or a future web frontend). This is the entry-contract DTO
+ * pattern mandated by AAP &sect;0.1.2 and &sect;0.4.1: BMS maps become
+ * input/output records on the corresponding Java application class.
+ *
+ * <h2>Field semantics</h2>
  * <ul>
- *   <li>BMS map definition: {@code app/bms/COMEN01.bms}.</li>
- *   <li>Symbolic map copybook: {@code app/cpy-bms/COMEN01.CPY},
- *       output group {@code 01 COMEN1AO REDEFINES COMEN1AI}
- *       (lines 139-260).</li>
+ *   <li>{@code trnName} &mdash; 4-char transaction ID echo (TRNNAMEO),
+ *       e.g., {@code "CM00"}.</li>
+ *   <li>{@code title01} &mdash; 40-char title line 1 (TITLE01O).</li>
+ *   <li>{@code curDate} &mdash; 8-char current date {@code "mm/dd/yy"}
+ *       (CURDATEO).</li>
+ *   <li>{@code pgmName} &mdash; 8-char program name echo (PGMNAMEO),
+ *       e.g., {@code "COMEN01C"}.</li>
+ *   <li>{@code title02} &mdash; 40-char title line 2 (TITLE02O).</li>
+ *   <li>{@code curTime} &mdash; 8-char current time {@code "hh:mm:ss"}
+ *       (CURTIMEO).</li>
+ *   <li>{@code option001} .. {@code option012} &mdash; 40-char menu
+ *       option lines (OPTN001O..OPTN012O); each line is conventionally
+ *       formatted as {@code "NN. <name>"} by {@code CoMen01C}.</li>
+ *   <li>{@code option} &mdash; 2-char echoed option entry (OPTIONO).</li>
+ *   <li>{@code errMsg} &mdash; 78-char error message (ERRMSGO).</li>
+ *   <li>{@code errMsgColor} &mdash; 1-char BMS extended color attribute
+ *       for ERRMSG (ERRMSGC). Default is the empty string (no override);
+ *       the COBOL "coming soon" path sets this to DFHGREEN (X'04').</li>
  * </ul>
  *
- * <h2>Role &mdash; entry-contract DTO (output side)</h2>
- * <p>Per AAP &sect;0.4.1, this record is the Java analog of the output
- * view of the BMS symbolic structure {@code COMEN1AO}: it carries the
- * field values that {@code CoMen01C} writes back to the 3270 screen via
- * {@code EXEC CICS SEND MAP}. The BMS output structure
- * {@code COMEN1AO REDEFINES COMEN1AI}, so the same memory region is
- * reinterpreted &mdash; each input {@code -I} leaf becomes a quartet of
- * three protocol bytes ({@code -C} color, {@code -P} PS, {@code -H}
- * highlight, {@code -V} validation) followed by an output payload
- * {@code -O}.
+ * <h2>String-only field model</h2>
+ * <p>All twenty-one fields are stored as {@link String}. BMS fields are
+ * {@code PIC X} (alphanumeric); even nominally numeric display fields
+ * such as {@code option}, {@code curDate}, and {@code curTime} are
+ * character-based on the 3270 datastream. Keeping every field as a
+ * {@link String} preserves COBOL semantics directly and avoids the
+ * accidental loss of leading zeros or fixed-width padding that would
+ * occur with numeric Java types.
  *
- * <h2>Field selection &mdash; output payloads plus error color</h2>
- * <p>This DTO models the eighteen {@code -O} value leaves plus the
- * single {@code ERRMSGC} color byte (the only 3270 attribute byte that
- * {@code COMEN01C} actually overrides &mdash; from default to
- * {@code DFHRED} on error). All other {@code -C}, {@code -P},
- * {@code -H}, and {@code -V} attribute bytes inherit their compile-time
- * defaults from the BMS map definition and are not surfaced here, in
- * keeping with AAP &sect;0.7.1 minimal-change.
+ * <h2>Width handling</h2>
+ * <p>The BMS-declared widths are documented as public {@code int}
+ * constants on this record (see {@link #TRN_NAME_WIDTH},
+ * {@link #TITLE_WIDTH}, {@link #DATE_TIME_WIDTH}, {@link #PGM_NAME_WIDTH},
+ * {@link #OPTION_LINE_WIDTH}, {@link #OPTION_WIDTH},
+ * {@link #ERRMSG_WIDTH}, {@link #COLOR_ATTR_WIDTH}) but are
+ * <strong>not enforced</strong> by the canonical constructor &mdash; only
+ * the non-null contract is. This matches COBOL {@code MOVE} semantics:
+ * a {@code MOVE} of a shorter source pads with spaces; a {@code MOVE} of
+ * a longer source truncates from the right. The application class
+ * ({@link CoMen01C}) is responsible for padding/truncating to width
+ * before populating these fields, so the canonical constructor avoids
+ * silently mutating caller-supplied values.
  *
- * <h2>Component inventory</h2>
- * <table border="1" summary="BMS-to-record component mapping">
- *   <thead>
- *     <tr><th>BMS field</th><th>BMS attrs / position</th>
- *         <th>Record component</th></tr>
- *   </thead>
- *   <tbody>
- *     <tr><td>{@code TRNNAMEO}</td><td>4 chars, (1,7)</td>
- *         <td>{@link #transactionName()}</td></tr>
- *     <tr><td>{@code TITLE01O}</td><td>40 chars, (1,21)</td>
- *         <td>{@link #title01()}</td></tr>
- *     <tr><td>{@code CURDATEO}</td><td>8 chars (mm/dd/yy), (1,71)</td>
- *         <td>{@link #currentDate()}</td></tr>
- *     <tr><td>{@code PGMNAMEO}</td><td>8 chars, (2,7)</td>
- *         <td>{@link #programName()}</td></tr>
- *     <tr><td>{@code TITLE02O}</td><td>40 chars, (2,21)</td>
- *         <td>{@link #title02()}</td></tr>
- *     <tr><td>{@code CURTIMEO}</td><td>8 chars (hh:mm:ss), (2,71)</td>
- *         <td>{@link #currentTime()}</td></tr>
- *     <tr><td>{@code OPTN001O}..{@code OPTN012O}</td>
- *         <td>40 chars each, (6,20)..(17,20)</td>
- *         <td>{@link #option01()}..{@link #option12()}</td></tr>
- *     <tr><td>{@code OPTIONO}</td>
- *         <td>2 chars, UNPROT, (20,41)</td>
- *         <td>{@link #option()}</td></tr>
- *     <tr><td>{@code ERRMSGO}</td><td>78 chars, (23,1)</td>
- *         <td>{@link #errorMessage()}</td></tr>
- *     <tr><td>{@code ERRMSGC}</td><td>1 byte, attribute</td>
- *         <td>{@link #errMsgColor()}</td></tr>
- *   </tbody>
- * </table>
+ * <h2>Twelve option slots vs. ten populated</h2>
+ * <p>The BMS source ({@code app/bms/COMEN01.bms} lines 80-139) declares
+ * twelve {@code OPTN001}..{@code OPTN012} display fields. The companion
+ * COBOL program {@code COMEN01C} populates only the first ten (see
+ * {@code MainMenuTable.OPT_COUNT}); unused slots are written as empty
+ * strings, matching the COBOL {@code MOVE LOW-VALUES TO COMEN1AO}
+ * initialization. This DTO mirrors the BMS map exactly (twelve slots)
+ * rather than only the populated subset, in keeping with AAP
+ * &sect;0.7.1's idiom-for-idiom mandate.
  *
- * <h2>Field colour override</h2>
- * <p>The {@link #errMsgColor()} component carries the
- * runtime-overridden colour for the {@code ERRMSGO} payload &mdash;
- * {@link FieldColor#NONE} means "leave at BMS map default (red on
- * black)", and any other value triggers the BMS adapter to emit the
- * matching {@code DFH<color>} attribute byte. {@code COMEN01C} sets it
- * to {@link FieldColor#NONE} on success and to {@link FieldColor#RED}
- * when an error message is present.
- *
- * <h2>Null and over-length tolerance</h2>
- * <p>The compact canonical constructor is <em>lenient</em>: every
- * {@code null} {@link String} is normalised to {@code ""}, and every
- * value longer than the BMS-declared {@code PIC X(n)} width is
- * truncated from the right (COBOL {@code MOVE} semantics for an
- * over-sized source). {@link #errMsgColor()} cannot be {@code null};
- * the constructor substitutes {@link FieldColor#NONE} if the caller
- * passes {@code null} (the "no override" case).
+ * <h2>Null safety</h2>
+ * <p>Every component is non-null per the canonical constructor's
+ * {@link Objects#requireNonNull(Object, String)} checks. Callers must
+ * use the empty string ({@code ""}) for unset values rather than
+ * {@code null}; see {@link #empty()} for a convenient all-blank factory.
+ * This protocol mirrors COBOL: a BMS field is always physically present
+ * in the symbolic structure; "absent" is represented by spaces or
+ * low-values, never by null.
  *
  * <h2>Immutability and concurrency</h2>
- * <p>Records, final components, no setters &mdash; safe to share across
- * threads including the virtual-thread workers per AAP &sect;0.6.6.
+ * <p>Java records are implicitly {@code final} with {@code final}
+ * components and no setters; instances are safely shareable across
+ * threads, including the virtual-thread workers described in AAP
+ * &sect;0.6.6. The provided {@code with*} helpers return a new record
+ * with one component swapped, preserving immutability while supporting
+ * the COBOL {@code MOVE ... TO ...} pattern that this DTO replaces.
  *
  * <h2>Non-goals (AAP &sect;0.7.4)</h2>
  * <p>No Spring, Lombok, Bean Validation, {@code java.util.Date},
- * {@code double}, {@code float}, or preview features.
- *
- * @param transactionName  TRNNAMEO &mdash; 4-char transaction code echo
- * @param title01          TITLE01O &mdash; 40-char line-1 title bar
- * @param currentDate      CURDATEO &mdash; 8-char date {@code "mm/dd/yy"}
- * @param programName      PGMNAMEO &mdash; 8-char program-id echo
- * @param title02          TITLE02O &mdash; 40-char line-2 title bar
- * @param currentTime      CURTIMEO &mdash; 8-char time {@code "hh:mm:ss"}
- * @param option01         OPTN001O &mdash; 40-char menu option 1 label
- * @param option02         OPTN002O &mdash; 40-char menu option 2 label
- * @param option03         OPTN003O &mdash; 40-char menu option 3 label
- * @param option04         OPTN004O &mdash; 40-char menu option 4 label
- * @param option05         OPTN005O &mdash; 40-char menu option 5 label
- * @param option06         OPTN006O &mdash; 40-char menu option 6 label
- * @param option07         OPTN007O &mdash; 40-char menu option 7 label
- * @param option08         OPTN008O &mdash; 40-char menu option 8 label
- * @param option09         OPTN009O &mdash; 40-char menu option 9 label
- * @param option10         OPTN010O &mdash; 40-char menu option 10 label
- * @param option11         OPTN011O &mdash; 40-char menu option 11 label
- * @param option12         OPTN012O &mdash; 40-char menu option 12 label
- * @param option           OPTIONO &mdash; 2-char menu selection echo
- * @param errorMessage     ERRMSGO &mdash; 78-char error message
- * @param errMsgColor      ERRMSGC override
- *                         ({@link FieldColor#NONE} = no override)
+ * {@code double}, {@code float}, or preview features. The record uses
+ * only Java&nbsp;25 finalized language features: record type (Java 16+)
+ * and JEP&nbsp;513 Flexible Constructor Bodies for the non-null
+ * validation that runs before the implicit canonical field assignment.
  *
  * @see CoMen01Input
- * @see <a href="https://www.ibm.com/docs/en/cics-ts">CICS/TS BMS reference</a>
+ * @see CoMen01C
  * @since 1.0.0
  */
 @CobolProgram(
         value = "COMEN01",
-        sourcePath = "app/bms/COMEN01.bms",
-        translationDate = "2025-10-15",
-        notes = "BMS entry-contract DTO (output side); symbolic copybook 01 COMEN1AO "
-                + "REDEFINES COMEN1AI in app/cpy-bms/COMEN01.CPY (lines 139-260). Driven "
-                + "by online program app/cbl/COMEN01C.cbl (main menu, transaction CM00)."
+        sourcePath = "app/cpy-bms/COMEN01.CPY",
+        translationDate = "2025-09-16",
+        notes = "BMS output map COMEN1AO output-side fields. Translated from BMS symbolic "
+                + "structure in COMEN01.CPY (REDEFINES COMEN1AI). Driven by online program "
+                + "app/cbl/COMEN01C.cbl (main menu, transaction CM00). All fields are String "
+                + "to preserve BMS PIC X semantics; widths are documented but not enforced by "
+                + "the canonical constructor (per AAP §0.7.1 idiom-for-idiom translation)."
 )
 public record CoMen01Output(
-        String transactionName,
+        String trnName,
         String title01,
-        String currentDate,
-        String programName,
+        String curDate,
+        String pgmName,
         String title02,
-        String currentTime,
-        String option01,
-        String option02,
-        String option03,
-        String option04,
-        String option05,
-        String option06,
-        String option07,
-        String option08,
-        String option09,
-        String option10,
-        String option11,
-        String option12,
+        String curTime,
+        String option001,
+        String option002,
+        String option003,
+        String option004,
+        String option005,
+        String option006,
+        String option007,
+        String option008,
+        String option009,
+        String option010,
+        String option011,
+        String option012,
         String option,
-        String errorMessage,
-        FieldColor errMsgColor
+        String errMsg,
+        String errMsgColor
 ) {
 
-    /** Length of {@link #transactionName()} per BMS map {@code TRNNAMEO} &mdash; 4 chars. */
-    public static final int TRANSACTION_NAME_LENGTH = 4;
+    // ------------------------------------------------------------------
+    // BMS field width constants (PIC X(n)) -- public for use by adapters
+    // ------------------------------------------------------------------
 
-    /** Length of {@link #title01()} per BMS map {@code TITLE01O} &mdash; 40 chars. */
-    public static final int TITLE_01_LENGTH = 40;
+    /** TRNNAME field width per BMS map ({@code PIC X(04)}). */
+    public static final int TRN_NAME_WIDTH = 4;
 
-    /** Length of {@link #currentDate()} per BMS map {@code CURDATEO} &mdash; 8 chars (mm/dd/yy). */
-    public static final int CURRENT_DATE_LENGTH = 8;
+    /** TITLE01 / TITLE02 field width per BMS map ({@code PIC X(40)}). */
+    public static final int TITLE_WIDTH = 40;
 
-    /** Length of {@link #programName()} per BMS map {@code PGMNAMEO} &mdash; 8 chars. */
-    public static final int PROGRAM_NAME_LENGTH = 8;
+    /** CURDATE / CURTIME field width per BMS map ({@code PIC X(08)}). */
+    public static final int DATE_TIME_WIDTH = 8;
 
-    /** Length of {@link #title02()} per BMS map {@code TITLE02O} &mdash; 40 chars. */
-    public static final int TITLE_02_LENGTH = 40;
+    /** PGMNAME field width per BMS map ({@code PIC X(08)}). */
+    public static final int PGM_NAME_WIDTH = 8;
 
-    /** Length of {@link #currentTime()} per BMS map {@code CURTIMEO} &mdash; 8 chars (hh:mm:ss). */
-    public static final int CURRENT_TIME_LENGTH = 8;
+    /** OPTN001..OPTN012 field width per BMS map ({@code PIC X(40)}). */
+    public static final int OPTION_LINE_WIDTH = 40;
+
+    /** OPTION field width per BMS map ({@code PIC X(02)}). */
+    public static final int OPTION_WIDTH = 2;
+
+    /** ERRMSG field width per BMS map ({@code PIC X(78)}). */
+    public static final int ERRMSG_WIDTH = 78;
+
+    /** ERRMSGC color attribute byte width (1 char). */
+    public static final int COLOR_ATTR_WIDTH = 1;
+
+    // ------------------------------------------------------------------
+    // Canonical constructor (JEP 513 Flexible Constructor Bodies)
+    // ------------------------------------------------------------------
 
     /**
-     * Length of each menu option label
-     * ({@code OPTN001O}..{@code OPTN012O}) per BMS map &mdash; 40 chars
-     * each.
-     */
-    public static final int OPTION_LABEL_LENGTH = 40;
-
-    /** Length of {@link #option()} per BMS map {@code OPTIONO} &mdash; 2 chars. */
-    public static final int OPTION_LENGTH = 2;
-
-    /** Length of {@link #errorMessage()} per BMS map {@code ERRMSGO} &mdash; 78 chars. */
-    public static final int ERROR_MESSAGE_LENGTH = 78;
-
-    /**
-     * Compact canonical constructor (JEP 513 Flexible Constructor
-     * Bodies). See {@link CoMen01Input#CoMen01Input} for the shared
-     * normalisation contract. {@code null} {@code errMsgColor} is
-     * substituted with {@link FieldColor#NONE} (the "no override"
-     * sentinel).
+     * Canonical (compact) constructor. Uses JEP&nbsp;513 Flexible
+     * Constructor Bodies (finalized in Java&nbsp;25): the validation
+     * statements execute before the implicit canonical field
+     * assignments, ensuring that no partially-constructed record can
+     * ever exist with a {@code null} component.
+     *
+     * <p>All twenty-one components are validated non-null via
+     * {@link Objects#requireNonNull(Object, String)}. Callers must use
+     * the empty string ({@code ""}) to indicate "unset"; {@code null}
+     * is rejected with {@link NullPointerException} carrying a
+     * descriptive message identifying which component was null.
+     *
+     * <p>Width validation is intentionally NOT performed here. COBOL
+     * {@code MOVE} semantics permit any-length source: shorter sources
+     * are space-padded and longer sources are truncated at the target
+     * field. The application class manages that contract; this
+     * constructor only refuses null. See the class-level Javadoc for
+     * the rationale.
+     *
+     * @throws NullPointerException if any of the twenty-one components
+     *                              is {@code null}; the exception
+     *                              message identifies the offending
+     *                              component name
      */
     public CoMen01Output {
-        transactionName = normalize(transactionName, TRANSACTION_NAME_LENGTH);
-        title01         = normalize(title01,         TITLE_01_LENGTH);
-        currentDate     = normalize(currentDate,     CURRENT_DATE_LENGTH);
-        programName     = normalize(programName,     PROGRAM_NAME_LENGTH);
-        title02         = normalize(title02,         TITLE_02_LENGTH);
-        currentTime     = normalize(currentTime,     CURRENT_TIME_LENGTH);
-        option01        = normalize(option01,        OPTION_LABEL_LENGTH);
-        option02        = normalize(option02,        OPTION_LABEL_LENGTH);
-        option03        = normalize(option03,        OPTION_LABEL_LENGTH);
-        option04        = normalize(option04,        OPTION_LABEL_LENGTH);
-        option05        = normalize(option05,        OPTION_LABEL_LENGTH);
-        option06        = normalize(option06,        OPTION_LABEL_LENGTH);
-        option07        = normalize(option07,        OPTION_LABEL_LENGTH);
-        option08        = normalize(option08,        OPTION_LABEL_LENGTH);
-        option09        = normalize(option09,        OPTION_LABEL_LENGTH);
-        option10        = normalize(option10,        OPTION_LABEL_LENGTH);
-        option11        = normalize(option11,        OPTION_LABEL_LENGTH);
-        option12        = normalize(option12,        OPTION_LABEL_LENGTH);
-        option          = normalize(option,          OPTION_LENGTH);
-        errorMessage    = normalize(errorMessage,    ERROR_MESSAGE_LENGTH);
-        if (errMsgColor == null) {
-            errMsgColor = FieldColor.NONE;
-        }
+        Objects.requireNonNull(trnName,     "trnName");
+        Objects.requireNonNull(title01,     "title01");
+        Objects.requireNonNull(curDate,     "curDate");
+        Objects.requireNonNull(pgmName,     "pgmName");
+        Objects.requireNonNull(title02,     "title02");
+        Objects.requireNonNull(curTime,     "curTime");
+        Objects.requireNonNull(option001,   "option001");
+        Objects.requireNonNull(option002,   "option002");
+        Objects.requireNonNull(option003,   "option003");
+        Objects.requireNonNull(option004,   "option004");
+        Objects.requireNonNull(option005,   "option005");
+        Objects.requireNonNull(option006,   "option006");
+        Objects.requireNonNull(option007,   "option007");
+        Objects.requireNonNull(option008,   "option008");
+        Objects.requireNonNull(option009,   "option009");
+        Objects.requireNonNull(option010,   "option010");
+        Objects.requireNonNull(option011,   "option011");
+        Objects.requireNonNull(option012,   "option012");
+        Objects.requireNonNull(option,      "option");
+        Objects.requireNonNull(errMsg,      "errMsg");
+        Objects.requireNonNull(errMsgColor, "errMsgColor");
     }
 
+    // ------------------------------------------------------------------
+    // Static factory: empty output (Java analog of MOVE LOW-VALUES)
+    // ------------------------------------------------------------------
+
     /**
-     * Returns a fully-blank output record: every {@link String}
-     * component is {@code ""} and {@link #errMsgColor()} is
-     * {@link FieldColor#NONE}. The Java equivalent of
-     * {@code MOVE LOW-VALUES TO COMEN1AO} performed by
-     * {@code COMEN01C} prior to populating the header on each cycle.
+     * Returns a fully-blank output record: every component is the empty
+     * string {@code ""}. The Java equivalent of
+     * {@code MOVE LOW-VALUES TO COMEN1AO} performed by {@code COMEN01C}
+     * prior to populating header fields on each transaction cycle.
+     *
+     * <p>This factory is the recommended starting point for building an
+     * outbound DTO: start from {@code empty()}, then chain {@code with*}
+     * calls to populate the desired fields. Unused option slots remain
+     * blank, matching the COBOL behavior for menus that populate fewer
+     * than twelve options.
      *
      * @return a fresh empty {@code CoMen01Output} (never {@code null})
      */
     public static CoMen01Output empty() {
         return new CoMen01Output(
-                "", "", "", "", "", "",
-                "", "", "", "", "", "", "", "", "", "", "", "",
-                "", "",
-                FieldColor.NONE
+                "",  // trnName
+                "",  // title01
+                "",  // curDate
+                "",  // pgmName
+                "",  // title02
+                "",  // curTime
+                "",  // option001
+                "",  // option002
+                "",  // option003
+                "",  // option004
+                "",  // option005
+                "",  // option006
+                "",  // option007
+                "",  // option008
+                "",  // option009
+                "",  // option010
+                "",  // option011
+                "",  // option012
+                "",  // option
+                "",  // errMsg
+                ""   // errMsgColor
         );
     }
 
+    // ------------------------------------------------------------------
+    // Fluent "with*" copy helpers -- one per component (21 total).
+    //
+    // Java records do not provide built-in with* methods (per AAP §0.1.2
+    // transformation table). Each helper returns a new immutable record
+    // with the specified component replaced and all other components
+    // preserved. This pattern is the Java translation of the COBOL
+    // MOVE ... TO ... (group-element) idiom.
+    // ------------------------------------------------------------------
+
     /**
-     * Returns a copy of this output with {@link #errorMessage()} and
-     * {@link #errMsgColor()} replaced (all other components preserved).
-     * Setting an error message conventionally also sets the colour to
-     * {@link FieldColor#RED}; this helper enforces that pairing.
+     * Returns a copy of this record with {@link #trnName()} replaced.
      *
-     * @param newErrorMessage the replacement error text (may be
-     *                        {@code null}; normalised to {@code ""}
-     *                        and truncated to 78 chars)
-     * @return a new {@code CoMen01Output} with the error pair replaced
+     * @param v the new transaction-name value (non-null; pass
+     *          {@code ""} to clear); must be non-null per the
+     *          canonical-constructor contract
+     * @return a new {@code CoMen01Output} with {@code trnName == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
      */
-    public CoMen01Output withErrorMessage(String newErrorMessage) {
+    public CoMen01Output withTrnName(String v) {
         return new CoMen01Output(
-                transactionName,
-                title01,
-                currentDate,
-                programName,
-                title02,
-                currentTime,
-                option01, option02, option03, option04, option05, option06,
-                option07, option08, option09, option10, option11, option12,
-                option,
-                newErrorMessage,
-                FieldColor.RED
-        );
+                v, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010, option011, option012,
+                option, errMsg, errMsgColor);
     }
 
     /**
-     * Sealed enumeration of 3270 field colour overrides emitted on the
-     * single attribute byte that {@code COMEN01C} actually changes
-     * ({@code ERRMSGC}). Mirrors the CICS BMS constants from copybook
-     * {@code DFHBMSCA} but is locally scoped to the menu DTO so a
-     * downstream change to the central colour table does not ripple
-     * into every BMS output record.
+     * Returns a copy of this record with {@link #title01()} replaced.
      *
-     * <p>{@link #NONE} is the sentinel meaning "no override &mdash;
-     * leave the field at the BMS map's compile-time
-     * {@code COLOR=} default". Any other value triggers the BMS
-     * adapter to emit the matching {@code DFH<color>} byte.
+     * @param v the new line-1 title value (non-null; pass {@code ""}
+     *          to clear)
+     * @return a new {@code CoMen01Output} with {@code title01 == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
      */
-    public enum FieldColor {
-        /** Sentinel: leave the field at the BMS map's compile-time {@code COLOR=} default. */
-        NONE,
-        /** {@code DFHRED} &mdash; used for error messages. */
-        RED,
-        /** {@code DFHGREEN} &mdash; used for success messages. */
-        GREEN,
-        /** {@code DFHYELLOW}. */
-        YELLOW,
-        /** {@code DFHBLUE}. */
-        BLUE,
-        /** {@code DFHPINK}. */
-        PINK,
-        /** {@code DFHTURQ}. */
-        TURQUOISE,
-        /** {@code DFHNEUTR}. */
-        NEUTRAL
+    public CoMen01Output withTitle01(String v) {
+        return new CoMen01Output(
+                trnName, v, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010, option011, option012,
+                option, errMsg, errMsgColor);
     }
 
     /**
-     * Normalises a {@link String} field per the COBOL {@code MOVE}
-     * contract. See {@link CoMen01Input} for the full contract.
+     * Returns a copy of this record with {@link #curDate()} replaced.
+     *
+     * @param v the new current-date value (non-null; pass {@code ""}
+     *          to clear); conventionally formatted {@code "mm/dd/yy"}
+     * @return a new {@code CoMen01Output} with {@code curDate == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
      */
-    private static String normalize(String value, int maxLen) {
-        if (value == null) {
-            return "";
-        }
-        if (value.length() > maxLen) {
-            return value.substring(0, maxLen);
-        }
-        return value;
+    public CoMen01Output withCurDate(String v) {
+        return new CoMen01Output(
+                trnName, title01, v, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010, option011, option012,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #pgmName()} replaced.
+     *
+     * @param v the new program-name value (non-null; pass {@code ""}
+     *          to clear)
+     * @return a new {@code CoMen01Output} with {@code pgmName == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withPgmName(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, v, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010, option011, option012,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #title02()} replaced.
+     *
+     * @param v the new line-2 title value (non-null; pass {@code ""}
+     *          to clear)
+     * @return a new {@code CoMen01Output} with {@code title02 == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withTitle02(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, v, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010, option011, option012,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #curTime()} replaced.
+     *
+     * @param v the new current-time value (non-null; pass {@code ""}
+     *          to clear); conventionally formatted {@code "hh:mm:ss"}
+     * @return a new {@code CoMen01Output} with {@code curTime == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withCurTime(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, v,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010, option011, option012,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #option001()} replaced.
+     *
+     * @param v the new menu option line 1 value (non-null; pass
+     *          {@code ""} to clear)
+     * @return a new {@code CoMen01Output} with {@code option001 == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withOption001(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, curTime,
+                v, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010, option011, option012,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #option002()} replaced.
+     *
+     * @param v the new menu option line 2 value (non-null; pass
+     *          {@code ""} to clear)
+     * @return a new {@code CoMen01Output} with {@code option002 == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withOption002(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, curTime,
+                option001, v, option003, option004, option005, option006,
+                option007, option008, option009, option010, option011, option012,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #option003()} replaced.
+     *
+     * @param v the new menu option line 3 value (non-null; pass
+     *          {@code ""} to clear)
+     * @return a new {@code CoMen01Output} with {@code option003 == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withOption003(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, v, option004, option005, option006,
+                option007, option008, option009, option010, option011, option012,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #option004()} replaced.
+     *
+     * @param v the new menu option line 4 value (non-null; pass
+     *          {@code ""} to clear)
+     * @return a new {@code CoMen01Output} with {@code option004 == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withOption004(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, v, option005, option006,
+                option007, option008, option009, option010, option011, option012,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #option005()} replaced.
+     *
+     * @param v the new menu option line 5 value (non-null; pass
+     *          {@code ""} to clear)
+     * @return a new {@code CoMen01Output} with {@code option005 == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withOption005(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, v, option006,
+                option007, option008, option009, option010, option011, option012,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #option006()} replaced.
+     *
+     * @param v the new menu option line 6 value (non-null; pass
+     *          {@code ""} to clear)
+     * @return a new {@code CoMen01Output} with {@code option006 == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withOption006(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, v,
+                option007, option008, option009, option010, option011, option012,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #option007()} replaced.
+     *
+     * @param v the new menu option line 7 value (non-null; pass
+     *          {@code ""} to clear)
+     * @return a new {@code CoMen01Output} with {@code option007 == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withOption007(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                v, option008, option009, option010, option011, option012,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #option008()} replaced.
+     *
+     * @param v the new menu option line 8 value (non-null; pass
+     *          {@code ""} to clear)
+     * @return a new {@code CoMen01Output} with {@code option008 == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withOption008(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, v, option009, option010, option011, option012,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #option009()} replaced.
+     *
+     * @param v the new menu option line 9 value (non-null; pass
+     *          {@code ""} to clear)
+     * @return a new {@code CoMen01Output} with {@code option009 == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withOption009(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, v, option010, option011, option012,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #option010()} replaced.
+     *
+     * @param v the new menu option line 10 value (non-null; pass
+     *          {@code ""} to clear)
+     * @return a new {@code CoMen01Output} with {@code option010 == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withOption010(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, v, option011, option012,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #option011()} replaced.
+     *
+     * @param v the new menu option line 11 value (non-null; pass
+     *          {@code ""} to clear)
+     * @return a new {@code CoMen01Output} with {@code option011 == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withOption011(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010, v, option012,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #option012()} replaced.
+     *
+     * @param v the new menu option line 12 value (non-null; pass
+     *          {@code ""} to clear)
+     * @return a new {@code CoMen01Output} with {@code option012 == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withOption012(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010, option011, v,
+                option, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #option()} (the echoed
+     * 2-character option selection) replaced.
+     *
+     * @param v the new option-echo value (non-null; pass {@code ""}
+     *          to clear)
+     * @return a new {@code CoMen01Output} with {@code option == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withOption(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010, option011, option012,
+                v, errMsg, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #errMsg()} (the
+     * 78-character ERRMSG payload) replaced. Note that the BMS color
+     * attribute {@link #errMsgColor()} is independent; use
+     * {@link #withErrMsgColor(String)} to update it.
+     *
+     * @param v the new error-message text (non-null; pass {@code ""}
+     *          to clear)
+     * @return a new {@code CoMen01Output} with {@code errMsg == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withErrMsg(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010, option011, option012,
+                option, v, errMsgColor);
+    }
+
+    /**
+     * Returns a copy of this record with {@link #errMsgColor()} (the
+     * 1-character ERRMSGC color attribute byte) replaced.
+     *
+     * <p>The COBOL {@code COMEN01C} "coming soon" path sets this to
+     * DFHGREEN (X'04') to render the message in green; the error path
+     * sets it to DFHRED (X'02'); the no-message path leaves it as the
+     * empty string (the BMS map default).
+     *
+     * @param v the new color attribute byte as a 1-character string
+     *          (non-null; pass {@code ""} for no override)
+     * @return a new {@code CoMen01Output} with {@code errMsgColor == v}
+     *         and all other components preserved
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoMen01Output withErrMsgColor(String v) {
+        return new CoMen01Output(
+                trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010, option011, option012,
+                option, errMsg, v);
     }
 }
