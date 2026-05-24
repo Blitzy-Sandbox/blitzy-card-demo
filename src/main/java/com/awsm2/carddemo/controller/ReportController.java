@@ -81,7 +81,7 @@ import org.springframework.web.bind.annotation.RestController;
  * <h2>Endpoint inventory (AAP &sect;0.3.4)</h2>
  *
  * <ul>
- *   <li>{@link #submitReport(ReportRequestDto) POST /api/reports}
+ *   <li>{@link #submitReport(ReportRequestDto) POST /api/reports/submit}
  *       &mdash; submit a report-generation request; the controller
  *       delegates to {@link ReportSubmissionService#submitReport} which
  *       validates the request, generates a UUID {@code requestId}, and
@@ -117,8 +117,9 @@ import org.springframework.web.bind.annotation.RestController;
  *           {@code EXEC CICS RECEIVE MAP('CORPT0A')} +
  *           {@code EVALUATE EIBAID}</td>
  *       <td>Spring MVC dispatch from {@code @RequestMapping("/api/reports")}
- *           + {@code @PostMapping} (Jackson binds the JSON body into the
- *           {@link ReportRequestDto} record)</td></tr>
+ *           + {@code @PostMapping("/submit")} composing the AAP-required
+ *           {@code POST /api/reports/submit} route (Jackson binds the JSON
+ *           body into the {@link ReportRequestDto} record)</td></tr>
  *   <tr><td>{@code PROCESS-ENTER-KEY} (lines 208-456) and
  *           {@code SUBMIT-JOB-TO-INTRDR} (lines 462-509)</td>
  *       <td>Delegated to
@@ -381,7 +382,7 @@ public class ReportController {
      *         UUID {@code requestId} and a human-readable
      *         acknowledgement.
      */
-    @PostMapping
+    @PostMapping("/submit")
     @Operation(
             summary = "Submit a transaction report request",
             description = "Submits a transaction report request for asynchronous batch "

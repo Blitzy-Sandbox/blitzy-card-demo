@@ -402,6 +402,12 @@ carddemo:
     stepfunctions:
       eod-batch-pipeline-arn: ${STATE_MACHINE_EOD_ARN:arn:aws:states:us-east-1:000000000000:stateMachine:eod-batch-pipeline}
       file-provisioning-arn: ${STATE_MACHINE_PROVISIONING_ARN:arn:aws:states:us-east-1:000000000000:stateMachine:file-provisioning}
+      # Local report-pipeline ARN — a separate placeholder ARN so
+      # KafkaEventConsumer#onReportRequested resolves a distinct value
+      # from the file-provisioning ARN (the review fix that ensures
+      # `report.requested` events never accidentally trigger the
+      # file-provisioning pipeline in local development).
+      report-pipeline-arn: ${STATE_MACHINE_REPORT_PIPELINE_ARN:arn:aws:states:us-east-1:000000000000:stateMachine:report-pipeline}
 
   # ---------------------------------------------------------------------------
   # Security — JWT signing key is a LOCAL-ONLY placeholder

@@ -129,7 +129,7 @@ import static org.mockito.Mockito.when;
  * {@link ReflectionTestUtils#setField(Object, String, Object)} call in
  * {@link #beforeEach()} sets the {@code reportPipelineStateMachineArn}
  * field on the consumer instance so the
- * {@code @Value("${carddemo.stepfunctions.report-pipeline-arn:...}")}
+ * {@code @Value("${carddemo.aws.stepfunctions.report-pipeline-arn:}")}
  * field is resolved without a Spring {@code Environment}.</p>
  *
  * <h2>Production class behavior reconciliation</h2>

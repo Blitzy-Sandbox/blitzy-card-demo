@@ -224,18 +224,28 @@ public class KafkaEventConsumer {
      * Parameter Store / Secrets Manager per AAP §0.7.1 so it can be
      * rotated without code changes.
      *
-     * <p>The property key matches the one declared in the agent prompt
-     * ({@code carddemo.stepfunctions.report-pipeline-arn}) with a fallback
-     * chain that resolves to the existing
-     * {@code carddemo.aws.stepfunctions.file-provisioning-arn} property
-     * declared in {@code application.yml} (which corresponds to
-     * {@code StepFunctionsOrchestrator}'s {@code reportPipelineArn} field).
-     * A blank value (typically the {@code local} profile when Step
-     * Functions are not provisioned) causes {@link #onReportRequested} to
-     * log at WARN and acknowledge the message without starting an
-     * execution — this keeps local development unblocked.</p>
+     * <p><b>Property contract (post-CP5 review fix):</b> the property key
+     * is {@code carddemo.aws.stepfunctions.report-pipeline-arn} — declared
+     * alongside {@code eod-batch-pipeline-arn} and
+     * {@code file-provisioning-arn} in every profile-specific YAML
+     * (application.yml, application-local.yml, application-dev.yml,
+     * application-prod.yml) and resolved from the
+     * {@code STATE_MACHINE_REPORT_PIPELINE_ARN} environment variable.
+     * There is NO fallback to {@code file-provisioning-arn} — the
+     * previous fallback was a defect identified in CP5 review and
+     * removed because it caused {@code report.requested} events to
+     * silently start the wrong state machine (file provisioning) when
+     * the report-pipeline ARN was unset.</p>
+     *
+     * <p>A blank/empty value at startup is tolerated so local
+     * development without LocalStack Step Functions remains unblocked:
+     * {@link #onReportRequested} logs at WARN and acknowledges the
+     * message without starting an execution. Dev and prod overlays
+     * declare the env var with no default, causing Spring to fail-fast
+     * at startup if the ARN is missing (the desired behavior — silent
+     * misconfiguration in production is unacceptable per AAP §0.6.3).</p>
      */
-    @Value("${carddemo.stepfunctions.report-pipeline-arn:${carddemo.aws.stepfunctions.file-provisioning-arn:}}")
+    @Value("${carddemo.aws.stepfunctions.report-pipeline-arn:}")
     private String reportPipelineStateMachineArn;
 
     /**
@@ -658,7 +668,7 @@ public class KafkaEventConsumer {
             if (arn.isEmpty()) {
                 LOG.warn(
                         "No report-pipeline state-machine ARN configured "
-                                + "(carddemo.stepfunctions.report-pipeline-arn); "
+                                + "(carddemo.aws.stepfunctions.report-pipeline-arn); "
                                 + "acknowledging report.requested without starting an execution "
                                 + "topic={} partition={} offset={} key={}",
                         topic, partition, offset, accountId);

@@ -22,20 +22,26 @@ import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.List;
 import java.util.UUID;
@@ -761,6 +767,49 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
     }
 
+    /**
+     * Handles {@link NoResourceFoundException} raised by Spring 6.x when the
+     * request URI does not match any controller mapping AND no static
+     * resource is served from that path. This is the Spring 6 successor to
+     * {@link NoHandlerFoundException} for resource-style URLs and is thrown
+     * by default (no configuration flag required) when the
+     * {@code ResourceHttpRequestHandler} cannot locate a matching resource.
+     * Returns HTTP 404 Not Found with the standardized envelope.
+     *
+     * <p><b>Rationale for separate handler:</b> Without this handler,
+     * unmapped URLs surface to the catch-all {@code Exception} handler and
+     * are returned as HTTP 500 Internal Server Error, which is the wrong
+     * REST semantic. Adding this handler aligns the error envelope and the
+     * status code for unmapped URLs even when the
+     * {@code spring.mvc.throw-exception-if-no-handler-found} property is
+     * not configured. This addresses the CP5 review area of concern
+     * regarding {@link NoHandlerFoundException} configuration
+     * prerequisites.</p>
+     *
+     * <p><b>COBOL provenance:</b> The COBOL source has no direct CICS
+     * analogue &mdash; in CICS, unmapped transactions surface as
+     * DFHAC2001/AC2002 abend codes. In REST, unmapped paths yield HTTP 404
+     * {@code ENDPOINT_NOT_FOUND}, mirroring the
+     * {@link NoHandlerFoundException} behaviour above.</p>
+     *
+     * @param ex      the no-resource-found exception
+     * @param request the HTTP request (for path logging)
+     * @return {@link ResponseEntity} with HTTP 404 Not Found and the
+     *         standardized envelope
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ApiResponse<Object>> handleNoResourceFound(
+            NoResourceFoundException ex, HttpServletRequest request) {
+        // COBOL: see NoHandlerFoundException handler above for rationale.
+        String correlationId = generateCorrelationId();
+        String message = "No handler for " + request.getMethod() + " " + request.getRequestURI();
+        LOG.warn("[{}] NoResourceFoundException at {}: httpMethod={}, resourcePath={}",
+                correlationId, request.getRequestURI(),
+                request.getMethod(), ex.getResourcePath());
+        ApiResponse<Object> body = ApiResponse.error("ENDPOINT_NOT_FOUND", message, correlationId);
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
+    }
+
     // =====================================================================
     // Spring Security exceptions — authentication (401) and authorization
     // (403) failures. Logged at WARN level. CRITICAL: the response body
@@ -868,6 +917,256 @@ public class GlobalExceptionHandler {
                 "Access denied",
                 correlationId);
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
+    }
+
+    // =====================================================================
+    // HTTP protocol-level exceptions — method-not-allowed (405) and
+    // media-type-not-supported (415). Both are Spring Web framework
+    // exceptions raised before controller method invocation; mapping them
+    // explicitly here ensures the response carries the standardized
+    // ApiResponse envelope rather than Spring's default ErrorResponse JSON
+    // (which would break the AAP §0.3.4 contract for consumers that parse
+    // every CardDemo response with the ApiResponse shape).
+    //
+    // CP5 review-mandated additions (Code Review Report — Checkpoint CP5,
+    // GlobalExceptionHandler MAJOR finding L201-958).
+    // =====================================================================
+
+    /**
+     * Handles {@link HttpRequestMethodNotSupportedException} raised when the
+     * request HTTP method is not declared by any handler for the matched URL
+     * (e.g., {@code POST /api/accounts/{id}} when only {@code GET} and
+     * {@code PUT} are mapped). Returns HTTP 405 Method Not Allowed with the
+     * standardized envelope and an {@code Allow} response header advertising
+     * the supported methods per RFC 7231 &sect;6.5.5.
+     *
+     * <p><b>COBOL provenance:</b> No direct CICS analogue &mdash; in CICS the
+     * client could only submit a transaction-ID via 3270 AID keys; the
+     * concept of "wrong HTTP method" does not exist. In the Java REST
+     * target this exception arises naturally from Spring's dispatcher
+     * servlet when, e.g., a client {@code POST}s to a {@code GET}-only
+     * endpoint or forgets the {@code PUT} verb on an update. Translating
+     * it here preserves the AAP &sect;0.3.4 envelope contract for every
+     * 4xx response.</p>
+     *
+     * <p><b>Response shape:</b> a 405 carries an {@code Allow} header listing
+     * supported methods (as required by RFC 7231 &sect;6.5.5) in addition to
+     * the JSON body. The body's {@code message} echoes the supported-method
+     * list so non-CORS clients (which cannot read the {@code Allow} header
+     * directly) can render an actionable error message.</p>
+     *
+     * <p><b>Logging:</b> WARN level &mdash; client-induced error (4xx),
+     * non-sensitive (the HTTP method name is metadata, not credentials).</p>
+     *
+     * @param ex      the method-not-supported exception
+     * @param request the HTTP request (for path logging)
+     * @return {@link ResponseEntity} with HTTP 405 Method Not Allowed, the
+     *         {@code Allow} response header, and the standardized envelope
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ApiResponse<Object>> handleMethodNotSupported(
+            HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
+        // COBOL: no direct CICS analogue — in CICS clients could only
+        // submit a transaction-ID via 3270 AID keys. In REST this surfaces
+        // as a 405 when the HTTP method is not mapped for the URL.
+        String correlationId = generateCorrelationId();
+        // Spring exposes the supported HTTP methods via getSupportedHttpMethods();
+        // null in pathological cases (e.g., the matched handler has no methods
+        // declared) — guard with a defensive empty-list fallback.
+        java.util.Set<HttpMethod> supported = ex.getSupportedHttpMethods();
+        String supportedList = (supported != null && !supported.isEmpty())
+                ? supported.stream()
+                        .map(HttpMethod::name)
+                        .sorted()
+                        .collect(Collectors.joining(", "))
+                : "";
+        String attemptedMethod = ex.getMethod() != null ? ex.getMethod() : "?";
+        String message = "HTTP method '" + attemptedMethod + "' not allowed"
+                + (supportedList.isEmpty() ? "" : "; supported: " + supportedList);
+        LOG.warn("[{}] HttpRequestMethodNotSupportedException at {}: method={}, supported={}",
+                correlationId, request.getRequestURI(), attemptedMethod, supportedList);
+        ApiResponse<Object> body = ApiResponse.error(
+                "METHOD_NOT_ALLOWED",
+                message,
+                correlationId);
+        // RFC 7231 §6.5.5 requires a 405 to advertise supported methods
+        // in the Allow response header. Build the header value from the
+        // exception's supported-method set.
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED);
+        if (supported != null && !supported.isEmpty()) {
+            HttpMethod[] methods = supported.toArray(new HttpMethod[0]);
+            builder.allow(methods);
+        }
+        return builder.body(body);
+    }
+
+    /**
+     * Handles {@link HttpMediaTypeNotSupportedException} raised when the
+     * request {@code Content-Type} is not declared by any handler for the
+     * matched URL (e.g., {@code text/xml} when only
+     * {@code application/json} is consumed). Returns HTTP 415 Unsupported
+     * Media Type with the standardized envelope and an {@code Accept}
+     * response header advertising the supported media types per RFC 7231
+     * &sect;6.5.13.
+     *
+     * <p><b>COBOL provenance:</b> No direct CICS analogue &mdash; CICS BMS
+     * always exchanged 3270 data streams in a fixed binary format. The
+     * REST target uses {@code application/json} exclusively per AAP
+     * &sect;0.3.4. This handler exists so clients that send malformed
+     * content-type headers receive a structured 415 in the standardized
+     * envelope rather than Spring's default ErrorResponse JSON.</p>
+     *
+     * <p><b>Response shape:</b> the body's {@code message} echoes the
+     * supported media-type list so the caller can correct its request.
+     * The {@code Accept} response header is also set per RFC 7231
+     * &sect;6.5.13.</p>
+     *
+     * <p><b>Logging:</b> WARN level &mdash; client-induced error (4xx),
+     * non-sensitive (media-type strings are metadata).</p>
+     *
+     * @param ex      the media-type-not-supported exception
+     * @param request the HTTP request (for path logging)
+     * @return {@link ResponseEntity} with HTTP 415 Unsupported Media Type,
+     *         the {@code Accept} response header, and the standardized
+     *         envelope
+     */
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ApiResponse<Object>> handleMediaTypeNotSupported(
+            HttpMediaTypeNotSupportedException ex, HttpServletRequest request) {
+        // COBOL: no direct CICS analogue — CICS BMS used fixed 3270 binary
+        // data streams. REST surfaces wrong Content-Type as a 415.
+        String correlationId = generateCorrelationId();
+        // Spring exposes the supported media types via getSupportedMediaTypes();
+        // null/empty in pathological cases — guard with a defensive
+        // empty-list fallback so the response is always well-formed.
+        List<MediaType> supported = ex.getSupportedMediaTypes();
+        String supportedList = (supported != null && !supported.isEmpty())
+                ? supported.stream()
+                        .map(MediaType::toString)
+                        .collect(Collectors.joining(", "))
+                : "";
+        MediaType attemptedType = ex.getContentType();
+        String attemptedTypeStr = attemptedType != null ? attemptedType.toString() : "?";
+        String message = "Content-Type '" + attemptedTypeStr + "' not supported"
+                + (supportedList.isEmpty() ? "" : "; supported: " + supportedList);
+        LOG.warn("[{}] HttpMediaTypeNotSupportedException at {}: contentType={}, supported={}",
+                correlationId, request.getRequestURI(), attemptedTypeStr, supportedList);
+        ApiResponse<Object> body = ApiResponse.error(
+                "UNSUPPORTED_MEDIA_TYPE",
+                message,
+                correlationId);
+        // RFC 7231 §6.5.13 — advertise supported media types via Accept
+        // response header (note: Accept header is technically a request
+        // header per RFC 7231 §5.3.2, but Spring + many HTTP libraries
+        // use the Accept response header as an advisory mechanism on 415
+        // responses, mirroring how a 406 response advertises with the
+        // same header).
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+        if (supported != null && !supported.isEmpty()) {
+            builder.header("Accept", supportedList);
+        }
+        return builder.body(body);
+    }
+
+    // =====================================================================
+    // Data-access exceptions — Spring's DataAccessException hierarchy
+    // (JPA, JDBC, transaction failures). MUST appear BEFORE the generic
+    // CardDemoException + Exception fallbacks below, but AFTER the more
+    // specific OptimisticLockingFailureException handler (line 321) so
+    // optimistic-lock conflicts continue to be mapped to 409 Conflict
+    // (DataAccessException is a superclass of OptimisticLockingFailureException;
+    // Spring's @ExceptionHandler resolver picks the most-specific match
+    // first regardless of physical order, but we keep this handler late
+    // in the file as a defensive measure).
+    //
+    // CP5 review-mandated addition (Code Review Report — Checkpoint CP5,
+    // GlobalExceptionHandler MAJOR finding L201-958).
+    // =====================================================================
+
+    /**
+     * Handles {@link DataAccessException} raised by Spring Data JPA, JDBC,
+     * or any underlying data-source layer when a database operation fails
+     * outside the typed cases already handled by
+     * {@link RecordNotFoundException}, {@link DuplicateRecordException},
+     * {@link OptimisticLockingFailureException}, and
+     * {@link ConcurrentModificationException}. Returns HTTP 500 Internal
+     * Server Error with a PCI-safe generic message.
+     *
+     * <p><b>COBOL provenance:</b> Replaces the COBOL pattern of inspecting
+     * {@code FILE STATUS} codes after a {@code READ} / {@code WRITE} /
+     * {@code REWRITE} / {@code DELETE} operation and routing to the
+     * {@code 9910-DISPLAY-IO-STATUS} or {@code 9999-ABEND-PROGRAM} paragraph
+     * for any unhandled non-zero status (e.g., {@code 91} - I/O error,
+     * {@code 92} - logic error, {@code 93} - resource unavailable,
+     * {@code 95} - file name not found, {@code 97} - successful execution
+     * with extra info). In the COBOL source, the
+     * {@code 9910-DISPLAY-IO-STATUS} paragraph in {@code CBTRN02C.cbl}
+     * displays the file-status code and the offending record key before
+     * abending; this handler is the Java equivalent &mdash; it produces a
+     * 500 response with a correlation ID for log lookup rather than echoing
+     * the underlying database error to the caller.</p>
+     *
+     * <p><b>PCI-DSS / security discipline (AAP &sect;0.7.2):</b> the response
+     * body emits only the generic message {@code "A data access error occurred"}.
+     * The underlying exception class name, SQL fragments, schema details,
+     * connection-string fragments, and stack trace are NEVER leaked to the
+     * caller because that would aid attackers in reconnaissance (e.g.,
+     * fingerprinting the database engine or schema layout). The full
+     * exception including stack trace IS captured in the WARN-level log
+     * record with the correlation identifier so operators can locate the
+     * offending entry from the caller's correlation ID and inspect the
+     * actual error.</p>
+     *
+     * <p><b>Why WARN not ERROR:</b> a data-access failure is often a
+     * transient infrastructure issue (network blip, connection pool
+     * exhaustion, deadlock retry exhaustion) rather than a code defect.
+     * Logging at WARN avoids alert fatigue while still capturing the full
+     * stack trace for operators. The handler-of-last-resort
+     * {@link #handleGenericException(Exception, HttpServletRequest)} logs
+     * at ERROR for everything else.</p>
+     *
+     * <p><b>Resolver precedence:</b> Spring's {@code @ExceptionHandler}
+     * resolver picks the MOST SPECIFIC match by class hierarchy regardless
+     * of physical order in the file. This means
+     * {@link OptimisticLockingFailureException} (declared earlier at line
+     * &asymp;321), which is a subclass of {@link DataAccessException},
+     * will continue to map to HTTP 409 Conflict. This handler catches only
+     * those {@code DataAccessException} subclasses that are NOT separately
+     * handled (e.g., {@code DataIntegrityViolationException},
+     * {@code QueryTimeoutException}, {@code CannotAcquireLockException},
+     * {@code TransientDataAccessException}, etc.).</p>
+     *
+     * @param ex      the data-access exception
+     * @param request the HTTP request (for path logging)
+     * @return {@link ResponseEntity} with HTTP 500 Internal Server Error
+     *         and the standardized envelope; the body never echoes
+     *         {@code ex.getMessage()} or the exception class name
+     */
+    @ExceptionHandler(DataAccessException.class)
+    public ResponseEntity<ApiResponse<Object>> handleDataAccessException(
+            DataAccessException ex, HttpServletRequest request) {
+        // COBOL: replaces 9910-DISPLAY-IO-STATUS / 9999-ABEND-PROGRAM
+        // paragraphs that display the FILE STATUS and offending record
+        // key on any unhandled VSAM I/O failure (see app/cbl/CBTRN02C.cbl
+        // and the analogous abend paragraphs across all app/cbl/*.cbl
+        // programs). In the Java target, services and Spring Data JPA
+        // raise DataAccessException; this handler maps it to HTTP 500
+        // with a non-leaky generic message.
+        String correlationId = generateCorrelationId();
+        // WARN (not ERROR) — see Javadoc for rationale. Stack trace IS
+        // captured for operators, just at WARN so it does not trip ERROR
+        // alarms for transient infrastructure issues.
+        LOG.warn("[{}] DataAccessException at {}: type={}, message={}",
+                correlationId, request.getRequestURI(),
+                ex.getClass().getSimpleName(), ex.getMessage(), ex);
+        // PCI-DSS-safe generic message — never echoes ex.getMessage(),
+        // ex.getClass().getSimpleName(), or any SQL/schema fragment to
+        // the caller per AAP §0.7.2.
+        ApiResponse<Object> body = ApiResponse.error(
+                "DATA_ACCESS_ERROR",
+                "A data access error occurred",
+                correlationId);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
     }
 
     // =====================================================================

@@ -523,14 +523,14 @@ public class MenuService {
      *       map ({@code WS-OPTION-X PIC X(02)} before normalisation) and
      *       defer numeric validation into this single method (it is the
      *       canonical site of the COBOL numeric check).</li>
-     *   <li>Match the wire contract carried by
-     *       {@code MenuController.MenuResolveRequest.option()} (validated
-     *       at the controller boundary by
-     *       {@code @Pattern(regexp = "^[0-9]{1,2}$")}) so the controller
-     *       never has to parse on behalf of the service. Sticking with
-     *       the wire contract preserves the layered-architecture
-     *       discipline from AAP §0.3.3 (controllers transform HTTP into
-     *       service inputs; services own domain validation).</li>
+     *   <li>Support internal-caller use cases (this method is no longer
+     *       exposed as a REST endpoint after the CP5 review removed the
+     *       out-of-scope {@code POST /api/menu/resolve} controller route;
+     *       see the {@link com.awsm2.carddemo.controller.MenuController}
+     *       class-level Javadoc "Scope discipline" section for the
+     *       rationale). The {@code String} signature is preserved so any
+     *       future internal caller mirrors the original COBOL
+     *       {@code WS-OPTION-X PIC X(02)} input contract.</li>
      * </ul>
      *
      * @param option      the user-supplied option number as a {@code String}

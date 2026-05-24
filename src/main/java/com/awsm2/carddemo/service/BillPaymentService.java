@@ -267,8 +267,18 @@ public class BillPaymentService {
                         "ACCOUNT_NOT_FOUND", "Account not found"));
 
         // ---- COBOL READ-CXACAIX-FILE (resolve a primary card) ----------
+        // Per CP5 review: use the deterministic-order alternate-index
+        // lookup so multi-card accounts always stamp the generated
+        // payment transaction with the lexicographically smallest card
+        // number. The unordered findByXrefAcctId returned rows in
+        // unspecified PostgreSQL order, which made the chosen card
+        // non-deterministic across executions and query-plan changes
+        // (violates AAP §0.7.1 preserve-behavior-exactly and the
+        // regulatory output-format constraint in §0.7.2). The COBOL
+        // source iterates the CXACAIX AIX in (XREF-ACCT-ID, XREF-CARD-NUM)
+        // order so this ordered method mirrors the original behavior.
         List<CardCrossReference> xrefs = cardCrossReferenceRepository
-                .findByXrefAcctId(acctId);
+                .findByXrefAcctIdOrderByXrefCardNumAsc(acctId);
         if (xrefs.isEmpty()) {
             throw new RecordNotFoundException(
                     "XREF_NOT_FOUND",

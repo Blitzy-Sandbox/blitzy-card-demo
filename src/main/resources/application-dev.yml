@@ -542,6 +542,11 @@ carddemo:
     stepfunctions:
       eod-batch-pipeline-arn: ${STATE_MACHINE_EOD_ARN}
       file-provisioning-arn: ${STATE_MACHINE_PROVISIONING_ARN}
+      # Dev report-pipeline ARN — Terraform output STATE_MACHINE_REPORT_PIPELINE_ARN
+      # must be wired to the dev TRANREPT state machine. KafkaEventConsumer
+      # uses this ARN exclusively for `report.requested` events; the
+      # previous fallback to file-provisioning ARN has been removed.
+      report-pipeline-arn: ${STATE_MACHINE_REPORT_PIPELINE_ARN}
     cloudtrail:
       trail-arn: ${CLOUDTRAIL_TRAIL_ARN:}
 

@@ -19,29 +19,21 @@ package com.awsm2.carddemo.controller;
 import com.awsm2.carddemo.dto.AdminMenuDto;
 import com.awsm2.carddemo.dto.ApiResponse;
 import com.awsm2.carddemo.dto.MainMenuDto;
-import com.awsm2.carddemo.dto.MenuOptionDto;
 import com.awsm2.carddemo.service.MenuService;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
-import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Menu REST controller &mdash; returns main and admin menu listings and
- * resolves option selections to their target endpoints.
+ * Menu REST controller &mdash; returns main and admin menu listings.
  *
  * <p><b>COBOL Provenance &mdash; the only AAP-sanctioned dual-source
  * controller (AAP &sect;0.4.1):</b> this controller replaces TWO CICS COBOL
@@ -75,35 +67,42 @@ import org.springframework.web.bind.annotation.RestController;
  *       {@code /api/admin/**} matcher in {@code SecurityConfig} (the
  *       admin-menu URL is under {@code /api/menu/admin}; the
  *       method-level annotation is the primary gate).</li>
- *   <li>{@code POST /api/menu/resolve} &mdash; validates a 2-digit option
- *       number, applies the COBOL admin-only and {@code DUMMY} gates,
- *       and returns the resolved {@link MenuOptionDto} (replaces the
- *       CICS {@code XCTL PROGRAM(CDEMO-MENU-OPT-PGMNAME)} dispatch
- *       paragraph). Available to any authenticated principal.</li>
  * </ul>
+ *
+ * <p><b>Scope discipline (CP5 review):</b> the previous
+ * {@code POST /api/menu/resolve} endpoint was removed because it was not
+ * declared in AAP &sect;0.3.4 (no scope creep per AAP &sect;0.7.1) and
+ * because it trusted request-body role-discriminator fields rather than
+ * deriving authority from the authenticated principal &mdash; a
+ * security defect that allowed {@code ROLE_USER} callers to submit
+ * {@code {"userType":"A","adminMenu":true}} and have the service resolve
+ * admin-menu entries. Menu-option-to-target-program resolution remains
+ * available to internal callers via
+ * {@link MenuService#resolveMenuTarget(String, String, boolean)}, but is
+ * no longer exposed as a REST endpoint. The COBOL
+ * {@code EXEC CICS XCTL PROGRAM(CDEMO-MENU-OPT-PGMNAME)} dispatch is
+ * replaced by REST navigation where the client invokes the resolved
+ * {@link com.awsm2.carddemo.dto.MenuOptionDto#targetEndpoint()} value
+ * returned in the main/admin menu listings directly via HTTP.</p>
  *
  * <p><b>COBOL behaviors preserved:</b></p>
  * <ul>
- *   <li>{@code WS-OPTION PIC 9(02)} (COMEN01C.cbl lines 45-46) &mdash;
- *       2-digit numeric option preserved as the {@code option} request
- *       body field with {@code @Pattern(regexp = "^[0-9]{1,2}$")}.</li>
- *   <li>{@code CDEMO-USER-TYPE PIC X(01)} (CSUSR01Y.cpy) &mdash;
- *       allowed values {@code 'A'} / {@code 'U'} preserved as the
- *       {@code userType} request body field with
- *       {@code @Pattern(regexp = "^[AU]$")}.</li>
- *   <li>Option-table selection (main vs admin) &mdash; preserved as the
- *       {@code adminMenu} boolean request body field.</li>
+ *   <li>Option-table selection (main vs admin) &mdash; preserved through
+ *       the distinct REST endpoints {@code GET /api/menu/main} and
+ *       {@code GET /api/menu/admin} (one per COBOL program).</li>
  *   <li>Original {@code EXEC CICS XCTL PROGRAM(...)} dispatch &mdash;
  *       replaced by REST navigation where the client invokes the
- *       resolved {@link MenuOptionDto#targetEndpoint()} after receiving
- *       it from {@code POST /api/menu/resolve}. The original target
- *       program identifier (e.g., {@code COACTVWC}) is preserved
- *       verbatim in {@link MenuOptionDto#targetProgram()} for audit /
- *       parallel-run traceability per AAP &sect;0.7.3.</li>
+ *       resolved
+ *       {@link com.awsm2.carddemo.dto.MenuOptionDto#targetEndpoint()}
+ *       after receiving it embedded in the main/admin menu listing
+ *       response. The original target program identifier (e.g.,
+ *       {@code COACTVWC}) is preserved verbatim in
+ *       {@link com.awsm2.carddemo.dto.MenuOptionDto#targetProgram()}
+ *       for audit / parallel-run traceability per AAP &sect;0.7.3.</li>
  * </ul>
  *
  * <p><b>Security model (AAP &sect;0.3.4, &sect;0.6.6, &sect;0.7.1):</b>
- * all three endpoints are authenticated (the global
+ * both endpoints are authenticated (the global
  * {@code BearerAuth} security requirement declared in
  * {@code OpenApiConfig#cardDemoOpenAPI()} applies to every operation by
  * default). Method-level {@link PreAuthorize @PreAuthorize}
@@ -113,9 +112,6 @@ import org.springframework.web.bind.annotation.RestController;
  *   <li>{@code getAdminMenu} &mdash; {@code hasRole('ADMIN')}
  *       (defense in depth alongside the {@code /api/admin/**} matcher
  *       in {@code SecurityConfig#securityFilterChain})</li>
- *   <li>{@code resolveMenuOption} &mdash; {@code hasAnyRole('USER','ADMIN')}
- *       (admin-only options are gated server-side by
- *       {@code MenuService.resolveMenuTarget(...)})</li>
  * </ul>
  *
  * <p><b>Layered architecture compliance (AAP &sect;0.3.3, &sect;0.7.1):</b>
@@ -136,12 +132,11 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p><b>PCI-DSS logging discipline (AAP &sect;0.6.6, &sect;0.7.2):</b> the
  * class-level SLF4J logger emits the authenticated user identifier
- * ({@code userId}) and the requested option number, both of which are
- * non-sensitive. No passwords, JWT tokens, card data, account balances,
- * or other PCI material are ever logged.</p>
+ * ({@code userId}), which is non-sensitive. No passwords, JWT tokens,
+ * card data, account balances, or other PCI material are ever logged.</p>
  *
- * <p><b>OpenAPI documentation:</b> the class-level {@link Tag} groups all
- * three endpoints under a single Swagger UI section labelled
+ * <p><b>OpenAPI documentation:</b> the class-level {@link Tag} groups
+ * both endpoints under a single Swagger UI section labelled
  * &ldquo;Menu&rdquo; (served at {@code /swagger-ui.html} and
  * {@code /v3/api-docs}); each endpoint carries a per-method
  * {@link Operation} summary, and per-status {@link ApiResponses}
@@ -156,7 +151,7 @@ import org.springframework.web.bind.annotation.RestController;
  * @see MenuService
  * @see MainMenuDto
  * @see AdminMenuDto
- * @see MenuOptionDto
+ * @see com.awsm2.carddemo.dto.MenuOptionDto
  * @see com.awsm2.carddemo.dto.ApiResponse
  * @see <a href=
  *      "https://github.com/aws-samples/aws-mainframe-modernization-carddemo">
@@ -165,7 +160,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/menu")
 @Tag(name = "Menu",
-        description = "Main and Admin menu listings and option-resolution. "
+        description = "Main and Admin menu listings. "
                 + "Replaces CICS COMEN01C (Tran-ID CM00, Main Menu) and "
                 + "COADM01C (Tran-ID CA00, Admin Menu).")
 public class MenuController {
@@ -423,236 +418,4 @@ public class MenuController {
         return ResponseEntity.ok(ApiResponse.success(menu));
     }
 
-    /**
-     * Resolves a user-supplied menu option number to the target menu
-     * entry, validating bounds, the admin-only gate, and the
-     * &ldquo;coming soon&rdquo; ({@code DUMMY}) gate, and returns the
-     * resolved {@link MenuOptionDto} so the client can navigate to the
-     * embedded {@link MenuOptionDto#targetEndpoint()}.
-     *
-     * <p><b>COBOL provenance:</b> Replaces the
-     * {@code PROCESS-ENTER-KEY} paragraph in both
-     * {@code app/cbl/COMEN01C.cbl} (lines 115-165) and
-     * {@code app/cbl/COADM01C.cbl} (analogous paragraph):</p>
-     * <ol>
-     *   <li>Read user-selected option from BMS map ({@code OPTIONI OF
-     *       COMEN1AI}) &mdash; replaced by the JSON-bound
-     *       {@code request.option()} field.</li>
-     *   <li>Bounds check ({@code IF WS-OPTION IS NOT NUMERIC OR
-     *       WS-OPTION > CDEMO-MENU-OPT-COUNT OR WS-OPTION = ZEROS}) and
-     *       admin-only / DUMMY gates &mdash; delegated to
-     *       {@link MenuService#resolveMenuTarget(String, String, boolean)},
-     *       which throws {@code ValidationException} (HTTP 400) on
-     *       failure.</li>
-     *   <li>{@code EXEC CICS XCTL PROGRAM(CDEMO-MENU-OPT-PGMNAME(WS-OPTION))}
-     *       routing &mdash; replaced by REST navigation. The client
-     *       receives the resolved {@link MenuOptionDto} (including the
-     *       {@code targetProgram} for traceability and the
-     *       {@code targetEndpoint} for navigation) and subsequently
-     *       invokes the endpoint URL directly via HTTP.</li>
-     * </ol>
-     *
-     * <p><b>Validation cascade (Jakarta Bean Validation):</b> the
-     * {@link Valid @Valid} on the {@link MenuResolveRequest} parameter
-     * triggers Jakarta validation on the record's components. Failures
-     * (e.g., non-numeric option, missing userType) bubble up as
-     * {@code MethodArgumentNotValidException} and are translated to
-     * HTTP 400 by {@code GlobalExceptionHandler.handleMethodArgumentNotValid(...)}
-     * with the standardized {@code fieldErrors} envelope.</p>
-     *
-     * <p><b>Authorization:</b>
-     * {@link PreAuthorize @PreAuthorize("hasAnyRole('USER','ADMIN')")}
-     * &mdash; any authenticated principal may resolve options. Admin-only
-     * options (where {@link MenuOptionDto#userType()} equals {@code 'A'})
-     * are rejected server-side by
-     * {@link MenuService#resolveMenuTarget(String, String, boolean)} with
-     * a {@code ValidationException} (translated to HTTP 400) when the
-     * caller's {@code userType} field is {@code 'U'} &mdash; mirroring the
-     * COBOL {@code IF CDEMO-USRTYP-USER AND CDEMO-MENU-OPT-USRTYPE = 'A'}
-     * check from {@code COMEN01C.cbl:PROCESS-ENTER-KEY}.</p>
-     *
-     * <p><b>Response envelope:</b> wrapped in {@link ApiResponse} via
-     * {@link ApiResponse#success(Object)} per AAP &sect;0.3.4.</p>
-     *
-     * @param request the validated {@link MenuResolveRequest} record
-     *                containing the user-selected option number, the
-     *                caller's user-type discriminator, and a boolean
-     *                indicating whether to resolve against the admin
-     *                menu ({@code true}) or the main menu ({@code false})
-     * @param userId  the authenticated principal name extracted from the
-     *                JWT-populated security context by
-     *                {@link AuthenticationPrincipal @AuthenticationPrincipal(expression
-     *                = "name")}. Used for structured-JSON debug logging
-     *                only. Non-sensitive per AAP &sect;0.7.2
-     * @return {@link ResponseEntity} with HTTP 200 and the resolved
-     *         {@link MenuOptionDto} wrapped in {@link ApiResponse}.
-     *         Validation failures (invalid bounds, admin-only access by
-     *         a regular user, {@code DUMMY}-prefixed &ldquo;coming
-     *         soon&rdquo; entry) surface as
-     *         {@code com.awsm2.carddemo.exception.ValidationException}
-     *         from {@link MenuService} and are translated to HTTP 400
-     *         by {@code GlobalExceptionHandler}; unauthenticated callers
-     *         are rejected with HTTP 401 upstream
-     */
-    @PostMapping("/resolve")
-    @Operation(
-            summary = "Resolve a menu option to its target program / endpoint",
-            description = "Maps a 2-digit option number from a menu screen to "
-                    + "the resolved target endpoint and target program identifier. "
-                    + "Replaces the CICS XCTL PROGRAM(CDEMO-MENU-OPT-PGMNAME) dispatch "
-                    + "from COMEN01C.cbl / COADM01C.cbl PROCESS-ENTER-KEY paragraphs. "
-                    + "Validates the option bounds, applies the admin-only gate "
-                    + "(rejects 'A'-marked options for 'U' callers), and applies the "
-                    + "DUMMY-prefix 'coming soon' gate."
-    )
-    @ApiResponses({
-            @io.swagger.v3.oas.annotations.responses.ApiResponse(
-                    responseCode = "200",
-                    description = "Option resolved successfully"),
-            @io.swagger.v3.oas.annotations.responses.ApiResponse(
-                    responseCode = "400",
-                    description = "Invalid option (out of range, non-numeric, "
-                            + "admin-only attempt by regular user, or DUMMY-prefixed "
-                            + "'coming soon' entry)"),
-            @io.swagger.v3.oas.annotations.responses.ApiResponse(
-                    responseCode = "401",
-                    description = "JWT missing or invalid")
-    })
-    @PreAuthorize("hasAnyRole('USER','ADMIN')")
-    public ResponseEntity<ApiResponse<MenuOptionDto>> resolveMenuOption(
-            @Valid @RequestBody MenuResolveRequest request,
-            @AuthenticationPrincipal(expression = "name") String userId) {
-        // COBOL: COMEN01C/COADM01C:PROCESS-ENTER-KEY -- option-to-target
-        //   program resolution (formerly CICS XCTL PROGRAM(...) chain).
-        //   Delegates the bounds / admin-only / DUMMY validation cascade
-        //   to MenuService.resolveMenuTarget which throws
-        //   ValidationException (HTTP 400) on any failure per AAP §0.4.1.
-        LOG.debug("Menu option resolution: userId={} option={} isAdminMenu={}",
-                userId, request.option(), request.adminMenu());
-        MenuOptionDto resolved = menuService.resolveMenuTarget(
-                request.option(),
-                request.userType(),
-                request.adminMenu()
-        );
-        return ResponseEntity.ok(ApiResponse.success(resolved));
-    }
-
-    /**
-     * Request body for the {@code POST /api/menu/resolve} endpoint.
-     *
-     * <p>Carries the 2-digit option number selected by the client, the
-     * COBOL {@code CDEMO-USER-TYPE} discriminator for admin-only gating
-     * within the service layer, and a boolean choosing between the main
-     * and admin option tables ({@code COMEN02Y.cpy} vs
-     * {@code COADM02Y.cpy}).</p>
-     *
-     * <p>This nested record is intentionally local to the
-     * {@link MenuController} (rather than a top-level DTO under
-     * {@code com.awsm2.carddemo.dto}) because:
-     * <ol>
-     *   <li>The AAP &sect;0.4.1 transformation table enumerates the DTOs
-     *       needed by the wider application surface, and
-     *       {@code MenuResolveRequest} is NOT among them &mdash; it is a
-     *       small ad-hoc input for a single endpoint.</li>
-     *   <li>Co-locating the request record with the controller keeps the
-     *       endpoint contract self-contained and avoids cluttering the
-     *       shared DTO package with controller-specific helper types.</li>
-     *   <li>The record's JSON contract is documented via
-     *       {@link Schema @Schema} so springdoc-openapi surfaces it in
-     *       the Swagger UI under {@code MenuResolveRequest} alongside the
-     *       sibling response DTOs ({@link MainMenuDto}, {@link AdminMenuDto},
-     *       {@link MenuOptionDto}).</li>
-     * </ol>
-     *
-     * <p><b>Jakarta Bean Validation contract:</b></p>
-     * <ul>
-     *   <li>{@code option} &mdash; {@link NotBlank @NotBlank} +
-     *       {@link Pattern @Pattern(regexp = "^[0-9]{1,2}$")}. Enforces
-     *       the COBOL {@code WS-OPTION PIC 9(02)} numeric 1-or-2 digit
-     *       contract from {@code COMEN01C.cbl:45-46}.</li>
-     *   <li>{@code userType} &mdash; {@link NotBlank @NotBlank} +
-     *       {@link Pattern @Pattern(regexp = "^[AU]$")}. Enforces the
-     *       COBOL {@code SEC-USR-TYPE PIC X(01)} allowed values from
-     *       {@code app/cpy/CSUSR01Y.cpy} ({@code 'A'} admin, {@code 'U'}
-     *       regular).</li>
-     *   <li>{@code adminMenu} &mdash; no constraint annotation; the
-     *       Jackson deserializer applies the JSON-to-boolean conversion
-     *       (true/false). A missing field defaults to {@code false}
-     *       (the JVM default for primitive {@code boolean}), matching
-     *       the COBOL behavior where {@code COMEN01C} (main menu) is
-     *       the default landing page.</li>
-     * </ul>
-     *
-     * <p>Validation failures bubble up to
-     * {@link org.springframework.web.bind.MethodArgumentNotValidException}
-     * which is translated by {@code GlobalExceptionHandler} to HTTP 400
-     * with the standardized {@link ApiResponse} {@code fieldErrors}
-     * envelope per AAP &sect;0.3.4.</p>
-     *
-     * <p><b>Why a {@code record}:</b> records are Java's idiomatic shape
-     * for immutable data carriers introduced in Java 16, which matches
-     * the project baseline of Java 17 (AAP &sect;0.5.1). Records
-     * automatically generate canonical constructor, accessors, equals /
-     * hashCode / toString, and are implicitly {@code final} &mdash;
-     * giving us thread-safe, GC-friendly DTOs without any boilerplate
-     * (and aligning with the pattern used throughout
-     * {@code com.awsm2.carddemo.dto}).</p>
-     *
-     * @param option    the user-selected option number as a 1-or-2 digit
-     *                  string. Maps to the COBOL {@code WS-OPTION
-     *                  PIC 9(02)} field that {@code COMEN01C:PROCESS-ENTER-KEY}
-     *                  extracts from the BMS {@code OPTIONI} input
-     *                  (lines 117-124 of {@code COMEN01C.cbl}). The
-     *                  service layer parses this into an integer before
-     *                  bounds-checking against the option-table count
-     *                  (10 for the main menu, 4 for the admin menu)
-     * @param userType  the COBOL {@code CDEMO-USER-TYPE} discriminator
-     *                  &mdash; {@code "A"} (admin) or {@code "U"} (user).
-     *                  Sourced from {@code app/cpy/CSUSR01Y.cpy:SEC-USR-TYPE}.
-     *                  Used by the service layer to gate admin-only
-     *                  options (rejects {@code 'A'}-marked options when
-     *                  caller is {@code 'U'} per
-     *                  {@code COMEN01C.cbl:PROCESS-ENTER-KEY} lines
-     *                  136-143)
-     * @param adminMenu {@code true} to resolve against the admin-menu
-     *                  option table ({@code COADM02Y.cpy}); {@code false}
-     *                  to resolve against the main-menu option table
-     *                  ({@code COMEN02Y.cpy}). Selects which COBOL
-     *                  literal-storage table the service iterates
-     */
-    @Schema(name = "MenuResolveRequest",
-            description = "Input for resolving a menu option to its target "
-                    + "program / REST endpoint. Replaces the COMEN01C / COADM01C "
-                    + "PROCESS-ENTER-KEY input read from the BMS OPTIONI field.")
-    public record MenuResolveRequest(
-
-            @NotBlank(message = "option is required")
-            @Pattern(regexp = "^[0-9]{1,2}$",
-                    message = "option must be 1-2 digits")
-            @Schema(description = "Selected option number "
-                    + "(COBOL WS-OPTION PIC 9(02) from COMEN01C.cbl:45-46). "
-                    + "Must be a 1-or-2 digit numeric string.",
-                    example = "1",
-                    pattern = "^[0-9]{1,2}$",
-                    maxLength = 2)
-            String option,
-
-            @NotBlank(message = "userType is required")
-            @Pattern(regexp = "^[AU]$",
-                    message = "userType must be A or U")
-            @Schema(description = "COBOL CDEMO-USER-TYPE discriminator: "
-                    + "'A' (admin) or 'U' (regular user). Sourced from "
-                    + "app/cpy/CSUSR01Y.cpy:SEC-USR-TYPE PIC X(01).",
-                    example = "U",
-                    allowableValues = {"A", "U"},
-                    maxLength = 1)
-            String userType,
-
-            @Schema(description = "True if resolving against the admin menu "
-                    + "(COADM01C / app/cpy/COADM02Y.cpy); false for the main "
-                    + "menu (COMEN01C / app/cpy/COMEN02Y.cpy).",
-                    example = "false")
-            boolean adminMenu
-    ) {
-    }
 }

@@ -124,11 +124,15 @@ import java.util.Objects;
  *   <tr><td>{@code MOVE FUNCTION UPPER-CASE(USERIDI)} (L132&ndash;L134)</td>
  *       <td>{@code request.userId().trim().toUpperCase(Locale.US)}</td></tr>
  *   <tr><td>{@code MOVE FUNCTION UPPER-CASE(PASSWDI)} (L135&ndash;L137)</td>
- *       <td>{@code request.password().toUpperCase(Locale.US)} &mdash;
- *       <b>uppercase BEFORE {@code passwordEncoder.matches}</b>
- *       (CRITICAL: the V015 seed migration stores hashes of the
- *       <i>uppercased</i> plaintext, so the Java target must uppercase
- *       first to remain byte-compatible with the COBOL source)</td></tr>
+ *       <td><b>Deprecated as a CP5-review-mandated security upgrade.</b>
+ *       The password is forwarded VERBATIM to
+ *       {@code passwordEncoder.matches} &mdash; the COBOL uppercasing
+ *       is NOT replicated because uppercasing collapses password
+ *       entropy and is incompatible with the BCrypt verbatim-encode
+ *       contract enforced by {@code UserAddService} and
+ *       {@code UserUpdateService}. The V015 seed migration uses
+ *       all-uppercase literals ("PASSWORDA" / "PASSWORDU") so seeded
+ *       credentials still authenticate against the literal value.</td></tr>
  *   <tr><td>{@code PERFORM READ-USER-SEC-FILE} +
  *       {@code EXEC CICS READ DATASET('USRSEC')} (L209&ndash;L219)</td>
  *       <td>{@link UserSecurityRepository#findById(Object)}</td></tr>
@@ -170,11 +174,14 @@ import java.util.Objects;
  *       60-character BCrypt hash whose verification incorporates the
  *       per-record salt and is computationally infeasible to reverse.
  *       The V015 seed migration ({@code V015__seed_default_users.sql})
- *       stores BCrypt hashes of the <i>uppercased</i> plaintext
- *       (e.g., hash("PASSWORDA") for {@code ADMIN001}), so the Java
- *       target must uppercase the supplied password before invoking
- *       {@code matches} &mdash; this is the verbatim preservation of
- *       COSGN00C L132&ndash;L137.</li>
+ *       stores BCrypt hashes derived from the all-uppercase plaintexts
+ *       ("PASSWORDA" / "PASSWORDU"), so the seeded credentials
+ *       authenticate against the literal value supplied by the caller
+ *       (no service-side uppercasing applied &mdash; per CP5 review
+ *       the password is passed VERBATIM to BCrypt so that the
+ *       {@code UserAddService} / {@code UserUpdateService} verbatim-
+ *       encode contract is honoured consistently across the three
+ *       services that touch credentials).</li>
  *   <li><b>JWT bearer token replaces CICS COMMAREA:</b> the CICS
  *       pseudo-conversational COMMAREA state
  *       ({@code CARDDEMO-COMMAREA} in {@code app/cpy/COCOM01Y.cpy})
@@ -245,13 +252,13 @@ public class SignonService {
      * Logs per AAP &sect;0.6.6 observability.
      *
      * <p><b>CRITICAL PCI-DSS DISCIPLINE:</b> this logger MUST NEVER emit
-     * {@code request.password()}, {@code normalizedPassword}, the
-     * stored BCrypt hash {@code user.getSecUsrPwd()}, or the issued
-     * JWT token at any level (INFO, DEBUG, WARN, ERROR). Only the
-     * (already-uppercased) user id, user type, and event type may
-     * appear in log lines. The audit pipeline
-     * ({@link AuditLogService#logSecurityEvent}) similarly sanitizes
-     * payloads via its built-in allowlist and PAN-masking regex.
+     * {@code request.password()}, the stored BCrypt hash
+     * {@code user.getSecUsrPwd()}, or the issued JWT token at any
+     * level (INFO, DEBUG, WARN, ERROR). Only the (already-uppercased)
+     * user id, user type, and event type may appear in log lines. The
+     * audit pipeline ({@link AuditLogService#logSecurityEvent})
+     * similarly sanitizes payloads via its built-in allowlist and
+     * PAN-masking regex.
      */
     private static final Logger LOG = LoggerFactory.getLogger(SignonService.class);
 
@@ -540,31 +547,48 @@ public class SignonService {
         }
 
         // -------------------------------------------------------------
-        // STEP 2 — Uppercase BOTH userId and password
-        //          (COBOL: COSGN00C:L132-135 FUNCTION UPPER-CASE)
+        // STEP 2 — Normalize the userId ONLY (not the password)
+        //          (COBOL parity: COSGN00C:L132-135 FUNCTION UPPER-CASE on
+        //           USERIDI; per CP5 review the password is NOT uppercased
+        //           before BCrypt match)
         // -------------------------------------------------------------
-        // COBOL: COSGN00C lines 132-137 — FUNCTION UPPER-CASE applied BEFORE auth.
-        //   MOVE FUNCTION UPPER-CASE(USERIDI OF COSGN0AI) TO WS-USER-ID
-        //                                                   CDEMO-USER-ID
-        //   MOVE FUNCTION UPPER-CASE(PASSWDI OF COSGN0AI) TO WS-USER-PWD
-        //
-        // CRITICAL — the password MUST be uppercased BEFORE
-        //            passwordEncoder.matches(...). The V015 seed migration
-        //            (V015__seed_default_users.sql) stores BCrypt hashes
-        //            of the UPPERCASED plaintext (e.g., hash("PASSWORDA")
-        //            for ADMIN001, hash("PASSWORDU") for USER0001). Skipping
-        //            the uppercase step here would silently break
-        //            authentication against those seeded credentials.
+        // COBOL: COSGN00C lines 132-137 originally applied FUNCTION
+        //        UPPER-CASE to BOTH USERIDI and PASSWDI before authenticating.
+        //        The Java target preserves the userId uppercasing (the
+        //        USRSEC key is uppercase-canonical per app/cpy/CSUSR01Y.cpy
+        //        and matching seed data) but DEPRECATES the password
+        //        uppercasing as a CP5-review-mandated security upgrade:
+        //          1. Password entropy MUST be preserved when BCrypt is
+        //             used. Uppercasing collapses the password space
+        //             (mixed-case passwords would hash equivalently to
+        //             their uppercase variants), which defeats the
+        //             BCrypt strength-12 upgrade introduced by AAP §0.7.1.
+        //          2. UserAddService (COUSR01C) and UserUpdateService
+        //             (COUSR02C) hash the request password VERBATIM via
+        //             passwordEncoder.encode(request.password()) — without
+        //             uppercasing. Uppercasing on signon while preserving
+        //             entropy on add/update produced a cross-service
+        //             defect where any admin-created or admin-updated
+        //             mixed-case password failed to authenticate. The
+        //             policy is therefore unified across the three services:
+        //             NORMALIZE USER IDS, NEVER PASSWORDS.
+        //          3. The V015 seed migration BCrypt hashes are derived
+        //             from the all-UPPERCASE plaintexts "PASSWORDA" and
+        //             "PASSWORDU"; those literal values themselves are
+        //             already uppercase, so signon with the literal
+        //             plaintext value continues to succeed regardless of
+        //             the (now-removed) uppercasing step.
         //
         // Locale.US is used explicitly to avoid locale-sensitive case folding
-        // (e.g., the Turkish locale lowercases 'I' to dotless-i which would
-        // produce mismatched uppercase output and break the lookup).
+        // on the userId (e.g., the Turkish locale lowercases 'I' to
+        // dotless-i which would produce mismatched uppercase output and
+        // break the USRSEC primary-key lookup).
         // .trim() on userId only — the BMS field is space-padded on the
-        // 3270 device, but passwords are not trimmed (a leading or trailing
-        // space in a password should be preserved verbatim, matching the
-        // COBOL behaviour where PIC X(08) preserves all 8 bytes literally).
+        // 3270 device. The password is forwarded VERBATIM to BCrypt;
+        // any leading/trailing whitespace in the password is intentionally
+        // preserved (matching the COBOL PIC X(08) byte-literal semantics
+        // and the UserAddService/UserUpdateService verbatim encode contract).
         final String normalizedUserId = request.userId().trim().toUpperCase(Locale.US);
-        final String normalizedPassword = request.password().toUpperCase(Locale.US);
 
         LOG.info("Signon attempt for userId={}", normalizedUserId);
 
@@ -612,10 +636,15 @@ public class SignonService {
         //        cannot distinguish "wrong password" from "right password"
         //        based on response latency.
         //
-        // CRITICAL: pass normalizedPassword (the UPPERCASED input), NOT
-        //           request.password() — see STEP 2 comment.
+        // Per CP5 review: pass the VERBATIM request.password() into
+        // BCrypt.matches() — never an uppercased copy. The cross-service
+        // contract is: UserAddService and UserUpdateService encode the
+        // password verbatim, so signon MUST match against the verbatim
+        // value. The V015 seed migration coincidentally uses uppercase
+        // literals ("PASSWORDA"/"PASSWORDU") so the seeded credentials
+        // still authenticate when the caller types those exact values.
         final boolean passwordMatches = passwordEncoder.matches(
-                normalizedPassword, user.getSecUsrPwd());
+                request.password(), user.getSecUsrPwd());
         if (!passwordMatches) {
             // COBOL: COSGN00C.cbl L242-L244 — "Wrong Password" path.
             //        The COBOL message was "Wrong Password. Try again ...";

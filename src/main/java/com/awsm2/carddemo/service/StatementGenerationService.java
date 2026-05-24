@@ -291,7 +291,19 @@ public class StatementGenerationService {
         Objects.requireNonNull(account, "account");
         Long acctId = account.getAcctId();
 
-        List<CardCrossReference> xrefs = xrefRepository.findByXrefAcctId(acctId);
+        // Per CP5 review: use the deterministic-order alternate-index
+        // lookup so the customer identifier chosen for the statement is
+        // reproducible across executions and query-plan changes. The
+        // unordered findByXrefAcctId returned rows in unspecified
+        // PostgreSQL order — even if the seed data tends to share the
+        // same customer for a given account, the implementation must not
+        // depend on undefined DB row order (AAP §0.7.1 preserve-behavior-
+        // exactly, §0.7.2 regulatory output-format constraint). The COBOL
+        // source iterates the CXACAIX AIX in (XREF-ACCT-ID, XREF-CARD-NUM)
+        // order so this ordered method mirrors the original CBSTM03A
+        // behavior.
+        List<CardCrossReference> xrefs =
+                xrefRepository.findByXrefAcctIdOrderByXrefCardNumAsc(acctId);
         if (xrefs.isEmpty()) {
             LOG.warn("CBSTM03A: no card cross-references for account {} "
                     + "&mdash; skipping statement", acctId);

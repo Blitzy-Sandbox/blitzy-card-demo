@@ -537,6 +537,13 @@ carddemo:
     stepfunctions:
       eod-batch-pipeline-arn: ${STATE_MACHINE_EOD_ARN}
       file-provisioning-arn: ${STATE_MACHINE_PROVISIONING_ARN}
+      # Production report-pipeline ARN — Terraform output
+      # STATE_MACHINE_REPORT_PIPELINE_ARN must be wired to the prod
+      # TRANREPT state machine; the env var has no default so Spring
+      # fails fast at startup if it is absent, per AAP §0.6.3 and the
+      # review fix that requires `report.requested` events to start the
+      # report pipeline (never the file-provisioning state machine).
+      report-pipeline-arn: ${STATE_MACHINE_REPORT_PIPELINE_ARN}
     cloudtrail:
       trail-arn: ${CLOUDTRAIL_TRAIL_ARN:}
 

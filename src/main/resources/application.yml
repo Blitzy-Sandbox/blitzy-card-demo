@@ -537,6 +537,15 @@ carddemo:
       # (AAP §0.6.3 — `eod-batch-pipeline.asl.json`).
       eod-batch-pipeline-arn: ${STATE_MACHINE_EOD_ARN:}
       file-provisioning-arn: ${STATE_MACHINE_PROVISIONING_ARN:}
+      # ARN of the Transaction-Report state machine consumed by
+      # KafkaEventConsumer#onReportRequested per AAP §0.1.1 (the sole
+      # online-to-batch bridge: CORPT00C TDQ 'JOBS' → MSK
+      # `report.requested` → Step Functions → AWS Batch report job).
+      # An empty value at runtime causes the consumer to log a WARN and
+      # acknowledge the message without starting an execution — this
+      # keeps local iteration unblocked. Production overlays MUST inject
+      # a real ARN; never fall back to the file-provisioning ARN.
+      report-pipeline-arn: ${STATE_MACHINE_REPORT_PIPELINE_ARN:}
 
   # ---------------------------------------------------------------------------
   # Security (AAP §0.7.1 — BCrypt password hashing, JWT tokens)

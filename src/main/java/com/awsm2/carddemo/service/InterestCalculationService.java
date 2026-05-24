@@ -417,8 +417,20 @@ public class InterestCalculationService {
 
                 // COBOL: MOVE TRANCAT-ACCT-ID TO FD-XREF-ACCT-ID
                 //        PERFORM 1110-GET-XREF-DATA (L204-L205)
+                //
+                // Per CP5 review: use the deterministic-order alternate-
+                // index lookup so multi-card accounts always stamp the
+                // generated interest transaction with the lexicographically
+                // smallest card number. The unordered findByXrefAcctId
+                // returned rows in unspecified PostgreSQL order, which made
+                // the chosen card non-deterministic across executions and
+                // query-plan changes (violates AAP §0.7.1 preserve-behavior-
+                // exactly and the regulatory output-format constraint in
+                // §0.7.2). The COBOL source iterates the CXACAIX AIX in
+                // (XREF-ACCT-ID, XREF-CARD-NUM) order so this ordered
+                // method mirrors the original CBACT04C behavior.
                 List<CardCrossReference> xrefs =
-                        xrefRepository.findByXrefAcctId(currentAcctId);
+                        xrefRepository.findByXrefAcctIdOrderByXrefCardNumAsc(currentAcctId);
                 if (xrefs.isEmpty()) {
                     LOG.warn("CBACT04C: no XREF entry for account {} "
                             + "&mdash; interest posting will use blank card number",

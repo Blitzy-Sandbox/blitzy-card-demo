@@ -278,4 +278,71 @@ public interface CardCrossReferenceRepository
      *         preserved from the COBOL VSAM source)
      */
     List<CardCrossReference> findByXrefAcctId(Long xrefAcctId);
+
+    /**
+     * Deterministic-order alternate-index lookup &mdash; returns all
+     * {@link CardCrossReference} rows whose {@code xrefAcctId} matches
+     * the supplied 11-digit account identifier, ordered by
+     * {@code xrefCardNum} ASCENDING.
+     *
+     * <p><strong>Why this method exists:</strong> the unordered
+     * {@link #findByXrefAcctId(Long)} method returns rows in whatever
+     * order PostgreSQL's planner selects (index-order, heap-order, or
+     * any other order driven by statistics). For callers that must pick
+     * a single representative card for a multi-card account &mdash; for
+     * example, {@link com.awsm2.carddemo.service.BillPaymentService}
+     * stamping the generated payment transaction with a primary card
+     * number, {@link com.awsm2.carddemo.service.InterestCalculationService}
+     * stamping generated interest transactions, and
+     * {@link com.awsm2.carddemo.service.StatementGenerationService}
+     * resolving the owning customer &mdash; that non-deterministic order
+     * is semantically incorrect: identical inputs can produce different
+     * outputs across executions or query-plan changes, which violates
+     * AAP &sect;0.7.1 (preserve behavior exactly) and the regulatory
+     * output-format constraint in AAP &sect;0.7.2.</p>
+     *
+     * <p>This method materialises an explicit
+     * {@code ORDER BY xref_card_num ASC} clause in the underlying SQL so
+     * the first row of the returned list is always the
+     * lexicographically smallest card number for the account &mdash; a
+     * deterministic, reproducible selection that does not depend on the
+     * planner. Spring Data JPA derives the method name into the JPQL
+     * query:</p>
+     * <pre>
+     *     SELECT cx FROM CardCrossReference cx
+     *      WHERE cx.xrefAcctId = :acctId
+     *      ORDER BY cx.xrefCardNum ASC
+     * </pre>
+     *
+     * <p>Performance is identical to the unordered variant for the
+     * 16-byte {@code xref_card_num} primary key &mdash; PostgreSQL's
+     * planner can either (a) read the {@code idx_cardxref_acct_id}
+     * index in account order and sort the at-most-handful of resulting
+     * rows in memory, or (b) use a covering index scan that already
+     * returns rows in {@code (xref_acct_id, xref_card_num)} order if
+     * such an index is available. The seed-fixture cardinality of
+     * &lt; 10 cards per account makes the in-memory sort cost
+     * negligible.</p>
+     *
+     * <p><strong>Replaces VSAM AIX:</strong> same alternate index as the
+     * unordered method &mdash; {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX}
+     * ({@code KEYS(11 25)}, {@code NONUNIQUEKEY UPGRADE}). The COBOL
+     * source iterates AIX rows in CICS {@code STARTBR}/{@code READNEXT}
+     * order &mdash; the AIX itself is keyed on
+     * {@code (XREF-ACCT-ID, XREF-CARD-NUM)} so the COBOL programs
+     * implicitly receive card-number-ordered output for any given
+     * account. This Java method explicitly mirrors that COBOL ordering
+     * to preserve byte-identical output during the parallel-run
+     * validation window per AAP &sect;0.6.6.</p>
+     *
+     * @param xrefAcctId the {@code xrefAcctId} alternate-key value
+     *                   (the 11-digit {@code Account.acctId} from
+     *                   {@code app/cpy/CVACT03Y.cpy XREF-ACCT-ID
+     *                   PIC 9(11)}); never {@code null}
+     * @return all cross-reference rows for the given account, ordered
+     *         by {@code xrefCardNum} ascending; never {@code null},
+     *         possibly empty (NONUNIQUEKEY semantics preserved from the
+     *         COBOL VSAM source)
+     */
+    List<CardCrossReference> findByXrefAcctIdOrderByXrefCardNumAsc(Long xrefAcctId);
 }
