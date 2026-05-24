@@ -843,11 +843,18 @@ public final class CbStm03A {
     }
 
     private CardXrefRecord decodeXrefFromFldt() {
-        // Xref fixture rows are 36 bytes (per AAP §0.6.9 / MIGRATION_NOTES.md
-        // anomaly). Use FIXTURE_LENGTH to align with the fixture format the
-        // CBSTM03B file-services subroutine emits.
-        byte[] chunk = new byte[CardXrefRecord.FIXTURE_LENGTH];
-        System.arraycopy(ws.fldt, 0, chunk, 0, chunk.length);
+        // CBSTM03B file-services emits 36-byte XREF rows (no trailing FILLER)
+        // per AAP §0.6.9 / MIGRATION_NOTES.md §1.4.9. CardXrefRecord.parse()
+        // requires the canonical 50-byte layout, so we pad the 36-byte
+        // payload with 14 trailing ASCII-space bytes (0x20) to synthesise
+        // the FILLER region. This yields a CardXrefRecord whose
+        // xrefCardNum / xrefCustId / xrefAcctId components are byte-identical
+        // to the legacy permissive-parser behaviour, with a 14-space FILLER
+        // (the same value the legacy parser auto-generated for 36-byte input).
+        final int xrefPayloadLength = CardXrefRecord.FILLER_OFFSET; // 36 bytes preceding FILLER
+        byte[] chunk = new byte[CardXrefRecord.RECORD_LENGTH];
+        java.util.Arrays.fill(chunk, (byte) 0x20);
+        System.arraycopy(ws.fldt, 0, chunk, 0, xrefPayloadLength);
         return CardXrefRecord.parse(chunk);
     }
 
