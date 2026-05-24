@@ -117,14 +117,23 @@ public final class CoTrn02C {
 
     private final CardXrefRepository cardXref;
     private final TransactionRepository transactions;
-    private final DateValidator dateValidator;
     private final ProgramRegistry programRegistry;
 
+    /**
+     * Constructs the CoTrn02C controller. The {@link DateValidator}
+     * collaborator is no longer injected: per its CSUTLDTC translation it
+     * is a utility class with only static methods, so call sites invoke
+     * {@code DateValidator.validate(...)} directly.
+     *
+     * @param cardXref         card cross-reference repository port; must be non-null
+     * @param transactions     transaction repository port; must be non-null
+     * @param programRegistry  dynamic dispatch routing for XCTL targets;
+     *                         must be non-null
+     */
     public CoTrn02C(CardXrefRepository cardXref, TransactionRepository transactions,
-                    DateValidator dateValidator, ProgramRegistry programRegistry) {
+                    ProgramRegistry programRegistry) {
         this.cardXref = cardXref;
         this.transactions = transactions;
-        this.dateValidator = dateValidator;
         this.programRegistry = programRegistry;
     }
 
@@ -304,17 +313,20 @@ public final class CoTrn02C {
         if (!DATE_PATTERN.matcher(input.origDate()).matches()) return MSG_ORIG_DT_FORMAT;
         if (!DATE_PATTERN.matcher(input.procDate()).matches()) return MSG_PROC_DT_FORMAT;
 
-        // Date validity via CSUTLDTC equivalent.
-        DateValidator.Result origRes = dateValidator.validate(
-                new DateValidator.Input(input.origDate(), "yyyy-MM-dd"));
-        if (origRes.severity() != DateValidator.Severity.OK
-                && !"2513".equals(origRes.msgNumber())) {
+        // Date validity via CSUTLDTC equivalent — DateValidator.validate is
+        // now a static call on the utility class, taking the COBOL format
+        // mask "YYYY-MM-DD". The "2513" msgNo (FC-UNSUPP-RANGE) tolerance
+        // is preserved: a year outside CEEDAYS' supported Gregorian range
+        // is allowed through since the regex pattern check above has
+        // already validated the field shape.
+        var origRes = DateValidator.validate(input.origDate(), "YYYY-MM-DD");
+        if (!origRes.isSuccess()
+                && !"2513".equals(origRes.msgNo().strip())) {
             return MSG_ORIG_DT_INVALID;
         }
-        DateValidator.Result procRes = dateValidator.validate(
-                new DateValidator.Input(input.procDate(), "yyyy-MM-dd"));
-        if (procRes.severity() != DateValidator.Severity.OK
-                && !"2513".equals(procRes.msgNumber())) {
+        var procRes = DateValidator.validate(input.procDate(), "YYYY-MM-DD");
+        if (!procRes.isSuccess()
+                && !"2513".equals(procRes.msgNo().strip())) {
             return MSG_PROC_DT_INVALID;
         }
 

@@ -132,9 +132,63 @@ to preserve the day-count semantics of the original mainframe API.
 **Feedback-code mapping**: the COBOL EVALUATE at
 `[app/cbl/CSUTLDTC.cbl:L128-L155]` maps `FC-*` symbolic feedback codes
 to a 15-character `WS-RESULT` message. The Java translation preserves
-both the codes and the exact message strings byte-for-byte, including
-the truncations dictated by `WS-RESULT IS 15 CHARACTERS`
-`[app/cbl/CSUTLDTC.cbl:L126]`.
+the exact 15-char message strings verbatim. The severity (4-char) and
+message number (4-char) values are a best-effort mapping from
+`DateTimeParseException` message categories to the most likely matching
+CEEDAYS feedback code; the precise byte values of CEEDAYS are opaque LE
+internals and cannot be reproduced exactly for every conceivable edge
+case. The `DateValidator.classifyDateTimeParseException` heuristic
+inspects exception message substrings ("monthofyear", "month",
+"dayofmonth", "day of month", "invalid date", "year"+"range",
+"could not be parsed", "text") to select the closest FC-* equivalent;
+falls through to `MSG_DATE_INVALID="9999"` for unrecognized failures
+(the COBOL `WHEN OTHER` branch).
+
+**DateValidator is a utility class with only static methods**: per the
+finalized design (AAP §0.3 and the file schema for
+`java/carddemo-application/.../util/DateValidator.java`), the
+translated wrapper is a non-instantiable utility class with a private
+constructor that throws `UnsupportedOperationException`. The
+single-program rename from `CsUtlDtC` to `DateValidator` (AAP §0.6.8 —
+the **only** renamed program in the migration) accompanies this design
+because the class also hosts the executable date-validation logic from
+`app/cpy/CSUTLDPY.cpy` (paragraphs `EDIT-DATE-CCYYMMDD`,
+`EDIT-YEAR-CCYY`, `EDIT-MONTH`, `EDIT-DAY`, `EDIT-DAY-MONTH-YEAR`,
+`EDIT-DATE-LE`, `EDIT-DATE-OF-BIRTH`). The class exposes:
+* `validate(String dateToTest, String dateFormat)` — primary CSUTLDTC
+  CEEDAYS equivalent; returns a `DateValidationResult` mirroring the
+  80-byte `LS-RESULT` LINKAGE structure
+* `validateCcyymmdd(String, String)` — orchestrates the full
+  `EDIT-DATE-CCYYMMDD` pipeline (year → month → day → cross-field → LE)
+* `validateDateOfBirth(String, String, LocalDate)` — strict future-date
+  check (sets all 3 NOT-OK flags on failure per CSUTLDPY)
+* `editYearCcyy / editMonth / editDay / editDayMonthYear / editDateLe`
+  — individual paragraph translations returning `FieldValidationResult`
+* `formatAsLsResult(DateValidationResult)` — produces the 80-byte
+  `LS-RESULT` text per the CSUTLDTC LINKAGE SECTION layout
+* 10 public `RESULT_*` constants (each exactly 15 chars) for the
+  EVALUATE WHEN result texts
+
+**Caller constructor signature changes** (downstream consequence): The
+two in-scope callers `CoRpt00C` (CORPT00C transaction) and `CoTrn02C`
+(COTRN02C transaction) previously held a `private final DateValidator
+dateValidator` field injected via constructor. Because `DateValidator`
+is now non-instantiable, these constructor parameters and fields were
+removed, and the call sites invoke `DateValidator.validate(...)`
+statically. Format-mask arguments were converted from the Java pattern
+`"yyyy-MM-dd"` to the COBOL pattern `"YYYY-MM-DD"` so they pass
+through the `Y → u`, `D → d` substitution in `parseMask`. The
+`!"2513".equals(msgNumber())` tolerance for `FC-UNSUPP-RANGE` was
+preserved (callers continue to allow this severity through after the
+regex / range pre-checks). Tests that constructed these classes (if
+any are added) must use the new 1-arg / 3-arg signatures.
+
+**COBOL-equivalent leap-year algorithm**: `editDayMonthYear` uses the
+exact CSUTLDPY rule (`if year mod 100 == 0 then divBy=400 else
+divBy=4; leap = year mod divBy == 0`) rather than delegating to
+`LocalDate.isLeapYear()`. The two algorithms produce identical results
+for all valid 4-digit Gregorian years (1..9999), but the COBOL form is
+preserved per AAP §0.7.1 idiom-for-idiom mandate.
 
 ---
 

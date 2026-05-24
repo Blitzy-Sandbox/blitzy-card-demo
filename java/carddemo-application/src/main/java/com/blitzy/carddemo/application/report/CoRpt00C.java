@@ -103,18 +103,21 @@ public final class CoRpt00C {
     private static final DateTimeFormatter ISO_DATE = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final Pattern NUMERIC_PATTERN = Pattern.compile("\\d+");
 
-    private final DateValidator dateValidator;
     private final ProgramRegistry programRegistry;
 
     /**
-     * Constructs a CORPT00C controller. Both collaborators are required
+     * Constructs a CORPT00C controller. {@code programRegistry} is required
      * (constructor injection; no Spring container per AAP &sect;0.3).
      *
-     * @param dateValidator    delegate for CSUTLDTC ResolverStyle.STRICT validation
-     * @param programRegistry  dynamic dispatch routing for XCTL targets
+     * <p>The {@link DateValidator} collaborator is no longer injected: per
+     * its CSUTLDTC translation it is a utility class with only static
+     * methods, so call sites invoke {@code DateValidator.validate(...)}
+     * directly.
+     *
+     * @param programRegistry  dynamic dispatch routing for XCTL targets;
+     *                         must be non-null
      */
-    public CoRpt00C(DateValidator dateValidator, ProgramRegistry programRegistry) {
-        this.dateValidator = dateValidator;
+    public CoRpt00C(ProgramRegistry programRegistry) {
         this.programRegistry = programRegistry;
     }
 
@@ -303,17 +306,21 @@ public final class CoRpt00C {
                     Integer.parseInt(input.endMonth().trim()),
                     Integer.parseInt(input.endDay().trim()));
 
-            DateValidator.Result sdtRes = dateValidator.validate(
-                    new DateValidator.Input(startDateString, "yyyy-MM-dd"));
-            if (sdtRes.severity() != DateValidator.Severity.OK
-                    && !"2513".equals(sdtRes.msgNumber())) {
+            // CSUTLDTC equivalent — DateValidator.validate is now static
+            // (utility class) and takes the COBOL format mask "YYYY-MM-DD".
+            // The "2513" msgNo (FC-UNSUPP-RANGE) tolerance is preserved:
+            // a year outside CEEDAYS' supported Gregorian range is allowed
+            // through since the caller has already range-checked the year
+            // digits and we still attempt LocalDate.parse below.
+            var sdtRes = DateValidator.validate(startDateString, "YYYY-MM-DD");
+            if (!sdtRes.isSuccess()
+                    && !"2513".equals(sdtRes.msgNo().strip())) {
                 return Result.sendMap(buildScreen(input, MSG_SDT_INVALID), commarea);
             }
 
-            DateValidator.Result edtRes = dateValidator.validate(
-                    new DateValidator.Input(endDateString, "yyyy-MM-dd"));
-            if (edtRes.severity() != DateValidator.Severity.OK
-                    && !"2513".equals(edtRes.msgNumber())) {
+            var edtRes = DateValidator.validate(endDateString, "YYYY-MM-DD");
+            if (!edtRes.isSuccess()
+                    && !"2513".equals(edtRes.msgNo().strip())) {
                 return Result.sendMap(buildScreen(input, MSG_EDT_INVALID), commarea);
             }
 
