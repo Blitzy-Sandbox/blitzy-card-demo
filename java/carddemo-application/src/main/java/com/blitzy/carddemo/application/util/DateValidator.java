@@ -7,15 +7,13 @@
 package com.blitzy.carddemo.application.util;
 
 import com.blitzy.carddemo.domain.annotation.CobolProgram;
-import com.blitzy.carddemo.domain.validation.DateValidationWork.Input;
-import com.blitzy.carddemo.domain.validation.DateValidationWork.Result;
-import com.blitzy.carddemo.domain.validation.DateValidationWork.Severity;
 
 import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
+import java.util.Objects;
 
 /**
  * Java translation of the {@code CSUTLDTC} COBOL program at
@@ -204,5 +202,187 @@ public final class DateValidator {
     /** Maps a result severity to the 4-character WS-SEVERITY representation. */
     public static String formatSeverity(Severity severity) {
         return severity.fourCharCode();
+    }
+
+    // ==================================================================
+    // NESTED TYPES — CSUTLDTC LINKAGE SECTION translation
+    //
+    // The original COBOL CSUTLDTC.cbl is a black-box callable utility whose
+    // LINKAGE SECTION declares (LS-DATE, LS-DATE-FORMAT, LS-RESULT). The
+    // following nested types translate that LINKAGE shape into idiomatic
+    // Java records / enum local to the validator service that owns them.
+    //
+    // Architectural note: these contract types live on the SERVICE class
+    // (DateValidator), not on the working-storage record (DateValidationWork).
+    // DateValidationWork is the COBOL CSUTLDWY working-storage data
+    // structure; DateValidator is the CSUTLDTC service. Per AAP §0.4.1 the
+    // executable validation logic translates here, not into the work area
+    // record.
+    // ==================================================================
+
+    /**
+     * Severity code modelling the COBOL {@code WS-SEVERITY-N} values returned by
+     * the IBM Language Environment {@code CSUTLDTC / CEEDAYS} service:
+     * {@code 0} = OK, {@code 4} = warning, {@code >= 8} = error. The Java
+     * translation collapses non-zero severities into a single {@link #ERROR}
+     * permit; the precise message number is carried separately on
+     * {@link Result#msgNumber()}.
+     */
+    public enum Severity {
+
+        /** {@code WS-SEVERITY-N = 0}: date is valid (LE service success). */
+        OK(0, "0000"),
+
+        /** {@code WS-SEVERITY-N >= 8} (or {@code 12}): date is invalid (LE service error). */
+        ERROR(12, "0012");
+
+        private final int code;
+        private final String fourCharCode;
+
+        Severity(int code, String fourCharCode) {
+            this.code = code;
+            this.fourCharCode = fourCharCode;
+        }
+
+        /**
+         * Returns the integer severity code (0 for OK, 12 for ERROR).
+         *
+         * @return the integer severity code
+         */
+        public int code() {
+            return code;
+        }
+
+        /**
+         * Returns the 4-character {@code WS-SEVERITY PIC X(04)} representation
+         * (e.g., {@code "0000"} for OK, {@code "0012"} for ERROR).
+         *
+         * @return the 4-character severity string
+         */
+        public String fourCharCode() {
+            return fourCharCode;
+        }
+    }
+
+    /**
+     * Input to the {@link DateValidator#validate(Input) validate} method. Mirrors the
+     * COBOL CSUTLDTC LINKAGE inputs ({@code LS-DATE PIC X(10)},
+     * {@code LS-DATE-FORMAT PIC X(10)}).
+     *
+     * <p>Both fields tolerate {@code null} inputs to match COBOL behavior &mdash; a
+     * {@code null} date string is treated as "not supplied" and routed to the
+     * {@link DateValidator#RESULT_INSUFFICIENT} branch; a {@code null} format string
+     * is replaced with the default {@code "YYYYMMDD"} per the
+     * {@code WS-DATE-FORMAT VALUE 'YYYYMMDD'} clause in {@code CSUTLDWY.cpy}.
+     *
+     * @param dateString the candidate date string to validate (may be {@code null})
+     * @param dateFormat the COBOL format pattern (may be {@code null}, defaults to
+     *                   {@code "YYYYMMDD"})
+     */
+    public record Input(String dateString, String dateFormat) {
+
+        /** Default COBOL date format from {@code WS-DATE-FORMAT VALUE 'YYYYMMDD'}. */
+        public static final String DEFAULT_DATE_FORMAT = "YYYYMMDD";
+
+        /**
+         * Compact canonical constructor (JEP 513 Flexible Constructor Bodies):
+         * normalizes {@code null} inputs to safe defaults before binding.
+         */
+        public Input {
+            dateString = dateString == null ? "" : dateString;
+            dateFormat = dateFormat == null ? DEFAULT_DATE_FORMAT : dateFormat;
+        }
+
+        /**
+         * Convenience factory using the default {@code "YYYYMMDD"} format.
+         *
+         * @param dateString the candidate date string
+         * @return an {@link Input} with {@code dateFormat} set to {@code "YYYYMMDD"}
+         */
+        public static Input yyyymmdd(String dateString) {
+            return new Input(dateString, DEFAULT_DATE_FORMAT);
+        }
+    }
+
+    /**
+     * Output of the {@link DateValidator#validate(Input) validate} method, mirroring
+     * the COBOL {@code WS-DATE-VALIDATION-RESULT} structure plus the year / month /
+     * day validity flags from {@code WS-EDIT-DATE-FLGS}.
+     *
+     * @param severity      validation outcome severity
+     * @param msgNumber     LE message number (e.g., {@code "2513"} for the LE
+     *                      "date is valid" success code)
+     * @param resultMessage human-readable result word
+     *                      (e.g., {@code "Date is valid  "})
+     * @param testedDate    the date string that was validated
+     * @param maskUsed      the date format mask that was applied
+     * @param yearOk        {@code true} if the year sub-edit passed
+     * @param monthOk       {@code true} if the month sub-edit passed
+     * @param dayOk         {@code true} if the day sub-edit passed
+     */
+    public record Result(
+            Severity severity,
+            String msgNumber,
+            String resultMessage,
+            String testedDate,
+            String maskUsed,
+            boolean yearOk,
+            boolean monthOk,
+            boolean dayOk
+    ) {
+
+        /**
+         * Compact canonical constructor (JEP 513): null-checks the {@code severity}
+         * (the only non-nullable field) and normalizes other {@code null} strings
+         * to empty strings.
+         */
+        public Result {
+            Objects.requireNonNull(severity, "severity");
+            msgNumber = msgNumber == null ? "" : msgNumber;
+            resultMessage = resultMessage == null ? "" : resultMessage;
+            testedDate = testedDate == null ? "" : testedDate;
+            maskUsed = maskUsed == null ? "" : maskUsed;
+        }
+
+        /**
+         * Factory for the success outcome with all flags set OK.
+         *
+         * @param date     the validated date
+         * @param maskUsed the format mask that was applied
+         * @return a successful {@link Result}
+         */
+        public static Result ok(LocalDate date, String maskUsed) {
+            return new Result(Severity.OK, "0000", "Valid",
+                    date.toString(), maskUsed,
+                    true, true, true);
+        }
+
+        /**
+         * Factory for a failure outcome carrying the year / month / day flag bytes.
+         *
+         * @param message    the human-readable failure message
+         * @param maskUsed   the format mask that was applied
+         * @param testedDate the date string that failed validation
+         * @param yearOk     whether the year sub-edit passed
+         * @param monthOk    whether the month sub-edit passed
+         * @param dayOk      whether the day sub-edit passed
+         * @return an unsuccessful {@link Result}
+         */
+        public static Result invalid(String message, String maskUsed,
+                                     String testedDate,
+                                     boolean yearOk, boolean monthOk, boolean dayOk) {
+            return new Result(Severity.ERROR, "0012", message,
+                    testedDate, maskUsed,
+                    yearOk, monthOk, dayOk);
+        }
+
+        /**
+         * Convenience predicate.
+         *
+         * @return {@code true} iff {@link #severity()} is {@link Severity#OK}
+         */
+        public boolean isOk() {
+            return severity == Severity.OK;
+        }
     }
 }

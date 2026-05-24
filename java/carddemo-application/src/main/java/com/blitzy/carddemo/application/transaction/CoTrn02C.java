@@ -25,7 +25,6 @@ import com.blitzy.carddemo.domain.record.CardXrefRecord;
 import com.blitzy.carddemo.domain.record.TranRecord;
 import com.blitzy.carddemo.domain.status.PgmContext;
 import com.blitzy.carddemo.domain.util.Decimals;
-import com.blitzy.carddemo.domain.validation.DateValidationWork;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -309,15 +308,15 @@ public final class CoTrn02C {
         if (!DATE_PATTERN.matcher(input.procDate()).matches()) return MSG_PROC_DT_FORMAT;
 
         // Date validity via CSUTLDTC equivalent.
-        DateValidationWork.Result origRes = dateValidator.validate(
-                new DateValidationWork.Input(input.origDate(), "yyyy-MM-dd"));
-        if (origRes.severity() != DateValidationWork.Severity.OK
+        DateValidator.Result origRes = dateValidator.validate(
+                new DateValidator.Input(input.origDate(), "yyyy-MM-dd"));
+        if (origRes.severity() != DateValidator.Severity.OK
                 && !"2513".equals(origRes.msgNumber())) {
             return MSG_ORIG_DT_INVALID;
         }
-        DateValidationWork.Result procRes = dateValidator.validate(
-                new DateValidationWork.Input(input.procDate(), "yyyy-MM-dd"));
-        if (procRes.severity() != DateValidationWork.Severity.OK
+        DateValidator.Result procRes = dateValidator.validate(
+                new DateValidator.Input(input.procDate(), "yyyy-MM-dd"));
+        if (procRes.severity() != DateValidator.Severity.OK
                 && !"2513".equals(procRes.msgNumber())) {
             return MSG_PROC_DT_INVALID;
         }

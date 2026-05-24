@@ -20,7 +20,6 @@ import com.blitzy.carddemo.application.util.DateValidator;
 import com.blitzy.carddemo.domain.annotation.CobolProgram;
 import com.blitzy.carddemo.domain.commarea.CardDemoCommarea;
 import com.blitzy.carddemo.domain.status.PgmContext;
-import com.blitzy.carddemo.domain.validation.DateValidationWork;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -277,16 +276,16 @@ public final class CoRpt00C {
                     Integer.parseInt(input.endMonth().trim()),
                     Integer.parseInt(input.endDay().trim()));
 
-            DateValidationWork.Result sdtRes = dateValidator.validate(
-                    new DateValidationWork.Input(startDateString, "yyyy-MM-dd"));
-            if (sdtRes.severity() != DateValidationWork.Severity.OK
+            DateValidator.Result sdtRes = dateValidator.validate(
+                    new DateValidator.Input(startDateString, "yyyy-MM-dd"));
+            if (sdtRes.severity() != DateValidator.Severity.OK
                     && !"2513".equals(sdtRes.msgNumber())) {
                 return Result.sendMap(buildScreen(input, MSG_SDT_INVALID), commarea);
             }
 
-            DateValidationWork.Result edtRes = dateValidator.validate(
-                    new DateValidationWork.Input(endDateString, "yyyy-MM-dd"));
-            if (edtRes.severity() != DateValidationWork.Severity.OK
+            DateValidator.Result edtRes = dateValidator.validate(
+                    new DateValidator.Input(endDateString, "yyyy-MM-dd"));
+            if (edtRes.severity() != DateValidator.Severity.OK
                     && !"2513".equals(edtRes.msgNumber())) {
                 return Result.sendMap(buildScreen(input, MSG_EDT_INVALID), commarea);
             }
