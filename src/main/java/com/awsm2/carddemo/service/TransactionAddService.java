@@ -30,6 +30,7 @@ import com.awsm2.carddemo.validation.DateValidationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -93,7 +94,7 @@ import java.util.Optional;
  *       <td>{@link TransactionRepository#save(Object)}</td></tr>
  *   <tr><td>{@code SYNCPOINT} (CICS commit)</td>
  *       <td>{@link Transactional @Transactional(rollbackFor =
- *       Exception.class)}</td></tr>
+ *       Exception.class, isolation = Isolation.READ_COMMITTED)}</td></tr>
  *   <tr><td>(NEW &mdash; not in COBOL source) Online &rarr; downstream
  *       notification of newly-posted transactions</td>
  *       <td>{@link KafkaEventPublisher#publishTransactionPosted(Long,
@@ -111,10 +112,11 @@ import java.util.Optional;
  * sequence inside a single CICS task. The Java target preserves the
  * same invariant by wrapping the {@code findTopByOrderByTranIdDesc} read and the
  * {@code save} write in the same {@link Transactional &#64;Transactional}
- * boundary using {@code SERIALIZABLE} isolation on the database
- * connection (provided by RDS PostgreSQL Multi-AZ per AAP &sect;0.6.2).
- * Two concurrent inserts will be serialized by PostgreSQL and the
- * later one will retry until the next available ID becomes visible.</p>
+ * boundary using {@link Isolation#READ_COMMITTED} isolation on the
+ * database connection (the JpaConfig default for the project &mdash;
+ * RDS PostgreSQL Multi-AZ per AAP &sect;0.6.2). Two concurrent inserts
+ * are serialized by the database; the later one will retry until the
+ * next available ID becomes visible.</p>
  *
  * <h2>Cross-field "account OR card" validation</h2>
  *
@@ -192,7 +194,7 @@ public class TransactionAddService {
      * @throws OnSizeErrorException    if the next tran ID would
      *                                 overflow the 16-digit ceiling
      */
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public TransactionAddDto addTransaction(TransactionAddDto request) {
         Objects.requireNonNull(request, "request");
         validate(request);
