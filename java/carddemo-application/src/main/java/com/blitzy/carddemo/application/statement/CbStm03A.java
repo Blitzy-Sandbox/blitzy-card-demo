@@ -10,7 +10,7 @@ import com.blitzy.carddemo.application.AbendException;
 import com.blitzy.carddemo.domain.annotation.CobolProgram;
 import com.blitzy.carddemo.domain.record.AccountRecord;
 import com.blitzy.carddemo.domain.record.CardXrefRecord;
-import com.blitzy.carddemo.domain.record.CustomerRecord;
+import com.blitzy.carddemo.domain.record.CustomerLegacyRecord;
 import com.blitzy.carddemo.domain.record.TrnxRecord;
 import com.blitzy.carddemo.domain.util.Decimals;
 
@@ -22,7 +22,6 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
@@ -139,9 +138,11 @@ public final class CbStm03A {
     private final Path htmlFilePath;
 
     // -- WORKING-STORAGE mirrors ------------------------------------------
-
-    /** Mirror of COBOL {@code WS-M03B-AREA}. */
-    private final CbStm03B.M03BArea ws = new CbStm03B.M03BArea();
+    //
+    // Note: the COBOL WS-M03B-AREA dispatch parameter is replaced by direct
+    // typed method calls on the CbStm03B subroutine per AAP §0.4.2 — there
+    // is no Java mirror of LK-M03B-AREA because the parameter is no longer
+    // marshalled at the call boundary.
 
     /** Mirror of {@code WS-FL-DD} (initial value 'TRNXFILE'). */
     private DispatchState wsFlDd = DispatchState.TRNXFILE;
@@ -174,8 +175,8 @@ public final class CbStm03A {
 
     /** Mirror of {@code XREF-...} layout once {@link #ws} carries a row. */
     private CardXrefRecord currentXref;
-    /** Mirror of {@code CUSTOMER-RECORD}. */
-    private CustomerRecord currentCustomer;
+    /** Mirror of {@code CUSTOMER-RECORD} (CUSTREC layout via CBSTM03B). */
+    private CustomerLegacyRecord currentCustomer;
     /** Mirror of {@code ACCOUNT-RECORD}. */
     private AccountRecord currentAccount;
     /** Mirror of {@code TRNX-RECORD} most-recently read from CBSTM03B. */
@@ -313,22 +314,18 @@ public final class CbStm03A {
      * state machine. Our equivalent simply returns the next state.
      */
     private DispatchState openTrnxFile() {
-        // MOVE 'TRNXFILE' TO WS-M03B-DD
-        // SET M03B-OPEN TO TRUE
-        ws.dd = CbStm03B.DD_TRNXFILE;
-        ws.oper = CbStm03B.Oper.OPEN;
-        ws.rc = CbStm03B.RC_OK;
-        cbStm03B.invoke(ws);
-        checkRc("ERROR OPENING TRNXFILE", ws.rc);
+        // MOVE 'TRNXFILE' TO WS-M03B-DD; SET M03B-OPEN TO TRUE; CALL 'CBSTM03B'
+        int rc = cbStm03B.openFile(CbStm03B.FILE_TAG_TRNXFILE);
+        checkRc("ERROR OPENING TRNXFILE", rc);
 
-        // SET M03B-READ TO TRUE; MOVE SPACES TO WS-M03B-FLDT
-        ws.oper = CbStm03B.Oper.READ;
-        clearFldt();
-        cbStm03B.invoke(ws);
-        checkRc("ERROR READING TRNXFILE", ws.rc);
-
-        // MOVE WS-M03B-FLDT TO TRNX-RECORD
-        currentTrnx = decodeTrnxFromFldt();
+        // SET M03B-READ TO TRUE; CALL 'CBSTM03B'
+        Optional<TrnxRecord> first = cbStm03B.readNextTransaction();
+        if (first.isEmpty()) {
+            log.error("ERROR READING TRNXFILE; EOF on first read");
+            abendProgram(new IllegalStateException("ERROR READING TRNXFILE: unexpected EOF"));
+            return DispatchState.DONE;
+        }
+        currentTrnx = first.get();
         // MOVE TRNX-CARD-NUM TO WS-SAVE-CARD
         wsSaveCard = currentTrnx.trnxKey().trnxCardNum();
         // MOVE 1 TO CR-CNT; MOVE 0 TO TR-CNT
@@ -345,11 +342,8 @@ public final class CbStm03A {
      * to opening CUSTFILE.
      */
     private DispatchState openXrefFile() {
-        ws.dd = CbStm03B.DD_XREFFILE;
-        ws.oper = CbStm03B.Oper.OPEN;
-        ws.rc = CbStm03B.RC_OK;
-        cbStm03B.invoke(ws);
-        checkRc("ERROR OPENING XREFFILE", ws.rc);
+        int rc = cbStm03B.openFile(CbStm03B.FILE_TAG_XREFFILE);
+        checkRc("ERROR OPENING XREFFILE", rc);
 
         wsFlDd = DispatchState.CUSTFILE;
         return DispatchState.CUSTFILE;
@@ -360,11 +354,8 @@ public final class CbStm03A {
      * to opening ACCTFILE.
      */
     private DispatchState openCustFile() {
-        ws.dd = CbStm03B.DD_CUSTFILE;
-        ws.oper = CbStm03B.Oper.OPEN;
-        ws.rc = CbStm03B.RC_OK;
-        cbStm03B.invoke(ws);
-        checkRc("ERROR OPENING CUSTFILE", ws.rc);
+        int rc = cbStm03B.openFile(CbStm03B.FILE_TAG_CUSTFILE);
+        checkRc("ERROR OPENING CUSTFILE", rc);
 
         wsFlDd = DispatchState.ACCTFILE;
         return DispatchState.ACCTFILE;
@@ -375,11 +366,8 @@ public final class CbStm03A {
      * directly to the MAINLINE loop.
      */
     private DispatchState openAcctFile() {
-        ws.dd = CbStm03B.DD_ACCTFILE;
-        ws.oper = CbStm03B.Oper.OPEN;
-        ws.rc = CbStm03B.RC_OK;
-        cbStm03B.invoke(ws);
-        checkRc("ERROR OPENING ACCTFILE", ws.rc);
+        int rc = cbStm03B.openFile(CbStm03B.FILE_TAG_ACCTFILE);
+        checkRc("ERROR OPENING ACCTFILE", rc);
 
         // GO TO 1000-MAINLINE
         return DispatchState.MAINLINE;
@@ -420,23 +408,20 @@ public final class CbStm03A {
             // MOVE TRNX-CARD-NUM TO WS-SAVE-CARD
             wsSaveCard = cardNum;
 
-            // Next READ
-            ws.dd = CbStm03B.DD_TRNXFILE;
-            ws.oper = CbStm03B.Oper.READ;
-            clearFldt();
-            cbStm03B.invoke(ws);
-
-            if (CbStm03B.RC_OK.equals(ws.rc)) {
+            // Next READ — typed API returns Optional<TrnxRecord> per AAP §0.4.2.
+            // Optional.isPresent() <=> COBOL FILE STATUS '00' (RC_OK);
+            // Optional.isEmpty()   <=> COBOL FILE STATUS '10' (RC_EOF).
+            // Any low-level I/O failure surfaces as UncheckedIOException which
+            // is caught by the outer run() try-catch and routed to
+            // 9999-ABEND-PROGRAM via abendProgram(RuntimeException).
+            Optional<TrnxRecord> next = cbStm03B.readNextTransaction();
+            if (next.isPresent()) {
                 // GO TO 8500-READTRNX-READ
-                currentTrnx = decodeTrnxFromFldt();
+                currentTrnx = next.get();
                 continue;
-            } else if (CbStm03B.RC_EOF.equals(ws.rc)) {
-                // GO TO 8599-EXIT
-                break;
             } else {
-                log.error("ERROR READING TRNXFILE; RETURN CODE: {}", ws.rc);
-                abendProgram(new IllegalStateException("ERROR READING TRNXFILE: " + ws.rc));
-                return DispatchState.DONE;
+                // GO TO 8599-EXIT (RC_EOF)
+                break;
             }
         }
 
@@ -488,19 +473,13 @@ public final class CbStm03A {
      * flag. Any other RC aborts with ABEND.
      */
     private void xrefFileGetNext() {
-        ws.dd = CbStm03B.DD_XREFFILE;
-        ws.oper = CbStm03B.Oper.READ;
-        ws.rc = CbStm03B.RC_OK;
-        clearFldt();
-        cbStm03B.invoke(ws);
-
-        switch (ws.rc) {
-            case CbStm03B.RC_OK -> currentXref = decodeXrefFromFldt();
-            case CbStm03B.RC_EOF -> endOfFile = true;
-            default -> {
-                log.error("ERROR READING XREFFILE; RETURN CODE: {}", ws.rc);
-                abendProgram(new IllegalStateException("ERROR READING XREFFILE: " + ws.rc));
-            }
+        // Typed API: Optional<CardXrefRecord> per AAP §0.4.2.
+        // Present <=> COBOL FILE STATUS '00' (RC_OK); empty <=> '10' (RC_EOF).
+        Optional<CardXrefRecord> next = cbStm03B.readNextXref();
+        if (next.isPresent()) {
+            currentXref = next.get();
+        } else {
+            endOfFile = true;
         }
     }
 
@@ -509,24 +488,17 @@ public final class CbStm03A {
      * customer id. RC=00 decodes; RC=23 sets EOF (no customer found).
      */
     private void custFileGet() {
-        ws.dd = CbStm03B.DD_CUSTFILE;
-        ws.oper = CbStm03B.Oper.READ_K;
-        ws.key = String.format("%09d", currentXref.xrefCustId());
-        ws.keyLn = 9;
-        ws.rc = CbStm03B.RC_OK;
-        clearFldt();
-        cbStm03B.invoke(ws);
-
-        switch (ws.rc) {
-            case CbStm03B.RC_OK -> currentCustomer = decodeCustomerFromFldt();
-            case CbStm03B.RC_NOT_FOUND -> {
-                log.warn("CUSTFILE key {} not found; ending statement cycle", ws.key);
-                endOfFile = true;
-            }
-            default -> {
-                log.error("ERROR READING CUSTFILE; RETURN CODE: {}", ws.rc);
-                abendProgram(new IllegalStateException("ERROR READING CUSTFILE: " + ws.rc));
-            }
+        // Typed API: Optional<CustomerLegacyRecord> via random read by FD-CUST-ID
+        // per AAP §0.4.2. Present <=> COBOL FILE STATUS '00' (RC_OK); empty
+        // <=> '23' (RC_NOT_FOUND) — end the statement cycle in that case.
+        long custId = currentXref.xrefCustId();
+        Optional<CustomerLegacyRecord> cust = cbStm03B.readCustomerByKey(custId);
+        if (cust.isPresent()) {
+            currentCustomer = cust.get();
+        } else {
+            log.warn("CUSTFILE key {} not found; ending statement cycle",
+                    String.format("%09d", custId));
+            endOfFile = true;
         }
     }
 
@@ -535,24 +507,17 @@ public final class CbStm03A {
      * account id. Same RC handling as CUSTFILE.
      */
     private void acctFileGet() {
-        ws.dd = CbStm03B.DD_ACCTFILE;
-        ws.oper = CbStm03B.Oper.READ_K;
-        ws.key = String.format("%011d", currentXref.xrefAcctId());
-        ws.keyLn = 11;
-        ws.rc = CbStm03B.RC_OK;
-        clearFldt();
-        cbStm03B.invoke(ws);
-
-        switch (ws.rc) {
-            case CbStm03B.RC_OK -> currentAccount = decodeAccountFromFldt();
-            case CbStm03B.RC_NOT_FOUND -> {
-                log.warn("ACCTFILE key {} not found; ending statement cycle", ws.key);
-                endOfFile = true;
-            }
-            default -> {
-                log.error("ERROR READING ACCTFILE; RETURN CODE: {}", ws.rc);
-                abendProgram(new IllegalStateException("ERROR READING ACCTFILE: " + ws.rc));
-            }
+        // Typed API: Optional<AccountRecord> via random read by FD-ACCT-ID
+        // per AAP §0.4.2. Present <=> COBOL FILE STATUS '00' (RC_OK); empty
+        // <=> '23' (RC_NOT_FOUND) — end the statement cycle in that case.
+        long acctId = currentXref.xrefAcctId();
+        Optional<AccountRecord> acct = cbStm03B.readAccountByKey(acctId);
+        if (acct.isPresent()) {
+            currentAccount = acct.get();
+        } else {
+            log.warn("ACCTFILE key {} not found; ending statement cycle",
+                    String.format("%011d", acctId));
+            endOfFile = true;
         }
     }
 
@@ -815,64 +780,28 @@ public final class CbStm03A {
     // 9100/9200/9300/9400 CLOSE paragraphs
     // ====================================================================
 
-    private void closeTrnxFile() { closeFile(CbStm03B.DD_TRNXFILE, "TRNXFILE"); }
-    private void closeXrefFile() { closeFile(CbStm03B.DD_XREFFILE, "XREFFILE"); }
-    private void closeCustFile() { closeFile(CbStm03B.DD_CUSTFILE, "CUSTFILE"); }
-    private void closeAcctFile() { closeFile(CbStm03B.DD_ACCTFILE, "ACCTFILE"); }
+    private void closeTrnxFile() { closeFile(CbStm03B.FILE_TAG_TRNXFILE, "TRNXFILE"); }
+    private void closeXrefFile() { closeFile(CbStm03B.FILE_TAG_XREFFILE, "XREFFILE"); }
+    private void closeCustFile() { closeFile(CbStm03B.FILE_TAG_CUSTFILE, "CUSTFILE"); }
+    private void closeAcctFile() { closeFile(CbStm03B.FILE_TAG_ACCTFILE, "ACCTFILE"); }
 
-    private void closeFile(String dd, String label) {
-        ws.dd = dd;
-        ws.oper = CbStm03B.Oper.CLOSE;
-        ws.rc = CbStm03B.RC_OK;
-        cbStm03B.invoke(ws);
-        checkRc("ERROR CLOSING " + label, ws.rc);
+    private void closeFile(String fileTag, String label) {
+        int rc = cbStm03B.closeFile(fileTag);
+        checkRc("ERROR CLOSING " + label, rc);
     }
 
     // ====================================================================
-    // FLDT decoding helpers
+    // Record decoding helpers
+    //
+    // The old WS-M03B-AREA dispatch returned a raw byte buffer
+    // (LK-M03B-FLDT, PIC X(1000)) that the caller decoded into typed
+    // records. The new CbStm03B typed API returns Optional<TrnxRecord>,
+    // Optional<CardXrefRecord>, Optional<CustomerLegacyRecord>, and
+    // Optional<AccountRecord> directly — no decoding step is required at
+    // the call site. The corresponding helper methods
+    // (decodeTrnxFromFldt, decodeXrefFromFldt, decodeCustomerFromFldt,
+    // decodeAccountFromFldt, clearFldt) have therefore been removed.
     // ====================================================================
-
-    /**
-     * Decode the current {@link CbStm03B.M03BArea#fldt} buffer as a 350-byte
-     * TRNX-RECORD via {@link TrnxRecord#parse(byte[])}.
-     */
-    private TrnxRecord decodeTrnxFromFldt() {
-        byte[] chunk = new byte[TrnxRecord.RECORD_LENGTH];
-        System.arraycopy(ws.fldt, 0, chunk, 0, chunk.length);
-        return TrnxRecord.parse(chunk);
-    }
-
-    private CardXrefRecord decodeXrefFromFldt() {
-        // CBSTM03B file-services emits 36-byte XREF rows (no trailing FILLER)
-        // per AAP §0.6.9 / MIGRATION_NOTES.md §1.4.9. CardXrefRecord.parse()
-        // requires the canonical 50-byte layout, so we pad the 36-byte
-        // payload with 14 trailing ASCII-space bytes (0x20) to synthesise
-        // the FILLER region. This yields a CardXrefRecord whose
-        // xrefCardNum / xrefCustId / xrefAcctId components are byte-identical
-        // to the legacy permissive-parser behaviour, with a 14-space FILLER
-        // (the same value the legacy parser auto-generated for 36-byte input).
-        final int xrefPayloadLength = CardXrefRecord.FILLER_OFFSET; // 36 bytes preceding FILLER
-        byte[] chunk = new byte[CardXrefRecord.RECORD_LENGTH];
-        java.util.Arrays.fill(chunk, (byte) 0x20);
-        System.arraycopy(ws.fldt, 0, chunk, 0, xrefPayloadLength);
-        return CardXrefRecord.parse(chunk);
-    }
-
-    private CustomerRecord decodeCustomerFromFldt() {
-        byte[] chunk = new byte[CustomerRecord.RECORD_LENGTH];
-        System.arraycopy(ws.fldt, 0, chunk, 0, chunk.length);
-        return CustomerRecord.parse(chunk);
-    }
-
-    private AccountRecord decodeAccountFromFldt() {
-        byte[] chunk = new byte[AccountRecord.RECORD_LENGTH];
-        System.arraycopy(ws.fldt, 0, chunk, 0, chunk.length);
-        return AccountRecord.parse(chunk);
-    }
-
-    private void clearFldt() {
-        java.util.Arrays.fill(ws.fldt, (byte) 0x20);
-    }
 
     // ====================================================================
     // 51×10 TRANSACTION MATRIX
@@ -1044,8 +973,29 @@ public final class CbStm03A {
     // ERROR HANDLING / ABEND
     // ====================================================================
 
-    private void checkRc(String message, String rc) {
-        if (CbStm03B.RC_OK.equals(rc) || "04".equals(rc)) {
+    /**
+     * Inspect a CBSTM03B integer return code against the canonical
+     * {@link CbStm03B#RC_OK} value. Anything other than {@code RC_OK} is
+     * treated as a fatal I/O failure and triggers an abend (mirroring the
+     * COBOL {@code MOVE LK-M03B-RC TO WS-RC} / {@code PERFORM 9999-ABEND-PROGRAM}
+     * pattern in CBSTM03A).
+     *
+     * <p>The previous {@code String}-based RC scheme accepted {@code "00"}
+     * (OK) and {@code "04"} (WARNING) as success. The new CBSTM03B API
+     * collapses those to a single {@link CbStm03B#RC_OK} integer return
+     * code; there is no warning equivalent. {@link CbStm03B#RC_EOF},
+     * {@link CbStm03B#RC_NOT_FOUND}, and {@link CbStm03B#RC_ERROR} are all
+     * treated as failures by this helper — callers that want to handle
+     * EOF or NOT_FOUND non-fatally must inspect the returned
+     * {@link java.util.Optional} from the typed CBSTM03B methods (e.g.
+     * {@link CbStm03B#readNextTransaction()}) rather than rely on this
+     * helper.</p>
+     *
+     * @param message diagnostic message included in the log and abend cause
+     * @param rc the integer return code from CBSTM03B
+     */
+    private void checkRc(String message, int rc) {
+        if (rc == CbStm03B.RC_OK) {
             return;
         }
         log.error("{}; RETURN CODE: {}", message, rc);
