@@ -64,8 +64,8 @@ import java.util.Optional;
  * snapshot stored in commarea, and aborts with
  * {@link UpdateState#CHANGES_FAILED CHANGES_FAILED} if any has changed
  * since the user first viewed the record. The Java translation preserves
- * this semantic: {@code CardRepository.findByCardNum(...)} re-fetches the
- * record, the application compares each editable field, then
+ * this semantic: {@code CardRepository.findByCardNumber(...)} re-fetches
+ * the record, the application compares each editable field, then
  * {@code CardRepository.save(...)} performs the REWRITE.
  *
  * <h2>Messages preserved verbatim per AAP &sect;0.7.1</h2>
@@ -109,7 +109,7 @@ import java.util.Optional;
         notes = "Card update online with state machine, optimistic concurrency, " +
                 "and 6 EDIT paragraphs. State persisted via UpdateState parameter " +
                 "modeling CCUP-CHANGE-ACTION. CICS READ-UPDATE/REWRITE translated " +
-                "to findByCardNum() + diff against CCUP-OLD-* snapshot + save(). " +
+                "to findByCardNumber() + diff against CCUP-OLD-* snapshot + save(). " +
                 "Verbatim messages including the no-space 'Changes validated.Press F5 " +
                 "to save' (PROMPT-FOR-CONFIRMATION), the mixed-case 14-trailing-spaces " +
                 "'PF03 pressed.Exiting              ' (same as COCRDSLC), the two-word " +
@@ -771,7 +771,7 @@ public final class CoCrdUpC {
     private UpdateContext fetchCardData(String acctVal, String cardVal) {
         Optional<CardRecord> rec;
         try {
-            rec = cards.findByCardNum(cardVal.trim());
+            rec = cards.findByCardNumber(cardVal.trim());
         } catch (RuntimeException re) {
             return UpdateContext.initial();
         }
@@ -833,7 +833,7 @@ public final class CoCrdUpC {
     private UpdateContext doWriteProcessing(UpdateContext context) {
         Optional<CardRecord> rec;
         try {
-            rec = cards.findByCardNum(context.cardNum().trim());
+            rec = cards.findByCardNumber(context.cardNum().trim());
         } catch (RuntimeException re) {
             return context.withState(UpdateState.CHANGES_OKAYED_LOCK_ERROR);
         }

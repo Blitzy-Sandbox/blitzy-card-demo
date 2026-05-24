@@ -42,7 +42,7 @@ import java.util.regex.Pattern;
  *       the CARDFILE by primary key {@code CARDNUM} alone (the COBOL
  *       sets {@code KEYLENGTH(LENGTH OF WS-CARD-RID-CARDNUM)} = 16
  *       bytes), so we delegate to
- *       {@link CardRepository#findByCardNum(String)}.</li>
+ *       {@link CardRepository#findByCardNumber(String)}.</li>
  *   <li>"   Displaying requested details" info message preserves the
  *       three leading spaces per AAP &sect;0.7.1.</li>
  *   <li>Account/card validation messages preserved verbatim:
@@ -229,7 +229,7 @@ public final class CoCrdSlC {
 
         Optional<CardRecord> cardOpt;
         try {
-            cardOpt = cards.findByCardNum(cardVal);
+            cardOpt = cards.findByCardNumber(cardVal);
         } catch (RuntimeException re) {
             return Result.sendMap(
                     buildScreenWithVals(MSG_READ_ERROR, "", acctVal, cardVal, "", "", "", ""),
