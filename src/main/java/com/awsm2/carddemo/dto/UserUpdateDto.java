@@ -167,11 +167,10 @@ import jakarta.validation.constraints.Size;
  *       "{@code (A=Admin, U=User)}" at line 154 of the BMS source &mdash;
  *       a constraint that, in the legacy code, was implicit and relied on
  *       operator discipline.</li>
- *   <li>JPA {@code @Version} is intentionally NOT used on
- *       {@code UserSecurity}: AAP &sect;0.7.1 mandates optimistic
- *       locking only on {@code Account} and {@code Card} aggregates.
- *       User-administration writes are admin-only and rare; concurrent
- *       admin edits are tolerated.</li>
+ *   <li>JPA {@code @Version} is used on {@code UserSecurity} to reject
+ *       stale concurrent updates with HTTP 409. This prevents the
+ *       last-write-wins data loss found in QA CR-14 while preserving the
+ *       DTO's COBOL-derived request field contract.</li>
  * </ul>
  *
  * <p>This record is immutable; field setters do not exist by design. All

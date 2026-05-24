@@ -20,6 +20,7 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -159,10 +160,10 @@ import java.util.Objects;
  *       {@code serialVersionUID} so instances can cross persistence-
  *       context boundaries, Spring Session caches, and JPA L2
  *       caches deterministically.</li>
- *   <li><b>No {@code @Version}</b> &mdash; the {@code user_security}
- *       table does not require optimistic locking; concurrent updates
- *       are handled by {@code @Transactional} boundaries in the
- *       user-admin service layer (AAP &sect;0.7.1).</li>
+ *   <li><b>{@code @Version}</b> on {@link #version} &mdash; rejects
+ *       concurrent admin updates that would otherwise silently overwrite
+ *       each other. This extends the AAP &sect;0.3.3 optimistic-locking
+ *       pattern to this mutable user-admin entity for QA CR-14.</li>
  *   <li><b>No JSON-binding annotations</b> &mdash; this entity is a
  *       pure persistence model. REST DTOs (e.g., {@code UserAddDto},
  *       {@code UserUpdateDto}) under {@code com.awsm2.carddemo.dto}
@@ -313,6 +314,27 @@ public class UserSecurity implements Serializable {
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "sec_usr_type", nullable = false, length = 1, columnDefinition = "CHAR(1)")
     private String secUsrType;
+
+    // Java-only optimistic-lock column added by V016__add_user_security_version.sql.
+    // COBOL COUSR02C performed READ UPDATE + REWRITE within one CICS task; the
+    // Java REST API can receive concurrent PUT requests for the same user, so
+    // JPA @Version is required to reject stale rewrites with HTTP 409.
+    /**
+     * Optimistic-lock version for mutable user-admin rows.
+     *
+     * <p><b>QA CR-14:</b> Without this version column, concurrent
+     * {@code PUT /api/admin/users/{id}} calls use last-write-wins semantics
+     * and every caller receives HTTP 200 even when another transaction
+     * overwrote its changes. Hibernate includes this value in the
+     * {@code UPDATE ... WHERE sec_usr_id = ? AND version = ?} predicate; if
+     * another transaction has already incremented the row version, the stale
+     * update affects zero rows and Spring raises
+     * {@code OptimisticLockingFailureException}. The global handler maps that
+     * exception to HTTP 409.</p>
+     */
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
 
     // -------------------------------------------------------------------------
     // Constructors
@@ -471,6 +493,24 @@ public class UserSecurity implements Serializable {
         this.secUsrType = secUsrType;
     }
 
+    /**
+     * @return optimistic-lock version managed by Hibernate
+     */
+    public Long getVersion() {
+        return version;
+    }
+
+    /**
+     * Sets the optimistic-lock version. Application code normally should not
+     * call this setter; it exists for Hibernate materialization and focused
+     * tests that verify stale-version handling.
+     *
+     * @param version optimistic-lock version to set
+     */
+    public void setVersion(Long version) {
+        this.version = version;
+    }
+
     // -------------------------------------------------------------------------
     // equals / hashCode / toString
     //
@@ -544,6 +584,7 @@ public class UserSecurity implements Serializable {
                 + ", secUsrFname='" + secUsrFname + '\''
                 + ", secUsrLname='" + secUsrLname + '\''
                 + ", secUsrType='" + secUsrType + '\''
+                + ", version=" + version
                 // NOTE: secUsrPwd is intentionally omitted per PCI-DSS
                 // (AAP §0.6.6) and AAP §0.7.1 (no credential material in logs).
                 + '}';

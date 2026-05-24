@@ -1031,7 +1031,7 @@ class UserAddServiceTest {
 
         /**
          * The thrown {@link DuplicateRecordException} carries the
-         * reason code {@code "UserSecurity"} (the 2-arg
+         * reason code {@code "DUPLICATE_USER"} (the 2-arg
          * {@code (reasonCode, message)} constructor used by
          * {@code UserAddService}). Downstream consumers
          * (GlobalExceptionHandler, error envelope formatters) rely
@@ -1039,7 +1039,7 @@ class UserAddServiceTest {
          * duplicate causes.
          */
         @Test
-        @DisplayName("DuplicateRecordException carries 'UserSecurity' reason code")
+        @DisplayName("DuplicateRecordException carries 'DUPLICATE_USER' reason code")
         void addUser_duplicateUserId_carriesReasonCode() {
             // Arrange
             when(userSecurityRepository.existsById(NORMALIZED_USER_ID)).thenReturn(true);
@@ -1048,7 +1048,7 @@ class UserAddServiceTest {
             assertThatThrownBy(() -> service.addUser(validRequest))
                     .isInstanceOf(DuplicateRecordException.class)
                     .extracting(t -> ((DuplicateRecordException) t).getReasonCode())
-                    .isEqualTo("UserSecurity");
+                    .isEqualTo("DUPLICATE_USER");
         }
     }
 

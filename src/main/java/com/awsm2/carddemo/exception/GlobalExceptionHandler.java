@@ -17,6 +17,7 @@
 package com.awsm2.carddemo.exception;
 
 import com.awsm2.carddemo.dto.ApiResponse;
+import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
@@ -668,10 +669,16 @@ public class GlobalExceptionHandler {
                 ex.getMostSpecificCause() != null
                         ? ex.getMostSpecificCause().getClass().getSimpleName()
                         : ex.getClass().getSimpleName());
-        ApiResponse<Object> body = ApiResponse.error(
-                "MALFORMED_REQUEST",
-                "Request body could not be parsed as JSON",
-                correlationId);
+        boolean typeMismatch = ex.getMostSpecificCause() instanceof MismatchedInputException;
+        ApiResponse<Object> body = typeMismatch
+                ? ApiResponse.error(
+                        "TYPE_MISMATCH",
+                        "Request body contains a JSON value with an incompatible type",
+                        correlationId)
+                : ApiResponse.error(
+                        "MALFORMED_REQUEST",
+                        "Request body could not be parsed as JSON",
+                        correlationId);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
     }
 

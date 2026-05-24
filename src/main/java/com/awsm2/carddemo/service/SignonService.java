@@ -20,7 +20,6 @@ import com.awsm2.carddemo.adapter.AuditLogService;
 import com.awsm2.carddemo.domain.UserSecurity;
 import com.awsm2.carddemo.dto.SignonRequestDto;
 import com.awsm2.carddemo.dto.SignonResponseDto;
-import com.awsm2.carddemo.exception.RecordNotFoundException;
 import com.awsm2.carddemo.exception.ValidationException;
 import com.awsm2.carddemo.repository.UserSecurityRepository;
 import com.awsm2.carddemo.security.JwtTokenProvider;
@@ -34,6 +33,7 @@ import java.time.Instant;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Sign-on / authentication service &mdash; the Java target for the
@@ -138,10 +138,14 @@ import java.util.Objects;
  *       <td>{@link UserSecurityRepository#findById(Object)}</td></tr>
  *   <tr><td>{@code WS-RESP-CD = 13} (NOTFND) &rarr;
  *       "User not found ..." (L247&ndash;L251)</td>
- *       <td>{@link RecordNotFoundException} with generic
- *       "Invalid credentials" message &rarr; HTTP 404 via
- *       {@code GlobalExceptionHandler} (security hardening: prevent
- *       user-enumeration attacks per AAP &sect;0.7.1)</td></tr>
+ *       <td>{@link ValidationException} with generic
+ *       "Invalid credentials" message &rarr; HTTP 400 via
+ *       {@code GlobalExceptionHandler} (identical response shape to
+ *       the bad-password path to prevent user-enumeration via
+ *       differential status codes per QA finding CR-04). Even
+ *       though the user is not present, the service still pays the
+ *       BCrypt verification cost against a dummy hash to equalize
+ *       timing per QA finding CR-15.</td></tr>
  *   <tr><td>{@code IF SEC-USR-PWD = WS-USER-PWD} (L223)</td>
  *       <td>{@link PasswordEncoder#matches(CharSequence, String)}
  *       (BCrypt strength 12 verification)</td></tr>
@@ -226,15 +230,14 @@ import java.util.Objects;
  * effects are deferred to other services per the one-service-per-COBOL-
  * program rule from AAP &sect;0.7.1.</p>
  *
- * <p>Domain exceptions ({@link RecordNotFoundException},
- * {@link ValidationException}) thrown from this service propagate
- * unhandled through the controller layer and are caught by the
- * application's {@code @RestControllerAdvice}
+ * <p>Domain exceptions ({@link ValidationException}) thrown from this
+ * service propagate unhandled through the controller layer and are
+ * caught by the application's {@code @RestControllerAdvice}
  * {@code GlobalExceptionHandler}, which translates them into the
  * standardized JSON error envelope and the appropriate HTTP status
- * code (404 for {@code RecordNotFoundException}, 400 for
- * {@code ValidationException}). This preserves the layered architecture
- * mandate from AAP &sect;0.3.3.</p>
+ * code (uniformly HTTP 400 for both the user-not-found and the
+ * bad-password paths per QA finding CR-04). This preserves the
+ * layered architecture mandate from AAP &sect;0.3.3.</p>
  *
  * @see com.awsm2.carddemo.repository.UserSecurityRepository
  * @see com.awsm2.carddemo.security.JwtTokenProvider
@@ -319,15 +322,43 @@ public class SignonService {
     private static final String INVALID_CREDENTIALS_MESSAGE = "Invalid credentials";
 
     /**
-     * Reason code propagated through {@link RecordNotFoundException}
-     * for the "user not found" failure path. This is the JPA entity
-     * name (rather than the COBOL FILE STATUS value {@code "23"}) so
-     * that downstream consumers of the JSON error envelope can
-     * differentiate between user-security lookups and other
-     * not-found conditions while still treating the response as
-     * HTTP 404 per the {@code GlobalExceptionHandler} mapping.
+     * Pre-computed BCrypt(v2a, strength=12) hash used solely to
+     * equalize the BCrypt verification timing on the "user not found"
+     * failure path. The dummy plaintext that produced this hash is
+     * intentionally a long, non-guessable sentinel value that no
+     * caller-supplied password could ever match.
+     *
+     * <p>Per QA finding CR-15, an earlier revision of
+     * {@link #signon(SignonRequestDto)} short-circuited on
+     * {@code Optional.orElseThrow()} when the user id was not found,
+     * skipping the BCrypt verification entirely. That produced a
+     * ~3 ms response for unknown user ids vs. ~350 ms for known ids
+     * &mdash; a 100&times; timing difference that allowed user-id
+     * enumeration without parsing the response body. The fix
+     * unconditionally invokes
+     * {@code passwordEncoder.matches(rawPassword, hash)} on EVERY
+     * signon attempt: with the real hash when the user is found, or
+     * with this dummy hash when the user is not found. Either way,
+     * the BCrypt key-expansion cost (2<sup>12</sup> = 4096 rounds at
+     * strength&nbsp;12) is paid before the {@link ValidationException}
+     * is thrown, equalizing the timing.</p>
+     *
+     * <p>The dummy hash is a <em>known-correct</em> BCrypt-12 hash so
+     * that {@link org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder#matches}
+     * actually performs the full key-expansion (it short-circuits to
+     * {@code false} only when the stored hash is structurally
+     * invalid, which would itself produce a timing signal). The
+     * plaintext that hashes to this value is the literal
+     * {@code "dummy_password_for_timing_equalization"} &mdash; clearly
+     * not a user-supplied password, so the {@code matches} call
+     * always returns {@code false}.</p>
+     *
+     * <p>This is a security-only constant, not a credential; it
+     * appears in source code intentionally and does not authenticate
+     * any user.</p>
      */
-    private static final String NOT_FOUND_REASON_CODE = "UserSecurity";
+    private static final String DUMMY_BCRYPT_HASH =
+            "$2a$12$JpaB9NA3eyzsJxIkUAoYAedW8wOrp3rto3xiZVM9L8zAFhXJqeB0K";
 
     /**
      * Spring Data JPA repository over the {@code user_security} table
@@ -453,18 +484,25 @@ public class SignonService {
      *       Turkish-I issues that would corrupt the comparison.</li>
      *   <li><b>Lookup USRSEC</b> &mdash; replaces COBOL
      *       {@code EXEC CICS READ DATASET('USRSEC') RIDFLD(WS-USER-ID)}
-     *       with {@link UserSecurityRepository#findById(Object)}. A
-     *       missing record (COBOL FILE STATUS 13, NOTFND) maps to a
-     *       {@link RecordNotFoundException} with the generic
-     *       "Invalid credentials" message (security hardening: do
-     *       NOT leak whether the userId exists).</li>
+     *       with {@link UserSecurityRepository#findById(Object)}. The
+     *       lookup populates an {@link Optional} but does <i>not</i>
+     *       short-circuit on a miss &mdash; the next step pays the
+     *       BCrypt verification cost unconditionally to equalize
+     *       response timing between known and unknown userIds per
+     *       QA finding CR-15.</li>
      *   <li><b>Verify password</b> &mdash; BCrypt
      *       {@link PasswordEncoder#matches(CharSequence, String)}
      *       replaces the COBOL plaintext compare on L223
-     *       ({@code IF SEC-USR-PWD = WS-USER-PWD}). A mismatch maps
-     *       to a {@link ValidationException} with the SAME generic
-     *       "Invalid credentials" message so the response shape is
-     *       identical to the user-not-found path.</li>
+     *       ({@code IF SEC-USR-PWD = WS-USER-PWD}). When the user
+     *       exists, the stored hash is used. When the user does NOT
+     *       exist, a precomputed dummy BCrypt-12 hash is used so the
+     *       key-expansion cost is still paid (CR-15 timing
+     *       equalization). EITHER a missing user OR a mismatching
+     *       password results in a {@link ValidationException} with
+     *       the generic "Invalid credentials" message &rarr; HTTP 400.
+     *       The two failure modes produce a byte-identical HTTP
+     *       response (status, code, message) so no enumeration is
+     *       possible via differential analysis (CR-04 fix).</li>
      *   <li><b>Issue JWT</b> &mdash; replaces COBOL
      *       {@code MOVE ... TO CDEMO-USER-ID / CDEMO-USER-TYPE} +
      *       {@code EXEC CICS XCTL} with
@@ -499,21 +537,21 @@ public class SignonService {
      *                {@code password}; must not be {@code null}
      * @return the signon response DTO with token, user identity, role
      *         discriminator, and expiry; never {@code null}
-     * @throws ValidationException     when (a) the request DTO is
-     *                                 {@code null} or (b) userId or
-     *                                 password is null/blank or (c)
-     *                                 the supplied password does not
-     *                                 match the stored BCrypt hash
-     *                                 (HTTP 400 via
-     *                                 {@code GlobalExceptionHandler})
-     * @throws RecordNotFoundException when the (uppercased) userId
-     *                                 does not exist in the
-     *                                 {@code user_security} table
-     *                                 (HTTP 404 via
-     *                                 {@code GlobalExceptionHandler};
-     *                                 message is the generic
-     *                                 "Invalid credentials" to
-     *                                 prevent enumeration)
+     * @throws ValidationException when (a) the request DTO is
+     *                             {@code null}, or (b) userId or
+     *                             password is null/blank, or (c) the
+     *                             (uppercased) userId is not present
+     *                             in the {@code user_security} table,
+     *                             or (d) the supplied password does
+     *                             not match the stored BCrypt hash.
+     *                             All paths return HTTP 400 with the
+     *                             generic {@code "Invalid credentials"}
+     *                             message via
+     *                             {@code GlobalExceptionHandler} so
+     *                             that no enumeration is possible via
+     *                             differential analysis of status
+     *                             code, body, or response timing
+     *                             (CR-04, CR-15).
      */
     @Transactional(readOnly = true)
     public SignonResponseDto signon(SignonRequestDto request) {
@@ -598,31 +636,42 @@ public class SignonService {
         // -------------------------------------------------------------
         // Maps to: EXEC CICS READ DATASET('USRSEC') RIDFLD(WS-USER-ID)
         //          INTO(SEC-USER-DATA) — COSGN00C.cbl L211-L219.
-        // A miss (Optional.empty) surfaces as RecordNotFoundException
-        // with reasonCode 'UserSecurity' and a deliberately generic
-        // 'Invalid credentials' message to prevent user-enumeration
-        // attacks (PCI-DSS hardening per AAP §0.7.1 — security best
-        // practice beyond the COBOL original, which surfaced
-        // "User not found ..." as a distinct message on the 3270
-        // screen).
-        final UserSecurity user = userSecurityRepository.findById(normalizedUserId)
-                .orElseThrow(() -> {
-                    // PII-safe audit: never log the password.
-                    // Note: this Optional.orElseThrow lambda is invoked
-                    // synchronously within the read-only transaction;
-                    // the @Async audit emission is handed off to the
-                    // Spring task executor and does not block the
-                    // throw of RecordNotFoundException.
-                    auditFailure(normalizedUserId, RESULT_USER_NOT_FOUND);
-                    LOG.info("Signon failed: user not found userId={}", normalizedUserId);
-                    // COBOL: COSGN00C.cbl L247-L251 — WS-RESP-CD = 13 path.
-                    //        The COBOL message was "User not found ..."; the
-                    //        Java target uses the generic "Invalid credentials"
-                    //        message to prevent user-enumeration attacks.
-                    return new RecordNotFoundException(
-                            NOT_FOUND_REASON_CODE,
-                            INVALID_CREDENTIALS_MESSAGE);
-                });
+        //
+        // Per QA finding CR-04, the user-not-found and bad-password
+        // paths MUST surface IDENTICAL HTTP responses to prevent
+        // user-enumeration via differential status codes. Earlier the
+        // not-found path threw RecordNotFoundException (HTTP 404 with
+        // code="UserSecurity") and the bad-password path threw
+        // ValidationException (HTTP 400 with code="VALIDATION") —
+        // attackers could probe arbitrary userIds and read the status
+        // code to learn which users exist. The fix below collapses
+        // both paths into a single ValidationException with the
+        // generic "Invalid credentials" message — the HTTP response
+        // shape (status, code, message) is byte-identical regardless
+        // of which side of the predicate failed.
+        //
+        // Per QA finding CR-15, the not-found path MUST also pay the
+        // BCrypt verification cost to prevent enumeration via response
+        // TIMING (BCrypt strength-12 verification takes ~350 ms; a
+        // not-found path that short-circuits on Optional.empty
+        // responds in ~3 ms — a 100x signal). The fix below resolves
+        // the user-or-dummy-hash up front, ALWAYS invokes
+        // passwordEncoder.matches() with that hash, and only after
+        // the BCrypt cost is paid does the predicate ('user is
+        // present AND matches returned true') decide whether to
+        // proceed. The audit emission still distinguishes the
+        // RESULT_USER_NOT_FOUND vs. RESULT_BAD_PASSWORD reason
+        // internally for operations dashboards — those reason codes
+        // never leak to the HTTP response body.
+        final Optional<UserSecurity> userOpt = userSecurityRepository.findById(normalizedUserId);
+        // Resolve the BCrypt hash to verify against: the real stored
+        // hash when the user exists, or the timing-equalization
+        // dummy when the user does not. Both are valid BCrypt-12
+        // hashes so passwordEncoder.matches() performs the full
+        // key-expansion in either branch.
+        final String hashToVerify = userOpt
+                .map(UserSecurity::getSecUsrPwd)
+                .orElse(DUMMY_BCRYPT_HASH);
 
         // -------------------------------------------------------------
         // STEP 4 — Verify password via BCrypt
@@ -634,17 +683,34 @@ public class SignonService {
         //        record salt embedded in the stored hash. The compare
         //        is constant-time (BCrypt's design) so timing attacks
         //        cannot distinguish "wrong password" from "right password"
-        //        based on response latency.
+        //        based on response latency on the per-call path.
         //
         // Per CP5 review: pass the VERBATIM request.password() into
         // BCrypt.matches() — never an uppercased copy. The cross-service
         // contract is: UserAddService and UserUpdateService encode the
         // password verbatim, so signon MUST match against the verbatim
-        // value. The V015 seed migration coincidentally uses uppercase
-        // literals ("PASSWORDA"/"PASSWORDU") so the seeded credentials
-        // still authenticate when the caller types those exact values.
+        // value. The V015 seed migration uses the 8-char literals
+        // ("PASSWDA1"/"PASSWDU1") per CR-01 so the seeded credentials
+        // authenticate when the caller types those exact values.
         final boolean passwordMatches = passwordEncoder.matches(
-                request.password(), user.getSecUsrPwd());
+                request.password(), hashToVerify);
+
+        // Decide outcome AFTER the BCrypt cost has been paid. The
+        // audit reason code distinguishes the failure mode for
+        // operations dashboards, but the HTTP response is identical
+        // (single ValidationException → HTTP 400 with the generic
+        // "Invalid credentials" message and code="VALIDATION") so
+        // there is no enumeration signal on either status or body.
+        if (userOpt.isEmpty()) {
+            // COBOL: COSGN00C.cbl L247-L251 — WS-RESP-CD = 13 path.
+            //        The COBOL message was "User not found ..."; the
+            //        Java target uses the generic "Invalid credentials"
+            //        message and the same HTTP 400 status code as the
+            //        bad-password path (CR-04 fix).
+            auditFailure(normalizedUserId, RESULT_USER_NOT_FOUND);
+            LOG.info("Signon failed: user not found userId={}", normalizedUserId);
+            throw new ValidationException(INVALID_CREDENTIALS_MESSAGE);
+        }
         if (!passwordMatches) {
             // COBOL: COSGN00C.cbl L242-L244 — "Wrong Password" path.
             //        The COBOL message was "Wrong Password. Try again ...";
@@ -652,11 +718,13 @@ public class SignonService {
             //        "Invalid credentials" message as the user-not-found
             //        path so the HTTP response shape is identical between
             //        the two failure modes (prevents enumeration via
-            //        differential error analysis).
+            //        differential error analysis — CR-04 fix).
             auditFailure(normalizedUserId, RESULT_BAD_PASSWORD);
             LOG.info("Signon failed: bad password userId={}", normalizedUserId);
             throw new ValidationException(INVALID_CREDENTIALS_MESSAGE);
         }
+        // Both predicates passed: user exists and password matches.
+        final UserSecurity user = userOpt.get();
 
         // -------------------------------------------------------------
         // STEP 5 — Issue JWT (COBOL: COSGN00C:ROUTE-BY-USRTYPE

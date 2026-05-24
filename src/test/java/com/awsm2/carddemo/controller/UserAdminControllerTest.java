@@ -57,6 +57,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -73,8 +74,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *       created {@code UserAddDto}.</li>
  *   <li>{@code PUT    /api/admin/users/{id}} &rarr; HTTP 200 with the
  *       updated {@code UserUpdateDto}.</li>
- *   <li>{@code DELETE /api/admin/users/{id}} &rarr; HTTP 200 with the
- *       echoed {@code UserDeleteDto}.</li>
+ *   <li>{@code DELETE /api/admin/users/{id}} &rarr; HTTP 204 No Content
+ *       when confirmed, or HTTP 200 cancellation envelope for
+ *       {@code confirm=N}.</li>
  * </ul>
  *
  * <p>Additionally exercises validation-error paths (HTTP 400) for
@@ -311,8 +313,8 @@ class UserAdminControllerTest {
     class DeleteUser {
 
         @Test
-        @DisplayName("returns HTTP 200 with confirmed deletion envelope")
-        void deleteUser_confirmed_returns200() throws Exception {
+        @DisplayName("returns HTTP 204 with no body when deletion is confirmed")
+        void deleteUser_confirmed_returns204() throws Exception {
             UserDeleteDto request = new UserDeleteDto(
                     "USER0001", "John", "Doe", "U", "Y");
             UserDeleteDto deleted = new UserDeleteDto(
@@ -323,10 +325,30 @@ class UserAdminControllerTest {
             mockMvc.perform(delete("/api/admin/users/USER0001")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsString(request)))
+                    .andExpect(status().isNoContent())
+                    .andExpect(content().string(""));
+
+            verify(userDeleteService).deleteUser(eq("USER0001"), any(UserDeleteDto.class));
+        }
+
+        @Test
+        @DisplayName("returns HTTP 200 with cancellation envelope when confirm=N")
+        void deleteUser_confirmNo_returnsCancellationEnvelope() throws Exception {
+            UserDeleteDto request = new UserDeleteDto(
+                    "USER0001", "John", "Doe", "U", "N");
+            UserDeleteDto cancelled = new UserDeleteDto(
+                    "USER0001", null, null, null, "N");
+            when(userDeleteService.deleteUser(eq("USER0001"), any(UserDeleteDto.class)))
+                    .thenReturn(cancelled);
+
+            mockMvc.perform(delete("/api/admin/users/USER0001")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(request)))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value("OK"))
-                    .andExpect(jsonPath("$.message").value("User deleted successfully"))
-                    .andExpect(jsonPath("$.data.userId").value("USER0001"));
+                    .andExpect(jsonPath("$.message").value("User deletion cancelled"))
+                    .andExpect(jsonPath("$.data.userId").value("USER0001"))
+                    .andExpect(jsonPath("$.data.confirm").value("N"));
 
             verify(userDeleteService).deleteUser(eq("USER0001"), any(UserDeleteDto.class));
         }

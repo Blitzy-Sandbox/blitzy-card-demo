@@ -24,6 +24,7 @@ import com.awsm2.carddemo.exception.ValidationException;
 import com.awsm2.carddemo.repository.UserSecurityRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
@@ -425,7 +426,7 @@ public class UserAddService {
         if (userSecurityRepository.existsById(normalizedUserId)) {
             LOG.warn("UserAddService.addUser DUPLICATE detected userId={}", normalizedUserId);
             throw new DuplicateRecordException(
-                    "UserSecurity",
+                    "DUPLICATE_USER",
                     "User already exists: " + normalizedUserId);
         }
 
@@ -465,12 +466,29 @@ public class UserAddService {
         // COBOL: WRITE-USER-SEC-FILE — EXEC CICS WRITE DATASET
         // ('USRSEC') FROM(SEC-USER-DATA) (lines 240–248)
         // ------------------------------------------------------------
-        // Replaces EXEC CICS WRITE with Spring Data JPA save(); the
-        // surrounding @Transactional boundary commits on normal exit
-        // and rolls back on any thrown exception (replaces COBOL
-        // implicit SYNCPOINT on task return).
+        // Replaces EXEC CICS WRITE with Spring Data JPA save() + flush().
+        // The explicit flush is intentional for QA CR-13: when concurrent
+        // POST requests race past the existsById pre-check, the database
+        // primary-key violation must be raised inside this try/catch and
+        // translated to DuplicateRecordException -> HTTP 409, never bubble
+        // out as a raw DataAccessException -> HTTP 500.
         // ============================================================
-        UserSecurity saved = userSecurityRepository.save(user);
+        UserSecurity saved;
+        try {
+            saved = userSecurityRepository.save(user);
+            userSecurityRepository.flush();
+        } catch (DataIntegrityViolationException ex) {
+            // COBOL: COUSR01C.cbl WRITE-USER-SEC-FILE — WHEN DFHRESP(DUPKEY)
+            // / DFHRESP(DUPREC). Concurrent Java inserts can still collide
+            // after the pre-check, so translate the DB-layer constraint
+            // failure into the same semantic duplicate-user response.
+            LOG.warn("UserAddService.addUser duplicate constraint detected userId={}",
+                    normalizedUserId);
+            throw new DuplicateRecordException(
+                    "DUPLICATE_USER",
+                    "User already exists: " + normalizedUserId,
+                    ex);
+        }
 
         // ============================================================
         // PCI-DSS audit (AAP §0.6.6) — emit USER_ADD security event

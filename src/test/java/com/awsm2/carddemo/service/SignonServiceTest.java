@@ -46,6 +46,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
@@ -742,21 +743,22 @@ class SignonServiceTest {
      * Verifies the USRSEC-lookup failure path (COBOL
      * {@code WS-RESP-CD = 13} NOTFND at COSGN00C L247-L251).
      *
-     * <p>A missing user surfaces as {@link RecordNotFoundException}
+     * <p>A missing user surfaces as {@link ValidationException}
      * with the GENERIC "Invalid credentials" message identical to the
      * bad-password path (PCI-DSS hardening &mdash; prevent user
-     * enumeration). The PasswordEncoder is NOT invoked because the
-     * service short-circuits via {@code .orElseThrow(...)}. A
+     * enumeration). The PasswordEncoder IS invoked against the service's
+     * precomputed dummy BCrypt hash so the not-found path has comparable
+     * timing to the bad-password path (QA CR-15). A
      * {@code SIGNON_FAILURE} audit event with result
      * {@code USER_NOT_FOUND} is still emitted so security operations
      * can monitor failed-authentication attempts.</p>
      */
     @Nested
-    @DisplayName("UserNotFound — Optional.empty() → RecordNotFoundException with neutral message (COSGN00C L247-L251 NOTFND)")
+    @DisplayName("UserNotFound — Optional.empty() → ValidationException with timing equalization (COSGN00C L247-L251 NOTFND)")
     class UserNotFound {
 
         @Test
-        @DisplayName("throws RecordNotFoundException with neutral 'Invalid credentials' message (prevents enumeration)")
+        @DisplayName("throws ValidationException with neutral 'Invalid credentials' message (prevents enumeration)")
         void signon_unknownUserId_throwsAuthenticationException_withNeutralMessage() {
             // COBOL: COSGN00C L247-L251 — WS-RESP-CD = 13 (NOTFND)
             //        path. COBOL surfaced "User not found ..." as a
@@ -769,7 +771,7 @@ class SignonServiceTest {
 
             // Act + Assert
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(RecordNotFoundException.class)
+                    .isInstanceOf(ValidationException.class)
                     .hasMessage(INVALID_CREDENTIALS_MESSAGE);
         }
 
@@ -785,28 +787,31 @@ class SignonServiceTest {
 
             // Act + Assert
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(RecordNotFoundException.class)
+                    .isInstanceOf(ValidationException.class)
                     .hasMessage(INVALID_CREDENTIALS_MESSAGE);
         }
 
         @Test
-        @DisplayName("never invokes passwordEncoder when user is not found (short-circuit)")
-        void signon_unknownUserId_neverInvokesPasswordEncoder() {
-            // The service must short-circuit via .orElseThrow before
-            // any BCrypt computation — both for correctness (cannot
-            // match a non-existent hash) and for performance (avoid
-            // a needless BCrypt round on the failure path).
+        @DisplayName("invokes passwordEncoder with dummy hash when user is not found (timing equalization)")
+        void signon_unknownUserId_invokesPasswordEncoderWithDummyHash() {
+            // QA CR-15: the service must pay BCrypt cost even when the
+            // user does not exist so known-vs-unknown user IDs are not
+            // distinguishable by response time.
             // Arrange
             when(userSecurityRepository.findById(NORMALIZED_USER_ID))
                     .thenReturn(Optional.empty());
 
             // Act
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(RecordNotFoundException.class);
+                    .isInstanceOf(ValidationException.class);
 
-            // Assert — passwordEncoder must NOT be touched
-            verify(passwordEncoder, never()).matches(anyString(), anyString());
-            verify(passwordEncoder, never()).matches(any(CharSequence.class), anyString());
+            // Assert — passwordEncoder must be touched once with a BCrypt-12
+            // hash that is not the real user's stored hash.
+            verify(passwordEncoder).matches(
+                    eq(PLAINTEXT_PASSWORD),
+                    argThat(hash -> hash != null
+                            && hash.startsWith("$2a$12$")
+                            && !hash.equals(STORED_BCRYPT_HASH)));
         }
 
         @Test
@@ -818,7 +823,7 @@ class SignonServiceTest {
 
             // Act
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(RecordNotFoundException.class);
+                    .isInstanceOf(ValidationException.class);
 
             // Assert
             verify(jwtTokenProvider, never())
@@ -838,7 +843,7 @@ class SignonServiceTest {
 
             // Act
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(RecordNotFoundException.class);
+                    .isInstanceOf(ValidationException.class);
 
             // Assert
             verify(auditLogService).logSecurityEvent(
@@ -1309,7 +1314,7 @@ class SignonServiceTest {
 
             // Act
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(RecordNotFoundException.class);
+                    .isInstanceOf(ValidationException.class);
 
             // Assert
             @SuppressWarnings("unchecked")

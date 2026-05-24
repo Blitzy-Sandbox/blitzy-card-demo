@@ -560,6 +560,7 @@ public class UserDeleteService {
         // -------------------------------------------------------------
         UserSecurity user = userSecurityRepository.findById(normalizedId)
                 .orElseThrow(() -> new RecordNotFoundException(
+                        "USER_NOT_FOUND",
                         "User ID NOT found..."));
 
         // -------------------------------------------------------------

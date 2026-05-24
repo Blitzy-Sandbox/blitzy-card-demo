@@ -536,7 +536,9 @@ public class UserUpdateService {
                 .orElseThrow(() -> {
                     LOG.warn("UserUpdateService.updateUser: user not found userId={}",
                             normalizedId);
-                    return new RecordNotFoundException("User ID NOT found...");
+                    return new RecordNotFoundException(
+                            "USER_NOT_FOUND",
+                            "User ID NOT found...");
                 });
 
         LOG.info("UserUpdateService.updateUser loaded userId={} currentType={}",
@@ -603,13 +605,15 @@ public class UserUpdateService {
         //        On DFHRESP(NORMAL): emits "User <id> has been
         //        updated ...". On other RESP: error feedback.
         //
-        // Java: save() flushes an UPDATE statement via Hibernate.
-        //       The surrounding @Transactional boundary commits on
-        //       normal exit and rolls back on any thrown exception
-        //       (replaces COBOL implicit task-level SYNCPOINT and
-        //       its explicit SYNCPOINT ROLLBACK partner).
+        // Java: save() + flush() forces Hibernate to execute the UPDATE before
+        //       emitting the audit success event. With UserSecurity.version
+        //       (QA CR-14), a stale concurrent update raises
+        //       OptimisticLockingFailureException here, which
+        //       GlobalExceptionHandler maps to HTTP 409 instead of silently
+        //       reporting success for overwritten data.
         // -------------------------------------------------------------
         UserSecurity saved = userSecurityRepository.save(user);
+        userSecurityRepository.flush();
 
         // -------------------------------------------------------------
         // Step 9: Audit emission (PCI-DSS / SOX per AAP §0.6.6).

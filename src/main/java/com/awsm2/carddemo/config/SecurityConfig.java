@@ -16,11 +16,15 @@
  */
 package com.awsm2.carddemo.config;
 
+import com.awsm2.carddemo.dto.ApiResponse;
 import com.awsm2.carddemo.security.JwtAuthenticationFilter;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
@@ -29,11 +33,13 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 
@@ -186,6 +192,18 @@ public class SecurityConfig {
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
 
     /**
+     * Application-wide Jackson mapper used to serialize authentication and
+     * authorization failures that occur inside Spring Security's filter chain.
+     *
+     * <p>Those failures never reach {@code GlobalExceptionHandler} because
+     * Spring Security's {@code ExceptionTranslationFilter} handles them before
+     * Spring MVC dispatch. Injecting the same {@link ObjectMapper} used by MVC
+     * keeps the wire shape identical to controller-level
+     * {@link ApiResponse} errors.</p>
+     */
+    private final ObjectMapper objectMapper;
+
+    /**
      * Constructor injection of the JWT authentication filter, per AAP
      * &sect;0.3.3 (Dependency Injection &mdash; constructor injection
      * for all {@code @Component} beans). Field injection via
@@ -203,9 +221,14 @@ public class SecurityConfig {
      *                                injection so an explicit
      *                                {@code Objects.requireNonNull} is
      *                                unnecessary
+     * @param objectMapper            application Jackson mapper used to
+     *                                write the standard JSON envelope for
+     *                                filter-chain authentication failures
      */
-    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
+    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
+                          ObjectMapper objectMapper) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+        this.objectMapper = objectMapper;
     }
 
     // -----------------------------------------------------------------
@@ -315,7 +338,8 @@ public class SecurityConfig {
                         // Public endpoints — no authentication required.
                         // Replaces: COSGN00C entry point (the only CICS
                         // transaction that was reachable before signon).
-                        .requestMatchers(HttpMethod.POST, "/api/auth/signin").permitAll()
+                        .requestMatchers("/api/auth/signin").permitAll()
+                        .requestMatchers("/error").permitAll()
                         .requestMatchers(HttpMethod.GET,
                                 "/actuator/health",
                                 "/actuator/health/**",
@@ -356,6 +380,30 @@ public class SecurityConfig {
                         UsernamePasswordAuthenticationFilter.class)
 
                 // -------------------------------------------------------
+                // Exception translation: Spring Security handles
+                // unauthenticated requests before Spring MVC can delegate
+                // to GlobalExceptionHandler. Register a REST entry point
+                // so missing/invalid credentials produce HTTP 401 with
+                // the same ApiResponse JSON envelope as MVC errors.
+                //
+                // QA CR-03: reserve HTTP 403 for authenticated callers
+                // that lack a required role; unauthenticated callers must
+                // receive REST-conventional HTTP 401.
+                // QA CR-08/CR-12: permitting all methods on the signon
+                // path lets Spring MVC return 405 Method Not Allowed for
+                // unsupported methods instead of Security short-circuiting
+                // them as 403.
+                // -------------------------------------------------------
+                .exceptionHandling(exceptionHandling -> exceptionHandling
+                        .authenticationEntryPoint(restAuthenticationEntryPoint())
+                        .accessDeniedHandler((request, response, accessDeniedException) ->
+                                writeSecurityError(
+                                        response,
+                                        HttpServletResponse.SC_FORBIDDEN,
+                                        "FORBIDDEN",
+                                        "Access denied")))
+
+                // -------------------------------------------------------
                 // Disable HTTP basic, form login and logout endpoints —
                 // the only authentication mechanism is the JWT issued by
                 // POST /api/auth/signin.
@@ -365,6 +413,56 @@ public class SecurityConfig {
                 .logout(logout -> logout.disable());
 
         return http.build();
+    }
+
+    /**
+     * Spring Security {@link AuthenticationEntryPoint} that converts
+     * unauthenticated access attempts into the CardDemo standard JSON
+     * envelope.
+     *
+     * <p><b>COBOL provenance:</b> Replaces the pre-transaction signon gate in
+     * {@code COSGN00C}. In the CICS source, a caller without a valid signon
+     * context could not proceed to protected transactions. In REST, the
+     * equivalent condition is an absent, malformed, expired, or otherwise
+     * unauthenticated JWT, surfaced as HTTP {@code 401 Unauthorized}.</p>
+     *
+     * @return authentication entry point emitting HTTP 401 and
+     *         {@link ApiResponse#error(String, String)}
+     */
+    @Bean
+    public AuthenticationEntryPoint restAuthenticationEntryPoint() {
+        return (request, response, authException) ->
+                writeSecurityError(
+                        response,
+                        HttpServletResponse.SC_UNAUTHORIZED,
+                        "UNAUTHORIZED",
+                        "Authentication required");
+    }
+
+    /**
+     * Writes a Spring-Security-layer error as the same {@link ApiResponse}
+     * envelope used by {@code GlobalExceptionHandler}.
+     *
+     * <p>This helper deliberately does not include {@code authException} or
+     * {@code accessDeniedException} messages in the response body. Security
+     * exception messages can contain implementation details (filter names,
+     * matcher internals, token parsing failures), so the wire response stays
+     * generic per AAP &sect;0.7.2 no-information-disclosure guidance.</p>
+     *
+     * @param response servlet response to write
+     * @param status   HTTP status code
+     * @param code     API error code
+     * @param message  generic client-facing message
+     * @throws IOException if the servlet output stream cannot be written
+     */
+    private void writeSecurityError(HttpServletResponse response,
+                                    int status,
+                                    String code,
+                                    String message) throws IOException {
+        response.setStatus(status);
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setCharacterEncoding("UTF-8");
+        objectMapper.writeValue(response.getWriter(), ApiResponse.error(code, message));
     }
 
     // -----------------------------------------------------------------

@@ -19,18 +19,29 @@
 -- VSAM cluster. Per AAP §0.7.1, this migration upgrades the security model:
 --   1. V010 widens sec_usr_pwd from VARCHAR(8) to VARCHAR(60) to hold BCrypt hashes.
 --   2. Plaintext passwords NEVER appear in this file or in any application code.
---   3. Pre-computed BCrypt(v2b, strength=12) hashes are embedded as deterministic
---      SQL literals. Each hash was generated offline via:
---          python3 -c "import bcrypt; print(bcrypt.hashpw(b'<password>', bcrypt.gensalt(rounds=12)).decode())"
+--   3. Pre-computed BCrypt(v2a, strength=12) hashes are embedded as deterministic
+--      SQL literals. Each hash was generated via:
+--          new BCryptPasswordEncoder(12).encode("<password>")
 --   4. Spring Security BCryptPasswordEncoder verifies user-supplied passwords
 --      against these stored hashes at signon time.
 --   5. Default passwords MUST BE ROTATED ON FIRST LOGIN in production (enforced
 --      at the application layer; not part of this SQL migration).
---   6. BCrypt hashes below were verified offline via bcrypt.checkpw() to
---      authenticate the corresponding plaintext passwords. DO NOT regenerate
+--   6. BCrypt hashes below were verified end-to-end via BCryptPasswordEncoder.matches()
+--      to authenticate the corresponding plaintext passwords. DO NOT regenerate
 --      these hashes -- BCrypt uses a random salt and each generation produces
 --      a different (but equivalent) hash. The hashes below are the canonical
 --      values committed in this migration for deterministic test reproducibility.
+--
+-- *** PASSWORD LENGTH POLICY ***
+-- The COBOL source SEC-USR-PWD field is PIC X(08) (8 bytes), and the Java target
+-- DTOs (SignonRequestDto, UserAddDto) enforce @Size(max = 8) to preserve the
+-- COBOL field contract. The default seed passwords are therefore exactly 8
+-- characters long:
+--     ADMIN users (sec_usr_type = 'A')  --  default plaintext = "PASSWDA1"
+--     Regular users (sec_usr_type = 'U') --  default plaintext = "PASSWDU1"
+-- Earlier revisions of this migration used 9-character defaults (PASSWORDA /
+-- PASSWORDU) which were rejected by the controller-layer DTO validation
+-- (HTTP 400 "Password must be at most 8 characters"); see QA finding CR-01.
 --
 -- Replaces:   IDCAMS REPRO step in app/jcl/DUSRSECJ.jcl that loads in-stream
 --             USRSEC.PS data into the USRSEC.VSAM.KSDS cluster.
@@ -54,16 +65,16 @@
 -- =============================================================================
 
 insert into user_security (sec_usr_id, sec_usr_fname, sec_usr_lname, sec_usr_pwd, sec_usr_type) values
-    -- Administrative users (sec_usr_type = 'A'); BCrypt hash of plaintext 'PASSWORDA'
-    ('ADMIN001', 'MARGARET',  'GOLD',       '$2b$12$5kRf7Cq.u2YnQV/DquQChOFOLGRxVuBaJCqI1RvdRnd/zXgJvgspu', 'A'),
-    ('ADMIN002', 'RUSSELL',   'RUSSELL',    '$2b$12$5kRf7Cq.u2YnQV/DquQChOFOLGRxVuBaJCqI1RvdRnd/zXgJvgspu', 'A'),
-    ('ADMIN003', 'RAYMOND',   'WHITMORE',   '$2b$12$5kRf7Cq.u2YnQV/DquQChOFOLGRxVuBaJCqI1RvdRnd/zXgJvgspu', 'A'),
-    ('ADMIN004', 'EMMANUEL',  'CASGRAIN',   '$2b$12$5kRf7Cq.u2YnQV/DquQChOFOLGRxVuBaJCqI1RvdRnd/zXgJvgspu', 'A'),
-    ('ADMIN005', 'GRANVILLE', 'LACHAPELLE', '$2b$12$5kRf7Cq.u2YnQV/DquQChOFOLGRxVuBaJCqI1RvdRnd/zXgJvgspu', 'A'),
-    -- Regular users (sec_usr_type = 'U'); BCrypt hash of plaintext 'PASSWORDU'
-    ('USER0001', 'LAWRENCE',  'THOMAS',     '$2b$12$1SkcD1BWDg5kKEDGOLRSjOV/KPsz.ceCRHxazcSZIFnIWjRhQP0GC', 'U'),
-    ('USER0002', 'AJITH',     'KUMAR',      '$2b$12$1SkcD1BWDg5kKEDGOLRSjOV/KPsz.ceCRHxazcSZIFnIWjRhQP0GC', 'U'),
-    ('USER0003', 'LAURITZ',   'ALME',       '$2b$12$1SkcD1BWDg5kKEDGOLRSjOV/KPsz.ceCRHxazcSZIFnIWjRhQP0GC', 'U'),
-    ('USER0004', 'AVERARDO',  'MAZZI',      '$2b$12$1SkcD1BWDg5kKEDGOLRSjOV/KPsz.ceCRHxazcSZIFnIWjRhQP0GC', 'U'),
-    ('USER0005', 'LEE',       'TING',       '$2b$12$1SkcD1BWDg5kKEDGOLRSjOV/KPsz.ceCRHxazcSZIFnIWjRhQP0GC', 'U')
+    -- Administrative users (sec_usr_type = 'A'); BCrypt-12 hash of plaintext 'PASSWDA1' (8 chars)
+    ('ADMIN001', 'MARGARET',  'GOLD',       '$2a$12$0OKQaiz1RhMXFYP2bgFiiO54Pi7sK/abtQ1j6UbfI9YOT5jRLz4Nu', 'A'),
+    ('ADMIN002', 'RUSSELL',   'RUSSELL',    '$2a$12$0OKQaiz1RhMXFYP2bgFiiO54Pi7sK/abtQ1j6UbfI9YOT5jRLz4Nu', 'A'),
+    ('ADMIN003', 'RAYMOND',   'WHITMORE',   '$2a$12$0OKQaiz1RhMXFYP2bgFiiO54Pi7sK/abtQ1j6UbfI9YOT5jRLz4Nu', 'A'),
+    ('ADMIN004', 'EMMANUEL',  'CASGRAIN',   '$2a$12$0OKQaiz1RhMXFYP2bgFiiO54Pi7sK/abtQ1j6UbfI9YOT5jRLz4Nu', 'A'),
+    ('ADMIN005', 'GRANVILLE', 'LACHAPELLE', '$2a$12$0OKQaiz1RhMXFYP2bgFiiO54Pi7sK/abtQ1j6UbfI9YOT5jRLz4Nu', 'A'),
+    -- Regular users (sec_usr_type = 'U'); BCrypt-12 hash of plaintext 'PASSWDU1' (8 chars)
+    ('USER0001', 'LAWRENCE',  'THOMAS',     '$2a$12$u2aJXxe1M5HWHu68r86gN.QOSbOYWEFfx7V9SgaBCNs/P1WfJOtKG', 'U'),
+    ('USER0002', 'AJITH',     'KUMAR',      '$2a$12$u2aJXxe1M5HWHu68r86gN.QOSbOYWEFfx7V9SgaBCNs/P1WfJOtKG', 'U'),
+    ('USER0003', 'LAURITZ',   'ALME',       '$2a$12$u2aJXxe1M5HWHu68r86gN.QOSbOYWEFfx7V9SgaBCNs/P1WfJOtKG', 'U'),
+    ('USER0004', 'AVERARDO',  'MAZZI',      '$2a$12$u2aJXxe1M5HWHu68r86gN.QOSbOYWEFfx7V9SgaBCNs/P1WfJOtKG', 'U'),
+    ('USER0005', 'LEE',       'TING',       '$2a$12$u2aJXxe1M5HWHu68r86gN.QOSbOYWEFfx7V9SgaBCNs/P1WfJOtKG', 'U')
 on conflict (sec_usr_id) do nothing;

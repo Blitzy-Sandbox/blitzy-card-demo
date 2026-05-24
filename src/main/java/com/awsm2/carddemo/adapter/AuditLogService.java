@@ -524,8 +524,12 @@ public class AuditLogService {
                     .register(meterRegistry)
                     .increment();
         } catch (RuntimeException e) {
-            LOG.error("Security audit emission FAILED eventType={} userId={} result={} sourceIp={} cause={}",
-                    eventType, userId, result, sourceIp, e.getMessage(), e);
+            // QA CR-10: LocalStack community edition may return HTML for
+            // OpenSearch endpoints. Audit is mandatory best-effort: log a
+            // concise warning and do not propagate or print a noisy stack
+            // trace that looks like a caller failure.
+            LOG.warn("Security audit emission degraded eventType={} userId={} result={} sourceIp={} cause={}",
+                    eventType, userId, result, sourceIp, e.getMessage());
         }
     }
 

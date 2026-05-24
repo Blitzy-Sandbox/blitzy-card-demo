@@ -265,10 +265,18 @@ public class MenuController {
      *
      * @param userId the authenticated principal name extracted from the
      *               JWT-populated security context by
-     *               {@link AuthenticationPrincipal @AuthenticationPrincipal(expression
-     *               = "name")}. Used for structured-JSON debug logging
-     *               only &mdash; the service itself is stateless and does
-     *               not personalise the menu by user identity (the
+     *               {@link AuthenticationPrincipal @AuthenticationPrincipal}.
+     *               The {@link com.awsm2.carddemo.security.JwtAuthenticationFilter}
+     *               places the COBOL-style userId (uppercased, 8-char max)
+     *               directly as the {@code Authentication.principal} value
+     *               of type {@link String}, so no SpEL property
+     *               extraction is required (an earlier version used
+     *               {@code expression = "name"} which raised
+     *               {@code SpelEvaluationException} because
+     *               {@link String} has no {@code name} property; see QA
+     *               finding CR-02). Used for structured-JSON debug
+     *               logging only &mdash; the service itself is stateless and
+     *               does not personalise the menu by user identity (the
      *               COMMAREA-style identity propagation from
      *               {@code COCOM01Y.cpy} is replaced by JWT claims; the
      *               controller layer does not need to forward the
@@ -306,7 +314,7 @@ public class MenuController {
     })
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
     public ResponseEntity<ApiResponse<MainMenuDto>> getMainMenu(
-            @AuthenticationPrincipal(expression = "name") String userId) {
+            @AuthenticationPrincipal String userId) {
         // COBOL: COMEN01C / Tran-ID CM00 -- render main menu options
         //   (delegates to MenuService which holds the verbatim COMEN02Y.cpy
         //    literal-storage table per AAP §0.4.1)
@@ -371,10 +379,14 @@ public class MenuController {
      *
      * @param userId the authenticated admin principal name extracted from
      *               the JWT-populated security context by
-     *               {@link AuthenticationPrincipal @AuthenticationPrincipal(expression
-     *               = "name")}. Used for structured-JSON debug logging
-     *               only; the service does not personalise the menu by
-     *               user identity. Non-sensitive per AAP &sect;0.7.2
+     *               {@link AuthenticationPrincipal @AuthenticationPrincipal}.
+     *               The {@link com.awsm2.carddemo.security.JwtAuthenticationFilter}
+     *               places the COBOL-style userId directly as the
+     *               {@code Authentication.principal} value of type
+     *               {@link String} (no SpEL property extraction required;
+     *               see QA finding CR-02). Used for structured-JSON debug
+     *               logging only; the service does not personalise the menu
+     *               by user identity. Non-sensitive per AAP &sect;0.7.2
      * @return {@link ResponseEntity} with HTTP 200 and the
      *         {@link AdminMenuDto} payload wrapped in {@link ApiResponse}.
      *         Unauthenticated callers receive HTTP 401 from the upstream
@@ -403,7 +415,7 @@ public class MenuController {
     })
     @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<AdminMenuDto>> getAdminMenu(
-            @AuthenticationPrincipal(expression = "name") String userId) {
+            @AuthenticationPrincipal String userId) {
         // COBOL: COADM01C / Tran-ID CA00 -- render admin menu options
         //   (delegates to MenuService which enforces the defense-in-depth
         //    admin-only gate by throwing ValidationException for any

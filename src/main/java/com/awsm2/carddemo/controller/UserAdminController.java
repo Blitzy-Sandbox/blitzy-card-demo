@@ -704,9 +704,11 @@ public class UserAdminController {
     )
     @ApiResponses({
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
+                    responseCode = "204",
+                    description = "User deleted successfully; no response body"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(
                     responseCode = "200",
-                    description = "User deleted successfully "
-                            + "(or confirmation pending on 'N')"),
+                    description = "Deletion cancelled because confirm=N"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
                     responseCode = "400",
                     description = "Confirmation flag missing or invalid"),
@@ -759,8 +761,13 @@ public class UserAdminController {
 
         UserDeleteDto deleted = userDeleteService.deleteUser(id, request);
 
+        if ("N".equalsIgnoreCase(deleted.confirm())) {
+            LOG.info("User deletion cancelled: userId={}", id);
+            return ResponseEntity.ok(ApiResponse.success(deleted,
+                    "User deletion cancelled"));
+        }
+
         LOG.info("User deleted successfully: userId={}", id);
-        return ResponseEntity.ok(ApiResponse.success(deleted,
-                "User deleted successfully"));
+        return ResponseEntity.noContent().build();
     }
 }
