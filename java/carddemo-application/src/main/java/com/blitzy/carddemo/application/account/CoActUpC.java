@@ -1590,9 +1590,12 @@ public final class CoActUpC {
                 acct.acctGroupId().trim(),
                 String.format("%09d", cust.custId()),
                 String.format("%09d", cust.custSsn()),
-                substringSafe(cust.custDobYyyyMmDd(), 0, 4),
-                substringSafe(cust.custDobYyyyMmDd(), 5, 7),
-                substringSafe(cust.custDobYyyyMmDd(), 8, 10),
+                // LocalDate.toString() yields ISO_LOCAL_DATE ("yyyy-MM-dd") so
+                // positional substrings (year=0..4, month=5..7, day=8..10) extract
+                // each component cleanly from the canonical 10-char form.
+                substringSafe(cust.custDobYyyyMmDd().toString(), 0, 4),
+                substringSafe(cust.custDobYyyyMmDd().toString(), 5, 7),
+                substringSafe(cust.custDobYyyyMmDd().toString(), 8, 10),
                 String.format("%03d", cust.custFicoCreditScore()),
                 cust.custFirstName(),
                 cust.custMiddleName(),
@@ -1792,7 +1795,10 @@ public final class CoActUpC {
                         && cust.custPhoneNum2().equals(acctPhone2)
                         && String.format("%09d", cust.custSsn()).equals(c.custSsn)
                         && upper(cust.custGovtIssuedId()).equals(upper(c.govtIssuedId))
-                        && cust.custDobYyyyMmDd().equals(dobReassembled)
+                        // cust.custDobYyyyMmDd() is a LocalDate; toString() yields the
+                        // canonical ISO "yyyy-MM-dd" form to compare against the
+                        // dobReassembled String built from form fields above.
+                        && cust.custDobYyyyMmDd().toString().equals(dobReassembled)
                         && cust.custEftAccountId().equals(c.eftAccountId)
                         && String.valueOf(cust.custPriCardHolderInd()).equals(c.primaryFlag)
                         && String.format("%03d", cust.custFicoCreditScore()).equals(c.ficoScore);
@@ -1817,9 +1823,12 @@ public final class CoActUpC {
                 acct.acctGroupId().trim(),
                 String.format("%09d", cust.custId()),
                 String.format("%09d", cust.custSsn()),
-                substringSafe(cust.custDobYyyyMmDd(), 0, 4),
-                substringSafe(cust.custDobYyyyMmDd(), 5, 7),
-                substringSafe(cust.custDobYyyyMmDd(), 8, 10),
+                // LocalDate.toString() yields ISO_LOCAL_DATE ("yyyy-MM-dd") so
+                // positional substrings (year=0..4, month=5..7, day=8..10) extract
+                // each component cleanly from the canonical 10-char form.
+                substringSafe(cust.custDobYyyyMmDd().toString(), 0, 4),
+                substringSafe(cust.custDobYyyyMmDd().toString(), 5, 7),
+                substringSafe(cust.custDobYyyyMmDd().toString(), 8, 10),
                 String.format("%03d", cust.custFicoCreditScore()),
                 cust.custFirstName(),
                 cust.custMiddleName(),
@@ -1905,7 +1914,11 @@ public final class CoActUpC {
             ssn = current.custSsn();
         }
         String govtId = padOrClamp(f.govtIssuedId, GOVT_ID_LEN);
-        String dob = formatDate(f.dobYear, f.dobMonth, f.dobDay, current.custDobYyyyMmDd());
+        // CustomerRecord.custDobYyyyMmDd is a java.time.LocalDate per AAP §0.6.4.
+        // Use parseDateOrFallback (which already returns LocalDate) instead of the
+        // String-returning formatDate so the value flows into the CustomerRecord
+        // constructor below without any LocalDate↔String conversion.
+        LocalDate dob = parseDateOrFallback(f.dobYear, f.dobMonth, f.dobDay, current.custDobYyyyMmDd());
         String eftId = padOrClamp(f.eftAccountId, EFT_LEN);
         char priInd = f.primaryFlag.isEmpty() ? current.custPriCardHolderInd()
                 : Character.toUpperCase(f.primaryFlag.charAt(0));

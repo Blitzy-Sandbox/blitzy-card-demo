@@ -324,7 +324,9 @@ public final class CoActVwC {
                 fmtMoney(acct.acctCurrCycDebit()),
                 String.format("%09d", cust.custId()),
                 formatSsn(cust.custSsn()),
-                clamp(cust.custDobYyyyMmDd(), 10),
+                // LocalDate.toString() yields ISO_LOCAL_DATE format ("yyyy-MM-dd"),
+                // matching the 10-byte CUST-DOB-YYYY-MM-DD field width exactly.
+                clamp(cust.custDobYyyyMmDd().toString(), 10),
                 String.format("%03d", cust.custFicoCreditScore()),
                 clamp(cust.custFirstName(), 25),
                 clamp(cust.custMiddleName(), 25),
