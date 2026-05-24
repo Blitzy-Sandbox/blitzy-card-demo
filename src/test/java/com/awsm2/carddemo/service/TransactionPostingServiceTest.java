@@ -647,13 +647,13 @@ class TransactionPostingServiceTest {
         }
 
         @Test
-        @DisplayName("posted: evicts accountView cache entry")
+        @DisplayName("posted: evicts account-view cache entry")
         void posted_evictsAccountCache() {
             stubHappyPathSingleTransaction();
 
             service.postDailyTransactions(BATCH_RUN_ID);
 
-            verify(cacheService).evict("accountView",
+            verify(cacheService).evict(AccountViewService.CACHE_NS,
                     String.valueOf(ACCOUNT_ID));
         }
 

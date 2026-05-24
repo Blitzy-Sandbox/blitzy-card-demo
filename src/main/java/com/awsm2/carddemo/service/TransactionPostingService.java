@@ -185,8 +185,9 @@ public class TransactionPostingService {
      */
     static final BigDecimal MAX_AMOUNT = new BigDecimal("99999999999.99");
 
-    /** Cache namespace for the AccountView cache-aside entries. */
-    static final String CACHE_NS_ACCOUNT = "accountView";
+    /** Cache namespace for the AccountView cache-aside entries
+     *  (mirrors {@link AccountViewService#CACHE_NS}). */
+    static final String CACHE_NS_ACCOUNT = AccountViewService.CACHE_NS;
 
     /** Audit event names. */
     static final String AUDIT_TX_POSTED = "transaction.posted";

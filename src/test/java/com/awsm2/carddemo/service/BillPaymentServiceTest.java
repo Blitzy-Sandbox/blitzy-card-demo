@@ -93,8 +93,9 @@ import static org.mockito.Mockito.when;
  *       missing XREF resolves to HTTP 404 via
  *       {@link RecordNotFoundException}.</li>
  *   <li><b>Cache-aside post-write invalidation</b> &mdash; account
- *       cache entry is evicted under namespace {@code accountView}
- *       with key = zero-padded 11-digit account ID.</li>
+ *       cache entry is evicted under namespace {@code account-view}
+ *       (see {@link AccountViewService#CACHE_NS}) with key =
+ *       zero-padded 11-digit account ID.</li>
  *   <li><b>Dual MSK publish</b> &mdash; both
  *       {@code transaction.posted} and {@code account.updated} are
  *       partitioned by owning account ID (AAP §0.6.5).</li>
@@ -548,7 +549,7 @@ class BillPaymentServiceTest {
 
             service.payBill(validRequest);
 
-            verify(cacheService).evict(eq("accountView"), eq(ACCOUNT_ID_STR));
+            verify(cacheService).evict(eq(AccountViewService.CACHE_NS), eq(ACCOUNT_ID_STR));
         }
 
         @Test

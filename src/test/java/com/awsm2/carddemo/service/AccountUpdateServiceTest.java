@@ -106,7 +106,8 @@ import static org.mockito.Mockito.when;
  *       layer; here we verify the service does not catch and
  *       swallow exceptions).</li>
  *   <li><b>Cache eviction</b> &mdash; {@link CacheService#evict} on
- *       the {@code accountView} namespace with the zero-padded
+ *       the {@code account-view} namespace (see
+ *       {@code AccountViewService.CACHE_NS}) with the zero-padded
  *       11-digit account-id key.</li>
  *   <li><b>MSK account.updated publish</b> &mdash;
  *       {@link KafkaEventPublisher#publishAccountUpdated} invoked
@@ -498,7 +499,7 @@ class AccountUpdateServiceTest {
     class SideEffects {
 
         @Test
-        @DisplayName("evicts the accountView cache after successful save")
+        @DisplayName("evicts the account-view cache after successful save")
         void updateAccount_evictsCache() {
             stubHappyPathRepositories();
             stubValidationServices();
@@ -506,7 +507,7 @@ class AccountUpdateServiceTest {
 
             service.updateAccount(validRequest);
 
-            verify(cacheService).evict(eq("accountView"), eq(CACHE_KEY));
+            verify(cacheService).evict(eq(AccountViewService.CACHE_NS), eq(CACHE_KEY));
         }
 
         @Test

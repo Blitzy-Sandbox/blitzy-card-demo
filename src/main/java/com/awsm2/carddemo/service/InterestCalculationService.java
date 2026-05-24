@@ -161,7 +161,7 @@ import java.util.Optional;
  *       rolls back all account updates and interest postings &mdash;
  *       matching COBOL CICS SYNCPOINT-on-success semantics.</li>
  *   <li><b>Cache invalidation:</b> After each {@code 1050-UPDATE-ACCOUNT},
- *       the {@code accountView} cache entry is evicted so subsequent
+ *       the {@code account-view} cache entry is evicted so subsequent
  *       reads from {@code AccountViewService} see the post-interest
  *       balance (per AAP &sect;0.3.3 cache-aside pattern).</li>
  *   <li><b>Event emission:</b> For each new interest {@link Transaction},
@@ -237,8 +237,9 @@ public class InterestCalculationService {
     static final String EVENT_TRANSACTION_POSTED = "transaction.posted";
     static final String EVENT_ACCOUNT_UPDATED = "account.updated";
 
-    /** Cache namespace for the AccountView cache-aside entries. */
-    static final String CACHE_NS_ACCOUNT = "accountView";
+    /** Cache namespace for the AccountView cache-aside entries
+     *  (mirrors {@link AccountViewService#CACHE_NS}). */
+    static final String CACHE_NS_ACCOUNT = AccountViewService.CACHE_NS;
 
     /** Audit event identifiers for the AuditLogService. */
     static final String AUDIT_EVENT_INTEREST_POSTED = "interest.posted";

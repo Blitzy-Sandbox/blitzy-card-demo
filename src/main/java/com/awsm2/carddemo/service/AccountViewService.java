@@ -22,6 +22,7 @@ import com.awsm2.carddemo.domain.CardCrossReference;
 import com.awsm2.carddemo.domain.Customer;
 import com.awsm2.carddemo.dto.AccountViewDto;
 import com.awsm2.carddemo.exception.RecordNotFoundException;
+import com.awsm2.carddemo.exception.ValidationException;
 import com.awsm2.carddemo.repository.AccountRepository;
 import com.awsm2.carddemo.repository.CardCrossReferenceRepository;
 import com.awsm2.carddemo.repository.CustomerRepository;
@@ -31,72 +32,23 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Account-view service &mdash; the Java target for the COBOL/CICS
+ * Account view service &mdash; the Java target for the COBOL/CICS
  * program {@code app/cbl/COACTVWC.cbl} (CICS transaction id
- * {@code CAVW}).
- *
- * <p>This service returns a denormalised account-view DTO assembled
- * from {@link Account}, {@link Customer}, and (optionally) the
- * first {@link CardCrossReference} owned by the account. In the COBOL
- * source the flow is:
- * <ol>
- *   <li>{@code EXEC CICS READ DATASET('CXACAIX')
- *       RIDFLD(WS-ACCT-ID)} &mdash; AIX/PATH lookup on the cross-
- *       reference cluster to find an associated card and customer ID;</li>
- *   <li>{@code EXEC CICS READ DATASET('ACCTDAT')
- *       RIDFLD(WS-ACCT-ID)} &mdash; primary-key read of the account
- *       record;</li>
- *   <li>{@code EXEC CICS READ DATASET('CUSTDAT')
- *       RIDFLD(WS-CUST-ID)} &mdash; primary-key read of the customer
- *       record;</li>
- *   <li>{@code MOVE} fields to the {@code COACTVW.bms} symbolic
- *       map and {@code SEND MAP}.</li>
- * </ol>
- *
- * <p>In the Java target:
- * <ol>
- *   <li>{@link CardCrossReferenceRepository#findByXrefAcctId(Long)}
- *       performs the XREF AIX lookup (NONUNIQUEKEY semantics:
- *       returns a {@link List} of zero, one, or many rows); the
- *       service picks the first row by ascending
- *       {@code xrefCardNum} client-side to preserve the COBOL
- *       {@code CXACAIX STARTBR}/{@code READNEXT} ordered-browse
- *       traversal semantics;</li>
- *   <li>{@link AccountRepository#findById(Object)} performs the account
- *       read;</li>
- *   <li>{@link CustomerRepository#findById(Object)} performs the
- *       customer read;</li>
- *   <li>The three rows are combined into a single {@link AccountViewDto}
- *       returned to the controller.</li>
- * </ol>
- *
- * <h2>Cache-aside pattern (AAP &sect;0.7.1)</h2>
- *
- * <p>Per the AAP "ElastiCache (Redis) used for account balance caching
- * &mdash; cache-aside pattern with TTL aligned to transaction
- * frequency", every read first consults {@link CacheService}. On miss,
- * the database read is performed and the result is populated back to
- * the cache with a 5-minute TTL (a balance between freshness and
- * RDS-read-load reduction). {@code AccountUpdateService} is responsible
- * for evicting the cache key whenever the underlying account or
- * customer changes &mdash; this service is read-only and never writes
- * to the database.</p>
- *
- * <p>The cache namespace is {@code accountView}; the key is the
- * 11-digit account ID. The cached value is the same denormalised DTO
- * returned to callers, so subsequent hits avoid all three database
- * reads.</p>
+ * {@code 'CAVW'}).
  *
  * <h2>Source provenance (AAP &sect;0.7.3 refactor discipline)</h2>
  * <ul>
- *   <li><b>COBOL program:</b> {@code app/cbl/COACTVWC.cbl} (CICS TRANID
- *       {@code 'CAVW'}).</li>
+ *   <li><b>COBOL program:</b> {@code app/cbl/COACTVWC.cbl} &mdash; the
+ *       online "Account View" CICS pseudo-conversational transaction.
+ *       Reads the {@code CXACAIX} alternate-index, then the
+ *       {@code ACCTDAT} primary key, then the {@code CUSTDAT} primary
+ *       key, and assembles a denormalised view for the
+ *       {@code COACTVW.bms} 3270 screen.</li>
  *   <li><b>BMS mapset:</b> {@code app/bms/COACTVW.bms} (mapset
  *       {@code COACTVW}, map {@code COACTVWA}).</li>
  *   <li><b>Record layouts:</b> {@code app/cpy/CVACT01Y.cpy}
@@ -107,17 +59,99 @@ import java.util.Optional;
  *       {@code CARDXREF} + {@code CXACAIX} (AIX) &mdash; replaced by
  *       PostgreSQL tables {@code accounts}, {@code customers},
  *       {@code card_xref} with the {@code idx_cardxref_acct_id}
- *       secondary index.</li>
+ *       secondary index per AAP &sect;0.6.2.</li>
  * </ul>
  *
- * <h2>Thread-safety, transactions, exception translation</h2>
+ * <h2>Flow (matches COACTVWC paragraph
+ *      {@code 9000-READ-ACCT} ordering)</h2>
+ * <ol>
+ *   <li><b>Validate acctId.</b> COACTVWC paragraph
+ *       {@code 2210-EDIT-ACCOUNT} (lines 649-684) rejects null /
+ *       zero / non-numeric account identifiers with the working-
+ *       storage condition {@code SEARCHED-ACCT-ZEROES} /
+ *       {@code SEARCHED-ACCT-NOT-NUMERIC} bearing the verbatim message
+ *       <em>"Account number must be a non zero 11 digit number"</em>.
+ *       The Java target maps this to {@link ValidationException}
+ *       (HTTP 400 via {@code GlobalExceptionHandler}).</li>
+ *   <li><b>Try cache (cache-aside).</b> ElastiCache Redis lookup via
+ *       {@link CacheService#get(String, String, Class)} in the
+ *       {@code "account-view"} namespace. On hit, return the cached
+ *       DTO and bypass all three DB reads. Per AAP &sect;0.7.1
+ *       <em>"ElastiCache (Redis) used for account balance caching
+ *       &mdash; cache-aside pattern with TTL aligned to transaction
+ *       frequency"</em>.</li>
+ *   <li><b>READ XREF (COBOL {@code 9200-GETCARDXREF-BYACCT}).</b>
+ *       {@link CardCrossReferenceRepository#findByXrefAcctId(Long)}
+ *       performs the AIX lookup. The COBOL source raises
+ *       {@code DID-NOT-FIND-ACCT-IN-CARDXREF} on AIX miss; the Java
+ *       target throws {@link RecordNotFoundException} carrying the
+ *       verbatim COBOL message
+ *       <em>"Did not find this account in account card xref file"</em>
+ *       (HTTP 404).</li>
+ *   <li><b>READ ACCOUNT (COBOL {@code 9300-GETACCTDATA-BYACCT}).</b>
+ *       {@link AccountRepository#findById(Object)} fetches the
+ *       300-byte {@link Account} row. COBOL raises
+ *       {@code DID-NOT-FIND-ACCT-IN-ACCTDAT} on NOTFND; the Java
+ *       target throws {@link RecordNotFoundException} with the
+ *       verbatim message
+ *       <em>"Did not find this account in account master file"</em>.</li>
+ *   <li><b>READ CUSTOMER (COBOL {@code 9400-GETCUSTDATA-BYCUST}).</b>
+ *       {@link CustomerRepository#findById(Object)} fetches the
+ *       500-byte {@link Customer} row keyed by
+ *       {@code xref.getXrefCustId()}. COBOL raises
+ *       {@code DID-NOT-FIND-CUST-IN-CUSTDAT} on NOTFND; the Java
+ *       target throws {@link RecordNotFoundException} with the
+ *       verbatim message
+ *       <em>"Did not find associated customer in master file"</em>.</li>
+ *   <li><b>Assemble DTO.</b> Project Account + Customer + first
+ *       {@link CardCrossReference} into the 30-field
+ *       {@link AccountViewDto} record. The DTO is responsible for
+ *       PII masking (SSN as {@code ***-**-XXXX} in
+ *       {@link AccountViewDto#toString()}) per AAP &sect;0.6.6
+ *       PCI-DSS handling.</li>
+ *   <li><b>Cache write-through.</b> Populate the cache via
+ *       {@link CacheService#put(String, String, Object, Duration)} so
+ *       subsequent reads hit the cache. Failure to cache is non-fatal
+ *       (CacheService implements fail-open semantics).</li>
+ *   <li><b>Return DTO.</b></li>
+ * </ol>
  *
+ * <h2>Read order preserved (AAP &sect;0.7.1 minimal-change rule)</h2>
+ * <p>The reads happen in the order XREF &rarr; ACCT &rarr; CUST &mdash;
+ * the same order as COACTVWC paragraph {@code 9000-READ-ACCT} (lines
+ * 687-718). This ordering is semantically meaningful: each failure
+ * surfaces a distinct error message tied to the dataset that was
+ * missing. Re-ordering the reads would produce the wrong error
+ * message for any given missing-row scenario, violating the AAP
+ * mandate to preserve behaviour exactly.</p>
+ *
+ * <h2>Cache-aside design</h2>
+ * <p>The cache namespace is {@code "account-view"} (AAP &sect;0.7.1)
+ * and the key is the 11-digit zero-padded account ID
+ * ({@code String.format("%011d", acctId)}). The key format mirrors
+ * the partition key used by {@code KafkaEventPublisher} for the
+ * {@code account.updated} MSK topic, ensuring consistent ID
+ * representation across services.</p>
+ *
+ * <p>{@link #CACHE_NS} is exposed as a {@code public static} constant
+ * so writers ({@code AccountUpdateService}, {@code BillPaymentService},
+ * {@code InterestCalculationService}) can evict the corresponding key
+ * after a write &mdash; the cache-aside invalidation pattern.</p>
+ *
+ * <h2>Thread-safety, transactions, exception translation</h2>
  * <p>Stateless and thread-safe. The
- * {@link Transactional &#64;Transactional(readOnly = true)} annotation
- * enables read-only PostgreSQL connection mode for slightly lower
- * latency. A missing account or customer surfaces as
- * {@link RecordNotFoundException} (HTTP 404; COBOL {@code FILE STATUS
- * 23}).</p>
+ * {@link Transactional &#64;Transactional(readOnly = true)}
+ * annotation declares the three-way join as a single read-only
+ * transactional unit; Hibernate skips dirty-checking and PostgreSQL
+ * uses a read-only snapshot for slightly lower latency per AAP
+ * &sect;0.7.1.</p>
+ *
+ * <p>All domain exceptions thrown from this service are translated
+ * to HTTP responses by {@code GlobalExceptionHandler}:</p>
+ * <ul>
+ *   <li>{@link ValidationException} &rarr; HTTP 400 Bad Request</li>
+ *   <li>{@link RecordNotFoundException} &rarr; HTTP 404 Not Found</li>
+ * </ul>
  *
  * @see com.awsm2.carddemo.repository.AccountRepository
  * @see com.awsm2.carddemo.repository.CustomerRepository
@@ -128,18 +162,40 @@ import java.util.Optional;
 @Service
 public class AccountViewService {
 
-    /** Class-level SLF4J logger &mdash; structured JSON output. */
+    /**
+     * Class-level SLF4J logger. Structured JSON output is configured
+     * in {@code src/main/resources/logback-spring.xml} per AAP
+     * &sect;0.7.2 observability requirements
+     * (logstash-logback-encoder &rarr; CloudWatch Logs &rarr;
+     * OpenSearch).
+     */
     private static final Logger LOG = LoggerFactory.getLogger(AccountViewService.class);
 
-    /** Cache namespace for account-view DTOs (per AAP §0.7.1 cache-aside). */
-    public static final String CACHE_NS = "accountView";
+    /**
+     * Cache namespace for account-view DTOs (AAP &sect;0.7.1
+     * cache-aside).
+     *
+     * <p><b>Why {@code public static final}:</b> exposed so writers
+     * &mdash; {@code AccountUpdateService} (COBOL {@code COACTUPC}),
+     * {@code BillPaymentService} (COBOL {@code COBIL00C}),
+     * {@code InterestCalculationService} (COBOL {@code CBACT04C}),
+     * and {@code TransactionPostingService} (COBOL
+     * {@code CBTRN02C}) &mdash; can evict the corresponding key
+     * after mutating the underlying account / customer row. This is
+     * the cache-aside invalidation contract: writers are responsible
+     * for invalidating stale entries before the next read pulls them
+     * back from RDS.</p>
+     */
+    public static final String CACHE_NS = "account-view";
 
     /**
      * Cache TTL for account-view rows. 5 minutes balances freshness
-     * against RDS-read-load reduction; the AAP directive specifies "TTL
-     * aligned to transaction frequency", and for the CardDemo workload
-     * the median per-account update interval comfortably exceeds 5
-     * minutes outside of EOD batch windows.
+     * against RDS-read-load reduction; the AAP directive specifies
+     * "TTL aligned to transaction frequency", and for the CardDemo
+     * workload the median per-account update interval comfortably
+     * exceeds 5 minutes outside of EOD batch windows. Stale entries
+     * are an acceptable trade-off because writers issue an explicit
+     * {@code cacheService.evict(...)} after every mutation.
      */
     public static final Duration CACHE_TTL = Duration.ofMinutes(5);
 
@@ -149,13 +205,41 @@ public class AccountViewService {
     private final CacheService cacheService;
 
     /**
-     * Constructor &mdash; Spring supplies the collaborators.
+     * Constructor &mdash; constructor injection only per AAP
+     * &sect;0.7.1 layered architecture rule (no field injection, no
+     * setter injection). Spring resolves the four collaborator beans
+     * at startup and provides them as constructor arguments.
+     *
+     * @param accountRepository            JPA repository for the
+     *                                     {@code accounts} table
+     *                                     (replaces VSAM {@code ACCTDAT}
+     *                                     per AAP &sect;0.6.2);
+     *                                     must not be {@code null}.
+     * @param customerRepository           JPA repository for the
+     *                                     {@code customers} table
+     *                                     (replaces VSAM {@code CUSTDAT}
+     *                                     per AAP &sect;0.6.2);
+     *                                     must not be {@code null}.
+     * @param cardCrossReferenceRepository JPA repository for the
+     *                                     {@code card_xref} table
+     *                                     (replaces VSAM {@code CARDXREF}
+     *                                     + {@code CXACAIX} AIX per AAP
+     *                                     &sect;0.6.2);
+     *                                     must not be {@code null}.
+     * @param cacheService                 ElastiCache Redis adapter
+     *                                     (cache-aside per AAP
+     *                                     &sect;0.7.1);
+     *                                     must not be {@code null}.
      */
     public AccountViewService(
             AccountRepository accountRepository,
             CustomerRepository customerRepository,
             CardCrossReferenceRepository cardCrossReferenceRepository,
             CacheService cacheService) {
+        // Constructor injection only (AAP §0.7.1 — no @Autowired,
+        // no setter injection). null guards protect against
+        // misconfigured @SpringBootTest contexts that wire mock
+        // collaborators ad hoc.
         this.accountRepository = Objects.requireNonNull(
                 accountRepository, "accountRepository");
         this.customerRepository = Objects.requireNonNull(
@@ -167,96 +251,162 @@ public class AccountViewService {
     }
 
     /**
-     * Aggregate account + customer (+ optional card linkage) into a
-     * single view DTO for the {@code COACTVW.bms} screen.
+     * Retrieves a fully-denormalised account view, joining the
+     * {@code accounts}, {@code customers}, and {@code card_xref}
+     * tables in a single read-only transaction. This is the Java
+     * target for the COBOL COACTVWC paragraph {@code 9000-READ-ACCT}
+     * (lines 687-718).
      *
-     * <p>COBOL paragraph mapping:</p>
-     * <table>
-     *   <caption>COBOL COACTVWC.cbl &harr;
-     *            AccountViewService.viewAccount(...)</caption>
-     *   <tr><th>COBOL paragraph</th><th>Java equivalent</th></tr>
-     *   <tr><td>{@code 9000-READ-ACCT}</td>
-     *       <td>{@link AccountRepository#findById(Object)} on
-     *       {@code accounts}</td></tr>
-     *   <tr><td>{@code 9100-GETCARDXREF-BYACCT}
-     *       (CXACAIX AIX read)</td>
-     *       <td>{@link
-     *           CardCrossReferenceRepository#findByXrefAcctId(Long)}
-     *       on {@code card_xref}, with client-side ascending sort by
-     *       {@code xrefCardNum} to pick the first row (NONUNIQUEKEY
-     *       semantics: the AIX may return 0/1/N rows)</td></tr>
-     *   <tr><td>{@code 9200-READ-CUST}</td>
-     *       <td>{@link CustomerRepository#findById(Object)} on
-     *       {@code customers}</td></tr>
-     *   <tr><td>NOTFND (FILE STATUS 23)</td>
-     *       <td>{@link RecordNotFoundException} &rarr; HTTP 404</td></tr>
-     * </table>
+     * <h3>Flow (preserves COACTVWC read ordering)</h3>
+     * <ol>
+     *   <li>Validate {@code acctId} &mdash; non-null and strictly
+     *       positive.</li>
+     *   <li>Look up the {@code "account-view"} cache. On hit, return
+     *       the cached DTO and skip the database reads.</li>
+     *   <li>READ XREF (COBOL {@code 9200-GETCARDXREF-BYACCT}) &mdash;
+     *       find any cross-reference row whose
+     *       {@code xref_acct_id} matches the requested account.</li>
+     *   <li>READ ACCT (COBOL {@code 9300-GETACCTDATA-BYACCT}) &mdash;
+     *       fetch the 300-byte account record by primary key.</li>
+     *   <li>READ CUST (COBOL {@code 9400-GETCUSTDATA-BYCUST}) &mdash;
+     *       fetch the 500-byte customer record by primary key
+     *       derived from the XREF row.</li>
+     *   <li>Project the three rows into a 30-field
+     *       {@link AccountViewDto} record.</li>
+     *   <li>Populate the cache (fail-open).</li>
+     *   <li>Return the DTO.</li>
+     * </ol>
      *
-     * @param accountId the 11-digit account identifier
-     *                  ({@code ACCT-ID PIC 9(11)}); never {@code null}
+     * @param acctId the 11-digit account identifier
+     *               ({@code ACCT-ID PIC 9(11)} in
+     *               {@code app/cpy/CVACT01Y.cpy})
      * @return a fully-populated {@link AccountViewDto}; never
      *         {@code null}
-     * @throws RecordNotFoundException when either the account or its
-     *                                 customer is missing (HTTP 404;
-     *                                 COBOL {@code FILE STATUS 23})
+     * @throws ValidationException     when {@code acctId} is
+     *                                 {@code null} or non-positive
+     *                                 &mdash; COBOL
+     *                                 {@code 2210-EDIT-ACCOUNT}
+     *                                 {@code SEARCHED-ACCT-ZEROES} /
+     *                                 {@code SEARCHED-ACCT-NOT-NUMERIC}
+     *                                 condition (HTTP 400)
+     * @throws RecordNotFoundException when no cross-reference row
+     *                                 exists for the account
+     *                                 ({@code DID-NOT-FIND-ACCT-IN-CARDXREF}),
+     *                                 when no account row exists
+     *                                 ({@code DID-NOT-FIND-ACCT-IN-ACCTDAT}),
+     *                                 or when no customer row exists
+     *                                 for the cross-referenced ID
+     *                                 ({@code DID-NOT-FIND-CUST-IN-CUSTDAT})
+     *                                 (HTTP 404)
      */
     @Transactional(readOnly = true)
-    public AccountViewDto viewAccount(Long accountId) {
-        Objects.requireNonNull(accountId, "accountId");
+    public AccountViewDto getAccountView(Long acctId) {
+        // -------------------------------------------------------------
+        // Step 1 — Validate acctId.
+        // COBOL: COACTVWC:2210-EDIT-ACCOUNT (lines 649-684)
+        //   88 SEARCHED-ACCT-ZEROES VALUE
+        //      'Account number must be a non zero 11 digit number'.
+        //   88 SEARCHED-ACCT-NOT-NUMERIC VALUE
+        //      'Account number must be a non zero 11 digit number'.
+        // -------------------------------------------------------------
+        if (acctId == null || acctId <= 0L) {
+            // Verbatim COBOL working-storage message per AAP §0.7.2
+            // "Error codes and condition handling surfaced to
+            //  downstream consumers must be preserved verbatim".
+            throw new ValidationException(
+                    "Account number must be a non zero 11 digit number");
+        }
 
-        // ---- Cache-aside lookup (AAP §0.7.1) -----------------------
-        String cacheKey = String.format("%011d", accountId);
-        Optional<AccountViewDto> cached =
+        // -------------------------------------------------------------
+        // Step 2 — Cache-aside lookup (AAP §0.7.1).
+        // The cache namespace and zero-padded key format mirror
+        // KafkaEventPublisher partition keys for the
+        // account.updated MSK topic, keeping a consistent
+        // 11-digit string identifier across all event-driven
+        // services.
+        // -------------------------------------------------------------
+        final String cacheKey = acctIdKey(acctId);
+        final Optional<AccountViewDto> cached =
                 cacheService.get(CACHE_NS, cacheKey, AccountViewDto.class);
         if (cached.isPresent()) {
-            LOG.debug("Cache hit accountId={}", cacheKey);
+            LOG.debug("Account view cache hit acctId={}", cacheKey);
             return cached.get();
         }
+        LOG.debug("Account view cache miss acctId={} — proceeding to RDS join", cacheKey);
 
-        // ---- COBOL 9000-READ-ACCT (EXEC CICS READ DATASET('ACCTDAT'))
-        Account account = accountRepository.findById(accountId)
-                .orElseThrow(() -> new RecordNotFoundException(
-                        "ACCT_NOT_FOUND",
-                        "Account not found: " + cacheKey));
-
-        // ---- COBOL 9100-GETCARDXREF-BYACCT
-        // The COBOL source uses the CXACAIX alternate index to find the
-        // owning customer ID by traversing from the account back to a
-        // card record. In the Java target we go via card_xref directly:
-        // CardCrossReferenceRepository.findByXrefAcctId(...) issues a
-        // single SELECT against the idx_cardxref_acct_id index and
-        // returns all matching rows (NONUNIQUEKEY semantics from
-        // app/jcl/XREFFILE.jcl). The service then picks the first row
-        // in ascending xrefCardNum order client-side to preserve the
-        // COBOL CXACAIX STARTBR/READNEXT ordered-browse traversal
-        // (which always returned rows in ascending alternate-key
-        // order). Per the repository contract, the caller -- not the
-        // repository -- owns the cardinality decision.
-        List<CardCrossReference> xrefs =
-                cardCrossReferenceRepository.findByXrefAcctId(accountId);
-        Long customerId;
-        if (!xrefs.isEmpty()) {
-            CardCrossReference xref = xrefs.stream()
-                    .min(Comparator.comparing(CardCrossReference::getXrefCardNum))
-                    .orElseThrow();
-            customerId = xref.getXrefCustId();
-        } else {
-            // No card linked yet: surface a not-found per the COBOL
-            // semantics (CXACAIX miss is propagated as FILE STATUS 23).
-            LOG.info("No card_xref found for accountId={}", cacheKey);
+        // -------------------------------------------------------------
+        // Step 3 — READ XREF (CXACAIX alternate index by acctId).
+        // COBOL: COACTVWC:READ-CXACAIX
+        //   EXEC CICS READ DATASET ('CXACAIX')
+        //        RIDFLD (WS-CARD-RID-ACCT-ID-X) ...
+        //   On NOTFND → DID-NOT-FIND-ACCT-IN-CARDXREF:
+        //       'Did not find this account in account card xref file'
+        // The JPA replacement is findByXrefAcctId(Long), which backs
+        // the V004 idx_cardxref_acct_id secondary index (AAP §0.6.2)
+        // and preserves the NONUNIQUEKEY semantics (0/1/N rows per
+        // account). The COBOL READ on an AIX returns the first
+        // matching record in AIX key order; we mirror that by taking
+        // the first element of the returned list.
+        // -------------------------------------------------------------
+        final List<CardCrossReference> xrefs =
+                cardCrossReferenceRepository.findByXrefAcctId(acctId);
+        if (xrefs.isEmpty()) {
+            // Verbatim COBOL working-storage message
+            // (COACTVWC 88 DID-NOT-FIND-ACCT-IN-CARDXREF, line 129-130).
             throw new RecordNotFoundException(
-                    "XREF_NOT_FOUND",
-                    "Cross-reference not found for account: " + cacheKey);
+                    "CardCrossReference",
+                    "Did not find this account in account card xref file: acctId=" + acctId);
         }
+        final CardCrossReference xref = xrefs.get(0);
 
-        // ---- COBOL 9200-READ-CUST (EXEC CICS READ DATASET('CUSTDAT'))
-        Customer customer = customerRepository.findById(customerId)
+        // -------------------------------------------------------------
+        // Step 4 — READ ACCTDAT by ACCT-ID (primary key).
+        // COBOL: COACTVWC:READ-ACCTDAT
+        //   EXEC CICS READ DATASET ('ACCTDAT')
+        //        RIDFLD (WS-CARD-RID-ACCT-ID-X) ...
+        //   On NOTFND → DID-NOT-FIND-ACCT-IN-ACCTDAT:
+        //       'Did not find this account in account master file'
+        // -------------------------------------------------------------
+        final Account account = accountRepository.findById(acctId)
                 .orElseThrow(() -> new RecordNotFoundException(
-                        "CUST_NOT_FOUND",
-                        "Customer not found: " + customerId));
+                        "Account",
+                        // Verbatim COBOL working-storage message
+                        // (COACTVWC 88 DID-NOT-FIND-ACCT-IN-ACCTDAT, line 131-132).
+                        "Did not find this account in account master file: acctId=" + acctId));
 
-        // ---- Combine into the view DTO -----------------------------
-        AccountViewDto dto = new AccountViewDto(
+        // -------------------------------------------------------------
+        // Step 5 — READ CUSTDAT by ACCT-CUST-ID (primary key,
+        // derived from the XREF row).
+        // COBOL: COACTVWC:READ-CUSTDAT
+        //   EXEC CICS READ DATASET ('CUSTDAT')
+        //        RIDFLD (WS-CARD-RID-CUST-ID-X) ...
+        //   On NOTFND → DID-NOT-FIND-CUST-IN-CUSTDAT:
+        //       'Did not find associated customer in master file'
+        // The customer-ID for the read is sourced from the
+        // CardCrossReference row's XREF-CUST-ID field
+        // (CVACT03Y.cpy line 9, PIC 9(09)).
+        // -------------------------------------------------------------
+        final Long custId = xref.getXrefCustId();
+        final Customer customer = customerRepository.findById(custId)
+                .orElseThrow(() -> new RecordNotFoundException(
+                        "Customer",
+                        // Verbatim COBOL working-storage message
+                        // (COACTVWC 88 DID-NOT-FIND-CUST-IN-CUSTDAT, line 133-134).
+                        "Did not find associated customer in master file: custId=" + custId));
+
+        // -------------------------------------------------------------
+        // Step 6 — Assemble the 30-field AccountViewDto.
+        // COBOL: COACTVWC:1200-SETUP-SCREEN-VARS (lines 460-535)
+        // moves every ACCOUNT-RECORD / CUSTOMER-RECORD field into the
+        // CACTVWAO symbolic-map output buffer. The Java equivalent is
+        // a positional record constructor whose argument order
+        // matches the AccountViewDto canonical constructor exactly.
+        // The DTO is responsible for PII masking (SSN as
+        // ***-**-XXXX in toString()) per AAP §0.6.6 PCI-DSS handling;
+        // this service trusts that contract.
+        // -------------------------------------------------------------
+        final AccountViewDto dto = new AccountViewDto(
+                // ===== Account fields (CVACT01Y.cpy) =====
                 account.getAcctId(),
                 account.getAcctActiveStatus(),
                 account.getAcctCurrBal(),
@@ -269,6 +419,7 @@ public class AccountViewService {
                 account.getAcctCurrCycDebit(),
                 account.getAcctAddrZip(),
                 account.getAcctGroupId(),
+                // ===== Customer fields (CVCUS01Y.cpy) =====
                 customer.getCustId(),
                 customer.getCustFirstName(),
                 customer.getCustMiddleName(),
@@ -288,30 +439,48 @@ public class AccountViewService {
                 customer.getCustPriCardHolderInd(),
                 customer.getCustFicoCreditScore());
 
-        // ---- Populate cache (cache-aside fill) ---------------------
-        // Failure to cache is non-fatal: CacheService.put logs and
-        // swallows any exception per the fail-open contract.
+        // -------------------------------------------------------------
+        // Step 7 — Cache the assembled DTO (write-through populate).
+        // CacheService.put is fail-open: a Redis driver fault is
+        // logged at WARN and swallowed, so the business flow is
+        // never blocked by a cache outage (AAP §0.7.1 cache-aside
+        // resilience semantics). The TTL is the 5-minute CACHE_TTL
+        // constant declared at class scope; subsequent writes by
+        // AccountUpdateService / BillPaymentService /
+        // InterestCalculationService explicitly evict this key.
+        // -------------------------------------------------------------
         cacheService.put(CACHE_NS, cacheKey, dto, CACHE_TTL);
 
-        LOG.info("Account view returned accountId={} customerId={}",
+        LOG.info("Account view returned acctId={} custId={}",
                 cacheKey, customer.getCustId());
+
+        // -------------------------------------------------------------
+        // Step 8 — Return the DTO to the controller, which will wrap
+        // it in an ApiResponse<AccountViewDto> envelope and emit it
+        // as the HTTP 200 body. The PII discipline is enforced by
+        // AccountViewDto.toString() which masks the SSN before any
+        // logger consumes the value.
+        // -------------------------------------------------------------
         return dto;
     }
 
     /**
-     * Returns the list of card numbers linked to the supplied account
-     * &mdash; companion helper used by the account-view UI to populate
-     * the "associated cards" sub-panel and by downstream services that
-     * need to enumerate every card owned by an account.
+     * Formats an account identifier as an 11-digit zero-padded
+     * string &mdash; the canonical cache-key and Kafka-partition-key
+     * representation for an {@code ACCT-ID PIC 9(11)} value.
      *
-     * @param accountId the 11-digit account identifier; never
-     *                  {@code null}
-     * @return the list of card numbers; never {@code null} (empty list
-     *         when the account owns no cards)
+     * <p>Consistency across {@code AccountViewService},
+     * {@code AccountUpdateService}, {@code BillPaymentService},
+     * {@code KafkaEventPublisher}, and the JWT subject claim ensures
+     * the same string identifies the same account everywhere &mdash;
+     * cache hits, partition assignment, and audit-log correlation
+     * all key off the same 11-character zero-padded form.</p>
+     *
+     * @param acctId the raw account identifier; assumed non-null and
+     *               positive (caller is responsible for validation)
+     * @return the 11-digit zero-padded string representation
      */
-    @Transactional(readOnly = true)
-    public List<CardCrossReference> listCardsForAccount(Long accountId) {
-        Objects.requireNonNull(accountId, "accountId");
-        return cardCrossReferenceRepository.findByXrefAcctId(accountId);
+    private static String acctIdKey(Long acctId) {
+        return String.format("%011d", acctId);
     }
 }

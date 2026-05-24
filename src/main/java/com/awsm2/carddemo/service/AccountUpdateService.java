@@ -101,9 +101,9 @@ import java.util.Objects;
  * <h2>Cache invalidation (AAP &sect;0.7.1)</h2>
  *
  * <p>Per the cache-aside contract, this service invalidates the
- * {@code accountView} cache entry for the affected account ID
+ * {@code account-view} cache entry for the affected account ID
  * immediately after the database write commits. The next
- * {@code AccountViewService.viewAccount(...)} call repopulates the
+ * {@code AccountViewService.getAccountView(...)} call repopulates the
  * cache from the new authoritative database state.</p>
  *
  * <h2>MSK event publication (AAP &sect;0.6.5)</h2>
@@ -188,7 +188,8 @@ public class AccountUpdateService {
      *       <td>{@link CustomerRepository#save(Object)}</td></tr>
      *   <tr><td>Cache eviction (no COBOL analogue)</td>
      *       <td>{@link CacheService#evict(String, String)} on the
-     *       {@code accountView} namespace</td></tr>
+     *       {@code account-view} namespace
+     *       (see {@link AccountViewService#CACHE_NS})</td></tr>
      *   <tr><td>SEND MAP with confirmation message</td>
      *       <td>Return the persisted DTO with the updated
      *       {@code version} value</td></tr>

@@ -178,8 +178,8 @@ public class BillPaymentService {
     /** Account balance precision per {@code CVACT01Y.cpy} (PIC S9(10)V99). */
     private static final BigDecimal MAX_ACCOUNT_BALANCE = new BigDecimal("99999999999.99");
 
-    /** Cache namespace; mirrors AccountViewService. */
-    private static final String CACHE_NS_ACCOUNT = "accountView";
+    /** Cache namespace; mirrors {@link AccountViewService#CACHE_NS}. */
+    private static final String CACHE_NS_ACCOUNT = AccountViewService.CACHE_NS;
 
     private final AccountRepository accountRepository;
     private final CustomerRepository customerRepository;

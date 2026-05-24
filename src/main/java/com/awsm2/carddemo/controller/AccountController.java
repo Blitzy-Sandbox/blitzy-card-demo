@@ -52,7 +52,7 @@ import java.util.Objects;
  *       {@code CUSTDATA} and {@code CARDXREF} (via {@code CXACAIX} AIX
  *       on {@code XREF-ACCT-ID}) to render the
  *       {@code app/bms/COACTVW.bms} screen. The Java target uses
- *       {@link AccountViewService#viewAccount(Long)} which composes
+ *       {@link AccountViewService#getAccountView(Long)} which composes
  *       these reads.</li>
  *   <li>{@code app/cbl/COACTUPC.cbl} (CICS transaction id {@code CAUP})
  *       &mdash; Account maintenance with full validation cascade
@@ -221,7 +221,7 @@ public class AccountController {
         //   AccountViewService which composes the three reads per
         //   AAP §0.4.1).
         LOG.debug("Account view requested for accountId={}", id);
-        AccountViewDto view = accountViewService.viewAccount(id);
+        AccountViewDto view = accountViewService.getAccountView(id);
         return ResponseEntity.ok(ApiResponse.success(view));
     }
 
