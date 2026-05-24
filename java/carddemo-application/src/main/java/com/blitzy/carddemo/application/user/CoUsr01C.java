@@ -11,7 +11,7 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
 import com.blitzy.carddemo.domain.commarea.CardDemoCommarea;
 import com.blitzy.carddemo.domain.port.UserSecurityRepository;
 import com.blitzy.carddemo.domain.record.SecUserData;
-import com.blitzy.carddemo.domain.status.PgmContext;
+import com.blitzy.carddemo.domain.commarea.PgmContext;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -268,7 +268,7 @@ public final class CoUsr01C {
         CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
                 TRANSACTION_ID,
                 PROGRAM_ID,
-                gi.toTranid(),
+                gi.toTranId(),
                 toProgram,
                 gi.userId(),
                 gi.userType(),
@@ -279,9 +279,9 @@ public final class CoUsr01C {
     private static CardDemoCommarea withPgmContext(CardDemoCommarea commarea, PgmContext ctx) {
         CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
         CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
-                gi.fromTranid(),
+                gi.fromTranId(),
                 gi.fromProgram(),
-                gi.toTranid(),
+                gi.toTranId(),
                 gi.toProgram(),
                 gi.userId(),
                 gi.userType(),

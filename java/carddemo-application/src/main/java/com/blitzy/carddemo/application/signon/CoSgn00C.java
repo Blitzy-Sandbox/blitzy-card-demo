@@ -11,8 +11,8 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
 import com.blitzy.carddemo.domain.commarea.CardDemoCommarea;
 import com.blitzy.carddemo.domain.port.UserSecurityRepository;
 import com.blitzy.carddemo.domain.record.SecUserData;
-import com.blitzy.carddemo.domain.status.PgmContext;
-import com.blitzy.carddemo.domain.status.UserType;
+import com.blitzy.carddemo.domain.commarea.PgmContext;
+import com.blitzy.carddemo.domain.commarea.UserType;
 import com.blitzy.carddemo.domain.text.CcWorkAreas.AidKey;
 
 import org.slf4j.Logger;
@@ -302,7 +302,7 @@ public final class CoSgn00C {
         char typeCode = user.secUsrType();
         UserType userType;
         try {
-            userType = UserType.fromCode(typeCode);
+            userType = UserType.fromIndicator(typeCode);
         } catch (IllegalArgumentException ex) {
             log.warn("Unknown CDEMO-USER-TYPE '{}' for user {}; defaulting to regular user", typeCode, userId);
             userType = UserType.USER;
@@ -327,7 +327,7 @@ public final class CoSgn00C {
         };
 
         log.info("Signon success for user '{}' (type='{}'); dispatching to {}",
-                userId, userType.code(), targetProgram);
+                userId, userType.indicator(), targetProgram);
 
         // EXEC CICS XCTL is non-returning; we report the dispatch via Result.
         // If the registry has a handler, allow the composition root to

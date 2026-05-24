@@ -11,7 +11,7 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
 import com.blitzy.carddemo.domain.commarea.CardDemoCommarea;
 import com.blitzy.carddemo.domain.port.TransactionRepository;
 import com.blitzy.carddemo.domain.record.TranRecord;
-import com.blitzy.carddemo.domain.status.PgmContext;
+import com.blitzy.carddemo.domain.commarea.PgmContext;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -515,7 +515,7 @@ public final class CoTrn00C {
     private static CardDemoCommarea withTarget(CardDemoCommarea commarea, String toProgram) {
         CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
         CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
-                TRANSACTION_ID, PROGRAM_ID, gi.toTranid(), toProgram,
+                TRANSACTION_ID, PROGRAM_ID, gi.toTranId(), toProgram,
                 gi.userId(), gi.userType(), PgmContext.ENTER);
         return commarea.withGeneralInfo(updated);
     }
@@ -523,7 +523,7 @@ public final class CoTrn00C {
     private static CardDemoCommarea withPgmContext(CardDemoCommarea commarea, PgmContext ctx) {
         CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
         CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
-                gi.fromTranid(), gi.fromProgram(), gi.toTranid(), gi.toProgram(),
+                gi.fromTranId(), gi.fromProgram(), gi.toTranId(), gi.toProgram(),
                 gi.userId(), gi.userType(), ctx);
         return commarea.withGeneralInfo(updated);
     }

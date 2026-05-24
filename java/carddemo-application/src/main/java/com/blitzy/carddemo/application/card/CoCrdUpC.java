@@ -20,7 +20,7 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
 import com.blitzy.carddemo.domain.commarea.CardDemoCommarea;
 import com.blitzy.carddemo.domain.port.CardRepository;
 import com.blitzy.carddemo.domain.record.CardRecord;
-import com.blitzy.carddemo.domain.status.PgmContext;
+import com.blitzy.carddemo.domain.commarea.PgmContext;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -955,7 +955,7 @@ public final class CoCrdUpC {
         if (isFromCcList(commarea)) {
             outbound = outbound
                     .withAccountInfo(new CardDemoCommarea.AccountInfo(0L, ""))
-                    .withCardInfo(new CardDemoCommarea.CardInfo(0L));
+                    .withCardInfo(new CardDemoCommarea.CardInfo("0000000000000000"));
         }
         return Result.xctl(target, outbound);
     }
@@ -966,11 +966,11 @@ public final class CoCrdUpC {
     private static CardDemoCommarea clearAcctAndCardOnFresh(CardDemoCommarea commarea, UpdateContext context) {
         // Only reset when CDEMO-FROM-TRANID is blank / LOW-VALUES, per the
         // COBOL source for CCUP-CHANGES-OKAYED-AND-DONE (3200-SETUP-SCREEN-VARS).
-        String fromTranid = commarea.generalInfo().fromTranid();
-        if (fromTranid == null || fromTranid.isBlank()) {
+        String fromTranId = commarea.generalInfo().fromTranId();
+        if (fromTranId == null || fromTranId.isBlank()) {
             return commarea
                     .withAccountInfo(new CardDemoCommarea.AccountInfo(0L, ""))
-                    .withCardInfo(new CardDemoCommarea.CardInfo(0L));
+                    .withCardInfo(new CardDemoCommarea.CardInfo("0000000000000000"));
         }
         return commarea;
     }
@@ -1190,9 +1190,9 @@ public final class CoCrdUpC {
     private static CardDemoCommarea withPgmContext(CardDemoCommarea commarea, PgmContext ctx) {
         CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
         CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
-                gi.fromTranid(),
+                gi.fromTranId(),
                 gi.fromProgram(),
-                gi.toTranid(),
+                gi.toTranId(),
                 gi.toProgram(),
                 gi.userId(),
                 gi.userType(),
@@ -1205,7 +1205,7 @@ public final class CoCrdUpC {
         CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
                 TRANSACTION_ID,
                 PROGRAM_ID,
-                gi.toTranid(),
+                gi.toTranId(),
                 toProgram,
                 gi.userId(),
                 gi.userType(),
@@ -1239,8 +1239,10 @@ public final class CoCrdUpC {
     }
 
     private static String preselectedCardNumString(CardDemoCommarea commarea) {
-        long card = commarea.cardInfo().cardNum();
-        return card == 0L ? "" : String.format("%016d", card);
+        // CardInfo.cardNum is a 16-digit String (preserves leading zeros, supports
+        // PAN masking per AAP §0.7.2). All-zeros indicates "no preselection".
+        String card = commarea.cardInfo().cardNum();
+        return "0000000000000000".equals(card) ? "" : card;
     }
 
     // ============================================================================

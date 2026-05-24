@@ -11,8 +11,8 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
 import com.blitzy.carddemo.domain.commarea.CardDemoCommarea;
 import com.blitzy.carddemo.domain.menu.MainMenuTable;
 import com.blitzy.carddemo.domain.menu.MainMenuTable.MainMenuEntry;
-import com.blitzy.carddemo.domain.status.PgmContext;
-import com.blitzy.carddemo.domain.status.UserType;
+import com.blitzy.carddemo.domain.commarea.PgmContext;
+import com.blitzy.carddemo.domain.commarea.UserType;
 import com.blitzy.carddemo.domain.text.CcWorkAreas.AidKey;
 
 import org.slf4j.Logger;
@@ -169,9 +169,9 @@ public final class CoMen01C {
         if (!(commarea.generalInfo().pgmContext() instanceof PgmContext.Reenter)) {
             CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
             CardDemoCommarea.GeneralInfo reentered = new CardDemoCommarea.GeneralInfo(
-                    gi.fromTranid(),
+                    gi.fromTranId(),
                     gi.fromProgram(),
-                    gi.toTranid(),
+                    gi.toTranId(),
                     gi.toProgram(),
                     gi.userId(),
                     gi.userType(),
@@ -227,7 +227,7 @@ public final class CoMen01C {
         MainMenuEntry mainOption = chosen.get();
 
         // IF CDEMO-USRTYP-USER AND CDEMO-MENU-OPT-USRTYPE(WS-OPTION) = 'A'
-        // NB: callerType is com.blitzy.carddemo.domain.status.UserType (from
+        // NB: callerType is com.blitzy.carddemo.domain.commarea.UserType (from
         // the commarea); mainOption.userType() is
         // com.blitzy.carddemo.domain.commarea.UserType (from the menu table,
         // per the AAP §0.6.10 / file-schema mandate). Both are sealed
@@ -257,7 +257,7 @@ public final class CoMen01C {
         CardDemoCommarea.GeneralInfo gi = new CardDemoCommarea.GeneralInfo(
                 TRANSACTION_ID,
                 PROGRAM_ID,
-                current.toTranid(),
+                current.toTranId(),
                 current.toProgram(),
                 current.userId(),
                 current.userType(),

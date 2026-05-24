@@ -11,7 +11,7 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
 import com.blitzy.carddemo.domain.commarea.CardDemoCommarea;
 import com.blitzy.carddemo.domain.menu.AdminMenuTable;
 import com.blitzy.carddemo.domain.menu.AdminMenuTable.AdminMenuEntry;
-import com.blitzy.carddemo.domain.status.PgmContext;
+import com.blitzy.carddemo.domain.commarea.PgmContext;
 import com.blitzy.carddemo.domain.text.CcWorkAreas.AidKey;
 
 import org.slf4j.Logger;
@@ -151,9 +151,9 @@ public final class CoAdm01C {
         if (!(commarea.generalInfo().pgmContext() instanceof PgmContext.Reenter)) {
             CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
             CardDemoCommarea.GeneralInfo reentered = new CardDemoCommarea.GeneralInfo(
-                    gi.fromTranid(),
+                    gi.fromTranId(),
                     gi.fromProgram(),
-                    gi.toTranid(),
+                    gi.toTranId(),
                     gi.toProgram(),
                     gi.userId(),
                     gi.userType(),
@@ -214,7 +214,7 @@ public final class CoAdm01C {
         CardDemoCommarea.GeneralInfo gi = new CardDemoCommarea.GeneralInfo(
                 TRANSACTION_ID,
                 PROGRAM_ID,
-                current.toTranid(),
+                current.toTranId(),
                 current.toProgram(),
                 current.userId(),
                 current.userType(),

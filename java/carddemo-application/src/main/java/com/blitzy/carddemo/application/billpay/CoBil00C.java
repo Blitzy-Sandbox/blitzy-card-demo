@@ -15,7 +15,7 @@ import com.blitzy.carddemo.domain.port.TransactionRepository;
 import com.blitzy.carddemo.domain.record.AccountRecord;
 import com.blitzy.carddemo.domain.record.CardXrefRecord;
 import com.blitzy.carddemo.domain.record.TranRecord;
-import com.blitzy.carddemo.domain.status.PgmContext;
+import com.blitzy.carddemo.domain.commarea.PgmContext;
 import com.blitzy.carddemo.domain.util.Decimals;
 
 import org.slf4j.Logger;
@@ -543,7 +543,7 @@ public final class CoBil00C {
         CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
                 TRANSACTION_ID,
                 PROGRAM_ID,
-                gi.toTranid(),
+                gi.toTranId(),
                 toProgram,
                 gi.userId(),
                 gi.userType(),
@@ -554,9 +554,9 @@ public final class CoBil00C {
     private static CardDemoCommarea withPgmContext(CardDemoCommarea commarea, PgmContext ctx) {
         CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
         CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
-                gi.fromTranid(),
+                gi.fromTranId(),
                 gi.fromProgram(),
-                gi.toTranid(),
+                gi.toTranId(),
                 gi.toProgram(),
                 gi.userId(),
                 gi.userType(),

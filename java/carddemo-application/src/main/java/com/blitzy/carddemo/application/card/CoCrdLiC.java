@@ -20,7 +20,7 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
 import com.blitzy.carddemo.domain.commarea.CardDemoCommarea;
 import com.blitzy.carddemo.domain.port.CardRepository;
 import com.blitzy.carddemo.domain.record.CardRecord;
-import com.blitzy.carddemo.domain.status.PgmContext;
+import com.blitzy.carddemo.domain.commarea.PgmContext;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -816,9 +816,9 @@ public final class CoCrdLiC {
     private static CardDemoCommarea withPgmContext(CardDemoCommarea commarea, PgmContext ctx) {
         CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
         CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
-                gi.fromTranid(),
+                gi.fromTranId(),
                 gi.fromProgram(),
-                gi.toTranid(),
+                gi.toTranId(),
                 gi.toProgram(),
                 gi.userId(),
                 gi.userType(),
@@ -831,7 +831,7 @@ public final class CoCrdLiC {
         CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
                 TRANSACTION_ID,
                 PROGRAM_ID,
-                gi.toTranid(),
+                gi.toTranId(),
                 toProgram,
                 gi.userId(),
                 gi.userType(),
@@ -850,9 +850,12 @@ public final class CoCrdLiC {
         CardDemoCommarea base = withTarget(commarea, toProgram);
         long acctId = parseLongOrZero(acctNo);
         long card   = parseLongOrZero(cardNum);
+        // CardInfo.cardNum is a 16-digit String (preserves leading zeros and supports
+        // PAN masking per AAP §0.7.2); format the parsed long as a 16-digit zero-padded
+        // string so the canonical constructor's all-digits validation passes.
         return base
                 .withAccountInfo(new CardDemoCommarea.AccountInfo(acctId, base.accountInfo().acctStatus()))
-                .withCardInfo(new CardDemoCommarea.CardInfo(card));
+                .withCardInfo(new CardDemoCommarea.CardInfo(String.format("%016d", card)));
     }
 
     private static long parseLongOrZero(String s) {
