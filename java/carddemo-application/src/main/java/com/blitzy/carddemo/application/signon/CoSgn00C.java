@@ -227,7 +227,7 @@ public final class CoSgn00C {
                  AidKey.PfKey01 _, AidKey.PfKey02 _, AidKey.PfKey04 _, AidKey.PfKey05 _,
                  AidKey.PfKey06 _, AidKey.PfKey07 _, AidKey.PfKey08 _, AidKey.PfKey09 _,
                  AidKey.PfKey10 _, AidKey.PfKey11 _, AidKey.PfKey12 _
-                    -> Result.sendMap(sendSignonScreen(input.userId(), input.password(), MSG_INVALID_KEY), cm);
+                    -> Result.sendMap(sendSignonScreen(input.userId(), input.passwd(), MSG_INVALID_KEY), cm);
         };
     }
 
@@ -244,7 +244,7 @@ public final class CoSgn00C {
      */
     private Result processEnterKey(CoSgn00Input input, CardDemoCommarea commarea) {
         String userId = orEmpty(input.userId());
-        String password = orEmpty(input.password());
+        String password = orEmpty(input.passwd());
 
         if (userId.isBlank()) {
             return Result.sendMap(sendSignonScreen("", "", "Please enter User ID ..."), commarea);
