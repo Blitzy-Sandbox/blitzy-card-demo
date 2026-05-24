@@ -10,7 +10,7 @@ import com.blitzy.carddemo.application.ProgramRegistry;
 import com.blitzy.carddemo.domain.annotation.CobolProgram;
 import com.blitzy.carddemo.domain.commarea.CardDemoCommarea;
 import com.blitzy.carddemo.domain.menu.AdminMenuTable;
-import com.blitzy.carddemo.domain.menu.AdminMenuTable.AdminOption;
+import com.blitzy.carddemo.domain.menu.AdminMenuTable.AdminMenuEntry;
 import com.blitzy.carddemo.domain.status.PgmContext;
 import com.blitzy.carddemo.domain.text.CcWorkAreas.AidKey;
 
@@ -20,7 +20,6 @@ import org.slf4j.LoggerFactory;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Objects;
-import java.util.Optional;
 
 /**
  * Java translation of the {@code COADM01C} CICS online program at
@@ -185,15 +184,13 @@ public final class CoAdm01C {
             return Result.sendMap(sendMenuScreen(commarea, MSG_INVALID_OPTION), commarea);
         }
 
-        Optional<AdminOption> chosen = AdminMenuTable.findByNum(option);
-        if (chosen.isEmpty()) {
-            return Result.sendMap(sendMenuScreen(commarea, MSG_INVALID_OPTION), commarea);
-        }
-        AdminOption adminOption = chosen.get();
+        // option has been validated to be in [1, OPT_COUNT]; AdminMenuTable's
+        // static initializer guarantees ENTRIES.get(i) has optionNumber == i+1.
+        AdminMenuEntry adminOption = AdminMenuTable.ENTRIES.get(option - 1);
 
         // IF CDEMO-ADMIN-OPT-PGMNAME(WS-OPTION)(1:5) NOT = 'DUMMY'  → XCTL
         // ELSE                                                       → "coming soon"
-        String pgmName = adminOption.pgmName().trim();
+        String pgmName = adminOption.programName().trim();
         if (pgmName.length() >= 5 && pgmName.regionMatches(0, "DUMMY", 0, 5)) {
             // NOTE: COBOL source has CDEMO-ADMIN-OPT-NAME commented out, so
             // the message contains no option name. Preserved verbatim.
@@ -230,10 +227,10 @@ public final class CoAdm01C {
         for (int i = 0; i < MAX_OPTION_SLOTS; i++) {
             slots[i] = "";
         }
-        var options = AdminMenuTable.options();
+        var options = AdminMenuTable.ENTRIES;
         for (int i = 0; i < options.size() && i < MAX_OPTION_SLOTS; i++) {
-            AdminOption opt = options.get(i);
-            slots[i] = String.format("%02d. %s", opt.optNum(), opt.optName());
+            AdminMenuEntry opt = options.get(i);
+            slots[i] = String.format("%02d. %s", opt.optionNumber(), opt.optionName());
         }
 
         CoAdm01Output.FieldColor color = (message == null || message.isBlank())
