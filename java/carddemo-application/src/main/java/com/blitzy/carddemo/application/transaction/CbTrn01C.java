@@ -141,7 +141,7 @@ public final class CbTrn01C {
      * the Java translation emits the same labeled lines via the logger.
      */
     private Optional<CardXrefRecord> lookupXref(String cardNum) {
-        Optional<CardXrefRecord> xref = xrefRepository.findByCardNum(cardNum);
+        Optional<CardXrefRecord> xref = xrefRepository.findByCardNumber(cardNum);
         if (xref.isPresent()) {
             log.info("SUCCESSFUL READ OF XREF");
             log.info("CARD NUMBER: {}", xref.get().xrefCardNum());

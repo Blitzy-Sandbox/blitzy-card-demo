@@ -34,7 +34,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
-import java.util.stream.Stream;
 
 /**
  * Java translation of COBOL program {@code COACTUPC}
@@ -1540,8 +1539,8 @@ public final class CoActUpC {
 
         // 9200-GETCARDXREF-BYACCT
         long custId;
-        try (Stream<CardXrefRecord> stream = cardXrefs.findByAccountId(acctId)) {
-            Optional<CardXrefRecord> xrefOpt = stream.findFirst();
+        try {
+            Optional<CardXrefRecord> xrefOpt = cardXrefs.findByAccountId(acctId);
             if (xrefOpt.isEmpty()) {
                 return UpdateContext.initial();
             }

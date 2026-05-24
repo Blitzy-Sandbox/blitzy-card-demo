@@ -33,7 +33,6 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Optional;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 /**
  * Java translation of COBOL program {@code COACTVWC}
@@ -212,10 +211,7 @@ public final class CoActVwC {
         }
 
         // 9200-GETCARDXREF-BYACCT.
-        Optional<CardXrefRecord> xrefOpt;
-        try (Stream<CardXrefRecord> stream = cardXref.findByAccountId(acctId)) {
-            xrefOpt = stream.findFirst();
-        }
+        Optional<CardXrefRecord> xrefOpt = cardXref.findByAccountId(acctId);
         if (xrefOpt.isEmpty()) {
             return Result.sendMap(buildErrorScreen(acctIdStr, MSG_NOT_FOUND_XREF), commarea);
         }

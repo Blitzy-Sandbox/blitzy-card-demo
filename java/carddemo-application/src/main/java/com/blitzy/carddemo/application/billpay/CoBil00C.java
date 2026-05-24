@@ -337,8 +337,8 @@ public final class CoBil00C {
 
         // READ-CXACAIX-FILE — locate the card number for this account
         String cardNum;
-        try (Stream<CardXrefRecord> xrefStream = cardXref.findByAccountId(acctId)) {
-            Optional<CardXrefRecord> first = xrefStream.findFirst();
+        try {
+            Optional<CardXrefRecord> first = cardXref.findByAccountId(acctId);
             if (first.isEmpty()) {
                 return Result.sendMap(buildScreen(input, MSG_ACCT_NOT_FOUND,
                                                   CoBil00Output.FieldColor.RED), commarea);

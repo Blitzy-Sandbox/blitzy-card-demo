@@ -280,7 +280,7 @@ public final class CbTrn02C {
      * sets reason 100 on miss.
      */
     private ValidationResult lookupXref(DalyTranRecord record) {
-        Optional<CardXrefRecord> xref = xrefRepository.findByCardNum(
+        Optional<CardXrefRecord> xref = xrefRepository.findByCardNumber(
                 record.dalytranCardNum());
         if (xref.isEmpty()) {
             return new ValidationResult(REASON_INVALID_CARD, "INVALID CARD NUMBER FOUND");

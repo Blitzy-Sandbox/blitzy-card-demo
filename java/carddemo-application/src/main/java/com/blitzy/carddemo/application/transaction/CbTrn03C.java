@@ -256,7 +256,7 @@ public final class CbTrn03C {
      * Mirrors {@code 1500-A-LOOKUP-XREF}. ABENDs on INVALID KEY.
      */
     private CardXrefRecord lookupXref(String cardNum) {
-        return xrefRepository.findByCardNum(cardNum)
+        return xrefRepository.findByCardNumber(cardNum)
                 .orElseThrow(() -> {
                     log.error("INVALID CARD NUMBER : {}", cardNum);
                     displayIoStatus("23");

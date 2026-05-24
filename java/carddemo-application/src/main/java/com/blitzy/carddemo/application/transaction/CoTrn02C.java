@@ -252,10 +252,7 @@ public final class CoTrn02C {
             } catch (NumberFormatException nfe) {
                 return new ValidationResult(MSG_ACCT_NUMERIC, input);
             }
-            Optional<CardXrefRecord> xref;
-            try (Stream<CardXrefRecord> stream = cardXref.findByAccountId(acctId)) {
-                xref = stream.findFirst();
-            }
+            Optional<CardXrefRecord> xref = cardXref.findByAccountId(acctId);
             if (xref.isEmpty()) {
                 return new ValidationResult(MSG_ACCT_NOT_FOUND, input);
             }
@@ -266,7 +263,7 @@ public final class CoTrn02C {
             if (!isNumeric(input.cardNumber())) {
                 return new ValidationResult(MSG_CARD_NUMERIC, input);
             }
-            Optional<CardXrefRecord> xref = cardXref.findByCardNum(input.cardNumber().trim());
+            Optional<CardXrefRecord> xref = cardXref.findByCardNumber(input.cardNumber().trim());
             if (xref.isEmpty()) {
                 return new ValidationResult(MSG_CARD_NOT_FOUND, input);
             }

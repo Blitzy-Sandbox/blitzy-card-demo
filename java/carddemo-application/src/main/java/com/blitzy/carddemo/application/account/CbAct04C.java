@@ -270,19 +270,17 @@ public final class CbAct04C {
      * record by account ID (alternate key). Aborts on file status != '00'.
      */
     private CardXrefRecord getXrefData(long acctId) {
-        // CardXrefRepository.findByAccountId returns a Stream (one acct can
-        // have multiple cards); take the first matching record like the
-        // COBOL READ KEY IS FD-XREF-ACCT-ID does (returns the first AIX hit).
-        try (Stream<CardXrefRecord> stream = xrefRepository.findByAccountId(acctId)) {
-            return stream.findFirst()
-                    .orElseThrow(() -> {
-                        log.error("ACCOUNT NOT FOUND: {}", acctId);
-                        log.error("ERROR READING XREF FILE");
-                        displayIoStatus("23");
-                        return new AbendException(999,
-                                "Xref entry not found for acct: " + acctId);
-                    });
-        }
+        // CardXrefRepository.findByAccountId returns the first matching xref
+        // record per AIX iteration order — matches the COBOL READ
+        // KEY IS FD-XREF-ACCT-ID semantics (first AIX hit, NOTFND if none).
+        return xrefRepository.findByAccountId(acctId)
+                .orElseThrow(() -> {
+                    log.error("ACCOUNT NOT FOUND: {}", acctId);
+                    log.error("ERROR READING XREF FILE");
+                    displayIoStatus("23");
+                    return new AbendException(999,
+                            "Xref entry not found for acct: " + acctId);
+                });
     }
 
     /**
