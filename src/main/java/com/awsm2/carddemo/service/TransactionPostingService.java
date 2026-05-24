@@ -17,7 +17,6 @@
 package com.awsm2.carddemo.service;
 
 import com.awsm2.carddemo.adapter.AuditLogService;
-import com.awsm2.carddemo.adapter.CacheService;
 import com.awsm2.carddemo.adapter.KafkaEventPublisher;
 import com.awsm2.carddemo.adapter.S3OutputService;
 import com.awsm2.carddemo.domain.Account;
@@ -28,6 +27,7 @@ import com.awsm2.carddemo.domain.TransactionCategoryBalance;
 import com.awsm2.carddemo.domain.TransactionCategoryBalance.TransactionCategoryBalanceId;
 import com.awsm2.carddemo.dto.AccountUpdateDto;
 import com.awsm2.carddemo.dto.TransactionAddDto;
+import com.awsm2.carddemo.exception.CardDemoException;
 import com.awsm2.carddemo.exception.OnSizeErrorException;
 import com.awsm2.carddemo.repository.AccountRepository;
 import com.awsm2.carddemo.repository.CardCrossReferenceRepository;
@@ -36,7 +36,10 @@ import com.awsm2.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.awsm2.carddemo.repository.TransactionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -50,23 +53,91 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Daily transaction-posting batch service &mdash; the Java target for
- * the COBOL batch program {@code app/cbl/CBTRN02C.cbl}.
+ * Daily transaction-posting batch service &mdash; the Java target for the
+ * COBOL batch program {@code app/cbl/CBTRN02C.cbl}, with overlapping
+ * preliminary-read semantics from {@code app/cbl/CBTRN01C.cbl}
+ * subsumed (the standalone {@code CBTRN01C} "dump" semantics now flow
+ * through this service's repository iteration). The companion COBOL
+ * report variant {@code app/cbl/CBTRN03C.cbl} is intentionally handled
+ * by a separate {@code TransactionReportService} per AAP &sect;0.4.1
+ * (this service owns the <em>posting</em> half of the cascade only).
  *
- * <p>This service implements the 4-stage validation cascade and the
- * post-success update sequence that the COBOL source performs for each
- * record in the {@code DALYTRAN} (daily transaction) staging file.
- * Records that fail validation are written to the {@code DALYREJS}
- * rejects file with a verbatim reject reason code (100&ndash;109) and
- * reason-description trailer (paragraph
+ * <p>The service implements the <b>4-stage validation cascade</b> and
+ * the post-success update sequence the COBOL source performs for each
+ * record in the {@code DALYTRAN} staging file. Records that fail
+ * validation are written to the {@code DALYREJS} rejects file (now
+ * the S3 prefix {@code dalyrejs/}) with a verbatim reject reason code
+ * (100&ndash;109) and reason-description trailer (paragraph
  * {@code 2500-WRITE-REJECT-REC}). The job's UNIX/JES return code is
  * {@code 4} when any rejects exist and {@code 0} otherwise
- * (paragraph {@code MAIN-PARA} L228-L230).</p>
+ * (paragraph {@code MAIN-PARA} L228-L231).</p>
+ *
+ * <h2>COBOL reject codes (preserved verbatim per AAP &sect;0.7.2)</h2>
+ *
+ * <table>
+ *   <caption>CBTRN02C.cbl reject codes</caption>
+ *   <tr><th>Reject code</th><th>COBOL paragraph (line)</th>
+ *       <th>Reject description (verbatim)</th></tr>
+ *   <tr><td>{@code 100}</td><td>{@code 1500-A-LOOKUP-XREF} (L385)</td>
+ *       <td>{@code INVALID CARD NUMBER FOUND}</td></tr>
+ *   <tr><td>{@code 101}</td><td>{@code 1500-B-LOOKUP-ACCT} (L397)</td>
+ *       <td>{@code ACCOUNT RECORD NOT FOUND}</td></tr>
+ *   <tr><td>{@code 102}</td><td>{@code 1500-B-LOOKUP-ACCT} (L410)</td>
+ *       <td>{@code OVERLIMIT TRANSACTION}</td></tr>
+ *   <tr><td>{@code 103}</td><td>{@code 1500-B-LOOKUP-ACCT} (L417)</td>
+ *       <td>{@code TRANSACTION RECEIVED AFTER ACCT EXPIRATION}</td></tr>
+ *   <tr><td>{@code 109}</td><td>{@code 2800-UPDATE-ACCOUNT-REC}</td>
+ *       <td>{@code ACCOUNT RECORD NOT FOUND} (REWRITE INVALID KEY at
+ *       post-time &rarr; mapped to JPA
+ *       {@link OptimisticLockingFailureException})</td></tr>
+ * </table>
+ *
+ * <h2>COBOL paragraph translation</h2>
+ *
+ * <table>
+ *   <caption>CBTRN02C.cbl &harr; TransactionPostingService</caption>
+ *   <tr><th>COBOL paragraph</th><th>Java equivalent</th></tr>
+ *   <tr><td>{@code PROCEDURE DIVISION} main loop (L194-L234)</td>
+ *       <td>{@link #postDailyTransactions(LocalDate)}</td></tr>
+ *   <tr><td>{@code 1500-VALIDATE-TRAN} (L370-L378)</td>
+ *       <td>{@link #validateTransaction(DailyTransaction)}</td></tr>
+ *   <tr><td>{@code 1500-A-LOOKUP-XREF} (L380-L392)</td>
+ *       <td>Stage 1 inside
+ *       {@link #validateTransaction(DailyTransaction)} &mdash; reject
+ *       100</td></tr>
+ *   <tr><td>{@code 1500-B-LOOKUP-ACCT} (L393-L421)</td>
+ *       <td>Stages 2-4 inside
+ *       {@link #validateTransaction(DailyTransaction)} &mdash;
+ *       rejects 101 (account not found), 102 (overlimit), 103
+ *       (expired)</td></tr>
+ *   <tr><td>{@code 2000-POST-TRANSACTION} (L424-L444)</td>
+ *       <td>{@link #postTransaction(DailyTransaction, ValidationResult)}
+ *       (orchestrates 2700/2800/2900 then emits MSK and audit events)
+ *       </td></tr>
+ *   <tr><td>{@code 2500-WRITE-REJECT-REC} (L446-L465)</td>
+ *       <td>{@link #writeRejectRecord(DailyTransaction, ValidationResult,
+ *       LocalDate)} &mdash; calls
+ *       {@link S3OutputService#writeRejection(String, String)}</td></tr>
+ *   <tr><td>{@code 2700-UPDATE-TCATBAL} +
+ *       {@code 2700-A-CREATE-TCATBAL-REC} +
+ *       {@code 2700-B-UPDATE-TCATBAL-REC} (L467-L539)</td>
+ *       <td>{@link #updateTcatbal(DailyTransaction,
+ *       CardCrossReference)}</td></tr>
+ *   <tr><td>{@code 2800-UPDATE-ACCOUNT-REC} (L545-L560) &mdash;
+ *       reject 109 on REWRITE INVALID KEY</td>
+ *       <td>{@link #updateAccount(DailyTransaction, Account)}</td></tr>
+ *   <tr><td>{@code 2900-WRITE-TRANSACTION-FILE} (L562-L578)</td>
+ *       <td>{@link TransactionRepository#save(Object)} via
+ *       {@link #postTransaction(DailyTransaction, ValidationResult)}</td></tr>
+ * </table>
  *
  * <h2>Source provenance (AAP &sect;0.7.3)</h2>
  * <ul>
- *   <li><b>COBOL program:</b> {@code app/cbl/CBTRN02C.cbl} &mdash;
- *       invoked by JCL job {@code app/jcl/POSTTRAN.jcl} STEP15.</li>
+ *   <li><b>COBOL programs:</b>
+ *       {@code app/cbl/CBTRN02C.cbl} (primary &mdash; posting engine),
+ *       {@code app/cbl/CBTRN01C.cbl} (preliminary DALYTRAN reader,
+ *       subsumed here), and {@code app/cbl/CBTRN03C.cbl} (report
+ *       variant, handled by {@code TransactionReportService}).</li>
  *   <li><b>Record layouts:</b>
  *       {@code app/cpy/CVTRA06Y.cpy}
  *       ({@code DALYTRAN-RECORD}; {@link DailyTransaction}),
@@ -79,96 +150,65 @@ import java.util.Optional;
  *       {@link TransactionCategoryBalance}),
  *       {@code app/cpy/CVTRA05Y.cpy}
  *       ({@code TRAN-RECORD}; {@link Transaction}).</li>
+ *   <li><b>JCL:</b> invoked by {@code app/jcl/POSTTRAN.jcl} STEP15
+ *       (PGM=CBTRN02C) &mdash; replaced operationally by the
+ *       {@code DailyTransactionPostingJob} Spring Batch tasklet
+ *       inside an AWS Batch job definition wired from the EOD
+ *       Step Functions state machine
+ *       ({@code src/main/resources/stepfunctions/eod-batch-pipeline.asl.json}).</li>
  * </ul>
  *
- * <h2>COBOL reject codes (preserved verbatim per AAP &sect;0.7.2)</h2>
- *
- * <table>
- *   <caption>CBTRN02C.cbl reject codes</caption>
- *   <tr><th>Reject code</th><th>COBOL paragraph (line)</th>
- *       <th>Reject description</th></tr>
- *   <tr><td>{@code 100}</td><td>{@code 1500-A-LOOKUP-XREF} (L385)</td>
- *       <td>{@code INVALID CARD NUMBER FOUND}</td></tr>
- *   <tr><td>{@code 101}</td><td>{@code 1500-B-LOOKUP-ACCT} (L397)</td>
- *       <td>{@code ACCOUNT RECORD NOT FOUND}</td></tr>
- *   <tr><td>{@code 102}</td><td>{@code 1500-B-LOOKUP-ACCT} (L410)</td>
- *       <td>{@code OVERLIMIT TRANSACTION}</td></tr>
- *   <tr><td>{@code 103}</td><td>{@code 1500-B-LOOKUP-ACCT} (L417)</td>
- *       <td>{@code TRANSACTION RECEIVED AFTER ACCT EXPIRATION}</td></tr>
- *   <tr><td>{@code 109}</td><td>{@code 2800-UPDATE-ACCOUNT-REC} (L556)</td>
- *       <td>{@code ACCOUNT RECORD NOT FOUND} (REWRITE INVALID KEY)</td></tr>
- * </table>
- *
- * <h2>COBOL paragraph translation</h2>
- * <table>
- *   <caption>CBTRN02C.cbl &harr; TransactionPostingService</caption>
- *   <tr><th>COBOL paragraph</th><th>Java equivalent</th></tr>
- *   <tr><td>{@code PROCEDURE DIVISION} main loop (L196-L220)</td>
- *       <td>{@link #postDailyTransactions(String)}</td></tr>
- *   <tr><td>{@code 1500-VALIDATE-TRAN} (L370-L378)</td>
- *       <td>{@link #validate(DailyTransaction)}</td></tr>
- *   <tr><td>{@code 1500-A-LOOKUP-XREF} (L380-L392)</td>
- *       <td>{@link #lookupXref(DailyTransaction)} &mdash; reject 100</td></tr>
- *   <tr><td>{@code 1500-B-LOOKUP-ACCT} (L393-L421)</td>
- *       <td>{@link #validateAccount(DailyTransaction, Long)} &mdash;
- *       rejects 101 (account not found), 102 (overlimit), 103
- *       (expired)</td></tr>
- *   <tr><td>{@code 2000-POST-TRANSACTION} (L424-L444)</td>
- *       <td>{@link #postTransaction(DailyTransaction, Long, Account)}
- *       &mdash; orchestrates 2700/2800/2900</td></tr>
- *   <tr><td>{@code 2500-WRITE-REJECT-REC} (L446-L465)</td>
- *       <td>{@link #writeReject(DailyTransaction, RejectReason, String)}
- *       &mdash; calls {@link S3OutputService#writeRejection(String,
- *       String)}</td></tr>
- *   <tr><td>{@code 2700-UPDATE-TCATBAL} +
- *       {@code 2700-A-CREATE-TCATBAL-REC} +
- *       {@code 2700-B-UPDATE-TCATBAL-REC} (L467-L539)</td>
- *       <td>{@link #updateTransactionCategoryBalance(DailyTransaction,
- *       Long)}</td></tr>
- *   <tr><td>{@code 2800-UPDATE-ACCOUNT-REC} (L544-L560) &mdash;
- *       reject 109 on REWRITE INVALID KEY</td>
- *       <td>{@link #updateAccount(DailyTransaction, Account)}</td></tr>
- *   <tr><td>{@code 2900-WRITE-TRANSACTION-FILE} (L562-L578)</td>
- *       <td>{@link TransactionRepository#save(Object)} via
- *       {@link #writeTransactionRecord(DailyTransaction, Long)}</td></tr>
- * </table>
- *
- * <h2>Implementation notes (AAP &sect;0.7.1 Refactor Discipline)</h2>
+ * <h2>Implementation rules (AAP &sect;0.7.1 Refactor Discipline)</h2>
  * <ul>
- *   <li><b>Reject codes preserved verbatim:</b> Every reject code and
- *       reject description matches the COBOL source byte-for-byte.
- *       Downstream consumers of the DALYREJS file (now an S3 object)
- *       receive identical reject reason codes per AAP &sect;0.7.2.</li>
- *   <li><b>Return code semantics:</b> {@link Result#returnCode()}
- *       mirrors the COBOL {@code RETURN-CODE}: {@code 4} when any
- *       rejects exist, {@code 0} otherwise. The AWS Batch wrapper
- *       maps this to its own job exit code so Step Functions
- *       conditional branches behave identically to JCL
- *       {@code COND=(4,LT)}.</li>
- *   <li><b>4-stage cascade:</b> The COBOL source short-circuits the
- *       cascade at the first failure (paragraph {@code 1500-VALIDATE-TRAN}
- *       only calls {@code 1500-B-LOOKUP-ACCT} when
- *       {@code WS-VALIDATION-FAIL-REASON = 0}). The Java port preserves
- *       this short-circuit behavior &mdash; the first
- *       {@link RejectReason} encountered halts further validation for
- *       that record.</li>
+ *   <li><b>Reject codes preserved verbatim:</b> Every reject code
+ *       (100, 101, 102, 103, 109) and its description matches the
+ *       COBOL source byte-for-byte. Downstream consumers of the
+ *       DALYREJS S3 object receive identical reject reason codes.</li>
+ *   <li><b>Return code semantics:</b> {@link PostingResult#returnCode()}
+ *       mirrors COBOL {@code RETURN-CODE}: {@code 4} when any
+ *       rejects exist, {@code 0} otherwise. AWS Batch maps this to
+ *       its own job exit code so Step Functions conditional branches
+ *       behave identically to JCL {@code COND=(4,LT)}.</li>
+ *   <li><b>4-stage cascade short-circuit:</b> The COBOL source
+ *       short-circuits at the first failure (paragraph
+ *       {@code 1500-VALIDATE-TRAN} only calls
+ *       {@code 1500-B-LOOKUP-ACCT} when
+ *       {@code WS-VALIDATION-FAIL-REASON = 0}). The Java port
+ *       preserves this with early {@code return} on first reject.</li>
  *   <li><b>BigDecimal arithmetic:</b> All monetary arithmetic uses
  *       {@link BigDecimal} with {@link RoundingMode#HALF_EVEN}
- *       (AAP &sect;0.7.1).</li>
- *   <li><b>ON SIZE ERROR:</b> Account balance updates are guarded
- *       against the COBOL {@code PIC S9(10)V99} ceiling
- *       ({@code 99999999999.99}).</li>
- *   <li><b>Transaction boundary:</b> The whole batch run executes
- *       within a single {@link Transactional @Transactional(rollbackFor
- *       = Exception.class)} so a hard failure (unexpected DB error,
- *       Kafka publish exception) rolls back the entire run; per-record
- *       business-logic rejects do not roll back &mdash; they are
- *       written to S3 and the next record continues, exactly as in
- *       COBOL.</li>
- *   <li><b>No direct AWS SDK calls:</b> Rejects to S3 go through the
- *       {@link S3OutputService} adapter; transaction events go through
- *       {@link KafkaEventPublisher}; audit records go through
- *       {@link AuditLogService}.</li>
+ *       (banker's rounding) and explicit
+ *       {@code .setScale(2, RoundingMode.HALF_EVEN)} per AAP
+ *       &sect;0.6.1 and &sect;0.7.1. <b>No</b> {@code float} or
+ *       {@code double} appears anywhere in this service.</li>
+ *   <li><b>{@code ON SIZE ERROR}:</b> Every {@link BigDecimal}
+ *       operation is wrapped in a {@code try}/{@code catch} that
+ *       converts {@link ArithmeticException} to
+ *       {@link OnSizeErrorException} (per AAP &sect;0.7.1 rule 13).</li>
+ *   <li><b>Per-record transaction boundary:</b>
+ *       {@link #postTransaction(DailyTransaction, ValidationResult)}
+ *       is annotated {@code @Transactional(rollbackFor =
+ *       Exception.class, isolation = READ_COMMITTED, propagation =
+ *       REQUIRES_NEW)} so each posted record gets its own commit
+ *       boundary &mdash; mirroring COBOL per-record commit semantics
+ *       where any mid-record I/O error caused a 9999-ABEND-PROGRAM
+ *       (per AAP &sect;0.7.1 rule 8).</li>
+ *   <li><b>No direct AWS SDK calls:</b> S3 writes go through
+ *       {@link S3OutputService}; Kafka publishes through
+ *       {@link KafkaEventPublisher}; OpenSearch/CloudTrail audits
+ *       through {@link AuditLogService} (per AAP &sect;0.7.1
+ *       "Isolate all AWS service integrations").</li>
+ *   <li><b>PII discipline:</b> Log statements never include the
+ *       full card number or the full amount in info-level output
+ *       (per AAP rule 10). Card numbers reach OpenSearch via the
+ *       {@link AuditLogService} adapter which performs masking.</li>
+ *   <li><b>Optimistic-locking failures &rarr; reject 109:</b> JPA
+ *       {@link OptimisticLockingFailureException} at the
+ *       {@code accountRepository.save} boundary is wrapped as a
+ *       {@link CardDemoException} carrying reason code
+ *       {@code "ACCOUNT_REWRITE_FAILED"} (mapped to COBOL reject
+ *       code 109 semantics &mdash; "ACCOUNT RECORD NOT FOUND" on
+ *       REWRITE INVALID KEY).</li>
  * </ul>
  */
 @Service
@@ -177,362 +217,714 @@ public class TransactionPostingService {
     private static final Logger LOG =
             LoggerFactory.getLogger(TransactionPostingService.class);
 
+    // -------------------------------------------------------------------------
+    // Verbatim COBOL reject codes (preserved per AAP §0.7.2)
+    // -------------------------------------------------------------------------
+
     /**
-     * The maximum representable monetary value used as the ON SIZE
-     * ERROR guard for the COBOL {@code PIC S9(10)V99} target columns
-     * ({@code ACCT-CURR-BAL}, {@code ACCT-CURR-CYC-CREDIT},
-     * {@code ACCT-CURR-CYC-DEBIT}).
+     * COBOL: {@code 1500-A-LOOKUP-XREF} (L385) reject code &mdash;
+     * INVALID CARD NUMBER FOUND (file status '23' on XREF READ).
      */
-    static final BigDecimal MAX_AMOUNT = new BigDecimal("99999999999.99");
+    static final int REJECT_INVALID_CARD = 100;
 
-    /** Cache namespace for the AccountView cache-aside entries
-     *  (mirrors {@link AccountViewService#CACHE_NS}). */
-    static final String CACHE_NS_ACCOUNT = AccountViewService.CACHE_NS;
+    /**
+     * COBOL: {@code 1500-B-LOOKUP-ACCT} (L397) reject code &mdash;
+     * ACCOUNT RECORD NOT FOUND (file status '23' on ACCT READ).
+     */
+    static final int REJECT_ACCOUNT_NOT_FOUND = 101;
 
-    /** Audit event names. */
-    static final String AUDIT_TX_POSTED = "transaction.posted";
-    static final String AUDIT_TX_REJECTED = "transaction.rejected";
-    static final String AUDIT_RUN_SUMMARY = "batch.posttran.completed";
+    /**
+     * COBOL: {@code 1500-B-LOOKUP-ACCT} (L410) reject code &mdash;
+     * OVERLIMIT TRANSACTION (post-debit balance exceeds
+     * ACCT-CREDIT-LIMIT).
+     */
+    static final int REJECT_OVERLIMIT = 102;
+
+    /**
+     * COBOL: {@code 1500-B-LOOKUP-ACCT} (L417) reject code &mdash;
+     * TRANSACTION RECEIVED AFTER ACCT EXPIRATION
+     * (ACCT-EXPIRAION-DATE < DALYTRAN-ORIG-TS (1:10)).
+     */
+    static final int REJECT_EXPIRED = 103;
+
+    /**
+     * COBOL: {@code 2800-UPDATE-ACCOUNT-REC} reject code &mdash;
+     * ACCOUNT RECORD NOT FOUND on REWRITE INVALID KEY. In the Java
+     * target this is the {@link OptimisticLockingFailureException}
+     * path at {@code accountRepository.save}.
+     */
+    static final int REJECT_ACCOUNT_REWRITE_FAILED = 109;
+
+    /** Verbatim COBOL reject description for reject code 100. */
+    static final String DESC_INVALID_CARD = "INVALID CARD NUMBER FOUND";
+
+    /** Verbatim COBOL reject description for reject code 101 (and 109). */
+    static final String DESC_ACCOUNT_NOT_FOUND = "ACCOUNT RECORD NOT FOUND";
+
+    /** Verbatim COBOL reject description for reject code 102. */
+    static final String DESC_OVERLIMIT = "OVERLIMIT TRANSACTION";
+
+    /** Verbatim COBOL reject description for reject code 103. */
+    static final String DESC_EXPIRED =
+            "TRANSACTION RECEIVED AFTER ACCT EXPIRATION";
+
+    /**
+     * COBOL {@code MOVE 4 TO RETURN-CODE} (L230). When any rejection
+     * occurs the job exits with this code; downstream JCL/Step
+     * Functions conditional branches use this to detect partial
+     * failures (per AAP &sect;0.7.2 "Error codes and condition
+     * handling surfaced to downstream consumers must be preserved
+     * verbatim").
+     */
+    static final int RETURN_CODE_WITH_REJECTS = 4;
+
+    /**
+     * Inclusive upper bound for any monetary {@link BigDecimal} field
+     * after arithmetic &mdash; explicit overflow guard per AAP
+     * &sect;0.6.1 ("each arithmetic operation is wrapped in a check
+     * against the configured precision"). The value
+     * {@code 99,999,999,999.99} matches the widest signed COBOL
+     * monetary {@code PIC S9(11)V99} present in the CardDemo record
+     * layouts and is therefore a conservative ceiling for every
+     * field-level COMPUTE/ADD/SUBTRACT result. Any post-arithmetic
+     * value whose absolute magnitude exceeds this bound triggers an
+     * {@link OnSizeErrorException} that mirrors the COBOL
+     * {@code ON SIZE ERROR} clause semantics.
+     */
+    static final BigDecimal MAX_AMOUNT =
+            new BigDecimal("99999999999.99");
+
+    /** Audit event type for a successfully posted transaction. */
+    static final String AUDIT_EVENT_POSTED = "transaction.posted";
+
+    /** Audit event type for a rejected transaction. */
+    static final String AUDIT_EVENT_REJECTED = "transaction.rejected";
+
+    /**
+     * Operator code used in audit records to identify a batch-emitted
+     * event (vs. an online operator-emitted event). The COBOL source
+     * used the program name in DISPLAY statements; the Java target
+     * uses the symbolic {@code "BATCH"} identifier so OpenSearch
+     * dashboards can filter on operator type.
+     */
+    static final String OPERATOR_BATCH = "BATCH";
+
+    // -------------------------------------------------------------------------
+    // Constructor injection (per AAP §0.7.1 rule 9 — NO @Autowired on fields,
+    // final fields, single constructor)
+    // -------------------------------------------------------------------------
 
     private final DailyTransactionRepository dailyTransactionRepository;
-    private final CardCrossReferenceRepository xrefRepository;
-    private final AccountRepository accountRepository;
-    private final TransactionCategoryBalanceRepository tcatbalRepository;
     private final TransactionRepository transactionRepository;
+    private final AccountRepository accountRepository;
+    private final CardCrossReferenceRepository cardCrossReferenceRepository;
+    private final TransactionCategoryBalanceRepository
+            transactionCategoryBalanceRepository;
     private final S3OutputService s3OutputService;
     private final KafkaEventPublisher kafkaEventPublisher;
-    private final CacheService cacheService;
     private final AuditLogService auditLogService;
 
+    /**
+     * Sole constructor &mdash; receives all collaborators via
+     * constructor injection per AAP &sect;0.7.1 rule 9 ("Constructor
+     * injection only &mdash; final fields, single constructor").
+     *
+     * @param dailyTransactionRepository           Spring Data JPA
+     *                                             repository for the
+     *                                             {@code daily_transactions}
+     *                                             staging table
+     *                                             (replaces COBOL
+     *                                             {@code DALYTRAN-FILE}
+     *                                             sequential read)
+     * @param transactionRepository                Spring Data JPA
+     *                                             repository for the
+     *                                             {@code transactions}
+     *                                             journal (replaces
+     *                                             COBOL
+     *                                             {@code TRANSACT-FILE}
+     *                                             RANDOM WRITE)
+     * @param accountRepository                    Spring Data JPA
+     *                                             repository for the
+     *                                             {@code accounts}
+     *                                             table (replaces
+     *                                             COBOL
+     *                                             {@code ACCOUNT-FILE}
+     *                                             RANDOM READ/REWRITE)
+     * @param cardCrossReferenceRepository         Spring Data JPA
+     *                                             repository for
+     *                                             {@code card_xref}
+     *                                             (replaces COBOL
+     *                                             {@code XREF-FILE}
+     *                                             RANDOM READ)
+     * @param transactionCategoryBalanceRepository Spring Data JPA
+     *                                             repository for
+     *                                             {@code tran_cat_bal}
+     *                                             (replaces COBOL
+     *                                             {@code TCATBAL-FILE}
+     *                                             RANDOM READ/WRITE/REWRITE)
+     * @param s3OutputService                      AWS SDK v2 adapter
+     *                                             writing rejection
+     *                                             records to the
+     *                                             {@code dalyrejs/} S3
+     *                                             prefix (replaces
+     *                                             COBOL
+     *                                             {@code DALYREJS-FILE}
+     *                                             sequential WRITE)
+     * @param kafkaEventPublisher                  MSK Kafka producer
+     *                                             adapter emitting
+     *                                             {@code transaction.posted}
+     *                                             and
+     *                                             {@code account.updated}
+     *                                             events partitioned
+     *                                             by account ID
+     * @param auditLogService                      Audit log adapter
+     *                                             emitting structured
+     *                                             events to Amazon
+     *                                             OpenSearch (and
+     *                                             Amazon CloudTrail
+     *                                             for cross-cutting
+     *                                             AWS API events) per
+     *                                             AAP &sect;0.6.6
+     */
     public TransactionPostingService(
             DailyTransactionRepository dailyTransactionRepository,
-            CardCrossReferenceRepository xrefRepository,
-            AccountRepository accountRepository,
-            TransactionCategoryBalanceRepository tcatbalRepository,
             TransactionRepository transactionRepository,
+            AccountRepository accountRepository,
+            CardCrossReferenceRepository cardCrossReferenceRepository,
+            TransactionCategoryBalanceRepository
+                    transactionCategoryBalanceRepository,
             S3OutputService s3OutputService,
             KafkaEventPublisher kafkaEventPublisher,
-            CacheService cacheService,
             AuditLogService auditLogService) {
         this.dailyTransactionRepository = Objects.requireNonNull(
-                dailyTransactionRepository, "dailyTransactionRepository");
-        this.xrefRepository = Objects.requireNonNull(xrefRepository,
-                "xrefRepository");
-        this.accountRepository = Objects.requireNonNull(accountRepository,
-                "accountRepository");
-        this.tcatbalRepository = Objects.requireNonNull(tcatbalRepository,
-                "tcatbalRepository");
+                dailyTransactionRepository,
+                "dailyTransactionRepository must not be null");
         this.transactionRepository = Objects.requireNonNull(
-                transactionRepository, "transactionRepository");
+                transactionRepository,
+                "transactionRepository must not be null");
+        this.accountRepository = Objects.requireNonNull(accountRepository,
+                "accountRepository must not be null");
+        this.cardCrossReferenceRepository = Objects.requireNonNull(
+                cardCrossReferenceRepository,
+                "cardCrossReferenceRepository must not be null");
+        this.transactionCategoryBalanceRepository = Objects.requireNonNull(
+                transactionCategoryBalanceRepository,
+                "transactionCategoryBalanceRepository must not be null");
         this.s3OutputService = Objects.requireNonNull(s3OutputService,
-                "s3OutputService");
+                "s3OutputService must not be null");
         this.kafkaEventPublisher = Objects.requireNonNull(kafkaEventPublisher,
-                "kafkaEventPublisher");
-        this.cacheService = Objects.requireNonNull(cacheService,
-                "cacheService");
+                "kafkaEventPublisher must not be null");
         this.auditLogService = Objects.requireNonNull(auditLogService,
-                "auditLogService");
+                "auditLogService must not be null");
     }
 
-    // -------------------------------------------------------------------------
-    // Public API
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // Public API — top-level entry point + exported records
+    // =========================================================================
 
     /**
-     * Enumerates the verbatim COBOL reject codes from
-     * {@code CBTRN02C.cbl}. The numeric value and the reason
-     * description are byte-identical to the source per AAP &sect;0.7.2.
-     */
-    public enum RejectReason {
-        /** COBOL: paragraph 1500-A-LOOKUP-XREF (L385) MOVE 100. */
-        INVALID_CARD(100, "INVALID CARD NUMBER FOUND"),
-        /** COBOL: paragraph 1500-B-LOOKUP-ACCT (L397) MOVE 101. */
-        ACCOUNT_NOT_FOUND(101, "ACCOUNT RECORD NOT FOUND"),
-        /** COBOL: paragraph 1500-B-LOOKUP-ACCT (L410) MOVE 102. */
-        OVERLIMIT(102, "OVERLIMIT TRANSACTION"),
-        /** COBOL: paragraph 1500-B-LOOKUP-ACCT (L417) MOVE 103. */
-        EXPIRED(103, "TRANSACTION RECEIVED AFTER ACCT EXPIRATION"),
-        /** COBOL: paragraph 2800-UPDATE-ACCOUNT-REC (L556) MOVE 109. */
-        ACCOUNT_REWRITE_FAIL(109, "ACCOUNT RECORD NOT FOUND");
-
-        private final int code;
-        private final String description;
-
-        RejectReason(int code, String description) {
-            this.code = code;
-            this.description = description;
-        }
-
-        public int getCode() {
-            return code;
-        }
-
-        public String getDescription() {
-            return description;
-        }
-    }
-
-    /**
-     * Result summary returned to the caller (typically a Spring Batch
-     * Tasklet step inside the {@code DailyTransactionPostingJob}).
+     * Summary returned to the caller (typically a Spring Batch
+     * {@code Tasklet} step inside the {@code DailyTransactionPostingJob}
+     * or an AWS Step Functions invocation via the
+     * {@code StepFunctionsOrchestrator} adapter).
      *
-     * @param transactionsProcessed number of records read from the
-     *                              DALYTRAN staging file
-     * @param transactionsPosted    number of records that passed
-     *                              validation and were posted
-     * @param transactionsRejected  number of records that failed
-     *                              validation and were written to
-     *                              DALYREJS
-     * @param returnCode            COBOL-equivalent {@code RETURN-CODE}
-     *                              (0 or 4)
+     * <p>The {@code returnCode} field mirrors the COBOL
+     * {@code RETURN-CODE} register exactly: {@code 4} when any
+     * rejections occurred (COBOL: {@code IF WS-REJECT-COUNT > 0 MOVE
+     * 4 TO RETURN-CODE} at L229-L230), otherwise {@code 0}. This
+     * value is surfaced to AWS Batch as the container exit code so
+     * downstream Step Functions conditional branches behave
+     * identically to JCL {@code COND=} clauses.</p>
+     *
+     * @param transactionCount total number of DALYTRAN records
+     *                         processed (COBOL
+     *                         {@code WS-TRANSACTION-COUNT})
+     * @param rejectCount      number of records that failed validation
+     *                         (COBOL {@code WS-REJECT-COUNT})
+     * @param returnCode       COBOL-equivalent {@code RETURN-CODE}
+     *                         (0 or 4)
      */
-    public record Result(int transactionsProcessed,
-                         int transactionsPosted,
-                         int transactionsRejected,
-                         int returnCode) {
+    public record PostingResult(int transactionCount,
+                                int rejectCount,
+                                int returnCode) {
     }
 
     /**
-     * Executes the daily-transaction posting batch run.
+     * Validation outcome carrier returned by
+     * {@link #validateTransaction(DailyTransaction)}. On success
+     * (reasonCode == 0) the {@code xref} and {@code account} fields
+     * are populated with the looked-up entities so the post-success
+     * paragraphs (2700/2800/2900) can use them without redundant
+     * repository round-trips. On failure (reasonCode 100&ndash;103)
+     * the {@code xref} and {@code account} fields are {@code null}
+     * and the {@code reasonDescription} holds the verbatim COBOL
+     * reject description for downstream emission to DALYREJS.
      *
-     * @param batchRunId batch execution identifier (e.g. Step Functions
-     *                   execution ARN suffix); must not be {@code null}
-     *                   or blank
-     * @return a {@link Result} summary of the run
+     * @param reasonCode        validation result code: {@code 0} for
+     *                          success, 100&ndash;103 for COBOL
+     *                          reject codes
+     * @param reasonDescription verbatim COBOL reject description
+     *                          (empty string on success)
+     * @param xref              looked-up {@link CardCrossReference} on
+     *                          success of stage 1, {@code null}
+     *                          otherwise
+     * @param account           looked-up {@link Account} on success of
+     *                          stage 2, {@code null} otherwise
      */
-    @Transactional(rollbackFor = Exception.class)
-    public Result postDailyTransactions(String batchRunId) {
-        if (batchRunId == null || batchRunId.isBlank()) {
-            throw new IllegalArgumentException("batchRunId must not be null or blank");
+    public record ValidationResult(int reasonCode,
+                                   String reasonDescription,
+                                   CardCrossReference xref,
+                                   Account account) {
+        /**
+         * Factory method returning a successful validation result
+         * carrying both looked-up entities. Equivalent to COBOL
+         * {@code WS-VALIDATION-FAIL-REASON = 0} state (and
+         * description is left blank per
+         * {@code MOVE SPACES TO WS-VALIDATION-FAIL-REASON-DESC}
+         * at L209).
+         *
+         * @param x the looked-up {@link CardCrossReference}
+         * @param a the looked-up {@link Account}
+         * @return a successful {@code ValidationResult}
+         */
+        public static ValidationResult ok(CardCrossReference x, Account a) {
+            return new ValidationResult(0, "", x, a);
         }
 
-        LOG.info("CBTRN02C: starting daily-transaction posting run (batchRunId={})",
-                batchRunId);
+        /**
+         * Factory method returning a failed validation result with
+         * the given verbatim COBOL reject code and description.
+         * The {@code xref} and {@code account} fields are {@code
+         * null} because the cascade has short-circuited and any
+         * further values are undefined per the COBOL source.
+         *
+         * @param code the verbatim COBOL reject code
+         *             (100&ndash;103)
+         * @param desc the verbatim COBOL reject description
+         * @return a failing {@code ValidationResult}
+         */
+        public static ValidationResult reject(int code, String desc) {
+            return new ValidationResult(code, desc, null, null);
+        }
+    }
 
-        // COBOL: PERFORM UNTIL END-OF-FILE = 'Y' (L202)
-        List<DailyTransaction> dailyTransactions = dailyTransactionRepository.findAll();
+    /**
+     * Top-level entry point invoked by the Spring Batch
+     * {@code DailyTransactionPostingJob} tasklet or directly by the
+     * {@code StepFunctionsOrchestrator} adapter. Translates the
+     * {@code PROCEDURE DIVISION} main loop of {@code CBTRN02C.cbl}
+     * (L194-L234) into a Java {@code for}-each over the
+     * {@code DailyTransactionRepository} contents.
+     *
+     * <p>Per-record flow (verbatim from COBOL):</p>
+     * <ol>
+     *   <li>Read each {@link DailyTransaction} (COBOL: PERFORM
+     *       UNTIL END-OF-FILE / READ NEXT loop).</li>
+     *   <li>Increment {@code WS-TRANSACTION-COUNT}.</li>
+     *   <li>Reset {@code WS-VALIDATION-FAIL-REASON} = 0 and call
+     *       {@link #validateTransaction(DailyTransaction)} (COBOL:
+     *       PERFORM 1500-VALIDATE-TRAN).</li>
+     *   <li>If the validation passed: call
+     *       {@link #postTransaction(DailyTransaction, ValidationResult)}
+     *       (COBOL: PERFORM 2000-POST-TRANSACTION).</li>
+     *   <li>Otherwise: increment {@code WS-REJECT-COUNT} and call
+     *       {@link #writeRejectRecord(DailyTransaction,
+     *       ValidationResult, LocalDate)} (COBOL: PERFORM
+     *       2500-WRITE-REJECT-REC).</li>
+     * </ol>
+     *
+     * <p>On completion logs {@code WS-TRANSACTION-COUNT} and
+     * {@code WS-REJECT-COUNT} (COBOL L227-L228) and returns a
+     * {@link PostingResult} whose {@link PostingResult#returnCode()}
+     * is {@code 4} when any rejects occurred, {@code 0} otherwise
+     * (COBOL L229-L230 {@code MOVE 4 TO RETURN-CODE}).</p>
+     *
+     * <p>Per-record posting is performed inside an isolated
+     * {@code @Transactional(propagation = REQUIRES_NEW)} boundary
+     * (see {@link #postTransaction(DailyTransaction,
+     * ValidationResult)}) so per-record commits remain independent
+     * &mdash; mirroring COBOL per-record commit semantics where any
+     * mid-record I/O error caused a 9999-ABEND-PROGRAM. The outer
+     * loop is intentionally <em>not</em> {@code @Transactional} so
+     * one record's failure does not roll back the whole batch.</p>
+     *
+     * @param batchDate the business date of this batch run (used as
+     *                  the S3 object-key prefix when writing reject
+     *                  records to {@code dalyrejs/<date>/}). Must
+     *                  not be {@code null}.
+     * @return a {@link PostingResult} summary of the run
+     * @throws NullPointerException if {@code batchDate} is null
+     */
+    public PostingResult postDailyTransactions(LocalDate batchDate) {
+        Objects.requireNonNull(batchDate, "batchDate must not be null");
 
-        int processed = 0;
-        int posted = 0;
-        int rejected = 0;
+        // COBOL: CBTRN02C - START OF EXECUTION (L194)
+        LOG.info("CBTRN02C: START OF EXECUTION OF PROGRAM CBTRN02C batchDate={}",
+                batchDate);
 
-        for (DailyTransaction dly : dailyTransactions) {
-            processed++;
+        // COBOL: PERFORM UNTIL END-OF-FILE = 'Y' / READ DALYTRAN-FILE INTO
+        // DALYTRAN-RECORD (L202-L218). The repository-driven iteration
+        // replaces the COBOL OPEN INPUT DALYTRAN-FILE + sequential READ
+        // NEXT loop per AAP §0.4.1.
+        List<DailyTransaction> dalyTransactions =
+                dailyTransactionRepository.findAll();
+
+        // COBOL: WS-TRANSACTION-COUNT PIC 9(09) VALUE 0
+        //        WS-REJECT-COUNT      PIC 9(09) VALUE 0  (L185-L186)
+        int transactionCount = 0;
+        int rejectCount = 0;
+
+        for (DailyTransaction dt : dalyTransactions) {
+            // COBOL: ADD 1 TO WS-TRANSACTION-COUNT (L206)
+            transactionCount++;
+
             // COBOL: MOVE 0 TO WS-VALIDATION-FAIL-REASON
             //        MOVE SPACES TO WS-VALIDATION-FAIL-REASON-DESC (L208-L209)
-            ValidationResult validation = validate(dly);
-            if (validation.passed()) {
+            //        PERFORM 1500-VALIDATE-TRAN (L210)
+            ValidationResult vr = validateTransaction(dt);
+
+            if (vr.reasonCode() == 0) {
                 // COBOL: IF WS-VALIDATION-FAIL-REASON = 0
-                //          PERFORM 2000-POST-TRANSACTION  (L211-L212)
-                postTransaction(dly, validation.xrefAcctId(),
-                        validation.account());
-                emitPostedEvents(dly, validation.xrefAcctId(), batchRunId);
-                posted++;
+                //          PERFORM 2000-POST-TRANSACTION (L211-L212)
+                postTransaction(dt, vr);
             } else {
                 // COBOL: ELSE ADD 1 TO WS-REJECT-COUNT
-                //             PERFORM 2500-WRITE-REJECT-REC  (L214-L215)
-                writeReject(dly, validation.reason(), batchRunId);
-                emitRejectedEvent(dly, validation.reason(), batchRunId);
-                rejected++;
+                //             PERFORM 2500-WRITE-REJECT-REC (L213-L215)
+                rejectCount++;
+                writeRejectRecord(dt, vr, batchDate);
             }
         }
 
-        // COBOL: IF WS-REJECT-COUNT > 0 MOVE 4 TO RETURN-CODE (L229)
-        int returnCode = rejected > 0 ? 4 : 0;
+        // COBOL: IF WS-REJECT-COUNT > 0 MOVE 4 TO RETURN-CODE (L229-L230)
+        int returnCode = rejectCount > 0 ? RETURN_CODE_WITH_REJECTS : 0;
 
-        LOG.info("CBTRN02C: completed posting run; "
-                + "processed={}, posted={}, rejected={}, returnCode={}",
-                processed, posted, rejected, returnCode);
+        // COBOL: DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT
+        //        DISPLAY 'TRANSACTIONS REJECTED  :' WS-REJECT-COUNT
+        //        DISPLAY 'END OF EXECUTION OF PROGRAM CBTRN02C' (L227-L232)
+        LOG.info("CBTRN02C: TRANSACTIONS PROCESSED : {}", transactionCount);
+        LOG.info("CBTRN02C: TRANSACTIONS REJECTED  : {}", rejectCount);
+        LOG.info("CBTRN02C: END OF EXECUTION OF PROGRAM CBTRN02C "
+                + "returnCode={}", returnCode);
 
-        Map<String, Object> summary = new LinkedHashMap<>();
-        summary.put("transactionsProcessed", processed);
-        summary.put("transactionsPosted", posted);
-        summary.put("transactionsRejected", rejected);
-        summary.put("returnCode", returnCode);
-        auditLogService.logAuditEvent(
-                AUDIT_RUN_SUMMARY,
-                "BATCH_RUN",
-                batchRunId,
-                "BATCH",
-                summary,
-                batchRunId);
-
-        return new Result(processed, posted, rejected, returnCode);
+        return new PostingResult(transactionCount, rejectCount, returnCode);
     }
 
-    // -------------------------------------------------------------------------
-    // Validation cascade (4-stage)
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // Private paragraphs — one Java method per COBOL paragraph; order preserved
+    // =========================================================================
 
     /**
-     * Validation outcome carrier &mdash; on success holds the resolved
-     * XREF account id and Account entity; on failure holds the
-     * {@link RejectReason}.
-     */
-    private record ValidationResult(boolean passed,
-                                    RejectReason reason,
-                                    Long xrefAcctId,
-                                    Account account) {
-        static ValidationResult ok(Long acctId, Account account) {
-            return new ValidationResult(true, null, acctId, account);
-        }
-        static ValidationResult fail(RejectReason reason) {
-            return new ValidationResult(false, reason, null, null);
-        }
-    }
-
-    /**
-     * COBOL: 1500-VALIDATE-TRAN (L370-L378).
+     * COBOL: {@code 1500-VALIDATE-TRAN} (L370-L378) &mdash; the
+     * 4-stage validation cascade short-circuiting on first failure
+     * per COBOL {@code IF WS-VALIDATION-FAIL-REASON = 0 PERFORM
+     * 1500-B-LOOKUP-ACCT} pattern.
      *
-     * <p>Performs the 4-stage cascade in source order. Short-circuits
-     * on first failure per the COBOL source ({@code IF
-     * WS-VALIDATION-FAIL-REASON = 0 PERFORM 1500-B-LOOKUP-ACCT}).</p>
-     */
-    ValidationResult validate(DailyTransaction dly) {
-        // Stage 1: XREF lookup (reject 100)
-        Optional<CardCrossReference> xrefOpt = lookupXref(dly);
-        if (xrefOpt.isEmpty()) {
-            return ValidationResult.fail(RejectReason.INVALID_CARD);
-        }
-        Long acctId = xrefOpt.get().getXrefAcctId();
-
-        // Stages 2-4 occur inside the COBOL NOT INVALID KEY branch of
-        // the READ ACCOUNT-FILE; the Java port collapses them into the
-        // validateAccount helper for clarity.
-        return validateAccount(dly, acctId);
-    }
-
-    /**
-     * COBOL: 1500-A-LOOKUP-XREF (L380-L392).
+     * <p>Stages:
+     * <ol>
+     *   <li><b>1500-A-LOOKUP-XREF</b> (L380-L392) &mdash; READ
+     *       XREF-FILE by DALYTRAN-CARD-NUM &rarr; reject code 100
+     *       on file status '23' (NOTFND).</li>
+     *   <li><b>1500-B-LOOKUP-ACCT</b> (L393-L401) &mdash; READ
+     *       ACCOUNT-FILE by XREF-ACCT-ID &rarr; reject code 101 on
+     *       file status '23'.</li>
+     *   <li><b>Credit-limit check</b> (L403-L413) &mdash; COMPUTE
+     *       WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT
+     *       + DALYTRAN-AMT; IF ACCT-CREDIT-LIMIT &lt; WS-TEMP-BAL
+     *       MOVE 102 TO WS-VALIDATION-FAIL-REASON.</li>
+     *   <li><b>Expiration check</b> (L414-L420) &mdash; IF
+     *       ACCT-EXPIRAION-DATE &lt; DALYTRAN-ORIG-TS (1:10) MOVE
+     *       103 TO WS-VALIDATION-FAIL-REASON.</li>
+     * </ol>
      *
-     * <p>Reads the {@code CARDXREF} VSAM cluster by primary key
-     * {@code DALYTRAN-CARD-NUM}; on INVALID KEY moves reject reason 100
-     * (translated to {@link Optional#empty()} in the Java target).</p>
+     * @param dt the daily transaction under validation
+     * @return a {@link ValidationResult} carrying either the
+     *         looked-up entities (success) or the verbatim COBOL
+     *         reject code/description (failure)
      */
-    Optional<CardCrossReference> lookupXref(DailyTransaction dly) {
-        String cardNum = dly.getDalytranCardNum();
+    ValidationResult validateTransaction(DailyTransaction dt) {
+        // COBOL: 1500-A-LOOKUP-XREF (L380-L392)
+        // MOVE DALYTRAN-CARD-NUM TO FD-XREF-CARD-NUM (L382)
+        // READ XREF-FILE INTO CARD-XREF-RECORD
+        //   INVALID KEY MOVE 100 TO WS-VALIDATION-FAIL-REASON  (L384-L387)
+        String cardNum = dt.getDalytranCardNum();
         if (cardNum == null || cardNum.isBlank()) {
-            return Optional.empty();
+            // Defensive: a null/blank card number cannot resolve to an
+            // XREF row, so short-circuit with reject code 100 rather
+            // than issuing a repository call with an invalid key.
+            return ValidationResult.reject(REJECT_INVALID_CARD,
+                    DESC_INVALID_CARD);
         }
-        return xrefRepository.findById(cardNum);
-    }
+        Optional<CardCrossReference> xrefOpt =
+                cardCrossReferenceRepository.findById(cardNum);
+        if (xrefOpt.isEmpty()) {
+            return ValidationResult.reject(REJECT_INVALID_CARD,
+                    DESC_INVALID_CARD);
+        }
+        CardCrossReference xref = xrefOpt.get();
 
-    /**
-     * COBOL: 1500-B-LOOKUP-ACCT (L393-L421).
-     *
-     * <p>Reads the {@code ACCT} VSAM cluster by {@code XREF-ACCT-ID};
-     * on INVALID KEY moves reject reason 101. If found, computes the
-     * provisional balance and checks reject reasons 102 (overlimit)
-     * and 103 (expired).</p>
-     */
-    ValidationResult validateAccount(DailyTransaction dly, Long acctId) {
-        // Stage 2 &mdash; account lookup (reject 101)
-        Optional<Account> acctOpt = accountRepository.findById(acctId);
+        // COBOL: 1500-B-LOOKUP-ACCT (L393-L401)
+        // MOVE XREF-ACCT-ID TO FD-ACCT-ID (L394)
+        // READ ACCOUNT-FILE INTO ACCOUNT-RECORD
+        //   INVALID KEY MOVE 101 TO WS-VALIDATION-FAIL-REASON  (L395-L399)
+        Optional<Account> acctOpt =
+                accountRepository.findById(xref.getXrefAcctId());
         if (acctOpt.isEmpty()) {
-            return ValidationResult.fail(RejectReason.ACCOUNT_NOT_FOUND);
+            return ValidationResult.reject(REJECT_ACCOUNT_NOT_FOUND,
+                    DESC_ACCOUNT_NOT_FOUND);
         }
         Account account = acctOpt.get();
 
-        // Stage 3 &mdash; credit limit check (reject 102)
-        // COBOL: COMPUTE WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT
-        //                          - ACCT-CURR-CYC-DEBIT
-        //                          + DALYTRAN-AMT  (L403-L405)
-        BigDecimal cycCredit = nonNull(account.getAcctCurrCycCredit());
-        BigDecimal cycDebit = nonNull(account.getAcctCurrCycDebit());
-        BigDecimal tranAmt = nonNull(dly.getDalytranAmt());
-        BigDecimal tempBal = cycCredit.subtract(cycDebit).add(tranAmt)
-                .setScale(2, RoundingMode.HALF_EVEN);
-
-        // COBOL: IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL CONTINUE
-        //        ELSE MOVE 102 TO WS-VALIDATION-FAIL-REASON (L407-L412)
-        BigDecimal creditLimit = nonNull(account.getAcctCreditLimit());
-        if (creditLimit.compareTo(tempBal) < 0) {
-            return ValidationResult.fail(RejectReason.OVERLIMIT);
-        }
-
-        // Stage 4 &mdash; expiration check (reject 103)
-        // COBOL: IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10)
-        //          CONTINUE
-        //        ELSE MOVE 103 TO WS-VALIDATION-FAIL-REASON (L414-L419)
-        LocalDate expiry = account.getAcctExpirationDate();
-        LocalDate origDate = dly.getDalytranOrigTs() != null
-                ? dly.getDalytranOrigTs().toLocalDate()
-                : null;
-        if (expiry != null && origDate != null && expiry.isBefore(origDate)) {
-            return ValidationResult.fail(RejectReason.EXPIRED);
-        }
-
-        return ValidationResult.ok(acctId, account);
-    }
-
-    // -------------------------------------------------------------------------
-    // Post-success helpers (paragraph 2000-POST-TRANSACTION cascade)
-    // -------------------------------------------------------------------------
-
-    /**
-     * COBOL: 2000-POST-TRANSACTION (L424-L444).
-     *
-     * <p>Orchestrates the three post-transaction updates:
-     * 2700-UPDATE-TCATBAL, 2800-UPDATE-ACCOUNT-REC, and
-     * 2900-WRITE-TRANSACTION-FILE.</p>
-     */
-    void postTransaction(DailyTransaction dly, Long acctId, Account account) {
-        // COBOL: PERFORM 2700-UPDATE-TCATBAL
-        updateTransactionCategoryBalance(dly, acctId);
-        // COBOL: PERFORM 2800-UPDATE-ACCOUNT-REC
-        updateAccount(dly, account);
-        // COBOL: PERFORM 2900-WRITE-TRANSACTION-FILE
-        writeTransactionRecord(dly, acctId);
-    }
-
-    /**
-     * COBOL: 2700-UPDATE-TCATBAL + 2700-A-CREATE-TCATBAL-REC +
-     * 2700-B-UPDATE-TCATBAL-REC (L467-L539).
-     *
-     * <p>Upserts the per-{@code (account, type, category)} running
-     * balance: ADDs DALYTRAN-AMT to the existing balance if present,
-     * or creates a new row with DALYTRAN-AMT if absent.</p>
-     */
-    void updateTransactionCategoryBalance(DailyTransaction dly, Long acctId) {
-        TransactionCategoryBalanceId id = new TransactionCategoryBalanceId(
-                acctId, dly.getDalytranTypeCd(), dly.getDalytranCatCd());
-        Optional<TransactionCategoryBalance> existing =
-                tcatbalRepository.findById(id);
-        BigDecimal amt = nonNull(dly.getDalytranAmt());
-        if (existing.isPresent()) {
-            // COBOL: 2700-B-UPDATE-TCATBAL-REC &mdash; ADD DALYTRAN-AMT
-            //        TO TRAN-CAT-BAL; REWRITE.
-            TransactionCategoryBalance bal = existing.get();
-            BigDecimal newBal = nonNull(bal.getTranCatBal()).add(amt)
+        // COBOL: credit-limit check (CBTRN02C L403-L413)
+        //   COMPUTE WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT
+        //                       - ACCT-CURR-CYC-DEBIT
+        //                       + DALYTRAN-AMT  (L403-L405)
+        //   IF ACCT-CREDIT-LIMIT >= WS-TEMP-BAL CONTINUE
+        //   ELSE MOVE 102 TO WS-VALIDATION-FAIL-REASON  (L407-L412)
+        BigDecimal cycCredit = nonNullScale2(account.getAcctCurrCycCredit());
+        BigDecimal cycDebit = nonNullScale2(account.getAcctCurrCycDebit());
+        BigDecimal amt = nonNullScale2(dt.getDalytranAmt());
+        BigDecimal tempBal;
+        try {
+            // COBOL ADD/SUBTRACT/COMPUTE semantics — explicit setScale(2,
+            // HALF_EVEN) at the boundary preserves COBOL PIC S9(09)V99
+            // decimal-arithmetic semantics exactly per AAP §0.6.1.
+            tempBal = cycCredit.subtract(cycDebit).add(amt)
                     .setScale(2, RoundingMode.HALF_EVEN);
-            guardOnSizeError(newBal, "TRAN-CAT-BAL");
-            bal.setTranCatBal(newBal);
-            tcatbalRepository.save(bal);
+        } catch (ArithmeticException e) {
+            // COBOL ON SIZE ERROR semantics per AAP §0.7.1 rule 5 — any
+            // overflow in WS-TEMP-BAL surfaces as a typed exception that
+            // bubbles up to the Spring Batch tasklet, then to AWS Batch
+            // as a non-zero exit code.
+            throw new OnSizeErrorException(
+                    "ON_SIZE_ERROR_WS_TEMP_BAL",
+                    "ON SIZE ERROR computing WS-TEMP-BAL for "
+                            + "tranId=" + safe(dt.getDalytranId()),
+                    e);
+        }
+        // Explicit overflow guard per AAP §0.6.1 (Java BigDecimal arithmetic
+        // does not raise ArithmeticException on result magnitude — the guard
+        // implements the COBOL ON SIZE ERROR semantics directly).
+        guardOnSizeError(tempBal, "WS-TEMP-BAL");
+        BigDecimal creditLimit = nonNullScale2(account.getAcctCreditLimit());
+        if (creditLimit.compareTo(tempBal) < 0) {
+            return ValidationResult.reject(REJECT_OVERLIMIT, DESC_OVERLIMIT);
+        }
+
+        // COBOL: expiration check (CBTRN02C L414-L420)
+        //   IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10) CONTINUE
+        //   ELSE MOVE 103 TO WS-VALIDATION-FAIL-REASON
+        //   The COBOL substring (1:10) extracts "YYYY-MM-DD" from the
+        //   X(26) DB2-format timestamp — equivalent to
+        //   LocalDateTime.toLocalDate() in Java.
+        LocalDate origDate = dt.getDalytranOrigTs() != null
+                ? dt.getDalytranOrigTs().toLocalDate()
+                : null;
+        LocalDate expiry = account.getAcctExpirationDate();
+        if (origDate != null && expiry != null && expiry.isBefore(origDate)) {
+            return ValidationResult.reject(REJECT_EXPIRED, DESC_EXPIRED);
+        }
+
+        return ValidationResult.ok(xref, account);
+    }
+
+    /**
+     * COBOL: {@code 2000-POST-TRANSACTION} (L424-L444) &mdash; the
+     * post-validation update orchestrator.
+     *
+     * <p>Per-record commit boundary: each invocation runs in its own
+     * transaction (per AAP &sect;0.7.1 rule 8 + agent_prompt
+     * "{@code @Transactional(rollbackFor = Exception.class,
+     * isolation = READ_COMMITTED, propagation = REQUIRES_NEW)}"
+     * directive). This mirrors COBOL per-record commit semantics
+     * where any mid-record I/O error caused a 9999-ABEND-PROGRAM
+     * (which, in the Java target, becomes a rolled-back transaction
+     * surfacing a {@link CardDemoException} to the batch tasklet).</p>
+     *
+     * <p>Steps (preserve COBOL order):</p>
+     * <ol>
+     *   <li>Build the target {@link Transaction} entity by copying
+     *       each {@code DALYTRAN-*} field to the matching
+     *       {@code TRAN-*} field (COBOL L425-L437).</li>
+     *   <li>{@code PERFORM 2700-UPDATE-TCATBAL} (L440) &rarr;
+     *       {@link #updateTcatbal(DailyTransaction,
+     *       CardCrossReference)}.</li>
+     *   <li>{@code PERFORM 2800-UPDATE-ACCOUNT-REC} (L441) &rarr;
+     *       {@link #updateAccount(DailyTransaction, Account)}.</li>
+     *   <li>{@code PERFORM 2900-WRITE-TRANSACTION-FILE} (L442)
+     *       &rarr; {@code transactionRepository.save(tx)}.</li>
+     *   <li>Post-commit side effects: publish
+     *       {@code transaction.posted} and {@code account.updated}
+     *       MSK events plus emit an OpenSearch/CloudTrail audit
+     *       record.</li>
+     * </ol>
+     *
+     * @param dt the daily transaction being posted
+     * @param vr the validation result carrying the looked-up
+     *           {@link CardCrossReference} and {@link Account}
+     */
+    @Transactional(
+            rollbackFor = Exception.class,
+            isolation = Isolation.READ_COMMITTED,
+            propagation = Propagation.REQUIRES_NEW)
+    void postTransaction(DailyTransaction dt, ValidationResult vr) {
+        // COBOL: MOVE DALYTRAN-* TO TRAN-* (L425-L437)
+        Transaction tx = new Transaction();
+        tx.setTranId(dt.getDalytranId());
+        tx.setTranTypeCd(dt.getDalytranTypeCd());
+        tx.setTranCatCd(dt.getDalytranCatCd());
+        tx.setTranSource(dt.getDalytranSource());
+        tx.setTranDesc(dt.getDalytranDesc());
+        // Monetary amount preserved with scale=2, HALF_EVEN per AAP §0.6.1.
+        tx.setTranAmt(nonNullScale2(dt.getDalytranAmt()));
+        tx.setTranMerchantId(dt.getDalytranMerchantId());
+        tx.setTranMerchantName(dt.getDalytranMerchantName());
+        tx.setTranMerchantCity(dt.getDalytranMerchantCity());
+        tx.setTranMerchantZip(dt.getDalytranMerchantZip());
+        tx.setTranCardNum(dt.getDalytranCardNum());
+        tx.setTranOrigTs(dt.getDalytranOrigTs());
+        // COBOL: PERFORM Z-GET-DB2-FORMAT-TIMESTAMP / MOVE DB2-FORMAT-TS
+        //        TO TRAN-PROC-TS (L437-L438) — replaced by native
+        //        LocalDateTime.now() per AAP §0.5.2 (Java native date/time
+        //        replaces LE CEEDAYS).
+        tx.setTranProcTs(LocalDateTime.now());
+
+        // COBOL: PERFORM 2700-UPDATE-TCATBAL (L440)
+        updateTcatbal(dt, vr.xref());
+        // COBOL: PERFORM 2800-UPDATE-ACCOUNT-REC (L441)
+        updateAccount(dt, vr.account());
+        // COBOL: PERFORM 2900-WRITE-TRANSACTION-FILE (L442)
+        // The COBOL paragraph writes FD-TRANFILE-REC FROM TRAN-RECORD; the
+        // Java target persists the JPA entity via the Spring Data
+        // repository, which executes the matching INSERT.
+        transactionRepository.save(tx);
+
+        // -- Side effects (after successful commit boundary). ---------------
+        // These are best-effort: any failure here is logged but does NOT
+        // roll back the transaction post (the COBOL source had no
+        // post-commit eventing; these are additive per AAP §0.6.5). They
+        // are inside the @Transactional method so events are emitted
+        // after the row is persisted in JPA terms; actual Kafka delivery
+        // may complete asynchronously per Spring Kafka's @Async producer.
+        publishPostedEvents(tx, vr.account());
+        emitPostedAudit(tx, vr.account());
+    }
+
+    /**
+     * COBOL: {@code 2700-UPDATE-TCATBAL} (L467-L539) &mdash; upserts
+     * the per-{@code (account, type, category)} running balance.
+     *
+     * <p>Composite-key construction (COBOL L469-L471):</p>
+     * <pre>
+     * MOVE XREF-ACCT-ID    TO FD-TRANCAT-ACCT-ID
+     * MOVE DALYTRAN-TYPE-CD TO FD-TRANCAT-TYPE-CD
+     * MOVE DALYTRAN-CAT-CD  TO FD-TRANCAT-CD
+     * </pre>
+     *
+     * <p>The COBOL source distinguishes two branches:</p>
+     * <ul>
+     *   <li><b>2700-A-CREATE-TCATBAL-REC</b> &mdash; when the
+     *       TCATBAL READ returns file status '23' (NOTFND), the
+     *       record is created (INITIALIZE + WRITE with DALYTRAN-AMT
+     *       as the initial balance).</li>
+     *   <li><b>2700-B-UPDATE-TCATBAL-REC</b> &mdash; when the
+     *       TCATBAL READ succeeds, ADD DALYTRAN-AMT TO TRAN-CAT-BAL
+     *       and REWRITE.</li>
+     * </ul>
+     *
+     * @param dt   the daily transaction being posted
+     * @param xref the cross-reference row resolved in stage 1 of
+     *             {@link #validateTransaction(DailyTransaction)}
+     */
+    void updateTcatbal(DailyTransaction dt, CardCrossReference xref) {
+        // COBOL: 2700-UPDATE-TCATBAL — composite key construction
+        // FD-TRAN-CAT-KEY = (ACCT-ID, TYPE-CD, CD) per CBTRN02C L93-L96.
+        TransactionCategoryBalanceId key = new TransactionCategoryBalanceId(
+                xref.getXrefAcctId(),
+                dt.getDalytranTypeCd(),
+                dt.getDalytranCatCd());
+        Optional<TransactionCategoryBalance> tcatOpt =
+                transactionCategoryBalanceRepository.findById(key);
+
+        if (tcatOpt.isEmpty()) {
+            // COBOL: 2700-A-CREATE-TCATBAL-REC — file status '23' = NOTFND.
+            //   INITIALIZE TRAN-CAT-BAL-RECORD; MOVE keys; MOVE DALYTRAN-AMT
+            //   TO TRAN-CAT-BAL; WRITE FD-TRAN-CAT-BAL-RECORD.
+            LOG.info("CBTRN02C: TCATBAL record not found for key "
+                    + "acctId={} typeCd={} catCd={} - creating",
+                    xref.getXrefAcctId(),
+                    dt.getDalytranTypeCd(),
+                    dt.getDalytranCatCd());
+            TransactionCategoryBalance tcat = new TransactionCategoryBalance();
+            tcat.setId(key);
+            // COBOL: MOVE DALYTRAN-AMT TO TRAN-CAT-BAL — explicit scale=2 to
+            // preserve PIC S9(09)V99 semantics per AAP §0.6.1.
+            tcat.setTranCatBal(nonNullScale2(dt.getDalytranAmt()));
+            transactionCategoryBalanceRepository.save(tcat);
         } else {
-            // COBOL: 2700-A-CREATE-TCATBAL-REC &mdash; INITIALIZE; MOVE
-            //        keys; ADD DALYTRAN-AMT TO TRAN-CAT-BAL; WRITE.
-            BigDecimal initial = amt.setScale(2, RoundingMode.HALF_EVEN);
-            guardOnSizeError(initial, "TRAN-CAT-BAL");
-            TransactionCategoryBalance bal = new TransactionCategoryBalance(id, initial);
-            tcatbalRepository.save(bal);
+            // COBOL: 2700-B-UPDATE-TCATBAL-REC
+            //   ADD DALYTRAN-AMT TO TRAN-CAT-BAL
+            //   REWRITE FD-TRAN-CAT-BAL-RECORD.
+            TransactionCategoryBalance tcat = tcatOpt.get();
+            BigDecimal newBal;
+            try {
+                newBal = nonNullScale2(tcat.getTranCatBal())
+                        .add(nonNullScale2(dt.getDalytranAmt()))
+                        .setScale(2, RoundingMode.HALF_EVEN);
+            } catch (ArithmeticException e) {
+                // COBOL ON SIZE ERROR — TCATBAL accumulator overflow.
+                throw new OnSizeErrorException(
+                        "ON_SIZE_ERROR_TCATBAL",
+                        "ON SIZE ERROR updating TCATBAL for "
+                                + "tranId=" + safe(dt.getDalytranId()),
+                        e);
+            }
+            // Explicit overflow guard per AAP §0.6.1.
+            guardOnSizeError(newBal, "TRAN-CAT-BAL");
+            tcat.setTranCatBal(newBal);
+            transactionCategoryBalanceRepository.save(tcat);
         }
     }
 
     /**
-     * COBOL: 2800-UPDATE-ACCOUNT-REC (L544-L560).
+     * COBOL: {@code 2800-UPDATE-ACCOUNT-REC} (L545-L560) &mdash;
+     * updates the {@link Account} entity with DALYTRAN-AMT and
+     * REWRITEs it. Optimistic-lock failure on save (the Java
+     * equivalent of COBOL REWRITE INVALID KEY) maps to reject code
+     * 109 semantics via a {@link CardDemoException} with reason code
+     * {@code "ACCOUNT_REWRITE_FAILED"}.
      *
-     * <p>Adds DALYTRAN-AMT to ACCT-CURR-BAL and to either
-     * ACCT-CURR-CYC-CREDIT or ACCT-CURR-CYC-DEBIT depending on sign,
-     * then REWRITEs the account. Reject 109 (account not found on
-     * REWRITE INVALID KEY) cannot occur in the JPA target because the
-     * account was already loaded by 1500-B-LOOKUP-ACCT &mdash; but the
-     * code is retained for documentation parity.</p>
+     * <p>Sign-based routing (COBOL L547-L550):</p>
+     * <pre>
+     * IF DALYTRAN-AMT >= 0
+     *   ADD DALYTRAN-AMT TO ACCT-CURR-CYC-CREDIT
+     * ELSE
+     *   ADD DALYTRAN-AMT TO ACCT-CURR-CYC-DEBIT
+     * END-IF
+     * </pre>
+     *
+     * <p>This routing is a verbatim business rule per AAP &sect;0.7.1
+     * Refactor Discipline ("Account balance signed amount routing is
+     * a verbatim business rule — DO NOT optimize/simplify").</p>
+     *
+     * @param dt      the daily transaction being posted
+     * @param account the account resolved in stage 2 of
+     *                {@link #validateTransaction(DailyTransaction)}
      */
-    void updateAccount(DailyTransaction dly, Account account) {
-        BigDecimal amt = nonNull(dly.getDalytranAmt());
-        BigDecimal previousBalance = nonNull(account.getAcctCurrBal());
-        BigDecimal newBalance = previousBalance.add(amt)
-                .setScale(2, RoundingMode.HALF_EVEN);
+    void updateAccount(DailyTransaction dt, Account account) {
+        // COBOL: ADD DALYTRAN-AMT TO ACCT-CURR-BAL (L546)
+        BigDecimal newBalance;
+        try {
+            newBalance = nonNullScale2(account.getAcctCurrBal())
+                    .add(nonNullScale2(dt.getDalytranAmt()))
+                    .setScale(2, RoundingMode.HALF_EVEN);
+        } catch (ArithmeticException e) {
+            throw new OnSizeErrorException(
+                    "ON_SIZE_ERROR_ACCT_CURR_BAL",
+                    "ON SIZE ERROR ADD DALYTRAN-AMT TO ACCT-CURR-BAL for "
+                            + "acctId=" + account.getAcctId(),
+                    e);
+        }
+        // Explicit overflow guard per AAP §0.6.1.
         guardOnSizeError(newBalance, "ACCT-CURR-BAL");
         account.setAcctCurrBal(newBalance);
 
@@ -541,191 +933,448 @@ public class TransactionPostingService {
         //        ELSE
         //          ADD DALYTRAN-AMT TO ACCT-CURR-CYC-DEBIT
         //        END-IF (L547-L550)
+        BigDecimal amt = nonNullScale2(dt.getDalytranAmt());
         if (amt.signum() >= 0) {
-            BigDecimal newCycCredit = nonNull(account.getAcctCurrCycCredit())
-                    .add(amt).setScale(2, RoundingMode.HALF_EVEN);
-            guardOnSizeError(newCycCredit, "ACCT-CURR-CYC-CREDIT");
-            account.setAcctCurrCycCredit(newCycCredit);
+            BigDecimal newCredit;
+            try {
+                newCredit = nonNullScale2(account.getAcctCurrCycCredit())
+                        .add(amt)
+                        .setScale(2, RoundingMode.HALF_EVEN);
+            } catch (ArithmeticException e) {
+                throw new OnSizeErrorException(
+                        "ON_SIZE_ERROR_ACCT_CURR_CYC_CREDIT",
+                        "ON SIZE ERROR ADD DALYTRAN-AMT TO "
+                                + "ACCT-CURR-CYC-CREDIT for acctId="
+                                + account.getAcctId(),
+                        e);
+            }
+            // Explicit overflow guard per AAP §0.6.1.
+            guardOnSizeError(newCredit, "ACCT-CURR-CYC-CREDIT");
+            account.setAcctCurrCycCredit(newCredit);
         } else {
-            BigDecimal newCycDebit = nonNull(account.getAcctCurrCycDebit())
-                    .add(amt).setScale(2, RoundingMode.HALF_EVEN);
-            guardOnSizeError(newCycDebit, "ACCT-CURR-CYC-DEBIT");
-            account.setAcctCurrCycDebit(newCycDebit);
+            BigDecimal newDebit;
+            try {
+                newDebit = nonNullScale2(account.getAcctCurrCycDebit())
+                        .add(amt)
+                        .setScale(2, RoundingMode.HALF_EVEN);
+            } catch (ArithmeticException e) {
+                throw new OnSizeErrorException(
+                        "ON_SIZE_ERROR_ACCT_CURR_CYC_DEBIT",
+                        "ON SIZE ERROR ADD DALYTRAN-AMT TO "
+                                + "ACCT-CURR-CYC-DEBIT for acctId="
+                                + account.getAcctId(),
+                        e);
+            }
+            // Explicit overflow guard per AAP §0.6.1.
+            guardOnSizeError(newDebit, "ACCT-CURR-CYC-DEBIT");
+            account.setAcctCurrCycDebit(newDebit);
         }
 
-        Account saved = accountRepository.save(account);
-
-        // Cache eviction so subsequent online reads see the
-        // post-batch balance (AAP §0.3.3 cache-aside)
+        // COBOL: REWRITE FD-ACCTFILE-REC FROM ACCOUNT-RECORD
+        //        INVALID KEY MOVE 109 TO WS-VALIDATION-FAIL-REASON
+        // JPA REWRITE = save. OptimisticLockingFailureException corresponds
+        // to the COBOL INVALID KEY condition (i.e., the row no longer
+        // matches the snapshot loaded at stage 2; mirrors COBOL
+        // before/after image comparison). Map to reject code 109.
         try {
-            cacheService.evict(CACHE_NS_ACCOUNT, String.valueOf(saved.getAcctId()));
-        } catch (RuntimeException ex) {
-            LOG.warn("CBTRN02C: cache eviction failed for account {} (continuing)",
-                    saved.getAcctId(), ex);
+            accountRepository.save(account);
+        } catch (OptimisticLockingFailureException e) {
+            // COBOL: MOVE 109 TO WS-VALIDATION-FAIL-REASON
+            //        DISPLAY 'ERROR REWRITING ACCOUNT' ; ABEND.
+            // The Java target raises a typed CardDemoException carrying
+            // reject code 109 semantics — the surrounding @Transactional
+            // boundary rolls back so the row state remains consistent.
+            throw new CardDemoException(
+                    "ACCOUNT_REWRITE_FAILED",
+                    "ACCOUNT RECORD NOT FOUND (109) for acctId="
+                            + account.getAcctId(),
+                    e);
         }
     }
 
     /**
-     * COBOL: 2900-WRITE-TRANSACTION-FILE (L562-L578).
+     * COBOL: {@code 2500-WRITE-REJECT-REC} (L446-L465) &mdash; writes
+     * the rejected daily transaction to the DALYREJS sequential file,
+     * now an S3 prefix (replaces COBOL {@code WRITE FD-REJS-RECORD
+     * FROM REJECT-RECORD}). The output record is exactly 430 bytes:
+     * 350-byte REJECT-TRAN-DATA (the DALYTRAN record) concatenated
+     * with the 80-byte VALIDATION-TRAILER (4-byte zero-padded
+     * reject reason code + 76-byte left-padded reason description).
      *
-     * <p>Composes the {@link Transaction} record by copying the DALYTRAN
-     * fields verbatim and setting TRAN-PROC-TS to the current
-     * timestamp (paragraph {@code Z-GET-DB2-FORMAT-TIMESTAMP}).</p>
+     * <p>S3 object key format:
+     * {@code dalyrejs/<batchDate>/rejects-<epochMs>.txt}. Per AAP
+     * &sect;0.7.1 the S3 SDK call is delegated to
+     * {@link S3OutputService#writeRejection(String, String)} (never
+     * inlined here).</p>
+     *
+     * <p>Audit emission: after a successful S3 write, an audit
+     * record is emitted to OpenSearch via
+     * {@link AuditLogService#logTransactionEvent(String, Long,
+     * String, String, String, Map, String)} preserving the
+     * transaction ID + reject reason code + description verbatim
+     * per AAP &sect;0.7.2 ("Audit trail content must continue to be
+     * emitted with the same values and semantics").</p>
+     *
+     * @param dt        the daily transaction that failed validation
+     * @param vr        the validation result carrying the verbatim
+     *                  COBOL reject code and description
+     * @param batchDate the business date used as the S3 object-key
+     *                  prefix
      */
-    Transaction writeTransactionRecord(DailyTransaction dly, Long acctId) {
-        LocalDateTime now = LocalDateTime.now();
-        // COBOL: MOVE DALYTRAN-* TO TRAN-* (L425-L437)
-        Transaction tx = new Transaction(
-                dly.getDalytranId(),
-                dly.getDalytranTypeCd(),
-                dly.getDalytranCatCd(),
-                dly.getDalytranSource(),
-                dly.getDalytranDesc(),
-                nonNull(dly.getDalytranAmt()).setScale(2, RoundingMode.HALF_EVEN),
-                dly.getDalytranMerchantId(),
-                dly.getDalytranMerchantName(),
-                dly.getDalytranMerchantCity(),
-                dly.getDalytranMerchantZip(),
-                dly.getDalytranCardNum(),
-                dly.getDalytranOrigTs(),
-                now);
-        return transactionRepository.save(tx);
+    void writeRejectRecord(DailyTransaction dt,
+                           ValidationResult vr,
+                           LocalDate batchDate) {
+        // COBOL: 2500-WRITE-REJECT-REC (L446-L465)
+        //   MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA  (L447)
+        //   MOVE WS-VALIDATION-TRAILER TO VALIDATION-TRAILER  (L448)
+        //   WRITE FD-REJS-RECORD FROM REJECT-RECORD  (L451)
+        // VALIDATION-TRAILER layout (L181-L182):
+        //   05 WS-VALIDATION-FAIL-REASON      PIC 9(04)  (4 bytes, zero-padded)
+        //   05 WS-VALIDATION-FAIL-REASON-DESC PIC X(76)  (76 bytes, left-padded)
+        // Total trailer width = 80 bytes; record total = 350 + 80 = 430.
+        String reasonCode = String.format("%04d", vr.reasonCode());
+        String reasonDesc = padRight(vr.reasonDescription(), 76);
+
+        // Build the 430-byte (350+80) reject record verbatim per AAP §0.7.2
+        // "regulatory reporting output formats must remain identical
+        // byte-for-byte".
+        String rejectLine = padTo350(dt) + reasonCode + reasonDesc;
+
+        // Compose the S3 batch run identifier — used by the adapter as
+        // the per-day object-key prefix (e.g.,
+        // dalyrejs/2025-01-15/rejs-<ts>.rejs). This satisfies the
+        // S3OutputService contract that batchRunId is non-blank.
+        String batchRunId = "POSTTRAN-" + batchDate.toString();
+
+        try {
+            s3OutputService.writeRejection(batchRunId, rejectLine);
+            emitRejectedAudit(dt, vr);
+        } catch (CardDemoException e) {
+            // A CardDemoException raised inside the audit path (or by
+            // the adapter validating batchRunId) is re-thrown so the
+            // batch tasklet surfaces it to AWS Batch. The S3 write
+            // already completed at this point if the audit failed.
+            throw e;
+        } catch (RuntimeException e) {
+            // S3 upload failure — map to CardDemoException carrying
+            // a reason code so the Spring Batch tasklet surfaces a
+            // non-zero exit to AWS Batch (per AAP §0.7.1).
+            LOG.error("CBTRN02C: failed to write reject record for "
+                    + "tranId={}", safe(dt.getDalytranId()), e);
+            throw new CardDemoException(
+                    "WRITE_REJECT_FAILED",
+                    "Failed to write reject record for tranId="
+                            + safe(dt.getDalytranId()),
+                    e);
+        }
     }
 
-    // -------------------------------------------------------------------------
-    // Reject helpers
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // Private helpers — DALYTRAN serialization, side-effect emitters
+    // =========================================================================
 
     /**
-     * COBOL: 2500-WRITE-REJECT-REC (L446-L465).
+     * Serializes the daily transaction back to its 350-byte
+     * fixed-width form per {@code CVTRA06Y.cpy}. Field widths are
+     * preserved verbatim from the copybook so the DALYREJS S3 object
+     * is byte-identical to the original mainframe sequential file.
      *
-     * <p>Constructs the 430-byte rejection record (350-byte
-     * REJECT-TRAN-DATA + 80-byte VALIDATION-TRAILER) and hands it to
-     * the {@link S3OutputService} adapter for verbatim write to the
-     * DALYREJS S3 prefix.</p>
-     */
-    void writeReject(DailyTransaction dly, RejectReason reason, String batchRunId) {
-        // The COBOL VALIDATION-TRAILER is 80 bytes:
-        //   05 REJECT-REASON-CD   PIC 9(03)  (3 bytes)
-        //   05 REJECT-REASON-DESC PIC X(77)  (77 bytes)
-        // The full 430-byte rejection record is REJECT-TRAN-DATA (350)
-        // concatenated with VALIDATION-TRAILER (80). The S3 adapter
-        // preserves bytes verbatim per AAP §0.7.2.
-        String trailer = String.format("%03d", reason.getCode())
-                + padRight(reason.getDescription(), 77);
-        String record = formatDalytranRecord(dly) + trailer;
-        s3OutputService.writeRejection(batchRunId, record);
-    }
-
-    /**
-     * Formats the 350-byte DALYTRAN record per CVTRA06Y.cpy.
+     * <p>Layout (350 bytes total):</p>
+     * <pre>
+     *  16 + 2 + 4 + 10 + 100 + 12 + 9 + 50 + 50 + 10 + 16 + 26 + 26 + 19
+     *  = 350
+     * </pre>
      *
-     * <p>Field widths per COBOL copybook are preserved verbatim. Null
-     * fields are rendered as the proper spaces/zeros.</p>
+     * <ul>
+     *   <li>PIC X(*) — left-aligned, blank-padded</li>
+     *   <li>PIC 9(*) — right-aligned, zero-padded, unsigned</li>
+     *   <li>PIC S9(09)V99 — sign-prefixed (+/-) + 9 integer digits
+     *       + literal '.' + 2 fractional digits (12 chars)</li>
+     *   <li>PIC X(26) — DB2-format timestamp
+     *       {@code yyyy-MM-dd-HH.mm.ss.NNNNNN}</li>
+     *   <li>Trailing 19-byte FILLER to bring total to 350 bytes
+     *       (the COBOL copybook is silent on the trailing padding
+     *       width, but the RECLN=350 / KEYLEN=16 constraints from
+     *       {@code app/jcl/TRANFILE.jcl} require it).</li>
+     * </ul>
+     *
+     * @param dt the daily transaction to serialize
+     * @return the 350-byte fixed-width record (without trailing
+     *         newline)
      */
-    String formatDalytranRecord(DailyTransaction dly) {
+    private String padTo350(DailyTransaction dt) {
         StringBuilder sb = new StringBuilder(350);
-        sb.append(padRight(dly.getDalytranId(), 16));         // PIC X(16)
-        sb.append(padRight(dly.getDalytranTypeCd(), 2));      // PIC X(02)
-        sb.append(formatNumeric4(dly.getDalytranCatCd()));    // PIC 9(04)
-        sb.append(padRight(dly.getDalytranSource(), 10));     // PIC X(10)
-        sb.append(padRight(dly.getDalytranDesc(), 100));      // PIC X(100)
-        sb.append(formatAmount(dly.getDalytranAmt()));        // PIC S9(09)V99 (12 chars)
-        sb.append(formatNumeric9(dly.getDalytranMerchantId()));// PIC 9(09)
-        sb.append(padRight(dly.getDalytranMerchantName(), 50));// PIC X(50)
-        sb.append(padRight(dly.getDalytranMerchantCity(), 50));// PIC X(50)
-        sb.append(padRight(dly.getDalytranMerchantZip(), 10));// PIC X(10)
-        sb.append(padRight(dly.getDalytranCardNum(), 16));    // PIC X(16)
-        sb.append(formatTimestamp(dly.getDalytranOrigTs()));  // PIC X(26)
-        sb.append(formatTimestamp(dly.getDalytranProcTs()));  // PIC X(26)
-        // Total above = 16+2+4+10+100+12+9+50+50+10+16+26+26 = 331 bytes
-        // CVTRA06Y has a 19-byte FILLER at the end to bring total to 350
-        sb.append(padRight("", 19));                          // FILLER
+        // 16 bytes — DALYTRAN-ID PIC X(16)
+        sb.append(padRight(dt.getDalytranId(), 16));
+        // 2 bytes — DALYTRAN-TYPE-CD PIC X(02)
+        sb.append(padRight(dt.getDalytranTypeCd(), 2));
+        // 4 bytes — DALYTRAN-CAT-CD PIC 9(04)
+        sb.append(formatNumeric(dt.getDalytranCatCd(), 4));
+        // 10 bytes — DALYTRAN-SOURCE PIC X(10)
+        sb.append(padRight(dt.getDalytranSource(), 10));
+        // 100 bytes — DALYTRAN-DESC PIC X(100)
+        sb.append(padRight(dt.getDalytranDesc(), 100));
+        // 12 bytes — DALYTRAN-AMT PIC S9(09)V99 (signed, 12 chars)
+        sb.append(formatSignedAmount(dt.getDalytranAmt()));
+        // 9 bytes — DALYTRAN-MERCHANT-ID PIC 9(09)
+        sb.append(formatNumeric(dt.getDalytranMerchantId(), 9));
+        // 50 bytes — DALYTRAN-MERCHANT-NAME PIC X(50)
+        sb.append(padRight(dt.getDalytranMerchantName(), 50));
+        // 50 bytes — DALYTRAN-MERCHANT-CITY PIC X(50)
+        sb.append(padRight(dt.getDalytranMerchantCity(), 50));
+        // 10 bytes — DALYTRAN-MERCHANT-ZIP PIC X(10)
+        sb.append(padRight(dt.getDalytranMerchantZip(), 10));
+        // 16 bytes — DALYTRAN-CARD-NUM PIC X(16)
+        sb.append(padRight(dt.getDalytranCardNum(), 16));
+        // 26 bytes — DALYTRAN-ORIG-TS PIC X(26)
+        sb.append(formatDb2Timestamp(dt.getDalytranOrigTs()));
+        // 26 bytes — DALYTRAN-PROC-TS PIC X(26)
+        sb.append(formatDb2Timestamp(dt.getDalytranProcTs()));
+        // 19 bytes — trailing FILLER to reach 350-byte record size
+        sb.append(" ".repeat(19));
         return sb.toString();
     }
 
-    // -------------------------------------------------------------------------
-    // Eventing and audit helpers
-    // -------------------------------------------------------------------------
+    /**
+     * Pads or truncates a string to exactly {@code width} characters,
+     * blank-padded on the right (COBOL PIC X semantics).
+     *
+     * @param v     the value to pad ({@code null} treated as blank)
+     * @param width the target width
+     * @return the padded string
+     */
+    private static String padRight(String v, int width) {
+        String s = v == null ? "" : v;
+        if (s.length() >= width) {
+            return s.substring(0, width);
+        }
+        return String.format("%-" + width + "s", s);
+    }
 
     /**
-     * Emits {@code transaction.posted} and {@code account.updated}
-     * MSK events plus an audit record (AAP &sect;0.6.5, &sect;0.6.6).
+     * Formats an integral value as a zero-padded unsigned numeric
+     * string (COBOL PIC 9(width) semantics). {@code null} is treated
+     * as zero.
+     *
+     * @param value the value to format (Integer or Long)
+     * @param width the target width
+     * @return the zero-padded string
      */
-    private void emitPostedEvents(DailyTransaction dly, Long acctId, String batchRunId) {
-        // transaction.posted
+    private static String formatNumeric(Number value, int width) {
+        long n = value == null ? 0L : value.longValue();
+        return String.format("%0" + width + "d", n);
+    }
+
+    /**
+     * Formats a signed {@link BigDecimal} amount as a 12-character
+     * COBOL {@code PIC S9(09)V99} string with explicit sign prefix
+     * (+ or -) followed by 9 integer digits and 2 fractional digits.
+     * The decimal point is <em>implied</em> per COBOL {@code V99}
+     * semantics &mdash; no literal '.' is emitted.
+     *
+     * @param value the amount ({@code null} treated as zero)
+     * @return the 12-character formatted amount
+     */
+    private static String formatSignedAmount(BigDecimal value) {
+        BigDecimal v = value == null
+                ? BigDecimal.ZERO.setScale(2, RoundingMode.HALF_EVEN)
+                : value.setScale(2, RoundingMode.HALF_EVEN);
+        String sign = v.signum() < 0 ? "-" : "+";
+        BigDecimal abs = v.abs();
+        String plain = abs.toPlainString();
+        String[] parts = plain.split("\\.");
+        String intPart = parts.length > 0 ? parts[0] : "0";
+        String fracPart = parts.length > 1 ? parts[1] : "00";
+        if (fracPart.length() < 2) {
+            fracPart = fracPart + "0".repeat(2 - fracPart.length());
+        } else if (fracPart.length() > 2) {
+            fracPart = fracPart.substring(0, 2);
+        }
+        long intValue = intPart.isEmpty() ? 0L : Long.parseLong(intPart);
+        // COBOL V99 = implied decimal — no literal '.' in storage.
+        return sign + String.format("%09d", intValue) + fracPart;
+    }
+
+    /**
+     * Formats a {@link LocalDateTime} as the COBOL DB2-format
+     * timestamp {@code X(26)} string {@code yyyy-MM-dd-HH.mm.ss.NNNNNN}.
+     * {@code null} produces 26 blank characters.
+     *
+     * @param ts the timestamp ({@code null} treated as blank)
+     * @return the 26-character formatted timestamp
+     */
+    private static String formatDb2Timestamp(LocalDateTime ts) {
+        if (ts == null) {
+            return " ".repeat(26);
+        }
+        return String.format("%04d-%02d-%02d-%02d.%02d.%02d.%06d",
+                ts.getYear(),
+                ts.getMonthValue(),
+                ts.getDayOfMonth(),
+                ts.getHour(),
+                ts.getMinute(),
+                ts.getSecond(),
+                ts.getNano() / 1000);
+    }
+
+    /**
+     * Returns the input {@link BigDecimal} normalized to scale 2 with
+     * banker's rounding, or {@code BigDecimal.ZERO} (scale 2) if the
+     * input is {@code null}. Centralizes the AAP &sect;0.6.1
+     * arithmetic-discipline rule so every monetary read from the
+     * domain entities consistently presents a non-null,
+     * 2-scale {@link BigDecimal}.
+     *
+     * @param value the value to normalize
+     * @return the normalized value
+     */
+    private static BigDecimal nonNullScale2(BigDecimal value) {
+        return value == null
+                ? BigDecimal.ZERO.setScale(2, RoundingMode.HALF_EVEN)
+                : value.setScale(2, RoundingMode.HALF_EVEN);
+    }
+
+    /**
+     * Verifies a post-arithmetic {@link BigDecimal} value does not
+     * exceed the configured {@link #MAX_AMOUNT} ceiling &mdash;
+     * explicit COBOL {@code ON SIZE ERROR} replication per AAP
+     * &sect;0.6.1 ("each arithmetic operation is wrapped in a check
+     * against the configured precision, and an
+     * {@link OnSizeErrorException} is thrown if the result would
+     * exceed the column's precision"). Returns the value unchanged
+     * on success so call sites can chain.
+     *
+     * @param value     the post-arithmetic value to check
+     * @param fieldName the human-readable COBOL field name embedded
+     *                  in the {@link OnSizeErrorException} message
+     *                  for traceability (e.g., {@code "ACCT-CURR-BAL"})
+     * @return the value unchanged, on success
+     * @throws OnSizeErrorException if {@code value.abs() > MAX_AMOUNT}
+     */
+    private static BigDecimal guardOnSizeError(BigDecimal value,
+                                               String fieldName) {
+        if (value != null && value.abs().compareTo(MAX_AMOUNT) > 0) {
+            // COBOL: ON SIZE ERROR — the receiving field cannot
+            // accommodate the post-arithmetic value. Surface as a
+            // typed exception so the surrounding @Transactional
+            // boundary rolls back the per-record commit and the
+            // Spring Batch tasklet propagates a non-zero exit code
+            // to AWS Batch.
+            throw new OnSizeErrorException(
+                    "ON_SIZE_ERROR",
+                    "ON SIZE ERROR on " + fieldName
+                            + " — post-arithmetic value exceeds "
+                            + "MAX_AMOUNT=" + MAX_AMOUNT.toPlainString());
+        }
+        return value;
+    }
+
+    /**
+     * Returns a safe (non-null) string for logging — never PII per
+     * AAP rule 10. {@code null} is rendered as the literal
+     * {@code "null"}; otherwise the value is returned unchanged
+     * (the caller is responsible for ensuring it does not contain
+     * full card numbers or amounts).
+     *
+     * @param s the candidate string
+     * @return a safe representation for log output
+     */
+    private static String safe(String s) {
+        return s == null ? "null" : s;
+    }
+
+    /**
+     * Publishes the {@code transaction.posted} and
+     * {@code account.updated} MSK events for a posted transaction
+     * (per AAP &sect;0.6.5 MSK Topic Ordering Guarantees). Both
+     * events are partitioned by the account ID via the adapter's
+     * key formatter so per-account ordering is preserved.
+     *
+     * <p>Per AAP &sect;0.7.1 ("isolate AWS SDK calls in dedicated
+     * adapter classes"), Kafka publish failures are <em>not</em>
+     * propagated to the caller &mdash; instead they are logged at
+     * WARN level so the rest of the batch run continues. The
+     * @Async producer in {@link KafkaEventPublisher} returns a
+     * {@link java.util.concurrent.CompletableFuture} which is not
+     * awaited here (fire-and-forget on the producer thread pool).</p>
+     *
+     * @param tx      the persisted transaction
+     * @param account the updated account
+     */
+    private void publishPostedEvents(Transaction tx, Account account) {
+        Long acctId = account.getAcctId();
+
+        // Build a TransactionAddDto envelope from the posted Transaction
+        // and post-update account state — this is what the
+        // KafkaEventPublisher.publishTransactionPosted API expects.
         try {
-            TransactionAddDto txEvent = new TransactionAddDto(
-                    String.format("%011d", acctId),
-                    nullToEmpty(dly.getDalytranCardNum()),
-                    dly.getDalytranTypeCd(),
-                    dly.getDalytranCatCd(),
-                    dly.getDalytranSource(),
-                    dly.getDalytranDesc(),
-                    dly.getDalytranAmt(),
-                    dly.getDalytranOrigTs(),
-                    LocalDateTime.now(),
-                    dly.getDalytranMerchantId(),
-                    dly.getDalytranMerchantName(),
-                    dly.getDalytranMerchantCity(),
-                    dly.getDalytranMerchantZip(),
-                    "Y");
+            TransactionAddDto txEvent = buildTransactionAddDto(tx, acctId);
             kafkaEventPublisher.publishTransactionPosted(acctId, txEvent);
         } catch (RuntimeException ex) {
-            LOG.warn("CBTRN02C: transaction.posted publish failed for account {} (continuing)",
-                    acctId, ex);
+            // Replaces: implicit downstream-notification absence in the
+            // original COBOL batch — we log and continue per AAP §0.6.5
+            // (event publishing is additive; primary state is already
+            // committed).
+            LOG.warn("CBTRN02C: transaction.posted publish failed for "
+                    + "acctId={} tranId={} (continuing)",
+                    acctId, safe(tx.getTranId()), ex);
         }
 
-        // account.updated
-        Optional<Account> refreshed = accountRepository.findById(acctId);
-        if (refreshed.isPresent()) {
-            try {
-                AccountUpdateDto event = buildAccountUpdateEvent(refreshed.get());
-                kafkaEventPublisher.publishAccountUpdated(acctId, event);
-            } catch (RuntimeException ex) {
-                LOG.warn("CBTRN02C: account.updated publish failed for account {} (continuing)",
-                        acctId, ex);
-            }
+        try {
+            AccountUpdateDto acctEvent = buildAccountUpdateDto(account);
+            kafkaEventPublisher.publishAccountUpdated(acctId, acctEvent);
+        } catch (RuntimeException ex) {
+            LOG.warn("CBTRN02C: account.updated publish failed for "
+                    + "acctId={} (continuing)", acctId, ex);
         }
-
-        // audit
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("transactionId", dly.getDalytranId());
-        payload.put("accountId", acctId);
-        payload.put("amount", dly.getDalytranAmt());
-        payload.put("batchRunId", batchRunId);
-        auditLogService.logTransactionEvent(
-                dly.getDalytranId(),
-                acctId,
-                "BATCH",
-                AUDIT_TX_POSTED,
-                null,
-                payload,
-                batchRunId);
     }
 
     /**
-     * Emits an audit record for a rejected transaction.
+     * Constructs a minimal {@link TransactionAddDto} envelope for the
+     * MSK {@code transaction.posted} event. Only the fields needed
+     * by downstream audit/reporting consumers are populated;
+     * BMS-specific operator-input fields (zip code overrides etc.)
+     * are left {@code null} since this is a server-emitted event,
+     * not an operator-keyed request.
+     *
+     * @param tx     the persisted transaction
+     * @param acctId the account ID (used as the Kafka partition key
+     *               by the adapter)
+     * @return a transaction-add DTO suitable for Kafka publication
      */
-    private void emitRejectedEvent(DailyTransaction dly, RejectReason reason, String batchRunId) {
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("transactionId", dly.getDalytranId());
-        payload.put("cardNumber", maskPan(dly.getDalytranCardNum()));
-        payload.put("amount", dly.getDalytranAmt());
-        payload.put("rejectCode", reason.getCode());
-        payload.put("rejectReason", reason.getDescription());
-        payload.put("batchRunId", batchRunId);
-        auditLogService.logTransactionEvent(
-                dly.getDalytranId(),
-                null,
-                "BATCH",
-                AUDIT_TX_REJECTED,
-                String.valueOf(reason.getCode()),
-                payload,
-                batchRunId);
+    private TransactionAddDto buildTransactionAddDto(Transaction tx,
+                                                    Long acctId) {
+        return new TransactionAddDto(
+                // accountId — formatted to the 11-digit zero-padded
+                // string per AAP §0.6.5 for consistent partitioner hashing.
+                String.format("%011d", acctId),
+                tx.getTranCardNum(),
+                tx.getTranTypeCd(),
+                tx.getTranCatCd(),
+                tx.getTranSource(),
+                tx.getTranDesc(),
+                nonNullScale2(tx.getTranAmt()),
+                tx.getTranOrigTs(),
+                tx.getTranProcTs(),
+                tx.getTranMerchantId(),
+                tx.getTranMerchantName(),
+                tx.getTranMerchantCity(),
+                tx.getTranMerchantZip(),
+                "Y");
     }
 
-    private AccountUpdateDto buildAccountUpdateEvent(Account account) {
+    /**
+     * Constructs a minimal {@link AccountUpdateDto} envelope for the
+     * MSK {@code account.updated} event. Most BMS-specific operator-
+     * input fields (customer name, address overrides, government
+     * IDs, etc.) are left {@code null} since this is a server-emitted
+     * event derived from the post-update {@link Account} entity (not
+     * an operator-keyed request).
+     *
+     * @param account the post-update account entity
+     * @return an account-update DTO suitable for Kafka publication
+     */
+    private AccountUpdateDto buildAccountUpdateDto(Account account) {
         return new AccountUpdateDto(
                 account.getAcctId(),
                 account.getAcctActiveStatus(),
@@ -744,90 +1393,59 @@ public class TransactionPostingService {
                 account.getVersion());
     }
 
-    // -------------------------------------------------------------------------
-    // Private helpers
-    // -------------------------------------------------------------------------
-
-    private void guardOnSizeError(BigDecimal value, String fieldName) {
-        if (value == null) {
-            return;
-        }
-        if (value.abs().compareTo(MAX_AMOUNT) > 0) {
-            throw new OnSizeErrorException(
-                    "ON_SIZE_ERROR",
-                    "ON SIZE ERROR on " + fieldName
-                            + " (computed " + value
-                            + " exceeds PIC S9(10)V99 ceiling)");
-        }
+    /**
+     * Emits an audit record for a successfully posted transaction to
+     * Amazon OpenSearch (and CloudTrail for cross-cutting AWS API
+     * events) per AAP &sect;0.6.6. PII-safe: the payload contains
+     * only the transaction ID and account ID; full card numbers are
+     * <em>not</em> included (the adapter performs additional
+     * sanitization as defense-in-depth).
+     *
+     * @param tx      the persisted transaction
+     * @param account the updated account
+     */
+    private void emitPostedAudit(Transaction tx, Account account) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("tranId", tx.getTranId());
+        payload.put("acctId", account.getAcctId());
+        payload.put("tranTypeCd", tx.getTranTypeCd());
+        payload.put("tranCatCd", tx.getTranCatCd());
+        payload.put("tranProcTs", tx.getTranProcTs());
+        auditLogService.logTransactionEvent(
+                tx.getTranId(),
+                account.getAcctId(),
+                OPERATOR_BATCH,
+                AUDIT_EVENT_POSTED,
+                null,
+                payload,
+                tx.getTranId());
     }
 
-    private static BigDecimal nonNull(BigDecimal value) {
-        return value == null
-                ? BigDecimal.ZERO.setScale(2, RoundingMode.HALF_EVEN)
-                : value;
-    }
-
-    private static String padRight(String value, int width) {
-        if (value == null) {
-            return " ".repeat(width);
-        }
-        if (value.length() >= width) {
-            return value.substring(0, width);
-        }
-        return value + " ".repeat(width - value.length());
-    }
-
-    private static String formatNumeric4(Integer value) {
-        return value == null ? "0000" : String.format("%04d", value);
-    }
-
-    private static String formatNumeric9(Long value) {
-        return value == null ? "000000000" : String.format("%09d", value);
-    }
-
-    private static String formatAmount(BigDecimal value) {
-        // COBOL PIC S9(09)V99 with a leading sign indicator
-        // (e.g. "+000000123.45"). Width = 12 chars including the sign
-        // and the implied decimal point.
-        BigDecimal v = value == null
-                ? BigDecimal.ZERO.setScale(2, RoundingMode.HALF_EVEN)
-                : value.setScale(2, RoundingMode.HALF_EVEN);
-        String sign = v.signum() < 0 ? "-" : "+";
-        BigDecimal abs = v.abs();
-        String digits = abs.toPlainString();
-        // ensure 9 integer digits with optional fractional padding
-        String[] parts = digits.split("\\.");
-        String integerPart = parts.length > 0 ? parts[0] : "0";
-        String fractionalPart = parts.length > 1 ? parts[1] : "00";
-        if (fractionalPart.length() < 2) {
-            fractionalPart = fractionalPart + "0".repeat(2 - fractionalPart.length());
-        } else if (fractionalPart.length() > 2) {
-            fractionalPart = fractionalPart.substring(0, 2);
-        }
-        integerPart = String.format("%09d",
-                Long.parseLong(integerPart.isEmpty() ? "0" : integerPart));
-        return sign + integerPart + "." + fractionalPart;
-    }
-
-    private static String formatTimestamp(LocalDateTime ts) {
-        if (ts == null) {
-            return " ".repeat(26);
-        }
-        // COBOL DB2-FORMAT-TS is X(26) &mdash; yyyy-MM-dd-HH.mm.ss.NNNNNN
-        return String.format("%04d-%02d-%02d-%02d.%02d.%02d.%06d",
-                ts.getYear(), ts.getMonthValue(), ts.getDayOfMonth(),
-                ts.getHour(), ts.getMinute(), ts.getSecond(),
-                ts.getNano() / 1000);
-    }
-
-    private static String nullToEmpty(String value) {
-        return value == null ? "" : value;
-    }
-
-    private static String maskPan(String pan) {
-        if (pan == null || pan.length() < 4) {
-            return "****";
-        }
-        return "****-****-****-" + pan.substring(pan.length() - 4);
+    /**
+     * Emits an audit record for a rejected transaction to Amazon
+     * OpenSearch (and CloudTrail for cross-cutting AWS API events)
+     * per AAP &sect;0.6.6 &mdash; preserving the verbatim COBOL
+     * reject code and description per AAP &sect;0.7.2.
+     *
+     * @param dt the daily transaction that failed validation
+     * @param vr the validation result carrying the reject code and
+     *           description
+     */
+    private void emitRejectedAudit(DailyTransaction dt, ValidationResult vr) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("tranId", dt.getDalytranId());
+        payload.put("rejectCode", vr.reasonCode());
+        payload.put("rejectDescription", vr.reasonDescription());
+        // Note: card number is NOT placed in the payload per AAP §0.6.6
+        // PII discipline — the adapter sanitizes additionally as
+        // defense-in-depth.
+        auditLogService.logTransactionEvent(
+                dt.getDalytranId(),
+                null,
+                OPERATOR_BATCH,
+                AUDIT_EVENT_REJECTED,
+                String.format("%04d", vr.reasonCode()),
+                payload,
+                dt.getDalytranId());
     }
 }

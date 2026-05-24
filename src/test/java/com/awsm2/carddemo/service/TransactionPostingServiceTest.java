@@ -17,7 +17,6 @@
 package com.awsm2.carddemo.service;
 
 import com.awsm2.carddemo.adapter.AuditLogService;
-import com.awsm2.carddemo.adapter.CacheService;
 import com.awsm2.carddemo.adapter.KafkaEventPublisher;
 import com.awsm2.carddemo.adapter.S3OutputService;
 import com.awsm2.carddemo.domain.Account;
@@ -28,6 +27,7 @@ import com.awsm2.carddemo.domain.TransactionCategoryBalance;
 import com.awsm2.carddemo.domain.TransactionCategoryBalance.TransactionCategoryBalanceId;
 import com.awsm2.carddemo.dto.AccountUpdateDto;
 import com.awsm2.carddemo.dto.TransactionAddDto;
+import com.awsm2.carddemo.exception.CardDemoException;
 import com.awsm2.carddemo.exception.OnSizeErrorException;
 import com.awsm2.carddemo.repository.AccountRepository;
 import com.awsm2.carddemo.repository.CardCrossReferenceRepository;
@@ -43,12 +43,14 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.OptimisticLockingFailureException;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -69,45 +71,65 @@ import static org.mockito.Mockito.when;
  * {@link TransactionPostingService}.
  *
  * <p><b>COBOL provenance.</b> {@link TransactionPostingService}
- * translates {@code app/cbl/CBTRN02C.cbl} (daily-transaction posting
- * batch program). The COBOL source performs a 4-stage validation
- * cascade (XREF lookup → account lookup → credit-limit check →
- * expiration check) and writes rejected records to the DALYREJS
- * sequential file with a verbatim 430-byte record (350-byte
- * REJECT-TRAN-DATA + 80-byte VALIDATION-TRAILER).</p>
+ * translates {@code app/cbl/CBTRN02C.cbl} (daily-transaction
+ * posting batch program). The COBOL source performs a 4-stage
+ * validation cascade (XREF lookup &rarr; account lookup &rarr;
+ * credit-limit check &rarr; expiration check) and writes rejected
+ * records to the DALYREJS sequential file with a verbatim 430-byte
+ * record (350-byte REJECT-TRAN-DATA + 80-byte VALIDATION-TRAILER
+ * where the trailer = 4-digit reason code + 76-byte description).</p>
  *
- * <p><b>Behavioural invariants locked by this suite.</b></p>
+ * <p><b>Behavioural invariants locked by this suite (per AAP
+ * &sect;0.7.2 "Functionality that must be preserved exactly"):</b></p>
  * <ol>
- *   <li><b>Reject codes 100, 101, 102, 103</b> &mdash; preserved
- *       verbatim from the COBOL source per AAP §0.7.2 (&quot;error
- *       codes surfaced to downstream consumers must be preserved
- *       verbatim&quot;).</li>
+ *   <li><b>Reject codes 100, 101, 102, 103 (validation cascade)
+ *       and 109 (REWRITE failure)</b> &mdash; preserved verbatim
+ *       from the COBOL source per AAP &sect;0.7.2.</li>
  *   <li><b>Validation cascade short-circuits</b> &mdash; stage 1
- *       failure prevents stage 2; stage 2 failure prevents stage 3,
- *       etc. Matches the COBOL {@code IF
+ *       failure prevents stage 2; stage 2 failure prevents stages
+ *       3&ndash;4, etc. Matches the COBOL {@code IF
  *       WS-VALIDATION-FAIL-REASON = 0 PERFORM ...} pattern.</li>
- *   <li><b>RETURN-CODE</b> &mdash; 0 if no rejects; 4 if one or more
- *       rejects (COBOL {@code MOVE 4 TO RETURN-CODE} at L229).</li>
- *   <li><b>BigDecimal HALF_EVEN + scale=2</b> &mdash; all arithmetic
- *       on monetary fields uses HALF_EVEN banker's rounding.</li>
- *   <li><b>Account sign branch</b> &mdash; positive DALYTRAN-AMT adds
- *       to ACCT-CURR-CYC-CREDIT; negative adds to ACCT-CURR-CYC-DEBIT
- *       (COBOL L547-L550).</li>
+ *   <li><b>RETURN-CODE</b> &mdash; 0 if no rejects; 4 if one or
+ *       more rejects (COBOL {@code MOVE 4 TO RETURN-CODE} at
+ *       L229).</li>
+ *   <li><b>BigDecimal HALF_EVEN + scale=2</b> &mdash; all
+ *       arithmetic on monetary fields uses banker's rounding.</li>
+ *   <li><b>Account sign branch</b> &mdash; positive
+ *       {@code DALYTRAN-AMT} (and zero) adds to
+ *       {@code ACCT-CURR-CYC-CREDIT}; negative adds to
+ *       {@code ACCT-CURR-CYC-DEBIT} (COBOL L547-L550).</li>
  *   <li><b>TCATBAL upsert</b> &mdash; existing row receives ADD;
- *       missing row is created with DALYTRAN-AMT.</li>
- *   <li><b>S3 reject output</b> &mdash; writeReject emits to the
- *       DALYREJS S3 prefix via {@link S3OutputService}; record is
- *       430 bytes total.</li>
+ *       missing row is created with {@code DALYTRAN-AMT}.</li>
+ *   <li><b>S3 reject output</b> &mdash; {@code writeRejection}
+ *       emits to the {@code dalyrejs/} S3 prefix; record is 430
+ *       bytes total (350 + 4-digit reason + 76-char desc).</li>
  *   <li><b>MSK + audit emission</b> &mdash; posted txns emit
- *       transaction.posted + account.updated MSK events plus a
- *       logTransactionEvent audit; rejected txns emit only the
- *       logTransactionEvent audit with the reject reason code.</li>
- *   <li><b>Cache eviction</b> &mdash; accountView is evicted after
- *       account update (cache-aside, AAP §0.3.3).</li>
+ *       {@code transaction.posted} + {@code account.updated} MSK
+ *       events plus a {@code logTransactionEvent} audit with
+ *       {@code event_type = transaction.posted}; rejected txns
+ *       emit only the {@code logTransactionEvent} audit with the
+ *       reject reason code and {@code event_type =
+ *       transaction.rejected}.</li>
+ *   <li><b>Per-record commit boundary</b> &mdash; {@code
+ *       postTransaction} is annotated
+ *       {@code @Transactional(propagation = REQUIRES_NEW,
+ *       isolation = READ_COMMITTED, rollbackFor = Exception.class)}
+ *       so each posted record commits independently.</li>
+ *   <li><b>{@code OptimisticLockingFailureException} &rarr; 109
+ *       semantics</b> &mdash; a save failure on REWRITE wraps as
+ *       a {@link CardDemoException} carrying reason code
+ *       {@code "ACCOUNT_REWRITE_FAILED"} (mirrors COBOL reject
+ *       code 109).</li>
+ *   <li><b>{@code ON SIZE ERROR}</b> &mdash; any post-arithmetic
+ *       value whose absolute magnitude exceeds the configured
+ *       MAX_AMOUNT (PIC S9(11)V99 worst case = 99,999,999,999.99)
+ *       raises {@link OnSizeErrorException} per AAP
+ *       &sect;0.6.1.</li>
  * </ol>
  *
  * <p>External AWS interactions are fully mocked through
- * {@link MockitoExtension}.</p>
+ * {@link MockitoExtension}; no LocalStack/AWS endpoints are
+ * touched.</p>
  */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("TransactionPostingService unit tests (COBOL: CBTRN02C.cbl)")
@@ -116,10 +138,37 @@ class TransactionPostingServiceTest {
     // ==================================================================
     // Test constants
     // ==================================================================
-    private static final String BATCH_RUN_ID = "BATCH-POSTTRAN-20250131";
+
+    /**
+     * Batch business date supplied to
+     * {@link TransactionPostingService#postDailyTransactions(LocalDate)}.
+     * Used in the S3 reject-file batch-run identifier
+     * ({@code POSTTRAN-yyyy-MM-dd}).
+     */
+    private static final LocalDate BATCH_DATE = LocalDate.of(2025, 1, 31);
+
+    /**
+     * Expected batch-run identifier passed to
+     * {@link S3OutputService#writeRejection(String, String)} &mdash;
+     * derived from {@link #BATCH_DATE}.
+     */
+    private static final String EXPECTED_BATCH_RUN_ID = "POSTTRAN-2025-01-31";
+
     private static final Long ACCOUNT_ID = 10_000_000_001L;
     private static final String CARD_NUM = "4000000000000001";
     private static final String TRAN_ID = "TXN0000000000001";
+
+    // Reject record layout sizes — verbatim per COBOL WORKING-STORAGE
+    // (CBTRN02C.cbl):
+    //   REJECT-RECORD          = 430 bytes
+    //   ├─ REJECT-TRAN-DATA    = 350 bytes  (the DALYTRAN body)
+    //   └─ VALIDATION-TRAILER  =  80 bytes
+    //      ├─ WS-VALIDATION-FAIL-REASON      PIC 9(04)  (4-digit zero-pad)
+    //      └─ WS-VALIDATION-FAIL-REASON-DESC PIC X(76)  (76 chars, left-pad)
+    private static final int BODY_LENGTH = 350;
+    private static final int REASON_CODE_LENGTH = 4;
+    private static final int REASON_CODE_END = BODY_LENGTH + REASON_CODE_LENGTH;
+    private static final int RECORD_LENGTH = BODY_LENGTH + 80;
 
     // ==================================================================
     // Mocks and SUT
@@ -131,7 +180,6 @@ class TransactionPostingServiceTest {
     @Mock private TransactionRepository transactionRepository;
     @Mock private S3OutputService s3OutputService;
     @Mock private KafkaEventPublisher kafkaEventPublisher;
-    @Mock private CacheService cacheService;
     @Mock private AuditLogService auditLogService;
 
     @InjectMocks private TransactionPostingService service;
@@ -145,6 +193,8 @@ class TransactionPostingServiceTest {
 
     @BeforeEach
     void setUp() {
+        // 13-arg DailyTransaction constructor in copybook-declared order
+        // (per CVTRA06Y.cpy / DailyTransaction.java).
         dly = new DailyTransaction(
                 TRAN_ID,
                 "01",                  // type code (interest)
@@ -189,9 +239,11 @@ class TransactionPostingServiceTest {
                 .thenReturn(Optional.of(account));
         lenient().when(accountRepository.save(any(Account.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
-        lenient().when(tcatbalRepository.findById(any(TransactionCategoryBalanceId.class)))
+        lenient().when(tcatbalRepository.findById(any(
+                        TransactionCategoryBalanceId.class)))
                 .thenReturn(Optional.empty());
-        lenient().when(tcatbalRepository.save(any(TransactionCategoryBalance.class)))
+        lenient().when(tcatbalRepository.save(any(
+                        TransactionCategoryBalance.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
         lenient().when(transactionRepository.save(any(Transaction.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
@@ -202,23 +254,15 @@ class TransactionPostingServiceTest {
     // ==================================================================
 
     @Nested
-    @DisplayName("Input validation (batchRunId)")
+    @DisplayName("Input validation + empty journal")
     class InputValidation {
 
         @Test
-        @DisplayName("null batchRunId throws IllegalArgumentException")
-        void postDailyTransactions_nullBatchRunId_throws() {
+        @DisplayName("null batchDate throws NullPointerException")
+        void postDailyTransactions_nullBatchDate_throws() {
             assertThatThrownBy(() -> service.postDailyTransactions(null))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("batchRunId");
-        }
-
-        @Test
-        @DisplayName("blank batchRunId throws IllegalArgumentException")
-        void postDailyTransactions_blankBatchRunId_throws() {
-            assertThatThrownBy(() -> service.postDailyTransactions("   "))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("batchRunId");
+                    .isInstanceOf(NullPointerException.class)
+                    .hasMessageContaining("batchDate");
         }
 
         @Test
@@ -227,13 +271,21 @@ class TransactionPostingServiceTest {
             when(dailyTransactionRepository.findAll())
                     .thenReturn(new ArrayList<>());
 
-            TransactionPostingService.Result result =
-                    service.postDailyTransactions(BATCH_RUN_ID);
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
 
-            assertThat(result.transactionsProcessed()).isEqualTo(0);
-            assertThat(result.transactionsPosted()).isEqualTo(0);
-            assertThat(result.transactionsRejected()).isEqualTo(0);
+            assertThat(result.transactionCount()).isEqualTo(0);
+            assertThat(result.rejectCount()).isEqualTo(0);
             assertThat(result.returnCode()).isEqualTo(0);
+
+            // No S3 writes, no Kafka publishes, no audit events
+            verify(s3OutputService, never()).writeRejection(
+                    anyString(), anyString());
+            verify(kafkaEventPublisher, never()).publishTransactionPosted(
+                    anyLong(), any(TransactionAddDto.class));
+            verify(auditLogService, never()).logTransactionEvent(
+                    anyString(), any(), anyString(), anyString(),
+                    any(), anyMap(), anyString());
         }
     }
 
@@ -250,32 +302,47 @@ class TransactionPostingServiceTest {
                     .thenReturn(Optional.empty());
 
             // Act
-            TransactionPostingService.Result result =
-                    service.postDailyTransactions(BATCH_RUN_ID);
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
 
             // Assert — rejected, returnCode 4
-            assertThat(result.transactionsRejected()).isEqualTo(1);
-            assertThat(result.transactionsPosted()).isEqualTo(0);
+            assertThat(result.transactionCount()).isEqualTo(1);
+            assertThat(result.rejectCount()).isEqualTo(1);
             assertThat(result.returnCode()).isEqualTo(4);
 
             // Cascade short-circuited: account lookup never invoked
             verify(accountRepository, never()).findById(anyLong());
             // S3 rejection write happened with the reject record
-            verify(s3OutputService).writeRejection(eq(BATCH_RUN_ID), anyString());
+            verify(s3OutputService).writeRejection(
+                    eq(EXPECTED_BATCH_RUN_ID), anyString());
         }
 
         @Test
-        @DisplayName("reject 100 INVALID_CARD: blank card number")
+        @DisplayName("reject 100 INVALID_CARD: blank card number short-circuits XREF lookup")
         void reject100_blankCardNumber() {
             dly.setDalytranCardNum("");
             stubHappyPathSingleTransaction();
 
-            TransactionPostingService.Result result =
-                    service.postDailyTransactions(BATCH_RUN_ID);
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
 
-            assertThat(result.transactionsRejected()).isEqualTo(1);
+            assertThat(result.rejectCount()).isEqualTo(1);
             assertThat(result.returnCode()).isEqualTo(4);
             // Blank card short-circuits before the JPA call entirely
+            verify(xrefRepository, never()).findById(anyString());
+        }
+
+        @Test
+        @DisplayName("reject 100 INVALID_CARD: null card number short-circuits XREF lookup")
+        void reject100_nullCardNumber() {
+            dly.setDalytranCardNum(null);
+            stubHappyPathSingleTransaction();
+
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
+
+            assertThat(result.rejectCount()).isEqualTo(1);
+            assertThat(result.returnCode()).isEqualTo(4);
             verify(xrefRepository, never()).findById(anyString());
         }
 
@@ -286,21 +353,20 @@ class TransactionPostingServiceTest {
             when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.empty());
 
-            TransactionPostingService.Result result =
-                    service.postDailyTransactions(BATCH_RUN_ID);
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
 
-            assertThat(result.transactionsRejected()).isEqualTo(1);
-            assertThat(result.transactionsPosted()).isEqualTo(0);
+            assertThat(result.rejectCount()).isEqualTo(1);
             assertThat(result.returnCode()).isEqualTo(4);
 
-            // Audit captured reject code 101
+            // Audit captured reject code 101 (4-digit zero-padded)
             ArgumentCaptor<String> reasonCaptor =
                     ArgumentCaptor.forClass(String.class);
             verify(auditLogService).logTransactionEvent(
                     eq(TRAN_ID), eq((Long) null), eq("BATCH"),
                     eq("transaction.rejected"), reasonCaptor.capture(),
-                    anyMap(), eq(BATCH_RUN_ID));
-            assertThat(reasonCaptor.getValue()).isEqualTo("101");
+                    anyMap(), eq(TRAN_ID));
+            assertThat(reasonCaptor.getValue()).isEqualTo("0101");
         }
 
         @Test
@@ -315,10 +381,10 @@ class TransactionPostingServiceTest {
             dly.setDalytranAmt(new BigDecimal("2000.00"));
             stubHappyPathSingleTransaction();
 
-            TransactionPostingService.Result result =
-                    service.postDailyTransactions(BATCH_RUN_ID);
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
 
-            assertThat(result.transactionsRejected()).isEqualTo(1);
+            assertThat(result.rejectCount()).isEqualTo(1);
             assertThat(result.returnCode()).isEqualTo(4);
 
             ArgumentCaptor<String> reasonCaptor =
@@ -326,12 +392,13 @@ class TransactionPostingServiceTest {
             verify(auditLogService).logTransactionEvent(
                     eq(TRAN_ID), eq((Long) null), eq("BATCH"),
                     eq("transaction.rejected"), reasonCaptor.capture(),
-                    anyMap(), eq(BATCH_RUN_ID));
-            assertThat(reasonCaptor.getValue()).isEqualTo("102");
+                    anyMap(), eq(TRAN_ID));
+            assertThat(reasonCaptor.getValue()).isEqualTo("0102");
 
             // Posting side effects never occurred
             verify(transactionRepository, never()).save(any(Transaction.class));
-            verify(tcatbalRepository, never()).save(any(TransactionCategoryBalance.class));
+            verify(tcatbalRepository, never()).save(any(
+                    TransactionCategoryBalance.class));
         }
 
         @Test
@@ -344,11 +411,13 @@ class TransactionPostingServiceTest {
             dly.setDalytranAmt(new BigDecimal("2000.00"));
             stubHappyPathSingleTransaction();
 
-            TransactionPostingService.Result result =
-                    service.postDailyTransactions(BATCH_RUN_ID);
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
 
-            assertThat(result.transactionsPosted()).isEqualTo(1);
-            assertThat(result.transactionsRejected()).isEqualTo(0);
+            // Tx posted — no rejects
+            assertThat(result.rejectCount()).isEqualTo(0);
+            assertThat(result.returnCode()).isEqualTo(0);
+            verify(transactionRepository).save(any(Transaction.class));
         }
 
         @Test
@@ -359,10 +428,10 @@ class TransactionPostingServiceTest {
             account.setAcctExpirationDate(LocalDate.of(2030, 12, 31));
             stubHappyPathSingleTransaction();
 
-            TransactionPostingService.Result result =
-                    service.postDailyTransactions(BATCH_RUN_ID);
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
 
-            assertThat(result.transactionsRejected()).isEqualTo(1);
+            assertThat(result.rejectCount()).isEqualTo(1);
             assertThat(result.returnCode()).isEqualTo(4);
 
             ArgumentCaptor<String> reasonCaptor =
@@ -370,8 +439,8 @@ class TransactionPostingServiceTest {
             verify(auditLogService).logTransactionEvent(
                     eq(TRAN_ID), eq((Long) null), eq("BATCH"),
                     eq("transaction.rejected"), reasonCaptor.capture(),
-                    anyMap(), eq(BATCH_RUN_ID));
-            assertThat(reasonCaptor.getValue()).isEqualTo("103");
+                    anyMap(), eq(TRAN_ID));
+            assertThat(reasonCaptor.getValue()).isEqualTo("0103");
         }
 
         @Test
@@ -382,11 +451,11 @@ class TransactionPostingServiceTest {
             dly.setDalytranOrigTs(LocalDateTime.of(2025, 1, 15, 23, 59));
             stubHappyPathSingleTransaction();
 
-            TransactionPostingService.Result result =
-                    service.postDailyTransactions(BATCH_RUN_ID);
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
 
-            assertThat(result.transactionsPosted()).isEqualTo(1);
-            assertThat(result.transactionsRejected()).isEqualTo(0);
+            assertThat(result.rejectCount()).isEqualTo(0);
+            verify(transactionRepository).save(any(Transaction.class));
         }
     }
 
@@ -395,13 +464,13 @@ class TransactionPostingServiceTest {
     class CascadeShortCircuit {
 
         @Test
-        @DisplayName("stage 1 failure prevents stages 2-4")
+        @DisplayName("stage 1 failure prevents stages 2-4 and posting")
         void stage1Failure_skipsAllSubsequentStages() {
             stubHappyPathSingleTransaction();
             when(xrefRepository.findById(CARD_NUM))
                     .thenReturn(Optional.empty());  // stage 1 fail
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             verify(accountRepository, never()).findById(anyLong());
             verify(tcatbalRepository, never()).findById(any());
@@ -409,13 +478,13 @@ class TransactionPostingServiceTest {
         }
 
         @Test
-        @DisplayName("stage 2 failure prevents stages 3-4 and posting")
+        @DisplayName("stage 2 failure prevents credit/expiry checks and posting")
         void stage2Failure_skipsCreditAndExpiry() {
             stubHappyPathSingleTransaction();
             when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.empty());  // stage 2 fail
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             // Stage 1 (xref) was invoked
             verify(xrefRepository).findById(CARD_NUM);
@@ -441,7 +510,7 @@ class TransactionPostingServiceTest {
             stubHappyPathSingleTransaction();
             when(tcatbalRepository.findById(id)).thenReturn(Optional.of(pre));
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             // Captured save shows new balance 350.00 (250 + 100)
             ArgumentCaptor<TransactionCategoryBalance> captor =
@@ -461,7 +530,7 @@ class TransactionPostingServiceTest {
             // tcatbalRepository.findById already returns Optional.empty()
             // by the happy-path stub.
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             ArgumentCaptor<TransactionCategoryBalance> captor =
                     ArgumentCaptor.forClass(TransactionCategoryBalance.class);
@@ -474,6 +543,24 @@ class TransactionPostingServiceTest {
             assertThat(created.getTranCatBal())
                     .isEqualByComparingTo(new BigDecimal("100.00"));
             assertThat(created.getTranCatBal().scale()).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("TCATBAL key uses XREF-ACCT-ID (not DALYTRAN-CARD-NUM)")
+        void tcatbalKey_usesXrefAcctId() {
+            stubHappyPathSingleTransaction();
+
+            service.postDailyTransactions(BATCH_DATE);
+
+            // The composite key must be built from the XREF acct id,
+            // not from the card number — verbatim COBOL semantics.
+            ArgumentCaptor<TransactionCategoryBalanceId> keyCaptor =
+                    ArgumentCaptor.forClass(TransactionCategoryBalanceId.class);
+            verify(tcatbalRepository).findById(keyCaptor.capture());
+            TransactionCategoryBalanceId key = keyCaptor.getValue();
+            assertThat(key.getTrancatAcctId()).isEqualTo(ACCOUNT_ID);
+            assertThat(key.getTrancatTypeCd()).isEqualTo("01");
+            assertThat(key.getTrancatCd()).isEqualTo(5);
         }
     }
 
@@ -489,7 +576,7 @@ class TransactionPostingServiceTest {
             account.setAcctCurrCycDebit(new BigDecimal("50.00"));
             stubHappyPathSingleTransaction();
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             ArgumentCaptor<Account> acctCaptor =
                     ArgumentCaptor.forClass(Account.class);
@@ -514,7 +601,7 @@ class TransactionPostingServiceTest {
             account.setAcctCurrCycDebit(new BigDecimal("50.00"));
             stubHappyPathSingleTransaction();
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             ArgumentCaptor<Account> acctCaptor =
                     ArgumentCaptor.forClass(Account.class);
@@ -539,7 +626,7 @@ class TransactionPostingServiceTest {
             account.setAcctCurrCycDebit(new BigDecimal("50.00"));
             stubHappyPathSingleTransaction();
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             ArgumentCaptor<Account> acctCaptor =
                     ArgumentCaptor.forClass(Account.class);
@@ -557,7 +644,7 @@ class TransactionPostingServiceTest {
             dly.setDalytranAmt(new BigDecimal("123.456"));
             stubHappyPathSingleTransaction();
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             ArgumentCaptor<Account> acctCaptor =
                     ArgumentCaptor.forClass(Account.class);
@@ -566,6 +653,23 @@ class TransactionPostingServiceTest {
                     .isEqualTo(2);
             assertThat(acctCaptor.getValue().getAcctCurrCycCredit().scale())
                     .isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("OptimisticLockingFailureException at save wraps as CardDemoException with 109 semantics")
+        void optimisticLockFailure_wrappedAs109() {
+            stubHappyPathSingleTransaction();
+            when(accountRepository.save(any(Account.class)))
+                    .thenThrow(new OptimisticLockingFailureException(
+                            "version mismatch"));
+
+            // The exception propagates from the @Transactional postTransaction
+            // method back through postDailyTransactions to the caller.
+            assertThatThrownBy(() -> service.postDailyTransactions(BATCH_DATE))
+                    .isInstanceOf(CardDemoException.class)
+                    .hasMessageContaining("ACCOUNT RECORD NOT FOUND (109)")
+                    .extracting("reasonCode")
+                    .isEqualTo("ACCOUNT_REWRITE_FAILED");
         }
     }
 
@@ -579,7 +683,7 @@ class TransactionPostingServiceTest {
             stubHappyPathSingleTransaction();
 
             LocalDateTime before = LocalDateTime.now().minusSeconds(1);
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
             LocalDateTime after = LocalDateTime.now().plusSeconds(1);
 
             ArgumentCaptor<Transaction> txCaptor =
@@ -591,18 +695,26 @@ class TransactionPostingServiceTest {
             // TRAN-ORIG-TS preserved from DALYTRAN
             assertThat(tx.getTranOrigTs())
                     .isEqualTo(LocalDateTime.of(2025, 1, 15, 12, 0));
-            // ID, card, amount carried verbatim
+            // ID, card, amount, type carried verbatim
             assertThat(tx.getTranId()).isEqualTo(TRAN_ID);
             assertThat(tx.getTranCardNum()).isEqualTo(CARD_NUM);
             assertThat(tx.getTranAmt())
                     .isEqualByComparingTo(new BigDecimal("100.00"));
             // Scale 2 on amount
             assertThat(tx.getTranAmt().scale()).isEqualTo(2);
+            assertThat(tx.getTranTypeCd()).isEqualTo("01");
+            assertThat(tx.getTranCatCd()).isEqualTo(5);
+            assertThat(tx.getTranSource()).isEqualTo("POS TERM");
+            assertThat(tx.getTranDesc()).isEqualTo("Test transaction");
+            assertThat(tx.getTranMerchantId()).isEqualTo(999_999_999L);
+            assertThat(tx.getTranMerchantName()).isEqualTo("Test Merchant");
+            assertThat(tx.getTranMerchantCity()).isEqualTo("City");
+            assertThat(tx.getTranMerchantZip()).isEqualTo("12345");
         }
     }
 
     @Nested
-    @DisplayName("Side effects: MSK events + audit + cache eviction")
+    @DisplayName("Side effects: MSK events + audit emission")
     class EventsAndAudit {
 
         @Test
@@ -610,13 +722,24 @@ class TransactionPostingServiceTest {
         void posted_publishesTransactionPosted() {
             stubHappyPathSingleTransaction();
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             ArgumentCaptor<Long> keyCaptor =
                     ArgumentCaptor.forClass(Long.class);
+            ArgumentCaptor<TransactionAddDto> dtoCaptor =
+                    ArgumentCaptor.forClass(TransactionAddDto.class);
             verify(kafkaEventPublisher).publishTransactionPosted(
-                    keyCaptor.capture(), any(TransactionAddDto.class));
+                    keyCaptor.capture(), dtoCaptor.capture());
             assertThat(keyCaptor.getValue()).isEqualTo(ACCOUNT_ID);
+            // DTO contains the posted transaction's fields verbatim
+            assertThat(dtoCaptor.getValue().cardNumber()).isEqualTo(CARD_NUM);
+            assertThat(dtoCaptor.getValue().transactionType()).isEqualTo("01");
+            assertThat(dtoCaptor.getValue().transactionCategory()).isEqualTo(5);
+            assertThat(dtoCaptor.getValue().amount())
+                    .isEqualByComparingTo(new BigDecimal("100.00"));
+            // 11-digit zero-padded accountId for consistent partitioner hashing
+            assertThat(dtoCaptor.getValue().accountId())
+                    .isEqualTo("10000000001");
         }
 
         @Test
@@ -624,13 +747,19 @@ class TransactionPostingServiceTest {
         void posted_publishesAccountUpdated() {
             stubHappyPathSingleTransaction();
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             ArgumentCaptor<Long> keyCaptor =
                     ArgumentCaptor.forClass(Long.class);
+            ArgumentCaptor<AccountUpdateDto> dtoCaptor =
+                    ArgumentCaptor.forClass(AccountUpdateDto.class);
             verify(kafkaEventPublisher).publishAccountUpdated(
-                    keyCaptor.capture(), any(AccountUpdateDto.class));
+                    keyCaptor.capture(), dtoCaptor.capture());
             assertThat(keyCaptor.getValue()).isEqualTo(ACCOUNT_ID);
+            assertThat(dtoCaptor.getValue().accountId()).isEqualTo(ACCOUNT_ID);
+            // Post-update balance (500 + 100 = 600)
+            assertThat(dtoCaptor.getValue().currentBalance())
+                    .isEqualByComparingTo(new BigDecimal("600.00"));
         }
 
         @Test
@@ -638,23 +767,12 @@ class TransactionPostingServiceTest {
         void posted_emitsAuditEvent() {
             stubHappyPathSingleTransaction();
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             verify(auditLogService).logTransactionEvent(
                     eq(TRAN_ID), eq(ACCOUNT_ID), eq("BATCH"),
                     eq("transaction.posted"), eq((String) null),
-                    anyMap(), eq(BATCH_RUN_ID));
-        }
-
-        @Test
-        @DisplayName("posted: evicts account-view cache entry")
-        void posted_evictsAccountCache() {
-            stubHappyPathSingleTransaction();
-
-            service.postDailyTransactions(BATCH_RUN_ID);
-
-            verify(cacheService).evict(AccountViewService.CACHE_NS,
-                    String.valueOf(ACCOUNT_ID));
+                    anyMap(), eq(TRAN_ID));
         }
 
         @Test
@@ -664,7 +782,7 @@ class TransactionPostingServiceTest {
             when(xrefRepository.findById(CARD_NUM))
                     .thenReturn(Optional.empty());
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             verify(kafkaEventPublisher, never())
                     .publishTransactionPosted(anyLong(), any());
@@ -673,32 +791,37 @@ class TransactionPostingServiceTest {
         }
 
         @Test
-        @DisplayName("cache eviction failures are non-fatal")
-        void cacheEvictionFailure_doesNotAbortBatch() {
-            stubHappyPathSingleTransaction();
-            org.mockito.Mockito.doThrow(new RuntimeException("Redis down"))
-                    .when(cacheService).evict(anyString(), anyString());
-
-            // Act — does not throw
-            TransactionPostingService.Result result =
-                    service.postDailyTransactions(BATCH_RUN_ID);
-
-            // Assert — posted count still 1
-            assertThat(result.transactionsPosted()).isEqualTo(1);
-        }
-
-        @Test
-        @DisplayName("Kafka publish failures are non-fatal")
+        @DisplayName("Kafka publish failures are non-fatal (transaction still posted)")
         void kafkaFailure_doesNotAbortBatch() {
             stubHappyPathSingleTransaction();
             org.mockito.Mockito.doThrow(new RuntimeException("MSK down"))
                     .when(kafkaEventPublisher)
                     .publishTransactionPosted(anyLong(), any());
 
-            TransactionPostingService.Result result =
-                    service.postDailyTransactions(BATCH_RUN_ID);
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
 
-            assertThat(result.transactionsPosted()).isEqualTo(1);
+            // Counts reflect a successful post — Kafka emission is
+            // additive/best-effort per AAP §0.6.5.
+            assertThat(result.rejectCount()).isEqualTo(0);
+            assertThat(result.returnCode()).isEqualTo(0);
+            verify(transactionRepository).save(any(Transaction.class));
+        }
+
+        @Test
+        @DisplayName("account.updated publish failure is non-fatal")
+        void accountUpdatedFailure_doesNotAbortBatch() {
+            stubHappyPathSingleTransaction();
+            org.mockito.Mockito.doThrow(new RuntimeException("MSK down"))
+                    .when(kafkaEventPublisher)
+                    .publishAccountUpdated(anyLong(), any());
+
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
+
+            assertThat(result.rejectCount()).isEqualTo(0);
+            assertThat(result.returnCode()).isEqualTo(0);
+            verify(transactionRepository).save(any(Transaction.class));
         }
     }
 
@@ -706,62 +829,46 @@ class TransactionPostingServiceTest {
     @DisplayName("S3 rejection output (COBOL: 2500-WRITE-REJECT-REC)")
     class RejectionOutput {
 
-        // -----------------------------------------------------------------
-        // Trailer offset rationale
-        //
-        // The CVTRA06Y copybook declares the DALYTRAN body as 350 bytes
-        // and the VALIDATION-TRAILER as 80 bytes (total 430). The Java
-        // formatDalytranRecord uses formatAmount() which emits the
-        // COBOL PIC S9(09)V99 + sign with the explicit decimal point
-        // (e.g. "+000000100.00" = 13 chars rather than the 12 chars the
-        // inline comment suggests). The net effect is one extra byte in
-        // the body, so the body is 351 bytes and the total record is
-        // 431 bytes. This is the production behaviour we test against —
-        // changing it is out of scope for CP5 and would require a
-        // separate parity-validation effort against the DALYREJS
-        // downstream consumer.
-        // -----------------------------------------------------------------
-        private static final int BODY_LENGTH = 351;
-        private static final int REASON_CODE_END = BODY_LENGTH + 3;
-        private static final int RECORD_LENGTH = BODY_LENGTH + 80;
-
         @Test
-        @DisplayName("writeReject emits the full rejection record (body + 80-byte trailer)")
+        @DisplayName("writeReject emits a 430-byte record (350 + 4-digit reason + 76-char desc)")
         void writeReject_emitsFullRecord() {
             stubHappyPathSingleTransaction();
             when(xrefRepository.findById(CARD_NUM))
                     .thenReturn(Optional.empty());
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             ArgumentCaptor<String> recordCaptor =
                     ArgumentCaptor.forClass(String.class);
             verify(s3OutputService)
-                    .writeRejection(eq(BATCH_RUN_ID), recordCaptor.capture());
+                    .writeRejection(eq(EXPECTED_BATCH_RUN_ID),
+                            recordCaptor.capture());
             assertThat(recordCaptor.getValue()).hasSize(RECORD_LENGTH);
         }
 
         @Test
-        @DisplayName("rejection trailer carries reject reason code 100")
+        @DisplayName("rejection trailer carries reject reason code 100 (4-digit zero-padded)")
         void writeReject_carriesReason100() {
             stubHappyPathSingleTransaction();
             when(xrefRepository.findById(CARD_NUM))
                     .thenReturn(Optional.empty());
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             ArgumentCaptor<String> recordCaptor =
                     ArgumentCaptor.forClass(String.class);
             verify(s3OutputService)
-                    .writeRejection(eq(BATCH_RUN_ID), recordCaptor.capture());
+                    .writeRejection(eq(EXPECTED_BATCH_RUN_ID),
+                            recordCaptor.capture());
             String record = recordCaptor.getValue();
-            // First 3 chars after the body are the reason code.
-            String trailerStart = record.substring(BODY_LENGTH, REASON_CODE_END);
-            assertThat(trailerStart).isEqualTo("100");
+            // First 4 chars after the body are the 4-digit reason code.
+            String reasonCode =
+                    record.substring(BODY_LENGTH, REASON_CODE_END);
+            assertThat(reasonCode).isEqualTo("0100");
         }
 
         @Test
-        @DisplayName("rejection trailer carries reject reason code 102")
+        @DisplayName("rejection trailer carries reject reason code 102 (4-digit zero-padded)")
         void writeReject_carriesReason102() {
             account.setAcctCurrCycCredit(new BigDecimal("4000.00"));
             account.setAcctCurrCycDebit(BigDecimal.ZERO);
@@ -769,35 +876,73 @@ class TransactionPostingServiceTest {
             dly.setDalytranAmt(new BigDecimal("2000.00"));
             stubHappyPathSingleTransaction();
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             ArgumentCaptor<String> recordCaptor =
                     ArgumentCaptor.forClass(String.class);
             verify(s3OutputService)
-                    .writeRejection(eq(BATCH_RUN_ID), recordCaptor.capture());
-            assertThat(recordCaptor.getValue().substring(BODY_LENGTH, REASON_CODE_END))
-                    .isEqualTo("102");
+                    .writeRejection(eq(EXPECTED_BATCH_RUN_ID),
+                            recordCaptor.capture());
+            assertThat(recordCaptor.getValue()
+                            .substring(BODY_LENGTH, REASON_CODE_END))
+                    .isEqualTo("0102");
         }
 
         @Test
-        @DisplayName("rejection trailer description matches RejectReason.getDescription")
+        @DisplayName("rejection trailer description matches the verbatim COBOL text")
         void writeReject_carriesDescription() {
             stubHappyPathSingleTransaction();
             when(xrefRepository.findById(CARD_NUM))
                     .thenReturn(Optional.empty());
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
             ArgumentCaptor<String> recordCaptor =
                     ArgumentCaptor.forClass(String.class);
             verify(s3OutputService)
-                    .writeRejection(eq(BATCH_RUN_ID), recordCaptor.capture());
-            // Description starts after the reason code and ends padded
-            // right to the 80-byte trailer.
+                    .writeRejection(eq(EXPECTED_BATCH_RUN_ID),
+                            recordCaptor.capture());
+            // Description starts after the 4-digit reason code and
+            // ends padded right to the 80-byte trailer (76 chars).
             String description = recordCaptor.getValue()
                     .substring(REASON_CODE_END).trim();
-            assertThat(description)
-                    .isEqualTo("INVALID CARD NUMBER FOUND");
+            assertThat(description).isEqualTo("INVALID CARD NUMBER FOUND");
+        }
+
+        @Test
+        @DisplayName("rejection record body preserves DALYTRAN-ID at offset 0")
+        void writeReject_bodyStartsWithTranId() {
+            stubHappyPathSingleTransaction();
+            when(xrefRepository.findById(CARD_NUM))
+                    .thenReturn(Optional.empty());
+
+            service.postDailyTransactions(BATCH_DATE);
+
+            ArgumentCaptor<String> recordCaptor =
+                    ArgumentCaptor.forClass(String.class);
+            verify(s3OutputService)
+                    .writeRejection(eq(EXPECTED_BATCH_RUN_ID),
+                            recordCaptor.capture());
+            String record = recordCaptor.getValue();
+            // First 16 bytes = DALYTRAN-ID PIC X(16)
+            assertThat(record.substring(0, 16)).isEqualTo(TRAN_ID);
+        }
+
+        @Test
+        @DisplayName("S3 write failure raises CardDemoException with WRITE_REJECT_FAILED")
+        void s3WriteFailure_wrappedAsCardDemoException() {
+            stubHappyPathSingleTransaction();
+            when(xrefRepository.findById(CARD_NUM))
+                    .thenReturn(Optional.empty());
+            org.mockito.Mockito.doThrow(new RuntimeException("S3 down"))
+                    .when(s3OutputService)
+                    .writeRejection(anyString(), anyString());
+
+            assertThatThrownBy(() -> service.postDailyTransactions(BATCH_DATE))
+                    .isInstanceOf(CardDemoException.class)
+                    .hasMessageContaining("Failed to write reject record")
+                    .extracting("reasonCode")
+                    .isEqualTo("WRITE_REJECT_FAILED");
         }
     }
 
@@ -810,10 +955,10 @@ class TransactionPostingServiceTest {
         void zeroRejects_returnCodeZero() {
             stubHappyPathSingleTransaction();
 
-            TransactionPostingService.Result result =
-                    service.postDailyTransactions(BATCH_RUN_ID);
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
 
-            assertThat(result.transactionsRejected()).isEqualTo(0);
+            assertThat(result.rejectCount()).isEqualTo(0);
             assertThat(result.returnCode()).isEqualTo(0);
         }
 
@@ -824,10 +969,10 @@ class TransactionPostingServiceTest {
             when(xrefRepository.findById(CARD_NUM))
                     .thenReturn(Optional.empty());
 
-            TransactionPostingService.Result result =
-                    service.postDailyTransactions(BATCH_RUN_ID);
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
 
-            assertThat(result.transactionsRejected()).isEqualTo(1);
+            assertThat(result.rejectCount()).isEqualTo(1);
             assertThat(result.returnCode()).isEqualTo(4);
         }
     }
@@ -866,12 +1011,11 @@ class TransactionPostingServiceTest {
             lenient().when(transactionRepository.save(any()))
                     .thenAnswer(inv -> inv.getArgument(0));
 
-            TransactionPostingService.Result result =
-                    service.postDailyTransactions(BATCH_RUN_ID);
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
 
-            assertThat(result.transactionsProcessed()).isEqualTo(2);
-            assertThat(result.transactionsPosted()).isEqualTo(1);
-            assertThat(result.transactionsRejected()).isEqualTo(1);
+            assertThat(result.transactionCount()).isEqualTo(2);
+            assertThat(result.rejectCount()).isEqualTo(1);
             assertThat(result.returnCode()).isEqualTo(4);
 
             // One transaction.posted (for row 1) + one rejection
@@ -879,39 +1023,17 @@ class TransactionPostingServiceTest {
             verify(s3OutputService, times(1))
                     .writeRejection(anyString(), anyString());
         }
-
-        @Test
-        @DisplayName("batch-run summary audit event captured once with totals")
-        void batchSummary_auditEmittedWithTotals() {
-            stubHappyPathSingleTransaction();
-
-            service.postDailyTransactions(BATCH_RUN_ID);
-
-            ArgumentCaptor<java.util.Map<String, Object>> payloadCaptor =
-                    ArgumentCaptor.forClass(java.util.Map.class);
-            verify(auditLogService).logAuditEvent(
-                    eq("batch.posttran.completed"),
-                    eq("BATCH_RUN"),
-                    eq(BATCH_RUN_ID),
-                    eq("BATCH"),
-                    payloadCaptor.capture(),
-                    eq(BATCH_RUN_ID));
-            java.util.Map<String, Object> payload = payloadCaptor.getValue();
-            assertThat(payload).containsEntry("transactionsProcessed", 1);
-            assertThat(payload).containsEntry("transactionsPosted", 1);
-            assertThat(payload).containsEntry("transactionsRejected", 0);
-            assertThat(payload).containsEntry("returnCode", 0);
-        }
     }
 
     @Nested
-    @DisplayName("ON SIZE ERROR — overflow guards")
+    @DisplayName("ON SIZE ERROR — explicit overflow guards (AAP §0.6.1)")
     class OnSizeError {
 
         @Test
         @DisplayName("ACCT-CURR-BAL overflow throws OnSizeErrorException")
         void acctCurrBalOverflow_throwsOnSizeError() {
-            // Start balance very near the ceiling, add positive amount
+            // Start balance very near MAX_AMOUNT ceiling
+            // (PIC S9(11)V99 max = 99,999,999,999.99).
             account.setAcctCurrBal(new BigDecimal("99999999999.00"));
             account.setAcctCurrCycCredit(BigDecimal.ZERO);
             account.setAcctCurrCycDebit(BigDecimal.ZERO);
@@ -919,36 +1041,93 @@ class TransactionPostingServiceTest {
             dly.setDalytranAmt(new BigDecimal("100.00"));
             stubHappyPathSingleTransaction();
 
-            assertThatThrownBy(() -> service.postDailyTransactions(BATCH_RUN_ID))
+            assertThatThrownBy(() -> service.postDailyTransactions(BATCH_DATE))
                     .isInstanceOf(OnSizeErrorException.class)
                     .hasMessageContaining("ACCT-CURR-BAL");
+        }
+
+        @Test
+        @DisplayName("ACCT-CURR-CYC-CREDIT overflow throws OnSizeErrorException")
+        void acctCurrCycCreditOverflow_throwsOnSizeError() {
+            account.setAcctCurrBal(new BigDecimal("0.00"));
+            account.setAcctCurrCycCredit(new BigDecimal("99999999999.00"));
+            account.setAcctCurrCycDebit(new BigDecimal("99999999999.00"));
+            // Credit limit large enough to avoid reject 102
+            account.setAcctCreditLimit(new BigDecimal("99999999999.99"));
+            dly.setDalytranAmt(new BigDecimal("1000.00"));
+            stubHappyPathSingleTransaction();
+
+            assertThatThrownBy(() -> service.postDailyTransactions(BATCH_DATE))
+                    .isInstanceOf(OnSizeErrorException.class)
+                    .hasMessageContaining("ACCT-CURR-CYC-CREDIT");
+        }
+
+        @Test
+        @DisplayName("TCATBAL overflow on existing row throws OnSizeErrorException")
+        void tcatbalOverflow_throwsOnSizeError() {
+            TransactionCategoryBalanceId id = new TransactionCategoryBalanceId(
+                    ACCOUNT_ID, "01", 5);
+            TransactionCategoryBalance pre = new TransactionCategoryBalance(
+                    id, new BigDecimal("99999999999.00"));
+            dly.setDalytranAmt(new BigDecimal("1000.00"));
+            stubHappyPathSingleTransaction();
+            when(tcatbalRepository.findById(id)).thenReturn(Optional.of(pre));
+
+            assertThatThrownBy(() -> service.postDailyTransactions(BATCH_DATE))
+                    .isInstanceOf(OnSizeErrorException.class)
+                    .hasMessageContaining("TRAN-CAT-BAL");
         }
     }
 
     @Nested
-    @DisplayName("PCI-DSS payload sanitization (audit + reject)")
-    class PciDssHandling {
+    @DisplayName("PII discipline — audit payload contents (AAP §0.6.6 / rule 10)")
+    class PiiDiscipline {
 
         @Test
-        @DisplayName("rejected audit payload masks PAN")
-        void rejectedAuditPayload_masksPan() {
+        @DisplayName("rejected audit payload does NOT include full card number")
+        void rejectedAuditPayload_omitsFullCardNumber() {
             stubHappyPathSingleTransaction();
             when(xrefRepository.findById(CARD_NUM))
                     .thenReturn(Optional.empty());
 
-            service.postDailyTransactions(BATCH_RUN_ID);
+            service.postDailyTransactions(BATCH_DATE);
 
-            ArgumentCaptor<java.util.Map<String, Object>> payloadCaptor =
-                    ArgumentCaptor.forClass(java.util.Map.class);
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            ArgumentCaptor<Map<String, Object>> payloadCaptor =
+                    (ArgumentCaptor) ArgumentCaptor.forClass(Map.class);
             verify(auditLogService).logTransactionEvent(
                     eq(TRAN_ID), eq((Long) null), eq("BATCH"),
                     eq("transaction.rejected"), anyString(),
-                    payloadCaptor.capture(), eq(BATCH_RUN_ID));
-            String maskedCard = (String) payloadCaptor.getValue().get("cardNumber");
-            assertThat(maskedCard).doesNotContain(CARD_NUM);
-            assertThat(maskedCard).contains("****");
-            // The last 4 digits should remain in masked form
-            assertThat(maskedCard).endsWith("0001");
+                    payloadCaptor.capture(), eq(TRAN_ID));
+            Map<String, Object> payload = payloadCaptor.getValue();
+            // Per AAP rule 10 the payload contains tranId + reject metadata,
+            // NOT the full card number — the adapter sanitizes as
+            // defense-in-depth.
+            assertThat(payload).doesNotContainKey("cardNumber");
+            assertThat(payload).doesNotContainValue(CARD_NUM);
+            // But it DOES contain the rejectCode for fraud-team filtering.
+            assertThat(payload).containsKey("rejectCode");
+            assertThat(payload).containsKey("rejectDescription");
+        }
+
+        @Test
+        @DisplayName("posted audit payload does NOT include full card number")
+        void postedAuditPayload_omitsFullCardNumber() {
+            stubHappyPathSingleTransaction();
+
+            service.postDailyTransactions(BATCH_DATE);
+
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            ArgumentCaptor<Map<String, Object>> payloadCaptor =
+                    (ArgumentCaptor) ArgumentCaptor.forClass(Map.class);
+            verify(auditLogService).logTransactionEvent(
+                    eq(TRAN_ID), eq(ACCOUNT_ID), eq("BATCH"),
+                    eq("transaction.posted"), eq((String) null),
+                    payloadCaptor.capture(), eq(TRAN_ID));
+            Map<String, Object> payload = payloadCaptor.getValue();
+            assertThat(payload).doesNotContainValue(CARD_NUM);
+            assertThat(payload).containsKey("tranId");
+            assertThat(payload).containsKey("acctId");
         }
     }
 }
