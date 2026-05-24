@@ -20,11 +20,15 @@ import com.awsm2.carddemo.adapter.AuditLogService;
 import com.awsm2.carddemo.adapter.CacheService;
 import com.awsm2.carddemo.adapter.KafkaEventPublisher;
 import com.awsm2.carddemo.domain.Account;
+import com.awsm2.carddemo.domain.CardCrossReference;
 import com.awsm2.carddemo.domain.Customer;
 import com.awsm2.carddemo.dto.AccountUpdateDto;
+import com.awsm2.carddemo.dto.AccountViewDto;
+import com.awsm2.carddemo.exception.ConcurrentModificationException;
 import com.awsm2.carddemo.exception.RecordNotFoundException;
 import com.awsm2.carddemo.exception.ValidationException;
 import com.awsm2.carddemo.repository.AccountRepository;
+import com.awsm2.carddemo.repository.CardCrossReferenceRepository;
 import com.awsm2.carddemo.repository.CustomerRepository;
 import com.awsm2.carddemo.validation.DateValidationService;
 import com.awsm2.carddemo.validation.ValidationLookupService;
@@ -42,6 +46,7 @@ import org.springframework.dao.OptimisticLockingFailureException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
@@ -156,6 +161,9 @@ class AccountUpdateServiceTest {
     private CustomerRepository customerRepository;
 
     @Mock
+    private CardCrossReferenceRepository cardCrossReferenceRepository;
+
+    @Mock
     private CacheService cacheService;
 
     @Mock
@@ -176,9 +184,14 @@ class AccountUpdateServiceTest {
     private AccountUpdateDto validRequest;
     private Account existingAccount;
     private Customer existingCustomer;
+    private CardCrossReference existingXref;
 
     @BeforeEach
     void setUp() {
+        // SSN 123456789 has part1=123 (valid per COBOL
+        // INVALID-SSN-PART1 rule which rejects 0, 666, 900-999;
+        // see app/cbl/COACTUPC.cbl WS-EDIT-US-SSN paragraph
+        // 1265-EDIT-US-SSN).
         validRequest = new AccountUpdateDto(
                 ACCOUNT_ID,
                 "Y",
@@ -196,7 +209,7 @@ class AccountUpdateServiceTest {
                 "JOHN",
                 "Q",
                 "DOE",
-                999999999L,
+                123456789L,
                 "5551234567",
                 null,
                 "123 MAIN ST",
@@ -225,11 +238,30 @@ class AccountUpdateServiceTest {
         existingCustomer.setCustLastName("ORIG_LAST");
         existingCustomer.setCustAddrStateCd("AK");
         existingCustomer.setCustAddrZip("00000");
+
+        // CardCrossReference fixture replacing the VSAM CXACAIX AIX
+        // lookup (CARDXREF.VSAM.AIX KEYS(11 25) NONUNIQUEKEY). The
+        // service resolves the customer ID via
+        // CardCrossReferenceRepository.findByXrefAcctId(acctId) — NOT
+        // by trusting request.customerId() (per COACTUPC.cbl
+        // 9200-GETCARDXREF-BYACCT paragraph). The xref fixture below
+        // therefore maps ACCOUNT_ID → CUSTOMER_ID so that the
+        // downstream customer findById sees CUSTOMER_ID.
+        existingXref = new CardCrossReference();
+        existingXref.setXrefCardNum("4111111111111111");
+        existingXref.setXrefAcctId(ACCOUNT_ID);
+        existingXref.setXrefCustId(CUSTOMER_ID);
     }
 
     private void stubHappyPathRepositories() {
         when(accountRepository.findById(ACCOUNT_ID))
                 .thenReturn(Optional.of(existingAccount));
+        // XREF lookup — replaces VSAM CXACAIX AIX read in COBOL
+        // COACTUPC:9200-GETCARDXREF-BYACCT. Returns a single-element
+        // list (NONUNIQUEKEY semantics allow multiple, but one is
+        // sufficient for the happy-path test).
+        when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
+                .thenReturn(List.of(existingXref));
         when(customerRepository.findById(CUSTOMER_ID))
                 .thenReturn(Optional.of(existingCustomer));
         when(accountRepository.save(any(Account.class)))
@@ -244,6 +276,13 @@ class AccountUpdateServiceTest {
                 .thenReturn(true);
         lenient().when(validationLookupService.isValidStateZipCombination(
                 anyString(), anyString())).thenReturn(true);
+        // NANPA area-code lookup (CSLKPCDY.cpy NANPA-AREA-CODES table):
+        // accept any 3-digit area code by default so the
+        // updateAccount-level validation cascade proceeds through to
+        // the next field. Tests that need to exercise area-code
+        // rejection override this stub.
+        lenient().when(validationLookupService.isValidAreaCode(anyString()))
+                .thenReturn(true);
         lenient().when(dateValidationService.validate(anyString()))
                 .thenReturn(DateValidationService.DateValidationResult.VALID);
     }
@@ -263,13 +302,21 @@ class AccountUpdateServiceTest {
     class OptimisticLock {
 
         @Test
-        @DisplayName("propagates OptimisticLockingFailureException from save")
-        void updateAccount_optimisticLockFailure_propagates() {
+        @DisplayName("rethrows save-time OptimisticLockingFailureException as ConcurrentModificationException (HTTP 409)")
+        void updateAccount_optimisticLockFailure_rethrownAs409() {
             // Arrange — repository.save throws optimistic-lock failure
             // (Hibernate's StaleStateException is wrapped to
-            //  OptimisticLockingFailureException by Spring Data)
+            //  OptimisticLockingFailureException by Spring Data). Per
+            // AAP §0.6.2, the service catches this and rethrows as
+            // the carddemo ConcurrentModificationException so callers
+            // see a single 409-mapped exception type regardless of
+            // whether the conflict is detected by the pre-mutation
+            // version check or by JPA's automatic check on save (the
+            // race-condition gap).
             when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.of(existingAccount));
+            when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of(existingXref));
             when(customerRepository.findById(CUSTOMER_ID))
                     .thenReturn(Optional.of(existingCustomer));
             stubValidationServices();
@@ -277,9 +324,10 @@ class AccountUpdateServiceTest {
                     .thenThrow(new OptimisticLockingFailureException(
                             "Row was updated by another transaction"));
 
-            // Act + Assert — exception propagates unchanged
-            assertThatThrownBy(() -> service.updateAccount(validRequest))
-                    .isInstanceOf(OptimisticLockingFailureException.class);
+            // Act + Assert — service catches OLE and rethrows as the
+            // carddemo ConcurrentModificationException (HTTP 409)
+            assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, validRequest))
+                    .isInstanceOf(ConcurrentModificationException.class);
 
             // Assert — customer.save and kafka publish do NOT occur
             // after the optimistic-lock failure
@@ -292,23 +340,31 @@ class AccountUpdateServiceTest {
         }
 
         @Test
-        @DisplayName("rejects request with null version (no findById call)")
+        @DisplayName("rejects request with null version (no save attempted)")
         void updateAccount_nullVersion_throwsValidation() {
-            // Arrange — request carries null version
+            // Arrange — request carries null version. Per AAP §0.6.2,
+            // a null version is treated as a ValidationException by
+            // verifyVersion() — the service refuses to "fall back" to
+            // letting JPA detect the conflict because that would
+            // silently mask a caller error.
             AccountUpdateDto request = buildRequestWithVersion(null);
             stubValidationServices();
-            // Findby must still succeed to reach the version-check step
+            // findById must succeed to reach the version-check step;
+            // the xref / customer / save paths must NOT be reached, so
+            // those stubs are intentionally absent (Mockito strictness
+            // would flag them as unnecessary if present).
             when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.of(existingAccount));
-            when(customerRepository.findById(CUSTOMER_ID))
-                    .thenReturn(Optional.of(existingCustomer));
 
             // Act + Assert
-            assertThatThrownBy(() -> service.updateAccount(request))
+            assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, request))
                     .isInstanceOf(ValidationException.class)
                     .hasMessageContaining("version");
 
-            // Assert — no save / publish / audit
+            // Assert — no xref lookup / save / publish / audit
+            verify(cardCrossReferenceRepository, never())
+                    .findByXrefAcctId(anyLong());
+            verify(customerRepository, never()).findById(anyLong());
             verify(accountRepository, never()).save(any());
             verify(customerRepository, never()).save(any());
             verify(kafkaEventPublisher, never())
@@ -316,28 +372,43 @@ class AccountUpdateServiceTest {
         }
 
         @Test
-        @DisplayName("propagates the caller-supplied version onto the loaded entity")
-        void updateAccount_versionPassedThroughToEntity() {
+        @DisplayName("rejects mismatched caller version via explicit pre-check (no save attempted)")
+        void updateAccount_versionMismatch_throwsConcurrentModification() {
             // Arrange — request carries version=42, but loaded entity
-            // has version=7 (the test verifies the request's version
-            // overrides the loaded one so Hibernate's UPDATE WHERE
-            // version=42 fails immediately if a concurrent writer
-            // touched the row)
+            // has version=7. Per AAP §0.6.2 / COACTUPC.cbl's
+            // DATA-WAS-CHANGED-BEFORE-UPDATE pattern, the service
+            // performs an EXPLICIT pre-mutation version comparison
+            // and throws com.awsm2.carddemo.exception.ConcurrentModificationException
+            // BEFORE attempting any save. This is the canonical
+            // replacement for the COBOL before/after image compare;
+            // JPA's automatic @Version check on save only covers the
+            // race-condition gap between the pre-check and the save.
             Long callerVersion = 42L;
             AccountUpdateDto request = buildRequestWithVersion(callerVersion);
-            existingAccount.setVersion(VERSION);
-            stubHappyPathRepositories();
+            existingAccount.setVersion(VERSION);   // 7L — does not match 42L
+            // Stub validation services so input validation passes —
+            // version check happens AFTER validation but BEFORE
+            // xref/customer/save in the service flow.
             stubValidationServices();
-            stubKafkaPublishSuccess();
+            when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(existingAccount));
 
-            // Act
-            service.updateAccount(request);
+            // Act + Assert — explicit pre-check throws 409-mapped exception
+            assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, request))
+                    .isInstanceOf(ConcurrentModificationException.class);
 
-            // Assert — capture the entity passed to save and verify
-            // its version is the caller-supplied value
-            ArgumentCaptor<Account> captor = ArgumentCaptor.forClass(Account.class);
-            verify(accountRepository).save(captor.capture());
-            assertThat(captor.getValue().getVersion()).isEqualTo(callerVersion);
+            // Assert — service short-circuits BEFORE any xref / customer
+            // lookup, save, publish, audit, or cache invalidation:
+            verify(cardCrossReferenceRepository, never())
+                    .findByXrefAcctId(anyLong());
+            verify(customerRepository, never()).findById(anyLong());
+            verify(accountRepository, never()).save(any());
+            verify(customerRepository, never()).save(any());
+            verify(cacheService, never()).evict(anyString(), anyString());
+            verify(kafkaEventPublisher, never())
+                    .publishAccountUpdated(anyLong(), any());
+            verify(auditLogService, never())
+                    .auditEvent(anyString(), anyString(), anyMap());
         }
     }
 
@@ -359,7 +430,7 @@ class AccountUpdateServiceTest {
             // CA→XX in the request
             AccountUpdateDto bad = buildRequestWithStateCode("XX");
 
-            assertThatThrownBy(() -> service.updateAccount(bad))
+            assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, bad))
                     .isInstanceOf(ValidationException.class);
 
             verify(accountRepository, never()).findById(anyLong());
@@ -374,7 +445,7 @@ class AccountUpdateServiceTest {
             when(validationLookupService.isValidStateZipCombination(
                     STATE_CODE, ZIP_CODE)).thenReturn(false);
 
-            assertThatThrownBy(() -> service.updateAccount(validRequest))
+            assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, validRequest))
                     .isInstanceOf(ValidationException.class);
 
             verify(accountRepository, never()).findById(anyLong());
@@ -394,7 +465,7 @@ class AccountUpdateServiceTest {
                             "E001", "Date is in the future"));
 
             // Act + Assert
-            assertThatThrownBy(() -> service.updateAccount(validRequest))
+            assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, validRequest))
                     .isInstanceOf(ValidationException.class);
 
             verify(accountRepository, never()).findById(anyLong());
@@ -403,7 +474,10 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("rejects null request DTO")
         void updateAccount_nullRequest_throwsNpe() {
-            assertThatThrownBy(() -> service.updateAccount(null))
+            // The service uses Objects.requireNonNull(request, "request")
+            // as the first statement of updateAccount(Long, AccountUpdateDto)
+            // — passing a null DTO triggers NPE before any other work.
+            assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, null))
                     .isInstanceOf(NullPointerException.class);
         }
     }
@@ -419,7 +493,7 @@ class AccountUpdateServiceTest {
             when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.empty());
 
-            assertThatThrownBy(() -> service.updateAccount(validRequest))
+            assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, validRequest))
                     .isInstanceOf(RecordNotFoundException.class);
 
             verify(accountRepository, never()).save(any());
@@ -431,10 +505,14 @@ class AccountUpdateServiceTest {
             stubValidationServices();
             when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.of(existingAccount));
+            // XREF resolves to a customer ID, but the customer record
+            // itself is missing — COBOL: DID-NOT-FIND-CUST-IN-CUSTDAT
+            when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of(existingXref));
             when(customerRepository.findById(CUSTOMER_ID))
                     .thenReturn(Optional.empty());
 
-            assertThatThrownBy(() -> service.updateAccount(validRequest))
+            assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, validRequest))
                     .isInstanceOf(RecordNotFoundException.class);
 
             verify(accountRepository, never()).save(any());
@@ -452,7 +530,7 @@ class AccountUpdateServiceTest {
             stubValidationServices();
             stubKafkaPublishSuccess();
 
-            service.updateAccount(validRequest);
+            service.updateAccount(ACCOUNT_ID, validRequest);
 
             ArgumentCaptor<Account> captor = ArgumentCaptor.forClass(Account.class);
             verify(accountRepository).save(captor.capture());
@@ -466,13 +544,14 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("normalises null balance fields to BigDecimal.ZERO")
         void updateAccount_nullBalance_normalisedToZero() {
-            // Arrange — request with null currentCycleCredit
+            // Arrange — request with null currentCycleCredit.
+            // SSN part-1 = 123 → passes COBOL INVALID-SSN-PART1 rule.
             AccountUpdateDto request = new AccountUpdateDto(
                     ACCOUNT_ID, "Y", CURRENT_BALANCE, CREDIT_LIMIT,
                     BigDecimal.ZERO, OPEN_DATE, EXPIRATION_DATE, null,
                     null, null,  // currentCycleCredit, currentCycleDebit null
                     ZIP_CODE, "001",
-                    CUSTOMER_ID, "JOHN", "Q", "DOE", 999999999L,
+                    CUSTOMER_ID, "JOHN", "Q", "DOE", 123456789L,
                     "5551234567", null, "123 MAIN ST", null, null,
                     STATE_CODE, COUNTRY_CODE, ZIP_CODE,
                     LocalDate.of(1980, 5, 15), "GOV12345", "EFT12345",
@@ -482,7 +561,7 @@ class AccountUpdateServiceTest {
             stubKafkaPublishSuccess();
 
             // Act
-            service.updateAccount(request);
+            service.updateAccount(ACCOUNT_ID, request);
 
             // Assert
             ArgumentCaptor<Account> captor = ArgumentCaptor.forClass(Account.class);
@@ -505,7 +584,7 @@ class AccountUpdateServiceTest {
             stubValidationServices();
             stubKafkaPublishSuccess();
 
-            service.updateAccount(validRequest);
+            service.updateAccount(ACCOUNT_ID, validRequest);
 
             verify(cacheService).evict(eq(AccountViewService.CACHE_NS), eq(CACHE_KEY));
         }
@@ -517,7 +596,7 @@ class AccountUpdateServiceTest {
             stubValidationServices();
             stubKafkaPublishSuccess();
 
-            service.updateAccount(validRequest);
+            service.updateAccount(ACCOUNT_ID, validRequest);
 
             ArgumentCaptor<AccountUpdateDto> dtoCaptor =
                     ArgumentCaptor.forClass(AccountUpdateDto.class);
@@ -533,7 +612,7 @@ class AccountUpdateServiceTest {
             stubValidationServices();
             stubKafkaPublishSuccess();
 
-            service.updateAccount(validRequest);
+            service.updateAccount(ACCOUNT_ID, validRequest);
 
             verify(auditLogService, times(1))
                     .auditEvent(eq("account.updated"), eq("system"), anyMap());
@@ -545,13 +624,17 @@ class AccountUpdateServiceTest {
     class ResponseShape {
 
         @Test
-        @DisplayName("returns DTO with merged account + customer fields")
+        @DisplayName("returns AccountViewDto with merged account + customer fields")
         void updateAccount_returnsMergedDto() {
             stubHappyPathRepositories();
             stubValidationServices();
             stubKafkaPublishSuccess();
 
-            AccountUpdateDto response = service.updateAccount(validRequest);
+            // AAP §0.3.4 / schema: updateAccount returns AccountViewDto
+            // (read-model projection of the post-update Account + Customer
+            // state, NOT the request DTO) — mirroring COACTUPC's post-REWRITE
+            // screen redisplay.
+            AccountViewDto response = service.updateAccount(ACCOUNT_ID, validRequest);
 
             assertThat(response).isNotNull();
             assertThat(response.accountId()).isEqualTo(ACCOUNT_ID);
@@ -568,12 +651,14 @@ class AccountUpdateServiceTest {
     // ------------------------------------------------------------------
 
     private AccountUpdateDto buildRequestWithVersion(Long version) {
+        // SSN part-1 = 123 → passes COBOL INVALID-SSN-PART1 rejection rule
+        // (rejects 0, 666, 900-999). See AccountUpdateService.validateSsn.
         return new AccountUpdateDto(
                 ACCOUNT_ID, "Y", CURRENT_BALANCE, CREDIT_LIMIT,
                 new BigDecimal("1000.00"), OPEN_DATE, EXPIRATION_DATE,
                 null, BigDecimal.ZERO, BigDecimal.ZERO,
                 ZIP_CODE, "001",
-                CUSTOMER_ID, "JOHN", "Q", "DOE", 999999999L,
+                CUSTOMER_ID, "JOHN", "Q", "DOE", 123456789L,
                 "5551234567", null, "123 MAIN ST", null, null,
                 STATE_CODE, COUNTRY_CODE, ZIP_CODE,
                 LocalDate.of(1980, 5, 15), "GOV12345", "EFT12345",
@@ -581,12 +666,13 @@ class AccountUpdateServiceTest {
     }
 
     private AccountUpdateDto buildRequestWithStateCode(String stateCode) {
+        // SSN part-1 = 123 → passes COBOL INVALID-SSN-PART1 rejection rule.
         return new AccountUpdateDto(
                 ACCOUNT_ID, "Y", CURRENT_BALANCE, CREDIT_LIMIT,
                 new BigDecimal("1000.00"), OPEN_DATE, EXPIRATION_DATE,
                 null, BigDecimal.ZERO, BigDecimal.ZERO,
                 ZIP_CODE, "001",
-                CUSTOMER_ID, "JOHN", "Q", "DOE", 999999999L,
+                CUSTOMER_ID, "JOHN", "Q", "DOE", 123456789L,
                 "5551234567", null, "123 MAIN ST", null, null,
                 stateCode, COUNTRY_CODE, ZIP_CODE,
                 LocalDate.of(1980, 5, 15), "GOV12345", "EFT12345",

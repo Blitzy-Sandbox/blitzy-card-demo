@@ -308,7 +308,7 @@ public class AccountController {
                     description = "Optimistic-lock conflict (account changed since GET)")
     })
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
-    public ResponseEntity<ApiResponse<AccountUpdateDto>> updateAccount(
+    public ResponseEntity<ApiResponse<AccountViewDto>> updateAccount(
             @PathVariable("id") Long id,
             @Valid @RequestBody AccountUpdateDto request) {
         // COBOL: COACTUPC / Tran-ID CAUP -- 9500-WRITE-PROCESSING +
@@ -328,7 +328,13 @@ public class AccountController {
         }
         LOG.debug("Account update requested for accountId={}, version={}",
                 id, request.version());
-        AccountUpdateDto updated = accountUpdateService.updateAccount(request);
+        // Service contract: updateAccount(Long acctId, AccountUpdateDto request)
+        // returns AccountViewDto representing the post-update authoritative
+        // view of the account + customer pair. The acctId comes from the
+        // path variable (already validated for IDOR via the consistency
+        // check above) and is the source of truth for the lookup, not
+        // request.accountId().
+        AccountViewDto updated = accountUpdateService.updateAccount(id, request);
         return ResponseEntity.ok(ApiResponse.success(updated,
                 "Account updated successfully"));
     }
