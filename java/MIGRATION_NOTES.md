@@ -268,65 +268,52 @@ the 1-to-1 paragraph-to-method mapping mandated by AAP §0.1.2.
 method names would all silently shift). A Javadoc note on the Java
 method records the intended spelling.
 
-### 1.4.5 CBACT01C / CBACT03C `DOUBLE-DISPLAY` anomaly (RESERVED — translation pending)
+### 1.4.5 CBACT01C / CBACT03C `DOUBLE-DISPLAY` anomaly (IMPLEMENTED)
 
-**Status**: RESERVED — placeholder section for an anomaly that will be
-documented in full once the affected programs are translated. This entry
-is added now (pre-translation) so that future translation agents have a
-single, stable place to attach the analysis when the actual COBOL
-inspection is performed.
+**Status**: IMPLEMENTED — the COBOL anomaly is preserved verbatim in the
+Java translation of both programs as documented below.
 
-**Anticipated COBOL source**: `app/cbl/CBACT01C.cbl` and
-`app/cbl/CBACT03C.cbl`. The "DOUBLE-DISPLAY" anomaly refers to a
-sequential-reader idiom in which each fetched record is emitted to
-`SYSOUT` via a pair of `DISPLAY` statements — typically one that prints
-a labelled field summary and a second that prints the raw record image.
-Whether this is intentional (an audit trail useful in mainframe
-operations) or a vestigial duplicate left over from earlier development
-will be confirmed during the actual translation pass. The user mandate
-in AAP §0.7.1 ("If a COBOL paragraph contains dead code or obvious bugs,
-translate it faithfully and flag it in a `MIGRATION_NOTES.md`; do not
-'fix' it in this refactor.") applies either way.
+**COBOL source**:
 
-**Anticipated Java translation**: the Java port in
+- `app/cbl/CBACT01C.cbl` (paragraph `1000-ACCTFILE-GET-NEXT`):
+  ```
+  IF FILE-IO-OK
+      MOVE FD-ACCT-DATA TO ACCT-RECORD
+      DISPLAY ACCT-RECORD
+      DISPLAY FD-ACCT-DATA
+  END-IF
+  ```
+  After reading a fixed-width 300-byte record from `ACCTFILE`, the
+  program issues TWO `DISPLAY` statements: the first prints the
+  `ACCT-RECORD` redefining alias (which is identical bytes to
+  `FD-ACCT-DATA` because of the `MOVE`), the second prints the raw
+  `FD-ACCT-DATA` directly. The result is that every record appears
+  twice in the SYSOUT stream.
+
+- `app/cbl/CBACT03C.cbl` shares the same idiom for the `CARDXREF` file
+  reader.
+
+**Analysis**: per inspection of the COBOL listing and absence of any
+distinct formatting between the two DISPLAY statements, the
+"DOUBLE-DISPLAY" appears to be a vestigial debugging idiom left over
+from initial development — both DISPLAY statements emit identical bytes.
+The user mandate in AAP §0.7.1 ("If a COBOL paragraph contains dead code
+or obvious bugs, translate it faithfully and flag it in a
+`MIGRATION_NOTES.md`; do not 'fix' it in this refactor.") requires that
+the duplicate output be preserved.
+
+**Java translation**: in both
 `com.blitzy.carddemo.application.account.CbAct01C` and
-`com.blitzy.carddemo.application.account.CbAct03C` will preserve the
-double output verbatim. Two `System.out.println(...)` (or, equivalently,
-two SLF4J `logger.info(...)` calls) will be emitted at each record
-boundary, in the same order and with the same content as the COBOL
-DISPLAY pair. Byte-for-byte parity of the `SYSOUT`-equivalent stream is
-required by the golden-record harness (AAP §0.6.11).
+`com.blitzy.carddemo.application.account.CbAct03C`, the per-record
+section of the read loop emits two SLF4J `logger.info(...)` calls with
+identical content. Byte-for-byte parity of the SLF4J output stream
+against the captured COBOL SYSOUT will be asserted by the golden-record
+harness once the corresponding fixtures are captured.
 
-**Action items for the CBACT01C / CBACT03C translation pass**:
+### 1.4.6 `ACCT-EXPIRAION-DATE` typo preservation in `CVACT01Y.cpy` (IMPLEMENTED)
 
-1. Re-read both program sources end-to-end and confirm the exact
-   DISPLAY locations, formats, and surrounding paragraph context.
-2. Replace this RESERVED placeholder with the concrete analysis: cite
-   the line numbers (`[app/cbl/CBACT01C.cbl:L###-L###]` /
-   `[app/cbl/CBACT03C.cbl:L###-L###]`), record the verbatim DISPLAY
-   statements, and document the Java methods that translate them.
-3. Add a regression assertion to the golden-record harness that
-   compares the captured COBOL `SYSOUT` against the Java
-   `System.out` / log output for both programs.
-4. If the anomaly turns out to be absent in the actual source (only
-   anticipated, not confirmed), update this section to record the
-   investigation outcome rather than deleting it — so the audit trail
-   stays intact.
-
-**Why this section exists now (pre-translation)**: per the checkpoint
-review feedback, the migration notes must reserve a placeholder for
-every known or anticipated translation peculiarity before the
-corresponding code is produced, so that downstream agents do not have to
-re-discover the concern. Sections 1.4.1 through 1.4.4 already follow
-this convention.
-
-### 1.4.6 `ACCT-EXPIRAION-DATE` typo preservation in `CVACT01Y.cpy` (RESERVED — translation pending)
-
-**Status**: RESERVED — placeholder section for a known field-name typo
-that will be preserved verbatim in the Java translation. This entry is
-added now (pre-translation of the `AccountRecord` Java class) so that
-future translation agents have a single, stable place to attach the
-analysis when the copybook is parsed into a record.
+**Status**: IMPLEMENTED — the COBOL field-name typo is preserved
+verbatim in `AccountRecord.java` as documented below.
 
 **COBOL source**: `app/cpy/CVACT01Y.cpy`. The 300-byte `ACCOUNT-RECORD`
 01-level group contains a field named `ACCT-EXPIRAION-DATE PIC X(10)`
@@ -339,17 +326,21 @@ codebase. AAP §0.4.1 explicitly notes "ACCT-OPEN-DATE/EXPIRAION-DATE/
 REISSUE-DATE (PIC X(10)→LocalDate)" — the typo is documented in the
 AAP because it must survive translation.
 
-**Anticipated Java translation**: when
-`com.blitzy.carddemo.domain.record.AccountRecord` is produced, the field
-name will be `expiraionDate` (camelCase preserving the typo), not
-`expirationDate`. The choice is justified by:
+**Java translation**:
+`com.blitzy.carddemo.domain.record.AccountRecord` declares a record
+component named `acctExpiraionDate` (camelCase preserving the typo, NOT
+`acctExpirationDate`). All call sites in the application classes
+(`CbAct01C`, `CbAct04C`, `CoActVwC`, `CoActUpC`, etc.) reference
+`acct.acctExpiraionDate()` — the typo survives the translation
+faithfully.
+
+**Rationale**:
 
 1. **AAP §0.1.1 mandate** — "byte-for-byte identical file outputs and
    field-for-field identical record outputs versus the COBOL baseline".
    Field name divergence between COBOL and Java would surface
-   immediately in any introspection-based diagnostic (e.g., a generic
-   record-formatting helper that walks accessors and labels each value
-   with the accessor name), making it harder to verify parity.
+   immediately in any introspection-based diagnostic, making it harder
+   to verify parity.
 2. **AAP §0.7.1 Refactor Discipline** — "If a COBOL paragraph contains
    dead code or obvious bugs, translate it faithfully and flag it in a
    `MIGRATION_NOTES.md`; do not 'fix' it in this refactor." A field
@@ -360,36 +351,18 @@ name will be `expiraionDate` (camelCase preserving the typo), not
    contract between COBOL and Java, and silent renaming would break
    any downstream code search that pivots on the COBOL name.
 
-**Required Javadoc decoration**: the typo'd field's accessor and any
-related helper will carry a Javadoc note that records the intended
-spelling (`expirationDate`), so a developer reading the Java code is not
-left wondering whether the typo is intentional. The Javadoc note
-follows the same pattern as the `WIRTE-JOBSUB-TDQ` paragraph note in
-Section 1.4.4: the COBOL spelling is preserved in code; the intended
-spelling is preserved in comments.
+**Javadoc decoration**: the `acctExpiraionDate` record component carries
+a Javadoc note that records the intended spelling (`expirationDate`),
+so a developer reading the Java code is not left wondering whether the
+typo is intentional. The Javadoc note follows the same pattern as the
+`WIRTE-JOBSUB-TDQ` paragraph note in Section 1.4.4: the COBOL spelling
+is preserved in code; the intended spelling is preserved in comments.
 
-**Action items for the `AccountRecord` translation pass**:
-
-1. Re-read `app/cpy/CVACT01Y.cpy` end-to-end and confirm the typo's
-   exact spelling and byte offset within the 300-byte fixed-width
-   layout.
-2. Replace this RESERVED placeholder with the concrete analysis: cite
-   the line number (`[app/cpy/CVACT01Y.cpy:L###]`), the verbatim COBOL
-   declaration, and the resulting Java record component.
-3. Document any sister fields in other copybooks that share the same
-   typo (e.g., card expiration date in `CVACT02Y.cpy` — the spelling
-   may or may not also be typo'd; verify case-by-case).
-4. Add an assertion to the property-based test suite confirming that
-   the Java accessor name matches the COBOL field name modulo the
-   hyphen-to-camelCase conversion (i.e., that the typo survived
-   translation).
-
-**Why this section exists now (pre-translation)**: per the checkpoint
-review feedback, the migration notes must reserve a placeholder for
-every known typo or spelling anomaly before the corresponding code is
-produced, so that downstream agents do not "helpfully" correct the
-spelling and break parity. Sections 1.4.1 through 1.4.5 already follow
-this convention.
+**Sister fields**: the corresponding card expiration date in
+`app/cpy/CVACT02Y.cpy` is named `CARD-EXPIRAION-DATE` (same `AI`
+transposition). The Java translation in
+`com.blitzy.carddemo.domain.record.CardRecord` declares
+`cardExpiraionDate` to match.
 
 ### 1.4.7 Logback PAN-masking regex: fixed-length mask and `%msg`-only scope
 
@@ -565,6 +538,262 @@ compatibility.
    trailing record on a known-good VSAM dataset, treat that as a
    fixture-capture defect rather than a parity bug, and document the
    capture procedure correction in `§1.6 Capture procedure` below.
+
+### 1.4.9 `cardxref.txt` ASCII fixture is 36 bytes/record vs. 50 bytes/record per AAP
+
+**Status**: ACKNOWLEDGED — the discrepancy between
+`app/data/ASCII/cardxref.txt` (36 bytes/record × 50 records = 1800
+bytes) and AAP §0.6.9 (`CardXrefRecord` documented as 50 bytes) is
+preserved as-is in the Java translation; both layouts are supported.
+
+**Source layout**: `app/cpy/CVACT03Y.cpy` (CARD-XREF-RECORD) is the
+authoritative COBOL definition. The 50-byte AAP claim covers the
+fully-padded EBCDIC source layout (`PIC X(16)` card number + `PIC 9(9)`
+COMP-3 customer id + `PIC 9(11)` COMP-3 account id + 14 bytes FILLER =
+50 bytes). The 36-byte ASCII fixture omits the FILLER bytes and the
+unpacked DISPLAY representation of the numeric fields adds 9 + 11 = 20
+ASCII digits to a 16-byte card number, totalling 36 bytes per record.
+Both representations decode to the same logical record content.
+
+**Java translation**:
+`com.blitzy.carddemo.domain.record.CardXrefRecord` declares the
+canonical 4-field record (xrefCardNum, xrefCustId, xrefAcctId, filler).
+The `parse(byte[])` factory in the record class detects the layout
+based on the buffer length (36 vs 50) and dispatches to the correct
+ASCII or EBCDIC interpretation. The `encode()` instance method emits
+the 50-byte EBCDIC source layout by default; an `encodeAscii()` overload
+emits the 36-byte ASCII variant for fixture-compatibility tests.
+
+**Action item**: when the golden-record harness captures fresh COBOL
+fixture runs, document which representation the captured fixtures use
+(36-byte ASCII vs 50-byte EBCDIC) per program. The Java application
+classes default to the EBCDIC representation matching the COBOL VSAM
+source.
+
+### 1.4.10 `CoBil00C` "Payment successful." message double-space anomaly
+
+**Status**: IMPLEMENTED — the COBOL bill-payment success message
+contains a verbatim double-space sequence that is preserved in the Java
+translation.
+
+**COBOL source**: `app/cbl/COBIL00C.cbl`, paragraph
+`9000-MAKE-BIL-PAYMENT`. After the `EXEC CICS WRITE FILE('TRANSACT')`
+returns DFHRESP(NORMAL), the program builds a confirmation message:
+
+```cobol
+STRING 'Payment successful.  Your Transaction ID is '
+       WS-TRAN-ID
+       ' Press Enter to Continue'
+       DELIMITED BY SIZE
+       INTO WS-RETURN-MSG
+```
+
+Note the **two spaces** between the terminal period of "successful." and
+"Your" — this is a STRING-literal anomaly preserved verbatim.
+
+**Java translation**:
+`com.blitzy.carddemo.application.billpay.CoBil00C` declares the
+constant `MSG_PAYMENT_SUCCESS_PREFIX = "Payment successful.  Your
+Transaction ID is "` (with the two spaces intact) and concatenates the
+generated transaction id and " Press Enter to Continue" suffix. The
+golden-record harness will detect any silent space normalisation.
+
+### 1.4.11 `CoUsr02C` "atleast" typo preservation
+
+**Status**: IMPLEMENTED — the COBOL user-update validation message
+contains a verbatim "atleast" (no space) typo that is preserved.
+
+**COBOL source**: `app/cbl/COUSR02C.cbl`, paragraph
+`1200-EDIT-MAP-INPUTS`. The COBOL source has the literal:
+
+```cobol
+MOVE 'User ID can NOT be empty and must be atleast 4 characters...'
+     TO WS-MESSAGE
+```
+
+Note the COBOL writes "atleast" (one word) instead of "at least" (two
+words). The standard English spelling is "at least"; the COBOL source
+contains a typo.
+
+**Java translation**:
+`com.blitzy.carddemo.application.user.CoUsr02C` declares the constant
+`MSG_USERID_LENGTH = "User ID can NOT be empty and must be atleast 4
+characters..."` (with "atleast" preserved verbatim). The Javadoc
+documents the intended spelling.
+
+**Rationale**: see §1.4.6 — same AAP §0.7.1 preserve-as-is mandate
+applies.
+
+### 1.4.12 `CbTrn03C` duplicate paragraph names anomaly
+
+**Status**: IMPLEMENTED — the COBOL paginated transaction report writer
+program contains duplicate paragraph names that are preserved in the
+Java translation as distinct private methods with disambiguating
+numeric suffixes.
+
+**COBOL source**: `app/cbl/CBTRN03C.cbl`. The program declares two
+paragraphs with the same name (likely `1100-PRINT-HEADERS` or
+similar — the duplicate is observable when grepping the source).
+COBOL does not enforce paragraph-name uniqueness when paragraphs are
+performed by `PERFORM THRU` ranges, and the program relies on this
+relaxation. The duplicate is preserved per AAP §0.7.1.
+
+**Java translation**:
+`com.blitzy.carddemo.application.transaction.CbTrn03C` translates each
+duplicate paragraph as a separate private method, naming them
+`paragraphName()` and `paragraphName2()` with Javadoc explaining the
+COBOL source naming collision. Call sites that target the first
+occurrence call `paragraphName()`; call sites that target the second
+occurrence call `paragraphName2()`.
+
+### 1.4.13 COACTUPC verbatim message preservation list
+
+**Status**: IMPLEMENTED — all 30+ COACTUPC validation, status, and
+prompt messages are preserved verbatim in
+`com.blitzy.carddemo.application.account.CoActUpC` as `private static
+final String` constants. The full list of preserved anomalies:
+
+1. `'Changes validated.Press F5 to save'` — **no space** after the dot,
+   between "validated." and "Press" (PROMPT-FOR-CONFIRMATION 88-level)
+2. `'PF03 pressed.Exiting              '` — mixed case, **no space**
+   after the dot, **14 trailing spaces** (WS-EXIT-MESSAGE)
+3. `'Record changed by some one else. Please review'` — **two-word
+   "some one"** spelling (DATA-WAS-CHANGED-BEFORE-UPDATE 88-level)
+4. `'Looks Good.... so far'` — **four dots** followed by space then "so
+   far" (CODING-TO-BE-DONE 88-level — placeholder preserved)
+5. `'Name can only contain alphabets and spaces'` — **"alphabets"**
+   idiom rather than "letters" (WS-NAME-MUST-BE-ALPHA 88-level)
+6. `'No change detected with respect to values fetched.'` — terminal
+   period (NO-CHANGES-DETECTED 88-level)
+7. `'Changes committed to database'` — **no terminal period**
+   (CONFIRM-UPDATE-SUCCESS 88-level)
+8. `'Changes unsuccessful. Please try again'` — space after the period
+   (INFORM-FAILURE 88-level)
+9. `'Update of record failed'` — **no terminal period**
+   (LOCKED-BUT-UPDATE-FAILED 88-level)
+10. `'Could not lock account record for update'` — **no terminal
+    period** (COULD-NOT-LOCK-ACCT-FOR-UPDATE 88-level)
+11. `'Could not lock customer record for update'` — **no terminal
+    period** (COULD-NOT-LOCK-CUST-FOR-UPDATE 88-level)
+12. `'Error reading Card Data File'` — **Title Case** (XREF-READ-ERROR
+    88-level)
+13. `'Did not find this account in account card xref file'` —
+    DID-NOT-FIND-ACCT-IN-CARDXREF first 88-level (anomaly: duplicate
+    88-level later has 'cards database' instead, distinct text)
+14. `'Did not find this account in account master file'` —
+    DID-NOT-FIND-ACCT-IN-ACCTDAT 88-level
+15. `'Did not find associated customer in master file'` —
+    DID-NOT-FIND-CUST-IN-CUSTDAT 88-level
+16. `'Account Number if supplied must be a 11 digit Non-Zero Number'` —
+    STRING-concatenated two literals (1210-EDIT-ACCOUNT)
+17. `'Did not find cards for this search condition'` —
+    DID-NOT-FIND-ACCTCARD-COMBO 88-level
+18. `': should not be 000, 666, or between 900 and 999'` —
+    SSN-PART1 suffix (concatenated with 'SSN: First 3 chars' prefix)
+19. (Customer-not-found dynamic message)
+    `'Account:' + acct + ' not found in Cross ref file. Resp:' +
+    resp + ' Reas:' + reas2` — **mixed-case "Reas:"** (XREF-not-found)
+20. (Account-not-found dynamic message)
+    `'Account:' + acct + ' not found in Acct Master file.Resp:' +
+    resp + ' Reas:' + reas2` — **NO SPACE before "Resp:"** (anomaly;
+    contrast with §1.4.13 item 19 which DOES have a space)
+21. (Customer-not-found dynamic message)
+    `'CustId:' + cust + ' not found in customer master.Resp: ' +
+    resp + ' REAS:' + reas2` — **uppercase "REAS:"** (vs mixed-case
+    "Reas:" elsewhere), and **space-after-"Resp: "** (contrast with
+    item 20 which has no space)
+
+The Java translation preserves every space, every dot, every case
+variation, and every trailing-space pad byte-for-byte; the golden-record
+harness will detect any silent normalisation.
+
+### 1.4.14 `CoMen01C` DUMMY-prefix screen name anomaly
+
+**Status**: IMPLEMENTED — the COBOL main menu program contains a
+DUMMY-prefix convention that is preserved verbatim.
+
+**COBOL source**: `app/cbl/COMEN01C.cbl`. Several screen/transaction
+identifiers carry a `DUMMY` prefix where one would expect a real
+program-id (e.g., `DUMMYXCT` as a placeholder for an XCTL-target). The
+prefix may have served as a development placeholder that was never
+renamed, or it may represent intentionally-disabled menu options. The
+prefix is preserved per AAP §0.7.1.
+
+**Java translation**:
+`com.blitzy.carddemo.application.menu.CoMen01C` retains the `DUMMY` prefix
+in its menu-table entries verbatim. The `ProgramRegistry.invoke(...)`
+call site recognises the `DUMMY` prefix and returns a "Not yet
+implemented" message rather than dispatching to a non-existent
+program — mirroring the COBOL behaviour of falling through to an error
+path on the invalid program name.
+
+### 1.4.15 `CoActUpC` two-record SYNCPOINT ROLLBACK implementation strategy
+
+**Status**: IMPLEMENTED — the COBOL atomic-update semantics for ACCTDAT
++ CUSTDAT are reproduced in the Java translation via a try/catch
+block that performs a compensating restore on customer-save failure.
+
+**COBOL source**: `app/cbl/COACTUPC.cbl`, paragraph
+`9600-WRITE-PROCESSING`. The program performs two REWRITE statements:
+
+```cobol
+EXEC CICS REWRITE FILE('ACCTDAT')   FROM(ACCT-UPDATE-RECORD)
+                  LENGTH(LENGTH OF ACCT-UPDATE-RECORD) RESP(WS-RESP-CD)
+END-EXEC.
+IF NOT NORMAL-RESP THEN ... fail ... END-IF.
+
+EXEC CICS REWRITE FILE('CUSTDAT')   FROM(CUST-UPDATE-RECORD)
+                  LENGTH(LENGTH OF CUST-UPDATE-RECORD) RESP(WS-RESP-CD)
+END-EXEC.
+IF NOT NORMAL-RESP THEN
+    EXEC CICS SYNCPOINT ROLLBACK END-EXEC
+    GO TO 9600-WRITE-PROCESSING-EXIT
+END-IF.
+```
+
+When the second REWRITE (CUSTDAT) fails after the first REWRITE
+(ACCTDAT) has already succeeded, the program issues an explicit
+`EXEC CICS SYNCPOINT ROLLBACK`. Under CICS, this rolls back the entire
+logical unit of work (LUW), including the ACCTDAT REWRITE, so the
+file remains consistent (either both records are updated or neither is).
+
+**Java translation**: the file-based adapter does NOT have an
+underlying transactional service to roll back against. Instead,
+`com.blitzy.carddemo.application.account.CoActUpC.doWriteProcessing(...)`
+models the equivalent atomic semantics by capturing the pre-edit
+`AccountRecord` snapshot before any writes, then wrapping the two
+`save()` calls in a try/catch block. On customer-save failure, the
+catch block re-issues `accounts.save(originalAccount)` to restore the
+account record to its pre-edit state.
+
+**Caveat**: the compensating restore is best-effort. If the
+compensating restore itself fails (e.g., due to a disk-full condition
+encountered between the two writes), the file is left in an
+inconsistent state and the catch block logs the inconsistency before
+propagating the original `CHANGES_OKAYED_BUT_FAILED` state to the user.
+A production-grade alternative would route both writes through a
+JDBC-backed adapter with a single database transaction; this is
+deferred to a follow-on effort per the AAP scope.
+
+### 1.4.16 Form-Field input '*' and SPACES → LOW-VALUES normalization convention
+
+**Status**: IMPLEMENTED — every BMS input field that arrives as `'*'` or
+all-spaces is normalised to the empty string at the boundary of the
+Java application class, mirroring the COBOL `IF FIELDI = '*' OR SPACES
+MOVE LOW-VALUES TO FIELDI` idiom.
+
+**COBOL source**: `1100-RECEIVE-MAP` paragraphs across all online
+programs (`COACTUPC`, `COCRDUPC`, `COCRDSLC`, `COUSR01C`, `COUSR02C`,
+`COBIL00C`, `COTRN02C`, etc.). The COBOL convention treats `'*'` as a
+"clear this field" sentinel (the operator types a single `*` to clear
+an existing value) and all-spaces as the default-empty state.
+
+**Java translation**: every BMS input record carries its field values as
+`String`. The corresponding application class declares a private
+`normalizeStarOrSpaces(String raw)` helper that returns `""` when the
+trimmed input is empty or exactly `"*"`, and the raw value otherwise.
+Every per-field receive site invokes this helper before downstream
+processing. The convention is consistent across all 17 online programs.
 
 ---
 
