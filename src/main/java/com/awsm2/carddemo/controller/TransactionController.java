@@ -28,11 +28,15 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -111,10 +115,11 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @RestController
 @RequestMapping("/api/transactions")
-@Tag(name = "Transactions",
+@Tag(name = "Transaction",
         description = "Transaction list, detail, and add. Replaces CICS "
                 + "COTRN00C (Tran-ID CT00), COTRN01C (Tran-ID CT01), and "
                 + "COTRN02C (Tran-ID CT02).")
+@Validated
 public class TransactionController {
 
     /**
@@ -211,14 +216,32 @@ public class TransactionController {
     })
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
     public ResponseEntity<ApiResponse<TransactionListDto>> listTransactions(
-            @Parameter(description = "Optional card-number filter (16-digit) for narrowing list")
-            @RequestParam(value = "id", required = false) String idFilter,
-            @Parameter(description = "0-based page index")
-            @RequestParam(value = "page", defaultValue = "0") int page) {
+            @RequestParam(value = "id", required = false)
+            @Pattern(regexp = "^[0-9]{1,16}$|^$",
+                    message = "id filter must be 1-16 digits")
+            @Parameter(
+                    description = "Optional starting transaction ID filter "
+                            + "(COBOL TRAN-ID, up to 16 digits). Maps to the "
+                            + "BMS TRNIDINI input field of COTRN00.bms.",
+                    example = "1000000000000001")
+            String idFilter,
+
+            @RequestParam(value = "page", required = false, defaultValue = "0")
+            @Min(value = 0, message = "page must be >= 0")
+            @Parameter(
+                    description = "0-based page index; defaults to 0 when "
+                            + "omitted. Translated from the COBOL "
+                            + "CDEMO-CT00-PAGE-NUM COMMAREA field per AAP "
+                            + "\u00a70.3.4 stateless REST.",
+                    example = "0")
+            int page) {
         // COBOL: COTRN00C / Tran-ID CT00 -- PROCESS-ENTER-KEY paginated
         //   browse (delegates to TransactionListService which preserves
         //   the COBOL PAGE_SIZE=10 contract per AAP §0.4.1).
-        LOG.debug("Transaction list requested: page={}", page);
+        // PCI-DSS-safe traceability log (AAP §0.6.6 / §0.7.2): only the
+        // non-sensitive transaction-ID prefix filter and page index are
+        // emitted; no card number, PAN, or amount leaks into logs.
+        LOG.debug("Transaction list requested: idFilter={} page={}", idFilter, page);
         TransactionListDto transactionList =
                 transactionListService.listTransactions(idFilter, page);
         return ResponseEntity.ok(ApiResponse.success(transactionList));
@@ -263,9 +286,19 @@ public class TransactionController {
     })
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
     public ResponseEntity<ApiResponse<TransactionDetailDto>> getTransaction(
-            @PathVariable("id") String id) {
+            @PathVariable("id")
+            @NotBlank(message = "Transaction ID is required")
+            @Pattern(regexp = "^[0-9]{16}$",
+                    message = "Transaction ID must be exactly 16 digits")
+            @Parameter(
+                    description = "16-digit transaction ID (COBOL TRAN-ID "
+                            + "PIC X(16) per app/cpy/CVTRA05Y.cpy)",
+                    example = "1000000000000001")
+            String id) {
         // COBOL: COTRN01C / Tran-ID CT01 -- READ-TRANSACT-FILE
         //   (delegates to TransactionDetailService per AAP §0.4.1).
+        // PCI-DSS (AAP §0.6.6, §0.7.2): only the non-sensitive
+        // transaction ID is emitted; PAN and amount are NOT logged.
         LOG.debug("Transaction detail requested for tranId={}", id);
         TransactionDetailDto detail = transactionDetailService.getTransactionDetail(id);
         return ResponseEntity.ok(ApiResponse.success(detail));
@@ -318,12 +351,13 @@ public class TransactionController {
      */
     @PostMapping
     @Operation(
-            summary = "Create a new transaction",
-            description = "Validates the request, generates the next "
-                    + "sequential transaction ID (MAX+1), resolves the "
-                    + "cross-reference, persists, and publishes the "
-                    + "'transaction.posted' MSK event. Replaces CICS COTRN02C "
-                    + "/ Tran-ID CT02 (transaction add)."
+            summary = "Add a new transaction",
+            description = "Creates a new transaction record. Caller must provide "
+                    + "EITHER account ID OR card number (XOR -- exactly one). "
+                    + "Generated 16-digit transaction ID is returned. Publishes "
+                    + "MSK 'transaction.posted' event partitioned by account ID "
+                    + "(AAP \u00a70.6.5). Replaces CICS COTRN02C / Tran-ID CT02 "
+                    + "(Transaction Add)."
     )
     @ApiResponses({
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
@@ -331,7 +365,7 @@ public class TransactionController {
                     description = "Transaction created successfully"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
                     responseCode = "400",
-                    description = "Validation failure"),
+                    description = "Validation failed (XOR rule, amount, dates, types)"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
                     responseCode = "401",
                     description = "JWT missing or invalid"),
@@ -339,21 +373,44 @@ public class TransactionController {
                     responseCode = "403",
                     description = "Forbidden"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
+                    responseCode = "404",
+                    description = "Account or card not found (XREF lookup failed)"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(
                     responseCode = "409",
-                    description = "Duplicate transaction ID")
+                    description = "Duplicate transaction ID"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(
+                    responseCode = "422",
+                    description = "Credit limit exceeded or card expired"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(
+                    responseCode = "500",
+                    description = "On size error -- amount overflow")
     })
     @PreAuthorize("hasAnyRole('USER','ADMIN')")
     public ResponseEntity<ApiResponse<TransactionAddDto>> addTransaction(
             @Valid @RequestBody TransactionAddDto request) {
-        // COBOL: COTRN02C / Tran-ID CT02 -- PROCESS-ENTER-KEY +
-        //   WRITE-TRANSACT-FILE (delegates to TransactionAddService
-        //   which performs MAX+1 sequence, XREF resolution, persist,
-        //   and MSK publish per AAP §0.4.1, §0.6.5).
-        // PCI-DSS: PAN is NOT logged. Only the metadata fields are
-        // logged at DEBUG; the service emits a follow-up audit event.
-        LOG.debug("Transaction add requested: type={}, category={}",
+        // COBOL: COTRN02C / Tran-ID CT02 -- Transaction Add
+        //         XOR ACCT-ID-N vs CARD-NUM-N via CXACAIX alternate-index lookup
+        //         MAX(TRAN-ID)+1 -> JPA sequence
+        //         Publishes 'transaction.posted' Kafka event (partition key =
+        //         account ID, per AAP §0.6.5)
+        // Delegates to TransactionAddService which performs MAX+1 sequence,
+        // XREF resolution, persist, and MSK publish per AAP §0.4.1, §0.6.5.
+        // PCI-DSS (AAP §0.6.6, §0.7.2): PAN is NOT logged at the controller
+        // boundary. Only non-sensitive metadata (type and category) is
+        // emitted at DEBUG; the service emits a follow-up audit event with
+        // a masked PAN (last-4 only) via AuditLogService.
+        LOG.info("Transaction add requested: type={}, category={}",
                 request.transactionType(), request.transactionCategory());
         TransactionAddDto saved = transactionAddService.addTransaction(request);
+        // The TransactionAddService persists the generated 16-digit TRAN-ID
+        // back into the response DTO; we log it for traceability so support
+        // operators can correlate the HTTP request with the downstream
+        // 'transaction.posted' Kafka event and audit-log record (the
+        // service also emits a structured audit event of its own).
+        LOG.info("Transaction add successful: type={}, category={}",
+                saved.transactionType(), saved.transactionCategory());
+        // HTTP 201 Created per AAP §0.3.4 HTTP status mapping for POST
+        // creating resources.
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(ApiResponse.success(saved, "Transaction created successfully"));
     }
