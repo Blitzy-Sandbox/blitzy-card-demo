@@ -16,254 +16,553 @@
  */
 package com.blitzy.carddemo.application.menu;
 
-// JEP 511 (finalized in Java 25): brings java.lang.String into scope.
-import module java.base;
-
 import com.blitzy.carddemo.domain.annotation.CobolProgram;
 
+import java.util.Objects;
+
 /**
- * Immutable input DTO for the {@code COADM01C} admin menu online
- * program (CICS transaction {@code CA00}, COBOL source
- * {@code app/cbl/COADM01C.cbl}).
+ * Input DTO for the admin menu BMS map ({@code COADM1AI}). Translates the
+ * input-side symbolic structure from {@code app/cpy-bms/COADM01.CPY} and
+ * the BMS field declarations in {@code app/bms/COADM01.bms}.
  *
- * <h2>Source artifacts</h2>
- * <ul>
- *   <li>BMS map definition: {@code app/bms/COADM01.bms}
- *       (mapset {@code COADM01}, map {@code COADM1A}).</li>
- *   <li>Symbolic map copybook: {@code app/cpy-bms/COADM01.CPY},
- *       input group {@code 01 COADM1AI} (lines 17-138).</li>
- * </ul>
+ * <p>Conceptually corresponds to {@code EXEC CICS RECEIVE MAP('COADM1A')
+ * MAPSET('COADM01') INTO(COADM1AI)} in {@code app/cbl/COADM01C.cbl}.
  *
  * <h2>Role &mdash; entry-contract DTO (input side)</h2>
- * <p>Per AAP &sect;0.4.1, this record is the Java analog of the input
- * view of the BMS symbolic structure {@code COADM1AI}: it carries the
- * field values returned from {@code EXEC CICS RECEIVE MAP} to
- * {@code CoAdm01C}. The admin menu is structurally identical to the
- * main menu (eighteen 40-char option labels echoed plus one 2-char
- * selection field) &mdash; only the static option lookup table differs
- * ({@code COADM02Y} vs.&nbsp;{@code COMEN02Y}).
+ * <p>Per AAP &sect;0.1.2 (COBOL {@code EXEC CICS SEND/RECEIVE MAP} translates
+ * to method parameters and return values on the corresponding Java application
+ * class) and &sect;0.4.1 (BMS maps become entry-contract DTO records placed
+ * alongside the using application class), this record is the Java analog of
+ * the input view of the BMS symbolic structure {@code COADM1AI}: it carries
+ * the field values returned from {@code EXEC CICS RECEIVE MAP} to
+ * {@code CoAdm01C}. There is no web framework, no Spring binding, no Jakarta
+ * Bean Validation; this is a plain Java carrier built around finalized
+ * Java&nbsp;25 language features only (records and JEP&nbsp;513 flexible
+ * constructor bodies).
+ *
+ * <h2>Why only 10 option slots (vs. 12 in COMEN01)?</h2>
+ * <p>Although the BMS source ({@code app/bms/COADM01.bms}) declares twelve
+ * {@code OPTN0nn} display fields (lines 16-17 of the 24-line screen), the
+ * Java DTO models exactly the ten slots that the admin program's static
+ * lookup table ({@code COADM02Y} &rarr; {@code AdminMenuTable}) can
+ * populate. Per AAP &sect;0.7.4 ("Phase 8: Forbidden / Required &mdash;
+ * Required: [x] Exactly 10 option fields (no 11, 12)") this DTO surfaces
+ * only {@code OPTN001I..OPTN010I}; the two trailing display-only slots are
+ * always blank in COBOL output and therefore have no semantic content to
+ * convey across the Java entry contract.
  *
  * <h2>Operator-editable field</h2>
  * <p>The only field the user actually populates is {@link #option()}
- * (OPTIONI, 2 chars): the two-digit menu selection that
+ * ({@code OPTIONI}, 2 chars): the two-digit menu selection that
  * {@code COADM01C} validates against the static admin menu table
- * {@code COADM02Y} and dispatches via {@code XCTL PROGRAM(...)}.
+ * {@code COADM02Y} and dispatches via {@code XCTL PROGRAM(...)}. Every
+ * other component is an echo of what the admin program sent on the
+ * previous {@code SEND MAP} cycle (header lines, option labels, prior
+ * error message) and is included for round-trip fidelity with the
+ * mainframe BMS contract.
  *
- * <h2>AID-key dispatch &mdash; separate parameter</h2>
- * <p>The 3270 AID key (ENTER, PF3, etc.) is decoded by the BMS adapter
- * and passed to {@code CoAdm01C#execute} as a separate parameter,
- * drawing from the central
- * {@code com.blitzy.carddemo.domain.text.CcWorkAreas.AidKey} sealed
- * hierarchy (AAP &sect;0.6.10).
- *
- * <h2>Null and over-length tolerance</h2>
- * <p>The compact canonical constructor is <em>lenient</em>: every
- * {@code null} {@link String} is normalised to {@code ""}, and every
- * value longer than the BMS-declared width is truncated from the right
- * (COBOL {@code MOVE} semantics for an over-sized source). The
- * constructor does <strong>not</strong> validate the <em>content</em>
- * of {@link #option()} &mdash; that is performed by
- * {@code CoAdm01C} and reported via
- * {@link CoAdm01Output#errorMessage()}.
- *
- * <h2>Component inventory</h2>
+ * <h2>Component inventory (BMS field &rarr; record component)</h2>
  * <table border="1" summary="BMS-to-record component mapping">
  *   <thead>
- *     <tr><th>BMS field</th><th>BMS attrs / position</th>
+ *     <tr><th>BMS field</th><th>BMS width / position</th>
  *         <th>Record component</th></tr>
  *   </thead>
  *   <tbody>
  *     <tr><td>{@code TRNNAMEI}</td><td>4 chars, (1,7)</td>
- *         <td>{@link #transactionName()}</td></tr>
+ *         <td>{@link #trnName()}</td></tr>
  *     <tr><td>{@code TITLE01I}</td><td>40 chars, (1,21)</td>
  *         <td>{@link #title01()}</td></tr>
  *     <tr><td>{@code CURDATEI}</td><td>8 chars (mm/dd/yy), (1,71)</td>
- *         <td>{@link #currentDate()}</td></tr>
+ *         <td>{@link #curDate()}</td></tr>
  *     <tr><td>{@code PGMNAMEI}</td><td>8 chars, (2,7)</td>
- *         <td>{@link #programName()}</td></tr>
+ *         <td>{@link #pgmName()}</td></tr>
  *     <tr><td>{@code TITLE02I}</td><td>40 chars, (2,21)</td>
  *         <td>{@link #title02()}</td></tr>
  *     <tr><td>{@code CURTIMEI}</td><td>8 chars (hh:mm:ss), (2,71)</td>
- *         <td>{@link #currentTime()}</td></tr>
- *     <tr><td>{@code OPTN001I}..{@code OPTN012I}</td>
+ *         <td>{@link #curTime()}</td></tr>
+ *     <tr><td>{@code OPTN001I}..{@code OPTN010I}</td>
  *         <td>40 chars each</td>
- *         <td>{@link #option01()}..{@link #option12()}</td></tr>
+ *         <td>{@link #option001()}..{@link #option010()}</td></tr>
  *     <tr><td>{@code OPTIONI}</td>
- *         <td>2 chars, UNPROT, NUM</td>
+ *         <td>2 chars, {@code UNPROT}, {@code NUM}</td>
  *         <td>{@link #option()} &mdash; <em>operator input</em></td></tr>
  *     <tr><td>{@code ERRMSGI}</td><td>78 chars</td>
- *         <td>{@link #errorMessage()}</td></tr>
+ *         <td>{@link #errMsg()}</td></tr>
  *   </tbody>
  * </table>
+ *
+ * <h2>Null contract (strict fail-fast)</h2>
+ * <p>The compact canonical constructor uses
+ * {@link Objects#requireNonNull(Object, String)} to fail-fast with a
+ * {@link NullPointerException} naming the offending component if any of
+ * the 18 String components is {@code null}. Callers that need a blank
+ * starting point should use {@link #empty()} instead of passing
+ * {@code null}.
+ *
+ * <h2>Java&nbsp;25 features used</h2>
+ * <ul>
+ *   <li>Record types (Java&nbsp;16+, mandated by AAP &sect;0.6.7)</li>
+ *   <li>JEP&nbsp;513 Flexible Constructor Bodies (finalized in
+ *       Java&nbsp;25): validation runs before canonical assignments</li>
+ *   <li>{@link CobolProgram @CobolProgram} traceability annotation
+ *       (AAP &sect;0.7.1)</li>
+ * </ul>
  *
  * <h2>Non-goals (AAP &sect;0.7.4)</h2>
  * <p>No Spring, Lombok, Bean Validation, {@code java.util.Date},
  * {@code double}, {@code float}, or preview features.
  *
- * @param transactionName  TRNNAMEI &mdash; 4-char transaction code echo
- * @param title01          TITLE01I &mdash; 40-char line-1 title bar echo
- * @param currentDate      CURDATEI &mdash; 8-char date echo
- * @param programName      PGMNAMEI &mdash; 8-char program-id echo
- * @param title02          TITLE02I &mdash; 40-char line-2 title bar echo
- * @param currentTime      CURTIMEI &mdash; 8-char time echo
- * @param option01         OPTN001I &mdash; 40-char menu option 1 label echo
- * @param option02         OPTN002I &mdash; 40-char menu option 2 label echo
- * @param option03         OPTN003I &mdash; 40-char menu option 3 label echo
- * @param option04         OPTN004I &mdash; 40-char menu option 4 label echo
- * @param option05         OPTN005I &mdash; 40-char menu option 5 label echo
- * @param option06         OPTN006I &mdash; 40-char menu option 6 label echo
- * @param option07         OPTN007I &mdash; 40-char menu option 7 label echo
- * @param option08         OPTN008I &mdash; 40-char menu option 8 label echo
- * @param option09         OPTN009I &mdash; 40-char menu option 9 label echo
- * @param option10         OPTN010I &mdash; 40-char menu option 10 label echo
- * @param option11         OPTN011I &mdash; 40-char menu option 11 label echo
- * @param option12         OPTN012I &mdash; 40-char menu option 12 label echo
- * @param option           OPTIONI &mdash; 2-char admin menu selection input
- * @param errorMessage     ERRMSGI &mdash; 78-char error message echo
+ * @param trnName    {@code TRNNAMEI} &mdash; 4-char transaction code echo
+ *                   ({@code 'CA00'} for the admin menu)
+ * @param title01    {@code TITLE01I} &mdash; 40-char line-1 title bar echo
+ * @param curDate    {@code CURDATEI} &mdash; 8-char date echo (mm/dd/yy)
+ * @param pgmName    {@code PGMNAMEI} &mdash; 8-char program-id echo
+ *                   ({@code 'COADM01C'})
+ * @param title02    {@code TITLE02I} &mdash; 40-char line-2 title bar echo
+ * @param curTime    {@code CURTIMEI} &mdash; 8-char time echo (hh:mm:ss)
+ * @param option001  {@code OPTN001I} &mdash; 40-char menu option&nbsp;1 label echo
+ * @param option002  {@code OPTN002I} &mdash; 40-char menu option&nbsp;2 label echo
+ * @param option003  {@code OPTN003I} &mdash; 40-char menu option&nbsp;3 label echo
+ * @param option004  {@code OPTN004I} &mdash; 40-char menu option&nbsp;4 label echo
+ * @param option005  {@code OPTN005I} &mdash; 40-char menu option&nbsp;5 label echo
+ * @param option006  {@code OPTN006I} &mdash; 40-char menu option&nbsp;6 label echo
+ * @param option007  {@code OPTN007I} &mdash; 40-char menu option&nbsp;7 label echo
+ * @param option008  {@code OPTN008I} &mdash; 40-char menu option&nbsp;8 label echo
+ * @param option009  {@code OPTN009I} &mdash; 40-char menu option&nbsp;9 label echo
+ * @param option010  {@code OPTN010I} &mdash; 40-char menu option&nbsp;10 label echo
+ * @param option     {@code OPTIONI} &mdash; 2-char admin menu selection input
+ *                   (the only operator-editable field)
+ * @param errMsg     {@code ERRMSGI} &mdash; 78-char error message echo
  *
  * @see CoAdm01Output
- * @see <a href="https://www.ibm.com/docs/en/cics-ts">CICS/TS BMS reference</a>
+ * @see CoAdm01C
  * @since 1.0.0
  */
 @CobolProgram(
         value = "COADM01",
-        sourcePath = "app/bms/COADM01.bms",
-        translationDate = "2025-10-15",
-        notes = "BMS entry-contract DTO (input side); symbolic copybook 01 COADM1AI in "
-                + "app/cpy-bms/COADM01.CPY (lines 17-138). Driven by online program "
-                + "app/cbl/COADM01C.cbl (admin menu, transaction CA00). The static "
-                + "admin-menu lookup table is provided by domain record COADM02Y "
-                + "(AdminMenuTable)."
+        sourcePath = "app/cpy-bms/COADM01.CPY",
+        translationDate = "2025-09-16",
+        notes = "BMS input map COADM1AI fields. 10 option slots (vs 12 in COMEN01) "
+                + "matching the COADM02Y admin-menu lookup table cardinality."
 )
 public record CoAdm01Input(
-        String transactionName,
+        String trnName,
         String title01,
-        String currentDate,
-        String programName,
+        String curDate,
+        String pgmName,
         String title02,
-        String currentTime,
-        String option01,
-        String option02,
-        String option03,
-        String option04,
-        String option05,
-        String option06,
-        String option07,
-        String option08,
-        String option09,
-        String option10,
-        String option11,
-        String option12,
+        String curTime,
+        String option001,
+        String option002,
+        String option003,
+        String option004,
+        String option005,
+        String option006,
+        String option007,
+        String option008,
+        String option009,
+        String option010,
         String option,
-        String errorMessage
+        String errMsg
 ) {
 
-    /** Length of {@link #transactionName()} per BMS map {@code TRNNAMEI} &mdash; 4 chars. */
-    public static final int TRANSACTION_NAME_LENGTH = 4;
-
-    /** Length of {@link #title01()} per BMS map {@code TITLE01I} &mdash; 40 chars. */
-    public static final int TITLE_01_LENGTH = 40;
-
-    /** Length of {@link #currentDate()} per BMS map {@code CURDATEI} &mdash; 8 chars (mm/dd/yy). */
-    public static final int CURRENT_DATE_LENGTH = 8;
-
-    /** Length of {@link #programName()} per BMS map {@code PGMNAMEI} &mdash; 8 chars. */
-    public static final int PROGRAM_NAME_LENGTH = 8;
-
-    /** Length of {@link #title02()} per BMS map {@code TITLE02I} &mdash; 40 chars. */
-    public static final int TITLE_02_LENGTH = 40;
-
-    /** Length of {@link #currentTime()} per BMS map {@code CURTIMEI} &mdash; 8 chars (hh:mm:ss). */
-    public static final int CURRENT_TIME_LENGTH = 8;
-
-    /** Length of each menu option label per BMS map &mdash; 40 chars. */
-    public static final int OPTION_LABEL_LENGTH = 40;
-
-    /** Length of {@link #option()} per BMS map {@code OPTIONI} &mdash; 2 chars. */
-    public static final int OPTION_LENGTH = 2;
-
-    /** Length of {@link #errorMessage()} per BMS map {@code ERRMSGI} &mdash; 78 chars. */
-    public static final int ERROR_MESSAGE_LENGTH = 78;
+    // ---------------------------------------------------------------
+    // BMS width constants (chars). Sourced from app/bms/COADM01.bms.
+    // Public so callers (BMS reader/writer adapters, tests, golden-
+    // record harness) can pad/truncate exactly to the on-wire widths.
+    // ---------------------------------------------------------------
 
     /**
-     * Compact canonical constructor (JEP 513 Flexible Constructor
-     * Bodies). Every {@link String} is normalised: {@code null}
-     * becomes {@code ""}, over-long values are truncated from the
-     * right per COBOL {@code MOVE} semantics. Trailing spaces are
-     * preserved (AAP &sect;0.7.1 byte fidelity).
+     * Width of {@link #trnName()} per BMS field {@code TRNNAME}
+     * ({@code LENGTH=4} at {@code POS=(1,7)}).
+     */
+    public static final int TRN_NAME_WIDTH = 4;
+
+    /**
+     * Width of {@link #title01()} and {@link #title02()} per BMS fields
+     * {@code TITLE01} / {@code TITLE02} ({@code LENGTH=40}).
+     */
+    public static final int TITLE_WIDTH = 40;
+
+    /**
+     * Width of {@link #curDate()} and {@link #curTime()} per BMS fields
+     * {@code CURDATE} / {@code CURTIME} ({@code LENGTH=8}).
+     */
+    public static final int DATE_TIME_WIDTH = 8;
+
+    /**
+     * Width of {@link #pgmName()} per BMS field {@code PGMNAME}
+     * ({@code LENGTH=8} at {@code POS=(2,7)}).
+     */
+    public static final int PGM_NAME_WIDTH = 8;
+
+    /**
+     * Width of each menu-option label slot per BMS fields
+     * {@code OPTN001}..{@code OPTN010} ({@code LENGTH=40}).
+     */
+    public static final int OPTION_LINE_WIDTH = 40;
+
+    /**
+     * Width of {@link #option()} per BMS field {@code OPTION}
+     * ({@code LENGTH=2}, {@code UNPROT}, {@code NUM}, {@code IC},
+     * {@code JUSTIFY=(RIGHT,ZERO)}). This is the only operator-editable
+     * field on the admin menu screen.
+     */
+    public static final int OPTION_WIDTH = 2;
+
+    /**
+     * Width of {@link #errMsg()} per BMS field {@code ERRMSG}
+     * ({@code LENGTH=78} at {@code POS=(23,1)}).
+     */
+    public static final int ERRMSG_WIDTH = 78;
+
+    /**
+     * Number of option-line slots surfaced by this DTO
+     * ({@code OPTN001I..OPTN010I}). Ten slots match the
+     * {@code COADM02Y} admin-menu lookup table cardinality (vs. twelve
+     * for the main menu). See class Javadoc &mdash; "Why only 10 option
+     * slots".
+     */
+    public static final int OPTION_LINE_COUNT = 10;
+
+    // ---------------------------------------------------------------
+    // Compact canonical constructor (JEP 513 Flexible Constructor
+    // Bodies, finalized in Java 25). Per AAP §0.6.3, the right place
+    // for COBOL-style fail-fast input validation: every component is
+    // checked before the canonical field assignments.
+    // ---------------------------------------------------------------
+
+    /**
+     * Compact canonical constructor enforcing the non-null contract
+     * for all 18 record components. Java&nbsp;25 JEP&nbsp;513 permits
+     * this validation to execute before the implicit canonical field
+     * assignments.
+     *
+     * @throws NullPointerException if any component is {@code null}; the
+     *         exception message names the offending component
      */
     public CoAdm01Input {
-        transactionName = normalize(transactionName, TRANSACTION_NAME_LENGTH);
-        title01         = normalize(title01,         TITLE_01_LENGTH);
-        currentDate     = normalize(currentDate,     CURRENT_DATE_LENGTH);
-        programName     = normalize(programName,     PROGRAM_NAME_LENGTH);
-        title02         = normalize(title02,         TITLE_02_LENGTH);
-        currentTime     = normalize(currentTime,     CURRENT_TIME_LENGTH);
-        option01        = normalize(option01,        OPTION_LABEL_LENGTH);
-        option02        = normalize(option02,        OPTION_LABEL_LENGTH);
-        option03        = normalize(option03,        OPTION_LABEL_LENGTH);
-        option04        = normalize(option04,        OPTION_LABEL_LENGTH);
-        option05        = normalize(option05,        OPTION_LABEL_LENGTH);
-        option06        = normalize(option06,        OPTION_LABEL_LENGTH);
-        option07        = normalize(option07,        OPTION_LABEL_LENGTH);
-        option08        = normalize(option08,        OPTION_LABEL_LENGTH);
-        option09        = normalize(option09,        OPTION_LABEL_LENGTH);
-        option10        = normalize(option10,        OPTION_LABEL_LENGTH);
-        option11        = normalize(option11,        OPTION_LABEL_LENGTH);
-        option12        = normalize(option12,        OPTION_LABEL_LENGTH);
-        option          = normalize(option,          OPTION_LENGTH);
-        errorMessage    = normalize(errorMessage,    ERROR_MESSAGE_LENGTH);
+        Objects.requireNonNull(trnName,    "trnName");
+        Objects.requireNonNull(title01,    "title01");
+        Objects.requireNonNull(curDate,    "curDate");
+        Objects.requireNonNull(pgmName,    "pgmName");
+        Objects.requireNonNull(title02,    "title02");
+        Objects.requireNonNull(curTime,    "curTime");
+        Objects.requireNonNull(option001,  "option001");
+        Objects.requireNonNull(option002,  "option002");
+        Objects.requireNonNull(option003,  "option003");
+        Objects.requireNonNull(option004,  "option004");
+        Objects.requireNonNull(option005,  "option005");
+        Objects.requireNonNull(option006,  "option006");
+        Objects.requireNonNull(option007,  "option007");
+        Objects.requireNonNull(option008,  "option008");
+        Objects.requireNonNull(option009,  "option009");
+        Objects.requireNonNull(option010,  "option010");
+        Objects.requireNonNull(option,     "option");
+        Objects.requireNonNull(errMsg,     "errMsg");
     }
 
+    // ---------------------------------------------------------------
+    // Static factories
+    // ---------------------------------------------------------------
+
     /**
-     * Returns a fully-blank input record: every {@link String}
-     * component is {@code ""}.
+     * Returns a fully-blank input record &mdash; every {@link String}
+     * component is the empty string {@code ""}. Useful as a starting
+     * point before chaining {@code withX(...)} mutations to populate
+     * specific fields, and as the canonical "blank cycle" value during
+     * BMS adapter initialisation.
      *
      * @return a fresh empty {@code CoAdm01Input} (never {@code null})
      */
     public static CoAdm01Input empty() {
         return new CoAdm01Input(
-                "", "", "", "", "", "",
-                "", "", "", "", "", "", "", "", "", "", "", "",
-                "", ""
+                "", "", "", "", "", "",   // header (trnName, title01, curDate, pgmName, title02, curTime)
+                "", "", "", "", "", "",   // option001-option006
+                "", "", "", "",           // option007-option010
+                "", ""                    // option, errMsg
         );
     }
 
     /**
-     * Returns a copy of this input with {@link #option()} replaced by
-     * the given value (all other components preserved).
+     * Convenience factory: returns a blank input with only
+     * {@link #option()} populated. Equivalent to
+     * {@code empty().withOption(optionValue)} but documents intent
+     * &mdash; the {@code option} component is the only field the
+     * terminal user actually populates on the admin menu screen.
      *
-     * @param newOption the replacement admin menu selection (normalised
-     *                  by the canonical constructor)
-     * @return a new {@code CoAdm01Input} with {@link #option()}
-     *         replaced (never {@code null})
+     * @param optionValue the 2-char admin menu selection (non-null)
+     * @return a new {@code CoAdm01Input} with {@link #option()} set
+     *         and every other component blank (never {@code null})
+     * @throws NullPointerException if {@code optionValue} is
+     *         {@code null}
      */
-    public CoAdm01Input withOption(String newOption) {
-        return new CoAdm01Input(
-                transactionName,
-                title01,
-                currentDate,
-                programName,
-                title02,
-                currentTime,
-                option01, option02, option03, option04, option05, option06,
-                option07, option08, option09, option10, option11, option12,
-                newOption,
-                errorMessage
-        );
+    public static CoAdm01Input ofOption(String optionValue) {
+        Objects.requireNonNull(optionValue, "optionValue");
+        return empty().withOption(optionValue);
+    }
+
+    // ---------------------------------------------------------------
+    // Fluent withX(...) update methods. One per record component
+    // (18 total). Each returns a new immutable instance with the
+    // single named field replaced; all other components are preserved
+    // by reference. The canonical constructor re-validates non-null
+    // on every call, so withX(null) throws.
+    // ---------------------------------------------------------------
+
+    /**
+     * Returns a copy of this input with {@link #trnName()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withTrnName(String v) {
+        return new CoAdm01Input(v, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010,
+                option, errMsg);
     }
 
     /**
-     * Normalises per COBOL {@code MOVE}: {@code null} becomes
-     * {@code ""}; over-long values are truncated from the right.
+     * Returns a copy of this input with {@link #title01()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
      */
-    private static String normalize(String value, int maxLen) {
-        if (value == null) {
-            return "";
-        }
-        if (value.length() > maxLen) {
-            return value.substring(0, maxLen);
-        }
-        return value;
+    public CoAdm01Input withTitle01(String v) {
+        return new CoAdm01Input(trnName, v, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010,
+                option, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #curDate()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withCurDate(String v) {
+        return new CoAdm01Input(trnName, title01, v, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010,
+                option, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #pgmName()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withPgmName(String v) {
+        return new CoAdm01Input(trnName, title01, curDate, v, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010,
+                option, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #title02()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withTitle02(String v) {
+        return new CoAdm01Input(trnName, title01, curDate, pgmName, v, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010,
+                option, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #curTime()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withCurTime(String v) {
+        return new CoAdm01Input(trnName, title01, curDate, pgmName, title02, v,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010,
+                option, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #option001()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withOption001(String v) {
+        return new CoAdm01Input(trnName, title01, curDate, pgmName, title02, curTime,
+                v, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010,
+                option, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #option002()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withOption002(String v) {
+        return new CoAdm01Input(trnName, title01, curDate, pgmName, title02, curTime,
+                option001, v, option003, option004, option005, option006,
+                option007, option008, option009, option010,
+                option, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #option003()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withOption003(String v) {
+        return new CoAdm01Input(trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, v, option004, option005, option006,
+                option007, option008, option009, option010,
+                option, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #option004()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withOption004(String v) {
+        return new CoAdm01Input(trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, v, option005, option006,
+                option007, option008, option009, option010,
+                option, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #option005()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withOption005(String v) {
+        return new CoAdm01Input(trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, v, option006,
+                option007, option008, option009, option010,
+                option, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #option006()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withOption006(String v) {
+        return new CoAdm01Input(trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, v,
+                option007, option008, option009, option010,
+                option, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #option007()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withOption007(String v) {
+        return new CoAdm01Input(trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                v, option008, option009, option010,
+                option, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #option008()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withOption008(String v) {
+        return new CoAdm01Input(trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, v, option009, option010,
+                option, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #option009()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withOption009(String v) {
+        return new CoAdm01Input(trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, v, option010,
+                option, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #option010()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withOption010(String v) {
+        return new CoAdm01Input(trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, v,
+                option, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #option()} replaced.
+     * This is the primary operator-input mutator: callers typically
+     * invoke {@code withOption("01")} (or any 2-digit selection) on an
+     * {@link #empty()} instance to simulate a terminal submission.
+     *
+     * @param v new admin menu selection value (non-null, typically
+     *          {@code OPTION_WIDTH} chars after BMS padding)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withOption(String v) {
+        return new CoAdm01Input(trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010,
+                v, errMsg);
+    }
+
+    /**
+     * Returns a copy of this input with {@link #errMsg()} replaced.
+     *
+     * @param v new value (non-null)
+     * @return new instance (never {@code null})
+     * @throws NullPointerException if {@code v} is {@code null}
+     */
+    public CoAdm01Input withErrMsg(String v) {
+        return new CoAdm01Input(trnName, title01, curDate, pgmName, title02, curTime,
+                option001, option002, option003, option004, option005, option006,
+                option007, option008, option009, option010,
+                option, v);
     }
 }
