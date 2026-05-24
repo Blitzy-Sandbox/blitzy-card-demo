@@ -630,7 +630,7 @@ public final class CoActUpC {
             context = UpdateContext.initial();
         }
 
-        boolean isReenter = commarea.generalInfo().pgmContext() instanceof PgmContext.Reenter;
+        boolean isReenter = commarea.cdemoGeneralInfo().pgmContext() instanceof PgmContext.Reenter;
 
         // ----------------------------------------------------------------------
         // AID key validity check (per IF CCARD-AID-ENTER OR CCARD-AID-PFK03 OR
@@ -1992,7 +1992,7 @@ public final class CoActUpC {
      * after SYNCPOINT.
      */
     private Result doExit(CardDemoCommarea commarea) {
-        String fromProgram = commarea.generalInfo().fromProgram();
+        String fromProgram = commarea.cdemoGeneralInfo().fromProgram();
         String target = (fromProgram != null && !fromProgram.isBlank()
                 && !fromProgram.equals(PROGRAM_ID))
                 ? fromProgram
@@ -2006,16 +2006,16 @@ public final class CoActUpC {
      * triggered when CDEMO-FROM-TRANID is blank.
      */
     private static CardDemoCommarea clearAcctOnFresh(CardDemoCommarea commarea, UpdateContext context) {
-        String fromTranId = commarea.generalInfo().fromTranId();
+        String fromTranId = commarea.cdemoGeneralInfo().fromTranId();
         if (fromTranId == null || fromTranId.isBlank()) {
-            return commarea.withAccountInfo(new CardDemoCommarea.AccountInfo(0L, ""));
+            return commarea.withCdemoAccountInfo(new CardDemoCommarea.CdemoAccountInfo(0L, ""));
         }
         return commarea;
     }
 
     private static CardDemoCommarea withPgmContext(CardDemoCommarea commarea, PgmContext ctx) {
-        CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
-        CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
+        CardDemoCommarea.CdemoGeneralInfo gi = commarea.cdemoGeneralInfo();
+        CardDemoCommarea.CdemoGeneralInfo updated = new CardDemoCommarea.CdemoGeneralInfo(
                 gi.fromTranId(),
                 gi.fromProgram(),
                 gi.toTranId(),
@@ -2023,12 +2023,12 @@ public final class CoActUpC {
                 gi.userId(),
                 gi.userType(),
                 ctx);
-        return commarea.withGeneralInfo(updated);
+        return commarea.withCdemoGeneralInfo(updated);
     }
 
     private static CardDemoCommarea withTarget(CardDemoCommarea commarea, String toProgram) {
-        CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
-        CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
+        CardDemoCommarea.CdemoGeneralInfo gi = commarea.cdemoGeneralInfo();
+        CardDemoCommarea.CdemoGeneralInfo updated = new CardDemoCommarea.CdemoGeneralInfo(
                 TRANSACTION_ID,
                 PROGRAM_ID,
                 gi.toTranId(),
@@ -2036,11 +2036,11 @@ public final class CoActUpC {
                 gi.userId(),
                 gi.userType(),
                 PgmContext.ENTER);
-        return commarea.withGeneralInfo(updated);
+        return commarea.withCdemoGeneralInfo(updated);
     }
 
     private static boolean isFromMainMenu(CardDemoCommarea commarea) {
-        String from = commarea.generalInfo().fromProgram();
+        String from = commarea.cdemoGeneralInfo().fromProgram();
         return from != null && from.trim().equals(ProgramRegistry.CO_MEN_01C);
     }
 

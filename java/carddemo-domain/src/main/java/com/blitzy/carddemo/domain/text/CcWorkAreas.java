@@ -112,10 +112,11 @@ import java.util.Objects;
  *
  * <h2>Card number representation</h2>
  * {@link CcCardNum.Numeric} stores the PAN as a {@code long}. The domain
- * {@code commarea.CardInfo} record stores the PAN as a {@code String} with
- * the masking applied for logging surfaces (mask all but last 4 digits per
- * AAP &sect;0.7.2). These are deliberately different representations for
- * different surfaces. Do NOT add masking logic to this class.
+ * {@code commarea.CdemoCardInfo} record stores the PAN as a {@code String}
+ * with the masking applied for logging surfaces (mask all but last 4 digits
+ * per AAP &sect;0.7.2). These are deliberately different representations
+ * for different surfaces; both this class and {@code CdemoCardInfo} mask
+ * the PAN in their {@code toString()} surfaces.
  *
  * @see <a href="../../../../../../../../../app/cpy/CVCRD01Y.cpy">CVCRD01Y.cpy</a>
  */
@@ -631,20 +632,24 @@ public record CcWorkAreas(
      * which fits within Java's signed-{@code long} range
      * ({@code 9_223_372_036_854_775_807L}).
      *
-     * <p><strong>PAN masking is NOT performed here.</strong> The domain
-     * {@code commarea.CardInfo} record represents the PAN as a
-     * {@code String} with all-but-last-4 digits masked, per the user
-     * mandate in AAP &sect;0.7.2 ("no card PAN logged in full; mask all
-     * but last 4 digits in logs"). These are deliberately different
-     * representations for different surfaces: this type is the wire
-     * format (where the full PAN is required), while
-     * {@code commarea.CardInfo} is the logging-safe surface.
+     * <p><strong>PAN masking applies to {@link #toString()} only.</strong>
+     * Both permits ({@link Text} and {@link Numeric}) override
+     * {@link Object#toString()} so that an accidental
+     * {@code log.info("{}", ccCardNum)} does NOT leak the cleartext
+     * 16-digit PAN; only the last 4 digits are visible in any
+     * string-coerced representation. The actual wire format used by
+     * {@link #encode()} preserves the full PAN unchanged &mdash; the
+     * byte-level path is the wire-fidelity surface and the
+     * {@code toString()} path is the logging-safe surface. The
+     * {@code commarea.CdemoCardInfo} record provides an equivalent
+     * masking helper at the commarea boundary.
      */
     @CobolProgram(
             value = "CVCRD01Y",
             sourcePath = "app/cpy/CVCRD01Y.cpy",
             notes = "REDEFINES CC-CARD-NUM PIC X(16) / CC-CARD-NUM-N PIC 9(16); "
-                    + "PAN masking happens in commarea.CardInfo, not here (AAP §0.7.2)"
+                    + "Text and Numeric permits override toString() to mask all but the "
+                    + "last 4 digits per AAP §0.7.2"
     )
     public sealed interface CcCardNum permits CcCardNum.Text, CcCardNum.Numeric {
 
@@ -684,6 +689,34 @@ public record CcWorkAreas(
                         Math.min(valueBytes.length, CARD_NUM_LENGTH));
                 return buf;
             }
+
+            /**
+             * PAN-safe {@link Object#toString()} override per AAP &sect;0.7.2.
+             * Replaces all but the last 4 digits of the underlying card
+             * number with {@code '*'} so that
+             * {@code log.info("{}", ccCardNum)} cannot leak the cleartext
+             * PAN. Leading and trailing whitespace are trimmed before
+             * masking so that COBOL space-padded fixtures produce a clean
+             * representation. The original {@link #value()} accessor still
+             * returns the unmasked value for byte-level processing paths
+             * such as {@link #encode()}.
+             *
+             * @return a string of the form
+             *         {@code "CcCardNum.Text[************1234]"}; never
+             *         {@code null}
+             */
+            @Override
+            public String toString() {
+                String trimmed = value.trim();
+                String masked;
+                if (trimmed.length() <= 4) {
+                    masked = trimmed;
+                } else {
+                    int prefixLen = trimmed.length() - 4;
+                    masked = "*".repeat(prefixLen) + trimmed.substring(prefixLen);
+                }
+                return "CcCardNum.Text[" + masked + "]";
+            }
         }
 
         /**
@@ -710,6 +743,28 @@ public record CcWorkAreas(
             public byte[] encode() {
                 // 16-character zero-padded decimal representation (PIC 9 pad LEFT)
                 return String.format("%016d", value).getBytes(StandardCharsets.US_ASCII);
+            }
+
+            /**
+             * PAN-safe {@link Object#toString()} override per AAP &sect;0.7.2.
+             * Renders the underlying 16-digit value with all but the last
+             * 4 digits replaced by {@code '*'}, so that
+             * {@code log.info("{}", ccCardNum)} cannot leak the cleartext
+             * PAN. The numeric {@link #value()} accessor still returns the
+             * unmasked value for byte-level processing paths such as
+             * {@link #encode()}.
+             *
+             * @return a string of the form
+             *         {@code "CcCardNum.Numeric[************1234]"}; never
+             *         {@code null}
+             */
+            @Override
+            public String toString() {
+                // 16-character zero-padded canonical view, then mask
+                // the first 12 digits to match PIC 9(16) semantics.
+                String padded = String.format("%016d", value);
+                String masked = "*".repeat(12) + padded.substring(12);
+                return "CcCardNum.Numeric[" + masked + "]";
             }
         }
 

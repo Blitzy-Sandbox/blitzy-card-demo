@@ -310,7 +310,7 @@ public final class CoSgn00C {
 
         // Build updated commarea: MOVE WS-TRANID, WS-PGMNAME, WS-USER-ID,
         // SEC-USR-TYPE, ZEROS TO CDEMO-* fields
-        CardDemoCommarea.GeneralInfo gi = new CardDemoCommarea.GeneralInfo(
+        CardDemoCommarea.CdemoGeneralInfo gi = new CardDemoCommarea.CdemoGeneralInfo(
                 TRANSACTION_ID,
                 PROGRAM_ID,
                 "",                 // CDEMO-TO-TRANID (not set here)
@@ -318,7 +318,7 @@ public final class CoSgn00C {
                 userId,
                 userType,
                 PgmContext.ENTER);  // MOVE ZEROS TO CDEMO-PGM-CONTEXT
-        CardDemoCommarea outboundCommarea = commarea.withGeneralInfo(gi);
+        CardDemoCommarea outboundCommarea = commarea.withCdemoGeneralInfo(gi);
 
         // EXEC CICS XCTL via ProgramRegistry
         String targetProgram = switch (userType) {

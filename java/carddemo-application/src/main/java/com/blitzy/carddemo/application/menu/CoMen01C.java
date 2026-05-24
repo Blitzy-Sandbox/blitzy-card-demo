@@ -166,9 +166,9 @@ public final class CoMen01C {
         }
 
         // IF NOT CDEMO-PGM-REENTER → first display
-        if (!(commarea.generalInfo().pgmContext() instanceof PgmContext.Reenter)) {
-            CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
-            CardDemoCommarea.GeneralInfo reentered = new CardDemoCommarea.GeneralInfo(
+        if (!(commarea.cdemoGeneralInfo().pgmContext() instanceof PgmContext.Reenter)) {
+            CardDemoCommarea.CdemoGeneralInfo gi = commarea.cdemoGeneralInfo();
+            CardDemoCommarea.CdemoGeneralInfo reentered = new CardDemoCommarea.CdemoGeneralInfo(
                     gi.fromTranId(),
                     gi.fromProgram(),
                     gi.toTranId(),
@@ -176,7 +176,7 @@ public final class CoMen01C {
                     gi.userId(),
                     gi.userType(),
                     PgmContext.REENTER);
-            CardDemoCommarea outbound = commarea.withGeneralInfo(reentered);
+            CardDemoCommarea outbound = commarea.withCdemoGeneralInfo(reentered);
             return Result.sendMap(sendMenuScreen(outbound, ""), outbound);
         }
 
@@ -234,7 +234,7 @@ public final class CoMen01C {
         // hierarchies with identical Admin/User permits; the {@code instanceof}
         // checks are package-scoped and use the fully-qualified permit name on
         // the menu side to avoid ambiguity with the imported status type.
-        UserType callerType = commarea.generalInfo().userType();
+        UserType callerType = commarea.cdemoGeneralInfo().userType();
         if (callerType instanceof UserType.User
                 && mainOption.userType() instanceof com.blitzy.carddemo.domain.commarea.UserType.Admin) {
             return Result.sendMap(sendMenuScreen(commarea, MSG_NO_ACCESS), commarea);
@@ -253,8 +253,8 @@ public final class CoMen01C {
 
         // Build outbound commarea: MOVE WS-TRANID TO CDEMO-FROM-TRANID,
         // WS-PGMNAME TO CDEMO-FROM-PROGRAM, ZEROS TO CDEMO-PGM-CONTEXT
-        CardDemoCommarea.GeneralInfo current = commarea.generalInfo();
-        CardDemoCommarea.GeneralInfo gi = new CardDemoCommarea.GeneralInfo(
+        CardDemoCommarea.CdemoGeneralInfo current = commarea.cdemoGeneralInfo();
+        CardDemoCommarea.CdemoGeneralInfo gi = new CardDemoCommarea.CdemoGeneralInfo(
                 TRANSACTION_ID,
                 PROGRAM_ID,
                 current.toTranId(),
@@ -262,7 +262,7 @@ public final class CoMen01C {
                 current.userId(),
                 current.userType(),
                 PgmContext.ENTER);
-        CardDemoCommarea outbound = commarea.withGeneralInfo(gi);
+        CardDemoCommarea outbound = commarea.withCdemoGeneralInfo(gi);
 
         log.info("CoMen01C: dispatching to {} for option {}", pgmName, option);
 
@@ -279,7 +279,7 @@ public final class CoMen01C {
      * {@code BUILD-MENU-OPTIONS}. Builds the populated output record.
      */
     private CoMen01Output sendMenuScreen(CardDemoCommarea commarea, String message) {
-        UserType userType = commarea.generalInfo().userType();
+        UserType userType = commarea.cdemoGeneralInfo().userType();
         // Capture 12 slot strings — only the first OPT_COUNT are populated.
         String[] slots = new String[MAX_OPTION_SLOTS];
         for (int i = 0; i < MAX_OPTION_SLOTS; i++) {

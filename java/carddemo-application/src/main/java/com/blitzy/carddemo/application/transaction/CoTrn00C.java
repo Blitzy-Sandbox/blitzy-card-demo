@@ -182,7 +182,7 @@ public final class CoTrn00C {
             pageState = PageState.initial();
         }
 
-        if (!(commarea.generalInfo().pgmContext() instanceof PgmContext.Reenter)) {
+        if (!(commarea.cdemoGeneralInfo().pgmContext() instanceof PgmContext.Reenter)) {
             CardDemoCommarea reentered = withPgmContext(commarea, PgmContext.REENTER);
             // First-time entry — PERFORM PROCESS-ENTER-KEY then SEND
             return processEnterKey(CoTrn00Input.empty(), reentered, pageState);
@@ -513,19 +513,19 @@ public final class CoTrn00C {
     }
 
     private static CardDemoCommarea withTarget(CardDemoCommarea commarea, String toProgram) {
-        CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
-        CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
+        CardDemoCommarea.CdemoGeneralInfo gi = commarea.cdemoGeneralInfo();
+        CardDemoCommarea.CdemoGeneralInfo updated = new CardDemoCommarea.CdemoGeneralInfo(
                 TRANSACTION_ID, PROGRAM_ID, gi.toTranId(), toProgram,
                 gi.userId(), gi.userType(), PgmContext.ENTER);
-        return commarea.withGeneralInfo(updated);
+        return commarea.withCdemoGeneralInfo(updated);
     }
 
     private static CardDemoCommarea withPgmContext(CardDemoCommarea commarea, PgmContext ctx) {
-        CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
-        CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
+        CardDemoCommarea.CdemoGeneralInfo gi = commarea.cdemoGeneralInfo();
+        CardDemoCommarea.CdemoGeneralInfo updated = new CardDemoCommarea.CdemoGeneralInfo(
                 gi.fromTranId(), gi.fromProgram(), gi.toTranId(), gi.toProgram(),
                 gi.userId(), gi.userType(), ctx);
-        return commarea.withGeneralInfo(updated);
+        return commarea.withCdemoGeneralInfo(updated);
     }
 
     private static String todayDate() {

@@ -28,6 +28,13 @@ package com.blitzy.carddemo.application.user;
 // java.util.* import statements.
 import module java.base;
 
+// AAP §0.7.1 traceability mandate: every translated BMS DTO must cite its
+// original BMS / symbolic-copybook source via the @CobolProgram annotation
+// declared in the carddemo-domain module. carddemo-application declares
+// carddemo-domain as a direct dependency in its pom.xml, so the annotation
+// is on the classpath and resolvable here.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
+
 /**
  * BMS output record for the {@code COUSR00 / COUSR0A} list-users map
  * (COBOL transaction {@code CU00}, program {@code COUSR00C}).
@@ -152,6 +159,15 @@ import module java.base;
  * @see com.blitzy.carddemo.application.user.CoUsr00C
  * @see com.blitzy.carddemo.application.user.CoUsr00Input
  */
+@CobolProgram(
+        value = "COUSR00",
+        sourcePath = "app/bms/COUSR00.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (output side); symbolic copybook 01 COUSR0AO "
+                + "REDEFINES COUSR0AI in app/cpy-bms/COUSR00.CPY. Driven by online "
+                + "program app/cbl/COUSR00C.cbl (transaction CU00 — List Users). "
+                + "Outputs paginated 10-row user list per AAP §0.6.10."
+)
 public record CoUsr00Output(
         // ----- Header row 1 -----
         String tranName,            // TRNNAMEO  PIC X(4)   — echoed transaction id

@@ -379,7 +379,7 @@ public final class CoCrdUpC {
             context = UpdateContext.initial();
         }
 
-        boolean isReenter = commarea.generalInfo().pgmContext() instanceof PgmContext.Reenter;
+        boolean isReenter = commarea.cdemoGeneralInfo().pgmContext() instanceof PgmContext.Reenter;
 
         // ----------------------------------------------------------------------
         // AID key validity check (per IF CCARD-AID-ENTER OR CCARD-AID-PFK03 OR
@@ -944,7 +944,7 @@ public final class CoCrdUpC {
      * per the COBOL source.
      */
     private Result doExit(CardDemoCommarea commarea) {
-        String fromProgram = commarea.generalInfo().fromProgram();
+        String fromProgram = commarea.cdemoGeneralInfo().fromProgram();
         String target = (fromProgram != null && !fromProgram.isBlank()
                 && !fromProgram.equals(PROGRAM_ID))
                 ? fromProgram
@@ -954,8 +954,8 @@ public final class CoCrdUpC {
         // If the from-program is the card-list, reset acct+card to zeros.
         if (isFromCcList(commarea)) {
             outbound = outbound
-                    .withAccountInfo(new CardDemoCommarea.AccountInfo(0L, ""))
-                    .withCardInfo(new CardDemoCommarea.CardInfo("0000000000000000"));
+                    .withCdemoAccountInfo(new CardDemoCommarea.CdemoAccountInfo(0L, ""))
+                    .withCdemoCardInfo(new CardDemoCommarea.CdemoCardInfo("0000000000000000"));
         }
         return Result.xctl(target, outbound);
     }
@@ -966,11 +966,11 @@ public final class CoCrdUpC {
     private static CardDemoCommarea clearAcctAndCardOnFresh(CardDemoCommarea commarea, UpdateContext context) {
         // Only reset when CDEMO-FROM-TRANID is blank / LOW-VALUES, per the
         // COBOL source for CCUP-CHANGES-OKAYED-AND-DONE (3200-SETUP-SCREEN-VARS).
-        String fromTranId = commarea.generalInfo().fromTranId();
+        String fromTranId = commarea.cdemoGeneralInfo().fromTranId();
         if (fromTranId == null || fromTranId.isBlank()) {
             return commarea
-                    .withAccountInfo(new CardDemoCommarea.AccountInfo(0L, ""))
-                    .withCardInfo(new CardDemoCommarea.CardInfo("0000000000000000"));
+                    .withCdemoAccountInfo(new CardDemoCommarea.CdemoAccountInfo(0L, ""))
+                    .withCdemoCardInfo(new CardDemoCommarea.CdemoCardInfo("0000000000000000"));
         }
         return commarea;
     }
@@ -1188,8 +1188,8 @@ public final class CoCrdUpC {
     // ============================================================================
 
     private static CardDemoCommarea withPgmContext(CardDemoCommarea commarea, PgmContext ctx) {
-        CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
-        CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
+        CardDemoCommarea.CdemoGeneralInfo gi = commarea.cdemoGeneralInfo();
+        CardDemoCommarea.CdemoGeneralInfo updated = new CardDemoCommarea.CdemoGeneralInfo(
                 gi.fromTranId(),
                 gi.fromProgram(),
                 gi.toTranId(),
@@ -1197,12 +1197,12 @@ public final class CoCrdUpC {
                 gi.userId(),
                 gi.userType(),
                 ctx);
-        return commarea.withGeneralInfo(updated);
+        return commarea.withCdemoGeneralInfo(updated);
     }
 
     private static CardDemoCommarea withTarget(CardDemoCommarea commarea, String toProgram) {
-        CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
-        CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
+        CardDemoCommarea.CdemoGeneralInfo gi = commarea.cdemoGeneralInfo();
+        CardDemoCommarea.CdemoGeneralInfo updated = new CardDemoCommarea.CdemoGeneralInfo(
                 TRANSACTION_ID,
                 PROGRAM_ID,
                 gi.toTranId(),
@@ -1210,21 +1210,21 @@ public final class CoCrdUpC {
                 gi.userId(),
                 gi.userType(),
                 PgmContext.ENTER);
-        return commarea.withGeneralInfo(updated);
+        return commarea.withCdemoGeneralInfo(updated);
     }
 
     private static boolean isFromCcList(CardDemoCommarea commarea) {
         // COBOL: CDEMO-FROM-PROGRAM EQUAL LIT-CCLISTPGM, or
         //        CDEMO-LAST-MAPSET EQUAL LIT-CCLISTMAPSET.
-        String from = commarea.generalInfo().fromProgram();
+        String from = commarea.cdemoGeneralInfo().fromProgram();
         boolean fromPgm = from != null && from.trim().equals(ProgramRegistry.CO_CRD_LI_C);
-        String lastMapset = commarea.moreInfo().lastMapset();
+        String lastMapset = commarea.cdemoMoreInfo().lastMapset();
         boolean fromMapset = lastMapset != null && lastMapset.trim().equals(MAPSET_CCLIST);
         return fromPgm || fromMapset;
     }
 
     private static boolean isFromMainMenu(CardDemoCommarea commarea) {
-        String from = commarea.generalInfo().fromProgram();
+        String from = commarea.cdemoGeneralInfo().fromProgram();
         return from != null && from.trim().equals(ProgramRegistry.CO_MEN_01C);
     }
 
@@ -1234,14 +1234,14 @@ public final class CoCrdUpC {
     }
 
     private static String preselectedAcctIdString(CardDemoCommarea commarea) {
-        long acct = commarea.accountInfo().acctId();
+        long acct = commarea.cdemoAccountInfo().acctId();
         return acct == 0L ? "" : String.format("%011d", acct);
     }
 
     private static String preselectedCardNumString(CardDemoCommarea commarea) {
-        // CardInfo.cardNum is a 16-digit String (preserves leading zeros, supports
+        // CdemoCardInfo.cardNum is a 16-digit String (preserves leading zeros, supports
         // PAN masking per AAP §0.7.2). All-zeros indicates "no preselection".
-        String card = commarea.cardInfo().cardNum();
+        String card = commarea.cdemoCardInfo().cardNum();
         return "0000000000000000".equals(card) ? "" : card;
     }
 

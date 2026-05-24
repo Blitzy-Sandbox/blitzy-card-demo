@@ -231,7 +231,7 @@ public final class ScreenAttributeSetter {
      * {@code PgmContext.Reenter} sealed permit (defined in
      * {@code CardDemoCommarea}). Callers are expected to derive
      * {@code isReenter} from a pattern match such as
-     * {@code commarea.generalInfo().pgmContext() instanceof PgmContext.Reenter}.
+     * {@code commarea.cdemoGeneralInfo().pgmContext() instanceof PgmContext.Reenter}.
      *
      * <h3>Behavior table</h3>
      * <table border="1">

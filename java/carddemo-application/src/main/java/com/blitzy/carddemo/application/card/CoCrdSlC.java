@@ -128,12 +128,12 @@ public final class CoCrdSlC {
             return Result.xctl(ProgramRegistry.CO_SGN_00C, outbound);
         }
 
-        boolean isReenter = commarea.generalInfo().pgmContext() instanceof PgmContext.Reenter;
+        boolean isReenter = commarea.cdemoGeneralInfo().pgmContext() instanceof PgmContext.Reenter;
         CardDemoCommarea reentered = isReenter ? commarea : withPgmContext(commarea, PgmContext.REENTER);
 
         // PF3 handling — always honored.
         if (input != null && input.aidKey() == CoCrdSlInput.AidKey.PF03_BACK) {
-            String fromProgram = commarea.generalInfo().fromProgram();
+            String fromProgram = commarea.cdemoGeneralInfo().fromProgram();
             String target = (fromProgram != null && !fromProgram.isBlank())
                     ? fromProgram
                     : ProgramRegistry.CO_MEN_01C;
@@ -333,8 +333,8 @@ public final class CoCrdSlC {
     }
 
     private static CardDemoCommarea withTarget(CardDemoCommarea commarea, String toProgram) {
-        CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
-        CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
+        CardDemoCommarea.CdemoGeneralInfo gi = commarea.cdemoGeneralInfo();
+        CardDemoCommarea.CdemoGeneralInfo updated = new CardDemoCommarea.CdemoGeneralInfo(
                 TRANSACTION_ID,
                 PROGRAM_ID,
                 gi.toTranId(),
@@ -342,12 +342,12 @@ public final class CoCrdSlC {
                 gi.userId(),
                 gi.userType(),
                 PgmContext.ENTER);
-        return commarea.withGeneralInfo(updated);
+        return commarea.withCdemoGeneralInfo(updated);
     }
 
     private static CardDemoCommarea withPgmContext(CardDemoCommarea commarea, PgmContext ctx) {
-        CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
-        CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
+        CardDemoCommarea.CdemoGeneralInfo gi = commarea.cdemoGeneralInfo();
+        CardDemoCommarea.CdemoGeneralInfo updated = new CardDemoCommarea.CdemoGeneralInfo(
                 gi.fromTranId(),
                 gi.fromProgram(),
                 gi.toTranId(),
@@ -355,7 +355,7 @@ public final class CoCrdSlC {
                 gi.userId(),
                 gi.userType(),
                 ctx);
-        return commarea.withGeneralInfo(updated);
+        return commarea.withCdemoGeneralInfo(updated);
     }
 
     private static String todayDate() {

@@ -154,7 +154,7 @@ public sealed interface PgmContext permits PgmContext.Enter, PgmContext.Reenter 
      * the same program a second time with {@code CDEMO-PGM-CONTEXT} byte set
      * to {@code '1'} so the program knows to restore its prior working state
      * (e.g., from {@code CDEMO-LAST-MAP} / {@code CDEMO-LAST-MAPSET} in
-     * {@link CardDemoCommarea.MoreInfo}) instead of starting over.
+     * {@link CardDemoCommarea.CdemoMoreInfo}) instead of starting over.
      *
      * <p>This permit is a zero-component record; all {@code Reenter} instances
      * are {@code .equals()}-equal. Prefer the canonical {@link #REENTER}

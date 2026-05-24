@@ -172,7 +172,9 @@ import java.util.Objects;
         sourcePath = "app/cpy-bms/COSGN00.CPY",
         notes = "BMS output map COSGN0AO fields plus dynamic ERRMSG color attribute "
                 + "(ERRMSGC). Translated from BMS symbolic structure in COSGN00.CPY "
-                + "and BMS map definition in COSGN00.bms."
+                + "and BMS map definition in COSGN00.bms. PASSWD component (BMS DRK "
+                + "attribute, conventionally SPACES on SEND) is masked in toString() "
+                + "per AAP §0.7.2 to prevent credential leakage into log surfaces."
 )
 public record CoSgn00Output(
         String trnName,
@@ -471,5 +473,78 @@ public record CoSgn00Output(
     public CoSgn00Output withErrMsgColor(String v) {
         return new CoSgn00Output(trnName, title01, curDate, pgmName, title02, curTime,
                 applId, sysId, userId, passwd, errMsg, v);
+    }
+
+    // ====================================================================
+    // Password-masking toString override (AAP §0.7.2 / §0.1.3)
+    //
+    // The default record-generated toString() emits every component,
+    // including the cleartext PASSWD field. Although the BMS DRK attribute
+    // means the value is never displayed on screen and SEND MAP
+    // conventionally sets it to SPACES, the in-memory Java DTO can carry
+    // an arbitrary string value at any point in the request cycle (e.g.,
+    // when this output record is constructed by withPasswd(...) before
+    // the BMS DRK semantics scrub it). Any sink that consumes
+    // Object.toString() — SLF4J loggers, AssertJ failure messages, IDE
+    // debugger displays, exception getMessage() calls, accidental
+    // System.out.println(this) — would leak the in-memory password.
+    //
+    // The override replaces the passwd component with the fixed
+    // PASSWORD_MASK constant while emitting every other component in
+    // its canonical form. The masking is purely a presentation/logging
+    // concern: it does NOT alter the stored value, which remains
+    // accessible via the canonical passwd() accessor.
+    //
+    // This is the same defense-in-depth pattern applied to
+    // SecUserData, CoUsr01Output, CoUsr01Input, CoUsr02Input, and
+    // CoSgn00Input.
+    // ====================================================================
+
+    /**
+     * Defense-in-depth mask used by {@link #toString()} so the password
+     * field never leaks into logs, stack traces, or debugger output.
+     * The mask preserves the COBOL/BMS field length ({@value #PASSWD_WIDTH}
+     * characters) and uses the conventional asterisk glyph.
+     */
+    private static final String PASSWORD_MASK = "********";
+
+    /**
+     * Returns a debug-friendly string representation of this DTO with the
+     * plaintext password component <strong>masked</strong>. This override
+     * is REQUIRED so that an accidental
+     * {@code log.info("{}", output)} does NOT leak whatever cleartext
+     * password value is carried in memory (even though BMS DRK and the
+     * SEND-MAP convention typically force this field to SPACES on the
+     * wire). Per AAP &sect;0.7.2 (<em>"preserve all existing PCI-relevant
+     * controls"</em>) and AAP &sect;0.1.3 (the plaintext-storage-but-no-
+     * cleartext-logging separation of concerns), the password value MUST
+     * be replaced by a non-reversible mask in every string-coerced
+     * representation of this record.
+     *
+     * <p>The masking is purely a defense-in-depth measure; it does not
+     * alter the stored password value, which remains accessible via
+     * {@link #passwd()}.
+     *
+     * @return a credential-safe diagnostic string of the form
+     *         {@code "CoSgn00Output[trnName=..., title01=..., curDate=...,
+     *         pgmName=..., title02=..., curTime=..., applId=..., sysId=...,
+     *         userId=..., passwd=********, errMsg=..., errMsgColor=...]"}
+     */
+    @Override
+    public String toString() {
+        return "CoSgn00Output["
+                + "trnName=" + trnName
+                + ", title01=" + title01
+                + ", curDate=" + curDate
+                + ", pgmName=" + pgmName
+                + ", title02=" + title02
+                + ", curTime=" + curTime
+                + ", applId=" + applId
+                + ", sysId=" + sysId
+                + ", userId=" + userId
+                + ", passwd=" + PASSWORD_MASK
+                + ", errMsg=" + errMsg
+                + ", errMsgColor=" + errMsgColor
+                + "]";
     }
 }

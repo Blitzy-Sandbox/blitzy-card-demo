@@ -162,13 +162,13 @@ public final class CoUsr03C {
         // IF EIBCALEN = 0  → return to signon screen
         if (commarea == null) {
             CardDemoCommarea outbound = CardDemoCommarea.empty();
-            CardDemoCommarea.GeneralInfo gi = new CardDemoCommarea.GeneralInfo(
+            CardDemoCommarea.CdemoGeneralInfo gi = new CardDemoCommarea.CdemoGeneralInfo(
                     TRANSACTION_ID, PROGRAM_ID, "COSGN00C", "COSGN00C", "", null, PgmContext.ENTER);
-            return Result.xctl(ProgramRegistry.CO_SGN_00C, outbound.withGeneralInfo(gi));
+            return Result.xctl(ProgramRegistry.CO_SGN_00C, outbound.withCdemoGeneralInfo(gi));
         }
 
         // IF NOT CDEMO-PGM-REENTER → first display
-        if (!(commarea.generalInfo().pgmContext() instanceof PgmContext.Reenter)) {
+        if (!(commarea.cdemoGeneralInfo().pgmContext() instanceof PgmContext.Reenter)) {
             CardDemoCommarea reenteredCommarea = withPgmContext(commarea, PgmContext.REENTER);
             CoUsr03Input freshInput = preselectedUserId != null && !preselectedUserId.isBlank()
                     ? CoUsr03Input.blank().withUserId(preselectedUserId)
@@ -275,7 +275,7 @@ public final class CoUsr03C {
      *                              (COSGN00C for PF3, COADM01C for PF12)
      */
     private Result returnToPrevScreen(CardDemoCommarea commarea, String defaultProgramOnEmpty) {
-        String fromProgram = commarea.generalInfo().fromProgram();
+        String fromProgram = commarea.cdemoGeneralInfo().fromProgram();
         String target;
         if (defaultProgramOnEmpty != null) {
             target = defaultProgramOnEmpty;
@@ -285,8 +285,8 @@ public final class CoUsr03C {
                     : fromProgram.trim();
         }
 
-        CardDemoCommarea.GeneralInfo current = commarea.generalInfo();
-        CardDemoCommarea.GeneralInfo gi = new CardDemoCommarea.GeneralInfo(
+        CardDemoCommarea.CdemoGeneralInfo current = commarea.cdemoGeneralInfo();
+        CardDemoCommarea.CdemoGeneralInfo gi = new CardDemoCommarea.CdemoGeneralInfo(
                 TRANSACTION_ID,
                 PROGRAM_ID,
                 current.toTranId(),
@@ -294,7 +294,7 @@ public final class CoUsr03C {
                 current.userId(),
                 current.userType(),
                 PgmContext.ENTER);
-        CardDemoCommarea outbound = commarea.withGeneralInfo(gi);
+        CardDemoCommarea outbound = commarea.withCdemoGeneralInfo(gi);
 
         log.info("CoUsr03C: XCTL to {} (return-to-prev)", target);
 
@@ -329,8 +329,8 @@ public final class CoUsr03C {
     // -- helpers ----------------------------------------------------------
 
     private static CardDemoCommarea withPgmContext(CardDemoCommarea commarea, PgmContext ctx) {
-        CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
-        CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
+        CardDemoCommarea.CdemoGeneralInfo gi = commarea.cdemoGeneralInfo();
+        CardDemoCommarea.CdemoGeneralInfo updated = new CardDemoCommarea.CdemoGeneralInfo(
                 gi.fromTranId(),
                 gi.fromProgram(),
                 gi.toTranId(),
@@ -338,7 +338,7 @@ public final class CoUsr03C {
                 gi.userId(),
                 gi.userType(),
                 ctx);
-        return commarea.withGeneralInfo(updated);
+        return commarea.withCdemoGeneralInfo(updated);
     }
 
     /**

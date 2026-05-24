@@ -249,7 +249,7 @@ public final class CoCrdLiC {
         // First-time entry: PgmContext.ENTER. Run an initial forward read
         // from the start of the file with whatever filter was passed in
         // through the commarea.
-        if (!(commarea.generalInfo().pgmContext() instanceof PgmContext.Reenter)) {
+        if (!(commarea.cdemoGeneralInfo().pgmContext() instanceof PgmContext.Reenter)) {
             CardDemoCommarea reentered = withPgmContext(commarea, PgmContext.REENTER);
             PageState reset = new PageState(0, "", "", false, false);
             return processReadForward(coalesceInput(input), reentered, reset, "");
@@ -311,10 +311,10 @@ public final class CoCrdLiC {
      * EVALUATE TRUE.
      */
     private Result processPf03Back(CardDemoCommarea commarea) {
-        String target = (commarea.generalInfo().fromProgram() != null
-                && !commarea.generalInfo().fromProgram().isBlank()
-                && !commarea.generalInfo().fromProgram().equals(PROGRAM_ID))
-                ? commarea.generalInfo().fromProgram()
+        String target = (commarea.cdemoGeneralInfo().fromProgram() != null
+                && !commarea.cdemoGeneralInfo().fromProgram().isBlank()
+                && !commarea.cdemoGeneralInfo().fromProgram().equals(PROGRAM_ID))
+                ? commarea.cdemoGeneralInfo().fromProgram()
                 : ProgramRegistry.CO_MEN_01C;
         CardDemoCommarea outbound = withTarget(commarea, target);
         return Result.xctl(target, outbound);
@@ -814,8 +814,8 @@ public final class CoCrdLiC {
     // ============================================================================
 
     private static CardDemoCommarea withPgmContext(CardDemoCommarea commarea, PgmContext ctx) {
-        CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
-        CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
+        CardDemoCommarea.CdemoGeneralInfo gi = commarea.cdemoGeneralInfo();
+        CardDemoCommarea.CdemoGeneralInfo updated = new CardDemoCommarea.CdemoGeneralInfo(
                 gi.fromTranId(),
                 gi.fromProgram(),
                 gi.toTranId(),
@@ -823,12 +823,12 @@ public final class CoCrdLiC {
                 gi.userId(),
                 gi.userType(),
                 ctx);
-        return commarea.withGeneralInfo(updated);
+        return commarea.withCdemoGeneralInfo(updated);
     }
 
     private static CardDemoCommarea withTarget(CardDemoCommarea commarea, String toProgram) {
-        CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
-        CardDemoCommarea.GeneralInfo updated = new CardDemoCommarea.GeneralInfo(
+        CardDemoCommarea.CdemoGeneralInfo gi = commarea.cdemoGeneralInfo();
+        CardDemoCommarea.CdemoGeneralInfo updated = new CardDemoCommarea.CdemoGeneralInfo(
                 TRANSACTION_ID,
                 PROGRAM_ID,
                 gi.toTranId(),
@@ -836,13 +836,13 @@ public final class CoCrdLiC {
                 gi.userId(),
                 gi.userType(),
                 PgmContext.ENTER);
-        return commarea.withGeneralInfo(updated);
+        return commarea.withCdemoGeneralInfo(updated);
     }
 
     /**
      * Build an outbound commarea carrying the selected row's account id and
-     * card number into {@link CardDemoCommarea.AccountInfo} and
-     * {@link CardDemoCommarea.CardInfo} so the next program (COCRDSLC /
+     * card number into {@link CardDemoCommarea.CdemoAccountInfo} and
+     * {@link CardDemoCommarea.CdemoCardInfo} so the next program (COCRDSLC /
      * COCRDUPC) finds the preselected values via the commarea.
      */
     private static CardDemoCommarea withRowSelection(CardDemoCommarea commarea, String toProgram,
@@ -850,12 +850,12 @@ public final class CoCrdLiC {
         CardDemoCommarea base = withTarget(commarea, toProgram);
         long acctId = parseLongOrZero(acctNo);
         long card   = parseLongOrZero(cardNum);
-        // CardInfo.cardNum is a 16-digit String (preserves leading zeros and supports
+        // CdemoCardInfo.cardNum is a 16-digit String (preserves leading zeros and supports
         // PAN masking per AAP §0.7.2); format the parsed long as a 16-digit zero-padded
         // string so the canonical constructor's all-digits validation passes.
         return base
-                .withAccountInfo(new CardDemoCommarea.AccountInfo(acctId, base.accountInfo().acctStatus()))
-                .withCardInfo(new CardDemoCommarea.CardInfo(String.format("%016d", card)));
+                .withCdemoAccountInfo(new CardDemoCommarea.CdemoAccountInfo(acctId, base.cdemoAccountInfo().acctStatus()))
+                .withCdemoCardInfo(new CardDemoCommarea.CdemoCardInfo(String.format("%016d", card)));
     }
 
     private static long parseLongOrZero(String s) {

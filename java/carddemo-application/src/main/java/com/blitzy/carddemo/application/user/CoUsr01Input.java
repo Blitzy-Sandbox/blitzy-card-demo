@@ -28,6 +28,13 @@ package com.blitzy.carddemo.application.user;
 // that touch many java.* packages, replacing individual java.lang.* imports.
 import module java.base;
 
+// AAP §0.7.1 traceability mandate: every translated BMS DTO must cite its
+// original BMS / symbolic-copybook source via the @CobolProgram annotation
+// declared in the carddemo-domain module. carddemo-application declares
+// carddemo-domain as a direct dependency in its pom.xml, so the annotation
+// is on the classpath and resolvable here.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
+
 /**
  * BMS input record for the {@code COUSR01 / COUSR1A} add-user map
  * (COBOL transaction {@code CU01}, program {@code COUSR01C}).
@@ -229,6 +236,17 @@ import module java.base;
  * @see com.blitzy.carddemo.application.user.CoUsr01C
  * @see com.blitzy.carddemo.application.user.CoUsr01Output
  */
+@CobolProgram(
+        value = "COUSR01",
+        sourcePath = "app/bms/COUSR01.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (input side); symbolic copybook 01 COUSR1AI "
+                + "in app/cpy-bms/COUSR01.CPY (lines 17-90). Driven by online program "
+                + "app/cbl/COUSR01C.cbl (transaction CU01 — Add User). Plaintext "
+                + "password preserved on the input record per AAP §0.1.3, but masked "
+                + "to '********' in toString() per AAP §0.7.2 to prevent logging "
+                + "surfaces from leaking credentials."
+)
 public record CoUsr01Input(
         String firstName,    // FNAMEI    PIC X(20) — UNPROT,IC,GREEN  (first editable field)
         String lastName,     // LNAMEI    PIC X(20) — UNPROT,GREEN

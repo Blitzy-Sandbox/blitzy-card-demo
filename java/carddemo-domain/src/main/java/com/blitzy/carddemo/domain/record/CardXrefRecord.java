@@ -84,16 +84,25 @@ import java.util.Objects;
  * would silently lose leading zeros and reject any non-digit byte the source
  * fixture might contain.
  *
- * <h2>PAN-masking is the carddemo-application layer's responsibility (AAP &sect;0.7.2)</h2>
- * Per the binding agent-prompt constraint #8, this record uses the
- * <strong>default</strong> {@code toString()} implementation auto-generated
- * by the record compiler, which renders the full PAN. The
- * {@code carddemo-application} layer is responsible for masking PANs (all
- * but the last 4 digits) before any log line, exception message, or report
- * row is emitted. The domain record is a pure data carrier; applying
- * masking here would be a presentation concern leaking into the domain ring
- * and would also break round-trip parity tests that need to inspect the
- * full card number.
+ * <h2>PAN-masking in {@link #toString()} (AAP &sect;0.7.2)</h2>
+ * Per AAP &sect;0.7.2 (<em>"No card PAN logged in full; mask all but last 4
+ * digits in logs and error messages"</em>), the auto-generated record
+ * {@link #toString()} is <strong>overridden</strong> to render the PAN-
+ * equivalent {@code XREF-CARD-NUM} field masked with all but the last 4
+ * digits replaced by {@code '*'}. The same masking pattern is used on
+ * {@link CardRecord}, {@link TranRecord}, {@link DalyTranRecord},
+ * {@link TrnxRecord}, and {@link com.blitzy.carddemo.domain.record.SecUserData},
+ * so accidental logging via {@code log.info("{}", xrefRecord)} or any
+ * other {@code Object.toString()} consumer never leaks the cleartext
+ * card number.
+ *
+ * <p>The masking is purely a presentation/logging concern; it does NOT
+ * alter the stored value, which remains accessible via {@link #xrefCardNum()}
+ * for the {@code 1500-A-LOOKUP-XREF} paragraph translation and any
+ * other byte-level processing path. The byte-for-byte round-trip
+ * invariant ({@code parse(b).encode() == b}) is unaffected because
+ * {@link #encode()} reads from the stored value, not from
+ * {@link #toString()}.
  *
  * <h2>Immutability (AAP &sect;0.1.2)</h2>
  * Records are inherently immutable, but the {@link #filler()} component is
@@ -132,7 +141,7 @@ import java.util.Objects;
         value = "CVACT03Y",
         sourcePath = "app/cpy/CVACT03Y.cpy",
         notes = "50-byte CARD-XREF-RECORD: 16-byte PAN + 9-digit cust id + 11-digit acct id + 14-byte FILLER. "
-                + "PAN-masking is the carddemo-application layer's responsibility (AAP §0.7.2)."
+                + "PAN masked in toString() per AAP §0.7.2 (all but last 4 digits replaced with '*')."
 )
 public record CardXrefRecord(
         String xrefCardNum,
@@ -402,6 +411,68 @@ public record CardXrefRecord(
         result = 31 * result + Long.hashCode(xrefAcctId);
         result = 31 * result + Arrays.hashCode(filler);
         return result;
+    }
+
+    // ------------------------------------------------------------------
+    // PAN masking and PAN-safe toString override (AAP §0.7.2)
+    // ------------------------------------------------------------------
+
+    /**
+     * Returns the PAN-equivalent {@link #xrefCardNum() XREF-CARD-NUM}
+     * field masked so that all but the last 4 digits are replaced with
+     * {@code '*'}. Leading/trailing whitespace is trimmed before masking
+     * so that COBOL space-padded test fixtures produce a clean masked
+     * representation.
+     *
+     * <p>Examples:
+     * <ul>
+     *   <li>{@code "4111111111111234" → "************1234"}</li>
+     *   <li>{@code "1234            " → "1234"} (already &le; 4 digits after trim)</li>
+     *   <li>{@code "                " → ""}</li>
+     * </ul>
+     *
+     * <p>Use this method whenever the cleartext PAN-equivalent value must
+     * be referenced in logs, error messages, or debug output. Per AAP
+     * &sect;0.7.2 the cleartext PAN MUST NOT appear in any log line.
+     *
+     * @return the card number with all but the last 4 digits replaced by
+     *         {@code '*'}; never {@code null}
+     */
+    public String maskedCardNum() {
+        String trimmed = xrefCardNum.trim();
+        if (trimmed.length() <= 4) {
+            return trimmed;
+        }
+        int prefixLen = trimmed.length() - 4;
+        return "*".repeat(prefixLen) + trimmed.substring(prefixLen);
+    }
+
+    /**
+     * String representation that masks the PAN-equivalent
+     * {@link #xrefCardNum() XREF-CARD-NUM} field. This override is
+     * REQUIRED so that an accidental {@code log.info("{}", xrefRecord)}
+     * does NOT leak the cleartext 16-byte card number. Per AAP
+     * &sect;0.7.2 the cleartext PAN MUST NOT appear in any log line.
+     *
+     * <p>The masking is purely a presentation/logging concern; it does
+     * NOT alter the stored value, which remains accessible via
+     * {@link #xrefCardNum()} for byte-level processing paths. The
+     * byte-for-byte round-trip invariant ({@code parse(b).encode() == b})
+     * is therefore unaffected.
+     *
+     * <p>The FILLER byte array is rendered as a fixed {@code <14 bytes>}
+     * placeholder so that the output is bounded and human-readable;
+     * FILLER carries no semantic content for cross-reference records.
+     *
+     * @return a PAN-safe diagnostic string suitable for logging
+     */
+    @Override
+    public String toString() {
+        return "CardXrefRecord["
+                + "xrefCardNum=" + maskedCardNum()
+                + ", xrefCustId=" + xrefCustId
+                + ", xrefAcctId=" + xrefAcctId
+                + ", filler=<" + FILLER_LENGTH + " bytes>]";
     }
 
     // ------------------------------------------------------------------

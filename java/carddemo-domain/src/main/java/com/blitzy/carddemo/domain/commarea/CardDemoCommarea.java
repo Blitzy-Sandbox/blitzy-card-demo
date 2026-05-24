@@ -42,23 +42,23 @@ import java.util.Objects;
  * <h2>Byte Layout (160 bytes total)</h2>
  * <pre>
  * Offset | Length | Field          | COBOL Type | Java Field
- * -------+--------+----------------+------------+----------------------
- *      0 |      4 | FROM-TRANID    | PIC X(04)  | generalInfo.fromTranId
- *      4 |      8 | FROM-PROGRAM   | PIC X(08)  | generalInfo.fromProgram
- *     12 |      4 | TO-TRANID      | PIC X(04)  | generalInfo.toTranId
- *     16 |      8 | TO-PROGRAM     | PIC X(08)  | generalInfo.toProgram
- *     24 |      8 | USER-ID        | PIC X(08)  | generalInfo.userId
- *     32 |      1 | USER-TYPE      | PIC X(01)  | generalInfo.userType
- *     33 |      1 | PGM-CONTEXT    | PIC 9(01)  | generalInfo.pgmContext
- *     34 |      9 | CUST-ID        | PIC 9(09)  | customerInfo.custId
- *     43 |     25 | CUST-FNAME     | PIC X(25)  | customerInfo.firstName
- *     68 |     25 | CUST-MNAME     | PIC X(25)  | customerInfo.middleName
- *     93 |     25 | CUST-LNAME     | PIC X(25)  | customerInfo.lastName
- *    118 |     11 | ACCT-ID        | PIC 9(11)  | accountInfo.acctId
- *    129 |      1 | ACCT-STATUS    | PIC X(01)  | accountInfo.acctStatus
- *    130 |     16 | CARD-NUM       | PIC 9(16)  | cardInfo.cardNum
- *    146 |      7 | LAST-MAP       | PIC X(7)   | moreInfo.lastMap
- *    153 |      7 | LAST-MAPSET    | PIC X(7)   | moreInfo.lastMapset
+ * -------+--------+----------------+------------+----------------------------
+ *      0 |      4 | FROM-TRANID    | PIC X(04)  | cdemoGeneralInfo.fromTranId
+ *      4 |      8 | FROM-PROGRAM   | PIC X(08)  | cdemoGeneralInfo.fromProgram
+ *     12 |      4 | TO-TRANID      | PIC X(04)  | cdemoGeneralInfo.toTranId
+ *     16 |      8 | TO-PROGRAM     | PIC X(08)  | cdemoGeneralInfo.toProgram
+ *     24 |      8 | USER-ID        | PIC X(08)  | cdemoGeneralInfo.userId
+ *     32 |      1 | USER-TYPE      | PIC X(01)  | cdemoGeneralInfo.userType
+ *     33 |      1 | PGM-CONTEXT    | PIC 9(01)  | cdemoGeneralInfo.pgmContext
+ *     34 |      9 | CUST-ID        | PIC 9(09)  | cdemoCustomerInfo.custId
+ *     43 |     25 | CUST-FNAME     | PIC X(25)  | cdemoCustomerInfo.firstName
+ *     68 |     25 | CUST-MNAME     | PIC X(25)  | cdemoCustomerInfo.middleName
+ *     93 |     25 | CUST-LNAME     | PIC X(25)  | cdemoCustomerInfo.lastName
+ *    118 |     11 | ACCT-ID        | PIC 9(11)  | cdemoAccountInfo.acctId
+ *    129 |      1 | ACCT-STATUS    | PIC X(01)  | cdemoAccountInfo.acctStatus
+ *    130 |     16 | CARD-NUM       | PIC 9(16)  | cdemoCardInfo.cardNum
+ *    146 |      7 | LAST-MAP       | PIC X(7)   | cdemoMoreInfo.lastMap
+ *    153 |      7 | LAST-MAPSET    | PIC X(7)   | cdemoMoreInfo.lastMapset
  * </pre>
  *
  * <h2>Immutability</h2>
@@ -99,24 +99,45 @@ import java.util.Objects;
  * components:
  * <pre>{@code
  * var commarea = new CardDemoCommarea(
- *     new CardDemoCommarea.GeneralInfo(
+ *     new CardDemoCommarea.CdemoGeneralInfo(
  *         "CC00", "COSGN00C", "    ", "        ", "USER0001",
  *         UserType.USER, PgmContext.ENTER),
- *     new CardDemoCommarea.CustomerInfo(
+ *     new CardDemoCommarea.CdemoCustomerInfo(
  *         123456789L,
  *         "JOHN                     ",
  *         "Q                        ",
  *         "DOE                      "),
- *     new CardDemoCommarea.AccountInfo(99999999999L, "Y"),
- *     new CardDemoCommarea.CardInfo("4111111111111234"),
- *     new CardDemoCommarea.MoreInfo("COSGN00", "COSGN00"));
+ *     new CardDemoCommarea.CdemoAccountInfo(99999999999L, "Y"),
+ *     new CardDemoCommarea.CdemoCardInfo("4111111111111234"),
+ *     new CardDemoCommarea.CdemoMoreInfo("COSGN00", "COSGN00"));
  * }</pre>
  *
+ * <h2>Nested-record naming (Cdemo* prefix)</h2>
+ * Nested record names match the COBOL {@code 05 CDEMO-*-INFO} group names
+ * with the {@code CDEMO-} prefix preserved as the {@code Cdemo} prefix in
+ * CamelCase: {@code CdemoGeneralInfo}, {@code CdemoCustomerInfo},
+ * {@code CdemoAccountInfo}, {@code CdemoCardInfo}, {@code CdemoMoreInfo}.
+ * This direct one-to-one correspondence with the COBOL group names per
+ * AAP &sect;0.4.1 makes call-site code easier to cross-reference with the
+ * underlying copybook.
+ *
  * <h2>Pattern-Matching Dispatch on Sealed Components</h2>
- * The {@link GeneralInfo#userType()} and {@link GeneralInfo#pgmContext()} accessors
- * return sealed types ({@link UserType}, {@link PgmContext}). Callers MUST use
- * exhaustive pattern-matching {@code switch} expressions when branching on these
+ * The {@link CdemoGeneralInfo#userType()} and
+ * {@link CdemoGeneralInfo#pgmContext()} accessors return sealed types
+ * ({@link UserType}, {@link PgmContext}). Callers MUST use exhaustive
+ * pattern-matching {@code switch} expressions when branching on these
  * values; no {@code default} branch is permitted (per AAP &sect;0.6.7).
+ *
+ * <h2>PAN masking in {@link #toString()} (AAP &sect;0.7.2)</h2>
+ * The auto-generated record {@link #toString()} is <strong>overridden</strong>
+ * to ensure that the nested {@link CdemoCardInfo#cardNum()} value is
+ * rendered using {@link CdemoCardInfo#maskedCardNum()} (all-but-last-4
+ * masking). This ensures that
+ * {@code log.info("{}", commarea)} cannot leak the cleartext PAN even
+ * if a logging surface ever renders the commarea via {@link Object#toString()}.
+ * The byte-for-byte round-trip invariant ({@code parse(b).encode() == b})
+ * is unaffected because {@link #encode()} reads from the stored
+ * {@link CdemoCardInfo#cardNum()} value, not from {@link #toString()}.
  *
  * @see UserType
  * @see PgmContext
@@ -130,14 +151,14 @@ import java.util.Objects;
         notes = "CARDDEMO-COMMAREA 01-level group; 160 bytes; nested records for "
               + "CDEMO-GENERAL-INFO, CDEMO-CUSTOMER-INFO, CDEMO-ACCOUNT-INFO, "
               + "CDEMO-CARD-INFO, CDEMO-MORE-INFO; sealed UserType and PgmContext "
-              + "for 88-level taxonomies"
+              + "for 88-level taxonomies; PAN masked in toString() per AAP §0.7.2"
 )
 public record CardDemoCommarea(
-        GeneralInfo generalInfo,
-        CustomerInfo customerInfo,
-        AccountInfo accountInfo,
-        CardInfo cardInfo,
-        MoreInfo moreInfo
+        CdemoGeneralInfo cdemoGeneralInfo,
+        CdemoCustomerInfo cdemoCustomerInfo,
+        CdemoAccountInfo cdemoAccountInfo,
+        CdemoCardInfo cdemoCardInfo,
+        CdemoMoreInfo cdemoMoreInfo
 ) {
 
     //--------------------------------------------------------------------------
@@ -249,11 +270,11 @@ public record CardDemoCommarea(
      *                              identifies which component
      */
     public CardDemoCommarea {
-        Objects.requireNonNull(generalInfo, "generalInfo");
-        Objects.requireNonNull(customerInfo, "customerInfo");
-        Objects.requireNonNull(accountInfo, "accountInfo");
-        Objects.requireNonNull(cardInfo, "cardInfo");
-        Objects.requireNonNull(moreInfo, "moreInfo");
+        Objects.requireNonNull(cdemoGeneralInfo, "cdemoGeneralInfo");
+        Objects.requireNonNull(cdemoCustomerInfo, "cdemoCustomerInfo");
+        Objects.requireNonNull(cdemoAccountInfo, "cdemoAccountInfo");
+        Objects.requireNonNull(cdemoCardInfo, "cdemoCardInfo");
+        Objects.requireNonNull(cdemoMoreInfo, "cdemoMoreInfo");
     }
 
     //--------------------------------------------------------------------------
@@ -281,7 +302,7 @@ public record CardDemoCommarea(
      */
     public static CardDemoCommarea empty() {
         return new CardDemoCommarea(
-                new GeneralInfo(
+                new CdemoGeneralInfo(
                         " ".repeat(LENGTH_FROM_TRANID),
                         " ".repeat(LENGTH_FROM_PROGRAM),
                         " ".repeat(LENGTH_TO_TRANID),
@@ -289,21 +310,21 @@ public record CardDemoCommarea(
                         " ".repeat(LENGTH_USER_ID),
                         UserType.USER,
                         PgmContext.ENTER),
-                new CustomerInfo(
+                new CdemoCustomerInfo(
                         0L,
                         " ".repeat(LENGTH_CUST_FNAME),
                         " ".repeat(LENGTH_CUST_MNAME),
                         " ".repeat(LENGTH_CUST_LNAME)),
-                new AccountInfo(0L, " "),
-                new CardInfo("0".repeat(LENGTH_CARD_NUM)),
-                new MoreInfo(
+                new CdemoAccountInfo(0L, " "),
+                new CdemoCardInfo("0".repeat(LENGTH_CARD_NUM)),
+                new CdemoMoreInfo(
                         " ".repeat(LENGTH_LAST_MAP),
                         " ".repeat(LENGTH_LAST_MAPSET)));
     }
 
     /**
      * Returns a new commarea identical to this one except that the
-     * {@link GeneralInfo} component is replaced by the supplied value.
+     * {@link CdemoGeneralInfo} component is replaced by the supplied value.
      * This is the immutable equivalent of the COBOL idiom of overwriting the
      * {@code CDEMO-GENERAL-INFO} group fields on the in-place commarea.
      *
@@ -311,56 +332,61 @@ public record CardDemoCommarea(
      * @return a new commarea with the substituted component
      * @throws NullPointerException if {@code info} is {@code null}
      */
-    public CardDemoCommarea withGeneralInfo(GeneralInfo info) {
-        return new CardDemoCommarea(info, customerInfo, accountInfo, cardInfo, moreInfo);
+    public CardDemoCommarea withCdemoGeneralInfo(CdemoGeneralInfo info) {
+        return new CardDemoCommarea(info, cdemoCustomerInfo, cdemoAccountInfo,
+                cdemoCardInfo, cdemoMoreInfo);
     }
 
     /**
      * Returns a new commarea identical to this one except that the
-     * {@link CustomerInfo} component is replaced by the supplied value.
+     * {@link CdemoCustomerInfo} component is replaced by the supplied value.
      *
      * @param info the new customer-info component (non-null)
      * @return a new commarea with the substituted component
      * @throws NullPointerException if {@code info} is {@code null}
      */
-    public CardDemoCommarea withCustomerInfo(CustomerInfo info) {
-        return new CardDemoCommarea(generalInfo, info, accountInfo, cardInfo, moreInfo);
+    public CardDemoCommarea withCdemoCustomerInfo(CdemoCustomerInfo info) {
+        return new CardDemoCommarea(cdemoGeneralInfo, info, cdemoAccountInfo,
+                cdemoCardInfo, cdemoMoreInfo);
     }
 
     /**
      * Returns a new commarea identical to this one except that the
-     * {@link AccountInfo} component is replaced by the supplied value.
+     * {@link CdemoAccountInfo} component is replaced by the supplied value.
      *
      * @param info the new account-info component (non-null)
      * @return a new commarea with the substituted component
      * @throws NullPointerException if {@code info} is {@code null}
      */
-    public CardDemoCommarea withAccountInfo(AccountInfo info) {
-        return new CardDemoCommarea(generalInfo, customerInfo, info, cardInfo, moreInfo);
+    public CardDemoCommarea withCdemoAccountInfo(CdemoAccountInfo info) {
+        return new CardDemoCommarea(cdemoGeneralInfo, cdemoCustomerInfo, info,
+                cdemoCardInfo, cdemoMoreInfo);
     }
 
     /**
      * Returns a new commarea identical to this one except that the
-     * {@link CardInfo} component is replaced by the supplied value.
+     * {@link CdemoCardInfo} component is replaced by the supplied value.
      *
      * @param info the new card-info component (non-null)
      * @return a new commarea with the substituted component
      * @throws NullPointerException if {@code info} is {@code null}
      */
-    public CardDemoCommarea withCardInfo(CardInfo info) {
-        return new CardDemoCommarea(generalInfo, customerInfo, accountInfo, info, moreInfo);
+    public CardDemoCommarea withCdemoCardInfo(CdemoCardInfo info) {
+        return new CardDemoCommarea(cdemoGeneralInfo, cdemoCustomerInfo, cdemoAccountInfo,
+                info, cdemoMoreInfo);
     }
 
     /**
      * Returns a new commarea identical to this one except that the
-     * {@link MoreInfo} component is replaced by the supplied value.
+     * {@link CdemoMoreInfo} component is replaced by the supplied value.
      *
      * @param info the new more-info component (non-null)
      * @return a new commarea with the substituted component
      * @throws NullPointerException if {@code info} is {@code null}
      */
-    public CardDemoCommarea withMoreInfo(MoreInfo info) {
-        return new CardDemoCommarea(generalInfo, customerInfo, accountInfo, cardInfo, info);
+    public CardDemoCommarea withCdemoMoreInfo(CdemoMoreInfo info) {
+        return new CardDemoCommarea(cdemoGeneralInfo, cdemoCustomerInfo, cdemoAccountInfo,
+                cdemoCardInfo, info);
     }
 
     //--------------------------------------------------------------------------
@@ -393,7 +419,7 @@ public record CardDemoCommarea(
             notes = "CDEMO-GENERAL-INFO 05-level group; 34 bytes; transaction/program "
                   + "routing and user identity"
     )
-    public static record GeneralInfo(
+    public static record CdemoGeneralInfo(
             String fromTranId,
             String fromProgram,
             String toTranId,
@@ -412,7 +438,7 @@ public record CardDemoCommarea(
          *                                  not match its COBOL PIC X(N) width,
          *                                  or contains non-ASCII characters
          */
-        public GeneralInfo {
+        public CdemoGeneralInfo {
             validateFixedLengthAscii(fromTranId, LENGTH_FROM_TRANID, "fromTranId");
             validateFixedLengthAscii(fromProgram, LENGTH_FROM_PROGRAM, "fromProgram");
             validateFixedLengthAscii(toTranId, LENGTH_TO_TRANID, "toTranId");
@@ -443,7 +469,7 @@ public record CardDemoCommarea(
             notes = "CDEMO-CUSTOMER-INFO 05-level group; 84 bytes; customer "
                   + "identifier and full name components"
     )
-    public static record CustomerInfo(
+    public static record CdemoCustomerInfo(
             long custId,
             String firstName,
             String middleName,
@@ -462,7 +488,7 @@ public record CardDemoCommarea(
          *                                  {@value #LENGTH_CUST_FNAME} ASCII
          *                                  characters
          */
-        public CustomerInfo {
+        public CdemoCustomerInfo {
             if (custId < 0L || custId > CUST_ID_MAX) {
                 throw new IllegalArgumentException(
                         "custId out of range [0," + CUST_ID_MAX + "]: " + custId);
@@ -490,7 +516,7 @@ public record CardDemoCommarea(
             notes = "CDEMO-ACCOUNT-INFO 05-level group; 12 bytes; account-id and "
                   + "one-char active-status flag"
     )
-    public static record AccountInfo(
+    public static record CdemoAccountInfo(
             long acctId,
             String acctStatus
     ) {
@@ -506,7 +532,7 @@ public record CardDemoCommarea(
          *                                  {@code acctStatus} is not exactly
          *                                  one ASCII character
          */
-        public AccountInfo {
+        public CdemoAccountInfo {
             if (acctId < 0L || acctId > ACCT_ID_MAX) {
                 throw new IllegalArgumentException(
                         "acctId out of range [0," + ACCT_ID_MAX + "]: " + acctId);
@@ -543,9 +569,9 @@ public record CardDemoCommarea(
             translationDate = "2025-10-15",
             notes = "CDEMO-CARD-INFO 05-level group; 16 bytes; 16-digit PAN stored "
                   + "as String to preserve leading zeros and support PAN masking "
-                  + "per AAP §0.7.2 logging mandate"
+                  + "per AAP §0.7.2 logging mandate; toString() masks the PAN"
     )
-    public static record CardInfo(
+    public static record CdemoCardInfo(
             String cardNum
     ) {
         /**
@@ -558,7 +584,7 @@ public record CardDemoCommarea(
          *                                  character is not an ASCII digit
          *                                  '0'&ndash;'9'
          */
-        public CardInfo {
+        public CdemoCardInfo {
             Objects.requireNonNull(cardNum, "cardNum");
             if (cardNum.length() != LENGTH_CARD_NUM) {
                 throw new IllegalArgumentException(
@@ -591,6 +617,24 @@ public record CardDemoCommarea(
         public String maskedCardNum() {
             return "*".repeat(12) + cardNum.substring(12);
         }
+
+        /**
+         * PAN-safe {@link Object#toString()} override per AAP &sect;0.7.2.
+         * Renders the underlying 16-digit PAN as {@link #maskedCardNum()}
+         * (first 12 digits replaced with {@code '*'}, last 4 visible) so
+         * that an accidental {@code log.info("{}", cdemoCardInfo)} does
+         * NOT leak the cleartext PAN. The actual {@link #cardNum()}
+         * accessor still returns the unmasked value for byte-level
+         * processing paths.
+         *
+         * @return a string of the form
+         *         {@code "CdemoCardInfo[cardNum=************1234]"};
+         *         never {@code null}
+         */
+        @Override
+        public String toString() {
+            return "CdemoCardInfo[cardNum=" + maskedCardNum() + "]";
+        }
     }
 
     /**
@@ -610,7 +654,7 @@ public record CardDemoCommarea(
             notes = "CDEMO-MORE-INFO 05-level group; 14 bytes; last-map and "
                   + "last-mapset for screen-flow context"
     )
-    public static record MoreInfo(
+    public static record CdemoMoreInfo(
             String lastMap,
             String lastMapset
     ) {
@@ -622,7 +666,7 @@ public record CardDemoCommarea(
          *                                  {@value #LENGTH_LAST_MAP} ASCII
          *                                  characters
          */
-        public MoreInfo {
+        public CdemoMoreInfo {
             validateFixedLengthAscii(lastMap, LENGTH_LAST_MAP, "lastMap");
             validateFixedLengthAscii(lastMapset, LENGTH_LAST_MAPSET, "lastMapset");
         }
@@ -702,7 +746,7 @@ public record CardDemoCommarea(
         }
         PgmContext pgmContext = PgmContext.fromIndicator(pgmCtxDigit);
 
-        GeneralInfo generalInfo = new GeneralInfo(
+        CdemoGeneralInfo cdemoGeneralInfo = new CdemoGeneralInfo(
                 fromTranId, fromProgram, toTranId, toProgram, userId, userType, pgmContext);
 
         // CDEMO-CUSTOMER-INFO (offsets 34–117)
@@ -710,24 +754,24 @@ public record CardDemoCommarea(
         String firstName  = readText(   buffer, OFFSET_CUST_FNAME, LENGTH_CUST_FNAME, charset);
         String middleName = readText(   buffer, OFFSET_CUST_MNAME, LENGTH_CUST_MNAME, charset);
         String lastName   = readText(   buffer, OFFSET_CUST_LNAME, LENGTH_CUST_LNAME, charset);
-        CustomerInfo customerInfo = new CustomerInfo(custId, firstName, middleName, lastName);
+        CdemoCustomerInfo cdemoCustomerInfo = new CdemoCustomerInfo(custId, firstName, middleName, lastName);
 
         // CDEMO-ACCOUNT-INFO (offsets 118–129)
         long   acctId     = readNumeric(buffer, OFFSET_ACCT_ID,     LENGTH_ACCT_ID);
         String acctStatus = readText(   buffer, OFFSET_ACCT_STATUS, LENGTH_ACCT_STATUS, charset);
-        AccountInfo accountInfo = new AccountInfo(acctId, acctStatus);
+        CdemoAccountInfo cdemoAccountInfo = new CdemoAccountInfo(acctId, acctStatus);
 
         // CDEMO-CARD-INFO (offsets 130–145) — cardNum stored as String to preserve
         // leading zeros and to enable PAN masking per AAP §0.7.2
         String cardNum = readText(buffer, OFFSET_CARD_NUM, LENGTH_CARD_NUM, charset);
-        CardInfo cardInfo = new CardInfo(cardNum);
+        CdemoCardInfo cdemoCardInfo = new CdemoCardInfo(cardNum);
 
         // CDEMO-MORE-INFO (offsets 146–159)
         String lastMap    = readText(buffer, OFFSET_LAST_MAP,    LENGTH_LAST_MAP,    charset);
         String lastMapset = readText(buffer, OFFSET_LAST_MAPSET, LENGTH_LAST_MAPSET, charset);
-        MoreInfo moreInfo = new MoreInfo(lastMap, lastMapset);
+        CdemoMoreInfo cdemoMoreInfo = new CdemoMoreInfo(lastMap, lastMapset);
 
-        return new CardDemoCommarea(generalInfo, customerInfo, accountInfo, cardInfo, moreInfo);
+        return new CardDemoCommarea(cdemoGeneralInfo, cdemoCustomerInfo, cdemoAccountInfo, cdemoCardInfo, cdemoMoreInfo);
     }
 
     //--------------------------------------------------------------------------
@@ -776,32 +820,65 @@ public record CardDemoCommarea(
         byte[] buffer = new byte[LENGTH];
 
         // CDEMO-GENERAL-INFO
-        writeText(buffer, OFFSET_FROM_TRANID,  LENGTH_FROM_TRANID,  generalInfo.fromTranId(),  charset);
-        writeText(buffer, OFFSET_FROM_PROGRAM, LENGTH_FROM_PROGRAM, generalInfo.fromProgram(), charset);
-        writeText(buffer, OFFSET_TO_TRANID,    LENGTH_TO_TRANID,    generalInfo.toTranId(),    charset);
-        writeText(buffer, OFFSET_TO_PROGRAM,   LENGTH_TO_PROGRAM,   generalInfo.toProgram(),   charset);
-        writeText(buffer, OFFSET_USER_ID,      LENGTH_USER_ID,      generalInfo.userId(),      charset);
-        buffer[OFFSET_USER_TYPE]   = (byte) generalInfo.userType().indicator();
-        buffer[OFFSET_PGM_CONTEXT] = (byte) ('0' + generalInfo.pgmContext().indicator());
+        writeText(buffer, OFFSET_FROM_TRANID,  LENGTH_FROM_TRANID,  cdemoGeneralInfo.fromTranId(),  charset);
+        writeText(buffer, OFFSET_FROM_PROGRAM, LENGTH_FROM_PROGRAM, cdemoGeneralInfo.fromProgram(), charset);
+        writeText(buffer, OFFSET_TO_TRANID,    LENGTH_TO_TRANID,    cdemoGeneralInfo.toTranId(),    charset);
+        writeText(buffer, OFFSET_TO_PROGRAM,   LENGTH_TO_PROGRAM,   cdemoGeneralInfo.toProgram(),   charset);
+        writeText(buffer, OFFSET_USER_ID,      LENGTH_USER_ID,      cdemoGeneralInfo.userId(),      charset);
+        buffer[OFFSET_USER_TYPE]   = (byte) cdemoGeneralInfo.userType().indicator();
+        buffer[OFFSET_PGM_CONTEXT] = (byte) ('0' + cdemoGeneralInfo.pgmContext().indicator());
 
         // CDEMO-CUSTOMER-INFO
-        writeNumeric(buffer, OFFSET_CUST_ID,    LENGTH_CUST_ID,    customerInfo.custId());
-        writeText(   buffer, OFFSET_CUST_FNAME, LENGTH_CUST_FNAME, customerInfo.firstName(),  charset);
-        writeText(   buffer, OFFSET_CUST_MNAME, LENGTH_CUST_MNAME, customerInfo.middleName(), charset);
-        writeText(   buffer, OFFSET_CUST_LNAME, LENGTH_CUST_LNAME, customerInfo.lastName(),   charset);
+        writeNumeric(buffer, OFFSET_CUST_ID,    LENGTH_CUST_ID,    cdemoCustomerInfo.custId());
+        writeText(   buffer, OFFSET_CUST_FNAME, LENGTH_CUST_FNAME, cdemoCustomerInfo.firstName(),  charset);
+        writeText(   buffer, OFFSET_CUST_MNAME, LENGTH_CUST_MNAME, cdemoCustomerInfo.middleName(), charset);
+        writeText(   buffer, OFFSET_CUST_LNAME, LENGTH_CUST_LNAME, cdemoCustomerInfo.lastName(),   charset);
 
         // CDEMO-ACCOUNT-INFO
-        writeNumeric(buffer, OFFSET_ACCT_ID,     LENGTH_ACCT_ID,     accountInfo.acctId());
-        writeText(   buffer, OFFSET_ACCT_STATUS, LENGTH_ACCT_STATUS, accountInfo.acctStatus(), charset);
+        writeNumeric(buffer, OFFSET_ACCT_ID,     LENGTH_ACCT_ID,     cdemoAccountInfo.acctId());
+        writeText(   buffer, OFFSET_ACCT_STATUS, LENGTH_ACCT_STATUS, cdemoAccountInfo.acctStatus(), charset);
 
         // CDEMO-CARD-INFO
-        writeText(buffer, OFFSET_CARD_NUM, LENGTH_CARD_NUM, cardInfo.cardNum(), charset);
+        writeText(buffer, OFFSET_CARD_NUM, LENGTH_CARD_NUM, cdemoCardInfo.cardNum(), charset);
 
         // CDEMO-MORE-INFO
-        writeText(buffer, OFFSET_LAST_MAP,    LENGTH_LAST_MAP,    moreInfo.lastMap(),    charset);
-        writeText(buffer, OFFSET_LAST_MAPSET, LENGTH_LAST_MAPSET, moreInfo.lastMapset(), charset);
+        writeText(buffer, OFFSET_LAST_MAP,    LENGTH_LAST_MAP,    cdemoMoreInfo.lastMap(),    charset);
+        writeText(buffer, OFFSET_LAST_MAPSET, LENGTH_LAST_MAPSET, cdemoMoreInfo.lastMapset(), charset);
 
         return buffer;
+    }
+
+    //--------------------------------------------------------------------------
+    // PAN-safe toString() override (AAP §0.7.2)
+    //--------------------------------------------------------------------------
+
+    /**
+     * PAN-safe {@link Object#toString()} override per AAP &sect;0.7.2 logging
+     * mandate. Renders the commarea with the embedded card number masked to
+     * its last 4 digits via
+     * {@link CdemoCardInfo#maskedCardNum()} so that accidental
+     * {@code log.info("{}", commarea)} does NOT leak the cleartext PAN.
+     * All other commarea components (general info, customer info, account
+     * info, more info) are rendered using their respective record
+     * {@code toString()} methods, which in turn already redact or mask
+     * sensitive fields where required.
+     *
+     * <p>The actual {@link CdemoCardInfo#cardNum()} accessor still returns
+     * the full 16-digit PAN, so byte-level processing paths (parse / encode /
+     * persistence) are unaffected.
+     *
+     * @return a non-{@code null} string representation of this commarea
+     *         with the embedded PAN masked
+     */
+    @Override
+    public String toString() {
+        return "CardDemoCommarea["
+                + "cdemoGeneralInfo=" + cdemoGeneralInfo
+                + ", cdemoCustomerInfo=" + cdemoCustomerInfo
+                + ", cdemoAccountInfo=" + cdemoAccountInfo
+                + ", cdemoCardInfo=" + cdemoCardInfo
+                + ", cdemoMoreInfo=" + cdemoMoreInfo
+                + "]";
     }
 
     //--------------------------------------------------------------------------
@@ -922,8 +999,9 @@ public record CardDemoCommarea(
      * or if any character is not representable in US-ASCII (i.e., character
      * code point &gt; 0x7F).
      *
-     * <p>This method is invoked from the compact constructors of {@link GeneralInfo},
-     * {@link CustomerInfo}, {@link AccountInfo}, and {@link MoreInfo}. JEP 513
+     * <p>This method is invoked from the compact constructors of
+     * {@link CdemoGeneralInfo}, {@link CdemoCustomerInfo},
+     * {@link CdemoAccountInfo}, and {@link CdemoMoreInfo}. JEP 513
      * Flexible Constructor Bodies allow this validation to run before any
      * canonical field assignment, supporting COBOL-style input validation
      * (per AAP &sect;0.6.3).

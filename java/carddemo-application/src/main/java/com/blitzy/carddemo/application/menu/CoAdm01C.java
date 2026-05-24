@@ -148,9 +148,9 @@ public final class CoAdm01C {
         }
 
         // IF NOT CDEMO-PGM-REENTER → first display
-        if (!(commarea.generalInfo().pgmContext() instanceof PgmContext.Reenter)) {
-            CardDemoCommarea.GeneralInfo gi = commarea.generalInfo();
-            CardDemoCommarea.GeneralInfo reentered = new CardDemoCommarea.GeneralInfo(
+        if (!(commarea.cdemoGeneralInfo().pgmContext() instanceof PgmContext.Reenter)) {
+            CardDemoCommarea.CdemoGeneralInfo gi = commarea.cdemoGeneralInfo();
+            CardDemoCommarea.CdemoGeneralInfo reentered = new CardDemoCommarea.CdemoGeneralInfo(
                     gi.fromTranId(),
                     gi.fromProgram(),
                     gi.toTranId(),
@@ -158,7 +158,7 @@ public final class CoAdm01C {
                     gi.userId(),
                     gi.userType(),
                     PgmContext.REENTER);
-            CardDemoCommarea outbound = commarea.withGeneralInfo(reentered);
+            CardDemoCommarea outbound = commarea.withCdemoGeneralInfo(reentered);
             return Result.sendMap(sendMenuScreen(outbound, ""), outbound);
         }
 
@@ -210,8 +210,8 @@ public final class CoAdm01C {
         }
 
         // Build outbound commarea
-        CardDemoCommarea.GeneralInfo current = commarea.generalInfo();
-        CardDemoCommarea.GeneralInfo gi = new CardDemoCommarea.GeneralInfo(
+        CardDemoCommarea.CdemoGeneralInfo current = commarea.cdemoGeneralInfo();
+        CardDemoCommarea.CdemoGeneralInfo gi = new CardDemoCommarea.CdemoGeneralInfo(
                 TRANSACTION_ID,
                 PROGRAM_ID,
                 current.toTranId(),
@@ -219,7 +219,7 @@ public final class CoAdm01C {
                 current.userId(),
                 current.userType(),
                 PgmContext.ENTER);
-        CardDemoCommarea outbound = commarea.withGeneralInfo(gi);
+        CardDemoCommarea outbound = commarea.withCdemoGeneralInfo(gi);
 
         log.info("CoAdm01C: dispatching to {} for option {}", pgmName, option);
 

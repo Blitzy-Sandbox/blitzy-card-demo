@@ -79,12 +79,22 @@ import java.util.Objects;
  * {@code DISPLAY} convention; the 168-byte trailing {@code FILLER} is
  * preserved verbatim as a defensive byte-array copy.
  *
- * <h2>SSN handling</h2>
- * The SSN is stored as a 9-digit unsigned {@code long}. Per AAP &sect;0.7.2,
- * masking of sensitive identifiers (SSN, PAN) is the responsibility of the
- * presentation/{@code carddemo-application} layer; this domain record
- * carries the raw value with no masking applied. Callers that render the
- * record for logs, screens, or reports MUST mask the SSN at the rendering
+ * <h2>SSN and PII handling in {@link #toString()} (AAP &sect;0.7.2)</h2>
+ * The SSN is stored verbatim as a 9-digit unsigned {@code long} so that
+ * byte-for-byte fidelity is preserved at the {@link #parse(byte[])} /
+ * {@link #encode()} contract. However, the auto-generated record
+ * {@link #toString()} is <strong>overridden</strong> to redact the SSN,
+ * government-issued ID, date of birth, EFT account id, and address
+ * components so that an accidental {@code log.info("{}", customerRecord)}
+ * cannot leak Personally Identifiable Information (PII). The name
+ * components are still rendered (trimmed) since the customer name is
+ * not considered confidential in the COBOL design, but the more
+ * sensitive identifiers are replaced with non-reversible masks.
+ *
+ * <p>Callers that need to render the record for legitimate non-logging
+ * purposes (reports, audit trails, screens) must access the raw
+ * components ({@link #custSsn()}, {@link #custGovtIssuedId()}, etc.)
+ * directly and apply context-appropriate masking at the rendering
  * boundary.
  *
  * <h2>Immutability</h2>
@@ -99,7 +109,9 @@ import java.util.Objects;
 @CobolProgram(
         value = "CVCUS01Y",
         sourcePath = "app/cpy/CVCUS01Y.cpy",
-        notes = "500-byte CUSTOMER-RECORD; CUST-DOB-YYYY-MM-DD parsed as LocalDate per AAP §0.6.4"
+        notes = "500-byte CUSTOMER-RECORD; CUST-DOB-YYYY-MM-DD parsed as LocalDate per AAP §0.6.4; "
+                + "sensitive PII (SSN, govt-issued id, DOB, EFT account, addresses) redacted in "
+                + "toString() per AAP §0.7.2"
 )
 public record CustomerRecord(
         long custId,
@@ -625,5 +637,86 @@ public record CustomerRecord(
         result = 31 * result + Integer.hashCode(custFicoCreditScore);
         result = 31 * result + Arrays.hashCode(filler);
         return result;
+    }
+
+    // ========================================================================
+    // PII-safe toString override (AAP §0.7.2).
+    //
+    // The default record-generated toString() would emit every component,
+    // including SSN, government-issued id, date of birth, EFT account id,
+    // address lines, phone numbers, and FICO credit score — collectively a
+    // PII surface that must not leak into logs, exception messages, debugger
+    // displays, or any other Object.toString() consumer.
+    //
+    // This override redacts the sensitive components while keeping the
+    // customer id and trimmed name visible for diagnostic correlation. The
+    // SSN renders as "***-**-1234" (last 4 visible) so that operators can
+    // disambiguate records during incident triage without seeing the full
+    // 9-digit identifier. All other sensitive fields render as "[REDACTED]"
+    // markers.
+    //
+    // The masking is purely a presentation/logging concern; it does NOT
+    // alter the stored values, which remain accessible via the canonical
+    // record accessors for byte-level processing and legitimate report
+    // generation. The byte-for-byte round-trip invariant
+    // (parse(b).encode() == b) is therefore unaffected.
+    // ========================================================================
+
+    /**
+     * PII-redaction placeholder used in {@link #toString()} for sensitive
+     * customer fields (government-issued id, date of birth, EFT account
+     * id, address lines, phone numbers). The marker is deliberately
+     * fixed-length and obviously non-data so log readers can distinguish
+     * redaction from missing data.
+     */
+    private static final String REDACTED = "[REDACTED]";
+
+    /**
+     * Returns the SSN with all but the last 4 digits masked in standard
+     * US format ({@code "***-**-1234"}). The full 9-digit value is
+     * preserved in {@link #custSsn()} for legitimate processing paths.
+     *
+     * @return the masked SSN string; never {@code null}
+     */
+    public String maskedSsn() {
+        long last4 = custSsn % 10000L;
+        return String.format("***-**-%04d", last4);
+    }
+
+    /**
+     * Returns a PII-safe diagnostic string representation of this customer
+     * record. The customer id and (trimmed) name components are emitted in
+     * cleartext; the SSN is rendered as {@link #maskedSsn()}; and the
+     * date-of-birth, government-issued id, EFT account id, address lines,
+     * phone numbers, FICO score, and FILLER are replaced with the
+     * {@value #REDACTED} placeholder. This is the required override per
+     * AAP &sect;0.7.2 to prevent accidental PII disclosure via
+     * {@code log.info("{}", customerRecord)} and any other
+     * {@link Object#toString()} consumer.
+     *
+     * @return a PII-safe diagnostic string
+     */
+    @Override
+    public String toString() {
+        return "CustomerRecord["
+                + "custId=" + custId
+                + ", custFirstName=" + custFirstName.trim()
+                + ", custMiddleName=" + custMiddleName.trim()
+                + ", custLastName=" + custLastName.trim()
+                + ", custAddrLine1=" + REDACTED
+                + ", custAddrLine2=" + REDACTED
+                + ", custAddrLine3=" + REDACTED
+                + ", custAddrStateCd=" + custAddrStateCd
+                + ", custAddrCountryCd=" + custAddrCountryCd
+                + ", custAddrZip=" + REDACTED
+                + ", custPhoneNum1=" + REDACTED
+                + ", custPhoneNum2=" + REDACTED
+                + ", custSsn=" + maskedSsn()
+                + ", custGovtIssuedId=" + REDACTED
+                + ", custDobYyyyMmDd=" + REDACTED
+                + ", custEftAccountId=" + REDACTED
+                + ", custPriCardHolderInd=" + custPriCardHolderInd
+                + ", custFicoCreditScore=" + REDACTED
+                + ", filler=<" + FILLER_LENGTH + " bytes>]";
     }
 }

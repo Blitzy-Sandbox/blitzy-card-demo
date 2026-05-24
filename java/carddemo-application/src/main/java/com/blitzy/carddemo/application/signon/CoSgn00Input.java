@@ -159,7 +159,8 @@ import java.util.Objects;
         notes = "BMS input map COSGN0AI fields. Translated from BMS symbolic structure in "
                 + "COSGN00.CPY and BMS map definition in COSGN00.bms. Driven by online "
                 + "program app/cbl/COSGN00C.cbl (signon, transaction CC00). USRSEC password "
-                + "is preserved as PIC X(8) plaintext per AAP §0.1.3."
+                + "is preserved as PIC X(8) plaintext per AAP §0.1.3; masked in toString() "
+                + "per AAP §0.7.2 to prevent credential leakage into log surfaces."
 )
 public record CoSgn00Input(
         String trnName,
@@ -409,5 +410,74 @@ public record CoSgn00Input(
     public CoSgn00Input withErrMsg(String v) {
         return new CoSgn00Input(trnName, title01, curDate, pgmName, title02, curTime,
                 applId, sysId, userId, passwd, v);
+    }
+
+    // ====================================================================
+    // Password-masking toString override (AAP §0.7.2 / §0.1.3)
+    //
+    // The default record-generated toString() emits every component,
+    // including the cleartext PASSWD field. That cleartext value would
+    // leak the user-typed credential into any sink that consumes
+    // Object.toString(): SLF4J loggers (log.info("{}", input)), AssertJ
+    // failure messages, IDE debugger displays, exception getMessage()
+    // calls, and accidental System.out.println(this) statements.
+    //
+    // The override replaces the passwd component with the fixed
+    // PASSWORD_MASK constant while emitting every other component in
+    // its canonical form. The masking is purely a presentation/logging
+    // concern: it does NOT alter the stored value, which remains
+    // accessible via the canonical passwd() accessor for the
+    // CoSgn00C credential-comparison path.
+    //
+    // This is the same defense-in-depth pattern applied to
+    // SecUserData, CoUsr01Output, CoUsr01Input, and CoUsr02Input.
+    // ====================================================================
+
+    /**
+     * Defense-in-depth mask used by {@link #toString()} so the cleartext
+     * password the operator typed never leaks into logs, stack traces,
+     * or debugger output. The mask preserves the COBOL/BMS field length
+     * ({@value #PASSWD_WIDTH} characters) and uses the conventional
+     * asterisk glyph.
+     */
+    private static final String PASSWORD_MASK = "********";
+
+    /**
+     * Returns a debug-friendly string representation of this DTO with the
+     * plaintext password component <strong>masked</strong>. This override
+     * is REQUIRED so that an accidental
+     * {@code log.info("{}", input)} does NOT leak the cleartext password
+     * the user typed into the {@code COSGN00} signon screen. Per AAP
+     * &sect;0.7.2 (<em>"preserve all existing PCI-relevant controls"</em>)
+     * and AAP &sect;0.1.3 (the plaintext-storage-but-no-cleartext-logging
+     * separation of concerns), the password value MUST be replaced by a
+     * non-reversible mask in every string-coerced representation of this
+     * record.
+     *
+     * <p>The masking is purely a defense-in-depth measure; it does not
+     * alter the stored password value, which remains accessible via
+     * {@link #passwd()} for the {@code COSGN00C} credential-comparison
+     * path.
+     *
+     * @return a credential-safe diagnostic string of the form
+     *         {@code "CoSgn00Input[trnName=..., title01=..., curDate=...,
+     *         pgmName=..., title02=..., curTime=..., applId=..., sysId=...,
+     *         userId=..., passwd=********, errMsg=...]"}
+     */
+    @Override
+    public String toString() {
+        return "CoSgn00Input["
+                + "trnName=" + trnName
+                + ", title01=" + title01
+                + ", curDate=" + curDate
+                + ", pgmName=" + pgmName
+                + ", title02=" + title02
+                + ", curTime=" + curTime
+                + ", applId=" + applId
+                + ", sysId=" + sysId
+                + ", userId=" + userId
+                + ", passwd=" + PASSWORD_MASK
+                + ", errMsg=" + errMsg
+                + "]";
     }
 }

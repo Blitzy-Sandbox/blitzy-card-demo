@@ -45,6 +45,13 @@ import module java.base;
 // always resolvable.
 import com.blitzy.carddemo.domain.text.CcWorkAreas.AidKey;
 
+// AAP §0.7.1 traceability mandate: every translated BMS DTO must cite its
+// original BMS / symbolic-copybook source via the @CobolProgram annotation
+// declared in the carddemo-domain module. carddemo-application declares
+// carddemo-domain as a direct dependency in its pom.xml, so the annotation
+// is on the classpath and resolvable here.
+import com.blitzy.carddemo.domain.annotation.CobolProgram;
+
 /**
  * BMS input record for the {@code CORPT0A} / {@code CORPT00}
  * Print-Transaction-Reports screen (CICS transaction {@code CR00}, online
@@ -249,6 +256,16 @@ import com.blitzy.carddemo.domain.text.CcWorkAreas.AidKey;
  * @see CoRpt00Output
  * @see com.blitzy.carddemo.domain.text.CcWorkAreas.AidKey
  */
+@CobolProgram(
+        value = "CORPT00",
+        sourcePath = "app/bms/CORPT00.bms",
+        translationDate = "2025-10-15",
+        notes = "BMS entry-contract DTO (input side); symbolic copybook 01 CORPT0AI "
+                + "in app/cpy-bms/CORPT00.CPY (lines 17-120). Driven by online program "
+                + "app/cbl/CORPT00C.cbl (transaction CR00 — Print Transaction Reports). "
+                + "AidKey is synthesized from EIBAID and carried as part of the entry "
+                + "contract per AAP §0.6.10."
+)
 public record CoRpt00Input(
         String monthly,        // MONTHLYI  PIC X(1)
         String yearly,         // YEARLYI   PIC X(1)
