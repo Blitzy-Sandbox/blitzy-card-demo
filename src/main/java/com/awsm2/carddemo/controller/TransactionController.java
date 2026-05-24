@@ -57,7 +57,7 @@ import org.springframework.web.bind.annotation.RestController;
  *   <li>{@code app/cbl/COTRN01C.cbl} (CICS transaction id {@code CT01})
  *       &mdash; Transaction detail by transaction ID; rendered via
  *       {@code app/bms/COTRN01.bms}. The Java target uses
- *       {@link TransactionDetailService#viewTransaction(String)}.</li>
+ *       {@link TransactionDetailService#getTransactionDetail(String)}.</li>
  *   <li>{@code app/cbl/COTRN02C.cbl} (CICS transaction id {@code CT02})
  *       &mdash; Transaction add with confirmation flow; generates a
  *       new transaction ID via MAX-TRAN-ID+1 (originally implemented
@@ -267,7 +267,7 @@ public class TransactionController {
         // COBOL: COTRN01C / Tran-ID CT01 -- READ-TRANSACT-FILE
         //   (delegates to TransactionDetailService per AAP §0.4.1).
         LOG.debug("Transaction detail requested for tranId={}", id);
-        TransactionDetailDto detail = transactionDetailService.viewTransaction(id);
+        TransactionDetailDto detail = transactionDetailService.getTransactionDetail(id);
         return ResponseEntity.ok(ApiResponse.success(detail));
     }
 
