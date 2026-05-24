@@ -29,6 +29,7 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
@@ -276,7 +277,29 @@ public class CardController {
             @Parameter(
                     description = "0-based page index; defaults to 0 when omitted",
                     example = "0")
-            int page) {
+            int page,
+
+            // Issue CP4-#15: page size is validated at the controller
+            // boundary to prevent DoS via excessive size requests. The
+            // COBOL COCRDLIC contract fixes the page at 7 rows (the
+            // height of the BMS COCRDLI map's WS-MAX-SCREEN-LINES); the
+            // service enforces this internally via PAGE_SIZE=7. The
+            // size query parameter is accepted for OpenAPI forward
+            // compatibility and to ensure invalid values are rejected
+            // explicitly (400 Bad Request) rather than silently
+            // ignored. Bounded to [1, 100] per QA recommendation.
+            @RequestParam(name = "size", required = false, defaultValue = "7")
+            @Min(value = 1, message = "size must be >= 1")
+            @Max(value = 100, message = "size must be <= 100")
+            @Parameter(
+                    description = "Requested page size; bounded to [1, 100] to prevent "
+                            + "DoS via excessive page requests. The service caps the "
+                            + "effective page size at 7 to preserve the COBOL "
+                            + "COCRDLIC BMS row-repeat contract (PAGE_SIZE=7). "
+                            + "Values >7 are silently capped; values outside "
+                            + "[1, 100] are rejected with HTTP 400.",
+                    example = "7")
+            int size) {
         // COBOL: COCRDLIC / Tran-ID CCLI -- 0000-MAIN paginated browse
         //   (delegates to CardListService which preserves the COBOL
         //   PAGE_SIZE=7 from WS-MAX-SCREEN-LINES and role-driven
@@ -289,8 +312,14 @@ public class CardController {
         // PCI-DSS-safe traceability log (AAP §0.6.6 / §0.7.2): only
         // non-sensitive account ID + page index emitted; no card number
         // leaks into operational logs.
-        LOG.debug("Card list requested: accountId={} isAdmin={} page={}",
-                accountId, isAdmin, page);
+        // Issue CP4-#15: size is validated at the controller boundary
+        // (@Min(1) @Max(100)) but the service enforces the COBOL
+        // PAGE_SIZE=7 contract internally. The size parameter
+        // therefore acts only as a DoS guard; it is intentionally not
+        // plumbed into the service method to preserve the COBOL
+        // page-shape contract per the AAP Minimal Change Clause.
+        LOG.debug("Card list requested: accountId={} isAdmin={} page={} requestedSize={} (effective=7)",
+                accountId, isAdmin, page, size);
         CardListDto cardList = cardListService.listCards(accountId, isAdmin, page);
         return ResponseEntity.ok(ApiResponse.success(cardList));
     }

@@ -246,8 +246,13 @@ import java.time.LocalDateTime;
                 + "PAN values are masked in toString() per PCI-DSS Requirement 3.4.")
 public record TransactionAddDto(
 
+        // COBOL: COTRN02C line 199 "Account ID must be Numeric..." (verbatim,
+        // Issue CP4-#2). The COBOL test is `IS NUMERIC` which fires when a
+        // value is present but non-numeric — translated to the @Pattern
+        // numeric check below. The cross-field "must be entered" rule
+        // (COBOL line 226) is enforced server-side in the service validate().
         @Pattern(regexp = "^\\d{11}$",
-                message = "Account ID must be exactly 11 digits")
+                message = "Account ID must be Numeric...")
         @Schema(description = "11-digit account identifier (optional if cardNumber is "
                         + "supplied; the service resolves the missing identifier via "
                         + "the CARDXREF cross-reference). Maps to BMS ACTIDIN PIC X(11).",
@@ -256,8 +261,10 @@ public record TransactionAddDto(
         @JsonProperty("accountId")
         String accountId,
 
+        // COBOL: COTRN02C line 213 "Card Number must be Numeric..." (verbatim,
+        // Issue CP4-#2).
         @Pattern(regexp = "^\\d{16}$",
-                message = "Card number must be exactly 16 digits")
+                message = "Card Number must be Numeric...")
         @Schema(description = "16-digit card number / Primary Account Number (PAN), "
                         + "optional if accountId is supplied. Maps to BMS CARDNIN PIC X(16) "
                         + "and to TRAN-CARD-NUM PIC X(16) on the record. The toString() "
@@ -268,9 +275,11 @@ public record TransactionAddDto(
         @JsonProperty("cardNumber")
         String cardNumber,
 
-        @NotBlank(message = "Transaction type is required")
+        // COBOL: COTRN02C line 254 "Type CD can NOT be empty..." and line 325
+        // "Type CD must be Numeric..." (verbatim, Issue CP4-#2).
+        @NotBlank(message = "Type CD can NOT be empty...")
         @Pattern(regexp = "^\\d{2}$",
-                message = "Transaction type must be 2 digits")
+                message = "Type CD must be Numeric...")
         @Schema(description = "Transaction type code (2 digits; foreign key into the "
                         + "transaction_type table). Maps to BMS TTYPCD PIC X(02) and to "
                         + "TRAN-TYPE-CD PIC X(02) on the record.",
@@ -280,7 +289,11 @@ public record TransactionAddDto(
         @JsonProperty("transactionType")
         String transactionType,
 
-        @NotNull(message = "Transaction category is required")
+        // COBOL: COTRN02C line 260 "Category CD can NOT be empty..." (verbatim,
+        // Issue CP4-#2). The line 331 "Category CD must be Numeric..." check
+        // is structurally enforced by the Integer Java type — JSON parsing
+        // rejects non-numeric values at Jackson layer before validation.
+        @NotNull(message = "Category CD can NOT be empty...")
         @Schema(description = "Transaction category code (4 digits; foreign key into the "
                         + "transaction_category table). Maps to BMS TCATCD PIC X(04) and to "
                         + "TRAN-CAT-CD PIC 9(04) on the record.",
@@ -289,9 +302,12 @@ public record TransactionAddDto(
         @JsonProperty("transactionCategory")
         Integer transactionCategory,
 
-        @NotBlank(message = "Transaction source is required")
+        // COBOL: COTRN02C line 266 "Source can NOT be empty..." (verbatim,
+        // Issue CP4-#2). The 10-char cap is enforced by @Size for the JSON
+        // contract; no separate COBOL message exists for over-length.
+        @NotBlank(message = "Source can NOT be empty...")
         @Size(max = 10,
-                message = "Transaction source must be at most 10 characters")
+                message = "Source can NOT be empty...")
         @Schema(description = "Free-text transaction source (e.g., \"ONLINE\", \"BATCH\", "
                         + "\"MOBILE\"). Maps to BMS TRNSRC PIC X(10) and to "
                         + "TRAN-SOURCE PIC X(10) on the record.",
@@ -301,9 +317,11 @@ public record TransactionAddDto(
         @JsonProperty("source")
         String source,
 
-        @NotBlank(message = "Description is required")
+        // COBOL: COTRN02C line 272 "Description can NOT be empty..." (verbatim,
+        // Issue CP4-#2).
+        @NotBlank(message = "Description can NOT be empty...")
         @Size(max = 100,
-                message = "Description must be at most 100 characters")
+                message = "Description can NOT be empty...")
         @Schema(description = "Free-text transaction description. Maps to BMS "
                         + "TDESC PIC X(60) on the screen, but the underlying "
                         + "TRAN-DESC PIC X(100) record field permits up to 100 "
@@ -315,13 +333,14 @@ public record TransactionAddDto(
         @JsonProperty("description")
         String description,
 
-        @NotNull(message = "Amount is required")
+        // COBOL: COTRN02C line 278 "Amount can NOT be empty..." and line 344
+        // "Amount should be in format -99999999.99" (verbatim, Issue CP4-#2).
+        @NotNull(message = "Amount can NOT be empty...")
         @Digits(integer = 9,
                 fraction = 2,
-                message = "Amount must have at most 9 integer digits and 2 fraction digits "
-                        + "(S9(09)V99)")
+                message = "Amount should be in format -99999999.99")
         @DecimalMin(value = "-999999999.99",
-                message = "Amount must be at least -999999999.99 (S9(09)V99 lower bound)")
+                message = "Amount should be in format -99999999.99")
         @Schema(description = "Signed monetary amount. Maps to BMS TRNAMT PIC X(12) "
                         + "(displayed as -99999999.99 with sign and decimal point) and to "
                         + "TRAN-AMT PIC S9(09)V99 on the record. Positive values represent "
@@ -335,7 +354,11 @@ public record TransactionAddDto(
         @JsonProperty("amount")
         BigDecimal amount,
 
-        @NotNull(message = "Origination date is required")
+        // COBOL: COTRN02C line 284 "Orig Date can NOT be empty..." (verbatim,
+        // Issue CP4-#2). The "should be in format YYYY-MM-DD" (line 356) and
+        // "Not a valid date" (line 401) error strings are emitted by the
+        // service-level validate() method after the @NotNull check fires.
+        @NotNull(message = "Orig Date can NOT be empty...")
         @JsonFormat(shape = JsonFormat.Shape.STRING,
                 pattern = "yyyy-MM-dd'T'HH:mm:ss")
         @Schema(description = "Origination timestamp supplied by the operator/client "
@@ -369,7 +392,11 @@ public record TransactionAddDto(
          * {@code CSUTLDPY.cpy} and {@code CSUTLDTC.cbl}) per AAP
          * &sect;0.6.3.
          */
-        @NotNull(message = "Processing date is required")
+        // COBOL: COTRN02C line 290 "Proc Date can NOT be empty..." (verbatim,
+        // Issue CP4-#2). The "should be in format YYYY-MM-DD" (line 369) and
+        // "Not a valid date" (line 421) error strings are emitted by the
+        // service-level validate() method after the @NotNull check fires.
+        @NotNull(message = "Proc Date can NOT be empty...")
         @JsonFormat(shape = JsonFormat.Shape.STRING,
                 pattern = "yyyy-MM-dd'T'HH:mm:ss")
         @Schema(description = "Processing timestamp supplied by the operator/client "
@@ -388,7 +415,11 @@ public record TransactionAddDto(
         @JsonProperty("processingTimestamp")
         LocalDateTime processingTimestamp,
 
-        @NotNull(message = "Merchant ID is required")
+        // COBOL: COTRN02C line 296 "Merchant ID can NOT be empty..." and line
+        // 432 "Merchant ID must be Numeric..." (verbatim, Issue CP4-#2). The
+        // numeric check is structurally enforced by Long Java type — Jackson
+        // rejects non-numeric values before validation fires.
+        @NotNull(message = "Merchant ID can NOT be empty...")
         @Schema(description = "9-digit merchant identifier. Maps to BMS MID PIC X(09) and "
                         + "to TRAN-MERCHANT-ID PIC 9(09) on the record.",
                 example = "100000001",
@@ -396,9 +427,11 @@ public record TransactionAddDto(
         @JsonProperty("merchantId")
         Long merchantId,
 
-        @NotBlank(message = "Merchant name is required")
+        // COBOL: COTRN02C line 302 "Merchant Name can NOT be empty..."
+        // (verbatim, Issue CP4-#2).
+        @NotBlank(message = "Merchant Name can NOT be empty...")
         @Size(max = 50,
-                message = "Merchant name must be at most 50 characters")
+                message = "Merchant Name can NOT be empty...")
         @Schema(description = "Merchant name. Maps to BMS MNAME PIC X(30) on the screen, "
                         + "but the underlying TRAN-MERCHANT-NAME PIC X(50) record field "
                         + "permits up to 50 characters; the wider capacity is honored here "
@@ -409,9 +442,11 @@ public record TransactionAddDto(
         @JsonProperty("merchantName")
         String merchantName,
 
-        @NotBlank(message = "Merchant city is required")
+        // COBOL: COTRN02C line 308 "Merchant City can NOT be empty..."
+        // (verbatim, Issue CP4-#2).
+        @NotBlank(message = "Merchant City can NOT be empty...")
         @Size(max = 50,
-                message = "Merchant city must be at most 50 characters")
+                message = "Merchant City can NOT be empty...")
         @Schema(description = "Merchant city. Maps to BMS MCITY PIC X(25) on the screen, "
                         + "but the underlying TRAN-MERCHANT-CITY PIC X(50) record field "
                         + "permits up to 50 characters; the wider capacity is honored here "
@@ -423,9 +458,11 @@ public record TransactionAddDto(
         @JsonProperty("merchantCity")
         String merchantCity,
 
-        @NotBlank(message = "Merchant ZIP is required")
+        // COBOL: COTRN02C line 314 "Merchant Zip can NOT be empty..." (verbatim,
+        // Issue CP4-#2).
+        @NotBlank(message = "Merchant Zip can NOT be empty...")
         @Size(max = 10,
-                message = "Merchant ZIP must be at most 10 characters")
+                message = "Merchant Zip can NOT be empty...")
         @Schema(description = "Merchant ZIP code (US 5 or 9 digit; either '98101' or "
                         + "'98101-1234' form is accepted). Maps to BMS MZIP PIC X(10) "
                         + "and to TRAN-MERCHANT-ZIP PIC X(10) on the record.",
@@ -435,8 +472,12 @@ public record TransactionAddDto(
         @JsonProperty("merchantZip")
         String merchantZip,
 
+        // COBOL: COTRN02C line 184 "Invalid value. Valid values are (Y/N)..."
+        // (verbatim, Issue CP4-#2). The blank/empty case (line 178 "Confirm
+        // to add this transaction...") is handled in the service-level
+        // validate() since it is conceptually a prompt, not a rejection.
         @Pattern(regexp = "^[YN]$",
-                message = "Confirmation must be 'Y' or 'N'")
+                message = "Invalid value. Valid values are (Y/N)...")
         @Schema(description = "Confirmation flag: 'Y' to post the transaction, 'N' to "
                         + "cancel without posting. Maps to BMS CONFIRM PIC X(01). This "
                         + "field is transient and is not persisted on the TRAN-RECORD; the "

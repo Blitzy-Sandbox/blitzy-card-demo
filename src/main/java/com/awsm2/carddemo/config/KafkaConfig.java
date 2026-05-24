@@ -446,9 +446,30 @@ public class KafkaConfig {
         // JsonDeserializer security + type-resolution hardening (AAP §0.6.6).
         // -----------------------------------------------------------------
         props.put(JsonDeserializer.TRUSTED_PACKAGES, trustedPackages);
-        // Inform JsonDeserializer to consult __TypeId__ headers from the producer
-        // when present; on absence, the listener-declared target type is used.
-        props.put(JsonDeserializer.USE_TYPE_INFO_HEADERS, true);
+        // Type-resolution contract (CP4 QA Issue #4): the producer side is
+        // explicitly configured with `spring.json.add.type.headers=false`
+        // (see application.yml L263 producer block) because events are
+        // routed by topic, not by Java class. Requiring `__TypeId__`
+        // headers on the consumer side here would mismatch with that
+        // producer contract and silently route 100% of events to the DLT
+        // with "No type information in headers and no default type
+        // provided" — exactly the breakage the QA observed. Therefore we
+        // disable USE_TYPE_INFO_HEADERS and rely on each `@KafkaListener`
+        // method to declare its target type via the `@Payload` parameter
+        // (the listener's container factory + payload type wins when no
+        // header is present), which preserves strong per-listener type
+        // safety without coupling producer and consumer to a shared class
+        // name.
+        props.put(JsonDeserializer.USE_TYPE_INFO_HEADERS, false);
+        // Explicit safety net (AAP §0.6.5): if a future listener forgets
+        // to declare its `@Payload` type (e.g., a `ConsumerRecord<?,?>` or
+        // raw `Object` payload), JSON bodies should still resolve to a
+        // generic LinkedHashMap rather than throwing
+        // IllegalStateException. JsonDeserializer applies the default
+        // type only when no header is present AND no listener-declared
+        // type can be inferred from the @KafkaListener method signature.
+        props.put(JsonDeserializer.VALUE_DEFAULT_TYPE,
+                "java.util.LinkedHashMap");
 
         return new DefaultKafkaConsumerFactory<>(props);
     }

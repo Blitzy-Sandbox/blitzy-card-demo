@@ -483,8 +483,53 @@ public class TransactionDetailService {
                 t.getTranMerchantName(),
                 t.getTranMerchantCity(),
                 t.getTranMerchantZip(),
-                t.getTranCardNum(),
+                // PAN masking — PCI-DSS Requirement 3.4.1 enforced at
+                // the producer so the wire DTO never carries the full
+                // PAN. Issue CP4-#13: previous behavior returned the
+                // unmasked card number on this detail endpoint while
+                // the list endpoint correctly masked it. Both endpoints
+                // now use the identical "************XXXX" 12-asterisk
+                // + last-4 pattern as TransactionListService.maskPan
+                // and CardListService.maskPan.
+                maskPan(t.getTranCardNum()),
                 t.getTranOrigTs(),
                 t.getTranProcTs());
+    }
+
+    /**
+     * Masks a card-number string for PCI-DSS-compliant transmission.
+     *
+     * <p>Applies the canonical {@code "************XXXX"} format
+     * (12 leading asterisks + the trailing 4 characters of the input).
+     * This implementation mirrors {@code TransactionListService.maskPan}
+     * and {@code CardListService.maskPan} verbatim to guarantee
+     * identical PAN-masking semantics across all list-and-detail
+     * endpoints (Issue CP4-#13). PCI-DSS v4.0 Requirement 3.4.1
+     * (mask all but the last 4) is satisfied: at most the last 4
+     * characters are revealed.</p>
+     *
+     * <p>Defensive handling:</p>
+     * <ul>
+     *   <li>{@code null} or shorter-than-4 input &rarr; returns
+     *       {@code "****"} (fully masked) so no partial digits ever
+     *       leak.</li>
+     *   <li>Standard 16-character input (the
+     *       {@code TRAN-CARD-NUM PIC X(16)} COBOL contract) &rarr;
+     *       returns 12 asterisks + last 4 digits.</li>
+     * </ul>
+     *
+     * @param pan the card-number string to mask; may be {@code null}
+     * @return a non-{@code null} masked representation; never reveals
+     *         more than the last 4 characters of the input
+     */
+    // COBOL: COTRN01C had no PAN masking — the legacy 3270 screen
+    // displayed the full 16-digit TRAN-CARD-NUM. PAN masking is a
+    // Java-side PCI-DSS guard rail added per AAP §0.6.6 and Issue
+    // CP4-#13 so the REST DTO is consistent with the list endpoint.
+    private static String maskPan(String pan) {
+        if (pan == null || pan.length() < 4) {
+            return "****";
+        }
+        return "************" + pan.substring(pan.length() - 4);
     }
 }

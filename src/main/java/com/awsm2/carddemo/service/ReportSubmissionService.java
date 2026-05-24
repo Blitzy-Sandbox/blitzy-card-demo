@@ -23,6 +23,8 @@ import com.awsm2.carddemo.exception.ValidationException;
 import com.awsm2.carddemo.validation.DateValidationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -375,13 +377,15 @@ public class ReportSubmissionService {
         // CONFIRMI = 'Y'/'y' to proceed; anything else aborts.
         validateConfirmation(request.confirm());
 
-        // ---- Step 3 — generate UUID requestId ----
+        // ---- Step 3 — generate per-submission requestId ----
         // The COBOL source used a fixed JCL job name ('TRNRPT00') with
         // no per-submission identifier; the Java target generates a
-        // unique UUID so each submission is independently traceable.
-        // The UUID also serves as the MSK partition key (per AAP §0.6.5
-        // — reports are independent so per-request ordering suffices).
-        final String requestId = UUID.randomUUID().toString();
+        // unique requestId so each submission is independently traceable.
+        // Format: "<USER-ID>-<UUID>" so the carrying body retains the
+        // global uniqueness needed for downstream correlation while
+        // preserving the USER-ID prefix for human-readable audit.
+        final String userId = resolveCurrentUserId();
+        final String requestId = userId + "-" + UUID.randomUUID();
 
         // ---- Step 4 — publish report.requested to MSK ----
         // COBOL: CORPT00C:WIRTE-JOBSUB-TDQ (lines 515-535) —
@@ -390,7 +394,18 @@ public class ReportSubmissionService {
         // The MSK consumer (Step Functions trigger Lambda) reads the
         // event and starts the transaction-report state machine which
         // submits the AWS Batch job equivalent of TRANREPT.jcl.
-        kafkaEventPublisher.publishReportRequested(requestId, request);
+        //
+        // Issue CP4-#11: partition key = USER-ID (NOT the UUID-bearing
+        // requestId). Per AAP §0.6.5 ("MSK topic ordering guarantees
+        // for financial transactions — partition by USER-ID for the
+        // report.requested topic per the JWT principal that submitted
+        // the report"). All report submissions for a given user land on
+        // a single partition, guaranteeing the user observes their own
+        // submissions in submission order even when the consumer fans
+        // out across partitions. The full requestId continues to
+        // appear inside the event payload (via the ReportRequestDto)
+        // and in the audit log for downstream correlation.
+        kafkaEventPublisher.publishReportRequested(userId, request);
 
         // ---- Step 5 — emit audit event ----
         // Replaces: COBOL DISPLAY 'PROCESS ENTER KEY' (line 210) and
@@ -707,6 +722,40 @@ public class ReportSubmissionService {
      */
     private static String normalize(String value) {
         return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    /**
+     * Resolves the current authenticated user's USER-ID from the Spring
+     * Security context. The {@code JwtAuthenticationFilter} populates the
+     * {@code Authentication.name} with the JWT subject (the COBOL
+     * {@code USRID PIC X(8)} value &mdash; e.g., {@code "ADMIN001"},
+     * {@code "USER0001"}). This USER-ID becomes the MSK partition key
+     * for the {@code report.requested} topic per Issue CP4-#11.
+     *
+     * <p>The COBOL source {@code app/cbl/CORPT00C.cbl} reads {@code USRID}
+     * from the {@code CARDDEMO-COMMAREA} (line 64 of {@code COCOM01Y.cpy})
+     * which is populated by the {@code COSGN00C} sign-on program. The
+     * Java target uses JWT claims as the COMMAREA equivalent per AAP
+     * &sect;0.1.1 ("CICS pseudo-conversational COMMAREA state is replaced
+     * by stateless REST with JWT").</p>
+     *
+     * @return the authenticated principal's USER-ID, or {@code "ANONYMOUS"}
+     *         if no security context is bound (defensive — should never
+     *         happen because {@code @PreAuthorize("hasAnyRole('USER',
+     *         'ADMIN')")} on the controller method gates anonymous
+     *         requests upstream)
+     */
+    // Replaces: COBOL CDEMO-USER-ID extraction from CARDDEMO-COMMAREA
+    // (CORPT00C lines 165, 207). JWT principal name carries the same
+    // value end-to-end per AAP §0.1.1 (JWT replaces CICS COMMAREA).
+    private String resolveCurrentUserId() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || auth.getName() == null || auth.getName().isBlank()) {
+            // Defense-in-depth — should never occur because the
+            // controller's @PreAuthorize requires authentication.
+            return "ANONYMOUS";
+        }
+        return auth.getName();
     }
 
     // =====================================================================

@@ -194,46 +194,60 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Apache Kafka 3.7 (Bitnami KRaft single-node) — replaces Amazon MSK in
-  # production and CICS TDQ from the COBOL source (AAP §0.6.5). KRaft mode
-  # eliminates the need for a separate Zookeeper container. Topics are
-  # auto-created in local dev only; production topics are managed by
+  # Apache Kafka (apache/kafka official image, KRaft single-node) — replaces
+  # Amazon MSK in production and CICS TDQ from the COBOL source (AAP §0.6.5).
+  # KRaft mode eliminates the need for a separate Zookeeper container. Topics
+  # are auto-created in local dev only; production topics are managed by
   # Terraform (infrastructure/terraform/msk.tf).
+  #
+  # Image / env-var contract: the official apache/kafka image consumes
+  # broker configuration through KAFKA_* environment variables WITHOUT the
+  # "_CFG_" infix that the older bitnami/kafka image required. Using the
+  # wrong prefix silently no-ops (env vars are dropped), which historically
+  # left the broker with default offsets.topic.replication.factor=3 against
+  # a single-broker quorum and broke __consumer_offsets auto-creation,
+  # rebalance, and ALL @KafkaListener registrations (CP4 QA Issue #14).
+  # Every variable below uses the apache/kafka KAFKA_* form and the
+  # single-broker durability overrides necessary for the local dev quorum.
   # ---------------------------------------------------------------------------
   kafka:
-    image: bitnami/kafka:3.7
+    image: apache/kafka:latest
     container_name: carddemo-kafka
     ports:
       - "9092:9092"
     environment:
       # KRaft mode (no Zookeeper) — single node combined controller + broker.
-      KAFKA_CFG_NODE_ID: "0"
-      KAFKA_CFG_PROCESS_ROLES: "controller,broker"
-      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "0@kafka:9093"
+      KAFKA_NODE_ID: "0"
+      KAFKA_PROCESS_ROLES: "controller,broker"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "0@kafka:9093"
       # Listeners: 9092 for client traffic, 9093 for inter-broker controller.
-      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
-      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
-      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
-      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
       # Auto-create topics is enabled for local dev only — production uses
       # Terraform-defined topics (AAP §0.6.5).
-      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       # Producer durability defaults match the AAP §0.6.5 ordering invariant
-      # (acks=all, idempotent producer).
-      KAFKA_CFG_DEFAULT_REPLICATION_FACTOR: "1"
-      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
-      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
-      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: "1"
-      KAFKA_CFG_MIN_INSYNC_REPLICAS: "1"
-      # Allow PLAINTEXT for local dev (production uses SASL_SSL via IAM auth).
-      ALLOW_PLAINTEXT_LISTENER: "yes"
+      # (acks=all, idempotent producer). Single-broker overrides MUST be 1
+      # so __consumer_offsets, __transaction_state, and user topics can be
+      # auto-created on a quorum of one (CP4 QA Issue #14 resolution).
+      KAFKA_DEFAULT_REPLICATION_FACTOR: "1"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_MIN_INSYNC_REPLICAS: "1"
+      # KRaft data dir — must match the volume mount below. The apache/kafka
+      # image defaults to /tmp/kraft-combined-logs but that is ephemeral
+      # tmpfs and prone to wipe across restarts; pin to /var/lib/kafka/data.
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
     volumes:
-      - kafka-data:/bitnami/kafka
+      - kafka-data:/var/lib/kafka/data
     healthcheck:
-      # kafka-broker-api-versions.sh ships with the Bitnami image at
-      # /opt/bitnami/kafka/bin/ (on PATH).
-      test: ["CMD-SHELL", "kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
+      # kafka-broker-api-versions.sh ships with the apache/kafka image at
+      # /opt/kafka/bin/ (NOT on PATH — invoke with full path).
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 10s
       retries: 15

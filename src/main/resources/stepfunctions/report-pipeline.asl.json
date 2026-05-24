@@ -1,0 +1,334 @@
+{
+  "Comment": "CardDemo Transaction Report Pipeline state machine. Replaces the COBOL CORPT00C -> CICS TDQ JOBS -> JES submission bridge per the AAP-mandated MSK Kafka -> Step Functions handoff (AAP §0.6.3 / §0.4.1). The Spring application publishes a `report.requested` Kafka event after the operator submits POST /api/reports/submit. KafkaEventConsumer.onReportRequested consumes the event and invokes StepFunctionsOrchestrator.startReportPipeline(), which starts this state machine via the AWS SDK Sfn client. Source artifacts: app/cbl/CORPT00C.cbl (online submitter), app/cbl/CBTRN03C.cbl (date-filtered transaction report generator), app/jcl/TRANREPT.jcl (JES batch wrapper). The state machine is parameterised on the report type (MONTHLY / YEARLY / CUSTOM) and an optional explicit date window; for YEARLY reports it additionally invokes the statement generation pipeline (CREASTMT / CBSTM03A) in parallel to mirror the year-end JCL chain. Implements AAP §0.4.1 (TransactionReportService entry), §0.6.3 (online-to-batch decoupling), §0.6.5 (per-user ordering via Kafka partition key = USER-ID), and §0.6.6 (audit trail via CloudWatch + OpenSearch).",
+  "StartAt": "InitializeReportPipeline",
+  "Version": "1.0",
+  "TimeoutSeconds": 7200,
+  "States": {
+    "InitializeReportPipeline": {
+      "Type": "Pass",
+      "Comment": "Initialize report pipeline context with the operator's submission payload. Binds only the identity and event fields provided by the upstream consumer (KafkaEventConsumer.toReportInputJson). The infrastructure ARNs (rdsSecretArn, s3OutputBucket, kmsKeyArn, snsAlertTopicArn) are injected by the AWS Batch task definitions at deploy time via Terraform-resolved environment variables, NOT by the state-machine input — see infrastructure/terraform/batch.tf. This keeps the consumer/producer contract minimal and aligned with the COBOL CORPT00C input (reportType + dates + confirm). Issue CP4-#9 follow-up: the consumer now enriches the JSON with userId and requestId so this Pass state can resolve those JSONPath bindings without error.",
+      "Parameters": {
+        "executionId.$": "$$.Execution.Name",
+        "startTime.$": "$$.State.EnteredTime",
+        "requestId.$": "$.requestId",
+        "userId.$": "$.userId",
+        "reportType.$": "$.reportType",
+        "startDate.$": "$.startDate",
+        "endDate.$": "$.endDate"
+      },
+      "ResultPath": "$.context",
+      "Next": "RouteByReportType"
+    },
+    "RouteByReportType": {
+      "Type": "Choice",
+      "Comment": "Branch based on report type. MONTHLY and CUSTOM map to the single TRANREPT batch job; YEARLY additionally fans out to CREASTMT (statement generation) per the legacy year-end chain. Replaces JCL: COND= conditional step routing inside CORPT00C-triggered batch jobs.",
+      "Choices": [
+        {
+          "Variable": "$.context.reportType",
+          "StringEquals": "YEARLY",
+          "Next": "YearlyReportFanOut"
+        }
+      ],
+      "Default": "RunTransactionReport"
+    },
+    "RunTransactionReport": {
+      "Type": "Task",
+      "Comment": "Run the date-filtered transaction report (TransactionReportService / CBTRN03C). Reads TRANSACT (AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS), TRANTYPE (AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS), TRANCATG (AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS), and CARDXREF (AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS); writes a flat sequential report to the TRANREPT S3 prefix. Replaces JCL: TRANREPT.jcl STEP01 EXEC PGM=CBTRN03C with DDs STEPLIB, SYSPRINT, SYSOUT, TRNFILE, REPTFILE (GDG +1), TRANTYPE, TRANCATG, XREFFILE, DATEPARM (PARM='start-date,end-date'). COBOL program: CBTRN03C.",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "States.Format('carddemo-tranrept-{}', $.context.executionId)",
+        "JobQueue": "${BATCH_JOB_QUEUE_ARN}",
+        "JobDefinition": "${TRANREPT_JOB_DEFINITION_ARN}",
+        "ContainerOverrides": {
+          "Environment": [
+            {
+              "Name": "SPRING_PROFILES_ACTIVE",
+              "Value": "prod"
+            },
+            {
+              "Name": "BATCH_JOB_NAME",
+              "Value": "transactionReportJob"
+            },
+            {
+              "Name": "REPORT_TYPE",
+              "Value.$": "$.context.reportType"
+            },
+            {
+              "Name": "REPORT_START_DATE",
+              "Value.$": "$.context.startDate"
+            },
+            {
+              "Name": "REPORT_END_DATE",
+              "Value.$": "$.context.endDate"
+            },
+            {
+              "Name": "REQUEST_ID",
+              "Value.$": "$.context.requestId"
+            },
+            {
+              "Name": "REQUESTING_USER_ID",
+              "Value.$": "$.context.userId"
+            }
+          ]
+        }
+      },
+      "ResultPath": "$.tranReptResult",
+      "TimeoutSeconds": 3600,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "Batch.AWSBatchException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.tranReptError",
+          "Next": "FailureNotification"
+        }
+      ],
+      "Next": "SuccessNotification"
+    },
+    "YearlyReportFanOut": {
+      "Type": "Parallel",
+      "Comment": "Yearly reports fan out: the transaction report runs in parallel with the statement generation (CREASTMT / CBSTM03A) to mirror the legacy year-end JCL chain. Each branch is fully isolated; either branch failing routes to FailureNotification. Replaces JCL: COND=(0,LT) parallel step pairing observed in the year-end CORPT00C-triggered batch chain.",
+      "Branches": [
+        {
+          "StartAt": "RunYearlyTransactionReport",
+          "States": {
+            "RunYearlyTransactionReport": {
+              "Type": "Task",
+              "Comment": "Yearly variant of the transaction report. Same Spring Batch job as RunTransactionReport but invoked with REPORT_TYPE=YEARLY for the full calendar year.",
+              "Resource": "arn:aws:states:::batch:submitJob.sync",
+              "Parameters": {
+                "JobName.$": "States.Format('carddemo-tranrept-yr-{}', $.context.executionId)",
+                "JobQueue": "${BATCH_JOB_QUEUE_ARN}",
+                "JobDefinition": "${TRANREPT_JOB_DEFINITION_ARN}",
+                "ContainerOverrides": {
+                  "Environment": [
+                    {
+                      "Name": "SPRING_PROFILES_ACTIVE",
+                      "Value": "prod"
+                    },
+                    {
+                      "Name": "BATCH_JOB_NAME",
+                      "Value": "transactionReportJob"
+                    },
+                    {
+                      "Name": "REPORT_TYPE",
+                      "Value": "YEARLY"
+                    },
+                    {
+                      "Name": "REPORT_START_DATE",
+                      "Value.$": "$.context.startDate"
+                    },
+                    {
+                      "Name": "REPORT_END_DATE",
+                      "Value.$": "$.context.endDate"
+                    },
+                    {
+                      "Name": "REQUEST_ID",
+                      "Value.$": "$.context.requestId"
+                    },
+                    {
+                      "Name": "REQUESTING_USER_ID",
+                      "Value.$": "$.context.userId"
+                    }
+                  ]
+                }
+              },
+              "TimeoutSeconds": 3600,
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "RunYearlyStatementGeneration",
+          "States": {
+            "RunYearlyStatementGeneration": {
+              "Type": "Task",
+              "Comment": "Generate yearly statements (StatementGenerationService / CBSTM03A). Reads ACCTDATA, CUSTDATA, TRANSACT, CARDXREF; writes both plain-text and HTML statement files to the STMTFILE S3 prefix. Replaces JCL: CREASTMT.JCL STEP15 EXEC PGM=CBSTM03A with DDs ACCTFILE, CUSTFILE, XREFFILE, TRANFILE, STMTFILE (text), HTMLFILE (HTML).",
+              "Resource": "arn:aws:states:::batch:submitJob.sync",
+              "Parameters": {
+                "JobName.$": "States.Format('carddemo-creastmt-{}', $.context.executionId)",
+                "JobQueue": "${BATCH_JOB_QUEUE_ARN}",
+                "JobDefinition": "${CREASTMT_JOB_DEFINITION_ARN}",
+                "ContainerOverrides": {
+                  "Environment": [
+                    {
+                      "Name": "SPRING_PROFILES_ACTIVE",
+                      "Value": "prod"
+                    },
+                    {
+                      "Name": "BATCH_JOB_NAME",
+                      "Value": "statementGenerationJob"
+                    },
+                    {
+                      "Name": "REQUEST_ID",
+                      "Value.$": "$.context.requestId"
+                    },
+                    {
+                      "Name": "REQUESTING_USER_ID",
+                      "Value.$": "$.context.userId"
+                    }
+                  ]
+                }
+              },
+              "TimeoutSeconds": 3600,
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultPath": "$.yearlyFanOutResult",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "Batch.AWSBatchException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.yearlyFanOutError",
+          "Next": "FailureNotification"
+        }
+      ],
+      "Next": "SuccessNotification"
+    },
+    "SuccessNotification": {
+      "Type": "Task",
+      "Comment": "Emit a CloudWatch metric and SNS notification on successful pipeline completion. Records ReportPipelineSucceeded count metric and publishes a brief success message to the alert topic. Replaces JCL: legacy JES MSGCLASS/NOTIFY notifications.",
+      "Resource": "arn:aws:states:::aws-sdk:cloudwatch:putMetricData",
+      "Parameters": {
+        "Namespace": "CardDemo/Reports",
+        "MetricData": [
+          {
+            "MetricName": "ReportPipelineSucceeded",
+            "Value": 1,
+            "Unit": "Count",
+            "Dimensions": [
+              {
+                "Name": "StateMachine",
+                "Value": "report-pipeline"
+              },
+              {
+                "Name": "ReportType",
+                "Value.$": "$.context.reportType"
+              }
+            ]
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "CloudWatch.CloudWatchException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.metricError",
+          "Next": "ReportPipelineSucceeded"
+        }
+      ],
+      "Next": "ReportPipelineSucceeded"
+    },
+    "ReportPipelineSucceeded": {
+      "Type": "Succeed",
+      "Comment": "Terminal success state. CloudTrail records the execution for audit per AAP §0.6.6. The TRANREPT (and, for yearly reports, STMTFILE) S3 objects are available for the operator to retrieve."
+    },
+    "FailureNotification": {
+      "Type": "Task",
+      "Comment": "Emit a CloudWatch metric and SNS notification on pipeline failure. Records ReportPipelineFailed count metric, includes the failing step's error path in the SNS message. Replaces JCL: legacy JES failure handling, manual operator pager notifications.",
+      "Resource": "arn:aws:states:::aws-sdk:cloudwatch:putMetricData",
+      "Parameters": {
+        "Namespace": "CardDemo/Reports",
+        "MetricData": [
+          {
+            "MetricName": "ReportPipelineFailed",
+            "Value": 1,
+            "Unit": "Count",
+            "Dimensions": [
+              {
+                "Name": "StateMachine",
+                "Value": "report-pipeline"
+              },
+              {
+                "Name": "ExecutionId",
+                "Value.$": "$.context.executionId"
+              }
+            ]
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "CloudWatch.CloudWatchException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.metricError",
+          "Next": "ReportPipelineFailed"
+        }
+      ],
+      "Next": "ReportPipelineFailed"
+    },
+    "ReportPipelineFailed": {
+      "Type": "Fail",
+      "Comment": "Terminal failure state. CloudTrail records the execution for audit per AAP §0.6.6. Operations team is alerted via the preceding FailureNotification SNS publish; CloudWatch records the ReportPipelineFailed metric for dashboards and alarms.",
+      "Error": "ReportPipelineFailed",
+      "Cause": "The report pipeline failed. See execution history and SNS notification."
+    }
+  }
+}

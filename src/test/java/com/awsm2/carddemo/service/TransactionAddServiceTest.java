@@ -203,6 +203,30 @@ class TransactionAddServiceTest {
     private static final String MERCHANT_ZIP = "98101";
 
     // ==================================================================
+    // Issue CP4-#1, #2: COBOL COTRN02C lines 282-294 require both
+    // TORIGDTI (Orig Date) and TPROCDTI (Proc Date) to be non-empty.
+    // The SUT's validate() method now enforces this rejection with the
+    // verbatim COBOL error strings "Orig Date can NOT be empty..." and
+    // "Proc Date can NOT be empty..." Production code formats these
+    // LocalDateTime values to YYYY-MM-DD before calling
+    // DateValidationService.validate(date, "YYYY-MM-DD") (line 386).
+    // Test fixtures therefore must provide non-null, valid date values.
+    //
+    // The chosen date (2024-01-15) is intentionally a fixed historical
+    // value that:
+    //   - is NOT a leap-year edge case
+    //   - is NOT in the future (avoids any "future-date" guard)
+    //   - is NOT month/day boundaries
+    //   - is reproducible across CI runs (no clock dependency)
+    //
+    // See app/cbl/COTRN02C.cbl L282-294 and L389-407.
+    // ==================================================================
+    private static final LocalDateTime ORIG_TS =
+            LocalDateTime.of(2024, 1, 15, 12, 30, 0);
+    private static final LocalDateTime PROC_TS =
+            LocalDateTime.of(2024, 1, 15, 12, 30, 0);
+
+    // ==================================================================
     // Mocks and SUT
     //
     // Only the 5 collaborators on the SUT's constructor are declared as
@@ -240,13 +264,33 @@ class TransactionAddServiceTest {
                 SOURCE,
                 DESCRIPTION,
                 AMOUNT,
-                null, // originationTimestamp -- SUT falls back to now()
-                null, // processingTimestamp  -- SUT always uses now()
+                ORIG_TS, // Issue CP4-#1, #2: non-null required per COTRN02C L282-294
+                PROC_TS, // Issue CP4-#1, #2: non-null required per COTRN02C L282-294
                 MERCHANT_ID,
                 MERCHANT_NAME,
                 MERCHANT_CITY,
                 MERCHANT_ZIP,
                 "Y");
+
+        // Issue CP4-#1: the SUT now ALWAYS calls
+        // dateValidationService.validate(<dateString>, "YYYY-MM-DD")
+        // for both originationTimestamp and processingTimestamp when
+        // they are non-null. Without a default stub Mockito returns
+        // null for DateValidationResult and the SUT NPEs on
+        // result.isValid(). We provide a lenient default that mirrors
+        // the COBOL CSUTLDTC-RESULT-SEV-CD = '0000' (valid) outcome so
+        // happy-path tests can proceed without re-stubbing in every
+        // method. Tests that intentionally exercise the invalid-date
+        // path (lines ~810, ~833) override this stub with the strict
+        // 2-arg form.
+        //
+        // {@code lenient()} is required because some negative-path
+        // tests fail validation BEFORE the date check is reached
+        // (e.g., missing accountId/cardNumber, blank confirm), which
+        // would otherwise trigger Mockito's
+        // UnnecessaryStubbingException diagnostic.
+        lenient().when(dateValidationService.validate(anyString(), anyString()))
+                .thenReturn(DateValidationService.DateValidationResult.VALID);
     }
 
     /**
@@ -257,7 +301,7 @@ class TransactionAddServiceTest {
     private TransactionAddDto buildRequestWithConfirm(String confirm) {
         return new TransactionAddDto(
                 ACCOUNT_ID_STR, CARD_NUMBER, TRAN_TYPE, TRAN_CAT, SOURCE,
-                DESCRIPTION, AMOUNT, null, null, MERCHANT_ID, MERCHANT_NAME,
+                DESCRIPTION, AMOUNT, ORIG_TS, PROC_TS, MERCHANT_ID, MERCHANT_NAME,
                 MERCHANT_CITY, MERCHANT_ZIP, confirm);
     }
 
@@ -269,7 +313,7 @@ class TransactionAddServiceTest {
     private TransactionAddDto buildRequestWithAmount(BigDecimal amount) {
         return new TransactionAddDto(
                 ACCOUNT_ID_STR, CARD_NUMBER, TRAN_TYPE, TRAN_CAT, SOURCE,
-                DESCRIPTION, amount, null, null, MERCHANT_ID, MERCHANT_NAME,
+                DESCRIPTION, amount, ORIG_TS, PROC_TS, MERCHANT_ID, MERCHANT_NAME,
                 MERCHANT_CITY, MERCHANT_ZIP, "Y");
     }
 
@@ -281,7 +325,7 @@ class TransactionAddServiceTest {
     private TransactionAddDto buildRequestWithAccountAndCard(String acct, String card) {
         return new TransactionAddDto(
                 acct, card, TRAN_TYPE, TRAN_CAT, SOURCE, DESCRIPTION,
-                AMOUNT, null, null, MERCHANT_ID, MERCHANT_NAME,
+                AMOUNT, ORIG_TS, PROC_TS, MERCHANT_ID, MERCHANT_NAME,
                 MERCHANT_CITY, MERCHANT_ZIP, "Y");
     }
 
@@ -609,11 +653,17 @@ class TransactionAddServiceTest {
         }
 
         @Test
-        @DisplayName("neither accountId nor cardNumber → ValidationException")
+        @DisplayName("neither accountId nor cardNumber → ValidationException with verbatim COBOL string")
         void addTransaction_noIdentifier_throwsValidation() {
             // Arrange — request missing both identifiers. COBOL:
             // EVALUATE TRUE ... WHEN OTHER → 'Account or Card Number
             // must be entered...' (lines 224-229).
+            //
+            // Issue CP4-#2, #5: The Java SUT now emits the VERBATIM
+            // COBOL string from COTRN02C line 226. The previous
+            // English paraphrase "Either accountId or cardNumber"
+            // violated the AAP §0.7.1 minimal-change clause and
+            // CP4 Phase 6 Verbatim Rule.
             TransactionAddDto request =
                     buildRequestWithAccountAndCard(null, null);
 
@@ -625,7 +675,7 @@ class TransactionAddServiceTest {
                     .extracting(ex -> ((ValidationException) ex).getFieldErrors())
                     .asInstanceOf(InstanceOfAssertFactories.LIST)
                     .anyMatch(fe ->
-                            fe.toString().contains("Either accountId or cardNumber"));
+                            fe.toString().contains("Account or Card Number must be entered..."));
         }
     }
 
@@ -642,7 +692,7 @@ class TransactionAddServiceTest {
     class Confirmation {
 
         @Test
-        @DisplayName("'N' confirm value blocks persistence")
+        @DisplayName("'N' confirm value blocks persistence with verbatim COBOL cancellation message")
         void addTransaction_confirmN_throwsValidation() {
             // Arrange — operator typed 'N' to cancel
             stubXrefByCard(CARD_NUMBER, ACCOUNT_ID);
@@ -651,9 +701,15 @@ class TransactionAddServiceTest {
             // The top-level ValidationException message text is the
             // service-supplied message; the reasonCode discriminator
             // is "NOT_CONFIRMED".
+            //
+            // Issue CP4-#2, #7: The Java SUT emits the canonical
+            // cancellation message
+            // "Transaction add cancelled by operator (confirm='N')"
+            // matching the BillPaymentService pattern. Previously
+            // asserted "Operator did not confirm" no longer matches.
             assertThatThrownBy(() -> service.addTransaction(request))
                     .isInstanceOf(ValidationException.class)
-                    .hasMessageContaining("Operator did not confirm");
+                    .hasMessageContaining("Transaction add cancelled by operator");
 
             verify(transactionRepository, never()).save(any());
             verify(kafkaEventPublisher, never())
@@ -694,16 +750,22 @@ class TransactionAddServiceTest {
         }
 
         @Test
-        @DisplayName("arbitrary string confirm blocks persistence")
+        @DisplayName("arbitrary string confirm blocks persistence with verbatim COBOL string")
         void addTransaction_arbitraryConfirm_throwsValidation() {
             // Arrange — COBOL: WHEN OTHER → 'Invalid value. Valid
             // values are (Y/N)...' (lines 182-187).
+            //
+            // Issue CP4-#2: The Java SUT now emits the VERBATIM
+            // COBOL string. The earlier substring match on "confirm"
+            // would have matched the field name in any error
+            // message; the strict verbatim assertion below removes
+            // that ambiguity.
             stubXrefByCard(CARD_NUMBER, ACCOUNT_ID);
             TransactionAddDto request = buildRequestWithConfirm("X");
 
             assertThatThrownBy(() -> service.addTransaction(request))
                     .isInstanceOf(ValidationException.class)
-                    .hasMessageContaining("confirm");
+                    .hasMessageContaining("Invalid value. Valid values are (Y/N)...");
 
             verify(transactionRepository, never()).save(any());
         }
@@ -738,48 +800,54 @@ class TransactionAddServiceTest {
         }
 
         @Test
-        @DisplayName("rejects 10-digit accountId (must be 11)")
+        @DisplayName("rejects 10-digit accountId (must be 11) with verbatim COBOL string")
         void addTransaction_shortAccountId_throwsValidation() {
             // Arrange — COBOL: ACTIDIN PIC X(11) — only an 11-digit
-            // value is acceptable.
+            // value is acceptable. COTRN02C line 199:
+            //   MOVE 'Account ID must be Numeric...' TO ...
+            // Issue CP4-#2: The Java SUT now emits the VERBATIM COBOL
+            // string (was previously the English paraphrase
+            // "accountId must be exactly 11 digits").
             TransactionAddDto request =
                     buildRequestWithAccountAndCard("1000000001", null);
 
-            // Act + Assert — the top-level ValidationException message
-            // is "Transaction add request contains invalid fields"; the
-            // per-field error is "accountId must be exactly 11 digits".
+            // Act + Assert — the per-field error is the verbatim COBOL
+            // string from COTRN02C line 199.
             assertThatThrownBy(() -> service.addTransaction(request))
                     .isInstanceOf(ValidationException.class)
                     .extracting(ex -> ((ValidationException) ex).getFieldErrors())
                     .asInstanceOf(InstanceOfAssertFactories.LIST)
-                    .anyMatch(fe -> fe.toString().contains("11 digits"));
+                    .anyMatch(fe -> fe.toString().contains("Account ID must be Numeric..."));
         }
 
         @Test
-        @DisplayName("rejects 15-digit cardNumber (must be 16)")
+        @DisplayName("rejects 15-digit cardNumber (must be 16) with verbatim COBOL string")
         void addTransaction_shortCardNumber_throwsValidation() {
             // Arrange — COBOL: CARDNIN PIC X(16) — only a 16-digit
-            // value is acceptable.
+            // value is acceptable. COTRN02C line 213:
+            //   MOVE 'Card Number must be Numeric...' TO ...
+            // Issue CP4-#2: verbatim COBOL string preserved.
             TransactionAddDto request = buildRequestWithAccountAndCard(
                     null, "411122223333444");
             assertThatThrownBy(() -> service.addTransaction(request))
                     .isInstanceOf(ValidationException.class)
                     .extracting(ex -> ((ValidationException) ex).getFieldErrors())
                     .asInstanceOf(InstanceOfAssertFactories.LIST)
-                    .anyMatch(fe -> fe.toString().contains("16 digits"));
+                    .anyMatch(fe -> fe.toString().contains("Card Number must be Numeric..."));
         }
 
         @Test
-        @DisplayName("rejects missing amount")
+        @DisplayName("rejects missing amount with verbatim COBOL string")
         void addTransaction_nullAmount_throwsValidation() {
             // Arrange — COBOL: WHEN TRNAMTI = SPACES OR LOW-VALUES →
-            // 'Amount can NOT be empty...' (lines 276-281).
+            // 'Amount can NOT be empty...' (line 278).
+            // Issue CP4-#2: verbatim COBOL string preserved.
             TransactionAddDto request = buildRequestWithAmount(null);
             assertThatThrownBy(() -> service.addTransaction(request))
                     .isInstanceOf(ValidationException.class)
                     .extracting(ex -> ((ValidationException) ex).getFieldErrors())
                     .asInstanceOf(InstanceOfAssertFactories.LIST)
-                    .anyMatch(fe -> fe.toString().contains("amount is required"));
+                    .anyMatch(fe -> fe.toString().contains("Amount can NOT be empty..."));
         }
 
         @Test
@@ -790,12 +858,21 @@ class TransactionAddServiceTest {
             // 389-407). The Java SUT stubs DateValidationService to
             // return an invalid result, which the SUT promotes to a
             // ValidationException.
+            //
+            // Issue CP4-#1, #2: Both originationTimestamp AND
+            // processingTimestamp must be non-null to satisfy the
+            // COBOL "empty" guard at COTRN02C L282-294. We supply a
+            // syntactically valid PROC_TS so that the only invalid
+            // path exercised is the Orig-Date format check stubbed
+            // below. The 2-arg validate(date, "YYYY-MM-DD") overload
+            // matches the production call signature introduced by
+            // the Issue CP4-#1 fix.
             LocalDateTime origin = LocalDateTime.of(2099, 1, 1, 12, 0);
             TransactionAddDto request = new TransactionAddDto(
                     ACCOUNT_ID_STR, CARD_NUMBER, TRAN_TYPE, TRAN_CAT, SOURCE,
-                    DESCRIPTION, AMOUNT, origin, null, MERCHANT_ID,
+                    DESCRIPTION, AMOUNT, origin, PROC_TS, MERCHANT_ID,
                     MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP, "Y");
-            when(dateValidationService.validate(anyString()))
+            when(dateValidationService.validate(anyString(), eq("YYYY-MM-DD")))
                     .thenReturn(DateValidationService.DateValidationResult.invalid(
                             "E001", "Date in the future"));
 
@@ -810,12 +887,15 @@ class TransactionAddServiceTest {
         void addTransaction_validOriginationDate_proceeds() {
             // Arrange — DateValidationService stubbed to return
             // success, allowing the SUT to proceed to save.
+            //
+            // Issue CP4-#1, #2: Both timestamps non-null; 2-arg stub
+            // matches production call signature.
             LocalDateTime origin = LocalDateTime.of(2024, 1, 15, 12, 30);
             TransactionAddDto request = new TransactionAddDto(
                     ACCOUNT_ID_STR, CARD_NUMBER, TRAN_TYPE, TRAN_CAT, SOURCE,
-                    DESCRIPTION, AMOUNT, origin, null, MERCHANT_ID,
+                    DESCRIPTION, AMOUNT, origin, PROC_TS, MERCHANT_ID,
                     MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP, "Y");
-            when(dateValidationService.validate(anyString()))
+            when(dateValidationService.validate(anyString(), eq("YYYY-MM-DD")))
                     .thenReturn(DateValidationService.DateValidationResult.VALID);
             stubXrefByCard(CARD_NUMBER, ACCOUNT_ID);
             stubTransactionRepository(null);
@@ -902,7 +982,7 @@ class TransactionAddServiceTest {
         }
 
         @Test
-        @DisplayName("processingTimestamp on the returned DTO is the SUT-assigned now()")
+        @DisplayName("processingTimestamp on the returned DTO is the SUT-assigned now(); originationTimestamp echoes the supplied value")
         void addTransaction_returnsCreatedTransaction() {
             // Arrange — happy path setup
             stubXrefByCard(CARD_NUMBER, ACCOUNT_ID);
@@ -914,14 +994,21 @@ class TransactionAddServiceTest {
             TransactionAddDto response = service.addTransaction(validRequest);
             LocalDateTime after = LocalDateTime.now().plusSeconds(1);
 
-            // Assert — return value carries the system-assigned timestamps.
+            // Assert — return value carries the system-assigned
+            // processingTimestamp (COBOL: MOVE FUNCTION
+            // CURRENT-DATE TO TRAN-PROC-TS, line 465). The
+            // originationTimestamp echoes the operator-supplied
+            // value verbatim — Issue CP4-#1, #2 requires this field
+            // to be non-null in the request, so the SUT no longer
+            // falls back to now() for it.
             assertThat(response).isNotNull();
             assertThat(response.processingTimestamp())
                     .as("processingTimestamp must be SUT-assigned (now)")
                     .isAfter(before).isBefore(after);
             assertThat(response.originationTimestamp())
-                    .as("originationTimestamp falls back to now when not supplied")
-                    .isAfter(before).isBefore(after);
+                    .as("originationTimestamp echoes the operator-supplied value (ORIG_TS) "
+                            + "per Issue CP4-#1, #2: COTRN02C L282-294 mandates non-null Orig Date")
+                    .isEqualTo(ORIG_TS);
             // Confirm field defaults to "Y" per the SUT's outbound DTO
             // construction (the response always carries the canonical
             // confirmation flag because the transaction has been posted).
@@ -1225,9 +1312,10 @@ class TransactionAddServiceTest {
             // PIC X(n) value as semantically empty.
             String paddedSource = "  POS  ";
             String paddedMerchantName = "  STARBUCKS  ";
+            // Issue CP4-#1, #2: non-null timestamps required by COTRN02C L282-294
             TransactionAddDto request = new TransactionAddDto(
                     ACCOUNT_ID_STR, CARD_NUMBER, TRAN_TYPE, TRAN_CAT,
-                    paddedSource, DESCRIPTION, AMOUNT, null, null,
+                    paddedSource, DESCRIPTION, AMOUNT, ORIG_TS, PROC_TS,
                     MERCHANT_ID, paddedMerchantName, MERCHANT_CITY,
                     MERCHANT_ZIP, "Y");
             stubXrefByCard(CARD_NUMBER, ACCOUNT_ID);

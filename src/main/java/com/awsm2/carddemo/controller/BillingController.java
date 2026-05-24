@@ -608,9 +608,22 @@ public class BillingController {
         LOG.info("Bill payment completed: tranId={} accountId={}",
                 transactionRecord.transactionId(), request.accountId());
 
-        // POST returns 201 Created per AAP §0.3.4 status-code mapping
-        // (the endpoint creates a Transaction record on the success path).
-        return ResponseEntity.status(HttpStatus.CREATED)
+        // Status code per REST conventions and Issue CP4-#7:
+        // - 201 Created ONLY when an actual Transaction record was
+        //   persisted (confirm='Y' happy path → tranId is non-null).
+        // - 200 OK for cancel (confirm='N'), blank-confirm preview, and
+        //   nothing-to-pay short-circuit — these branches return the
+        //   current account state WITHOUT creating any new resource.
+        //   Returning 201 in these cases would imply a resource was
+        //   created at a URI which is false. Detection uses tranId
+        //   nullity: the BillPaymentService preview/cancel/nothing-to-
+        //   pay helpers all set tranId to null.
+        final boolean resourceCreated = transactionRecord.transactionId() != null
+                && !transactionRecord.transactionId().isBlank();
+        final HttpStatus successStatus = resourceCreated
+                ? HttpStatus.CREATED
+                : HttpStatus.OK;
+        return ResponseEntity.status(successStatus)
                 .body(ApiResponse.success(transactionRecord, SUCCESS_MESSAGE));
     }
 

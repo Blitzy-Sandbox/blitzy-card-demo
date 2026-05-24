@@ -203,13 +203,39 @@ public class TransactionAddService {
         //   Resolve owning account (mandatory partition key for MSK).
         Long resolvedAcctId = resolveAccountId(request);
 
-        // Confirmation gate (CONFIRMI of COTRN2AI = 'Y')
-        if (!"Y".equalsIgnoreCase(safeTrim(request.confirm()))) {
+        // Confirmation gate (CONFIRMI of COTRN2AI = 'Y'). Per COTRN02C
+        // line 178 ("Confirm to add this transaction..." — initial prompt
+        // when CONFIRMI is blank/low-values) and line 184 ("Invalid value.
+        // Valid values are (Y/N)..." — when CONFIRMI is non-Y/N) and the
+        // line 195 final gate (only 'Y' actually writes the record).
+        // Issue CP4-#2: error strings preserved verbatim from COBOL.
+        final String confirmRaw = safeTrim(request.confirm());
+        if (confirmRaw == null || confirmRaw.isEmpty()) {
             throw new ValidationException(
                     "NOT_CONFIRMED",
-                    "Operator did not confirm the transaction (confirm must be 'Y')",
+                    "Confirm to add this transaction...",
                     List.of(new ValidationException.FieldError(
-                            "confirm", "Set confirm='Y' to commit the transaction")));
+                            "confirm", "Confirm to add this transaction...")));
+        }
+        if (!"Y".equalsIgnoreCase(confirmRaw) && !"N".equalsIgnoreCase(confirmRaw)) {
+            throw new ValidationException(
+                    "VALIDATION_FAILED",
+                    "Invalid value. Valid values are (Y/N)...",
+                    List.of(new ValidationException.FieldError(
+                            "confirm", "Invalid value. Valid values are (Y/N)...")));
+        }
+        if ("N".equalsIgnoreCase(confirmRaw)) {
+            // COBOL COTRN02C: when CONFIRMI = 'N' the transaction is NOT
+            // written; the screen returns to the initial display state.
+            // The REST equivalent is a typed validation rejection so
+            // callers can distinguish "not confirmed" from "validation
+            // failed" — preserves Issue CP4-#7 semantics for the
+            // transaction-add flow (analogous to BillPaymentService).
+            throw new ValidationException(
+                    "NOT_CONFIRMED",
+                    "Transaction add cancelled by operator (confirm='N')",
+                    List.of(new ValidationException.FieldError(
+                            "confirm", "Transaction not added — operator entered N")));
         }
 
         // ---- COBOL ADD-TRANSACTION (MAX-TRAN-ID + 1) -------------------
@@ -328,6 +354,11 @@ public class TransactionAddService {
     /**
      * Validates field-level rules; throws {@link ValidationException}
      * carrying every error discovered.
+     *
+     * <p>All error strings are reproduced verbatim from the source COBOL
+     * program {@code COTRN02C.cbl} per AAP &sect;0.7.1 minimal-change
+     * clause and Issue CP4-#2/#5. Parallel-run validation depends on
+     * downstream consumers seeing the identical COBOL error formats.</p>
      */
     private void validate(TransactionAddDto request) {
         List<ValidationException.FieldError> errors = new ArrayList<>();
@@ -335,58 +366,141 @@ public class TransactionAddService {
         String accountIdStr = request.accountId();
         String cardNumber = request.cardNumber();
 
-        // COBOL: at least one of ACTIDIN or CARDNIN must be present.
+        // COBOL: COTRN02C line 226 "Account or Card Number must be
+        // entered..." (verbatim, Issue CP4-#2/#5). The cross-field check
+        // fires when BOTH ACTIDIN and CARDNIN are blank — the BMS
+        // operator may supply either one, but not neither.
         boolean hasAccount = accountIdStr != null && !accountIdStr.isBlank();
         boolean hasCard = cardNumber != null && !cardNumber.isBlank();
         if (!hasAccount && !hasCard) {
             errors.add(new ValidationException.FieldError(
                     "accountId",
-                    "Either accountId or cardNumber must be supplied"));
+                    "Account or Card Number must be entered..."));
         }
 
+        // COBOL: COTRN02C line 199 "Account ID must be Numeric..." (verbatim).
+        // Note: the @Pattern annotation on TransactionAddDto.accountId already
+        // enforces this rule at the Jakarta Bean Validation layer; this
+        // service-level check is defense-in-depth for callers that bypass
+        // bean validation (e.g., internal Java-level invocations from tests).
         if (hasAccount) {
             if (!accountIdStr.matches("^\\d{11}$")) {
                 errors.add(new ValidationException.FieldError(
-                        "accountId", "accountId must be exactly 11 digits"));
+                        "accountId", "Account ID must be Numeric..."));
             }
         }
 
+        // COBOL: COTRN02C line 213 "Card Number must be Numeric..." (verbatim).
         if (hasCard) {
             if (!cardNumber.matches("^\\d{16}$")) {
                 errors.add(new ValidationException.FieldError(
-                        "cardNumber", "cardNumber must be exactly 16 digits"));
+                        "cardNumber", "Card Number must be Numeric..."));
             }
         }
 
+        // COBOL: COTRN02C line 254 "Type CD can NOT be empty..." and line 325
+        // "Type CD must be Numeric..." (verbatim, Issue CP4-#2).
         if (request.transactionType() == null || request.transactionType().isBlank()) {
             errors.add(new ValidationException.FieldError(
-                    "transactionType", "transactionType is required"));
+                    "transactionType", "Type CD can NOT be empty..."));
+        } else if (!request.transactionType().matches("^\\d{2}$")) {
+            errors.add(new ValidationException.FieldError(
+                    "transactionType", "Type CD must be Numeric..."));
         }
 
+        // COBOL: COTRN02C line 260 "Category CD can NOT be empty..." (verbatim).
+        // The numeric check (line 331) is structurally enforced by the
+        // Integer Java type — Jackson rejects non-numeric values upstream.
         if (request.transactionCategory() == null) {
             errors.add(new ValidationException.FieldError(
-                    "transactionCategory", "transactionCategory is required"));
+                    "transactionCategory", "Category CD can NOT be empty..."));
         }
 
+        // COBOL: COTRN02C line 266 "Source can NOT be empty..." (verbatim).
         if (request.source() == null || request.source().isBlank()) {
             errors.add(new ValidationException.FieldError(
-                    "source", "source is required"));
+                    "source", "Source can NOT be empty..."));
         }
 
+        // COBOL: COTRN02C line 272 "Description can NOT be empty..." (verbatim).
+        if (request.description() == null || request.description().isBlank()) {
+            errors.add(new ValidationException.FieldError(
+                    "description", "Description can NOT be empty..."));
+        }
+
+        // COBOL: COTRN02C line 278 "Amount can NOT be empty..." (verbatim).
         if (request.amount() == null) {
             errors.add(new ValidationException.FieldError(
-                    "amount", "amount is required"));
+                    "amount", "Amount can NOT be empty..."));
+        }
+
+        // COBOL: COTRN02C line 296 "Merchant ID can NOT be empty..." (verbatim).
+        if (request.merchantId() == null) {
+            errors.add(new ValidationException.FieldError(
+                    "merchantId", "Merchant ID can NOT be empty..."));
+        }
+
+        // COBOL: COTRN02C line 302 "Merchant Name can NOT be empty..." (verbatim).
+        if (request.merchantName() == null || request.merchantName().isBlank()) {
+            errors.add(new ValidationException.FieldError(
+                    "merchantName", "Merchant Name can NOT be empty..."));
+        }
+
+        // COBOL: COTRN02C line 308 "Merchant City can NOT be empty..." (verbatim).
+        if (request.merchantCity() == null || request.merchantCity().isBlank()) {
+            errors.add(new ValidationException.FieldError(
+                    "merchantCity", "Merchant City can NOT be empty..."));
+        }
+
+        // COBOL: COTRN02C line 314 "Merchant Zip can NOT be empty..." (verbatim).
+        if (request.merchantZip() == null || request.merchantZip().isBlank()) {
+            errors.add(new ValidationException.FieldError(
+                    "merchantZip", "Merchant Zip can NOT be empty..."));
         }
 
         // COBOL TRAN-ORIG-TS, TRAN-PROC-TS — both validated via the
-        // DateValidationService (LE CEEDAYS replacement). The COBOL
-        // source accepts free-form date strings; we accept ISO-8601.
-        if (request.originationTimestamp() != null) {
+        // DateValidationService (LE CEEDAYS replacement). Per COTRN02C
+        // line 356/369 the COBOL format mask is YYYY-MM-DD with hyphen
+        // separators, which matches the ISO-8601 form produced by
+        // LocalDate.toString(). The two-arg validate(dateString,
+        // "YYYY-MM-DD") overload aligns the parser with this contract
+        // (Issue CP4-#1).
+        if (request.originationTimestamp() == null) {
+            // COBOL: COTRN02C line 284 "Orig Date can NOT be empty..."
+            // (verbatim, Issue CP4-#2). Defense-in-depth — the @NotNull
+            // on the DTO fires first, but a programmatic invocation that
+            // bypasses bean validation must still see the COBOL string.
+            errors.add(new ValidationException.FieldError(
+                    "originationTimestamp", "Orig Date can NOT be empty..."));
+        } else {
+            // COBOL: COTRN02C VALIDATE-ORIG-DATE paragraph (line 396-405).
             DateValidationService.DateValidationResult result =
-                    dateValidationService.validate(request.originationTimestamp().toLocalDate().toString());
+                    dateValidationService.validate(
+                            request.originationTimestamp().toLocalDate().toString(),
+                            "YYYY-MM-DD");
             if (!result.isValid()) {
+                // COBOL: COTRN02C line 401 "Orig Date - Not a valid date..."
+                // (verbatim).
                 errors.add(new ValidationException.FieldError(
-                        "originationTimestamp", result.errorMessage()));
+                        "originationTimestamp", "Orig Date - Not a valid date..."));
+            }
+        }
+        if (request.processingTimestamp() == null) {
+            // COBOL: COTRN02C line 290 "Proc Date can NOT be empty..."
+            // (verbatim, Issue CP4-#2).
+            errors.add(new ValidationException.FieldError(
+                    "processingTimestamp", "Proc Date can NOT be empty..."));
+        } else {
+            // COBOL: COTRN02C VALIDATE-PROC-DATE paragraph (line 416-425).
+            DateValidationService.DateValidationResult result =
+                    dateValidationService.validate(
+                            request.processingTimestamp().toLocalDate().toString(),
+                            "YYYY-MM-DD");
+            if (!result.isValid()) {
+                // COBOL: COTRN02C line 421 "Proc Date - Not a valid date..."
+                // (verbatim).
+                errors.add(new ValidationException.FieldError(
+                        "processingTimestamp", "Proc Date - Not a valid date..."));
             }
         }
 

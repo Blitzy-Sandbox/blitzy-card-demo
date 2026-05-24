@@ -26,11 +26,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.BiConsumer;
 
 /**
  * Apache Kafka / Amazon MSK producer adapter &mdash; the sole entry point for
@@ -117,10 +119,23 @@ import java.util.concurrent.CompletableFuture;
  * </ul>
  *
  * <h2>Asynchronous dispatch</h2>
- * <p>Each {@code publishXxx} method is annotated {@link Async @Async} so that
- * publishing never blocks the calling business-logic thread on Kafka latency.
- * The async execution boundary is provided by {@code @EnableAsync} on
- * {@code CardDemoApplication}. Callers receive a {@link CompletableFuture}
+ * <p>Each {@code publishXxx} method is <b>transaction-aware</b> via
+ * {@link TransactionSynchronizationManager}: when a Spring-managed
+ * {@code @Transactional} boundary is active on the calling thread, the actual
+ * {@code KafkaTemplate.send(...)} is deferred until the
+ * {@link TransactionSynchronization#afterCommit() afterCommit} callback fires
+ * &mdash; guaranteeing that no Kafka event is ever visible to consumers for a
+ * database transaction that subsequently rolled back. Outside a transaction
+ * (e.g., batch jobs, test fixtures), the send executes immediately on the
+ * calling thread. This preserves CICS {@code SYNCPOINT} / {@code SYNCPOINT
+ * ROLLBACK} semantics (AAP &sect;0.7.1: "Use {@code @Transactional} with
+ * proper isolation levels for transactional integrity") &mdash; a rolled-back
+ * JPA transaction MUST NOT produce phantom downstream events.</p>
+ *
+ * <p>{@code KafkaTemplate.send(...)} itself is non-blocking (the Kafka producer
+ * batches and writes on its own I/O thread), so publishing never blocks the
+ * calling business-logic thread on Kafka latency even without an
+ * {@code @Async} wrapper. Callers receive a {@link CompletableFuture}
  * resolving to a {@link SendResult} so they can observe send completion or
  * chain post-publish work (e.g., audit emission) without blocking.</p>
  *
@@ -290,9 +305,18 @@ public class KafkaEventPublisher {
      * All events for a given account land on the same partition, guaranteeing
      * per-account ordering even with multiple concurrent producers.</p>
      *
-     * <p>The method is {@link Async @Async}: business-logic threads (REST
-     * controllers, Spring Batch step processors) return immediately while the
-     * actual broker round-trip executes on the application's task executor.</p>
+     * <p>The method is <b>transaction-aware</b>: when a Spring transaction is
+     * active on the calling thread (the typical case &mdash; this method is
+     * normally called from a {@code @Transactional} service method such as
+     * {@code TransactionAddService.create} or
+     * {@code BillPaymentService.processBillPayment}), the actual
+     * {@code KafkaTemplate.send(...)} is registered as a post-commit
+     * synchronization and executes only after the JPA transaction commits.
+     * If the surrounding transaction rolls back, the Kafka event is never
+     * sent &mdash; preserving CICS {@code SYNCPOINT ROLLBACK} semantics
+     * (Issue CP4-#3, AAP &sect;0.7.1). Outside a transaction (e.g., from
+     * batch jobs or test fixtures) the send executes immediately on the
+     * calling thread.</p>
      *
      * @param acctId 11-digit account ID (the COBOL {@code ACCT-ID PIC 9(11)}
      *               value); becomes the Kafka partition key after
@@ -303,14 +327,18 @@ public class KafkaEventPublisher {
      * @return a {@link CompletableFuture} resolving to the
      *         {@link SendResult} (partition, offset, key, record metadata) on
      *         success, or completing exceptionally on a post-retry-exhaustion
-     *         publish failure
+     *         publish failure. When deferred to after-commit, the future
+     *         completes only after the JPA transaction commits AND the
+     *         broker acknowledges the send.
      * @throws IllegalArgumentException if {@code acctId} is {@code null}
      */
     // Replaces: COBIL00C 9300-WRITE-TRANSACT-FILE (WRITE-TRANSACT-FILE
     // paragraph, called from line 233), COTRN02C transaction-add WRITE,
     // CBTRN02C 2000-POST-TRANSACTION (line 424), CBACT04C interest-posting
     // WRITE. Partition key = account ID per AAP §0.6.5.
-    @Async
+    // Transaction-aware send (Issue CP4-#3): defers to afterCommit() if a
+    // Spring transaction is active so that a rolled-back JPA transaction
+    // never produces a phantom Kafka event (CICS SYNCPOINT semantics).
     public CompletableFuture<SendResult<String, Object>> publishTransactionPosted(
             Long acctId, TransactionAddDto event) {
         final String key = formatAccountKey(acctId);
@@ -320,9 +348,7 @@ public class KafkaEventPublisher {
                 transactionPostedTopic, key, lastFourOfPan(event));
         // 3-arg send is mandatory: a null key would route to a random
         // partition and break per-account ordering (AAP §0.6.5).
-        return kafkaTemplate.send(transactionPostedTopic, key, event)
-                .whenComplete((result, ex) ->
-                        handleSendResult(transactionPostedTopic, key, result, ex));
+        return sendTransactionAware(transactionPostedTopic, key, event);
     }
 
     /**
@@ -354,15 +380,15 @@ public class KafkaEventPublisher {
      */
     // Replaces: COACTUPC 9700-REWRITE-ACCTDAT-FILE, COBIL00C
     // UPDATE-ACCTDAT-FILE (line 235), CBACT04C account-balance rewrite.
-    @Async
+    // Transaction-aware send (Issue CP4-#3): deferred to afterCommit() so
+    // a rolled-back balance update never emits a phantom account.updated
+    // event to projection consumers.
     public CompletableFuture<SendResult<String, Object>> publishAccountUpdated(
             Long acctId, AccountUpdateDto event) {
         final String key = formatAccountKey(acctId);
         LOG.info("Publishing account.updated topic={} accountId={}",
                 accountUpdatedTopic, key);
-        return kafkaTemplate.send(accountUpdatedTopic, key, event)
-                .whenComplete((result, ex) ->
-                        handleSendResult(accountUpdatedTopic, key, result, ex));
+        return sendTransactionAware(accountUpdatedTopic, key, event);
     }
 
     /**
@@ -396,15 +422,16 @@ public class KafkaEventPublisher {
     // property of the full COBOL batch pipeline (CBTRN02C → CBACT04C →
     // COMBTRAN → CREASTMT/TRANREPT). AAP §0.6.5 lists ledger.balanced
     // as a core financial topic.
-    @Async
+    // Transaction-aware send (Issue CP4-#3): when called within a
+    // batch-step JPA transaction, the broker round-trip occurs after
+    // commit so a rolled-back reconciliation step does not leak a
+    // false ledger.balanced event.
     public CompletableFuture<SendResult<String, Object>> publishLedgerBalanced(
             Long acctId, Object event) {
         final String key = formatAccountKey(acctId);
         LOG.info("Publishing ledger.balanced topic={} accountId={}",
                 ledgerBalancedTopic, key);
-        return kafkaTemplate.send(ledgerBalancedTopic, key, event)
-                .whenComplete((result, ex) ->
-                        handleSendResult(ledgerBalancedTopic, key, result, ex));
+        return sendTransactionAware(ledgerBalancedTopic, key, event);
     }
 
     /**
@@ -451,7 +478,10 @@ public class KafkaEventPublisher {
     // Replaces: CORPT00C WIRTE-JOBSUB-TDQ → EXEC CICS WRITEQ TD QUEUE('JOBS')
     // → JES batch submission (line 515-523 of app/cbl/CORPT00C.cbl).
     // Per AAP §0.1.1, this is the sole online-to-batch bridge in the source.
-    @Async
+    // Transaction-aware send (Issue CP4-#3): if the ReportSubmissionService
+    // is wrapped in a JPA transaction (e.g., for audit-log persistence),
+    // the event is published after that commits so no batch pipeline is
+    // ever started for a request the database rejected.
     public CompletableFuture<SendResult<String, Object>> publishReportRequested(
             String reportId, ReportRequestDto event) {
         if (reportId == null || reportId.isBlank()) {
@@ -462,9 +492,7 @@ public class KafkaEventPublisher {
         LOG.info("Publishing report.requested topic={} reportId={} reportType={}",
                 reportRequestedTopic, reportId,
                 event != null ? event.reportType() : null);
-        return kafkaTemplate.send(reportRequestedTopic, reportId, event)
-                .whenComplete((result, ex) ->
-                        handleSendResult(reportRequestedTopic, reportId, result, ex));
+        return sendTransactionAware(reportRequestedTopic, reportId, event);
     }
 
     // ---------------------------------------------------------------------
@@ -550,6 +578,112 @@ public class KafkaEventPublisher {
      * @param ex     the underlying exception when the send fails;
      *               {@code null} on success
      */
+    /**
+     * Transaction-aware Kafka send helper. The decision tree is:
+     * <ol>
+     *   <li><b>If a Spring transaction synchronization is active on the
+     *       calling thread</b> (i.e., we are running inside a
+     *       {@code @Transactional} service method that has not yet
+     *       committed or rolled back) &mdash; defer the
+     *       {@code kafkaTemplate.send(...)} until the
+     *       {@link TransactionSynchronization#afterCommit() afterCommit}
+     *       callback fires. If the surrounding transaction rolls back,
+     *       {@code afterCommit()} is never invoked and the Kafka event is
+     *       never sent &mdash; preserving CICS {@code SYNCPOINT ROLLBACK}
+     *       semantics required by AAP &sect;0.7.1 (Issue CP4-#3).</li>
+     *   <li><b>If no transaction is active</b> (e.g., test fixtures,
+     *       batch jobs that manage their own transactions step-by-step,
+     *       or controller methods that never enter a {@code @Transactional}
+     *       boundary) &mdash; the send executes immediately on the calling
+     *       thread, preserving the historical behavior for non-transactional
+     *       call sites.</li>
+     * </ol>
+     *
+     * <p>The returned {@link CompletableFuture} mirrors the underlying
+     * Kafka send future in both code paths. When deferred, the future
+     * completes only after both the JPA commit AND the broker
+     * acknowledgement. When the caller's transaction rolls back, the
+     * future completes exceptionally with a
+     * {@link CardDemoException} carrying reason code
+     * {@code KAFKA-TX-ROLLBACK} so callers that observe completion can
+     * distinguish "publish never attempted because tx rolled back" from
+     * "publish attempted and failed".</p>
+     *
+     * @param topic Kafka topic name (one of the four injected by
+     *              {@link Value}); never {@code null}.
+     * @param key   Kafka partition key (account ID or report ID);
+     *              guaranteed non-null by the caller.
+     * @param value event payload; opaque {@link Object} for compatibility
+     *              with the typed {@code publishXxx} method signatures.
+     * @return a {@link CompletableFuture} resolving to the
+     *         {@link SendResult} on broker acknowledgement
+     */
+    // Implements the transaction-aware publish pattern recommended by
+    // the QA CP4 review (Issue #3). Equivalent to wrapping each call in
+    // a @TransactionalEventListener(phase=AFTER_COMMIT), but inlined to
+    // preserve the existing publishXxx adapter contract.
+    private CompletableFuture<SendResult<String, Object>> sendTransactionAware(
+            String topic, String key, Object value) {
+        // BiConsumer captures the post-send logging contract once so both
+        // the deferred and immediate paths use identical telemetry.
+        final BiConsumer<SendResult<String, Object>, Throwable> postSend =
+                (result, ex) -> handleSendResult(topic, key, result, ex);
+
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            // We are inside an @Transactional boundary. Register an
+            // after-commit synchronization that performs the actual send
+            // only when the JPA transaction commits successfully.
+            final CompletableFuture<SendResult<String, Object>> deferred =
+                    new CompletableFuture<>();
+            LOG.debug("Deferring Kafka send until afterCommit topic={} key={}",
+                    topic, key);
+            TransactionSynchronizationManager.registerSynchronization(
+                    new TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            LOG.debug("afterCommit fired — publishing topic={} key={}",
+                                    topic, key);
+                            kafkaTemplate.send(topic, key, value)
+                                    .whenComplete((result, ex) -> {
+                                        postSend.accept(result, ex);
+                                        if (ex == null) {
+                                            deferred.complete(result);
+                                        } else {
+                                            deferred.completeExceptionally(ex);
+                                        }
+                                    });
+                        }
+
+                        @Override
+                        public void afterCompletion(int status) {
+                            // STATUS_COMMITTED = 0; STATUS_ROLLED_BACK = 1;
+                            // STATUS_UNKNOWN = 2. afterCommit() handles the
+                            // committed case. For the rollback / unknown
+                            // cases we must signal callers so they can
+                            // observe that no publish was attempted.
+                            if (status != STATUS_COMMITTED) {
+                                LOG.warn(
+                                        "Skipping Kafka publish topic={} key={} due to tx status={} "
+                                                + "(rollback / unknown) — preserves CICS SYNCPOINT ROLLBACK semantics",
+                                        topic, key, status);
+                                deferred.completeExceptionally(new CardDemoException(
+                                        "KAFKA-TX-ROLLBACK",
+                                        "Kafka publish skipped because the surrounding transaction "
+                                                + "did not commit (status=" + status + ", topic=" + topic
+                                                + ", key=" + key + ")"));
+                            }
+                        }
+                    });
+            return deferred;
+        }
+
+        // No transaction is active — preserve historical immediate-send
+        // behavior. KafkaTemplate.send is itself non-blocking (the Kafka
+        // producer batches and writes on its own I/O thread).
+        return kafkaTemplate.send(topic, key, value)
+                .whenComplete(postSend);
+    }
+
     private void handleSendResult(String topic,
                                   String key,
                                   SendResult<String, Object> result,

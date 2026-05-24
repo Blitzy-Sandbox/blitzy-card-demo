@@ -481,7 +481,14 @@ STUB_ASL='{"Comment":"CardDemo local stub","StartAt":"Done","States":{"Done":{"T
 # Step Functions execution role; the actual IAM role is created in Phase 10.
 STEPFN_ROLE_ARN="arn:aws:iam::000000000000:role/carddemo-local-step-functions-execution"
 
-for STATE_MACHINE in eod-batch-pipeline file-provisioning; do
+#
+# Issue CP4-#9 follow-up: pre-deploy the `report-pipeline` state machine so
+# that the CORPT00C -> Kafka(report.requested) -> Step Functions bridge can
+# be exercised end-to-end in LocalStack. Without this stub the consumer
+# handler (KafkaEventConsumer.onReportRequested) would resolve the
+# configured ARN (`carddemo.aws.stepfunctions.report-pipeline-arn`) but the
+# Sfn StartExecution call would return StateMachineDoesNotExist.
+for STATE_MACHINE in eod-batch-pipeline file-provisioning report-pipeline; do
   log "  State machine: ${STATE_MACHINE}"
   ASL_FILE="${ASL_DIR}/${STATE_MACHINE}.asl.json"
   if [ -f "${ASL_FILE}" ]; then

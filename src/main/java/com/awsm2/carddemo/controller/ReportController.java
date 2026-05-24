@@ -391,17 +391,20 @@ public class ReportController {
                     + "consumed by a Step Functions trigger that submits an AWS Batch "
                     + "job (replaces the CICS TDQ 'JOBS' → JES submission bridge in "
                     + "COBOL CORPT00C — the ONLY online-to-batch bridge in the source "
-                    + "system per AAP §0.1.1 / §0.6.5). Returns HTTP 201 Created with "
-                    + "the submission receipt carrying the generated UUID requestId; "
+                    + "system per AAP §0.1.1 / §0.6.5). Returns HTTP 202 Accepted with "
+                    + "the submission receipt carrying the generated requestId; "
                     + "the actual report is generated asynchronously by the AWS Batch "
-                    + "TransactionReportJob.")
+                    + "TransactionReportJob. Issue CP4-#10: status 202 reflects that "
+                    + "the request has been queued for asynchronous processing — no "
+                    + "report resource is created at this URI synchronously.")
     @ApiResponses({
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
-                    responseCode = "201",
-                    description = "Report request accepted; the 'report.requested' MSK "
-                            + "Kafka event has been published and the submission receipt "
-                            + "(carrying the UUID requestId and acknowledgement message) "
-                            + "is returned in the ApiResponse envelope."),
+                    responseCode = "202",
+                    description = "Report request accepted for asynchronous processing; "
+                            + "the 'report.requested' MSK Kafka event has been published "
+                            + "and the submission receipt (carrying the requestId and "
+                            + "acknowledgement message) is returned in the ApiResponse "
+                            + "envelope."),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(
                     responseCode = "400",
                     description = "Validation failed — invalid or missing reportType, "
@@ -461,7 +464,16 @@ public class ReportController {
         // (request-scoped correlation may be added by downstream
         // request-filters via the X-Correlation-Id response header),
         // and timestamp = Instant.now() (UTC ISO-8601).
-        return ResponseEntity.status(HttpStatus.CREATED)
+        //
+        // HTTP 202 Accepted per REST conventions and Issue CP4-#10:
+        // the operation is asynchronous (an MSK Kafka event has been
+        // published; the actual report generation occurs in a separate
+        // Step Functions / AWS Batch pipeline). 202 Accepted signals
+        // "request accepted, processing will occur later" — distinct
+        // from 201 Created which would imply a new resource was
+        // available synchronously at a URI. The receipt's requestId
+        // is the correlation handle clients use to poll for completion.
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
                 .body(ApiResponse.success(submissionReceipt,
                         "Report request submitted successfully"));
     }

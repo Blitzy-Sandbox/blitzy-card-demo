@@ -28,6 +28,7 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
@@ -234,14 +235,43 @@ public class TransactionController {
                             + "CDEMO-CT00-PAGE-NUM COMMAREA field per AAP "
                             + "\u00a70.3.4 stateless REST.",
                     example = "0")
-            int page) {
+            int page,
+
+            // Issue CP4-#15: page size is validated at the controller
+            // boundary to prevent DoS via excessive size requests. The
+            // COBOL COTRN00C contract fixes the page at 10 rows (the
+            // height of the BMS COTRN00 map's row repeat group); the
+            // service enforces this internally via PAGE_SIZE=10. The
+            // size query parameter is accepted for OpenAPI forward
+            // compatibility and to ensure invalid values are rejected
+            // explicitly (400 Bad Request) rather than silently
+            // ignored. Bounded to [1, 100] per QA recommendation.
+            @RequestParam(value = "size", required = false, defaultValue = "10")
+            @Min(value = 1, message = "size must be >= 1")
+            @Max(value = 100, message = "size must be <= 100")
+            @Parameter(
+                    description = "Requested page size; bounded to [1, 100] to prevent "
+                            + "DoS via excessive page requests. The service caps the "
+                            + "effective page size at 10 to preserve the COBOL "
+                            + "COTRN00C BMS row-repeat contract (PAGE_SIZE=10). "
+                            + "Values >10 are silently capped; values outside "
+                            + "[1, 100] are rejected with HTTP 400.",
+                    example = "10")
+            int size) {
         // COBOL: COTRN00C / Tran-ID CT00 -- PROCESS-ENTER-KEY paginated
         //   browse (delegates to TransactionListService which preserves
         //   the COBOL PAGE_SIZE=10 contract per AAP §0.4.1).
         // PCI-DSS-safe traceability log (AAP §0.6.6 / §0.7.2): only the
         // non-sensitive transaction-ID prefix filter and page index are
         // emitted; no card number, PAN, or amount leaks into logs.
-        LOG.debug("Transaction list requested: idFilter={} page={}", idFilter, page);
+        // Issue CP4-#15: size is validated at the controller boundary
+        // (@Min(1) @Max(100)) but the service enforces the COBOL
+        // PAGE_SIZE=10 contract internally. The size parameter
+        // therefore acts only as a DoS guard; it is intentionally not
+        // plumbed into the service method to preserve the COBOL
+        // page-shape contract per the AAP Minimal Change Clause.
+        LOG.debug("Transaction list requested: idFilter={} page={} requestedSize={} (effective=10)",
+                idFilter, page, size);
         TransactionListDto transactionList =
                 transactionListService.listTransactions(idFilter, page);
         return ResponseEntity.ok(ApiResponse.success(transactionList));

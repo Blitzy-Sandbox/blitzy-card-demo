@@ -453,13 +453,15 @@ class TransactionDetailServiceTest {
             assertThat(result.merchantName()).isEqualTo(TRAN_MERCHANT_NAME);
             assertThat(result.merchantCity()).isEqualTo(TRAN_MERCHANT_CITY);
             assertThat(result.merchantZip()).isEqualTo(TRAN_MERCHANT_ZIP);
-            // The unmasked PAN flows through to the DTO accessor per
-            // the TransactionDetailService JavaDoc (&quot;The full PAN
-            // flows through to the DTO unmasked — masking is the
-            // DTO's responsibility (it applies only in toString()
-            // output per AAP §0.6.6); REST callers receive the full
-            // PAN to match the legacy 3270 screen behavior&quot;).
-            assertThat(result.cardNumber()).isEqualTo(TRAN_CARD_NUM);
+            // Issue CP4-#13: per QA CP4 report (PCI-DSS v4.0 Requirement
+            // 3.3 — Mask PAN when displayed), the cardNumber accessor
+            // returns the MASKED form (12 asterisks + last 4) to match
+            // the masking already applied by TransactionListService.
+            // Previously the detail endpoint exposed the full PAN while
+            // the list endpoint masked it; the inconsistency was a
+            // hidden over-disclosure surface. The masking is enforced
+            // by TransactionDetailService.maskPan() in toDetailDto().
+            assertThat(result.cardNumber()).isEqualTo(MASKED_PAN);
 
             // Verify the repository method was invoked exactly with
             // the supplied (trimmed) transaction ID — uses
@@ -519,27 +521,29 @@ class TransactionDetailServiceTest {
          * 3.4.1 rule: the PAN never appears in plaintext through any
          * logging-prone DTO output.
          *
-         * <p>The {@link TransactionDetailService} deliberately
-         * passes the full 16-digit PAN through to the DTO's
-         * {@link TransactionDetailDto#cardNumber()} accessor &mdash;
-         * REST callers receive the unmasked PAN so the response
-         * matches the legacy 3270 View Transaction screen behavior
-         * (authorization is enforced upstream by Spring Security on
-         * {@code TransactionController}, and TLS 1.2+ is enforced
-         * on the ALB per AAP &sect;0.6.6). Masking is the DTO's
-         * responsibility, not the service's, and it applies at the
-         * {@link TransactionDetailDto#toString() toString()}
-         * boundary &mdash; the single point where the DTO is most
-         * likely to be incorporated into a CloudWatch / OpenSearch
-         * log line and thus expose the PAN to the wrong audience.
-         * </p>
+         * <p>Issue CP4-#13 (PCI-DSS v4.0 Requirement 3.3): the
+         * {@link TransactionDetailService} now masks the PAN at the
+         * service boundary &mdash; the unmasked PAN never leaves the
+         * service layer. Previously the detail endpoint exposed the
+         * full 16-digit PAN through
+         * {@link TransactionDetailDto#cardNumber()} while
+         * {@link com.awsm2.carddemo.service.TransactionListService}
+         * masked it; the inconsistency was a hidden over-disclosure
+         * surface flagged by QA as a PCI-DSS concern. Masking now
+         * applies uniformly across both the list and detail
+         * endpoints: 12 asterisks followed by the last 4 PAN
+         * characters. TLS 1.2+ on the ALB, JWT authentication,
+         * KMS-at-rest encryption, CloudWatch log filters, and
+         * Macie S3 scanning are additional defence-in-depth layers
+         * mandated by AAP &sect;0.6.6.</p>
          *
-         * <p>This test asserts BOTH halves of that contract:</p>
+         * <p>This test asserts BOTH halves of the masking contract:</p>
          * <ol>
          *   <li>The {@link TransactionDetailDto#cardNumber()}
-         *       accessor returns the FULL unmasked PAN
-         *       (matching the legacy 3270 screen behavior and the
-         *       documented service design).</li>
+         *       accessor returns the MASKED PAN
+         *       ({@code ************1111}) so that all downstream
+         *       consumers (REST clients, audit logs, OpenSearch
+         *       indexes) receive only the masked form.</li>
          *   <li>The {@link TransactionDetailDto#toString()}
          *       representation contains the masked form
          *       {@code ************1111} and does NOT contain the
@@ -550,11 +554,10 @@ class TransactionDetailServiceTest {
         // COBOL: COTRN01C:VIEW-TRANSACTION — MOVE TRAN-CARD-NUM TO
         // CARDNUMI OF COTRN1AI (L179); the 3270 terminal renders
         // the full PAN to the authenticated operator. The Java
-        // target preserves the legacy behavior at the wire
-        // boundary (cardNumber() returns the full PAN) but masks
-        // at the toString() boundary per AAP §0.6.6 PCI-DSS rule.
+        // target consistently masks the PAN at the service
+        // boundary per AAP §0.6.6 PCI-DSS rule and CP4 Issue #13.
         @Test
-        @DisplayName("PAN unmasked in cardNumber(), masked in toString()")
+        @DisplayName("PAN masked in cardNumber() and in toString() (CP4 Issue #13)")
         void getTransactionDetail_panMasked() {
             // Arrange — happy-path stub
             when(transactionRepository.findById(TRAN_ID))
@@ -564,15 +567,14 @@ class TransactionDetailServiceTest {
             TransactionDetailDto result =
                     service.getTransactionDetail(TRAN_ID);
 
-            // Assert — cardNumber() accessor returns the FULL PAN
-            // (matching the legacy 3270 screen behavior; Spring
-            // Security upstream enforces authorization, TLS 1.2+
-            // protects the wire). This is the service's documented
-            // design: "The full PAN flows through to the DTO
-            // unmasked — masking is the DTO's responsibility".
-            assertThat(result.cardNumber()).isEqualTo(TRAN_CARD_NUM);
+            // Assert — cardNumber() accessor returns the MASKED PAN
+            // ("************1111"). Per Issue CP4-#13 the unmasked
+            // PAN never leaves the service layer; this is a
+            // defence-in-depth measure aligned with PCI-DSS v4.0
+            // Requirement 3.3 (mask PAN when displayed).
+            assertThat(result.cardNumber()).isEqualTo(MASKED_PAN);
 
-            // Assert — toString() output masks the PAN to its
+            // Assert — toString() output also masks the PAN to its
             // last 4 digits per AAP §0.6.6 PCI-DSS v4.0 Requirement
             // 3.4.1. The masked form is twelve asterisks followed
             // by the last 4 PAN characters. Any accidental DTO

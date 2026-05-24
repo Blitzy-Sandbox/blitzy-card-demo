@@ -324,21 +324,30 @@ public record BillPaymentDto(
         @JsonProperty("currentBalance")
         BigDecimal currentBalance,
 
-        @NotBlank(message = "Confirmation is required")
-        @Pattern(regexp = "^[YN]$",
-                message = "Confirmation must be 'Y' or 'N'")
+        // Per COBOL COBIL00C line 182-184: when CONFIRMI is blank/spaces/
+        // low-values the screen displays the current account balance
+        // and prompts the operator to type Y or N. The REST equivalent
+        // is a 200 OK preview response containing the balance — NOT a
+        // 400 rejection. Issue CP4-#8: removed @NotBlank so a blank
+        // (or absent) confirm is accepted at the wire layer and routed
+        // to the service-level preview branch. The Pattern is relaxed
+        // to "^[YN]?$" (zero-or-one Y/N) so empty string passes and
+        // any non-Y/N character is still rejected.
+        @Pattern(regexp = "^[YN]?$",
+                message = "Confirmation must be 'Y', 'N', or blank to preview balance")
         @Schema(description = "Payment confirmation flag: 'Y' to pay the full current "
-                        + "balance, 'N' to cancel without writing. Maps to BMS CONFIRM "
-                        + "PIC X(01) on the COBIL0A screen. Transient -- never persisted on "
-                        + "any record; used by the service to gate the final write. The "
-                        + "original COBOL program also accepts lowercase 'y'/'n' "
-                        + "(line 174-179 of COBIL00C.cbl), but the REST contract normalizes "
-                        + "to uppercase to keep the wire format unambiguous; clients should "
-                        + "uppercase the value before sending.",
+                        + "balance, 'N' to cancel without writing, or omit/blank to "
+                        + "preview the current account balance without writing. Maps "
+                        + "to BMS CONFIRM PIC X(01) on the COBIL0A screen. Transient "
+                        + "-- never persisted on any record; used by the service to "
+                        + "gate the final write. The original COBOL program (line "
+                        + "182-184 of COBIL00C.cbl) treats blank/spaces/low-values as "
+                        + "a balance-preview prompt; the REST contract preserves this "
+                        + "semantic by accepting null or empty string and returning a "
+                        + "200 OK balance-only response.",
                 example = "Y",
                 maxLength = 1,
-                allowableValues = {"Y", "N"},
-                requiredMode = Schema.RequiredMode.REQUIRED)
+                allowableValues = {"Y", "N"})
         @JsonProperty("confirm")
         String confirm,
 

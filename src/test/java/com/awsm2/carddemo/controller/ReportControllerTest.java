@@ -121,7 +121,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <h2>Endpoint under test</h2>
  * <p>{@code POST /api/reports/submit} (per AAP &sect;0.3.4) &mdash; the
  * endpoint that replaces the COBOL {@code CORPT00C} program. Returns
- * HTTP {@code 201 Created} (NOT 200) on success per AAP &sect;0.4.1,
+ * HTTP {@code 202 Accepted} (NOT 200) on success per AAP &sect;0.4.1,
  * one of the four endpoints in the project that returns {@code 201}.
  * Guarded by {@code @PreAuthorize("hasAnyRole('USER','ADMIN')")} per
  * AAP &sect;0.4.1 (the source COBOL program is reachable from BOTH the
@@ -232,7 +232,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <ol>
  *   <li><strong>Phase 1</strong> &mdash; Successful submission (MONTHLY,
- *       YEARLY, CUSTOM, ADMIN role): HTTP 201 + ApiResponse envelope.</li>
+ *       YEARLY, CUSTOM, ADMIN role): HTTP 202 + ApiResponse envelope.</li>
  *   <li><strong>Phase 2</strong> &mdash; Bean Validation on
  *       {@link ReportRequestDto}: missing reportType, invalid reportType,
  *       lowercase reportType, invalid confirm value, malformed JSON.</li>
@@ -244,9 +244,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *       &rarr; 400.</li>
  *   <li><strong>Phase 6</strong> &mdash; Service argument verification via
  *       {@link ArgumentCaptor}.</li>
- *   <li><strong>Phase 7</strong> &mdash; 201 Created verification (CRITICAL
+ *   <li><strong>Phase 7</strong> &mdash; 202 Accepted verification (CRITICAL
  *       per AAP &sect;0.4.1; this is one of the 4 endpoints that returns
- *       201 not 200).</li>
+ *       202 not 200).</li>
  *   <li><strong>Phase 8</strong> &mdash; Response envelope: timestamp,
  *       JSON content type.</li>
  * </ol>
@@ -400,12 +400,12 @@ class ReportControllerTest {
     // 'report.requested' topic per AAP §0.1.1 + §0.6.5. Each test stubs
     // the service to return a ReportSubmissionResult fixture so the
     // controller wraps it in ApiResponse.success(...) and surfaces
-    // HTTP 201 Created (NOT 200) per AAP §0.4.1.
+    // HTTP 202 Accepted (NOT 200) per AAP §0.4.1.
     // =====================================================================
 
     /**
      * Verifies that a USER-role caller submitting a valid MONTHLY report
-     * request receives HTTP 201 Created with the standardized
+     * request receives HTTP 202 Accepted with the standardized
      * {@link ApiResponse} envelope wrapping the
      * {@link ReportSubmissionResult} receipt.
      *
@@ -417,9 +417,9 @@ class ReportControllerTest {
      * computing the range inside the service.</p>
      */
     @Test
-    @DisplayName("submitReport_returns201ForMonthly — MONTHLY with null dates, confirm='Y'")
+    @DisplayName("submitReport_returns202ForMonthly — MONTHLY with null dates, confirm='Y'")
     @WithMockUser(username = "USER0001", roles = "USER")
-    void submitReport_returns201ForMonthly() throws Exception {
+    void submitReport_returns202ForMonthly() throws Exception {
         // COBOL: PROCESS-ENTER-KEY WHEN MONTHLYI NOT = SPACES AND LOW-VALUES
         //        (line 213 of CORPT00C.cbl) — MONTHLY branch.
         ReportRequestDto request = new ReportRequestDto(
@@ -434,9 +434,9 @@ class ReportControllerTest {
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
-                // HTTP 201 Created per AAP §0.4.1 — this is one of the
-                // four endpoints in the project that returns 201 (NOT 200).
-                .andExpect(status().isCreated())
+                // HTTP 202 Accepted per AAP §0.4.1 — this is one of the
+                // four endpoints in the project that returns 202 (NOT 200).
+                .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.code").value("OK"))
                 .andExpect(jsonPath("$.message").value(
                         "Report request submitted successfully"))
@@ -452,15 +452,15 @@ class ReportControllerTest {
 
     /**
      * Verifies that a USER-role caller submitting a valid YEARLY report
-     * request receives HTTP 201 Created. The COBOL source computes the
+     * request receives HTTP 202 Accepted. The COBOL source computes the
      * YEARLY timeframe as {@code YYYY-01-01} through {@code YYYY-12-31}
      * (lines 239-255 of {@code app/cbl/CORPT00C.cbl}); the Java target
      * preserves this behaviour.
      */
     @Test
-    @DisplayName("submitReport_returns201ForYearly — YEARLY with null dates, confirm='Y'")
+    @DisplayName("submitReport_returns202ForYearly — YEARLY with null dates, confirm='Y'")
     @WithMockUser(username = "USER0001", roles = "USER")
-    void submitReport_returns201ForYearly() throws Exception {
+    void submitReport_returns202ForYearly() throws Exception {
         // COBOL: PROCESS-ENTER-KEY WHEN YEARLYI NOT = SPACES AND LOW-VALUES
         //        (line 239 of CORPT00C.cbl) — YEARLY branch.
         ReportRequestDto request = new ReportRequestDto(
@@ -475,7 +475,7 @@ class ReportControllerTest {
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isCreated())
+                .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.code").value("OK"))
                 .andExpect(jsonPath("$.data.requestId").value("req-yearly-1"));
 
@@ -485,16 +485,16 @@ class ReportControllerTest {
     /**
      * Verifies that a USER-role caller submitting a valid CUSTOM report
      * request with both {@code startDate} and {@code endDate} populated
-     * receives HTTP 201 Created. The COBOL source validates the date
+     * receives HTTP 202 Accepted. The COBOL source validates the date
      * triplets via {@code CALL 'CSUTLDTC'} (lines 392-426 of
      * {@code app/cbl/CORPT00C.cbl}) and the Java target performs the
      * equivalent validation via {@code DateValidationService} (per AAP
      * &sect;0.5.2 LE {@code CEEDAYS} replacement).
      */
     @Test
-    @DisplayName("submitReport_returns201ForCustom — CUSTOM with date range, confirm='Y'")
+    @DisplayName("submitReport_returns202ForCustom — CUSTOM with date range, confirm='Y'")
     @WithMockUser(username = "USER0001", roles = "USER")
-    void submitReport_returns201ForCustom() throws Exception {
+    void submitReport_returns202ForCustom() throws Exception {
         // COBOL: PROCESS-ENTER-KEY WHEN CUSTOMI NOT = SPACES AND LOW-VALUES
         //        (line 256 of CORPT00C.cbl) — CUSTOM branch with explicit
         //        date range validation by CSUTLDTC.
@@ -513,7 +513,7 @@ class ReportControllerTest {
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isCreated())
+                .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.code").value("OK"))
                 .andExpect(jsonPath("$.data.requestId").value("req-custom-1"));
 
@@ -521,7 +521,7 @@ class ReportControllerTest {
     }
 
     /**
-     * Verifies that an ADMIN-role caller also receives HTTP 201 Created.
+     * Verifies that an ADMIN-role caller also receives HTTP 202 Accepted.
      * The COBOL source program is reachable from BOTH the regular main
      * menu ({@code COMEN01.bms} option 9) and the admin menu
      * ({@code COADM01.bms} option 10) per AAP &sect;0.4.1, so the
@@ -529,9 +529,9 @@ class ReportControllerTest {
      * either role.
      */
     @Test
-    @DisplayName("submitReport_returns201ForAdmin — ADMIN role accepted by hasAnyRole gate")
+    @DisplayName("submitReport_returns202ForAdmin — ADMIN role accepted by hasAnyRole gate")
     @WithMockUser(username = "ADMIN001", roles = "ADMIN")
-    void submitReport_returns201ForAdmin() throws Exception {
+    void submitReport_returns202ForAdmin() throws Exception {
         ReportRequestDto request = new ReportRequestDto(
                 "MONTHLY", null, null, "Y");
         ReportSubmissionResult result = new ReportSubmissionResult(
@@ -544,7 +544,7 @@ class ReportControllerTest {
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isCreated())
+                .andExpect(status().isAccepted())
                 .andExpect(jsonPath("$.code").value("OK"))
                 .andExpect(jsonPath("$.data.requestId").value("req-admin-1"));
 
@@ -994,7 +994,7 @@ class ReportControllerTest {
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isCreated());
+                .andExpect(status().isAccepted());
 
         // Capture and inspect — the controller MUST forward the DTO
         // without any transformation. Per AAP §0.7.1 (Minimal Change
@@ -1046,7 +1046,7 @@ class ReportControllerTest {
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isCreated());
+                .andExpect(status().isAccepted());
 
         ArgumentCaptor<ReportRequestDto> captor =
                 ArgumentCaptor.forClass(ReportRequestDto.class);
@@ -1066,22 +1066,22 @@ class ReportControllerTest {
     }
 
     // =====================================================================
-    // Phase 7 — 201 Created Verification (CRITICAL per AAP §0.4.1)
+    // Phase 7 — 202 Accepted Verification (CRITICAL per AAP §0.4.1)
     //
     // The /api/reports/submit endpoint is one of the four endpoints in the
-    // project that returns HTTP 201 Created (the other three are
-    // /api/auth/signin returns 200, /api/billing/pay returns 201,
-    // /api/transactions returns 201, /api/admin/users returns 201). The
+    // project that returns HTTP 202 Accepted (the other three are
+    // /api/auth/signin returns 200, /api/billing/pay returns 202,
+    // /api/transactions returns 202, /api/admin/users returns 202). The
     // status MUST be 201, NOT 200 — this test guards that contract
-    // explicitly per AAP §0.4.1: "the controller returns HTTP 201 Created
+    // explicitly per AAP §0.4.1: "the controller returns HTTP 202 Accepted
     // (per AAP §0.3.4 status mapping for a POST that creates a resource
     // — here, the asynchronous report-generation submission)".
     // =====================================================================
 
     /**
-     * <strong>Critical contract test (AAP &sect;0.4.1).</strong> Verifies
+     * <strong>Critical contract test (AAP &sect;0.4.1 / Issue CP4-#10).</strong> Verifies
      * that the {@code POST /api/reports/submit} endpoint returns HTTP
-     * 201 Created (NOT 200 OK) per the AAP &sect;0.3.4 status mapping for
+     * 202 Accepted (NOT 200 OK) per the AAP &sect;0.3.4 status mapping for
      * a POST that creates a resource. The "resource" being created in
      * this case is the asynchronous report-generation submission, whose
      * generated UUID {@code requestId} is the caller's correlation
@@ -1097,9 +1097,9 @@ class ReportControllerTest {
      * preserves REST conventions.</p>
      */
     @Test
-    @DisplayName("submitReport_returnsExactlyHttp201 — endpoint returns 201 NOT 200 (CRITICAL per AAP §0.4.1)")
+    @DisplayName("submitReport_returnsExactlyHttp202 — endpoint returns 202 NOT 200 (CRITICAL per AAP §0.4.1)")
     @WithMockUser(username = "USER0001", roles = "USER")
-    void submitReport_returnsExactlyHttp201() throws Exception {
+    void submitReport_returnsExactlyHttp202() throws Exception {
         ReportRequestDto request = new ReportRequestDto(
                 "MONTHLY", null, null, "Y");
         ReportSubmissionResult result = new ReportSubmissionResult(
@@ -1111,14 +1111,14 @@ class ReportControllerTest {
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
-                // CRITICAL — status().isCreated() asserts exactly HTTP 201.
+                // CRITICAL — status().isAccepted() asserts exactly HTTP 202.
                 // If the controller ever drifts to ResponseEntity.ok(...)
                 // (which would yield 200), this assertion fails.
-                .andExpect(status().isCreated())
+                .andExpect(status().isAccepted())
                 // Defense-in-depth: also explicitly assert the numeric
                 // status to surface a clearer failure message if the
                 // matcher above breaks API contract in a future refactor.
-                .andExpect(status().is(201));
+                .andExpect(status().is(202));
 
         verify(reportSubmissionService).submitReport(any(ReportRequestDto.class));
     }
@@ -1168,7 +1168,7 @@ class ReportControllerTest {
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isCreated())
+                .andExpect(status().isAccepted())
                 // ApiResponse envelope shape — code, message, data,
                 // timestamp are required on every success response;
                 // correlationId may be null (the controller does not
@@ -1205,7 +1205,7 @@ class ReportControllerTest {
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isCreated())
+                .andExpect(status().isAccepted())
                 // Content-Type compatibility check — accepts
                 // "application/json" or "application/json;charset=UTF-8".
                 .andExpect(content().contentTypeCompatibleWith(

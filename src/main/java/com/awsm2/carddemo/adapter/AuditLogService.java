@@ -403,8 +403,19 @@ public class AuditLogService {
             // to callers; a future iteration will route failed documents
             // to an SQS DLQ for retry. Operational metadata only — never
             // log the document body which may carry PII.
-            LOG.error("Transaction audit emission FAILED transactionId={} eventType={} reasonCode={} cause={}",
-                    transactionId, eventType, reasonCode, e.getMessage(), e);
+            //
+            // Issue CP4-#12: when the cause is a Jackson parse error
+            // (LocalStack Community Edition returns HTML on the
+            // OpenSearch endpoint), downgrade to DEBUG to eliminate
+            // log spam in dev/local environments. Real OpenSearch
+            // transport faults continue to log at ERROR.
+            if (isLocalStackHtmlResponse(e)) {
+                LOG.debug("Transaction audit degraded (LocalStack HTML response) transactionId={} eventType={} reasonCode={} cause={}",
+                        transactionId, eventType, reasonCode, e.getMessage());
+            } else {
+                LOG.error("Transaction audit emission FAILED transactionId={} eventType={} reasonCode={} cause={}",
+                        transactionId, eventType, reasonCode, e.getMessage(), e);
+            }
         }
     }
 
@@ -465,8 +476,14 @@ public class AuditLogService {
                     .register(meterRegistry)
                     .increment();
         } catch (RuntimeException e) {
-            LOG.error("Audit event emission FAILED eventType={} resourceType={} resourceId={} cause={}",
-                    eventType, resourceType, resourceId, e.getMessage(), e);
+            // Issue CP4-#12: downgrade LocalStack-HTML-response noise to DEBUG.
+            if (isLocalStackHtmlResponse(e)) {
+                LOG.debug("Audit event degraded (LocalStack HTML response) eventType={} resourceType={} resourceId={} cause={}",
+                        eventType, resourceType, resourceId, e.getMessage());
+            } else {
+                LOG.error("Audit event emission FAILED eventType={} resourceType={} resourceId={} cause={}",
+                        eventType, resourceType, resourceId, e.getMessage(), e);
+            }
         }
     }
 
@@ -528,8 +545,20 @@ public class AuditLogService {
             // OpenSearch endpoints. Audit is mandatory best-effort: log a
             // concise warning and do not propagate or print a noisy stack
             // trace that looks like a caller failure.
-            LOG.warn("Security audit emission degraded eventType={} userId={} result={} sourceIp={} cause={}",
-                    eventType, userId, result, sourceIp, e.getMessage());
+            //
+            // Issue CP4-#12: align with the other AuditLogService catch
+            // blocks — when the cause is a Jackson parse error on an
+            // HTML response body (LocalStack Community Edition), drop
+            // to DEBUG to eliminate the per-signin log spam in local
+            // and CI environments. Real transport / OpenSearch faults
+            // continue to log at WARN.
+            if (isLocalStackHtmlResponse(e)) {
+                LOG.debug("Security audit degraded (LocalStack HTML response) eventType={} userId={} result={} sourceIp={} cause={}",
+                        eventType, userId, result, sourceIp, e.getMessage());
+            } else {
+                LOG.warn("Security audit emission degraded eventType={} userId={} result={} sourceIp={} cause={}",
+                        eventType, userId, result, sourceIp, e.getMessage());
+            }
         }
     }
 
@@ -600,8 +629,14 @@ public class AuditLogService {
                     .register(meterRegistry)
                     .increment();
         } catch (RuntimeException e) {
-            LOG.error("Batch lifecycle audit emission FAILED jobName={} executionId={} status={} cause={}",
-                    jobName, executionId, status, e.getMessage(), e);
+            // Issue CP4-#12: downgrade LocalStack-HTML-response noise to DEBUG.
+            if (isLocalStackHtmlResponse(e)) {
+                LOG.debug("Batch lifecycle audit degraded (LocalStack HTML response) jobName={} executionId={} status={} cause={}",
+                        jobName, executionId, status, e.getMessage());
+            } else {
+                LOG.error("Batch lifecycle audit emission FAILED jobName={} executionId={} status={} cause={}",
+                        jobName, executionId, status, e.getMessage(), e);
+            }
         }
     }
 
@@ -815,5 +850,49 @@ public class AuditLogService {
      */
     private static String nullSafeTag(String value) {
         return value != null ? value : "unknown";
+    }
+
+    /**
+     * Detects whether the supplied exception represents a LocalStack
+     * HTML-response failure (the OpenSearch endpoint returned a
+     * non-JSON body that Jackson rejected). Issue CP4-#12.
+     *
+     * <p>This is a development / local-environment artifact only
+     * &mdash; LocalStack Community Edition does not ship OpenSearch
+     * and returns its HTML landing page when the OpenSearch endpoint
+     * is contacted. Production AWS OpenSearch returns proper JSON,
+     * so this branch will never fire there.</p>
+     *
+     * <p>The detection walks the exception's cause chain looking for
+     * Jackson parse-error class names or the canonical
+     * {@code "Unexpected character ('<'"} message text. Class names
+     * are inspected via {@link Class#getSimpleName()} to avoid binding
+     * to Jackson's type tree at compile time.</p>
+     *
+     * @param t the exception to inspect; never {@code null}
+     * @return {@code true} if any cause in the chain is a Jackson
+     *         parse failure on an HTML response body
+     */
+    private static boolean isLocalStackHtmlResponse(Throwable t) {
+        Throwable cursor = t;
+        int depth = 0;
+        while (cursor != null && depth < 16) {
+            String name = cursor.getClass().getSimpleName();
+            if ("JsonParseException".equals(name)
+                    || "JsonMappingException".equals(name)) {
+                return true;
+            }
+            String msg = cursor.getMessage();
+            if (msg != null && msg.contains("Unexpected character ('<'")) {
+                return true;
+            }
+            Throwable next = cursor.getCause();
+            if (next == cursor) {
+                break;
+            }
+            cursor = next;
+            depth++;
+        }
+        return false;
     }
 }

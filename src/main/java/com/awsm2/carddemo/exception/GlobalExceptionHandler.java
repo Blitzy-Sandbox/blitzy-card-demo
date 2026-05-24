@@ -528,7 +528,7 @@ public class GlobalExceptionHandler {
      *                when an arithmetic operation produced an out-of-range
      *                value
      * @param request the HTTP request (for path logging)
-     * @return {@link ResponseEntity} with HTTP 500 Internal Server Error and
+     * @return {@link ResponseEntity} with HTTP 422 Unprocessable Entity and
      *         the standardized {@link ApiResponse} envelope
      */
     @ExceptionHandler(OnSizeErrorException.class)
@@ -540,14 +540,22 @@ public class GlobalExceptionHandler {
         // app/cbl/COACTUPC.cbl lines 1079-1130 — credit-limit recompute,
         // app/cbl/COBIL00C.cbl line 234 — bill payment).
         // Explicit overflow detection per AAP §0.6.1.
+        //
+        // HTTP 422 Unprocessable Entity per Issue CP4-#6: ON SIZE ERROR
+        // is a *business* arithmetic constraint violation (the request
+        // is syntactically well-formed but the resulting computation
+        // overflows the configured precision), not an internal server
+        // fault. 422 aligns this with the existing 422 mappings for
+        // CreditLimitExceededException and ExpiredCardException, which
+        // are likewise rejected business outcomes for valid inputs.
         String correlationId = generateCorrelationId();
         String reasonCode = (ex.getReasonCode() != null)
                 ? ex.getReasonCode()
                 : OnSizeErrorException.DEFAULT_REASON_CODE;
-        LOG.error("[{}] OnSizeErrorException at {}: reasonCode={}, message={}",
-                correlationId, request.getRequestURI(), reasonCode, ex.getMessage(), ex);
+        LOG.warn("[{}] OnSizeErrorException at {}: reasonCode={}, message={}",
+                correlationId, request.getRequestURI(), reasonCode, ex.getMessage());
         ApiResponse<Object> body = ApiResponse.error(reasonCode, ex.getMessage(), correlationId);
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(body);
     }
 
     // =====================================================================

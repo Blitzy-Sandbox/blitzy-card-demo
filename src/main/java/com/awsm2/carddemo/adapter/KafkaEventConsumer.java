@@ -336,7 +336,19 @@ public class KafkaEventConsumer {
     @KafkaListener(
             topics = "${carddemo.kafka.topics.transaction-posted:transaction.posted}",
             groupId = "${carddemo.kafka.consumer.group-id:carddemo-consumer-group}",
-            containerFactory = "kafkaListenerContainerFactory"
+            containerFactory = "kafkaListenerContainerFactory",
+            // Per-listener JsonDeserializer override (CP4 QA Issue #4): the
+            // producer is configured with `spring.json.add.type.headers=false`
+            // so the consumer cannot rely on inbound `__TypeId__` headers.
+            // Setting VALUE_DEFAULT_TYPE here makes JsonDeserializer
+            // deserialize every record on this topic to TransactionAddDto
+            // regardless of header presence, eliminating the DLT cascade
+            // observed in the QA report and matching the @Payload type
+            // declared on this listener method.
+            properties = {
+                    "spring.json.value.default.type=com.awsm2.carddemo.dto.TransactionAddDto",
+                    "spring.json.use.type.headers=false"
+            }
     )
     public void onTransactionPosted(
             @Payload TransactionAddDto event,
@@ -426,7 +438,15 @@ public class KafkaEventConsumer {
     @KafkaListener(
             topics = "${carddemo.kafka.topics.account-updated:account.updated}",
             groupId = "${carddemo.kafka.consumer.group-id:carddemo-consumer-group}",
-            containerFactory = "kafkaListenerContainerFactory"
+            containerFactory = "kafkaListenerContainerFactory",
+            // Per-listener JsonDeserializer override (CP4 QA Issue #4):
+            // producer does NOT add `__TypeId__` headers, so we declare
+            // the target deserialization type explicitly here. Matches
+            // the @Payload AccountUpdateDto parameter below.
+            properties = {
+                    "spring.json.value.default.type=com.awsm2.carddemo.dto.AccountUpdateDto",
+                    "spring.json.use.type.headers=false"
+            }
     )
     public void onAccountUpdated(
             @Payload AccountUpdateDto event,
@@ -516,7 +536,17 @@ public class KafkaEventConsumer {
     @KafkaListener(
             topics = "${carddemo.kafka.topics.ledger-balanced:ledger.balanced}",
             groupId = "${carddemo.kafka.consumer.group-id:carddemo-consumer-group}",
-            containerFactory = "kafkaListenerContainerFactory"
+            containerFactory = "kafkaListenerContainerFactory",
+            // Per-listener JsonDeserializer override (CP4 QA Issue #4):
+            // ledger.balanced carries a polymorphic envelope (the source
+            // COBOL had multiple balancing programs). Use LinkedHashMap
+            // as the default deserialization type so the listener can
+            // inspect the body and dispatch internally without requiring
+            // a __TypeId__ header from the producer.
+            properties = {
+                    "spring.json.value.default.type=java.util.LinkedHashMap",
+                    "spring.json.use.type.headers=false"
+            }
     )
     public void onLedgerBalanced(
             @Payload Object event,
@@ -621,7 +651,17 @@ public class KafkaEventConsumer {
     @KafkaListener(
             topics = "${carddemo.kafka.topics.report-requested:report.requested}",
             groupId = "${carddemo.kafka.consumer.group-id:carddemo-consumer-group}",
-            containerFactory = "kafkaListenerContainerFactory"
+            containerFactory = "kafkaListenerContainerFactory",
+            // Per-listener JsonDeserializer override (CP4 QA Issues #4 & #9):
+            // resolves the CORPT00C -> Step Functions bridge that was 100%
+            // broken by the deserialization mismatch. Forces every
+            // report.requested record to deserialize to ReportRequestDto
+            // regardless of __TypeId__ header presence, restoring the
+            // online-to-batch bridge invariant from AAP §0.1.1.
+            properties = {
+                    "spring.json.value.default.type=com.awsm2.carddemo.dto.ReportRequestDto",
+                    "spring.json.use.type.headers=false"
+            }
     )
     public void onReportRequested(
             @Payload ReportRequestDto event,
@@ -683,7 +723,17 @@ public class KafkaEventConsumer {
             // here so the orchestrator stays AWS-SDK-pure (no Jackson coupling
             // in the orchestrator; the consumer owns the wire format of its
             // own inputs).
-            String inputJson = toReportInputJson(event);
+            //
+            // Issue CP4-#9 follow-up: the report-pipeline state-machine input
+            // schema requires the operator's userId (= Kafka message key, per
+            // Issue CP4-#11) AND a stable requestId for downstream
+            // correlation. The consumer is the most appropriate place to
+            // enrich the payload because it has both the Kafka key (userId)
+            // and the offset (used to derive a deterministic requestId
+            // suffix). The richer 2-arg toReportInputJson() overload below
+            // is invoked here; the legacy 1-arg overload is retained for
+            // backward compatibility with existing unit tests.
+            String inputJson = toReportInputJson(event, accountId);
             String executionArn = stepFunctionsOrchestrator.startExecution(arn, inputJson);
 
             LOG.info(
@@ -1032,6 +1082,74 @@ public class KafkaEventConsumer {
         // endDate — optional (only required when reportType=CUSTOM)
         first = appendJsonField(sb, first, "endDate", quoteJsonDate(event.endDate()));
         // confirm — optional ('Y' / 'N' / null per ReportRequestDto contract)
+        appendJsonField(sb, first, "confirm", quoteJsonString(event.confirm()));
+
+        sb.append('}');
+        return sb.toString();
+    }
+
+    /**
+     * Enriched overload of {@link #toReportInputJson(ReportRequestDto)} that
+     * additionally embeds the operator's {@code userId} (the Kafka message
+     * key, per Issue CP4-#11) and a deterministic {@code requestId} derived
+     * from the userId for downstream Step Functions correlation.
+     *
+     * <p>Issue CP4-#9 follow-up: the {@code report-pipeline} state-machine's
+     * {@code InitializeReportPipeline} Pass state binds
+     * {@code requestId.$="$.requestId"} and {@code userId.$="$.userId"} via
+     * JSONPath, so the input JSON MUST include these two fields or the
+     * execution fails immediately with a {@code States.Runtime} error. The
+     * 1-arg overload is preserved for backward compatibility with existing
+     * unit tests that exercise the bare-ReportRequestDto contract.</p>
+     *
+     * <p>The generated {@code requestId} format is
+     * {@code "<userId>-<random-UUID>"}, matching the format produced by
+     * {@code ReportSubmissionService.submitReport()} (the upstream producer).
+     * Tests that need a deterministic requestId should rely on a controlled
+     * UUID source; in production the random UUID guarantees uniqueness
+     * across concurrent submissions for the same user.</p>
+     *
+     * @param event   the source DTO; may be {@code null}
+     * @param userId  the operator's userId from the Kafka message key; may
+     *                be {@code null} or blank when no key was present (the
+     *                consumer falls back to the literal "UNKNOWN" so the
+     *                state-machine input is still well-formed)
+     * @return a well-formed JSON object literal carrying the four event
+     *         fields plus {@code userId} and {@code requestId}; never
+     *         {@code null} or blank
+     */
+    static String toReportInputJson(ReportRequestDto event, String userId) {
+        // Resolve userId fallback — the state-machine schema requires this
+        // field, so a null/blank key must not produce a missing field.
+        String resolvedUserId = (userId == null || userId.isBlank()) ? "UNKNOWN" : userId;
+        // Generate requestId in the canonical "<userId>-<UUID>" format.
+        String resolvedRequestId = resolvedUserId + "-" + java.util.UUID.randomUUID();
+
+        if (event == null) {
+            // Even when the event is null we still need a well-formed object
+            // carrying the identity fields so the state machine can route.
+            StringBuilder sbEmpty = new StringBuilder(96);
+            sbEmpty.append('{');
+            appendJsonField(sbEmpty, true, "userId", quoteJsonString(resolvedUserId));
+            appendJsonField(sbEmpty, false, "requestId", quoteJsonString(resolvedRequestId));
+            sbEmpty.append('}');
+            return sbEmpty.toString();
+        }
+        StringBuilder sb = new StringBuilder(192);
+        sb.append('{');
+        boolean first = true;
+
+        // userId / requestId — identity fields required by report-pipeline
+        // InitializeReportPipeline Parameters.
+        first = appendJsonField(sb, first, "userId", quoteJsonString(resolvedUserId));
+        first = appendJsonField(sb, first, "requestId", quoteJsonString(resolvedRequestId));
+        // reportType — required field per ReportRequestDto contract.
+        first = appendJsonField(sb, first, "reportType", quoteJsonString(event.reportType()));
+        // startDate — optional (only required when reportType=CUSTOM).
+        first = appendJsonField(sb, first, "startDate", quoteJsonDate(event.startDate()));
+        // endDate — optional (only required when reportType=CUSTOM).
+        first = appendJsonField(sb, first, "endDate", quoteJsonDate(event.endDate()));
+        // confirm — optional ('Y' / 'N' / null per ReportRequestDto contract).
         appendJsonField(sb, first, "confirm", quoteJsonString(event.confirm()));
 
         sb.append('}');

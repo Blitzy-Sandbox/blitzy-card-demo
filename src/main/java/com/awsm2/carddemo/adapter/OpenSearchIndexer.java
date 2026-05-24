@@ -369,8 +369,29 @@ public class OpenSearchIndexer {
         } catch (IOException | OpenSearchException e) {
             // PCI-DSS-safe logging: include index/id/cause only — never the
             // document body, which may carry PII (AAP §0.6.6).
-            LOG.error("OpenSearch index FAILED index={} id={} cause={}",
-                    indexName, docId, e.getMessage(), e);
+            //
+            // Issue CP4-#12: when the application runs against LocalStack
+            // Community Edition (which does NOT ship OpenSearch), the
+            // OpenSearch endpoint returns the LocalStack landing-page
+            // HTML and the typed client's Jackson deserializer rejects
+            // the response with "Unexpected character ('<' (code 60))".
+            // This is a configuration / environment limitation, NOT a
+            // production fault. We detect Jackson parse failures via
+            // the exception-cause chain and log at DEBUG (eliminating
+            // the per-request stack-trace spam in app.log) while still
+            // throwing the typed CardDemoException so the upstream
+            // AuditLogService still observes the failure and metrics
+            // continue to fire. Real OpenSearch transport faults,
+            // 4xx/5xx server errors, and OpenSearchException all
+            // continue to log at ERROR.
+            if (isJacksonParseFailure(e)) {
+                LOG.debug("OpenSearch index parse-error (likely LocalStack HTML response) "
+                                + "index={} id={} cause={}",
+                        indexName, docId, e.getMessage());
+            } else {
+                LOG.error("OpenSearch index FAILED index={} id={} cause={}",
+                        indexName, docId, e.getMessage(), e);
+            }
 
             // Wrap as CardDemoException so callers (AuditLogService) catch and
             // route the failed event to the DLQ without depending on the
@@ -381,6 +402,48 @@ public class OpenSearchIndexer {
                             + "' with docId '" + docId + "'",
                     e);
         }
+    }
+
+    /**
+     * Detects whether the supplied exception (or any cause in its chain)
+     * is a Jackson JSON parsing failure. Such failures occur when the
+     * OpenSearch transport returns a non-JSON body (e.g., LocalStack
+     * Community Edition serving its HTML landing page on the OpenSearch
+     * endpoint).
+     *
+     * <p>The check inspects the simple class name rather than importing
+     * {@code com.fasterxml.jackson.core.JsonParseException} so the
+     * adapter does not bind directly to the Jackson type tree at
+     * compile time (Jackson is an implicit transitive dependency of
+     * the OpenSearch client and may evolve independently). The class
+     * names {@code JsonParseException} and {@code JsonProcessingException}
+     * are part of Jackson's stable public API.</p>
+     *
+     * @param t the exception to inspect; never {@code null}
+     * @return {@code true} if any cause in the chain is a Jackson
+     *         parse failure
+     */
+    private static boolean isJacksonParseFailure(Throwable t) {
+        Throwable cursor = t;
+        while (cursor != null) {
+            String name = cursor.getClass().getSimpleName();
+            if ("JsonParseException".equals(name)
+                    || "JsonMappingException".equals(name)) {
+                return true;
+            }
+            // Also check by message text — LocalStack's HTML payload
+            // produces the canonical "Unexpected character ('<'" string.
+            String msg = cursor.getMessage();
+            if (msg != null && msg.contains("Unexpected character ('<'")) {
+                return true;
+            }
+            cursor = cursor.getCause();
+            if (cursor == t) {
+                // Defensive — break a self-referencing cause cycle.
+                break;
+            }
+        }
+        return false;
     }
 
     /**

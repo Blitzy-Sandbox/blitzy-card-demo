@@ -227,15 +227,42 @@ class ReportSubmissionServiceTest {
     private static final String DATE_FORMAT_MASK = "YYYY-MM-DD";
 
     /**
-     * UUID regex matcher for {@code requestId} verification. UUID v4 is
-     * 32 hex digits in 8-4-4-4-12 groups joined by dashes.
-     * {@link ReportSubmissionService} generates the request id via
-     * {@link UUID#randomUUID()}.{@link UUID#toString() toString()} at
-     * line 384 of the service, which always produces this canonical form.
+     * Request ID regex matcher per Issue CP4-#11. Since CP4 the
+     * {@link ReportSubmissionService} composes the request id as
+     * {@code "<userId>-<UUID>"} where {@code userId} is the
+     * authenticated principal from
+     * {@link org.springframework.security.core.context.SecurityContextHolder}
+     * (or {@code "ANONYMOUS"} when no authentication context is
+     * present, e.g. in unit tests that bypass Spring Security). The
+     * Kafka partition key is the {@code userId} portion alone (the
+     * USER-ID, not the full requestId) so that all reports submitted
+     * by the same user land on the same Kafka partition and preserve
+     * per-user ordering (AAP &sect;0.6.5). The full requestId carries
+     * the UUID suffix so individual report submissions remain
+     * distinguishable in audit trails and downstream correlation.
+     *
+     * <p>The regex matches: an arbitrary non-blank prefix (the
+     * userId), a literal dash, then a canonical UUID (32 hex digits
+     * in 8-4-4-4-12 groups joined by dashes).</p>
      */
     private static final String UUID_REGEX =
-            "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
-                    + "[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
+            "^[A-Za-z0-9_-]+-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+                    + "[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
+
+    /**
+     * The expected Kafka partition key for unauthenticated unit-test
+     * invocations of {@link ReportSubmissionService#submitReport}. Per
+     * Issue CP4-#11 the service falls back to the literal
+     * {@code "ANONYMOUS"} string when the security context is empty
+     * (the case under {@link org.mockito.junit.jupiter.MockitoExtension}
+     * which does NOT initialise a Spring Security context). The
+     * production code path under
+     * {@link com.awsm2.carddemo.controller.ReportController} always
+     * authenticates the caller via Spring Security and so the live
+     * USER-ID (e.g. "USER0001", "ADMIN001") is propagated as the
+     * partition key.
+     */
+    private static final String EXPECTED_USER_ID_KEY = "ANONYMOUS";
 
     // =========================================================================
     // Mocks and SUT
@@ -1031,22 +1058,42 @@ class ReportSubmissionServiceTest {
             // Stronger: full structural equality with the inbound DTO.
             assertThat(captured).isEqualTo(request);
 
-            // The result's requestId is the same as the kafka key —
-            // both come from a single UUID.randomUUID() call.
-            assertThat(keyCaptor.getValue()).isEqualTo(result.requestId());
+            // Issue CP4-#11: the Kafka partition key is the USER-ID
+            // alone (not the full requestId). The requestId is the
+            // composite "<userId>-<UUID>" form which carries
+            // additional uniqueness for audit correlation, but the
+            // partition key — driving murmur2 hashing for per-user
+            // ordering on the MSK topic — is just the USER-ID.
+            assertThat(keyCaptor.getValue()).isEqualTo(EXPECTED_USER_ID_KEY);
+            // And the requestId begins with that key followed by the
+            // UUID suffix.
+            assertThat(result.requestId())
+                    .startsWith(EXPECTED_USER_ID_KEY + "-");
         }
 
         /**
-         * Verify that the Kafka partition key is exactly the
-         * {@code requestId} returned in the
-         * {@link ReportSubmissionResult}. Per AAP &sect;0.6.5 the
-         * partition key drives the murmur2 hash that selects the
-         * topic partition; using the requestId guarantees per-report
-         * ordering even with multiple concurrent submitters.
+         * Verify that the Kafka partition key is the USER-ID of the
+         * authenticated principal (Issue CP4-#11; AAP &sect;0.6.5).
+         * Previously the partition key was a UUID drawn from the
+         * requestId, which gave every event a unique partition
+         * assignment and provided no ordering guarantee. The CP4 fix
+         * switches the partition key to the USER-ID extracted from
+         * {@link org.springframework.security.core.context.SecurityContextHolder}
+         * so that all reports submitted by the same user land on the
+         * same Kafka partition and preserve per-user ordering — the
+         * same partitioning strategy used for
+         * {@code transaction.posted} and {@code account.updated}
+         * (where the partition key is the account ID).
+         *
+         * <p>The requestId returned to the caller remains a composite
+         * {@code "<userId>-<UUID>"} string so audit trails and
+         * downstream correlation can distinguish individual report
+         * submissions.</p>
          */
         @Test
-        // AAP §0.6.5: partition key = requestId for per-report ordering.
-        @DisplayName("Kafka partition key equals the returned requestId")
+        // AAP §0.6.5 / Issue CP4-#11: partition key = USER-ID for
+        // per-user ordering of report-submission events.
+        @DisplayName("Kafka partition key equals the USER-ID (CP4 Issue #11)")
         void submitReport_eventKeyIsReportId() {
             // Arrange — kafka stub installed by @BeforeEach. MONTHLY
             // bypasses date validation entirely.
@@ -1061,16 +1108,18 @@ class ReportSubmissionServiceTest {
             verify(kafkaEventPublisher).publishReportRequested(
                     keyCaptor.capture(), eq(request));
 
-            // Assert: the captured key equals the requestId returned to
-            // the caller. Both flow from the same UUID.randomUUID()
-            // call inside the service, so equality is by reference
-            // (same String instance).
+            // Assert: the captured key equals the USER-ID
+            // (Spring Security principal or "ANONYMOUS" in unit tests
+            // without a security context). The full requestId
+            // contains the same userId prefix.
             String capturedKey = keyCaptor.getValue();
             assertThat(capturedKey)
-                    .as("Kafka key must equal the returned requestId")
+                    .as("Kafka key must equal the USER-ID per CP4 Issue #11")
                     .isNotNull()
                     .isNotBlank()
-                    .isEqualTo(result.requestId())
+                    .isEqualTo(EXPECTED_USER_ID_KEY);
+            assertThat(result.requestId())
+                    .startsWith(capturedKey + "-")
                     .matches(UUID_REGEX);
         }
 

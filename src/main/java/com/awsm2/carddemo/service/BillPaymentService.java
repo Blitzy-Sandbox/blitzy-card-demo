@@ -385,6 +385,32 @@ public class BillPaymentService {
      */
     private static final BigDecimal MAX_ACCOUNT_BALANCE = new BigDecimal("99999999999.99");
 
+    /**
+     * Numeric absolute ceiling for the {@code TRAN-AMT} column.
+     * Mirrors the {@code PIC S9(09)V99} declaration of
+     * {@code TRAN-AMT} per {@code app/cpy/CVTRA05Y.cpy:L10} (9 integer
+     * digits + 2 fraction digits = absolute max 999,999,999.99). The
+     * mapped JDBC type is {@code NUMERIC(11,2)} per
+     * {@code db/migration/V005__create_transaction.sql}, which the
+     * PostgreSQL driver enforces at INSERT time and surfaces as
+     * {@code DataIntegrityViolationException} on overflow.
+     *
+     * <p>This ceiling is STRICTLY tighter than {@link #MAX_ACCOUNT_BALANCE}
+     * (the {@code ACCT-CURR-BAL} field has 10 integer digits, while
+     * {@code TRAN-AMT} has only 9). When COBIL00C copies
+     * {@code ACCT-CURR-BAL} into {@code TRAN-AMT} (line 224 of the
+     * source), any account balance with an absolute value greater than
+     * {@code 999,999,999.99} would overflow the narrower {@code TRAN-AMT}
+     * field. The source COBOL would have produced an {@code ON SIZE
+     * ERROR} condition; the Java target raises an
+     * {@link OnSizeErrorException} pre-check before attempting the
+     * insert so the failure is a typed business-logic exception (HTTP
+     * 422 Unprocessable Entity) rather than a database-layer
+     * {@code DataIntegrityViolationException} (HTTP 500). Issue
+     * CP4-#6.</p>
+     */
+    private static final BigDecimal MAX_TRAN_AMT = new BigDecimal("999999999.99");
+
     // =========================================================================
     // Cache namespace and audit metadata
     // =========================================================================
@@ -657,6 +683,28 @@ public class BillPaymentService {
         // with HALF_EVEN preserves the COBOL PIC 9 decimal-arithmetic
         // semantic at the boundary (AAP §0.6.1).
         final BigDecimal tranAmt = currentBalance.setScale(2, RoundingMode.HALF_EVEN);
+
+        // ON SIZE ERROR pre-check (Issue CP4-#6): when ACCT-CURR-BAL has
+        // an absolute value greater than the narrower TRAN-AMT field's
+        // ceiling (PIC S9(09)V99 = ±999,999,999.99), the implicit
+        // truncation in the source COBOL would have raised the COMPUTE
+        // ON SIZE ERROR condition (COBIL00C L224 implicit truncation,
+        // L234 explicit ON SIZE ERROR). In the Java target, the
+        // narrower NUMERIC(11,2) column would reject the INSERT with a
+        // DataIntegrityViolationException and surface as HTTP 500. We
+        // throw a typed OnSizeErrorException here so the failure is a
+        // business-logic 422 Unprocessable Entity per AAP §0.7.1
+        // ("Map COBOL RETURN-CODE / condition codes to Spring exception
+        // hierarchy").
+        if (tranAmt.abs().compareTo(MAX_TRAN_AMT) > 0) {
+            throw new OnSizeErrorException(
+                    "TRAN_AMT_OVERFLOW",
+                    "Account balance " + tranAmt
+                            + " exceeds TRAN-AMT PIC S9(09)V99 ceiling "
+                            + "(999,999,999.99); cannot copy to TRAN-AMT for bill "
+                            + "payment. COBOL: COBIL00C L224 MOVE ACCT-CURR-BAL TO "
+                            + "TRAN-AMT would have raised ON SIZE ERROR.");
+        }
         Transaction tx = new Transaction(
                 newTranId,
                 BILL_PAY_TYPE_CODE,            // COBOL: '02'
