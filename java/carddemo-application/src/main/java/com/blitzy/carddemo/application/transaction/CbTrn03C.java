@@ -521,7 +521,14 @@ public final class CbTrn03C {
         closeQuietly(transactionRepository, "POSTED TRANSACTION FILE");
         closeQuietly(xrefRepository, "CROSS REF FILE");
         closeQuietly(tranTypeRepository, "TRANSACTION TYPE FILE");
-        closeQuietly(tranCatgRepository, "TRANSACTION CATG FILE");
+        // 9400-TRANCATG-CLOSE: the TransactionCategoryRepository port
+        // deliberately does not extend AutoCloseable (per its schema —
+        // only the 4 schema-listed methods findByKey/streamSequential/
+        // save/delete are exposed). The TRANCATG file lifecycle is
+        // therefore owned by the adapter implementation, not by the
+        // application class. The COBOL CLOSE-paragraph semantic for
+        // TRANCATG-FILE is preserved by the adapter's own
+        // close-on-completion contract.
         // REPORT-FILE was opened lazily via writeReportLine + flushReport
     }
 
