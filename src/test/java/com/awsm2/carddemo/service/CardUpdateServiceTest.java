@@ -52,6 +52,15 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+// COBOL: COCRDUPC:UPDATE-CARD -- behavioural-parity test suite for the
+// COBOL/CICS card-update flow translated by {@link CardUpdateService}.
+// Locks the COBOL semantics (READ UPDATE → before/after snapshot compare
+// → REWRITE → SYNCPOINT) onto JPA-idiomatic optimistic locking, cache-
+// aside invalidation, and CloudTrail/OpenSearch audit emission. Every
+// @Nested group below corresponds to a specific COCRDUPC.cbl paragraph
+// family or a cross-cutting concern (PCI-DSS, side-effect ordering)
+// surfaced by AAP §0.6.6 and §0.7.1.
+
 /**
  * JUnit 5 + Mockito + AssertJ unit tests for {@link CardUpdateService}.
  *
@@ -572,6 +581,240 @@ class CardUpdateServiceTest {
         }
     }
 
+    // ==================================================================
+    // The next three @Nested groups (StatusUpdate, EmbossedNameValidation,
+    // ExpiryDateValidation) align test class structure with the
+    // agent_prompt's Phase 3 group enumeration. Coverage overlaps with
+    // the broader FieldValidation group above, but these focused groups
+    // exercise specific COBOL paragraph behaviours (1240-EDIT-CARDSTATUS,
+    // 1230-EDIT-NAME, 1250/1260-EDIT-EXPIRY) and the additive status-flip
+    // + past-but-valid-date positive cases that FieldValidation does not
+    // cover. COBOL: COCRDUPC:UPDATE-CARD
+    // ==================================================================
+
+    @Nested
+    @DisplayName("StatusUpdate (COBOL: COCRDUPC 1240-EDIT-CARDSTATUS)")
+    class StatusUpdate {
+
+        @Test
+        @DisplayName("flips status from N to Y (activate inactive card) and persists")
+        void updateCard_activateInactiveCard_succeeds() {
+            // COBOL: COCRDUPC:UPDATE-CARD -- the canonical activation
+            // flip: existing CARD-ACTIVE-STATUS = 'N' (inactive), new
+            // value = 'Y' (active). The COBOL flow accepts any
+            // FLG-YES-NO-VALID value (lines 91, 845-873) and writes it
+            // verbatim to CARD-UPDATE-ACTIVE-STATUS (line 1475).
+            // Arrange — fixture already has existingCard.status = "N";
+            // validRequest carries status = "Y".
+            stubHappyPathRepositories();
+            assertThat(existingCard.getCardActiveStatus())
+                    .as("fixture precondition: existing status must be N")
+                    .isEqualTo("N");
+            assertThat(validRequest.activeStatus())
+                    .as("fixture precondition: request status must be Y")
+                    .isEqualTo("Y");
+
+            // Act
+            CardDetailDto response = service.updateCard(CARD_NUMBER, validRequest);
+
+            // Assert — the persisted entity carries the new "Y" status
+            // and the response DTO reflects it.
+            ArgumentCaptor<Card> savedCaptor = ArgumentCaptor.forClass(Card.class);
+            verify(cardRepository).saveAndFlush(savedCaptor.capture());
+            assertThat(savedCaptor.getValue().getCardActiveStatus()).isEqualTo("Y");
+            assertThat(response.activeStatus()).isEqualTo("Y");
+            verify(cacheService).evict(eq("card-detail"), eq(CARD_NUMBER));
+            verify(auditLogService).auditEvent(
+                    eq("card.updated"), eq("system"), anyMap());
+        }
+
+        @Test
+        @DisplayName("flips status from Y to N (deactivate active card) and persists")
+        void updateCard_deactivateActiveCard_succeeds() {
+            // COBOL: COCRDUPC:UPDATE-CARD -- the canonical deactivation
+            // flip; covers the reverse direction of the activation test
+            // above.
+            // Arrange — existing card status = "Y"; request status = "N".
+            existingCard.setCardActiveStatus("Y");
+            stubHappyPathRepositories();
+            CardUpdateDto deactivate = buildRequestWithStatus("N");
+
+            // Act
+            CardDetailDto response = service.updateCard(CARD_NUMBER, deactivate);
+
+            // Assert
+            ArgumentCaptor<Card> savedCaptor = ArgumentCaptor.forClass(Card.class);
+            verify(cardRepository).saveAndFlush(savedCaptor.capture());
+            assertThat(savedCaptor.getValue().getCardActiveStatus()).isEqualTo("N");
+            assertThat(response.activeStatus()).isEqualTo("N");
+        }
+
+        @Test
+        @DisplayName("rejects invalid status code (not Y or N)")
+        void updateCard_invalidStatusCode_throwsValidation() {
+            // COBOL: COCRDUPC:1240-EDIT-CARDSTATUS -- FLG-YES-NO-VALID
+            // 88-level (line 91) rejects anything other than 'Y' or 'N'
+            // with message CARD-STATUS-MUST-BE-YES-NO.
+            CardUpdateDto invalid = buildRequestWithStatus("X");
+
+            assertThatThrownBy(() -> service.updateCard(CARD_NUMBER, invalid))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("Y or N");
+            verify(cardRepository, never()).findById(anyString());
+            verify(cardRepository, never()).saveAndFlush(any());
+        }
+    }
+
+    @Nested
+    @DisplayName("EmbossedNameValidation (COBOL: COCRDUPC 1230-EDIT-NAME)")
+    class EmbossedNameValidation {
+
+        @Test
+        @DisplayName("accepts a 50-character embossed name (max-length boundary)")
+        void updateCard_maxLengthName_accepted() {
+            // COBOL: COCRDUPC:1230-EDIT-NAME -- CARD-NAME-CHECK PIC X(50)
+            // (line 87) accepts up to 50 characters; CARD-EMBOSSED-NAME
+            // PIC X(50) (CVACT02Y.cpy line 8) is exactly 50 bytes wide.
+            // Use a name composed only of characters that the @Pattern
+            // on the DTO permits (uppercase letters and spaces) so the
+            // request would also pass controller-boundary validation.
+            String exactlyFifty = "A".repeat(50);
+            stubHappyPathRepositories();
+            CardUpdateDto request = buildRequestWithEmbossedName(exactlyFifty);
+
+            CardDetailDto response = service.updateCard(CARD_NUMBER, request);
+
+            assertThat(response.embossedName()).isEqualTo(exactlyFifty);
+            ArgumentCaptor<Card> savedCaptor = ArgumentCaptor.forClass(Card.class);
+            verify(cardRepository).saveAndFlush(savedCaptor.capture());
+            assertThat(savedCaptor.getValue().getCardEmbossedName()).isEqualTo(exactlyFifty);
+        }
+
+        @Test
+        @DisplayName("rejects blank embossed name (COBOL WS-PROMPT-FOR-NAME)")
+        void updateCard_blankName_throwsValidation() {
+            CardUpdateDto request = buildRequestWithEmbossedName("");
+            assertThatThrownBy(() -> service.updateCard(CARD_NUMBER, request))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("Card name not provided");
+        }
+
+        @Test
+        @DisplayName("rejects name longer than 50 chars (COBOL CARD-NAME-CHECK PIC X(50))")
+        void updateCard_nameTooLong_throwsValidation() {
+            String tooLong = "A".repeat(51);
+            CardUpdateDto request = buildRequestWithEmbossedName(tooLong);
+            assertThatThrownBy(() -> service.updateCard(CARD_NUMBER, request))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("at most 50");
+        }
+
+        @Test
+        @DisplayName("accepts a name with hyphens and apostrophes (COBOL CARD-NAME-CHECK alphanumeric)")
+        void updateCard_nameWithSpecialChars_acceptedAtServiceLayer() {
+            // COBOL: COCRDUPC:1230-EDIT-NAME -- the COBOL paragraph
+            // applies an INSPECT against LIT-ALL-ALPHA / LIT-ALL-SPACES
+            // (lines 806-840), but the Java SUT delegates that
+            // alphabet-class enforcement to the @Pattern on
+            // CardUpdateDto (Jakarta Bean Validation, fired at the
+            // controller boundary). The SUT itself accepts any
+            // non-blank value of length <= 50, so a name with hyphens
+            // and apostrophes (which the DTO @Pattern permits) reaches
+            // the database. This is the AAP-mandated split between
+            // controller-layer DTO validation and service-layer
+            // invariant enforcement (AAP §0.3.3, §0.7.3).
+            String nameWithSpecials = "O'BRIEN-SMITH";
+            stubHappyPathRepositories();
+            CardUpdateDto request = buildRequestWithEmbossedName(nameWithSpecials);
+
+            CardDetailDto response = service.updateCard(CARD_NUMBER, request);
+
+            assertThat(response.embossedName()).isEqualTo(nameWithSpecials);
+        }
+    }
+
+    @Nested
+    @DisplayName("ExpiryDateValidation (COBOL: COCRDUPC 1250/1260-EDIT-EXPIRY)")
+    class ExpiryDateValidation {
+
+        @Test
+        @DisplayName("accepts a past-but-valid expiry date (COBOL allows past dates)")
+        void updateCard_pastExpiryDate_acceptedAsCobol() {
+            // COBOL: COCRDUPC:1250-EDIT-EXPIRY-MON / 1260-EDIT-EXPIRY-YEAR
+            // (lines 877-944) -- the COBOL flow validates month 1-12
+            // and year 1950-2099 but does NOT reject past dates per se.
+            // The Java SUT preserves this exact behaviour: an expiry
+            // date in the past (year >= 1950, month 1-12) is accepted
+            // and written to the row. Downstream consumers (e.g.,
+            // TransactionPostingService reject code 103) handle the
+            // expired-card semantics at TRANSACTION time, not at CARD
+            // UPDATE time.
+            LocalDate pastButValid = LocalDate.of(2020, 1, 15);
+            stubHappyPathRepositories();
+            CardUpdateDto request = buildRequestWithExpiration(pastButValid);
+
+            CardDetailDto response = service.updateCard(CARD_NUMBER, request);
+
+            assertThat(response.expirationDate()).isEqualTo(pastButValid);
+            ArgumentCaptor<Card> savedCaptor = ArgumentCaptor.forClass(Card.class);
+            verify(cardRepository).saveAndFlush(savedCaptor.capture());
+            assertThat(savedCaptor.getValue().getCardExpirationDate())
+                    .isEqualTo(pastButValid);
+        }
+
+        @Test
+        @DisplayName("accepts the minimum-year (1950) boundary")
+        void updateCard_minYearBoundary_accepted() {
+            LocalDate minYear = LocalDate.of(1950, 1, 1);
+            stubHappyPathRepositories();
+            CardUpdateDto request = buildRequestWithExpiration(minYear);
+
+            CardDetailDto response = service.updateCard(CARD_NUMBER, request);
+            assertThat(response.expirationDate()).isEqualTo(minYear);
+        }
+
+        @Test
+        @DisplayName("accepts the maximum-year (2099) boundary")
+        void updateCard_maxYearBoundary_accepted() {
+            LocalDate maxYear = LocalDate.of(2099, 12, 31);
+            stubHappyPathRepositories();
+            CardUpdateDto request = buildRequestWithExpiration(maxYear);
+
+            CardDetailDto response = service.updateCard(CARD_NUMBER, request);
+            assertThat(response.expirationDate()).isEqualTo(maxYear);
+        }
+
+        @Test
+        @DisplayName("rejects an expiry date with year < 1950")
+        void updateCard_yearTooEarly_throwsValidation() {
+            // COBOL: COCRDUPC:VALID-YEAR VALUES 1950 THRU 2099 (line 99)
+            CardUpdateDto request =
+                    buildRequestWithExpiration(LocalDate.of(1949, 12, 31));
+            assertThatThrownBy(() -> service.updateCard(CARD_NUMBER, request))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("expiry year");
+        }
+
+        @Test
+        @DisplayName("rejects an expiry date with year > 2099")
+        void updateCard_yearTooLate_throwsValidation() {
+            CardUpdateDto request =
+                    buildRequestWithExpiration(LocalDate.of(2100, 1, 1));
+            assertThatThrownBy(() -> service.updateCard(CARD_NUMBER, request))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("expiry year");
+        }
+
+        @Test
+        @DisplayName("rejects a null expiry date")
+        void updateCard_nullExpiryDate_throwsValidation() {
+            CardUpdateDto request = buildRequestWithExpiration(null);
+            assertThatThrownBy(() -> service.updateCard(CARD_NUMBER, request))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("expiry date not provided");
+        }
+    }
+
     @Nested
     @DisplayName("PCI-DSS discipline: audit payload + log lines")
     class PciDssHandling {
@@ -598,6 +841,24 @@ class CardUpdateServiceTest {
             assertThat(payload).containsEntry("cardLast4", LAST4);
             assertThat(payload).containsEntry("accountId", ACCOUNT_ID);
             assertThat(payload).containsEntry("entity", "Card");
+
+            // COBOL: COCRDUPC:UPDATE-CARD -- mandatory CVV-absence
+            // assertion per the agent prompt's Phase 4 critical rules
+            // and AAP §0.6.6 (PCI-DSS v4.0 Requirement 3.2: sensitive
+            // authentication data must NEVER appear in any audit /
+            // logging / cache emission, even post-authorization).
+            // The Card entity itself omits the CVV column (QA finding
+            // DB1), so the SUT cannot accidentally emit a "cardCvvCd"
+            // payload key — but the explicit negative assertion locks
+            // the invariant against any future code-path that might
+            // re-introduce CVV handling.
+            assertThat(payload)
+                    .as("audit payload must NEVER carry the CVV (PCI-DSS Req 3.2)")
+                    .doesNotContainKey("cardCvvCd")
+                    .doesNotContainKey("cardCvv")
+                    .doesNotContainKey("cvv")
+                    .doesNotContainKey("CVV")
+                    .doesNotContainKey("CARD-CVV-CD");
 
             // No payload key or value may carry the full PAN
             for (Map.Entry<String, Object> entry : payload.entrySet()) {
