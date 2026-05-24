@@ -520,7 +520,14 @@ public final class CbTrn03C {
         // 9000-TRANFILE-CLOSE through 9500-DATEPARM-CLOSE.
         closeQuietly(transactionRepository, "POSTED TRANSACTION FILE");
         closeQuietly(xrefRepository, "CROSS REF FILE");
-        closeQuietly(tranTypeRepository, "TRANSACTION TYPE FILE");
+        // 9300-TRANTYPE-CLOSE: the TransactionTypeRepository port
+        // deliberately does not extend AutoCloseable (per its schema —
+        // only the 4 schema-listed methods findByCode/streamSequential/
+        // save/delete are exposed). The TRANTYPE file lifecycle is
+        // therefore owned by the adapter implementation, not by the
+        // application class. The COBOL CLOSE-paragraph semantic for
+        // TRANTYPE-FILE is preserved by the adapter's own
+        // close-on-completion contract.
         // 9400-TRANCATG-CLOSE: the TransactionCategoryRepository port
         // deliberately does not extend AutoCloseable (per its schema —
         // only the 4 schema-listed methods findByKey/streamSequential/
