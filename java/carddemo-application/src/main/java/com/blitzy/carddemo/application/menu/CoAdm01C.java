@@ -99,7 +99,19 @@ public final class CoAdm01C {
 
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("MM/dd/yy");
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
-    private static final int MAX_OPTION_SLOTS = 12;
+
+    /**
+     * Number of {@code OPTN0nn} option slots surfaced by
+     * {@link CoAdm01Output} (and {@link CoAdm01Input}). Bound to the
+     * DTO's {@link CoAdm01Output#OPTION_LINE_COUNT} constant so the
+     * loop bounds in {@link #sendMenuScreen} cannot drift out of sync
+     * with the record's component count. The admin menu BMS source
+     * {@code app/bms/COADM01.bms} declares twelve display fields but
+     * the entry-contract DTO models only the ten that the
+     * {@link AdminMenuTable} lookup can populate (see
+     * {@link CoAdm01Output} class Javadoc for the rationale).
+     */
+    private static final int MAX_OPTION_SLOTS = CoAdm01Output.OPTION_LINE_COUNT;
 
     private final ProgramRegistry programRegistry;
 
@@ -233,9 +245,14 @@ public final class CoAdm01C {
             slots[i] = String.format("%02d. %s", opt.optionNumber(), opt.optionName());
         }
 
-        CoAdm01Output.FieldColor color = (message == null || message.isBlank())
-                ? CoAdm01Output.FieldColor.NONE
-                : CoAdm01Output.FieldColor.RED;
+        // ERRMSGC attribute byte: COBOL COADM01C does NOT programmatically
+        // set ERRMSGC (unlike COMEN01C which uses MOVE DFHGREEN TO ERRMSGC
+        // on the coming-soon path). We map the prior FieldColor semantics
+        // onto the schema-mandated String errMsgColor component: "" means
+        // "no override / leave at BMS compile-time COLOR=RED default", and
+        // "R" emits the DFHRED single-char extended-color attribute when
+        // a runtime error message is present.
+        String errMsgColor = (message == null || message.isBlank()) ? "" : "R";
 
         return new CoAdm01Output(
                 TRANSACTION_ID,
@@ -244,11 +261,11 @@ public final class CoAdm01C {
                 PROGRAM_ID,
                 TITLE_02,
                 nowTime(),
-                slots[0], slots[1], slots[2], slots[3], slots[4], slots[5],
-                slots[6], slots[7], slots[8], slots[9], slots[10], slots[11],
+                slots[0], slots[1], slots[2], slots[3], slots[4],
+                slots[5], slots[6], slots[7], slots[8], slots[9],
                 "",                                  // OPTIONO echo (blank on send)
                 message == null ? "" : message,
-                color
+                errMsgColor
         );
     }
 
