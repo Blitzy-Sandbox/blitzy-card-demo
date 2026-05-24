@@ -200,13 +200,15 @@ public final class CoUsr02C {
                 return Result.sendMap(buildScreen(input, MSG_NOT_FOUND, false), commarea);
             }
             SecUserData user = userOpt.get();
-            // Populate FNAMEI/LNAMEI/PASSWDI/USRTYPEI from record
+            // Populate FNAMEI/LNAMEI/PASSWDI/USRTYPEI from record.
+            // SEC-USR-TYPE is a single COBOL X(01) char; CoUsr02Input.userType is the
+            // 1-char BMS String. Wrap with String.valueOf for the conversion.
             CoUsr02Input populated = new CoUsr02Input(
                     user.secUsrId(),
                     user.secUsrFname(),
                     user.secUsrLname(),
                     user.secUsrPwd(),
-                    user.secUsrType(),
+                    String.valueOf(user.secUsrType()),
                     input.aidKey());
             return Result.sendMap(buildScreen(populated, MSG_PRESS_PF5, /*neutral=*/ true), commarea);
         } catch (RuntimeException re) {
@@ -286,14 +288,19 @@ public final class CoUsr02C {
             return Result.sendMap(buildScreen(input, MSG_NO_MODIFICATION, false), commarea);
         }
 
-        // REWRITE the user record with diff'd fields
+        // REWRITE the user record with diff'd fields.
+        // CoUsr02Input.userType is a 1-char BMS String (clamped to length 1 in the
+        // compact constructor); SecUserData.secUsrType is the COBOL PIC X(01) char.
+        // Convert empty -> space to mirror COBOL space-fill semantics.
+        String inputUserTypeStr = input.userType();
+        char inputUserTypeChar = inputUserTypeStr.isEmpty() ? ' ' : inputUserTypeStr.charAt(0);
         SecUserData updated = new SecUserData(
                 existing.secUsrId(),
                 input.firstName(),
                 input.lastName(),
                 input.password(),
-                input.userType(),
-                existing.filler());
+                inputUserTypeChar,
+                existing.secUsrFiller());
 
         try {
             userSecurity.update(updated);

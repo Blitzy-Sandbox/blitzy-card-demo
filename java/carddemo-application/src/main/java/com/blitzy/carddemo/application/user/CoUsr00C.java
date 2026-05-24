@@ -338,7 +338,9 @@ public final class CoUsr00C {
                         u.secUsrId(),
                         u.secUsrFname(),
                         u.secUsrLname(),
-                        u.secUsrType()));
+                        // SEC-USR-TYPE is a single COBOL X(01) char; the BMS row carries
+                        // it as a 1-char String to match the PIC X(1) BMS leaf.
+                        String.valueOf(u.secUsrType())));
             } else {
                 rows.add(CoUsr00Output.UserRow.empty());
             }

@@ -210,13 +210,15 @@ public final class CoUsr03C {
                 // DFHRESP(NOTFND)
                 return Result.sendMap(buildScreen(input, MSG_NOT_FOUND, commarea), commarea);
             }
-            // DFHRESP(NORMAL) — populate first/last name and user type
+            // DFHRESP(NORMAL) — populate first/last name and user type.
+            // SEC-USR-TYPE is a single COBOL X(01) char; CoUsr03Input.userType is the
+            // 1-char BMS String. Wrap with String.valueOf for the conversion.
             SecUserData user = userOpt.get();
             CoUsr03Input populated = new CoUsr03Input(
                     user.secUsrId(),
                     user.secUsrFname(),
                     user.secUsrLname(),
-                    user.secUsrType(),
+                    String.valueOf(user.secUsrType()),
                     input.aidKey());
             return Result.sendMap(buildScreen(populated, MSG_PRESS_PF5, commarea), commarea);
         } catch (RuntimeException re) {

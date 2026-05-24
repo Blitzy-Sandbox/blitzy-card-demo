@@ -182,12 +182,18 @@ public final class CoUsr01C {
         // Defensive copy preserves the byte[]-component contract of records.
         byte[] filler = new byte[23];
         java.util.Arrays.fill(filler, (byte) ' ');
+        // CoUsr01Input.userType is a String clamped to <=1 char (matching the BMS
+        // PIC X(1) leaf USRTYPEI); SecUserData.secUsrType is a single char (the
+        // COBOL PIC X(01) representation). Convert empty -> space to mirror COBOL
+        // space-fill semantics for an unset 1-byte field.
+        String userTypeStr = input.userType();
+        char userTypeChar = userTypeStr.isEmpty() ? ' ' : userTypeStr.charAt(0);
         SecUserData newUser = new SecUserData(
                 input.userId(),
                 input.firstName(),
                 input.lastName(),
                 input.password(),
-                input.userType(),
+                userTypeChar,
                 filler);
 
         try {

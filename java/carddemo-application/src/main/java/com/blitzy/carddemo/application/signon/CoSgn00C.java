@@ -296,8 +296,10 @@ public final class CoSgn00C {
             return Result.sendMap(sendSignonScreen(userId, "", "Wrong Password. Try again ..."), commarea);
         }
 
-        // SUCCESS: dispatch to admin or regular menu via UserType sealed switch
-        char typeCode = user.secUsrType().isEmpty() ? ' ' : user.secUsrType().charAt(0);
+        // SUCCESS: dispatch to admin or regular menu via UserType sealed switch.
+        // SEC-USR-TYPE is PIC X(01); SecUserData exposes it as a single char
+        // (always present — the underlying buffer position always has a byte).
+        char typeCode = user.secUsrType();
         UserType userType;
         try {
             userType = UserType.fromCode(typeCode);
