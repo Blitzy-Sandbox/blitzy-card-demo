@@ -20,6 +20,7 @@ import com.blitzy.carddemo.application.util.DateValidator;
 import com.blitzy.carddemo.domain.annotation.CobolProgram;
 import com.blitzy.carddemo.domain.commarea.CardDemoCommarea;
 import com.blitzy.carddemo.domain.status.PgmContext;
+import com.blitzy.carddemo.domain.text.CcWorkAreas.AidKey;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -170,24 +171,50 @@ public final class CoRpt00C {
         // First-time entry (CDEMO-PGM-REENTER is false in COBOL):
         if (!(commarea.generalInfo().pgmContext() instanceof PgmContext.Reenter)) {
             CardDemoCommarea reentered = withPgmContext(commarea, PgmContext.REENTER);
-            return Result.sendMap(buildScreen(CoRpt00Input.blank(), ""), reentered);
+            return Result.sendMap(buildScreen(CoRpt00Input.empty(), ""), reentered);
         }
 
         // Re-entry: dispatch by AID key.
         if (input == null) {
-            return Result.sendMap(buildScreen(CoRpt00Input.blank(), ""), commarea);
+            return Result.sendMap(buildScreen(CoRpt00Input.empty(), ""), commarea);
         }
 
+        // EVALUATE EIBAID (lines 184-196 of app/cbl/CORPT00C.cbl):
+        //   WHEN DFHENTER  → process selection
+        //   WHEN DFHPF3    → return to previous program (default COMEN01C)
+        //   WHEN OTHER     → invalid-key error
+        // Translated to an exhaustive pattern-matching switch over the sealed
+        // com.blitzy.carddemo.domain.text.CcWorkAreas.AidKey hierarchy (16
+        // record permits) per AAP §0.6.10. NO `default` branch (compiler-
+        // enforced exhaustiveness).
         return switch (input.aidKey()) {
-            case ENTER -> processEnterKey(input, commarea);
-            case PF03_BACK -> {
+            case AidKey.Enter ignored -> processEnterKey(input, commarea);
+            case AidKey.PfKey03 ignored -> {
                 String target = (commarea.generalInfo().toProgram() != null
                         && !commarea.generalInfo().toProgram().isBlank())
                         ? commarea.generalInfo().toProgram()
                         : ProgramRegistry.CO_MEN_01C;
                 yield Result.xctl(target, withTarget(commarea, target));
             }
-            case OTHER -> Result.sendMap(buildScreen(input, MSG_INVALID_KEY), commarea);
+            // WHEN OTHER: every AID key other than ENTER and PF3 falls
+            // through to the "Invalid key pressed..." error path. Each
+            // permit is enumerated to satisfy exhaustive-switch checking
+            // over the sealed AidKey hierarchy without resorting to a
+            // forbidden `default` branch.
+            case AidKey.Clear ignored -> Result.sendMap(buildScreen(input, MSG_INVALID_KEY), commarea);
+            case AidKey.Pa1 ignored -> Result.sendMap(buildScreen(input, MSG_INVALID_KEY), commarea);
+            case AidKey.Pa2 ignored -> Result.sendMap(buildScreen(input, MSG_INVALID_KEY), commarea);
+            case AidKey.PfKey01 ignored -> Result.sendMap(buildScreen(input, MSG_INVALID_KEY), commarea);
+            case AidKey.PfKey02 ignored -> Result.sendMap(buildScreen(input, MSG_INVALID_KEY), commarea);
+            case AidKey.PfKey04 ignored -> Result.sendMap(buildScreen(input, MSG_INVALID_KEY), commarea);
+            case AidKey.PfKey05 ignored -> Result.sendMap(buildScreen(input, MSG_INVALID_KEY), commarea);
+            case AidKey.PfKey06 ignored -> Result.sendMap(buildScreen(input, MSG_INVALID_KEY), commarea);
+            case AidKey.PfKey07 ignored -> Result.sendMap(buildScreen(input, MSG_INVALID_KEY), commarea);
+            case AidKey.PfKey08 ignored -> Result.sendMap(buildScreen(input, MSG_INVALID_KEY), commarea);
+            case AidKey.PfKey09 ignored -> Result.sendMap(buildScreen(input, MSG_INVALID_KEY), commarea);
+            case AidKey.PfKey10 ignored -> Result.sendMap(buildScreen(input, MSG_INVALID_KEY), commarea);
+            case AidKey.PfKey11 ignored -> Result.sendMap(buildScreen(input, MSG_INVALID_KEY), commarea);
+            case AidKey.PfKey12 ignored -> Result.sendMap(buildScreen(input, MSG_INVALID_KEY), commarea);
         };
     }
 
@@ -325,7 +352,7 @@ public final class CoRpt00C {
         }
         if (confirm.equals("N") || confirm.equals("n")) {
             // Cancel: clear all fields, redisplay screen.
-            return Result.sendMap(buildScreen(CoRpt00Input.blank(), ""), commarea);
+            return Result.sendMap(buildScreen(CoRpt00Input.empty(), ""), commarea);
         }
         // Invalid confirmation value.
         String msg = "\"" + firstSpaceDelimitedToken(confirm)
