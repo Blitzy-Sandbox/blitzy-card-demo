@@ -4,10 +4,102 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
+    <!--
+        carddemo-app — COMPOSITION ROOT of the hexagonal architecture (AAP §0.3.6).
+
+        Contents:
+          * One Java main class per JCL EXEC PGM= step from app/jcl/ (AAP §0.4.1):
+              - PostTransactionsApp           (POSTTRAN.jcl  → CBTRN02C)
+              - InterestCalculationApp        (INTCALC.jcl   → CBACT04C)
+              - CombineTransactionsApp        (COMBTRAN.jcl)
+              - CreateStatementsApp           (CREASTMT.JCL  → CBSTM03A)
+              - DailyRejectsApp               (DALYREJS.jcl)
+              - PrintTcatBalApp               (PRTCATBL.jcl)
+              - TransactionReportApp          (TRANREPT.jcl  → CBTRN03C)
+              - UsersSecuritySeedApp          (DUSRSECJ.jcl)
+              - DefineGdgApp                  (DEFGDGB.jcl)
+              - DefineAccountFileApp          (ACCTFILE.jcl)
+              - DefineCardFileApp             (CARDFILE.jcl)
+              - DefineCustomerFileApp         (CUSTFILE.jcl + DEFCUST.jcl)
+              - DefineDiscountGroupApp        (DISCGRP.jcl)
+              - DefineTransactionFileApp      (TRANFILE.jcl)
+              - DefineTransactionCategoryApp  (TRANCATG.jcl)
+              - DefineTransactionTypeApp      (TRANTYPE.jcl)
+              - DefineCardXrefApp             (XREFFILE.jcl)
+              - DefineTcatBalApp              (TCATBALF.jcl)
+              - TransactionBackupApp          (TRANBKP.jcl)
+              - TransactionIndexApp           (TRANIDX.jcl)
+              - OpenFileApp                   (OPENFIL.jcl)
+              - CloseFileApp                  (CLOSEFIL.jcl)
+              - ReadAccountDumpApp            (READACCT.jcl  → CBACT01C)
+              - ReadCardDumpApp               (READCARD.jcl  → CBACT02C)
+              - ReadCustomerDumpApp           (READCUST.jcl  → CBCUS01C)
+              - ReadCardXrefDumpApp           (READXREF.jcl  → CBACT03C)
+              - ReportFileApp                 (REPTFILE.jcl)
+              - AdminCodeApp                  (CBADMCDJ.jcl)
+          * Each main class establishes a ScopedValue<BatchRunContext> binding at
+            job entry (run ID, processing date, tenant) per AAP §0.6.6 — replacing
+            ThreadLocal entirely (JEP 506 Final).
+          * Each main class wires the chosen adapters via plain Java constructor
+            injection at startup (default: carddemo-adapter-file; optional:
+            carddemo-adapter-db — AAP §0.3.6).
+          * 28 distinct shaded jars produced via maven-shade-plugin executions
+            (one per main class), each runnable as
+            `java -jar carddemo-<program>.jar <args>` per AAP §0.2.1 and §0.4.1.
+
+        Architectural rule (AAP §0.3.6, §0.6.12):
+          * This module is the OUTERMOST ring of the hexagon and depends on every
+            other internal module: carddemo-batch (orchestration), carddemo-application
+            (use cases), carddemo-adapter-file (default persistence), carddemo-adapter-db
+            (optional persistence, empty by default), and carddemo-domain (records,
+            sealed types, ports, Decimals).
+          * carddemo-app is depended on ONLY by carddemo-tests — never the reverse.
+          * This module is the ONLY one in the reactor that pulls logback-classic
+            at runtime scope; the SLF4J implementation is bound here at the
+            composition root per AAP §0.6.12.
+
+        Runtime JVM tuning (per AAP §0.3.4, all finalized JEPs — applied at
+        `java -XX:...` command line by the operator, NOT at build time):
+          -XX:+UseCompactObjectHeaders          (JEP 519, final in Java 25)
+          -XX:+UseShenandoahGC
+          -XX:ShenandoahGCMode=generational     (JEP 521, final in Java 25)
+        No "enable-preview" flag is required or permitted (AAP §0.6.7, §0.7.4).
+
+        Forbidden here (AAP §0.1.1 architectural override, §0.6.7, §0.6.12, §0.7.4
+        and the carddemo-app folder requirements "Forbidden in this Module" list):
+          * Spring / Spring Boot / Spring Batch / Spring Security / Spring MVC /
+            Spring Data / Spring Cloud AWS — AAP §0.6.12 explicit override.
+            NO spring-boot-maven-plugin — use plain maven-shade-plugin instead.
+          * Hibernate / JPA / jakarta.persistence / javax.persistence
+          * Lombok — Java 25 records replace it (AAP §0.7.3).
+          * Docker / docker-maven-plugin / fabric8 / jib-maven-plugin — the
+            shaded jar IS the unit of deployment per folder requirements.
+          * JDBC drivers (PostgreSQL, MySQL, DB2, H2, Oracle, MariaDB, SQLite) —
+            those belong to carddemo-adapter-db (which is empty by default
+            per AAP §0.7.5).
+          * Connection pools (HikariCP, c3p0, commons-dbcp, commons-dbcp2,
+            tomcat-jdbc).
+          * Flyway, Liquibase, Testcontainers, LocalStack — out of scope per
+            AAP §0.6.12.
+          * Micrometer, Prometheus, Grafana, Jaeger, OpenTelemetry — observability
+            is JFR-only per AAP §0.6.12.
+          * The "enable-preview" JVM flag in any compiler/surefire/shade
+            configuration (AAP §0.7.4 — finalized JEPs only).
+          * &lt;source&gt;/&lt;target&gt; tags — the parent POM's
+            &lt;release&gt;25&lt;/release&gt; is the single source of truth for
+            the Java language level.
+          * carddemo-tests as a dependency — tests are a sibling module that
+            depends ON carddemo-app, not the other way around.
+          * A &lt;jar&gt; &lt;manifest&gt; block that hard-codes a single
+            Main-Class — there are 28 main classes; each shaded execution sets
+            its own Main-Class via ManifestResourceTransformer.
+    -->
+
     <parent>
         <groupId>com.blitzy.carddemo</groupId>
         <artifactId>carddemo-parent</artifactId>
         <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
     </parent>
 
     <artifactId>carddemo-app</artifactId>
@@ -15,48 +107,240 @@
 
     <name>CardDemo App (Composition Root)</name>
     <description>
-        Composition root: main entry points, one per JCL EXEC PGM= step.
-        Each main class is packaged as a single shaded jar via maven-shade-plugin
-        per AAP §0.3.1 / §0.7.2. Wires file or DB adapters into application use cases.
-
-        Runtime JVM tuning (per AAP §0.3.4, all finalized JEPs):
-          -XX:+UseCompactObjectHeaders    (JEP 519, final in 25)
-          -XX:+UseShenandoahGC
-          -XX:ShenandoahGCMode=generational (JEP 521, final in 25)
-        No --enable-preview flag is required or permitted.
+        Composition root of the hexagonal architecture: one main class per JCL
+        EXEC PGM= step from app/jcl/. Wires file-based adapters (default) or
+        optional JDBC adapters into use cases via plain Java constructor
+        injection. Establishes ScopedValue&lt;BatchRunContext&gt; at job entry.
+        Packaged as one shaded jar per executable via maven-shade-plugin per
+        AAP §0.2.1, §0.4.1. NO Spring, NO Docker, NO --enable-preview per
+        AAP §0.1.1 architectural override and §0.6.7, §0.7.4 forbidden-features
+        list. Depends on every sibling module except carddemo-tests; this is
+        the ONLY module that supplies logback-classic at runtime scope.
     </description>
 
     <dependencies>
-        <dependency>
-            <groupId>com.blitzy.carddemo</groupId>
-            <artifactId>carddemo-application</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.blitzy.carddemo</groupId>
-            <artifactId>carddemo-adapter-file</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.blitzy.carddemo</groupId>
-            <artifactId>carddemo-adapter-db</artifactId>
-        </dependency>
+        <!--
+            Internal dependency: carddemo-batch — orchestration layer.
+            Provides batch driver classes (PostTransactionsBatch,
+            InterestCalculationBatch, DailyRejectsBatch, PrintTcatBalBatch,
+            CombineTransactionsBatch, CreateStatementsBatch) that compose
+            use cases from carddemo-application with virtual-thread fan-out
+            via Executors.newVirtualThreadPerTaskExecutor() and
+            ScopedValue&lt;BatchRunContext&gt; propagation per AAP §0.6.6.
+            The main classes in this module instantiate these batch drivers
+            with file-based adapters at startup and establish the ScopedValue
+            scope at job entry per AAP §0.3.6.
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT per AAP §0.5.1).
+        -->
         <dependency>
             <groupId>com.blitzy.carddemo</groupId>
             <artifactId>carddemo-batch</artifactId>
         </dependency>
 
+        <!--
+            Internal dependency: carddemo-application — use-case ring.
+            Provides one Java class per COBOL PROGRAM-ID from app/cbl/
+            (CbAct01C/02C/03C/04C, CbCus01C, CbTrn01C/02C/03C, CbStm03A/03B,
+            CoActVwC, CoActUpC, CoCrdLiC/SlC/UpC, CoTrn00C/01C/02C, CoRpt00C,
+            CoBil00C, CoMen01C, CoAdm01C, CoSgn00C, CoUsr00C/01C/02C/03C,
+            DateValidator) and ProgramRegistry for dynamic CALL routing.
+            The main classes in carddemo-app instantiate and invoke these
+            use case classes directly via constructor injection at the
+            composition root per AAP §0.3.1 and §0.3.6.
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT per AAP §0.5.1).
+        -->
+        <dependency>
+            <groupId>com.blitzy.carddemo</groupId>
+            <artifactId>carddemo-application</artifactId>
+        </dependency>
+
+        <!--
+            Internal dependency: carddemo-adapter-file — DEFAULT outer-ring
+            repository adapter (AAP §0.7.5: file-based is the default since
+            the COBOL source uses VSAM KSDS with fixed-width records, NOT
+            embedded SQL). Provides FileAccountRepository, FileCardRepository,
+            FileCustomerRepository, FileTransactionRepository,
+            FileDailyTransactionRepository, etc., along with FixedWidthReader,
+            FixedWidthWriter, and EbcdicTranscoder (Charset.forName("IBM-1047")
+            default) per AAP §0.6.5. The main classes in this module wire
+            these file-based adapters into the use cases at startup as the
+            default persistence path per AAP §0.3.6.
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT per AAP §0.5.1).
+        -->
+        <dependency>
+            <groupId>com.blitzy.carddemo</groupId>
+            <artifactId>carddemo-adapter-file</artifactId>
+        </dependency>
+
+        <!--
+            Internal dependency: carddemo-adapter-db — OPTIONAL JDBC adapter,
+            empty by default per AAP §0.7.5 (the COBOL source contains no
+            EXEC SQL: verified by `grep -l "EXEC SQL" ../app/cbl/*.cbl`
+            returning empty). Declared here to satisfy the hexagonal
+            architecture contract (carddemo-domain.port interfaces CAN be
+            implemented by JDBC if needed) and to keep the composition root's
+            classpath ready to switch adapters at startup if a future JDBC
+            implementation is added. By default this module supplies no
+            classes; the runtime wiring in carddemo-app instantiates
+            carddemo-adapter-file (not this module's classes) per AAP §0.3.6.
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT per AAP §0.5.1).
+        -->
+        <dependency>
+            <groupId>com.blitzy.carddemo</groupId>
+            <artifactId>carddemo-adapter-db</artifactId>
+        </dependency>
+
+        <!--
+            Internal dependency: carddemo-domain — innermost ring of the
+            hexagonal architecture. Although reachable TRANSITIVELY through
+            carddemo-batch, carddemo-application, carddemo-adapter-file, and
+            carddemo-adapter-db above, declared explicitly per AAP §0.4.1 and
+            the file's agent_prompt §1.2 for intent clarity to readers and
+            tooling.
+            Provides:
+              * Java records (AccountRecord, TranRecord, CardDemoCommarea,
+                SecUserData, etc.) — domain records the main classes pass
+                between adapters and use cases (AAP §0.6.9)
+              * Sealed types (UserType, PgmContext, AidKey, CcAcctId,
+                CcCardNum, CcCustId, WsCurDate, WsCurTime, FileStatus,
+                AccountStatus — AAP §0.6.10) for compiler-enforced
+                exhaustiveness on every COBOL EVALUATE
+              * Repository port interfaces (AccountRepository, CardRepository,
+                CardXrefRepository, CustomerRepository, TransactionRepository,
+                DailyTransactionRepository, DiscountGroupRepository,
+                TransactionCategoryBalanceRepository,
+                TransactionTypeRepository, TransactionCategoryRepository,
+                UserSecurityRepository — AAP §0.3.1) — ports the main classes
+                wire adapter implementations to
+              * BatchRunContext record — the value type bound to
+                ScopedValue&lt;BatchRunContext&gt; at job entry per
+                AAP §0.6.6
+              * Decimals utility — BigDecimal facade with MathContext.DECIMAL128
+                and explicit RoundingMode selection (HALF_EVEN for ROUNDED,
+                DOWN otherwise) per AAP §0.3.3, §0.6.1
+              * @CobolProgram traceability annotation cited in Javadoc on
+                every translated class (AAP §0.2.1)
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT per AAP §0.5.1).
+        -->
+        <dependency>
+            <groupId>com.blitzy.carddemo</groupId>
+            <artifactId>carddemo-domain</artifactId>
+        </dependency>
+
+        <!--
+            Production dependency: SLF4J API (compile scope).
+            Used by the main classes in carddemo-app (PostTransactionsApp,
+            InterestCalculationApp, etc.) to log:
+              * Job start/end events with BatchRunContext bindings
+                (run ID, processing date, tenant) per AAP §0.6.6
+              * Adapter wiring decisions at the composition root
+                (carddemo-adapter-file vs carddemo-adapter-db) per AAP §0.3.6
+              * FILE STATUS-equivalent exception summaries via the sealed
+                FileStatus hierarchy per AAP §0.6.10
+              * Reject-vs-post counter snapshots from CbTrn02C DALYREJS flow
+              * PAN-masking enforcement (mask all but last 4 digits per
+                AAP §0.7.2)
+            The runtime implementation (logback-classic, below) is supplied
+            by this same module at runtime scope so that each of the 28
+            shaded jars contains both the API and the concrete backend.
+            Version inherited from the parent POM's dependencyManagement
+            (slf4j-api 2.0.16 per AAP §0.5.1).
+        -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
         </dependency>
+
+        <!--
+            Production runtime dependency: Logback Classic — the concrete
+            SLF4J implementation bound to the facade at the composition root.
+
+            This is the ONLY module in the carddemo reactor that depends on
+            logback-classic at runtime scope per AAP §0.6.12 (every other
+            module — carddemo-domain, carddemo-application,
+            carddemo-adapter-file, carddemo-adapter-db, carddemo-batch —
+            depends only on the slf4j-api facade so the framework choice is
+            made at the composition root, not by the inner rings).
+
+            The runtime scope means the implementation is on the classpath
+            at runtime but NOT at compile time, keeping main-class source
+            code free of any direct Logback API usage (only SLF4J facade
+            calls are visible to compilers in carddemo-app sources).
+
+            This Logback jar is bundled into EACH of the 28 shaded jars
+            produced by maven-shade-plugin below so that every executable
+            (PostTransactionsApp, InterestCalculationApp, etc.) has a
+            working logging implementation at runtime. The
+            ServicesResourceTransformer in each shade execution below is
+            CRITICAL to preserve Logback's META-INF/services/*
+            ServiceLoader registrations across the shaded jars per
+            AAP §0.6.12 — without it, SLF4J would log
+            "Failed to load class org.slf4j.impl.StaticLoggerBinder" and
+            fall back to NOP logging in the shaded jars.
+
+            Version inherited from the parent POM's dependencyManagement
+            (logback-classic 1.5.12 per AAP §0.5.1).
+        -->
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
             <scope>runtime</scope>
         </dependency>
 
+        <!--
+            Test dependencies (test scope only).
+            Versions are inherited from the parent POM's dependencyManagement:
+              * junit-jupiter            via junit-bom 5.13.1 (AAP §0.5.1) —
+                                                  unit tests for the main
+                                                  entry-point classes:
+                                                  command-line argument
+                                                  parsing, exit-code
+                                                  semantics, ScopedValue
+                                                  &lt;BatchRunContext&gt;
+                                                  bootstrap at job entry,
+                                                  and constructor-injection
+                                                  wiring of file-based
+                                                  adapters into use cases.
+              * junit-platform-launcher  1.13.1 — required minimum for JUnit
+                                                  Platform native discovery
+                                                  by maven-surefire-plugin
+                                                  3.5.2; aligns with
+                                                  jqwik 1.9.3's minimum
+                                                  platform requirement to
+                                                  ensure consistent JUnit
+                                                  Platform behavior across
+                                                  the reactor when running
+                                                  smoke tests against the
+                                                  28 shaded jars produced
+                                                  by maven-shade-plugin
+                                                  (AAP §0.5.1).
+              * assertj-core             3.26.3 — fluent assertions for
+                                                  main-class command-line
+                                                  behavior, exit codes,
+                                                  ScopedValue
+                                                  &lt;BatchRunContext&gt;
+                                                  binding outcomes,
+                                                  adapter-wiring sanity
+                                                  checks, and shaded-jar
+                                                  manifest Main-Class
+                                                  attribute correctness
+                                                  (AAP §0.5.1).
+            Note: jqwik is NOT declared here — property-based tests for the
+            Decimals utility live in carddemo-tests per AAP §0.3.1.
+        -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -68,27 +352,106 @@
 
     <build>
         <plugins>
+            <!--
+                maven-compiler-plugin — activated for this module so the
+                parent's pluginManagement (version 3.13.0,
+                &lt;release&gt;25&lt;/release&gt;, no preview flag per
+                AAP §0.7.4, -parameters for record component names) applies
+                during the compile phase. The Java language level is set
+                ONCE in the parent POM; this child must NOT redeclare
+                &lt;source&gt;, &lt;target&gt;, or &lt;release&gt;.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+
+            <!--
+                maven-surefire-plugin — activated for this module so the
+                parent's pluginManagement (version 3.5.2, JUnit Platform
+                native discovery, argLine for finalized features only — NO
+                "enable-preview" argLine per AAP §0.7.4) applies during the
+                test phase. Test classes are discovered by the standard
+                **/*Test.java and **/*Tests.java patterns. Required to run
+                smoke tests on the main entry-point classes BEFORE the
+                maven-shade-plugin package phase produces the 28 shaded jars.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+
+            <!--
+                maven-shade-plugin — the DEFINING PLUGIN of this composition
+                root module. Produces 28 distinct shaded jars, ONE per JCL
+                EXEC PGM= step from app/jcl/ per AAP §0.2.1 and §0.4.1.
+
+                Each shaded jar:
+                  * Has a unique <finalName> following the pattern
+                    `carddemo-<program-kebab-case>` so the run command in
+                    java/README.md is `java -jar carddemo-<program>.jar <args>`.
+                  * Has a Main-Class manifest entry set via
+                    ManifestResourceTransformer pointing to the correct
+                    com.blitzy.carddemo.app.<ClassName>.
+                  * Has merged META-INF/services/* via ServicesResourceTransformer
+                    (CRITICAL for SLF4J ServiceLoader discovery of logback-classic;
+                    without this, SLF4J falls back to NOP logging in the shaded
+                    jars).
+                  * Excludes META-INF/*.SF, *.DSA, *.RSA from any signed jars to
+                    prevent "Invalid signature file digest" runtime errors.
+                  * Sets <shadedArtifactAttached>false</shadedArtifactAttached>
+                    so the 28 jars do NOT attach as classifiers to the main
+                    Maven artifact (with 28 of them that would cause classifier
+                    conflicts).
+                  * Sets <createDependencyReducedPom>false</createDependencyReducedPom>
+                    so the 28 executions do not overwrite each other's
+                    dependency-reduced-pom.xml at the module root.
+
+                Version (3.6.0 per AAP §0.5.1) is inherited from the parent
+                POM's pluginManagement; this child must NOT redeclare it.
+
+                Naming convention enforced (AAP §0.4.1):
+                  <id>shade-<program-kebab-case></id>
+                  <finalName>carddemo-<program-kebab-case></finalName>
+                  <mainClass>com.blitzy.carddemo.app.<ClassName></mainClass>
+
+                The default Maven jar (carddemo-app-1.0.0-SNAPSHOT.jar) is
+                still produced during the package phase by maven-jar-plugin
+                and is NOT the runnable artifact — the 28 shaded jars are.
+
+                No "enable-preview" compiler arg or JVM arg appears anywhere
+                in this plugin's configuration per AAP §0.6.7 and §0.7.4.
+            -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <executions>
+                    <!--
+                        ============================================================
+                        Shade execution 01 of 28
+                        JCL:           app/jcl/POSTTRAN.jcl  (EXEC PGM=CBTRN02C)
+                        Main class:    com.blitzy.carddemo.app.PostTransactionsApp
+                        Shaded jar:    carddemo-post-transactions.jar
+                        Purpose:       Full posting engine (CBTRN02C — ~25
+                                       paragraphs incl. validate/lookup/post/
+                                       write/update — AAP §0.4.1, §0.6.8).
+                        ============================================================
+                    -->
                     <execution>
-                        <id>shade</id>
+                        <id>shade-post-transactions</id>
                         <phase>package</phase>
                         <goals>
                             <goal>shade</goal>
                         </goals>
                         <configuration>
+                            <finalName>carddemo-post-transactions</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
-                            <shadedArtifactAttached>true</shadedArtifactAttached>
-                            <shadedClassifierName>shaded</shadedClassifierName>
                             <transformers>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <manifestEntries>
-                                        <Multi-Release>true</Multi-Release>
-                                    </manifestEntries>
+                                    <mainClass>com.blitzy.carddemo.app.PostTransactionsApp</mainClass>
                                 </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                             </transformers>
                             <filters>
                                 <filter>
@@ -97,12 +460,1085 @@
                                         <exclude>META-INF/*.SF</exclude>
                                         <exclude>META-INF/*.DSA</exclude>
                                         <exclude>META-INF/*.RSA</exclude>
-                                        <exclude>module-info.class</exclude>
                                     </excludes>
                                 </filter>
                             </filters>
                         </configuration>
                     </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 02 of 28
+                        JCL:           app/jcl/INTCALC.jcl   (EXEC PGM=CBACT04C)
+                        Main class:    com.blitzy.carddemo.app.InterestCalculationApp
+                        Shaded jar:    carddemo-interest-calculation.jar
+                        Purpose:       Interest calculation engine (CBACT04C —
+                                       driven by INTCALC PARM='2022071800' —
+                                       AAP §0.4.1).
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-interest-calculation</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-interest-calculation</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.InterestCalculationApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 03 of 28
+                        JCL:           app/jcl/COMBTRAN.jcl  (SORT + IDCAMS)
+                        Main class:    com.blitzy.carddemo.app.CombineTransactionsApp
+                        Shaded jar:    carddemo-combine-transactions.jar
+                        Purpose:       Sort + merge using java.nio.file + Java
+                                       collections; preserve sort order exactly —
+                                       AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-combine-transactions</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-combine-transactions</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.CombineTransactionsApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 04 of 28
+                        JCL:           app/jcl/CREASTMT.JCL  (EXEC PGM=CBSTM03A)
+                        Main class:    com.blitzy.carddemo.app.CreateStatementsApp
+                        Shaded jar:    carddemo-create-statements.jar
+                        Purpose:       Statement generation with HTML output
+                                       (CBSTM03A; flagged DEVIATION in
+                                       MIGRATION_NOTES.md for legacy z/OS
+                                       TIOT/TCB/PSA inspection — AAP §0.4.1).
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-create-statements</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-create-statements</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.CreateStatementsApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 05 of 28
+                        JCL:           app/jcl/DALYREJS.jcl
+                        Main class:    com.blitzy.carddemo.app.DailyRejectsApp
+                        Shaded jar:    carddemo-daily-rejects.jar
+                        Purpose:       Daily rejects export (DALYREJS — IDCAMS
+                                       REPRO equivalent — AAP §0.4.1).
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-daily-rejects</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-daily-rejects</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.DailyRejectsApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 06 of 28
+                        JCL:           app/jcl/PRTCATBL.jcl  (SORT + report)
+                        Main class:    com.blitzy.carddemo.app.PrintTcatBalApp
+                        Shaded jar:    carddemo-print-tcatbal.jar
+                        Purpose:       Print TCATBAL report (transaction
+                                       category balance — AAP §0.4.1).
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-print-tcatbal</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-print-tcatbal</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.PrintTcatBalApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 07 of 28
+                        JCL:           app/jcl/TRANREPT.jcl  (EXEC PGM=CBTRN03C)
+                        Main class:    com.blitzy.carddemo.app.TransactionReportApp
+                        Shaded jar:    carddemo-transaction-report.jar
+                        Purpose:       Paginated transaction detail report
+                                       writer (CBTRN03C — AAP §0.4.1).
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-transaction-report</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-transaction-report</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.TransactionReportApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 08 of 28
+                        JCL:           app/jcl/DUSRSECJ.jcl  (IEBGENER + IDCAMS)
+                        Main class:    com.blitzy.carddemo.app.UsersSecuritySeedApp
+                        Shaded jar:    carddemo-users-security-seed.jar
+                        Purpose:       Seeds USRSEC equivalent (IEBGENER copy
+                                       of seed records — AAP §0.4.1). Plaintext
+                                       SEC-USR-PWD preserved per AAP §0.1.3.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-users-security-seed</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-users-security-seed</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.UsersSecuritySeedApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 09 of 28
+                        JCL:           app/jcl/DEFGDGB.jcl   (IDCAMS DEFINE GDG)
+                        Main class:    com.blitzy.carddemo.app.DefineGdgApp
+                        Shaded jar:    carddemo-define-gdg.jar
+                        Purpose:       GDG base define (IDCAMS); translates to
+                                       filesystem versioned-file scaffolding —
+                                       AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-define-gdg</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-define-gdg</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.DefineGdgApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 10 of 28
+                        JCL:           app/jcl/ACCTFILE.jcl  (IDCAMS define + load)
+                        Main class:    com.blitzy.carddemo.app.DefineAccountFileApp
+                        Shaded jar:    carddemo-define-account-file.jar
+                        Purpose:       Define + load ACCTDATA (IDCAMS); load from
+                                       app/data/ASCII/acctdata.txt — AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-define-account-file</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-define-account-file</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.DefineAccountFileApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 11 of 28
+                        JCL:           app/jcl/CARDFILE.jcl  (IDCAMS define + load)
+                        Main class:    com.blitzy.carddemo.app.DefineCardFileApp
+                        Shaded jar:    carddemo-define-card-file.jar
+                        Purpose:       Define + load CARDDATA (IDCAMS); load from
+                                       app/data/ASCII/carddata.txt — AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-define-card-file</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-define-card-file</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.DefineCardFileApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 12 of 28
+                        JCL:           app/jcl/CUSTFILE.jcl + app/jcl/DEFCUST.jcl
+                                       (IDCAMS define + load; covers both JCLs
+                                       per AAP §0.4.1 mapping)
+                        Main class:    com.blitzy.carddemo.app.DefineCustomerFileApp
+                        Shaded jar:    carddemo-define-customer-file.jar
+                        Purpose:       Define + load CUSTDATA (IDCAMS); load
+                                       from app/data/ASCII/custdata.txt. Flag
+                                       DEFCUST delete/define dataset-name
+                                       mismatch in MIGRATION_NOTES.md as
+                                       suspected COBOL/JCL bug — translate
+                                       faithfully per AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-define-customer-file</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-define-customer-file</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.DefineCustomerFileApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 13 of 28
+                        JCL:           app/jcl/DISCGRP.jcl   (IDCAMS define + load)
+                        Main class:    com.blitzy.carddemo.app.DefineDiscountGroupApp
+                        Shaded jar:    carddemo-define-discount-group.jar
+                        Purpose:       Define + load DISCGRP (IDCAMS); load from
+                                       app/data/ASCII/discgrp.txt — AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-define-discount-group</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-define-discount-group</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.DefineDiscountGroupApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 14 of 28
+                        JCL:           app/jcl/TRANFILE.jcl  (IDCAMS define + load)
+                        Main class:    com.blitzy.carddemo.app.DefineTransactionFileApp
+                        Shaded jar:    carddemo-define-transaction-file.jar
+                        Purpose:       Define + load TRANSACT KSDS (IDCAMS);
+                                       load from fixture — AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-define-transaction-file</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-define-transaction-file</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.DefineTransactionFileApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 15 of 28
+                        JCL:           app/jcl/TRANCATG.jcl  (IDCAMS define + load)
+                        Main class:    com.blitzy.carddemo.app.DefineTransactionCategoryApp
+                        Shaded jar:    carddemo-define-transaction-category.jar
+                        Purpose:       Define + load TRANCATG (IDCAMS); load
+                                       from app/data/ASCII/trancatg.txt — AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-define-transaction-category</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-define-transaction-category</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.DefineTransactionCategoryApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 16 of 28
+                        JCL:           app/jcl/TRANTYPE.jcl  (IDCAMS define + load)
+                        Main class:    com.blitzy.carddemo.app.DefineTransactionTypeApp
+                        Shaded jar:    carddemo-define-transaction-type.jar
+                        Purpose:       Define + load TRANTYPE (IDCAMS); load
+                                       from app/data/ASCII/trantype.txt — AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-define-transaction-type</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-define-transaction-type</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.DefineTransactionTypeApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 17 of 28
+                        JCL:           app/jcl/XREFFILE.jcl  (IDCAMS define + load + AIX)
+                        Main class:    com.blitzy.carddemo.app.DefineCardXrefApp
+                        Shaded jar:    carddemo-define-card-xref.jar
+                        Purpose:       Define + load CARDXREF + AIX (IDCAMS);
+                                       load from app/data/ASCII/cardxref.txt — AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-define-card-xref</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-define-card-xref</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.DefineCardXrefApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 18 of 28
+                        JCL:           app/jcl/TCATBALF.jcl  (IDCAMS define + load)
+                        Main class:    com.blitzy.carddemo.app.DefineTcatBalApp
+                        Shaded jar:    carddemo-define-tcatbal.jar
+                        Purpose:       Define + load TCATBALF (IDCAMS); load
+                                       from app/data/ASCII/tcatbal.txt — AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-define-tcatbal</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-define-tcatbal</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.DefineTcatBalApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 19 of 28
+                        JCL:           app/jcl/TRANBKP.jcl   (IDCAMS REPRO backup)
+                        Main class:    com.blitzy.carddemo.app.TransactionBackupApp
+                        Shaded jar:    carddemo-transaction-backup.jar
+                        Purpose:       Backup TRANSACT KSDS via IDCAMS REPRO —
+                                       AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-transaction-backup</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-transaction-backup</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.TransactionBackupApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 20 of 28
+                        JCL:           app/jcl/TRANIDX.jcl   (IDCAMS DEFINE AIX)
+                        Main class:    com.blitzy.carddemo.app.TransactionIndexApp
+                        Shaded jar:    carddemo-transaction-index.jar
+                        Purpose:       Build TRANSACT AIX (alternate index) —
+                                       AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-transaction-index</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-transaction-index</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.TransactionIndexApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 21 of 28
+                        JCL:           app/jcl/OPENFIL.jcl   (IEFBR14 no-op / SDSF)
+                        Main class:    com.blitzy.carddemo.app.OpenFileApp
+                        Shaded jar:    carddemo-open-file.jar
+                        Purpose:       IEFBR14 no-op translated for completeness —
+                                       AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-open-file</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-open-file</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.OpenFileApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 22 of 28
+                        JCL:           app/jcl/CLOSEFIL.jcl  (IEFBR14 no-op / SDSF)
+                        Main class:    com.blitzy.carddemo.app.CloseFileApp
+                        Shaded jar:    carddemo-close-file.jar
+                        Purpose:       IEFBR14 no-op translated for completeness —
+                                       AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-close-file</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-close-file</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.CloseFileApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 23 of 28
+                        JCL:           app/jcl/READACCT.jcl  (EXEC PGM=CBACT01C)
+                        Main class:    com.blitzy.carddemo.app.ReadAccountDumpApp
+                        Shaded jar:    carddemo-read-account-dump.jar
+                        Purpose:       IDCAMS PRINT translated to text dump
+                                       utility — sequential ACCTFILE reader
+                                       (CBACT01C) — AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-read-account-dump</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-read-account-dump</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.ReadAccountDumpApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 24 of 28
+                        JCL:           app/jcl/READCARD.jcl  (EXEC PGM=CBACT02C)
+                        Main class:    com.blitzy.carddemo.app.ReadCardDumpApp
+                        Shaded jar:    carddemo-read-card-dump.jar
+                        Purpose:       IDCAMS PRINT translated to text dump
+                                       utility — sequential CARDFILE reader
+                                       (CBACT02C) — AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-read-card-dump</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-read-card-dump</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.ReadCardDumpApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 25 of 28
+                        JCL:           app/jcl/READCUST.jcl  (EXEC PGM=CBCUS01C)
+                        Main class:    com.blitzy.carddemo.app.ReadCustomerDumpApp
+                        Shaded jar:    carddemo-read-customer-dump.jar
+                        Purpose:       IDCAMS PRINT translated to text dump
+                                       utility — sequential CUSTOMER reader
+                                       (CBCUS01C) — AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-read-customer-dump</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-read-customer-dump</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.ReadCustomerDumpApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 26 of 28
+                        JCL:           app/jcl/READXREF.jcl  (EXEC PGM=CBACT03C)
+                        Main class:    com.blitzy.carddemo.app.ReadCardXrefDumpApp
+                        Shaded jar:    carddemo-read-card-xref-dump.jar
+                        Purpose:       IDCAMS PRINT translated to text dump
+                                       utility — sequential CARDXREF reader
+                                       (CBACT03C) — AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-read-card-xref-dump</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-read-card-xref-dump</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.ReadCardXrefDumpApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 27 of 28
+                        JCL:           app/jcl/REPTFILE.jcl  (IDCAMS PRINT)
+                        Main class:    com.blitzy.carddemo.app.ReportFileApp
+                        Shaded jar:    carddemo-report-file.jar
+                        Purpose:       Print report file (IDCAMS PRINT
+                                       translated to text dump) — AAP §0.4.1.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-report-file</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-report-file</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.ReportFileApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        ============================================================
+                        Shade execution 28 of 28
+                        JCL:           app/jcl/CBADMCDJ.jcl  (EXEC PGM=DFHCSDUP)
+                        Main class:    com.blitzy.carddemo.app.AdminCodeApp
+                        Shaded jar:    carddemo-admin-code.jar
+                        Purpose:       CICS admin job (DFHCSDUP) translated as
+                                       standalone Java main — AAP §0.4.1. The
+                                       CICS CSD is preserved unchanged under
+                                       ../app/csd/CARDDEMO.CSD per AAP §0.2.2;
+                                       this main class encapsulates the JCL
+                                       step's run-time behavior only.
+                        ============================================================
+                    -->
+                    <execution>
+                        <id>shade-admin-code</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <finalName>carddemo-admin-code</finalName>
+                            <shadedArtifactAttached>false</shadedArtifactAttached>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.blitzy.carddemo.app.AdminCodeApp</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+
                 </executions>
             </plugin>
         </plugins>
