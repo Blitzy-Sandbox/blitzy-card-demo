@@ -357,7 +357,10 @@ resource "random_password" "redis_auth_token" {
 resource "aws_secretsmanager_secret" "redis_auth" {
   name        = "carddemo-${var.environment}-redis-auth"
   description = "Redis AUTH token for CardDemo ElastiCache replication group (AAP §0.7.1 — credentials in Secrets Manager only)"
-  kms_key_id  = aws_kms_key.carddemo.arn
+  # F-CP6-TF-KMS-01: Per-service CMK separation. Secrets encrypted
+  # with aws_kms_key.secrets_kms (the dedicated Secrets Manager CMK)
+  # rather than the legacy aws_kms_key.carddemo.
+  kms_key_id = aws_kms_key.secrets_kms.arn
 
   tags = merge(local.common_tags, {
     Name    = "carddemo-${var.environment}-redis-auth"
@@ -423,7 +426,9 @@ resource "aws_secretsmanager_secret_version" "redis_auth_value" {
 resource "aws_cloudwatch_log_group" "elasticache_slow" {
   name              = "/aws/elasticache/carddemo-${var.environment}/slow-log"
   retention_in_days = 30
-  kms_key_id        = aws_kms_key.carddemo.arn
+  # F-CP6-TF-KMS-01: CloudWatch log groups use the dedicated
+  # aws_kms_key.cloudwatch_kms CMK (per-service separation).
+  kms_key_id = aws_kms_key.cloudwatch_kms.arn
 
   tags = merge(local.common_tags, {
     Name    = "carddemo-${var.environment}-redis-slow-log"
@@ -434,7 +439,7 @@ resource "aws_cloudwatch_log_group" "elasticache_slow" {
 resource "aws_cloudwatch_log_group" "elasticache_engine" {
   name              = "/aws/elasticache/carddemo-${var.environment}/engine-log"
   retention_in_days = 30
-  kms_key_id        = aws_kms_key.carddemo.arn
+  kms_key_id        = aws_kms_key.cloudwatch_kms.arn
 
   tags = merge(local.common_tags, {
     Name    = "carddemo-${var.environment}-redis-engine-log"
@@ -545,7 +550,10 @@ resource "aws_elasticache_replication_group" "carddemo" {
 
   # Encryption-at-rest — mandatory per AAP §0.7.1.
   at_rest_encryption_enabled = true
-  kms_key_id                 = aws_kms_key.carddemo.arn
+  # F-CP6-TF-KMS-01: Per-service CMK separation. ElastiCache uses the
+  # dedicated aws_kms_key.elasticache_kms rather than the shared
+  # aws_kms_key.carddemo.
+  kms_key_id = aws_kms_key.elasticache_kms.arn
 
   # Encryption-in-transit — mandatory per AAP §0.6.6. Forces TLS 1.2+.
   transit_encryption_enabled = true

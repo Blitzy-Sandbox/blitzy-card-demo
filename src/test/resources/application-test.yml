@@ -223,7 +223,12 @@ spring:
     hikari:
       pool-name: CardDemoHikariCP-test
       maximum-pool-size: 5
-      minimum-idle: 1
+      # Keep no background idle-fill target in tests. The full Surefire
+      # suite creates many cached Spring contexts backed by Testcontainers
+      # PostgreSQL; setting this to zero prevents Hikari connection-adder
+      # threads from delaying JVM shutdown after a context's container has
+      # already been closed.
+      minimum-idle: 0
       connection-test-query: SELECT 1
       # Explicit transaction boundaries — every @Transactional service test
       # opens its own JDBC tx; nothing auto-commits silently.
@@ -415,6 +420,11 @@ spring:
         # Testcontainers Kafka uses plaintext only (no IAM). Production uses
         # SASL_SSL + AWS_MSK_IAM.
         security.protocol: PLAINTEXT
+        # Avoid Kafka JMX metric registration in full test-suite shutdown.
+        # Spring/Micrometer assertions cover application metrics separately,
+        # and disabling the native JMX reporter prevents JVM-exit contention
+        # when several listener containers close concurrently.
+        auto.include.jmx.reporter: false
         # Total time the producer will spend attempting to deliver a record
         # (across retries and broker acknowledgments).
         delivery.timeout.ms: 120000
@@ -452,6 +462,9 @@ spring:
         spring.json.trusted.packages: com.awsm2.carddemo.dto,com.awsm2.carddemo.domain
         # Testcontainers Kafka uses plaintext only — see producer above.
         security.protocol: PLAINTEXT
+        # See producer-side rationale above. Testcontainers/Kafka flow tests
+        # inspect Spring-managed metrics and listener config, not JMX MBeans.
+        auto.include.jmx.reporter: false
         # Max time between successive polls before the consumer is
         # considered dead and rebalance is triggered.
         max.poll.interval.ms: 300000
@@ -463,6 +476,10 @@ spring:
       # `MANUAL` — application code calls `Acknowledgment.acknowledge()`
       # after successful processing (AAP §0.6.5 manual commit semantics).
       ack-mode: MANUAL
+      # Full-context tests that are not Kafka-specific should not connect
+      # production @KafkaListener containers to the placeholder broker. Kafka
+      # integration tests explicitly start the containers they exercise.
+      auto-startup: false
       # Single consumer thread for deterministic test ordering. Production
       # may raise this to match topic partition count.
       concurrency: 1

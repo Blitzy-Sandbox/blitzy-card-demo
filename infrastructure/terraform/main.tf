@@ -86,6 +86,19 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
+
+    # F-CP6-TF-MSK-01: Required to declare MSK Kafka topics as managed
+    # Terraform resources. The Mongey/kafka provider is the de facto
+    # standard for Kafka topic management in Terraform. The provider is
+    # configured in msk.tf because it depends on the bootstrap brokers
+    # produced by the aws_msk_cluster resource, and a first-time apply
+    # requires the cluster to exist before the topics can be created
+    # (a 2-phase apply: -target=aws_msk_cluster.carddemo first, then a
+    # normal apply).
+    kafka = {
+      source  = "Mongey/kafka"
+      version = "~> 0.7"
+    }
   }
 
   # ---------------------------------------------------------------------------

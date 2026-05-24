@@ -226,6 +226,19 @@ public class KafkaConfig {
     private int listenerConcurrency;
 
     /**
+     * Listener auto-startup flag bound from
+     * {@code spring.kafka.listener.auto-startup}.
+     *
+     * <p>Production profiles keep the Spring Kafka default ({@code true}) so
+     * MSK consumers start with the application. The test profile sets this
+     * value to {@code false}; Kafka-specific tests explicitly start only the
+     * listener container they exercise, while full-context tests avoid opening
+     * placeholder broker connections during JVM shutdown.</p>
+     */
+    @Value("${spring.kafka.listener.auto-startup:true}")
+    private boolean listenerAutoStartup;
+
+    /**
      * Trusted-packages whitelist for the {@link JsonDeserializer}.
      *
      * <p>Security-hardening property &mdash; the deserializer rejects any
@@ -508,6 +521,7 @@ public class KafkaConfig {
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
         factory.setConcurrency(listenerConcurrency);
+        factory.setAutoStartup(listenerAutoStartup);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL);
 
         // -----------------------------------------------------------------

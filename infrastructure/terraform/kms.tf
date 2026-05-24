@@ -602,3 +602,570 @@ data "aws_iam_policy_document" "kms_carddemo" {
     }
   }
 }
+
+###############################################################################
+# Section 5 — Service-specific CMKs (F-CP6-TF-KMS-01 separation)
+###############################################################################
+#
+# Per CP6 review finding F-CP6-TF-KMS-01, the AAP requires SEPARATE CMKs for
+# each major data class so that a single key compromise does not affect every
+# data store, the per-service audit trail is sharper (each CloudTrail
+# `kms:Decrypt` event maps to exactly one data store), and key rotation can
+# be staged independently per service.
+#
+# The legacy `aws_kms_key.carddemo` is RETAINED above to preserve back-compat
+# for older consumers (ECR, IAM `kms_use` policy doc, SNS topics in macie.tf,
+# misc. file headers). Service-specific consumers are migrated to the new
+# CMKs:
+#   * aws_kms_key.rds_kms          - RDS PostgreSQL + Performance Insights
+#   * aws_kms_key.s3_kms           - S3 batch_outputs + logs (SSE-KMS)
+#   * aws_kms_key.elasticache_kms  - ElastiCache Redis at-rest
+#   * aws_kms_key.msk_kms          - MSK broker storage
+#   * aws_kms_key.cloudwatch_kms   - CloudWatch Logs (incl. WAF, Glue, app)
+#   * aws_kms_key.secrets_kms      - Secrets Manager (RDS, Redis, JWT, MSK)
+#   * aws_kms_key.opensearch_kms   - OpenSearch domain (provisioned for
+#                                    CP7 + future-proofs the CMK split)
+#
+# Every key:
+#   * Enables annual rotation per AAP §0.6.6.
+#   * Uses the same `deletion_window_in_days` as the legacy key.
+#   * Has a human-readable alias `alias/carddemo-<env>-<service>`.
+#   * Has a focused key policy granting only the relevant service
+#     principal(s) plus the root account admin. The "via service"
+#     attached-principal grants from Section 14 of the legacy key
+#     remain on the legacy key only; service-specific consumers
+#     reference the corresponding CMK directly and use AWS service
+#     principals.
+#
+# Cross-references:
+#   * rds.tf            - aws_kms_key.rds_kms
+#   * s3.tf             - aws_kms_key.s3_kms
+#   * elasticache.tf    - aws_kms_key.elasticache_kms
+#   * msk.tf            - aws_kms_key.msk_kms
+#   * cloudwatch.tf     - aws_kms_key.cloudwatch_kms
+#   * waf.tf            - aws_kms_key.cloudwatch_kms (WAF log group)
+#   * secrets.tf        - aws_kms_key.secrets_kms (JWT, MSK SCRAM, rotation)
+#   * iam.tf            - kms_use IAM policy doc updated to reference
+#                         all CMKs (resources list expanded)
+###############################################################################
+
+# -----------------------------------------------------------------------------
+# Shared key-policy helper: root-admin + AWS service principal grant.
+#
+# All 7 service-specific CMKs share the same minimal policy shape:
+#   1. Root-account admin (required to retain key manageability).
+#   2. A single AWS service principal grant (e.g., rds.amazonaws.com)
+#      with the canonical encrypt/decrypt/data-key/describe set.
+#
+# Implemented as an `aws_iam_policy_document` per CMK below to keep
+# the per-service principal customizable (some services need
+# `kms:CreateGrant` and some don't).
+# -----------------------------------------------------------------------------
+
+# RDS CMK policy.
+data "aws_iam_policy_document" "kms_rds" {
+  statement {
+    sid    = "EnableRootAccountAdmin"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:${local.partition}:iam::${local.account_id}:root"]
+    }
+
+    actions   = ["kms:*"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "AllowRDS"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["rds.amazonaws.com"]
+    }
+
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+      "kms:CreateGrant",
+      "kms:DescribeKey"
+    ]
+
+    resources = ["*"]
+  }
+
+  # Allow account principals (the ECS task role, Glue role, etc.) to use
+  # the key via rds.amazonaws.com only.
+  statement {
+    sid    = "AllowAccountUseViaRds"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    actions = [
+      "kms:Decrypt",
+      "kms:DescribeKey",
+      "kms:GenerateDataKey"
+    ]
+
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [local.account_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["rds.${var.aws_region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_kms_key" "rds_kms" {
+  description              = "CardDemo RDS PostgreSQL CMK (F-CP6-TF-KMS-01 per-service CMK separation; AAP §0.6.6)"
+  deletion_window_in_days  = var.kms_deletion_window_in_days
+  enable_key_rotation      = true
+  is_enabled               = true
+  key_usage                = "ENCRYPT_DECRYPT"
+  customer_master_key_spec = "SYMMETRIC_DEFAULT"
+  multi_region             = false
+
+  policy = data.aws_iam_policy_document.kms_rds.json
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-rds-cmk"
+    Purpose = "RDS PostgreSQL encryption-at-rest (per-service CMK)"
+  })
+}
+
+resource "aws_kms_alias" "rds_kms" {
+  name          = "alias/carddemo-${var.environment}-rds"
+  target_key_id = aws_kms_key.rds_kms.key_id
+}
+
+# S3 CMK policy.
+data "aws_iam_policy_document" "kms_s3" {
+  statement {
+    sid    = "EnableRootAccountAdmin"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:${local.partition}:iam::${local.account_id}:root"]
+    }
+
+    actions   = ["kms:*"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "AllowS3"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["s3.amazonaws.com"]
+    }
+
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+      "kms:DescribeKey"
+    ]
+
+    resources = ["*"]
+  }
+
+  # Account principals (ECS tasks, AWS Batch jobs, Glue jobs) need to
+  # encrypt/decrypt S3 objects via this CMK.
+  statement {
+    sid    = "AllowAccountUseViaS3"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    actions = [
+      "kms:Decrypt",
+      "kms:Encrypt",
+      "kms:ReEncrypt*",
+      "kms:GenerateDataKey*",
+      "kms:DescribeKey"
+    ]
+
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [local.account_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["s3.${var.aws_region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_kms_key" "s3_kms" {
+  description              = "CardDemo S3 batch_outputs + logs CMK (F-CP6-TF-KMS-01 per-service CMK separation; AAP §0.6.6)"
+  deletion_window_in_days  = var.kms_deletion_window_in_days
+  enable_key_rotation      = true
+  is_enabled               = true
+  key_usage                = "ENCRYPT_DECRYPT"
+  customer_master_key_spec = "SYMMETRIC_DEFAULT"
+  multi_region             = false
+
+  policy = data.aws_iam_policy_document.kms_s3.json
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-s3-cmk"
+    Purpose = "S3 SSE-KMS encryption (per-service CMK)"
+  })
+}
+
+resource "aws_kms_alias" "s3_kms" {
+  name          = "alias/carddemo-${var.environment}-s3"
+  target_key_id = aws_kms_key.s3_kms.key_id
+}
+
+# ElastiCache CMK policy.
+data "aws_iam_policy_document" "kms_elasticache" {
+  statement {
+    sid    = "EnableRootAccountAdmin"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:${local.partition}:iam::${local.account_id}:root"]
+    }
+
+    actions   = ["kms:*"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "AllowElastiCache"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["elasticache.amazonaws.com"]
+    }
+
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+      "kms:CreateGrant",
+      "kms:DescribeKey"
+    ]
+
+    resources = ["*"]
+  }
+}
+
+resource "aws_kms_key" "elasticache_kms" {
+  description              = "CardDemo ElastiCache Redis CMK (F-CP6-TF-KMS-01 per-service CMK separation; AAP §0.6.6)"
+  deletion_window_in_days  = var.kms_deletion_window_in_days
+  enable_key_rotation      = true
+  is_enabled               = true
+  key_usage                = "ENCRYPT_DECRYPT"
+  customer_master_key_spec = "SYMMETRIC_DEFAULT"
+  multi_region             = false
+
+  policy = data.aws_iam_policy_document.kms_elasticache.json
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-elasticache-cmk"
+    Purpose = "ElastiCache Redis encryption-at-rest (per-service CMK)"
+  })
+}
+
+resource "aws_kms_alias" "elasticache_kms" {
+  name          = "alias/carddemo-${var.environment}-elasticache"
+  target_key_id = aws_kms_key.elasticache_kms.key_id
+}
+
+# MSK CMK policy.
+data "aws_iam_policy_document" "kms_msk" {
+  statement {
+    sid    = "EnableRootAccountAdmin"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:${local.partition}:iam::${local.account_id}:root"]
+    }
+
+    actions   = ["kms:*"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "AllowMSK"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["kafka.amazonaws.com"]
+    }
+
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+      "kms:DescribeKey"
+    ]
+
+    resources = ["*"]
+  }
+}
+
+resource "aws_kms_key" "msk_kms" {
+  description              = "CardDemo MSK (Kafka) broker storage CMK (F-CP6-TF-KMS-01 per-service CMK separation; AAP §0.6.5/§0.6.6)"
+  deletion_window_in_days  = var.kms_deletion_window_in_days
+  enable_key_rotation      = true
+  is_enabled               = true
+  key_usage                = "ENCRYPT_DECRYPT"
+  customer_master_key_spec = "SYMMETRIC_DEFAULT"
+  multi_region             = false
+
+  policy = data.aws_iam_policy_document.kms_msk.json
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-msk-cmk"
+    Purpose = "MSK broker storage encryption (per-service CMK)"
+  })
+}
+
+resource "aws_kms_alias" "msk_kms" {
+  name          = "alias/carddemo-${var.environment}-msk"
+  target_key_id = aws_kms_key.msk_kms.key_id
+}
+
+# CloudWatch CMK policy.
+data "aws_iam_policy_document" "kms_cloudwatch" {
+  statement {
+    sid    = "EnableRootAccountAdmin"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:${local.partition}:iam::${local.account_id}:root"]
+    }
+
+    actions   = ["kms:*"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "AllowCloudWatchLogs"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["logs.${var.aws_region}.amazonaws.com"]
+    }
+
+    actions = [
+      "kms:Encrypt*",
+      "kms:Decrypt*",
+      "kms:ReEncrypt*",
+      "kms:GenerateDataKey*",
+      "kms:Describe*"
+    ]
+
+    resources = ["*"]
+
+    # EncryptionContext guard restricting decryption to log groups in
+    # this AWS account + region (per AAP §0.6.6).
+    condition {
+      test     = "ArnEquals"
+      variable = "kms:EncryptionContext:aws:logs:arn"
+      values   = ["arn:${local.partition}:logs:${var.aws_region}:${local.account_id}:log-group:*"]
+    }
+  }
+}
+
+resource "aws_kms_key" "cloudwatch_kms" {
+  description              = "CardDemo CloudWatch Logs CMK (F-CP6-TF-KMS-01 per-service CMK separation; AAP §0.6.6)"
+  deletion_window_in_days  = var.kms_deletion_window_in_days
+  enable_key_rotation      = true
+  is_enabled               = true
+  key_usage                = "ENCRYPT_DECRYPT"
+  customer_master_key_spec = "SYMMETRIC_DEFAULT"
+  multi_region             = false
+
+  policy = data.aws_iam_policy_document.kms_cloudwatch.json
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-cloudwatch-cmk"
+    Purpose = "CloudWatch Logs encryption (per-service CMK)"
+  })
+}
+
+resource "aws_kms_alias" "cloudwatch_kms" {
+  name          = "alias/carddemo-${var.environment}-cloudwatch"
+  target_key_id = aws_kms_key.cloudwatch_kms.key_id
+}
+
+# Secrets Manager CMK policy.
+data "aws_iam_policy_document" "kms_secrets" {
+  statement {
+    sid    = "EnableRootAccountAdmin"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:${local.partition}:iam::${local.account_id}:root"]
+    }
+
+    actions   = ["kms:*"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "AllowSecretsManagerService"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["secretsmanager.amazonaws.com"]
+    }
+
+    actions = [
+      "kms:Decrypt",
+      "kms:Encrypt",
+      "kms:GenerateDataKey",
+      "kms:ReEncryptFrom",
+      "kms:ReEncryptTo",
+      "kms:DescribeKey"
+    ]
+
+    resources = ["*"]
+  }
+
+  # Lambda rotation function needs Decrypt + GenerateDataKey directly
+  # (it reads the secret value from Secrets Manager and writes a new
+  # version). This is in addition to the secretsmanager.amazonaws.com
+  # service grant above.
+  statement {
+    sid    = "AllowAccountUseViaSecretsManager"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+      "kms:DescribeKey"
+    ]
+
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [local.account_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${var.aws_region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_kms_key" "secrets_kms" {
+  description              = "CardDemo Secrets Manager CMK (F-CP6-TF-KMS-01 per-service CMK separation; AAP §0.6.4/§0.6.6)"
+  deletion_window_in_days  = var.kms_deletion_window_in_days
+  enable_key_rotation      = true
+  is_enabled               = true
+  key_usage                = "ENCRYPT_DECRYPT"
+  customer_master_key_spec = "SYMMETRIC_DEFAULT"
+  multi_region             = false
+
+  policy = data.aws_iam_policy_document.kms_secrets.json
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-secrets-cmk"
+    Purpose = "Secrets Manager encryption (per-service CMK)"
+  })
+}
+
+resource "aws_kms_alias" "secrets_kms" {
+  name          = "alias/carddemo-${var.environment}-secrets"
+  target_key_id = aws_kms_key.secrets_kms.key_id
+}
+
+# OpenSearch CMK policy.
+data "aws_iam_policy_document" "kms_opensearch" {
+  statement {
+    sid    = "EnableRootAccountAdmin"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:${local.partition}:iam::${local.account_id}:root"]
+    }
+
+    actions   = ["kms:*"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "AllowOpenSearch"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["es.amazonaws.com"]
+    }
+
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+      "kms:CreateGrant",
+      "kms:DescribeKey"
+    ]
+
+    resources = ["*"]
+  }
+}
+
+resource "aws_kms_key" "opensearch_kms" {
+  description              = "CardDemo OpenSearch domain CMK (F-CP6-TF-KMS-01 per-service CMK separation; AAP §0.6.6)"
+  deletion_window_in_days  = var.kms_deletion_window_in_days
+  enable_key_rotation      = true
+  is_enabled               = true
+  key_usage                = "ENCRYPT_DECRYPT"
+  customer_master_key_spec = "SYMMETRIC_DEFAULT"
+  multi_region             = false
+
+  policy = data.aws_iam_policy_document.kms_opensearch.json
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-opensearch-cmk"
+    Purpose = "OpenSearch domain encryption (per-service CMK)"
+  })
+}
+
+resource "aws_kms_alias" "opensearch_kms" {
+  name          = "alias/carddemo-${var.environment}-opensearch"
+  target_key_id = aws_kms_key.opensearch_kms.key_id
+}

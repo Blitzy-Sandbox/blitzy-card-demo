@@ -61,10 +61,10 @@ import org.springframework.kafka.support.SendResult;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.kafka.ConfluentKafkaContainer;
 import org.testcontainers.utility.DockerImageName;
 import software.amazon.awssdk.services.cloudwatch.CloudWatchClient;
 import software.amazon.awssdk.services.glue.GlueClient;
@@ -160,7 +160,7 @@ import static org.awaitility.Awaitility.await;
  * <h2>Test isolation strategy</h2>
  *
  * <ul>
- *   <li>{@link KafkaContainer} (Confluent {@code cp-kafka:7.5.0}, pinned per
+ *   <li>{@link ConfluentKafkaContainer} (Confluent {@code cp-kafka:7.5.0}, pinned per
  *       AAP &sect;0.5.1 "no {@code latest} tags") provides an ephemeral
  *       Apache Kafka broker per test class lifecycle. Spring Boot 3.1+
  *       auto-wires the broker URL via
@@ -197,7 +197,7 @@ import static org.awaitility.Awaitility.await;
  * <ul>
  *   <li>No hardcoded credentials, ARNs, or endpoint URLs &mdash; all values
  *       come from {@code application-test.yml}, the
- *       {@link KafkaContainer}, or the {@link DynamicPropertySource}.</li>
+ *       {@link ConfluentKafkaContainer}, or the {@link DynamicPropertySource}.</li>
  *   <li>No inline AWS SDK calls in business logic &mdash; the SOLE adapters
  *       under direct test are {@link KafkaEventPublisher} and
  *       {@link KafkaEventConsumer}.</li>
@@ -365,16 +365,15 @@ class KafkaEventFlowIT {
      * provisioned by Testcontainers. Pinned image tag per AAP &sect;0.5.1
      * "no {@code latest} tags".
      *
-     * <p>The {@link ServiceConnection &#64;ServiceConnection} annotation
-     * (Spring Boot 3.1+) automatically binds Spring Boot&apos;s
-     * {@code KafkaConnectionDetails} to this container, so the application&apos;s
-     * {@link KafkaTemplate} and {@link KafkaListenerEndpointRegistry} beans
-     * connect to this broker without manual {@code spring.kafka.bootstrap-servers}
-     * configuration.</p>
+     * <p>Bound through {@link #registerDynamicProperties(DynamicPropertyRegistry)}
+     * rather than {@link ServiceConnection &#64;ServiceConnection}; Spring Boot's
+     * built-in service-connection factories do not expose connection details
+     * for {@link ConfluentKafkaContainer}, and CardDemo's custom
+     * {@link KafkaConfig} reads {@code spring.kafka.bootstrap-servers}
+     * directly.</p>
      */
     @Container
-    @ServiceConnection
-    static final KafkaContainer KAFKA = new KafkaContainer(
+    static final ConfluentKafkaContainer KAFKA = new ConfluentKafkaContainer(
             DockerImageName.parse("confluentinc/cp-kafka:7.5.0"));
 
     /**
@@ -640,18 +639,21 @@ class KafkaEventFlowIT {
     }
 
     /**
-     * Resumes every application {@code @KafkaListener} container that was
-     * paused by {@link #createTopicsAndPauseApplicationConsumers()} so the
-     * containers are in their natural state for the next test. The
-     * {@link KafkaContainer} itself persists across tests; topic re-use is
-     * acceptable because each test uses a distinct consumer-group UUID and
-     * polls only the records it published.
+     * Stops every application {@code @KafkaListener} container after each test.
+     * The test profile disables listener auto-startup, and the two tests that
+     * explicitly exercise application consumers start only the container they
+     * need. Returning to the stopped state prevents background consumers from
+     * racing with test-owned consumers or entering DLT recovery while the
+     * Testcontainers Kafka broker is shutting down.
      */
     @AfterEach
-    void resumeApplicationConsumersAfterTest() {
+    void stopApplicationConsumersAfterTest() {
         listenerRegistry.getListenerContainers().forEach(container -> {
-            if (container.isPauseRequested()) {
+            if (container.isPauseRequested() && container.isRunning()) {
                 container.resume();
+            }
+            if (container.isRunning()) {
+                container.stop();
             }
         });
     }

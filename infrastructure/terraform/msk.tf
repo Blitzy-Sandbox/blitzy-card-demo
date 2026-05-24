@@ -358,7 +358,9 @@ resource "aws_msk_configuration" "carddemo" {
 resource "aws_cloudwatch_log_group" "msk_broker" {
   name              = "/aws/msk/carddemo-${var.environment}/broker"
   retention_in_days = 365
-  kms_key_id        = aws_kms_key.carddemo.arn
+  # F-CP6-TF-KMS-01: CloudWatch log group uses the dedicated
+  # aws_kms_key.cloudwatch_kms CMK.
+  kms_key_id = aws_kms_key.cloudwatch_kms.arn
 
   tags = merge(local.common_tags, {
     Name    = "carddemo-${var.environment}-msk-broker-log"
@@ -496,9 +498,12 @@ resource "aws_msk_cluster" "carddemo" {
 
   # ---------------------------------------------------------------------------
   # Encryption (AAP S0.6.6 + S0.7.1).
+  # F-CP6-TF-KMS-01: Per-service CMK separation. MSK broker storage uses
+  # the dedicated aws_kms_key.msk_kms rather than the shared
+  # aws_kms_key.carddemo.
   # ---------------------------------------------------------------------------
   encryption_info {
-    encryption_at_rest_kms_key_arn = aws_kms_key.carddemo.arn
+    encryption_at_rest_kms_key_arn = aws_kms_key.msk_kms.arn
 
     encryption_in_transit {
       client_broker = "TLS"
@@ -637,55 +642,86 @@ resource "aws_msk_cluster" "carddemo" {
 #   Consumer:   Step Functions trigger Lambda -> submits AWS Batch job
 #   ---------------------------------------------------------------------------
 #
-# If the mongey/kafka provider is adopted in a future iteration, the four
-# topics would be declared as follows. The provider expects bootstrap
-# servers + IAM-signed SASL credentials, which can be sourced from the
-# aws_msk_cluster.carddemo.bootstrap_brokers_sasl_iam attribute below.
+# F-CP6-TF-MSK-01: The four required topics are now provisioned as
+# active Terraform resources using the Mongey/kafka provider declared
+# in main.tf required_providers. The provider configuration consumes
+# the aws_msk_cluster.carddemo.bootstrap_brokers_sasl_iam attribute,
+# which means a first-time apply requires a 2-phase rollout:
 #
-#   resource "kafka_topic" "transaction_posted" {
-#     name               = "transaction.posted"
-#     partitions         = var.msk_topic_partitions
-#     replication_factor = var.msk_topic_replication_factor
-#     config = {
-#       "compression.type"    = "snappy"
-#       "min.insync.replicas" = "2"
-#       "retention.ms"        = "604800000"
-#       "cleanup.policy"      = "delete"
-#     }
-#   }
-#   resource "kafka_topic" "account_updated" {
-#     name               = "account.updated"
-#     partitions         = var.msk_topic_partitions
-#     replication_factor = var.msk_topic_replication_factor
-#     config = {
-#       "compression.type"    = "snappy"
-#       "min.insync.replicas" = "2"
-#       "retention.ms"        = "604800000"
-#       "cleanup.policy"      = "delete"
-#     }
-#   }
-#   resource "kafka_topic" "ledger_balanced" {
-#     name               = "ledger.balanced"
-#     partitions         = var.msk_topic_partitions
-#     replication_factor = var.msk_topic_replication_factor
-#     config = {
-#       "compression.type"    = "snappy"
-#       "min.insync.replicas" = "2"
-#       "retention.ms"        = "604800000"
-#       "cleanup.policy"      = "delete"
-#     }
-#   }
-#   resource "kafka_topic" "report_requested" {
-#     name               = "report.requested"
-#     partitions         = var.msk_topic_partitions
-#     replication_factor = var.msk_topic_replication_factor
-#     config = {
-#       "compression.type"    = "snappy"
-#       "min.insync.replicas" = "2"
-#       "retention.ms"        = "604800000"
-#       "cleanup.policy"      = "delete"
-#     }
-#   }
+#   1. terraform apply -target=aws_msk_cluster.carddemo
+#   2. terraform apply  (creates the four topics)
+#
+# After the first apply, normal terraform apply lifecycle applies.
+
+provider "kafka" {
+  # Bootstrap servers come from the MSK cluster's SASL-IAM endpoint.
+  # The list is split into a slice because the AWS-provided string is
+  # comma-separated.
+  bootstrap_servers = split(",", aws_msk_cluster.carddemo.bootstrap_brokers_sasl_iam)
+
+  # SASL/IAM auth (preferred for AWS-only Kafka clients per AAP §0.6.5).
+  sasl_mechanism       = "aws-iam"
+  tls_enabled          = true
+  sasl_aws_region      = var.aws_region
+  skip_tls_verify      = false
+  sasl_aws_creds_debug = false
+}
+
+resource "kafka_topic" "transaction_posted" {
+  name               = "transaction.posted"
+  partitions         = var.msk_topic_partitions
+  replication_factor = var.msk_topic_replication_factor
+
+  # AAP §0.6.5: producer ordering guarantees require per-account
+  # partitioning + acks=all on the producer side. The cluster-side
+  # config below ensures topic durability matches the producer
+  # contract.
+  config = {
+    "compression.type"    = "snappy"
+    "min.insync.replicas" = "2"
+    "retention.ms"        = "604800000"
+    "cleanup.policy"      = "delete"
+  }
+}
+
+resource "kafka_topic" "account_updated" {
+  name               = "account.updated"
+  partitions         = var.msk_topic_partitions
+  replication_factor = var.msk_topic_replication_factor
+
+  config = {
+    "compression.type"    = "snappy"
+    "min.insync.replicas" = "2"
+    "retention.ms"        = "604800000"
+    "cleanup.policy"      = "delete"
+  }
+}
+
+resource "kafka_topic" "ledger_balanced" {
+  name               = "ledger.balanced"
+  partitions         = var.msk_topic_partitions
+  replication_factor = var.msk_topic_replication_factor
+
+  config = {
+    "compression.type"    = "snappy"
+    "min.insync.replicas" = "2"
+    "retention.ms"        = "604800000"
+    "cleanup.policy"      = "delete"
+  }
+}
+
+resource "kafka_topic" "report_requested" {
+  name               = "report.requested"
+  partitions         = var.msk_topic_partitions
+  replication_factor = var.msk_topic_replication_factor
+
+  config = {
+    "compression.type"    = "snappy"
+    "min.insync.replicas" = "2"
+    "retention.ms"        = "604800000"
+    "cleanup.policy"      = "delete"
+  }
+}
 #
 # Bootstrap servers (consumed by outputs.tf and by Spring Boot
 # KafkaConfig via the MSK_BOOTSTRAP_SERVERS env var):

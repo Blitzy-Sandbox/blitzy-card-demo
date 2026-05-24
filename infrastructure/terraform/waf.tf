@@ -467,7 +467,9 @@ resource "aws_cloudwatch_log_group" "waf" {
   retention_in_days = var.cloudwatch_log_retention_days
 
   # KMS-CMK encryption at rest per AAP §0.6.6 / §0.7.1.
-  kms_key_id = aws_kms_key.carddemo.arn
+  # F-CP6-TF-KMS-01: WAF log group uses the dedicated CloudWatch CMK
+  # (aws_kms_key.cloudwatch_kms) rather than the legacy shared key.
+  kms_key_id = aws_kms_key.cloudwatch_kms.arn
 
   # STANDARD class supports real-time queries, metric filters, and
   # subscription filters — all needed for WAF security telemetry.

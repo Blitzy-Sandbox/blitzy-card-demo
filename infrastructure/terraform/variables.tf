@@ -222,6 +222,12 @@ variable "rds_master_username" {
   description = "RDS master username. The master password is NEVER set via Terraform variables — it is generated at apply time by a `random_password` resource and stored in AWS Secrets Manager (per AAP §0.7.1). The username is metadata only and may be visible in logs / console."
   type        = string
   default     = "carddemo_admin"
+  # F-CP6-TF-Variables-01: Mark as sensitive so plan/apply output does
+  # not include the username in CLI logs or CI logs. The username itself
+  # is not a secret (it appears in CloudWatch metric dimensions for
+  # RDS), but masking it from Terraform output reduces the principle-
+  # of-least-disclosure surface.
+  sensitive = true
 }
 
 variable "rds_multi_az" {
@@ -412,6 +418,10 @@ variable "app_port" {
 variable "alb_acm_certificate_arn" {
   description = "ACM certificate ARN for the ALB HTTPS listener. Must already exist in the same region as the ALB (or be provisioned alongside this configuration by an aws_acm_certificate resource). No default — the operator must supply this value."
   type        = string
+
+  # F-CP6-TF-Variables-01: Mark sensitive so the ACM ARN does not leak
+  # into plan/apply output.
+  sensitive = true
 
   validation {
     condition     = can(regex("^arn:aws[a-zA-Z-]*:acm:[a-z]{2}-[a-z]+-[0-9]:[0-9]{12}:certificate/[a-f0-9-]+$", var.alb_acm_certificate_arn))

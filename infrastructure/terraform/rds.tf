@@ -496,10 +496,14 @@ resource "random_password" "rds_master" {
 # Members exposed for downstream consumers (per the file schema):
 #   arn, id, name, description, kms_key_id, rotation_enabled, tags_all.
 # -----------------------------------------------------------------------------
+# F-CP6-TF-KMS-01: Per-service CMK separation. The RDS master secret is
+# encrypted with the dedicated Secrets Manager CMK (aws_kms_key.secrets_kms)
+# rather than the legacy shared aws_kms_key.carddemo, per the CP6 KMS
+# separation requirement.
 resource "aws_secretsmanager_secret" "rds_master" {
   name        = "carddemo-${var.environment}-rds-master"
   description = "RDS PostgreSQL master credentials for CardDemo (AAP §0.7.1 — Secrets Manager only; §0.6.4 — Lambda rotation without Spring Boot restart)"
-  kms_key_id  = aws_kms_key.carddemo.arn
+  kms_key_id  = aws_kms_key.secrets_kms.arn
 
   tags = merge(local.common_tags, {
     Name    = "carddemo-${var.environment}-rds-master"
@@ -771,7 +775,10 @@ resource "aws_db_instance" "carddemo" {
   max_allocated_storage = var.rds_max_allocated_storage
   storage_type          = "gp3"
   storage_encrypted     = true
-  kms_key_id            = aws_kms_key.carddemo.arn
+  # F-CP6-TF-KMS-01: Per-service CMK separation. RDS storage encryption
+  # uses the dedicated aws_kms_key.rds_kms CMK rather than the legacy
+  # shared aws_kms_key.carddemo, per the CP6 KMS separation requirement.
+  kms_key_id = aws_kms_key.rds_kms.arn
 
   # Initial database and master credential
   db_name  = var.rds_db_name
@@ -811,8 +818,11 @@ resource "aws_db_instance" "carddemo" {
   # Performance Insights — query-level diagnostics with KMS encryption
   # of the captured workload data. 7-day retention is the free tier;
   # set to 731 for Standard-tier compliance retention if required.
-  performance_insights_enabled          = true
-  performance_insights_kms_key_id       = aws_kms_key.carddemo.arn
+  performance_insights_enabled = true
+  # F-CP6-TF-KMS-01: Performance Insights encrypted with the same RDS
+  # CMK as storage so the workload data set and the underlying storage
+  # share an auditing key.
+  performance_insights_kms_key_id       = aws_kms_key.rds_kms.arn
   performance_insights_retention_period = 7
 
   # Enhanced Monitoring — per-OS-process metrics every 60 seconds via

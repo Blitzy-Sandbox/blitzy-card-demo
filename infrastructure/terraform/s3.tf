@@ -237,8 +237,12 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "batch_outputs" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.carddemo.arn
+      sse_algorithm = "aws:kms"
+      # F-CP6-TF-KMS-01: Per-service CMK separation. S3 SSE-KMS uses
+      # the dedicated aws_kms_key.s3_kms CMK rather than the legacy
+      # shared aws_kms_key.carddemo, per the CP6 KMS separation
+      # requirement.
+      kms_master_key_id = aws_kms_key.s3_kms.arn
     }
 
     bucket_key_enabled = true
@@ -339,8 +343,11 @@ resource "aws_s3_bucket_policy" "batch_outputs" {
         Action    = "s3:PutObject"
         Resource  = "${aws_s3_bucket.batch_outputs.arn}/*"
         Condition = {
+          # F-CP6-TF-KMS-01: Enforce the per-service S3 CMK
+          # (aws_kms_key.s3_kms) on every PutObject — uploads that
+          # reference any other KMS key are denied.
           StringNotEqualsIfExists = {
-            "s3:x-amz-server-side-encryption-aws-kms-key-id" = aws_kms_key.carddemo.arn
+            "s3:x-amz-server-side-encryption-aws-kms-key-id" = aws_kms_key.s3_kms.arn
           }
         }
       }
@@ -718,8 +725,10 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "logs" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.carddemo.arn
+      sse_algorithm = "aws:kms"
+      # F-CP6-TF-KMS-01: Per-service CMK separation. The logs bucket
+      # uses the dedicated S3 CMK (aws_kms_key.s3_kms).
+      kms_master_key_id = aws_kms_key.s3_kms.arn
     }
 
     bucket_key_enabled = true

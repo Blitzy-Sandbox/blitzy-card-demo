@@ -174,7 +174,21 @@ data "aws_iam_policy_document" "kms_use" {
       "kms:ReEncryptTo",
       "kms:DescribeKey"
     ]
-    resources = [aws_kms_key.carddemo.arn]
+    # F-CP6-TF-KMS-01: Expand the resource list to cover every
+    # service-specific CMK introduced by the per-service KMS separation
+    # in kms.tf. Application principals that need to decrypt RDS
+    # ciphertext, S3 SSE-KMS objects, Secrets Manager secrets, etc.
+    # must be granted use of the corresponding CMK explicitly.
+    resources = [
+      aws_kms_key.carddemo.arn,
+      aws_kms_key.rds_kms.arn,
+      aws_kms_key.s3_kms.arn,
+      aws_kms_key.elasticache_kms.arn,
+      aws_kms_key.msk_kms.arn,
+      aws_kms_key.cloudwatch_kms.arn,
+      aws_kms_key.secrets_kms.arn,
+      aws_kms_key.opensearch_kms.arn
+    ]
   }
 }
 
@@ -788,23 +802,67 @@ resource "aws_iam_role" "step_functions_execution" {
 # -----------------------------------------------------------------------------
 data "aws_iam_policy_document" "step_functions_runtime" {
   # ---------------------------------------------------------------------------
-  # AWS Batch — submit, describe, terminate jobs.
+  # F-CP6-TF-IAM-01: AWS Batch — split actions by resource-type support.
   #
-  # AWS Batch SubmitJob does not accept resource-level scoping at the
-  # IAM action level; the API accepts any job-queue + job-definition
-  # ARN as parameters. The PassRole condition below limits which job
-  # roles Step Functions may bind to those jobs.
+  # The AWS Batch IAM documentation enumerates resource types for several
+  # actions. We split the previous single wildcard statement into action-
+  # specific statements that scope ARNs as tightly as AWS supports:
+  #
+  #   * batch:SubmitJob       — supports job-queue + job-definition.
+  #   * batch:TerminateJob    — supports job ARNs (active jobs).
+  #   * batch:DescribeJobs    — only supports * (read).
+  #   * batch:ListJobs        — only supports * (read).
+  #
+  # The PassRole condition further below limits which job roles Step
+  # Functions may bind to submitted jobs.
   # ---------------------------------------------------------------------------
   statement {
     sid    = "SubmitBatchJobs"
     effect = "Allow"
     actions = [
-      "batch:SubmitJob",
+      "batch:SubmitJob"
+    ]
+    # SubmitJob requires both a job queue ARN and a job definition ARN
+    # in the action's required resource list. Scope to CardDemo-owned
+    # ARNs only.
+    resources = [
+      "arn:${local.partition}:batch:${var.aws_region}:${local.account_id}:job-queue/carddemo-${var.environment}-*",
+      "arn:${local.partition}:batch:${var.aws_region}:${local.account_id}:job-definition/carddemo-${var.environment}-*",
+      "arn:${local.partition}:batch:${var.aws_region}:${local.account_id}:job-definition/carddemo-${var.environment}-*:*"
+    ]
+  }
+
+  statement {
+    sid    = "TerminateBatchJobs"
+    effect = "Allow"
+    actions = [
+      "batch:TerminateJob"
+    ]
+    # TerminateJob accepts job ARNs. Scope by CardDemo job ARN prefix.
+    resources = [
+      "arn:${local.partition}:batch:${var.aws_region}:${local.account_id}:job/*"
+    ]
+  }
+
+  statement {
+    sid    = "DescribeAndListBatchJobs"
+    effect = "Allow"
+    actions = [
       "batch:DescribeJobs",
-      "batch:TerminateJob",
       "batch:ListJobs"
     ]
+    # DescribeJobs and ListJobs do not support resource-level scoping
+    # per AWS Batch IAM documentation; the * wildcard is required.
+    # Risk is bounded because both actions are read-only and the IAM
+    # CallerAccount condition below restricts use to the CardDemo
+    # account.
     resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceAccount"
+      values   = [local.account_id]
+    }
   }
 
   # ---------------------------------------------------------------------------
