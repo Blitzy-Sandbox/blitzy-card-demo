@@ -320,10 +320,15 @@ public final class CbTrn02C {
         // COBOL: IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10) CONTINUE
         //        ELSE MOVE 103 TO WS-VALIDATION-FAIL-REASON.
         // DALYTRAN-ORIG-TS is PIC X(26); the first 10 chars form the YYYY-MM-DD prefix.
+        // DalyTranRecord now carries DALYTRAN-ORIG-TS as java.time.LocalDateTime
+        // per AAP §0.6.4. A null timestamp represents the COBOL all-spaces
+        // sentinel; rendered as 10 spaces for the lexicographic compare so the
+        // COBOL "always-pass" semantics on blank ORIG-TS are preserved (ASCII
+        // space < '0', so any valid expiration date string is > 10 spaces).
         String expirStr = currentAccount.acctExpiraionDate().toString(); // ISO yyyy-MM-dd
-        String origDateStr = record.dalytranOrigTs().length() >= 10
-                ? record.dalytranOrigTs().substring(0, 10)
-                : record.dalytranOrigTs();
+        String origDateStr = record.dalytranOrigTs() != null
+                ? record.dalytranOrigTs().toLocalDate().toString()
+                : "          "; // 10 spaces — preserves COBOL alphanumeric compare on blank ORIG-TS
         // Lexicographic compare on ISO yyyy-MM-dd is equivalent to chronological
         // compare; matches the COBOL alphanumeric comparison semantics exactly.
         if (expirStr.compareTo(origDateStr) < 0) {
@@ -342,9 +347,10 @@ public final class CbTrn02C {
      * three update paragraphs (TCATBAL, ACCT, TRANSACT).
      */
     private void postTransaction(DalyTranRecord record) {
-        // AAP §0.6.4: PIC X(26) timestamps map to LocalDateTime in the
-        // TranRecord schema. The DalyTranRecord still carries the
-        // timestamp as a String; convert via TranRecord.parseTimestamp.
+        // AAP §0.6.4: PIC X(26) timestamps map to LocalDateTime in both
+        // DalyTranRecord and TranRecord, so DALYTRAN-ORIG-TS flows
+        // straight into TRAN-ORIG-TS with no conversion. TRAN-PROC-TS
+        // gets the current wall-clock time (DB2 CURRENT TIMESTAMP).
         LocalDateTime procTs = LocalDateTime.now();
 
         // MOVE DALYTRAN-... TO TRAN-... (field-by-field MOVE)
@@ -360,8 +366,8 @@ public final class CbTrn02C {
                 record.dalytranMerchantCity(),
                 record.dalytranMerchantZip(),
                 record.dalytranCardNum(),
-                TranRecord.parseTimestamp(record.dalytranOrigTs()),  // TRAN-ORIG-TS = DALYTRAN-ORIG-TS
-                procTs,                                              // TRAN-PROC-TS = DB2-FORMAT-TS
+                record.dalytranOrigTs(),  // TRAN-ORIG-TS = DALYTRAN-ORIG-TS (LocalDateTime; may be null)
+                procTs,                   // TRAN-PROC-TS = DB2-FORMAT-TS
                 TranRecord.emptyFiller());
 
         // PERFORM 2700-UPDATE-TCATBAL
