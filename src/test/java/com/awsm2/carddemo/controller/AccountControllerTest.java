@@ -330,19 +330,21 @@ class AccountControllerTest {
         @WithMockUser(username = "ADMIN001", roles = "ADMIN")
         void getAccount_notFound_returns404() throws Exception {
             // Match the COBOL-faithful exception message from
-            // AccountViewService: the exception carries a reasonCode
-            // of "CardCrossReference" because XREF is the first
-            // dataset consulted in the COACTVWC paragraph ordering.
+            // AccountViewService: the exception carries a structured
+            // reasonCode (XREF_NOT_FOUND) per QA Final-CP6 Finding M6 —
+            // XREF is the first dataset consulted in the COACTVWC
+            // paragraph ordering, so the XREF-miss code surfaces for
+            // an unknown account ID.
             when(accountViewService.getAccountView(99999999999L))
                     .thenThrow(new RecordNotFoundException(
-                            "CardCrossReference",
+                            "XREF_NOT_FOUND",
                             "Did not find this account in account card xref file: "
                                     + "acctId=99999999999"));
 
             mockMvc.perform(get("/api/accounts/{id}", 99999999999L)
                             .accept(MediaType.APPLICATION_JSON))
                     .andExpect(status().isNotFound())
-                    .andExpect(jsonPath("$.code").value("CardCrossReference"))
+                    .andExpect(jsonPath("$.code").value("XREF_NOT_FOUND"))
                     .andExpect(jsonPath("$.message")
                             .value(containsString("99999999999")));
         }
@@ -747,9 +749,12 @@ class AccountControllerTest {
         @WithMockUser(username = "ADMIN001", roles = "ADMIN")
         void updateAccount_recordNotFound_returns404() throws Exception {
             AccountUpdateDto request = buildValidUpdateRequest(ACCOUNT_ID, INITIAL_VERSION);
+            // QA Final-CP6 Finding M6: use the new structured code
+            // (ACCOUNT_NOT_FOUND) to match the post-fix exception
+            // envelope pattern instead of the entity-class name.
             when(accountUpdateService.updateAccount(eq(ACCOUNT_ID), any(AccountUpdateDto.class)))
                     .thenThrow(new RecordNotFoundException(
-                            "Account",
+                            "ACCOUNT_NOT_FOUND",
                             "Account not found: acctId=" + ACCOUNT_ID));
 
             mockMvc.perform(put("/api/accounts/{id}", ACCOUNT_ID)
@@ -759,7 +764,7 @@ class AccountControllerTest {
                             .accept(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsString(request)))
                     .andExpect(status().isNotFound())
-                    .andExpect(jsonPath("$.code").value("Account"));
+                    .andExpect(jsonPath("$.code").value("ACCOUNT_NOT_FOUND"));
         }
 
         /**
@@ -1095,7 +1100,12 @@ class AccountControllerTest {
                 "GOV12345",
                 "EFT12345",
                 "Y",
-                720);
+                720,
+                // QA Final-CP6 Finding M1: AccountViewDto now exposes
+                // the @Version token from the accounts.version column;
+                // the controller test fixture seeds 0L so that the
+                // GET-then-PUT round-trip is internally consistent.
+                0L);
     }
 
     /**

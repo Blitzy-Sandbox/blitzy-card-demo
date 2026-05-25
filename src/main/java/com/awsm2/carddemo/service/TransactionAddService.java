@@ -200,8 +200,24 @@ public class TransactionAddService {
         validate(request);
 
         // ---- COBOL READ-CXACAIX-FILE -----------------------------------
-        //   Resolve owning account (mandatory partition key for MSK).
-        Long resolvedAcctId = resolveAccountId(request);
+        //   Resolve owning account (mandatory partition key for MSK) AND
+        //   the primary card number to be persisted on the TRAN-RECORD.
+        //
+        //   QA Final-CP6 Finding C2: BMS COTRN2A on COTRN02C accepts EITHER
+        //   ACTIDIN (11-digit account) OR CARDNIN (16-digit card). When the
+        //   operator entered only ACTIDIN, the COBOL program performed an
+        //   alternate-index browse on CXACAIX, latched on the first XREF
+        //   row, and moved XREF-CARD-NUM to TRAN-CARD-NUM before the
+        //   WRITE-TRANSACT-FILE call (CVTRA05Y.cpy line 8, TRAN-CARD-NUM
+        //   PIC X(16) — NOT NULL on the target table). The previous Java
+        //   implementation returned only the account id and then passed
+        //   request.cardNumber() (null) into the Transaction constructor,
+        //   tripping the tran_card_num NOT-NULL constraint at JPA save.
+        //   The fix mirrors the COBOL behaviour: resolve both ids in one
+        //   pass and persist the resolved card number.
+        ResolvedIdentity identity = resolveIdentity(request);
+        Long resolvedAcctId = identity.accountId();
+        String resolvedCardNum = identity.cardNumber();
 
         // Confirmation gate (CONFIRMI of COTRN2AI = 'Y'). Per COTRN02C
         // line 178 ("Confirm to add this transaction..." — initial prompt
@@ -242,6 +258,13 @@ public class TransactionAddService {
         String nextTranId = nextTransactionId();
 
         // ---- COBOL INITIALIZE TRAN-RECORD + MOVE * TO TRAN-* -----------
+        //   QA Final-CP6 Finding C2: TRAN-CARD-NUM is sourced from the
+        //   resolved cross-reference (XREF-CARD-NUM, CVACT03Y.cpy line 7,
+        //   PIC X(16)) — NOT from the request — so that an accountId-only
+        //   submission still satisfies the TRAN-RECORD NOT-NULL contract
+        //   for TRAN-CARD-NUM. When the request provided cardNumber
+        //   directly, identity.cardNumber() is exactly that value (via the
+        //   request.cardNumber() supplied to resolveIdentity).
         LocalDateTime now = LocalDateTime.now();
         Transaction t = new Transaction(
                 nextTranId,
@@ -254,7 +277,7 @@ public class TransactionAddService {
                 safeTrim(request.merchantName()),
                 safeTrim(request.merchantCity()),
                 safeTrim(request.merchantZip()),
-                safeTrim(request.cardNumber()),
+                resolvedCardNum,
                 request.originationTimestamp() != null ? request.originationTimestamp() : now,
                 now);
 
@@ -265,6 +288,17 @@ public class TransactionAddService {
         // Per AAP §0.6.5 / V005 documentation: every MSK event for a
         // transaction is partitioned by the OWNING ACCOUNT id so that
         // per-account ordering is preserved end-to-end on the partition.
+        //
+        // QA Final-CP6 Finding M2 (MAJOR): the outbound DTO now carries
+        // the server-generated tran_id from the just-persisted row so
+        // the HTTP response includes it (and the MSK event payload
+        // includes it for downstream consumers). The generator
+        // (MAX(TRAN-ID)+1) computed the value above; saved.getTranId()
+        // reads it back from the JPA-managed entity post-flush.
+        // COBOL: TRAN-ID PIC X(16) on CVTRA05Y.cpy line 7. The COBOL
+        // counterpart never returned the value to BMS COTRN2A; modern
+        // REST convention requires returning it so the caller can
+        // reference, audit, and correlate against OpenSearch / CloudTrail.
         TransactionAddDto outbound = new TransactionAddDto(
                 String.format("%011d", resolvedAcctId),
                 saved.getTranCardNum(),
@@ -279,7 +313,8 @@ public class TransactionAddService {
                 saved.getTranMerchantName(),
                 saved.getTranMerchantCity(),
                 saved.getTranMerchantZip(),
-                "Y");
+                "Y",
+                saved.getTranId());
         kafkaEventPublisher.publishTransactionPosted(resolvedAcctId, outbound);
 
         // ---- Audit -----------------------------------------------------
@@ -546,17 +581,68 @@ public class TransactionAddService {
     }
 
     /**
-     * Resolves the owning account ID from the supplied account or
-     * card identifier. Mirrors the COBOL
-     * {@code READ-CXACAIX-FILE} paragraph which is invoked either
-     * keyed by card number (random access) or by account number
-     * (alternate-index browse via {@code CXACAIX}).
+     * Resolves the owning account ID and the primary card number to be
+     * persisted on the {@code TRAN-RECORD}, given an inbound request that
+     * may carry either an 11-digit account ID, a 16-digit card number, or
+     * both.
+     *
+     * <p>Mirrors the COBOL {@code READ-CXACAIX-FILE} paragraph in
+     * {@code app/cbl/COTRN02C.cbl}, which is invoked either keyed by card
+     * number (random access via the primary key on {@code CARDXREF}) or by
+     * account number (alternate-index browse via {@code CXACAIX}). In
+     * either case, the COBOL program moves {@code XREF-CARD-NUM} into
+     * {@code TRAN-CARD-NUM} before the {@code WRITE-TRANSACT-FILE} call
+     * (CVTRA05Y.cpy line 8, {@code TRAN-CARD-NUM PIC X(16)} &mdash; the
+     * field is NOT NULL on the target {@code transactions} table).</p>
+     *
+     * <h3>QA Final-CP6 Finding C2 &mdash; bug fix</h3>
+     * <p>The previous implementation returned only the account ID and
+     * relied on the caller to read {@code request.cardNumber()} for the
+     * persisted card-number value. When the operator supplied only
+     * {@code ACTIDIN} (the BMS-allowed and COBOL-accepted pattern), the
+     * downstream {@code new Transaction(..., request.cardNumber(), ...)}
+     * call passed {@code null} into the NOT-NULL column, producing
+     * {@code DATA_INTEGRITY_VIOLATION} at JPA save time. The refactored
+     * method returns both identifiers so the caller can use the resolved
+     * card number regardless of which inbound shape was used.</p>
+     *
+     * <h3>Resolution rules</h3>
+     * <ul>
+     *   <li><b>Case 1 &mdash; cardNumber supplied (with or without accountId):</b>
+     *       Read the {@code CARDXREF} row by primary key
+     *       ({@link CardCrossReferenceRepository#findById(Object)}). If
+     *       missing, throw {@code RecordNotFoundException}. If
+     *       {@code accountId} is also supplied, verify it matches the
+     *       cross-reference's {@code xrefAcctId} (else
+     *       {@code ValidationException XREF_MISMATCH}). Return
+     *       {@code (xref.xrefAcctId, request.cardNumber)}.</li>
+     *   <li><b>Case 2 &mdash; accountId only:</b> Browse {@code CXACAIX}
+     *       ({@link CardCrossReferenceRepository#findByXrefAcctId(Long)})
+     *       and pick the FIRST row. If empty, throw
+     *       {@code RecordNotFoundException}. Return
+     *       {@code (accountId, xrefs.get(0).xrefCardNum)}.</li>
+     * </ul>
+     *
+     * @param request the validated transaction-add request
+     * @return both the resolved account ID and the primary card number
+     *         (never null)
+     * @throws RecordNotFoundException if no cross-reference row exists for
+     *                                  the supplied identifier
+     * @throws ValidationException     if both identifiers are supplied and
+     *                                  they do not cross-reference
      */
-    private Long resolveAccountId(TransactionAddDto request) {
-        // Case 1: both supplied → check consistency.
+    private ResolvedIdentity resolveIdentity(TransactionAddDto request) {
+        // Case 1: cardNumber supplied → primary-key read on CARDXREF.
+        // COBOL: COTRN02C READ-CXACAIX-FILE keyed by CARD-NUM (random
+        // access via the primary key on CARDXREF, app/cpy/CVACT03Y.cpy
+        // line 6: XREF-CARD-NUM PIC X(16)). The resolved card number to
+        // persist on TRAN-CARD-NUM equals the caller-supplied value (a
+        // direct passthrough — the COBOL pattern MOVES request.cardNumber
+        // straight into TRAN-CARD-NUM).
         if (request.cardNumber() != null && !request.cardNumber().isBlank()) {
+            final String requestedCard = request.cardNumber();
             Optional<CardCrossReference> xref = cardCrossReferenceRepository
-                    .findById(request.cardNumber());
+                    .findById(requestedCard);
             if (xref.isEmpty()) {
                 throw new RecordNotFoundException(
                         "XREF_NOT_FOUND",
@@ -574,10 +660,18 @@ public class TransactionAddService {
                                     "accountId does not cross-reference to cardNumber")));
                 }
             }
-            return fromCard;
+            return new ResolvedIdentity(fromCard, requestedCard);
         }
 
-        // Case 2: only account supplied → look up via AIX path.
+        // Case 2: only account supplied → look up via AIX path (CXACAIX).
+        // COBOL: COTRN02C READ-CXACAIX-FILE via the CXACAIX alternate
+        // index (KEYS(11 25), NONUNIQUEKEY) which returns one-or-many
+        // CARDXREF rows for a given XREF-ACCT-ID. The COBOL program
+        // latches on the FIRST row returned by the browse (single
+        // STARTBR+READ pattern) and moves its XREF-CARD-NUM into
+        // TRAN-CARD-NUM. The Java target performs the same single-pick
+        // (xrefs.get(0)) so the chosen card matches the COBOL behavior
+        // for an accountId-only submission.
         Long fromInput = parseAccountId(request.accountId());
         List<CardCrossReference> xrefs = cardCrossReferenceRepository
                 .findByXrefAcctId(fromInput);
@@ -586,8 +680,40 @@ public class TransactionAddService {
                     "XREF_NOT_FOUND",
                     "No card cross-reference found for the supplied accountId");
         }
-        return fromInput;
+        CardCrossReference primaryXref = xrefs.get(0);
+        // QA Final-CP6 Finding C2: extract the resolved card number from
+        // the first cross-reference row and return it alongside the
+        // account id. CVACT03Y.cpy line 6 — XREF-CARD-NUM PIC X(16) — is
+        // the source field; the JPA-mapped accessor is getXrefCardNum().
+        String resolvedCardNum = primaryXref.getXrefCardNum();
+        if (resolvedCardNum == null || resolvedCardNum.isBlank()) {
+            // Defensive: a CARDXREF row exists but its xref_card_num is
+            // null/blank — this would indicate a data-quality issue in
+            // CARDXREF rather than a missing row. Surface it as
+            // RecordNotFoundException so the caller sees a 404 (matches
+            // the COBOL "missing required field" semantic) rather than a
+            // 500 from the downstream NOT-NULL constraint.
+            throw new RecordNotFoundException(
+                    "XREF_NOT_FOUND",
+                    "Card cross-reference row is missing the card number "
+                            + "for the supplied accountId");
+        }
+        return new ResolvedIdentity(fromInput, resolvedCardNum);
     }
+
+    /**
+     * Immutable holder for the (accountId, cardNumber) pair resolved from
+     * the inbound {@code TransactionAddDto} via the {@code CARDXREF}
+     * cross-reference table. The {@code accountId} field becomes the MSK
+     * partition key (per AAP &sect;0.6.5) and the {@code cardNumber} field
+     * is persisted on the {@code TRAN-RECORD} as {@code TRAN-CARD-NUM}
+     * (CVTRA05Y.cpy line 8).
+     *
+     * <p>Added per QA Final-CP6 Finding C2 to fix the silent regression
+     * where an accountId-only submission tripped a {@code NOT NULL}
+     * constraint at {@code transactionRepository.save()}.</p>
+     */
+    private record ResolvedIdentity(Long accountId, String cardNumber) { }
 
     /** Parses an 11-digit account ID string; never throws past validation. */
     private Long parseAccountId(String accountIdStr) {

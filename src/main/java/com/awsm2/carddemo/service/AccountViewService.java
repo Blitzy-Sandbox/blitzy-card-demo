@@ -353,8 +353,13 @@ public class AccountViewService {
         if (xrefs.isEmpty()) {
             // Verbatim COBOL working-storage message
             // (COACTVWC 88 DID-NOT-FIND-ACCT-IN-CARDXREF, line 129-130).
+            // QA Final-CP6 Finding M6: use a structured error code
+            // (XREF_NOT_FOUND) rather than the entity-class name so the
+            // wire envelope's `code` field matches the pattern used by
+            // CardDetailService (CARD_NOT_FOUND) and the rest of the
+            // post-fix exception surface.
             throw new RecordNotFoundException(
-                    "CardCrossReference",
+                    "XREF_NOT_FOUND",
                     "Did not find this account in account card xref file: acctId=" + acctId);
         }
         final CardCrossReference xref = xrefs.get(0);
@@ -369,7 +374,9 @@ public class AccountViewService {
         // -------------------------------------------------------------
         final Account account = accountRepository.findById(acctId)
                 .orElseThrow(() -> new RecordNotFoundException(
-                        "Account",
+                        // QA Final-CP6 Finding M6: structured error code
+                        // matching the post-fix exception envelope pattern.
+                        "ACCOUNT_NOT_FOUND",
                         // Verbatim COBOL working-storage message
                         // (COACTVWC 88 DID-NOT-FIND-ACCT-IN-ACCTDAT, line 131-132).
                         "Did not find this account in account master file: acctId=" + acctId));
@@ -389,7 +396,9 @@ public class AccountViewService {
         final Long custId = xref.getXrefCustId();
         final Customer customer = customerRepository.findById(custId)
                 .orElseThrow(() -> new RecordNotFoundException(
-                        "Customer",
+                        // QA Final-CP6 Finding M6: structured error code
+                        // matching the post-fix exception envelope pattern.
+                        "CUSTOMER_NOT_FOUND",
                         // Verbatim COBOL working-storage message
                         // (COACTVWC 88 DID-NOT-FIND-CUST-IN-CUSTDAT, line 133-134).
                         "Did not find associated customer in master file: custId=" + custId));
@@ -437,7 +446,25 @@ public class AccountViewService {
                 customer.getCustGovtIssuedId(),
                 customer.getCustEftAccountId(),
                 customer.getCustPriCardHolderInd(),
-                customer.getCustFicoCreditScore());
+                customer.getCustFicoCreditScore(),
+                // ===== Optimistic-lock version (accounts.version) =====
+                // QA Final-CP6 Finding M1 (MAJOR): expose the @Version
+                // token so clients performing a subsequent
+                // PUT /api/accounts/{id} can populate
+                // AccountUpdateDto.version (which is annotated @NotNull
+                // for optimistic-lock enforcement). The token originates
+                // from the JPA @Version annotation on the Account
+                // entity; Hibernate increments it on every UPDATE. The
+                // value is null-safe — for a detached/projected Account
+                // it would render as null in the DTO rather than
+                // silently emitting 0.
+                // COBOL: no direct equivalent. The CICS pseudo-
+                // conversational pattern used READ UPDATE / REWRITE for
+                // implicit single-task locking; the Java target uses
+                // JPA optimistic locking with a monotonically
+                // increasing version token (see AAP §0.4.1 and §0.6.x
+                // for Card/Account version semantics).
+                account.getVersion());
 
         // -------------------------------------------------------------
         // Step 7 — Cache the assembled DTO (write-through populate).

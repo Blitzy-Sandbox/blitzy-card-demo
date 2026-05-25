@@ -18,6 +18,7 @@ package com.awsm2.carddemo.dto;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.OptBoolean;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Digits;
@@ -409,7 +410,17 @@ public record AccountUpdateDto(
         BigDecimal cashCreditLimit,
 
         @NotNull(message = "Open date is required")
-        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
+        // QA Final-CP6 C1 (date coercion fix): lenient = OptBoolean.FALSE
+        // forces Jackson's contextual LocalDateDeserializer to resolve the
+        // supplied date under ResolverStyle.STRICT. The previous (LENIENT)
+        // resolver style silently coerced impossible day-of-month values
+        // (e.g. "2024-02-30" -> 2024-02-29; "2023-02-30" -> 2023-02-28),
+        // regressing the COBOL CSUTLDTC calendar-validity contract that
+        // rejects such dates. With lenient=FALSE, Jackson throws
+        // InvalidFormatException -> HttpMessageNotReadableException ->
+        // HTTP 400 from GlobalExceptionHandler.handleMessageNotReadable.
+        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "uuuu-MM-dd",
+                lenient = OptBoolean.FALSE)
         @Schema(description = "Account open date (ISO 8601 yyyy-MM-dd). Maps to "
                         + "ACCT-OPEN-DATE PIC X(10) and segmented BMS fields "
                         + "OPNYEAR/OPNMON/OPNDAY. Semantic validation (leap year, "
@@ -421,7 +432,9 @@ public record AccountUpdateDto(
         LocalDate openDate,
 
         @NotNull(message = "Expiration date is required")
-        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
+        // QA Final-CP6 C1 — see openDate above for rationale.
+        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "uuuu-MM-dd",
+                lenient = OptBoolean.FALSE)
         @Schema(description = "Account expiration date (ISO 8601 yyyy-MM-dd). Maps "
                         + "to ACCT-EXPIRAION-DATE PIC X(10) (COBOL spelling typo "
                         + "preserved at the storage layer) and segmented BMS fields "
@@ -433,7 +446,9 @@ public record AccountUpdateDto(
         LocalDate expirationDate,
 
         @NotNull(message = "Reissue date is required")
-        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
+        // QA Final-CP6 C1 — see openDate above for rationale.
+        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "uuuu-MM-dd",
+                lenient = OptBoolean.FALSE)
         @Schema(description = "Account reissue date (ISO 8601 yyyy-MM-dd). Maps to "
                         + "ACCT-REISSUE-DATE PIC X(10) and segmented BMS fields "
                         + "RISYEAR/RISMON/RISDAY.",
@@ -650,7 +665,9 @@ public record AccountUpdateDto(
         String zipCode,
 
         @NotNull(message = "Date of birth is required")
-        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
+        // QA Final-CP6 C1 (date coercion fix): see openDate for rationale.
+        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "uuuu-MM-dd",
+                lenient = OptBoolean.FALSE)
         @Schema(description = "Customer date of birth (ISO 8601 yyyy-MM-dd). "
                         + "Maps to CUST-DOB-YYYY-MM-DD PIC X(10) and segmented "
                         + "BMS fields DOBYEAR/DOBMON/DOBDAY. Semantic "

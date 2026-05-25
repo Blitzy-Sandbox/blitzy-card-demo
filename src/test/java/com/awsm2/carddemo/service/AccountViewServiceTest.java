@@ -1538,6 +1538,12 @@ class AccountViewServiceTest {
                 GOVT_ID,
                 EFT_ACCT,
                 PRI_HOLDER_IND,
-                FICO_SCORE);
+                FICO_SCORE,
+                // ===== Optimistic-lock version =====
+                // QA Final-CP6 Finding M1: AccountViewDto exposes the
+                // @Version token from the accounts row. The test
+                // fixture pre-seeds account.setVersion(0L) above, so
+                // the expected DTO carries the matching value.
+                0L);
     }
 }

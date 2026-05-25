@@ -18,6 +18,7 @@ package com.awsm2.carddemo.dto;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.OptBoolean;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
@@ -302,7 +303,17 @@ public record ReportRequestDto(
                 example = "2026-01-01",
                 format = "date",
                 type = "string")
-        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
+        // QA Final-CP6 C1 (date coercion fix): lenient = OptBoolean.FALSE
+        // forces Jackson's contextual LocalDateDeserializer to resolve the
+        // supplied date under ResolverStyle.STRICT. The previous (LENIENT)
+        // resolver style silently coerced impossible day-of-month values
+        // (e.g. "2024-02-30" -> 2024-02-29), regressing the COBOL CSUTLDTC
+        // calendar-validity contract that rejects such dates. With
+        // lenient=FALSE, Jackson throws InvalidFormatException ->
+        // HttpMessageNotReadableException -> HTTP 400 from
+        // GlobalExceptionHandler.handleMessageNotReadable.
+        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "uuuu-MM-dd",
+                lenient = OptBoolean.FALSE)
         @JsonProperty("startDate")
         LocalDate startDate,
 
@@ -333,7 +344,9 @@ public record ReportRequestDto(
                 example = "2026-12-31",
                 format = "date",
                 type = "string")
-        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
+        // QA Final-CP6 C1 (date coercion fix): see startDate for rationale.
+        @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "uuuu-MM-dd",
+                lenient = OptBoolean.FALSE)
         @JsonProperty("endDate")
         LocalDate endDate,
 

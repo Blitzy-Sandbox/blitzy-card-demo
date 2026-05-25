@@ -373,7 +373,14 @@ public class TransactionDetailService {
                     // include in the error envelope.
                     LOG.info("TransactionDetailService: Transaction ID NOT found tranId={}",
                             trimmed);
-                    return new RecordNotFoundException("Transaction",
+                    // QA Final-CP6 Finding M6 (MINOR): structured error
+                    // code (TRANSACTION_NOT_FOUND) matching the post-fix
+                    // exception envelope pattern. Replaces the previous
+                    // entity-class name ("Transaction") so the `code`
+                    // field on the wire envelope is consistent with the
+                    // pattern used by CardDetailService (CARD_NOT_FOUND),
+                    // AccountViewService (ACCOUNT_NOT_FOUND), etc.
+                    return new RecordNotFoundException("TRANSACTION_NOT_FOUND",
                             "tranId=" + trimmed);
                 });
 

@@ -673,12 +673,35 @@ public class GlobalExceptionHandler {
         // surfaced as red-highlight feedback. In REST, malformed JSON
         // yields a sanitized 400 response.
         String correlationId = generateCorrelationId();
+        Throwable rootCause = ex.getMostSpecificCause();
         LOG.warn("[{}] HttpMessageNotReadableException at {}: cause={}",
                 correlationId, request.getRequestURI(),
-                ex.getMostSpecificCause() != null
-                        ? ex.getMostSpecificCause().getClass().getSimpleName()
+                rootCause != null
+                        ? rootCause.getClass().getSimpleName()
                         : ex.getClass().getSimpleName());
-        boolean typeMismatch = ex.getMostSpecificCause() instanceof MismatchedInputException;
+
+        // QA Final-CP6 Finding C1 (strict date-coercion rejection):
+        // Jackson's contextual LocalDateDeserializer / LocalDateTimeDeserializer
+        // throw InvalidFormatException (a MismatchedInputException subtype)
+        // wrapping a DateTimeParseException whenever an impossible calendar
+        // date is supplied under the now-strict (lenient=OptBoolean.FALSE)
+        // resolver. Surface this as a dedicated INVALID_DATE_FORMAT envelope
+        // so callers and parallel-run COBOL-diff harnesses see a stable code
+        // for the entire class of "rejected because the day-of-month / month
+        // / year combination does not exist on the proleptic ISO calendar"
+        // failures. The HTTP status remains 400 Bad Request.
+        if (isDateParseFailure(rootCause)) {
+            ApiResponse<Object> body = ApiResponse.error(
+                    "INVALID_DATE_FORMAT",
+                    "Request body contains an invalid date value (impossible "
+                            + "day-of-month, month, or year). Use ISO-8601 "
+                            + "yyyy-MM-dd (or yyyy-MM-dd'T'HH:mm:ss for "
+                            + "timestamps) and ensure the date exists.",
+                    correlationId);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+        }
+
+        boolean typeMismatch = rootCause instanceof MismatchedInputException;
         ApiResponse<Object> body = typeMismatch
                 ? ApiResponse.error(
                         "TYPE_MISMATCH",
@@ -689,6 +712,80 @@ public class GlobalExceptionHandler {
                         "Request body could not be parsed as JSON",
                         correlationId);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
+
+    /**
+     * Detects whether the root cause of an
+     * {@link HttpMessageNotReadableException} is a Jackson JSR-310 date
+     * parse failure produced by the strict-resolver
+     * {@code LocalDate}/{@code LocalDateTime} deserializers configured in
+     * {@code JacksonConfig} (QA Final-CP6 Finding C1).
+     *
+     * <p>Jackson surfaces date-validation failures in several wrapped
+     * forms depending on which layer of the JSR-310 deserialization
+     * stack catches the underlying calendar arithmetic exception:</p>
+     *
+     * <ul>
+     *   <li>{@link java.time.format.DateTimeParseException} &mdash;
+     *       raised by {@code DateTimeFormatter.parse(...)} when the
+     *       input string is structurally well-formed but the
+     *       resolver-style (STRICT) refuses to produce a calendar
+     *       value (e.g., {@code "2024-13-01"} for a month-of-year
+     *       outside 1..12).</li>
+     *   <li>{@link java.time.DateTimeException} &mdash; raised by the
+     *       resolver during the temporal field validation step when
+     *       a structurally well-formed input violates a calendar
+     *       constraint (e.g., {@code "2024-02-30"} where the day-of-
+     *       month {@code 30} exceeds the month-of-year {@code 02}
+     *       maximum of {@code 29} for the leap-year-2024 February).
+     *       {@code DateTimeParseException} is a SUBCLASS of
+     *       {@code DateTimeException}, so checking for the parent
+     *       catches both failure modes.</li>
+     *   <li>{@code com.fasterxml.jackson.databind.exc.InvalidFormatException}
+     *       (a {@code MismatchedInputException} subtype) &mdash;
+     *       Jackson's wrapper around a JSR-310 deserialization
+     *       failure when a per-field {@code @JsonFormat} pattern is
+     *       in use.  The target type points at a {@code java.time.*}
+     *       class so we can distinguish a "bad date" from a
+     *       "bad number" or "bad string" type-mismatch.</li>
+     * </ul>
+     *
+     * <p>The cause chain is walked depth-first up to 16 hops to
+     * accommodate Jackson's nested wrapping of the underlying JSR-310
+     * exception. The hop limit prevents pathological cycles in
+     * malformed exception chains.</p>
+     *
+     * @param cause the root cause supplied by
+     *              {@link HttpMessageNotReadableException#getMostSpecificCause()}
+     * @return {@code true} if the cause chain contains a
+     *         {@link java.time.DateTimeException} (including its
+     *         {@link java.time.format.DateTimeParseException} subclass)
+     *         or an {@code InvalidFormatException} whose target type is a
+     *         {@code java.time} class; {@code false} otherwise
+     */
+    private static boolean isDateParseFailure(Throwable cause) {
+        if (cause == null) {
+            return false;
+        }
+        Throwable t = cause;
+        for (int hops = 0; t != null && hops < 16; hops++, t = t.getCause()) {
+            // DateTimeException is the common parent of both
+            // DateTimeParseException (parser failures) and the
+            // resolver-raised value-validation failures
+            // (e.g., "Invalid date 'FEBRUARY 30'"). Checking the
+            // parent catches both failure modes.
+            if (t instanceof java.time.DateTimeException) {
+                return true;
+            }
+            if (t instanceof com.fasterxml.jackson.databind.exc.InvalidFormatException ife) {
+                Class<?> target = ife.getTargetType();
+                if (target != null
+                        && target.getName().startsWith("java.time.")) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**

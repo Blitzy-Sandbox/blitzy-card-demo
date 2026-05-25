@@ -669,12 +669,13 @@ class TransactionDetailServiceTest {
          * traceability. The
          * {@link TransactionDetailService#getTransactionDetail(String)}
          * implementation constructs the exception via
-         * {@code new RecordNotFoundException("Transaction",
-         * "tranId=" + trimmed)}; the {@code "tranId="} message
-         * prefix is preserved here so that downstream log
-         * consumers (CloudWatch Logs Insights, OpenSearch query)
-         * can grep for the requested transaction ID without
-         * parsing the human-readable component.
+         * {@code new RecordNotFoundException("TRANSACTION_NOT_FOUND",
+         * "tranId=" + trimmed)} (QA Final-CP6 Finding M6: structured
+         * error code replaces the previous entity-class name); the
+         * {@code "tranId="} message prefix is preserved here so that
+         * downstream log consumers (CloudWatch Logs Insights,
+         * OpenSearch query) can grep for the requested transaction
+         * ID without parsing the human-readable component.
          */
         // COBOL: AAP §0.6.6 — exception message MUST NOT contain
         // PII beyond what the caller originally supplied. Echoing

@@ -999,16 +999,52 @@ class EndToEndAccountWorkflowIT {
         assertThat(view.countryCode()).isEqualTo("USA");
         assertThat(view.dateOfBirth()).isEqualTo(LocalDate.of(1980, 1, 1));
         assertThat(view.phoneNumber1()).isEqualTo("2125551234");
-        // SSN is a Long on the wire — the toString() mask is enforced on
-        // log lines (AAP §0.6.6) and exhaustively asserted in
-        // PciDssAndAuditTests below. Equality of the numeric is still
-        // verifiable from the typed DTO.
-        assertThat(view.customerSsn()).isEqualTo(TEST_CUST_SSN);
+
+        // QA Final-CP6 Finding M4 — SSN is masked on the wire per
+        // AAP §0.6.6.  MaskedSsnSerializer rewrites the underlying
+        // 9-digit Long to the literal "***-**-XXXX" pattern (where
+        // XXXX = the last four digits) in the response JSON body.
+        // Because the mask is irreversible, MaskedSsnDeserializer
+        // resolves the masked literal back to {@code null} when
+        // round-tripped through the typed DTO; the only way to
+        // observe the on-wire mask is to read the raw JSON tree.
+        //
+        // COBOL parallel: the COACTVWC.cbl 9300-DISPLAY-PROCESSING
+        // paragraph emits the unmasked SSN to the BMS map for the
+        // operator's 3270 terminal, but the application LOG and
+        // audit trail emit only the masked form. The Java port
+        // moves both wire and toString to the masked form for
+        // defense-in-depth PCI-DSS compliance.
+        try {
+            com.fasterxml.jackson.databind.JsonNode root =
+                    objectMapper.readTree(response.getBody());
+            com.fasterxml.jackson.databind.JsonNode ssnNode =
+                    root.path("data").path("customerSsn");
+            String wireSsn = ssnNode.asText();
+            String expectedMask = "***-**-"
+                    + String.format("%09d", TEST_CUST_SSN).substring(5);
+            assertThat(wireSsn)
+                    .as("Masked SSN on JSON wire per AAP §0.6.6")
+                    .isEqualTo(expectedMask);
+            // Belt-and-suspenders: confirm the raw 9-digit SSN
+            // never appears anywhere in the response body.
+            assertThat(response.getBody())
+                    .as("Raw SSN never present in response body")
+                    .doesNotContain(String.valueOf(TEST_CUST_SSN));
+        } catch (Exception e) {
+            throw new AssertionError(
+                    "Failed to parse masked SSN from wire JSON", e);
+        }
 
         // Verify the DTO's toString() masks the SSN per the PII contract.
+        // After Finding M4, the customerSsn field is deserialized to null
+        // by MaskedSsnDeserializer (one-way mask), so toString() emits
+        // "customerSsn=null".  The "***-**-" assertion below is satisfied
+        // by the {@code maskedCardNumber} component (PAN mask), which
+        // also uses the "***-**-" prefix pattern. Either way, no raw
+        // SSN value leaks into the DTO toString().
         String dtoString = view.toString();
-        assertThat(dtoString).as("DTO toString masks SSN per AAP §0.6.6")
-                .contains("***-**-")
+        assertThat(dtoString).as("DTO toString never contains raw SSN per AAP §0.6.6")
                 .doesNotContain(String.valueOf(TEST_CUST_SSN));
 
         // Second GET — must succeed (verifies the cache-aside path does
@@ -1382,6 +1418,28 @@ class EndToEndAccountWorkflowIT {
          * the actual production behavior, defending against future PII
          * leakage if the DTO is accidentally interpolated into a log
          * line (AAP &sect;0.6.6).
+         *
+         * <p>This test exercises {@link AccountViewDto#toString()}
+         * directly with the canonical {@code TEST_CUST_SSN} fixture
+         * value rather than round-tripping through the JSON wire,
+         * because the {@code MaskedSsnDeserializer} (paired with
+         * {@code MaskedSsnSerializer} introduced for QA Final-CP6
+         * Finding M4) deliberately resolves the masked literal back
+         * to {@code null} on inbound deserialization &mdash; the
+         * mask is irreversible by design.  Round-tripping via
+         * {@code parseApiResponse(...)} would therefore observe a
+         * {@code null} {@code customerSsn} and the {@code toString()}
+         * mask branch would render the literal {@code "null"}, which
+         * would not exercise the mask code path at all.  Constructing
+         * a {@link AccountViewDto} directly with the {@code Long} SSN
+         * value verifies the {@code toString()} mask is applied
+         * exactly as it is at production runtime when the service
+         * builds the DTO from the JPA {@code Customer} entity.</p>
+         *
+         * <p>Additionally, the test verifies the wire-level mask by
+         * reading the raw response body and asserting that the
+         * masked SSN string appears on the wire, which the
+         * complementary {@link MaskedSsnSerializer} produces.</p>
          */
         @Test
         @DisplayName("AccountViewDto.toString() masks SSN per AAP §0.6.6")
@@ -1389,12 +1447,80 @@ class EndToEndAccountWorkflowIT {
             String jwt = signIn(TEST_USER_ID, TEST_USER_PWD);
             ResponseEntity<String> response =
                     getJson("/api/accounts/" + TEST_ACCT_ID, jwt);
-            AccountViewDto view = parseApiResponse(
-                    response.getBody(), AccountViewDto.class).data();
-            String dtoString = view.toString();
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+            // --- Wire-level mask assertion ----------------------
+            // The JSON body MUST carry the SSN as the masked string
+            // ***-**-XXXX (where XXXX = last four digits of
+            // TEST_CUST_SSN).  This verifies MaskedSsnSerializer
+            // is wired correctly on outbound serialization.
+            try {
+                com.fasterxml.jackson.databind.JsonNode root =
+                        objectMapper.readTree(response.getBody());
+                String wireSsn = root.path("data").path("customerSsn").asText();
+                String expectedMask = "***-**-"
+                        + String.format("%09d", TEST_CUST_SSN).substring(5);
+                assertThat(wireSsn)
+                        .as("Wire JSON customerSsn is masked per AAP §0.6.6")
+                        .isEqualTo(expectedMask);
+            } catch (Exception e) {
+                throw new AssertionError(
+                        "Failed to parse masked SSN from wire JSON", e);
+            }
+
+            // --- toString() mask assertion -----------------------
+            // Construct an AccountViewDto directly with the canonical
+            // SSN fixture value so the toString() mask code path is
+            // exercised even though the masked wire format is one-way
+            // (the JSON-round-trip path would yield null and lose
+            // the mask under test).  This mirrors how the service
+            // layer constructs the DTO in production from the
+            // managed JPA Customer entity at the
+            // AccountViewService.getAccountView(...) boundary.
+            AccountViewDto direct = new AccountViewDto(
+                    TEST_ACCT_ID,
+                    "Y",
+                    bd("1500.00"),
+                    bd("5000.00"),
+                    bd("1000.00"),
+                    LocalDate.of(2020, 1, 1),
+                    LocalDate.of(2099, 12, 31),
+                    LocalDate.of(2020, 1, 1),
+                    bd("0.00"),
+                    bd("0.00"),
+                    "90210",
+                    "DEFAULT",
+                    TEST_CUST_ID,
+                    "TEST",
+                    "",
+                    "CUSTOMER",
+                    TEST_CUST_SSN,
+                    "2125551234",
+                    "",
+                    "ADDR LINE ONE",
+                    "",
+                    "",
+                    "CA",
+                    "USA",
+                    "90210",
+                    LocalDate.of(1980, 1, 1),
+                    // Deliberately use a government ID whose textual digits
+                    // do NOT contain the SSN sequence — required for the
+                    // doesNotContain(String.valueOf(TEST_CUST_SSN)) assertion
+                    // below to be a true test of the SSN mask and not a
+                    // collision with an unrelated identifier substring.
+                    "GOV-ABCDEFGH",
+                    "EFT-IJKLMNOP",
+                    "Y",
+                    700,
+                    0L);
+
+            String dtoString = direct.toString();
+            String expectedMask = "***-**-"
+                    + String.format("%09d", TEST_CUST_SSN).substring(5);
             assertThat(dtoString)
                     .as("toString masks SSN to ***-**-XXXX")
-                    .contains("***-**-")
+                    .contains("customerSsn=" + expectedMask)
                     .doesNotContain(String.valueOf(TEST_CUST_SSN));
         }
 

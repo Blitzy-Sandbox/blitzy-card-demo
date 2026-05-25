@@ -16,8 +16,10 @@
  */
 package com.awsm2.carddemo.dto;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.OptBoolean;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Digits;
@@ -359,8 +361,18 @@ public record TransactionAddDto(
         // "Not a valid date" (line 401) error strings are emitted by the
         // service-level validate() method after the @NotNull check fires.
         @NotNull(message = "Orig Date can NOT be empty...")
+        // QA Final-CP6 C1 (date coercion fix): lenient = OptBoolean.FALSE
+        // forces Jackson's contextual LocalDateTimeDeserializer to resolve
+        // the supplied timestamp under ResolverStyle.STRICT. The previous
+        // (LENIENT) resolver style silently coerced impossible day-of-
+        // month values (e.g. "2024-02-30T10:00:00" -> 2024-02-29T10:00:00),
+        // regressing the COBOL CSUTLDTC calendar-validity contract that
+        // rejects such dates. With lenient=FALSE, Jackson throws
+        // InvalidFormatException -> HttpMessageNotReadableException ->
+        // HTTP 400 from GlobalExceptionHandler.handleMessageNotReadable.
         @JsonFormat(shape = JsonFormat.Shape.STRING,
-                pattern = "yyyy-MM-dd'T'HH:mm:ss")
+                pattern = "uuuu-MM-dd'T'HH:mm:ss",
+                lenient = OptBoolean.FALSE)
         @Schema(description = "Origination timestamp supplied by the operator/client "
                         + "(ISO-8601, yyyy-MM-dd'T'HH:mm:ss). Maps to BMS TORIGDT PIC X(10) "
                         + "(date portion only, displayed as YYYY-MM-DD) and to "
@@ -397,8 +409,10 @@ public record TransactionAddDto(
         // "Not a valid date" (line 421) error strings are emitted by the
         // service-level validate() method after the @NotNull check fires.
         @NotNull(message = "Proc Date can NOT be empty...")
+        // QA Final-CP6 C1 (date coercion fix): see originationTimestamp.
         @JsonFormat(shape = JsonFormat.Shape.STRING,
-                pattern = "yyyy-MM-dd'T'HH:mm:ss")
+                pattern = "uuuu-MM-dd'T'HH:mm:ss",
+                lenient = OptBoolean.FALSE)
         @Schema(description = "Processing timestamp supplied by the operator/client "
                         + "(ISO-8601, yyyy-MM-dd'T'HH:mm:ss). Maps to BMS TPROCDT "
                         + "PIC X(10) (line 200 of app/bms/COTRN02.bms; date portion "
@@ -487,8 +501,114 @@ public record TransactionAddDto(
                 maxLength = 1,
                 allowableValues = {"Y", "N"})
         @JsonProperty("confirm")
-        String confirm
+        String confirm,
+
+        /**
+         * Server-generated transaction identifier returned on the
+         * {@code POST /api/transactions} response so the caller can
+         * reference, audit, and follow up on the created transaction
+         * without re-querying.
+         *
+         * <p>QA Final-CP6 Finding M2 (MAJOR): the generated MAX-TRAN-ID+1
+         * value was previously persisted but never surfaced to the
+         * caller. The {@code BillPaymentDto.transactionId} field
+         * (returned by {@code POST /api/billing/pay}) already used this
+         * pattern; this brings the {@code POST /api/transactions}
+         * endpoint into parity.
+         *
+         * <p>The field is request-side optional (defaults to {@code null})
+         * and response-side populated. The Bean Validation annotations
+         * on the request fields above are skipped because Jackson's
+         * deserializer reads the (likely-absent) {@code transactionId}
+         * property as {@code null} when present in the inbound payload;
+         * the service ignores any client-supplied value and uses its
+         * own generator.
+         *
+         * <p>COBOL: maps to {@code TRAN-ID PIC X(16)} on
+         * {@code CVTRA05Y.cpy} line 7. The COBOL paragraph
+         * {@code WRITE-TRANSACT-FILE} computed
+         * {@code TRAN-ID = MAX(TRAN-ID-IN-FILE) + 1} and never returned
+         * the value to the operator (the BMS COTRN2A map did not display
+         * it). The Java target preserves the same generator semantics
+         * but, per modern REST conventions, returns the value to the
+         * caller so the operator can correlate the response with
+         * downstream audit / OpenSearch / CloudTrail entries.
+         */
+        @Schema(description = "Server-generated 16-digit transaction "
+                        + "identifier (TRAN-ID PIC X(16)). Populated on "
+                        + "responses to POST /api/transactions; ignored "
+                        + "on requests &mdash; the service computes the "
+                        + "value as MAX(TRAN-ID)+1 against the "
+                        + "transactions table.",
+                example = "0000000000000023",
+                maxLength = 16,
+                accessMode = Schema.AccessMode.READ_ONLY)
+        @JsonProperty(value = "transactionId", access = JsonProperty.Access.READ_ONLY)
+        String transactionId
 ) {
+
+    /**
+     * Compact canonical constructor annotated with
+     * {@link JsonCreator} so Jackson unambiguously picks the
+     * 15-component record constructor when deserializing inbound
+     * JSON (even though a sibling non-canonical 14-arg constructor
+     * exists below). The compact form runs the record's implicit
+     * field-assignment after this body returns &mdash; we do not
+     * perform any validation here (Bean Validation is applied via
+     * the per-field {@code @NotNull}/{@code @Pattern}/{@code @Digits}
+     * constraints when the controller invokes {@code @Valid}).
+     *
+     * <p>Without the explicit {@code @JsonCreator}, Jackson 2.x sees
+     * two candidate constructors on this record (the 15-arg
+     * canonical and the 14-arg backward-compatible delegate) and
+     * fails with &ldquo;no Creators, like default constructor,
+     * exist&rdquo;. Annotating the canonical form is the
+     * minimal-change resolution prescribed by Jackson's record
+     * support semantics introduced in Jackson 2.12.</p>
+     *
+     * <p>QA Final-CP6 Finding M2 follow-up.</p>
+     */
+    @JsonCreator
+    public TransactionAddDto {
+        // No-op compact body: record-generated field-assignment is
+        // applied automatically; per-field bean-validation
+        // constraints fire during @Valid binding at the controller
+        // layer.
+    }
+
+    /**
+     * Backward-compatible 14-arg constructor for inbound request
+     * deserialization &mdash; callers (tests, services) that do
+     * not supply a {@code transactionId} hit this form and the
+     * delegating call passes {@code null} for the trailing
+     * component.
+     *
+     * <p>QA Final-CP6 Finding M2: added so the addition of the new
+     * {@code transactionId} response-only field does not break the
+     * ~46 existing call-sites that construct this DTO with 14
+     * positional arguments (request shape).</p>
+     */
+    public TransactionAddDto(
+            String accountId,
+            String cardNumber,
+            String transactionType,
+            Integer transactionCategory,
+            String source,
+            String description,
+            BigDecimal amount,
+            LocalDateTime originationTimestamp,
+            LocalDateTime processingTimestamp,
+            Long merchantId,
+            String merchantName,
+            String merchantCity,
+            String merchantZip,
+            String confirm) {
+        this(accountId, cardNumber, transactionType, transactionCategory,
+                source, description, amount, originationTimestamp,
+                processingTimestamp, merchantId, merchantName,
+                merchantCity, merchantZip, confirm,
+                /* transactionId = */ null);
+    }
 
     /**
      * Returns a PCI-DSS-safe string representation of this request.
@@ -555,6 +675,7 @@ public record TransactionAddDto(
                 + ", merchantCity=" + merchantCity
                 + ", merchantZip=" + merchantZip
                 + ", confirm=" + confirm
+                + ", transactionId=" + transactionId
                 + "]";
     }
 }

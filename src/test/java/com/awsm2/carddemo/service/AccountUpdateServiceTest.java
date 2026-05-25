@@ -42,6 +42,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -179,6 +180,21 @@ class AccountUpdateServiceTest {
     @Mock
     private DateValidationService dateValidationService;
 
+    /**
+     * QA Final-CP6 Finding M5: the service now uses
+     * {@link jakarta.persistence.EntityManager#lock(Object,
+     * jakarta.persistence.LockModeType)} with
+     * {@code OPTIMISTIC_FORCE_INCREMENT} to bump the Account version
+     * even on Customer-only edits. The mock is field-injected by
+     * Mockito's {@code @InjectMocks} via the {@code @PersistenceContext}
+     * private field; the default no-op stub on {@code .lock(...)} is
+     * sufficient for unit tests that do not exercise the lock-failure
+     * path (those tests stub {@code accountRepository.save(...)} to
+     * throw {@code OptimisticLockingFailureException} directly).
+     */
+    @Mock
+    private jakarta.persistence.EntityManager entityManager;
+
     @InjectMocks
     private AccountUpdateService service;
 
@@ -189,6 +205,29 @@ class AccountUpdateServiceTest {
 
     @BeforeEach
     void setUp() {
+        // QA Final-CP6 Finding M5: Mockito's {@code @InjectMocks}
+        // performs constructor injection followed by setter/field
+        // injection, BUT it does NOT scan the
+        // {@code @PersistenceContext}-annotated private field on
+        // {@link AccountUpdateService#entityManager}. That field
+        // therefore remains null after the framework finishes
+        // instantiating {@code service}. Because the production
+        // {@link AccountUpdateService#updateAccount(String,
+        // AccountUpdateDto)} now calls
+        // {@code entityManager.lock(account,
+        // LockModeType.OPTIMISTIC_FORCE_INCREMENT)} unconditionally
+        // (the fix forces an Account version bump even on
+        // Customer-only edits — see app/cbl/COACTUPC.cbl
+        // 9800-WRITE-PROCESSING which only REWRITEs ACCTDAT when the
+        // Account row itself changed; the Java target preserves the
+        // single-task safety guarantee by always force-incrementing),
+        // we MUST manually inject the EntityManager mock via
+        // reflection so the assertion path can reach the line under
+        // test (e.g., the {@code .save(...)} that throws
+        // {@link OptimisticLockingFailureException}).
+        ReflectionTestUtils.setField(service, "entityManager",
+                entityManager);
+
         // SSN 123456789 has part1=123 (valid per COBOL
         // INVALID-SSN-PART1 rule which rejects 0, 666, 900-999;
         // see app/cbl/COACTUPC.cbl WS-EDIT-US-SSN paragraph
@@ -265,9 +304,19 @@ class AccountUpdateServiceTest {
                 .thenReturn(List.of(existingXref));
         when(customerRepository.findById(CUSTOMER_ID))
                 .thenReturn(Optional.of(existingCustomer));
-        when(accountRepository.save(any(Account.class)))
+        // QA Final-CP6 Finding M1 follow-up: the service calls
+        // {@code saveAndFlush(...)} (not bare {@code save(...)}) so the
+        // in-memory @Version field reflects the post-flush value when
+        // we project the entity back to the response DTO. The mock
+        // stubs both for backwards compatibility with any older test
+        // path that might still exercise the deprecated save(...) flow.
+        when(accountRepository.saveAndFlush(any(Account.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
-        when(customerRepository.save(any(Customer.class)))
+        when(customerRepository.saveAndFlush(any(Customer.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+        lenient().when(accountRepository.save(any(Account.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+        lenient().when(customerRepository.save(any(Customer.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
     }
 
@@ -328,7 +377,12 @@ class AccountUpdateServiceTest {
             when(customerRepository.findById(CUSTOMER_ID))
                     .thenReturn(Optional.of(existingCustomer));
             stubValidationServices();
-            when(accountRepository.save(any(Account.class)))
+            // QA Final-CP6 Finding M1 follow-up: the service now calls
+            // saveAndFlush(...) so Hibernate's optimistic-lock
+            // detection fires synchronously inside the call (rather
+            // than at transaction commit). The mock must therefore
+            // throw on the saveAndFlush invocation, not on save(...).
+            when(accountRepository.saveAndFlush(any(Account.class)))
                     .thenThrow(new OptimisticLockingFailureException(
                             "Row was updated by another transaction"));
 
@@ -337,9 +391,10 @@ class AccountUpdateServiceTest {
             assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, validRequest))
                     .isInstanceOf(ConcurrentModificationException.class);
 
-            // Assert — customer.save and kafka publish do NOT occur
-            // after the optimistic-lock failure
+            // Assert — customer save and kafka publish do NOT occur
+            // after the optimistic-lock failure on the account write.
             verify(customerRepository, never()).save(any());
+            verify(customerRepository, never()).saveAndFlush(any());
             verify(kafkaEventPublisher, never())
                     .publishAccountUpdated(anyLong(), any());
             // No success audit
@@ -373,8 +428,13 @@ class AccountUpdateServiceTest {
             verify(cardCrossReferenceRepository, never())
                     .findByXrefAcctId(anyLong());
             verify(customerRepository, never()).findById(anyLong());
+            // M1 follow-up: service now uses saveAndFlush(...); the bare
+            // save(...) path is also asserted to defend against a future
+            // refactor regressing back to save() without flush.
             verify(accountRepository, never()).save(any());
+            verify(accountRepository, never()).saveAndFlush(any());
             verify(customerRepository, never()).save(any());
+            verify(customerRepository, never()).saveAndFlush(any());
             verify(kafkaEventPublisher, never())
                     .publishAccountUpdated(anyLong(), any());
         }
@@ -410,8 +470,13 @@ class AccountUpdateServiceTest {
             verify(cardCrossReferenceRepository, never())
                     .findByXrefAcctId(anyLong());
             verify(customerRepository, never()).findById(anyLong());
+            // M1 follow-up: verify both save(...) AND saveAndFlush(...)
+            // are NOT called — the explicit pre-check short-circuits
+            // before either persistence call.
             verify(accountRepository, never()).save(any());
+            verify(accountRepository, never()).saveAndFlush(any());
             verify(customerRepository, never()).save(any());
+            verify(customerRepository, never()).saveAndFlush(any());
             verify(cacheService, never()).evict(anyString(), anyString());
             verify(kafkaEventPublisher, never())
                     .publishAccountUpdated(anyLong(), any());
@@ -553,7 +618,13 @@ class AccountUpdateServiceTest {
             assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, validRequest))
                     .isInstanceOf(RecordNotFoundException.class);
 
+            // M1 follow-up: verify neither save(...) nor saveAndFlush(...)
+            // fired on either repository — the not-found path short-
+            // circuits before any persistence operation.
             verify(accountRepository, never()).save(any());
+            verify(accountRepository, never()).saveAndFlush(any());
+            verify(customerRepository, never()).save(any());
+            verify(customerRepository, never()).saveAndFlush(any());
         }
 
         @Test
@@ -572,7 +643,12 @@ class AccountUpdateServiceTest {
             assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, validRequest))
                     .isInstanceOf(RecordNotFoundException.class);
 
+            // M1 follow-up: verify neither save(...) nor saveAndFlush(...)
+            // fired on either repository.
             verify(accountRepository, never()).save(any());
+            verify(accountRepository, never()).saveAndFlush(any());
+            verify(customerRepository, never()).save(any());
+            verify(customerRepository, never()).saveAndFlush(any());
         }
     }
 
@@ -590,7 +666,7 @@ class AccountUpdateServiceTest {
             service.updateAccount(ACCOUNT_ID, validRequest);
 
             ArgumentCaptor<Account> captor = ArgumentCaptor.forClass(Account.class);
-            verify(accountRepository).save(captor.capture());
+            verify(accountRepository).saveAndFlush(captor.capture());
             BigDecimal persisted = captor.getValue().getAcctCurrBal();
             assertThat(persisted)
                     .as("balance preserves scale and value exactly")
@@ -622,7 +698,7 @@ class AccountUpdateServiceTest {
 
             // Assert
             ArgumentCaptor<Account> captor = ArgumentCaptor.forClass(Account.class);
-            verify(accountRepository).save(captor.capture());
+            verify(accountRepository).saveAndFlush(captor.capture());
             assertThat(captor.getValue().getAcctCurrCycCredit())
                     .isEqualByComparingTo(BigDecimal.ZERO);
             assertThat(captor.getValue().getAcctCurrCycDebit())
@@ -665,7 +741,7 @@ class AccountUpdateServiceTest {
 
             // Assert — saved account carries the negative balance verbatim
             ArgumentCaptor<Account> captor = ArgumentCaptor.forClass(Account.class);
-            verify(accountRepository).save(captor.capture());
+            verify(accountRepository).saveAndFlush(captor.capture());
             assertThat(captor.getValue().getAcctCurrBal())
                     .as("negative balance preserved per COBOL signed-PIC contract")
                     .isEqualByComparingTo(negativeBalance);
@@ -791,9 +867,13 @@ class AccountUpdateServiceTest {
                     .thenReturn(List.of(existingXref));
             when(customerRepository.findById(CUSTOMER_ID))
                     .thenReturn(Optional.of(existingCustomer));
-            when(accountRepository.save(any(Account.class)))
+            // M1 follow-up: service now uses saveAndFlush(...) so the
+            // failure-injection target moves accordingly. The first
+            // saveAndFlush returns the account; the customer
+            // saveAndFlush throws to simulate the rollback scenario.
+            when(accountRepository.saveAndFlush(any(Account.class)))
                     .thenAnswer(inv -> inv.getArgument(0));
-            when(customerRepository.save(any(Customer.class)))
+            when(customerRepository.saveAndFlush(any(Customer.class)))
                     .thenThrow(new RuntimeException(
                             "Simulated customer-save failure for rollback test"));
 

@@ -727,7 +727,15 @@ public class UserAdminController {
     @Operation(
             summary = "Delete a user with confirmation (admin-only)",
             description = "Deletes a USRSEC entry after explicit "
-                    + "confirmation flag = 'Y' in the request body. "
+                    + "confirmation flag = 'Y'. The confirmation can be "
+                    + "supplied via EITHER a JSON request body "
+                    + "({@code {\"userId\":\"...\",\"confirm\":\"Y\"}}) "
+                    + "OR a query parameter "
+                    + "({@code ?confirm=Y}) for HTTP-idiomatic DELETE "
+                    + "calls -- per QA Final-CP6 Finding M8. "
+                    + "If both are present, the body value wins; if "
+                    + "neither is present, the request is rejected with "
+                    + "HTTP 400 CONFIRM_REQUIRED. "
                     + "Confirmation flag 'N' aborts the delete gracefully "
                     + "(no row removed). Replaces CICS COUSR03C / "
                     + "Tran-ID CU03 (user delete)."
@@ -768,14 +776,41 @@ public class UserAdminController {
                     example = "USER0001")
             String id,
 
-            @Valid @RequestBody UserDeleteDto request) {
+            // QA Final-CP6 Finding M8 (MINOR): the request body is now
+            // OPTIONAL (required=false). Callers using the HTTP-
+            // idiomatic DELETE pattern can supply the confirmation
+            // flag via the ?confirm= query parameter instead; the body
+            // remains supported for backward compatibility with the
+            // existing test suite and any clients that already wire
+            // the JSON envelope. The {@code resolveDeleteRequest}
+            // helper below merges the two sources of confirm value.
+            @Valid @RequestBody(required = false) UserDeleteDto request,
+
+            @RequestParam(name = "confirm", required = false)
+            @Pattern(regexp = "^[YNyn]$",
+                    message = "confirm query param must be Y or N")
+            @Parameter(
+                    description = "Optional confirmation flag (Y or N) "
+                            + "for HTTP-idiomatic DELETE calls that do "
+                            + "not supply a JSON body. Mutually "
+                            + "exclusive with the body 'confirm' field "
+                            + "(if both are present, the body wins).",
+                    example = "Y")
+            String confirmQueryParam) {
+
+        // QA Final-CP6 Finding M8: resolve the effective DTO from the
+        // body (if supplied) or the path/query params. The body is
+        // optional but at least the confirm flag must be present in
+        // SOME form, else we return CONFIRM_REQUIRED.
+        final UserDeleteDto effectiveRequest = resolveDeleteRequest(
+                id, request, confirmQueryParam);
 
         // IDOR mitigation — path/body consistency check.
         //   Same defense-in-depth pattern as updateUser above:
         //   a DELETE on /api/admin/users/USER0001 with body claiming
         //   { "userId": "USER0002", ... } is rejected with
         //   USER_ID_MISMATCH before any service invocation.
-        if (!Objects.equals(id, request.userId())) {
+        if (!Objects.equals(id, effectiveRequest.userId())) {
             LOG.warn("User delete rejected: path userId differs from body");
             throw new ValidationException(
                     "USER_ID_MISMATCH",
@@ -787,9 +822,9 @@ public class UserAdminController {
         //    RecordNotFoundException -> HTTP 404; invalid confirm
         //    surfaces as ValidationException -> HTTP 400).
         LOG.info("User delete requested for userId={} confirm={}",
-                id, request.confirm());
+                id, effectiveRequest.confirm());
 
-        UserDeleteDto deleted = userDeleteService.deleteUser(id, request);
+        UserDeleteDto deleted = userDeleteService.deleteUser(id, effectiveRequest);
 
         if ("N".equalsIgnoreCase(deleted.confirm())) {
             LOG.info("User deletion cancelled: userId={}", id);
@@ -799,5 +834,97 @@ public class UserAdminController {
 
         LOG.info("User deleted successfully: userId={}", id);
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Merges the optional request body and the optional {@code confirm}
+     * query parameter into a single {@link UserDeleteDto} consumed by
+     * {@link UserDeleteService}.
+     *
+     * <h2>QA Final-CP6 Finding M8 (MINOR)</h2>
+     * <p>Resolution policy when both inputs may be present:</p>
+     * <ol>
+     *   <li>If the request body is present:
+     *     <ul>
+     *       <li>If the body specifies {@code confirm}, use the body
+     *           DTO verbatim (the query param is ignored — body wins).</li>
+     *       <li>If the body has a null/blank {@code confirm} but the
+     *           query param supplies one, rebuild the DTO with the
+     *           query-param confirm value and the body's {@code userId}
+     *           (the path {@code userId} mismatch check still fires
+     *           downstream).</li>
+     *     </ul>
+     *   </li>
+     *   <li>If the request body is absent and the query param supplies
+     *       {@code confirm}, synthesize a DTO with
+     *       {@code (userId=pathId, confirm=queryParam)}.</li>
+     *   <li>If both inputs are absent, throw
+     *       {@code ValidationException} with the
+     *       {@code CONFIRM_REQUIRED} reason code (HTTP 400). This
+     *       matches the COBOL COUSR03C semantic where a blank
+     *       {@code CONFIRMI} short-circuits the delete and prompts the
+     *       operator (the REST equivalent is to require a confirm
+     *       value from the client).</li>
+     * </ol>
+     *
+     * @param pathId             the user ID from the {@code /{id}} path variable
+     * @param body               the optional JSON request body (may be null)
+     * @param confirmQueryParam  the optional {@code ?confirm=} query parameter
+     *                           (may be null/blank)
+     * @return a non-null {@link UserDeleteDto} carrying the resolved
+     *         {@code userId} and {@code confirm} values
+     * @throws ValidationException if neither the body nor the query
+     *                             parameter supplies a confirm value
+     */
+    private UserDeleteDto resolveDeleteRequest(String pathId,
+                                               UserDeleteDto body,
+                                               String confirmQueryParam) {
+        final String normalizedQueryConfirm =
+                (confirmQueryParam == null || confirmQueryParam.isBlank())
+                        ? null
+                        : confirmQueryParam.toUpperCase(java.util.Locale.ROOT);
+
+        if (body != null) {
+            // Body present — body wins on the confirm field if it
+            // supplied a non-blank value; otherwise back-fill from the
+            // query param.
+            if (body.confirm() != null && !body.confirm().isBlank()) {
+                return body;
+            }
+            if (normalizedQueryConfirm != null) {
+                // Preserve all the optional confirmation-screen fields
+                // (firstName/lastName/userType from the body) and only
+                // overwrite the confirm flag from the query param.
+                return new UserDeleteDto(
+                        body.userId(),
+                        body.firstName(),
+                        body.lastName(),
+                        body.userType(),
+                        normalizedQueryConfirm);
+            }
+            // Body present but confirm absent in BOTH body and query —
+            // surface the standard missing-confirm rejection.
+            throw new ValidationException(
+                    "CONFIRM_REQUIRED",
+                    "confirm flag is required (provide ?confirm=Y/N or "
+                            + "include a JSON body with a confirm field)");
+        }
+
+        // Body absent — must have a query-param confirm.
+        if (normalizedQueryConfirm == null) {
+            throw new ValidationException(
+                    "CONFIRM_REQUIRED",
+                    "confirm flag is required (provide ?confirm=Y/N or "
+                            + "include a JSON body with a confirm field)");
+        }
+
+        // Synthesize a DTO from path id + query confirm. The path id is
+        // the canonical user identifier; the downstream IDOR check
+        // (path == body.userId) is trivially satisfied. The optional
+        // confirmation-screen display fields (firstName/lastName/
+        // userType) are left null — UserDeleteService re-loads the
+        // current row from USRSEC to populate the response DTO with
+        // the actual stored values.
+        return new UserDeleteDto(pathId, null, null, null, normalizedQueryConfirm);
     }
 }

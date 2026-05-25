@@ -675,13 +675,17 @@ class SignonServiceTest {
         }
 
         @Test
-        @DisplayName("matches returns false → ValidationException with neutral 'Invalid credentials' message")
+        @DisplayName("matches returns false → BadCredentialsException with neutral 'Invalid credentials' message (HTTP 401)")
         void signon_passwordEncoderReturnsFalse_throwsValidationException() {
             // COBOL: COSGN00C L242-L246 — "Wrong Password. Try again ..." path.
             // The Java target collapses this to the same generic
             // 'Invalid credentials' message as the user-not-found path
             // (PCI-DSS hardening: prevent enumeration via differential
             // error analysis).
+            // QA Final-CP6 Finding M3: the failure now surfaces as
+            // Spring Security BadCredentialsException so the REST layer
+            // returns HTTP 401 UNAUTHORIZED (was previously HTTP 400 via
+            // ValidationException — non-conforming with REST conventions).
             // Arrange — encoder.matches stub returns false
             when(userSecurityRepository.findById(NORMALIZED_USER_ID))
                     .thenReturn(Optional.of(standardUser));
@@ -690,7 +694,7 @@ class SignonServiceTest {
 
             // Act + Assert
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(ValidationException.class)
+                    .isInstanceOf(org.springframework.security.authentication.BadCredentialsException.class)
                     .hasMessage(INVALID_CREDENTIALS_MESSAGE);
 
             // Assert — NO JWT issuance on the failure path
@@ -714,7 +718,7 @@ class SignonServiceTest {
 
             // Act
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(ValidationException.class);
+                    .isInstanceOf(org.springframework.security.authentication.BadCredentialsException.class);
 
             // Assert — capture the failure-audit payload and scan
             @SuppressWarnings("unchecked")
@@ -758,20 +762,23 @@ class SignonServiceTest {
     class UserNotFound {
 
         @Test
-        @DisplayName("throws ValidationException with neutral 'Invalid credentials' message (prevents enumeration)")
+        @DisplayName("throws BadCredentialsException with neutral 'Invalid credentials' message (prevents enumeration; HTTP 401)")
         void signon_unknownUserId_throwsAuthenticationException_withNeutralMessage() {
             // COBOL: COSGN00C L247-L251 — WS-RESP-CD = 13 (NOTFND)
             //        path. COBOL surfaced "User not found ..." as a
             //        distinct message; the Java target uses the
             //        generic "Invalid credentials" to prevent user
             //        enumeration attacks.
+            // QA Final-CP6 Finding M3: surfaces as Spring Security
+            // BadCredentialsException so the REST layer returns HTTP
+            // 401 UNAUTHORIZED (was HTTP 400 via ValidationException).
             // Arrange — repository returns empty Optional
             when(userSecurityRepository.findById(NORMALIZED_USER_ID))
                     .thenReturn(Optional.empty());
 
             // Act + Assert
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(ValidationException.class)
+                    .isInstanceOf(org.springframework.security.authentication.BadCredentialsException.class)
                     .hasMessage(INVALID_CREDENTIALS_MESSAGE);
         }
 
@@ -787,7 +794,7 @@ class SignonServiceTest {
 
             // Act + Assert
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(ValidationException.class)
+                    .isInstanceOf(org.springframework.security.authentication.BadCredentialsException.class)
                     .hasMessage(INVALID_CREDENTIALS_MESSAGE);
         }
 
@@ -802,8 +809,16 @@ class SignonServiceTest {
                     .thenReturn(Optional.empty());
 
             // Act
+            // QA Final-CP6 Finding M3: the user-not-found path now
+            // throws Spring Security's BadCredentialsException (mapped
+            // to HTTP 401 by GlobalExceptionHandler) instead of the
+            // generic ValidationException (which maps to HTTP 400) —
+            // see app/cbl/COSGN00C.cbl L240 "Wrong Password ..."
+            // message which is intentionally identical for both the
+            // user-not-found and bad-password paths to prevent
+            // enumeration attacks.
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(ValidationException.class);
+                    .isInstanceOf(org.springframework.security.authentication.BadCredentialsException.class);
 
             // Assert — passwordEncoder must be touched once with a BCrypt-12
             // hash that is not the real user's stored hash.
@@ -822,8 +837,11 @@ class SignonServiceTest {
                     .thenReturn(Optional.empty());
 
             // Act
+            // QA Final-CP6 Finding M3: user-not-found path now throws
+            // BadCredentialsException → HTTP 401 (was ValidationException
+            // → HTTP 400).
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(ValidationException.class);
+                    .isInstanceOf(org.springframework.security.authentication.BadCredentialsException.class);
 
             // Assert
             verify(jwtTokenProvider, never())
@@ -842,8 +860,11 @@ class SignonServiceTest {
                     .thenReturn(Optional.empty());
 
             // Act
+            // QA Final-CP6 Finding M3: user-not-found path now throws
+            // BadCredentialsException → HTTP 401 (was ValidationException
+            // → HTTP 400).
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(ValidationException.class);
+                    .isInstanceOf(org.springframework.security.authentication.BadCredentialsException.class);
 
             // Assert
             verify(auditLogService).logSecurityEvent(
@@ -1097,8 +1118,13 @@ class SignonServiceTest {
                     .thenReturn(false);
 
             // Act
+            // QA Final-CP6 Finding M3: bad-password path now throws
+            // BadCredentialsException → HTTP 401 (was ValidationException
+            // → HTTP 400). Same exception type as user-not-found path
+            // preserves COBOL anti-enumeration semantics
+            // (COSGN00C.cbl L240).
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(ValidationException.class);
+                    .isInstanceOf(org.springframework.security.authentication.BadCredentialsException.class);
 
             // Assert — no JWT issuance on the failed-BCrypt path
             verify(jwtTokenProvider, never())
@@ -1191,8 +1217,10 @@ class SignonServiceTest {
                     .thenReturn(false);
 
             // Act
+            // QA Final-CP6 Finding M3: bad-password path now throws
+            // BadCredentialsException → HTTP 401.
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(ValidationException.class);
+                    .isInstanceOf(org.springframework.security.authentication.BadCredentialsException.class);
 
             // Assert
             verify(auditLogService).logSecurityEvent(
@@ -1278,8 +1306,10 @@ class SignonServiceTest {
                     .thenReturn(false);
 
             // Act
+            // QA Final-CP6 Finding M3: bad-password path now throws
+            // BadCredentialsException → HTTP 401.
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(ValidationException.class);
+                    .isInstanceOf(org.springframework.security.authentication.BadCredentialsException.class);
 
             // Assert
             @SuppressWarnings("unchecked")
@@ -1313,8 +1343,11 @@ class SignonServiceTest {
                     .thenReturn(Optional.empty());
 
             // Act
+            // QA Final-CP6 Finding M3: user-not-found path now throws
+            // BadCredentialsException → HTTP 401 (same exception type
+            // as bad-password to prevent enumeration).
             assertThatThrownBy(() -> service.signon(validRequest))
-                    .isInstanceOf(ValidationException.class);
+                    .isInstanceOf(org.springframework.security.authentication.BadCredentialsException.class);
 
             // Assert
             @SuppressWarnings("unchecked")

@@ -32,6 +32,9 @@ import com.awsm2.carddemo.repository.CardCrossReferenceRepository;
 import com.awsm2.carddemo.repository.CustomerRepository;
 import com.awsm2.carddemo.validation.DateValidationService;
 import com.awsm2.carddemo.validation.ValidationLookupService;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
+import jakarta.persistence.PersistenceContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.OptimisticLockingFailureException;
@@ -259,6 +262,26 @@ public class AccountUpdateService {
     private final AuditLogService auditLogService;
 
     /**
+     * Container-injected JPA {@link EntityManager} used to force an
+     * Account {@code @Version} increment when only Customer-side fields
+     * were edited (see {@link #updateAccount(Long, AccountUpdateDto)}
+     * step "force-increment").
+     *
+     * <p>QA Final-CP6 Finding M5 (MINOR): the previous flow performed
+     * {@code customer.set* + accountRepository.save(account)} but
+     * Hibernate's dirty-check skipped the Account UPDATE when no
+     * Account field had changed &mdash; leaving the Account
+     * {@code version} column stale and allowing two concurrent
+     * Customer-only edits to race undetected. Forcing an
+     * {@link LockModeType#OPTIMISTIC_FORCE_INCREMENT} on the Account
+     * before commit closes that gap by inserting a guaranteed
+     * {@code UPDATE accounts SET version = version + 1
+     * WHERE acct_id = ? AND version = ?} into the transaction.</p>
+     */
+    @PersistenceContext
+    private EntityManager entityManager;
+
+    /**
      * Constructor &mdash; Spring supplies the 8 collaborators via
      * constructor injection. All references are immutable after
      * construction (final fields) and validated non-null via
@@ -449,6 +472,20 @@ public class AccountUpdateService {
                         "Customer",
                         "custId=" + custId));
 
+        // QA Final-CP6 Finding M5 (MINOR): capture an "Account-fields"
+        // snapshot BEFORE applyAccountEdits(...) so we can later decide
+        // whether the request changed any Account column. Hibernate
+        // already issues an UPDATE-with-version-check when ANY Account
+        // column is dirty (the normal @Version increment path), so we
+        // must ONLY force an extra increment when the Account is NOT
+        // dirty — i.e., a Customer-fields-only edit. Otherwise we would
+        // get TWO version increments per update (one from the dirty-
+        // check UPDATE, one from the OPTIMISTIC_FORCE_INCREMENT
+        // UPDATE), breaking the "version advances exactly once per
+        // commit" invariant asserted by the end-to-end integration
+        // suite.
+        AccountSnapshot beforeSnapshot = AccountSnapshot.of(account);
+
         // ---- COBOL: field-by-field MOVE statements ---------------------
         // Apply the validated DTO values to the managed JPA entities.
         // Monetary fields normalise null → BigDecimal.ZERO and are
@@ -456,6 +493,9 @@ public class AccountUpdateService {
         // AAP §0.6.1 — never float/double.
         applyAccountEdits(account, request);
         applyCustomerEdits(customer, request);
+
+        // Determine whether the request changed any Account field.
+        boolean accountDirty = !beforeSnapshot.equals(AccountSnapshot.of(account));
 
         // ---- COBOL: 9700-REWRITE-ACCTDAT-FILE +
         //              9800-REWRITE-CUSTDAT-FILE ------------------------
@@ -473,9 +513,114 @@ public class AccountUpdateService {
         // and save). Per AAP §0.6.2, this is rethrown as the carddemo
         // ConcurrentModificationException (HTTP 409) to give callers a
         // single, consistent conflict-response shape.
+        //
+        // QA Final-CP6 Finding M1: declare the projected post-commit
+        // Account version variable OUTSIDE the try block so it is
+        // accessible to the response-DTO projection below. Its value
+        // is assigned inside the try once the saveAndFlush sequence
+        // has completed without raising OptimisticLockingFailureException.
+        long postCommitAccountVersion;
         try {
-            accountRepository.save(account);
-            customerRepository.save(customer);
+            // QA Final-CP6 Finding M5 (MINOR): force an Account version
+            // increment so that even a "Customer-fields-only" edit
+            // bumps accounts.version. Without this, Hibernate's dirty-
+            // check skips the Account UPDATE (no Account column
+            // changed) and two concurrent Customer-only updates can
+            // race undetected — the second writer would not observe a
+            // version-mismatch and would silently overwrite the first.
+            //
+            // OPTIMISTIC_FORCE_INCREMENT issues a guaranteed
+            //   UPDATE accounts SET version = version + 1
+            //   WHERE acct_id = ? AND version = ?
+            // inside the current transaction; if a concurrent writer
+            // committed between this service's findById and the
+            // commit, Hibernate raises OptimisticLockingFailureException
+            // which the catch block below maps to HTTP 409
+            // ConcurrentModificationException.
+            //
+            // CRITICAL: only force-increment when the Account is NOT
+            // already dirty. When the request DID change Account
+            // columns, Hibernate's normal dirty-check UPDATE issues
+            // exactly one version increment via the standard @Version
+            // path — applying OPTIMISTIC_FORCE_INCREMENT on top would
+            // produce a SECOND increment (Hibernate's lock() schedules
+            // a forced UPDATE that fires in addition to the dirty
+            // UPDATE), inflating the version stamp from N to N+2 and
+            // breaking the "version advances exactly once per commit"
+            // contract asserted by the end-to-end suite.
+            //
+            // COBOL: matches the COACTUPC.cbl 9700-CHECK-CHANGE-IN-REC
+            // pattern where the before/after snapshot compare was
+            // performed against BOTH the ACCOUNT-RECORD and the
+            // CUSTOMER-RECORD — a Customer-only change would still
+            // trigger the SYNCPOINT ROLLBACK check on the ACCOUNT-
+            // RECORD if a concurrent operator had modified it.
+            if (!accountDirty) {
+                entityManager.lock(account,
+                        LockModeType.OPTIMISTIC_FORCE_INCREMENT);
+            }
+            // Use saveAndFlush(...) so Hibernate immediately executes
+            // the UPDATE statement, which triggers the @Version
+            // increment on the managed entity. Without an explicit
+            // flush, the in-memory account.getVersion() returns the
+            // pre-update value (e.g., 0) right up until transaction
+            // commit, and the toViewDto(...) projection at the end
+            // of this method would surface a STALE version token to
+            // the caller. That stale token would then fail optimistic
+            // locking on the caller's NEXT PUT cycle — exactly the
+            // ergonomic gap that QA Final-CP6 Finding M1 was opened
+            // to close. Flushing here updates account.getVersion()
+            // (and customer.getVersion()) so the response body
+            // carries the same value persisted to the database,
+            // making the response usable as the seed for the next
+            // edit cycle without an extra GET round-trip.
+            //
+            // COBOL parallel: COACTUPC.cbl 9800-WRITE-PROCESSING
+            // performed the EXEC CICS REWRITE and immediately
+            // received the post-write timestamp / record image, so
+            // the COBOL terminal-out path always sent the freshest
+            // snapshot back to the operator. saveAndFlush() restores
+            // the same "REWRITE then return current image" contract.
+            accountRepository.saveAndFlush(account);
+            customerRepository.saveAndFlush(customer);
+
+            // QA Final-CP6 Finding M1 (post-commit version projection):
+            // For the accountDirty=true path, Hibernate's normal dirty-
+            // check UPDATE fires synchronously during the saveAndFlush
+            // calls above, and the @Version post-update callback writes
+            // the new value into account.getVersion() before
+            // saveAndFlush returns. So account.getVersion() ALREADY
+            // reflects the post-commit value (e.g., N -> N+1).
+            //
+            // For the accountDirty=false (Customer-only) path, the
+            // entityManager.lock(account, OPTIMISTIC_FORCE_INCREMENT)
+            // call above scheduled an EntityIncrementVersionProcess on
+            // the Hibernate action queue. That process is processed in
+            // doBeforeTransactionCompletion() at TX commit phase, AFTER
+            // the @Transactional method returns. The actual UPDATE
+            // accounts SET version = version + 1 fires at commit, so
+            // the DB advances from N -> N+1, but the in-memory
+            // account.getVersion() still holds the pre-commit value N
+            // when we build the response DTO below. To give the caller
+            // the same post-commit value the DB will carry (so they
+            // can use it as the seed for their next optimistic-lock
+            // edit cycle without an extra GET round-trip), we project
+            // the value here as account.getVersion() + 1.
+            //
+            // The projection is exact because OPTIMISTIC_FORCE_INCREMENT
+            // bumps the version by exactly 1 per invocation, and the
+            // @Transactional boundary on this method guarantees
+            // atomicity (no concurrent commit can interleave).
+            //
+            // COBOL parallel: COACTUPC.cbl 9800-WRITE-PROCESSING
+            // immediately followed each EXEC CICS REWRITE with a
+            // READ ACCTDAT INTO ACCT-DETAIL-RECORD so the BMS map
+            // echoed the post-write image to the operator. The
+            // projection restores that "REWRITE then return current
+            // image" contract for the REST surface.
+            postCommitAccountVersion = accountDirty
+                    ? account.getVersion()
+                    : account.getVersion() + 1L;
         } catch (OptimisticLockingFailureException ole) {
             throw new com.awsm2.carddemo.exception.ConcurrentModificationException(
                     "Account",
@@ -509,21 +654,36 @@ public class AccountUpdateService {
         // Audit-trail emission — CloudTrail + OpenSearch (AAP §0.6.6).
         // Payload contains acctId, custId, and post-update version
         // ONLY; never SSN, full phone, DOB, or full address.
+        //
+        // QA Final-CP6 Finding M1: the "version" attribute uses the
+        // projected post-commit value (which equals the in-memory
+        // account.getVersion() for the accountDirty=true path, and
+        // account.getVersion() + 1 for the OPTIMISTIC_FORCE_INCREMENT
+        // path). This ensures the audit trail records the same value
+        // the database will carry once the transaction commits, even
+        // though the FORCE_INCREMENT UPDATE has not yet fired.
         Map<String, Object> auditPayload = new HashMap<>();
         auditPayload.put("accountId", cacheKey);
         auditPayload.put("customerId", customer.getCustId());
-        auditPayload.put("version", account.getVersion());
+        auditPayload.put("version", postCommitAccountVersion);
         auditLogService.auditEvent(EVENT_ACCT_UPDATED, AUDIT_ACTOR, auditPayload);
 
         // PII-safe structured log message: only acctId + custId emitted.
         LOG.info("Account updated acctId={} custId={} version={}",
-                cacheKey, customer.getCustId(), account.getVersion());
+                cacheKey, customer.getCustId(), postCommitAccountVersion);
 
         // ---- COBOL: SEND MAP with confirmation -----------------------
         // Return the post-update AccountViewDto for the caller to use
         // as the new authoritative snapshot (and to seed the next
         // optimistic-lock cycle if the caller continues editing).
-        return toViewDto(account, customer);
+        //
+        // QA Final-CP6 Finding M1: pass the projected post-commit
+        // Account version so the response DTO surfaces the value the
+        // database will carry after commit (NOT the stale pre-commit
+        // value held by the in-memory entity in the FORCE_INCREMENT
+        // path). The 3-arg toViewDto overload accepts an explicit
+        // version override exactly for this purpose.
+        return toViewDto(account, customer, postCommitAccountVersion);
     }
 
     // ==================================================================
@@ -925,11 +1085,71 @@ public class AccountUpdateService {
      * uses it as the new optimistic-lock seed for any subsequent
      * edit cycle.</p>
      *
-     * <p>The constructor matches {@link AccountViewDto}'s 30-field
-     * record signature exactly (no version &mdash; AccountViewDto is
-     * a read-only response shape).</p>
+     * <p>The constructor matches {@link AccountViewDto}'s 31-field
+     * record signature exactly. The trailing {@code version} field
+     * &mdash; added per QA Final-CP6 Finding M1 &mdash; carries the
+     * <em>post-rewrite</em> optimistic-lock token so the caller can
+     * immediately re-issue another PUT without an intervening GET.</p>
      */
     private static AccountViewDto toViewDto(Account a, Customer c) {
+        // Default overload — uses the in-memory version exactly as Hibernate
+        // tracks it. Used by reverse-projection paths where the caller has
+        // already ensured the in-memory value reflects the post-commit value.
+        return toViewDto(a, c, a.getVersion());
+    }
+
+    /**
+     * Variant of {@link #toViewDto(Account, Customer)} that accepts an
+     * explicit {@code projectedVersion}, used by the {@code updateAccount}
+     * path to surface the post-commit Account version to the caller.
+     *
+     * <p>For the {@code accountDirty=true} path, Hibernate's normal
+     * dirty-check {@code UPDATE} fires synchronously during
+     * {@code saveAndFlush(...)}, and the {@code @Version} post-update
+     * callback writes the new value into the in-memory entity, so
+     * {@code account.getVersion()} already reflects the post-commit
+     * value at the time the response DTO is built.</p>
+     *
+     * <p>For the {@code accountDirty=false} (Customer-only edit) path,
+     * the call to {@code entityManager.lock(account,
+     * LockModeType.OPTIMISTIC_FORCE_INCREMENT)} schedules an
+     * {@code EntityIncrementVersionProcess} on the Hibernate action
+     * queue. That process is processed during
+     * {@code doBeforeTransactionCompletion()} (i.e., transaction commit
+     * phase), AFTER the @Transactional method has returned. Hibernate
+     * issues an {@code UPDATE accounts SET version = version + 1 WHERE
+     * acct_id = ? AND version = ?} at commit time, but neither the
+     * in-memory entity nor the persistence context is updated during
+     * the method body. Consequently, {@code account.getVersion()} reads
+     * the pre-bump value at the point we build the response DTO.</p>
+     *
+     * <p>The caller projects the correct post-commit version by:</p>
+     * <pre>
+     *   long projected = accountDirty ? account.getVersion() : account.getVersion() + 1;
+     * </pre>
+     *
+     * <p>and passes that {@code projected} value to this method, which
+     * substitutes it for {@code a.getVersion()} in the
+     * {@link AccountViewDto} constructor's final position.</p>
+     *
+     * <p>COBOL parallel: COACTUPC.cbl 9800-WRITE-PROCESSING immediately
+     * followed each {@code EXEC CICS REWRITE} with a {@code READ ACCTDAT
+     * INTO ACCT-DETAIL-RECORD} so the BMS map echoed the current
+     * record-image to the operator. The projected version restores that
+     * "REWRITE then return current image" contract.</p>
+     *
+     * @param a                managed Account JPA entity (in-memory state
+     *                         may lag DB state if FORCE_INCREMENT was applied)
+     * @param c                managed Customer JPA entity
+     * @param projectedVersion the post-commit Account version to surface
+     *                         in the response DTO; equal to
+     *                         {@code a.getVersion()} when Hibernate's
+     *                         dirty-check UPDATE fired, or
+     *                         {@code a.getVersion() + 1} when only
+     *                         {@code OPTIMISTIC_FORCE_INCREMENT} was applied
+     * @return the response DTO with the projected version
+     */
+    private static AccountViewDto toViewDto(Account a, Customer c, Long projectedVersion) {
         return new AccountViewDto(
                 // ----- Account fields (CVACT01Y.cpy) -----
                 a.getAcctId(),
@@ -962,7 +1182,15 @@ public class AccountUpdateService {
                 c.getCustGovtIssuedId(),
                 c.getCustEftAccountId(),
                 c.getCustPriCardHolderInd(),
-                c.getCustFicoCreditScore());
+                c.getCustFicoCreditScore(),
+                // ----- Optimistic-lock version (post-rewrite) -----
+                // QA Final-CP6 Finding M1: surface the @Version token
+                // from the just-updated Account row so the caller can
+                // use it as the new optimistic-lock seed for any
+                // subsequent edit cycle (mirrors the COBOL
+                // pattern where the BMS map carries the now-current
+                // record-image after a successful REWRITE).
+                projectedVersion);
     }
 
     /**
@@ -976,6 +1204,113 @@ public class AccountUpdateService {
      */
     private static String acctIdKey(Long acctId) {
         return String.format("%011d", acctId);
+    }
+
+    // ============================================================
+    // QA Final-CP6 Finding M5 (MINOR) — Account "dirty" snapshot
+    // ============================================================
+    //
+    // Immutable record snapshot of the 11 mutable Account columns
+    // that {@link #applyAccountEdits(Account, AccountUpdateDto)} can
+    // write to.  Captured BEFORE the field-by-field MOVE statements
+    // and compared AFTER so we can decide whether Hibernate's
+    // normal dirty-check UPDATE will issue a row-level UPDATE
+    // (and therefore a single version increment via the @Version
+    // path) or whether we need to FORCE a version increment via
+    // {@code EntityManager.lock(account, OPTIMISTIC_FORCE_INCREMENT)}
+    // because the operator only edited Customer columns.
+    //
+    // Why a separate snapshot? Hibernate exposes
+    // {@code session.unwrap(Session.class).isDirty()} but that
+    // reports dirtiness across the ENTIRE persistence context (it
+    // would be true for an Account that has no changes if the
+    // Customer it loaded does have changes). We need PER-ENTITY
+    // dirtiness, which only a value-equality snapshot can give us.
+    //
+    // COBOL parallel:
+    // ----------------
+    // COACTUPC.cbl 9700-CHECK-CHANGE-IN-REC iterates the
+    // ACCT-RECORD fields and compares the before-image (read into
+    // ACCT-RECORD-OLD by 1500-READ-ACCT) against the after-image
+    // (the operator-supplied values from the BMS map). If ANY
+    // ACCT-RECORD field has changed, the program executes a
+    // REWRITE; otherwise it skips the REWRITE entirely. This
+    // record mirrors that "before-image" capture, and the
+    // {@code accountDirty} boolean mirrors the "any-field-changed"
+    // gate the original program used to decide whether to issue
+    // the REWRITE statement.
+    //
+    // Field selection matches {@link #applyAccountEdits(Account, AccountUpdateDto)}
+    // exactly — these are the 11 fields a PUT /api/accounts/{id}
+    // operator can write to. Customer columns are deliberately
+    // EXCLUDED because they participate in a separate
+    // {@code customerDirty} consideration (out of scope for the
+    // current M5 fix — see M5 note in the service body for why
+    // customers.version is intentionally absent per AAP §0.4.1).
+    //
+    // Equality:
+    // ----------
+    // The {@code record} contract gives us a Java-native
+    // {@code equals()} implementation that delegates to each
+    // component's {@code equals()} method:
+    //   - String   → {@link String#equals(Object)}     (null-safe via Objects.equals)
+    //   - BigDecimal → {@link BigDecimal#equals(Object)} which checks BOTH
+    //                  value AND scale.  Since
+    //                  {@link #applyAccountEdits(Account, AccountUpdateDto)} runs
+    //                  every input through {@link #safeBalance(BigDecimal)}
+    //                  (HALF_EVEN to scale 2), the before/after scales are
+    //                  always (2,2) so equal values compare equal.
+    //   - LocalDate → {@link LocalDate#equals(Object)} (year/month/day)
+    //
+    // The {@code Objects.equals(...)} chain inside the auto-
+    // generated record equals() is null-safe so an Account with
+    // null monetary fields (legacy data) is still safely
+    // snapshottable and comparable.
+    private record AccountSnapshot(
+            String acctActiveStatus,
+            BigDecimal acctCurrBal,
+            BigDecimal acctCreditLimit,
+            BigDecimal acctCashCreditLimit,
+            LocalDate acctOpenDate,
+            LocalDate acctExpirationDate,
+            LocalDate acctReissueDate,
+            BigDecimal acctCurrCycCredit,
+            BigDecimal acctCurrCycDebit,
+            String acctAddrZip,
+            String acctGroupId) {
+
+        /**
+         * Capture an immutable snapshot of the 11 Account columns
+         * that a PUT /api/accounts/{id} can mutate.
+         *
+         * <p>Invoked once BEFORE {@code applyAccountEdits(...)} (to
+         * capture the database-truth values) and once AFTER (to
+         * capture the operator-supplied values). If the two
+         * snapshots are equal, NO Account column changed and
+         * Hibernate's dirty-check will skip the row-level UPDATE
+         * for {@code accounts}; the M5 fix then explicitly forces a
+         * version increment to defend against concurrent Customer-
+         * only edits racing undetected.</p>
+         *
+         * @param a a managed Account entity (must not be {@code null});
+         *          the caller has already loaded it via the
+         *          {@link AccountRepository#findById(Object)} chain
+         * @return a value-typed snapshot of all 11 monitored columns
+         */
+        static AccountSnapshot of(Account a) {
+            return new AccountSnapshot(
+                    a.getAcctActiveStatus(),
+                    a.getAcctCurrBal(),
+                    a.getAcctCreditLimit(),
+                    a.getAcctCashCreditLimit(),
+                    a.getAcctOpenDate(),
+                    a.getAcctExpirationDate(),
+                    a.getAcctReissueDate(),
+                    a.getAcctCurrCycCredit(),
+                    a.getAcctCurrCycDebit(),
+                    a.getAcctAddrZip(),
+                    a.getAcctGroupId());
+        }
     }
 }
 

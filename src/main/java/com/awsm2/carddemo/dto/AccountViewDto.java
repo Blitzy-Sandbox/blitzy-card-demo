@@ -16,8 +16,12 @@
  */
 package com.awsm2.carddemo.dto;
 
+import com.awsm2.carddemo.dto.serialization.MaskedSsnDeserializer;
+import com.awsm2.carddemo.dto.serialization.MaskedSsnSerializer;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Pattern;
 
@@ -393,12 +397,38 @@ public record AccountViewDto(
         String lastName,
 
         @Schema(description = "Customer SSN (CUST-SSN PIC 9(09) in CVCUS01Y.cpy). "
-                + "Masked as ***-**-XXXX in toString() output for log/audit safety "
-                + "per AAP §0.6.6 PCI-DSS handling; unmasked over TLS 1.2+ in the "
-                + "JSON response to authorized callers.",
-                example = "123456789",
+                + "Masked as ***-**-XXXX in BOTH the JSON wire response AND "
+                + "toString() output for log/audit safety per AAP §0.6.6 "
+                + "PCI-DSS handling. The unmasked Long value remains in JVM "
+                + "memory for internal code paths that explicitly read the "
+                + "record component, but it is NOT transmitted over the wire. "
+                + "On-wire shape: JSON string '***-**-NNNN' (the @JsonSerialize "
+                + "annotation rewrites the type from JSON number to JSON string).",
+                example = "***-**-6789",
+                type = "string",
                 accessMode = Schema.AccessMode.READ_ONLY)
         @JsonProperty("customerSsn")
+        // QA Final-CP6 Finding M4 (MINOR): mask the SSN on the JSON wire
+        // response (the toString() override already masks for logs).
+        // The MaskedSsnSerializer renders '***-**-XXXX' where XXXX is
+        // the last 4 digits of the 9-digit value, mirroring the BMS
+        // COACTVW masking pattern that the legacy COBOL screen used
+        // when CICS attribute byte was set to DARK for the SSN field
+        // (CUST-SSN PIC 9(09)).
+        @JsonSerialize(using = MaskedSsnSerializer.class)
+        // QA Final-CP6 Finding M4 follow-up: pair the wire-serializer
+        // with a graceful deserializer so that integration callers
+        // that perform a JSON round-trip (e.g.,
+        // {@code EndToEndAccountWorkflowIT.viewAccount_dtoToStringMasksSsn}
+        // which serializes the response body back into an AccountViewDto
+        // to test the toString() mask) do not crash on
+        // InvalidFormatException when Jackson sees the masked string
+        // form '***-**-XXXX' for a {@code Long}-typed field. The
+        // deserializer also continues to accept raw 9-digit numeric
+        // inputs to preserve the inbound-update contract on
+        // {@code AccountUpdateDto} (which shares this Long type but
+        // not this masking serializer).
+        @JsonDeserialize(using = MaskedSsnDeserializer.class)
         Long customerSsn,
 
         @Schema(description = "Customer primary phone "
@@ -502,7 +532,47 @@ public record AccountViewDto(
                 minimum = "0",
                 maximum = "999")
         @JsonProperty("ficoCreditScore")
-        Integer ficoCreditScore
+        Integer ficoCreditScore,
+
+        /**
+         * Optimistic-lock version token from the {@code accounts.version}
+         * column &mdash; populated from {@link
+         * com.awsm2.carddemo.domain.Account#getVersion()} via the JPA
+         * {@link jakarta.persistence.Version &#64;Version} mechanism.
+         *
+         * <p>QA Final-CP6 Finding M1 (MAJOR): added so callers performing
+         * a subsequent
+         * {@code PUT /api/accounts/&#123;id&#125;} have a way to discover
+         * the current optimistic-lock token without an out-of-band side
+         * channel. The previous version of this DTO omitted the field
+         * entirely, which caused {@code AccountUpdateDto.version}
+         * (annotated {@code @NotNull}) to fail validation with HTTP 400
+         * even when the caller faithfully echoed back every field
+         * returned by {@code GET /api/accounts/&#123;id&#125;}.
+         *
+         * <p>This is the same pattern already in use by {@code
+         * CardDetailDto.version} (QA finding U2 precedent) &mdash; both
+         * are read-only and round-trip through the corresponding
+         * {@code @Version} column on the JPA entity.
+         *
+         * <p>Type is the boxed {@link Long} (not the primitive
+         * {@code long}) so that DTOs built from entities where the
+         * version was not hydrated render the field as {@code null}
+         * rather than silently emitting {@code 0}. In normal read paths
+         * the field is always populated by the @{@code Version} machinery
+         * on the {@code accounts} row.
+         */
+        @Schema(description = "Optimistic-lock version token. Echo this "
+                        + "value on the subsequent PUT request body so the "
+                        + "server can detect and reject stale writes "
+                        + "(HTTP 409 DATA_CHANGED_BEFORE_UPDATE). Maps to "
+                        + "the accounts.version column maintained by the "
+                        + "JPA @Version annotation on the Account entity.",
+                example = "0",
+                minimum = "0",
+                accessMode = Schema.AccessMode.READ_ONLY)
+        @JsonProperty("version")
+        Long version
 
 ) {
 
@@ -585,6 +655,7 @@ public record AccountViewDto(
                 + ", eftAccountId=" + eftAccountId
                 + ", primaryCardHolderIndicator=" + primaryCardHolderIndicator
                 + ", ficoCreditScore=" + ficoCreditScore
+                + ", version=" + version
                 + "]";
     }
 }

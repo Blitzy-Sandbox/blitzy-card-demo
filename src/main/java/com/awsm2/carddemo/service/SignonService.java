@@ -25,6 +25,7 @@ import com.awsm2.carddemo.repository.UserSecurityRepository;
 import com.awsm2.carddemo.security.JwtTokenProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -705,11 +706,20 @@ public class SignonService {
             // COBOL: COSGN00C.cbl L247-L251 — WS-RESP-CD = 13 path.
             //        The COBOL message was "User not found ..."; the
             //        Java target uses the generic "Invalid credentials"
-            //        message and the same HTTP 400 status code as the
-            //        bad-password path (CR-04 fix).
+            //        message and the same HTTP 401 status code as the
+            //        bad-password path (anti-enumeration preserved per
+            //        CR-04 + QA Final-CP6 Finding M3).
+            // QA Final-CP6 Finding M3 (MINOR): the failure now surfaces
+            // as Spring Security {@code BadCredentialsException}, which
+            // {@code GlobalExceptionHandler#handleBadCredentials} maps
+            // to HTTP 401 UNAUTHORIZED — the REST-convention status
+            // for authentication failures (the legacy mapping went via
+            // ValidationException → HTTP 400). The single shared
+            // exception type for both user-not-found and bad-password
+            // paths preserves the anti-enumeration guarantee.
             auditFailure(normalizedUserId, RESULT_USER_NOT_FOUND);
             LOG.info("Signon failed: user not found userId={}", normalizedUserId);
-            throw new ValidationException(INVALID_CREDENTIALS_MESSAGE);
+            throw new BadCredentialsException(INVALID_CREDENTIALS_MESSAGE);
         }
         if (!passwordMatches) {
             // COBOL: COSGN00C.cbl L242-L244 — "Wrong Password" path.
@@ -719,9 +729,15 @@ public class SignonService {
             //        path so the HTTP response shape is identical between
             //        the two failure modes (prevents enumeration via
             //        differential error analysis — CR-04 fix).
+            // QA Final-CP6 Finding M3 (MINOR): the failure now surfaces
+            // as Spring Security {@code BadCredentialsException}, which
+            // {@code GlobalExceptionHandler#handleBadCredentials} maps
+            // to HTTP 401 UNAUTHORIZED. Identical response shape and
+            // identical message vs. the user-not-found branch keeps
+            // anti-enumeration intact.
             auditFailure(normalizedUserId, RESULT_BAD_PASSWORD);
             LOG.info("Signon failed: bad password userId={}", normalizedUserId);
-            throw new ValidationException(INVALID_CREDENTIALS_MESSAGE);
+            throw new BadCredentialsException(INVALID_CREDENTIALS_MESSAGE);
         }
         // Both predicates passed: user exists and password matches.
         final UserSecurity user = userOpt.get();

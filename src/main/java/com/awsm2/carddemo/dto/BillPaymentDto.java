@@ -317,11 +317,24 @@ public record BillPaymentDto(
                         + "preserve exact COBOL decimal-arithmetic semantics; the service "
                         + "performs all arithmetic with RoundingMode.HALF_EVEN (banker's "
                         + "rounding). Null in the inbound request; populated in the "
-                        + "response.",
+                        + "response. The service ALWAYS reads the authoritative balance "
+                        + "from ACCT-CURR-BAL on the joined Account row -- any value "
+                        + "supplied on the request is silently ignored (Jackson treats "
+                        + "this field as READ_ONLY).",
                 example = "1234.56",
                 format = "decimal",
                 accessMode = Schema.AccessMode.READ_ONLY)
-        @JsonProperty("currentBalance")
+        // QA Final-CP6 Finding M7 (MINOR): elevate the response-only
+        // contract from "documented in @Schema" to "enforced by
+        // Jackson". With access = READ_ONLY, any value supplied by a
+        // client on the inbound request is silently discarded during
+        // deserialization (Jackson sets the record component to null).
+        // The service-side guarantee remains unchanged: BillPaymentService
+        // L621 always reads the live balance via
+        // safeBalance(account.getAcctCurrBal()) and never trusts the
+        // request value, but this annotation prevents any future
+        // refactor from accidentally using the inbound value.
+        @JsonProperty(value = "currentBalance", access = JsonProperty.Access.READ_ONLY)
         BigDecimal currentBalance,
 
         // Per COBOL COBIL00C line 182-184: when CONFIRMI is blank/spaces/
