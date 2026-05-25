@@ -149,12 +149,101 @@ resource "aws_s3_bucket" "cloudtrail_logs" {
   # still manually empty the bucket if intentional destruction is
   # required (an explicit, audited action that itself is captured by
   # CloudTrail until the moment the bucket is emptied).
+  #
+  # NOTE on Object Lock interaction with force_destroy:
+  #   When object_lock_enabled = true and the retention mode is
+  #   COMPLIANCE, terraform destroy CANNOT delete objects until their
+  #   retention windows have elapsed — not even with
+  #   force_destroy = true. This is the intended PCI-DSS audit-of-
+  #   record protection. In dev/staging where force_destroy is true,
+  #   COMPLIANCE-locked objects must age out naturally (per
+  #   var.cloudtrail_s3_object_lock_retention_days) before the bucket
+  #   can be destroyed. For rapid iteration in lab environments
+  #   consider setting var.cloudtrail_s3_object_lock_mode = "GOVERNANCE"
+  #   so a principal with s3:BypassGovernanceRetention can issue a
+  #   bypass-versioned delete.
   force_destroy = var.environment != "prod"
+
+  # ---------------------------------------------------------------------------
+  # S3 Object Lock — storage-layer WORM (write-once-read-many)
+  # immutability for the CloudTrail audit-of-record bucket.
+  # ---------------------------------------------------------------------------
+  # Added in response to QA Checkpoint 9 Issue 2 (LOW —
+  # Defence-in-Depth):
+  #
+  #   "CloudTrail S3 bucket lacks Object Lock / MFA Delete. The
+  #    user-specified checkpoint instructions reference 'MFA delete
+  #    or Object Lock' as preferred immutability mechanism. Current
+  #    implementation relies on log file integrity validation +
+  #    bucket versioning + KMS encryption + restrictive bucket
+  #    policy with SourceArn constraint. While these provide
+  #    strong tamper-evidence and access control, S3 Object Lock
+  #    would provide cryptographic WORM at the storage layer."
+  #
+  # Object Lock cooperates with the existing controls to form a
+  # defence-in-depth stack:
+  #
+  #   1. CloudTrail log file integrity validation (hash chain) —
+  #      tamper detection (existing).
+  #   2. S3 versioning — preserves any pre-Object-Lock object
+  #      versions and supports the noncurrent_version_* lifecycle
+  #      rules (existing).
+  #   3. SSE-KMS with the CardDemo CMK — encryption at rest
+  #      (existing).
+  #   4. Bucket policy SourceArn condition + DenyInsecureTransport
+  #      — access control + TLS-only (existing).
+  #   5. Object Lock COMPLIANCE retention (NEW) — storage-layer
+  #      WORM that prevents ANY principal, including the root
+  #      account, from deleting or modifying an object until its
+  #      retention period elapses. This is the strongest
+  #      immutability guarantee S3 offers and is the PCI-DSS
+  #      Requirement 10.5 recommended posture for audit-of-record
+  #      buckets.
+  #
+  # CRITICAL AWS CONSTRAINT — Object Lock can ONLY be enabled at
+  # bucket CREATION time. The `object_lock_enabled` attribute is
+  # immutable on existing buckets. For deployments where the
+  # CloudTrail bucket already exists WITHOUT Object Lock enabled,
+  # toggling var.cloudtrail_s3_object_lock_enabled to true forces
+  # Terraform to REPLACE the bucket (destroy old, create new). This
+  # has two operational consequences:
+  #
+  #   (a) Existing log objects in the old bucket are NOT migrated
+  #       automatically. Before applying the change in production,
+  #       an operator must run an S3 Batch Replication job (or
+  #       `aws s3 sync`) to copy historical logs into the new
+  #       bucket, OR retain the old bucket as a read-only archive
+  #       for the remainder of its lifecycle.
+  #
+  #   (b) The bucket policy referencing the trail's SourceArn must
+  #       be re-attached to the new bucket. Terraform handles this
+  #       automatically via the existing aws_s3_bucket_policy
+  #       resource, but the CloudTrail itself will fail log delivery
+  #       for any window between bucket destroy and policy reapply
+  #       — schedule the apply during an audit-tolerant maintenance
+  #       window and confirm log delivery resumes via
+  #       `aws cloudtrail get-trail-status --name <trail>`.
+  #
+  # The brownfield migration runbook for prod is captured at
+  # ../README.md#cloudtrail-object-lock-brownfield-migration
+  # (sibling runbook to the MFA Delete procedure already
+  # referenced from this file). For greenfield deployments
+  # (terraform apply on a fresh account/environment) the
+  # configuration is fully automated and no manual steps are
+  # required.
+  #
+  # The variable default is true (secure-by-default), reflecting
+  # AAP §0.7.1 ("Encrypt all S3 buckets with SSE-KMS and block
+  # public access") and the QA Checkpoint 9 Issue 2 finding's
+  # recommendation. Set var.cloudtrail_s3_object_lock_enabled =
+  # false ONLY to preserve a legacy pre-Object-Lock bucket
+  # without forcing replacement.
+  object_lock_enabled = var.cloudtrail_s3_object_lock_enabled
 
   tags = merge(local.common_tags, {
     Name      = "${local.resource_name_prefix}-cloudtrail-logs"
     DataClass = "Audit"
-    Purpose   = "CloudTrail log file delivery (immutable audit-of-record per AAP §0.6.6)"
+    Purpose   = "CloudTrail log file delivery (immutable audit-of-record per AAP §0.6.6, Object Lock WORM per QA CP9 Issue 2)"
     Region    = var.aws_region
   })
 }
@@ -174,6 +263,69 @@ resource "aws_s3_bucket_versioning" "cloudtrail_logs" {
   versioning_configuration {
     status = "Enabled"
   }
+}
+
+# -----------------------------------------------------------------------------
+# S3 Object Lock configuration — storage-layer WORM (write-once-read-many)
+# defence-in-depth on top of the existing log file integrity validation +
+# versioning + KMS + bucket policy controls.
+#
+# Added in QA Checkpoint 9 Issue 2 (LOW — Defence-in-Depth) remediation.
+# See the bucket-resource comment block above for the full rationale,
+# the AWS bucket-creation-time constraint, and the brownfield migration
+# procedure.
+#
+# Behaviour summary:
+#   * The default retention rule applies to every new object written
+#     to the bucket (CloudTrail log files and digest files).
+#   * Mode COMPLIANCE means objects cannot be deleted or modified
+#     before retention elapses, not even by the root account. This
+#     is the PCI-DSS Requirement 10.5 audit-trail-integrity posture.
+#   * Mode GOVERNANCE means principals with the
+#     s3:BypassGovernanceRetention IAM permission can delete during
+#     the retention window. Only configure GOVERNANCE when the
+#     security review board has explicitly approved emergency-
+#     override capability.
+#   * Retention period is configurable via
+#     var.cloudtrail_s3_object_lock_retention_days. The default
+#     2557 days (~7 years) matches var.s3_lifecycle_expiration_days
+#     so every object is immutable for its full retained lifetime.
+#     The lifecycle rule deletes objects AFTER their retention
+#     expires; Object Lock prevents deletion BEFORE that point.
+#
+# Conditional resource gating:
+#   This resource is created ONLY when
+#   var.cloudtrail_s3_object_lock_enabled = true. The companion
+#   `object_lock_enabled = var.cloudtrail_s3_object_lock_enabled`
+#   attribute on the bucket resource above ensures the bucket is
+#   created with Object Lock support; the AWS S3 API rejects
+#   PutObjectLockConfiguration on buckets that were NOT created
+#   with object_lock_enabled = true, so the count gate keeps
+#   Terraform's plan consistent when the toggle is set false.
+#
+# Dependencies:
+#   * Object Lock requires bucket versioning (already configured
+#     via aws_s3_bucket_versioning.cloudtrail_logs immediately
+#     above). The depends_on declaration makes the ordering
+#     explicit so Terraform never attempts to apply the lock
+#     configuration before versioning is in place.
+# -----------------------------------------------------------------------------
+resource "aws_s3_bucket_object_lock_configuration" "cloudtrail_logs" {
+  count = var.cloudtrail_s3_object_lock_enabled ? 1 : 0
+
+  bucket = aws_s3_bucket.cloudtrail_logs.id
+
+  rule {
+    default_retention {
+      mode = var.cloudtrail_s3_object_lock_mode
+      days = var.cloudtrail_s3_object_lock_retention_days
+    }
+  }
+
+  # Versioning must be Enabled before Object Lock configuration can
+  # be applied; this dependency makes the ordering explicit so
+  # `terraform apply` cannot attempt the lock configuration first.
+  depends_on = [aws_s3_bucket_versioning.cloudtrail_logs]
 }
 
 # -----------------------------------------------------------------------------
@@ -609,17 +761,36 @@ resource "aws_cloudtrail" "carddemo" {
   # org-level trail. Production deployments set the variable to true
   # via the prod tfvars overlay.
   #
-  # Operational note — MFA Delete on the cloudtrail_logs bucket:
-  #   S3 MFA Delete cannot be enabled via Terraform / SDK; it requires
-  #   an `aws s3api put-bucket-versioning` call performed by the root
-  #   user with an active MFA token. The CardDemo runbook documents
-  #   the manual enablement procedure under
-  #   ../README.md#mfa-delete-on-cloudtrail-bucket. Until that manual
-  #   step is performed, the bucket retains the standard versioning
-  #   guarantee from `aws_s3_bucket_versioning.cloudtrail_logs` above
-  #   (versioning is mandatory; MFA Delete is the additional defence-
-  #   in-depth control). Operators must complete this step BEFORE
-  #   production cutover per the Code Review CP7 audit finding.
+  # Operational note — bucket immutability controls (MFA Delete +
+  # Object Lock) on the cloudtrail_logs bucket:
+  #
+  #   (1) S3 Object Lock — ENABLED BY DEFAULT via
+  #       var.cloudtrail_s3_object_lock_enabled = true. This adds
+  #       storage-layer WORM (write-once-read-many) with COMPLIANCE
+  #       retention by default (configurable via
+  #       var.cloudtrail_s3_object_lock_mode). See the bucket and
+  #       configuration resources above for full detail. This was
+  #       added in QA Checkpoint 9 Issue 2 remediation. Object Lock
+  #       can ONLY be enabled at bucket creation time; brownfield
+  #       enablement requires bucket replacement (procedure
+  #       documented at
+  #       ../README.md#cloudtrail-object-lock-brownfield-migration).
+  #
+  #   (2) S3 MFA Delete — STILL MANUAL. MFA Delete cannot be enabled
+  #       via Terraform / SDK; it requires an
+  #       `aws s3api put-bucket-versioning` call performed by the
+  #       root user with an active MFA token. The CardDemo runbook
+  #       documents the manual enablement procedure under
+  #       ../README.md#mfa-delete-on-cloudtrail-bucket. Until that
+  #       manual step is performed, the bucket retains the standard
+  #       versioning guarantee from
+  #       `aws_s3_bucket_versioning.cloudtrail_logs` above plus the
+  #       Object Lock COMPLIANCE retention. Object Lock is the
+  #       PRIMARY immutability guarantee; MFA Delete adds a final
+  #       layer of defence specifically against root-account
+  #       version-deletion attacks. Operators should complete the
+  #       MFA Delete step BEFORE production cutover per the Code
+  #       Review CP7 audit finding and the QA CP9 Issue 2 finding.
   is_organization_trail = var.cloudtrail_is_organization_trail
 
   # Hourly digest files with SHA-256 hashes of each log file; operators

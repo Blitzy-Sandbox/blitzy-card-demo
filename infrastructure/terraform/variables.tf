@@ -678,3 +678,60 @@ variable "opensearch_deletion_protection_enabled" {
   type        = bool
   default     = true
 }
+
+###############################################################################
+# Section 10 — CloudTrail S3 Object Lock (PCI-DSS WORM defence-in-depth)
+#
+# Added in response to QA Checkpoint 9 Issue 2 (LOW — Defence-in-Depth):
+#
+#   "CloudTrail S3 bucket lacks Object Lock / MFA Delete. The user-
+#    specified checkpoint instructions reference 'MFA delete or Object
+#    Lock' as preferred immutability mechanism. Current implementation
+#    relies on log file integrity validation + bucket versioning + KMS
+#    encryption + restrictive bucket policy — strong tamper-evidence
+#    but not storage-layer WORM. S3 Object Lock with COMPLIANCE
+#    retention mode would provide cryptographic write-once-read-many
+#    at the storage layer."
+#
+# These variables drive the cloudtrail.tf Object Lock configuration:
+#   * cloudtrail_s3_object_lock_enabled — toggles bucket creation with
+#     `object_lock_enabled = true` and the companion configuration
+#     resource. Default true so secure-by-default applies to new
+#     deployments; existing deployments must follow the bucket-
+#     replacement migration documented in cloudtrail.tf comments.
+#   * cloudtrail_s3_object_lock_mode — COMPLIANCE (cannot be removed
+#     until retention expires, not even by the root account) or
+#     GOVERNANCE (can be removed by principals with
+#     s3:BypassGovernanceRetention permission). COMPLIANCE is the
+#     PCI-DSS recommendation for audit-of-record buckets.
+#   * cloudtrail_s3_object_lock_retention_days — retention period for
+#     the default rule. Default 2557 days (~7 years) matches the
+#     existing s3_lifecycle_expiration_days policy so an object is
+#     immutable for its entire retained lifetime.
+###############################################################################
+
+variable "cloudtrail_s3_object_lock_enabled" {
+  description = "When true, create the CloudTrail logs S3 bucket with object_lock_enabled = true AND attach an aws_s3_bucket_object_lock_configuration resource with the default retention rule defined by cloudtrail_s3_object_lock_mode and cloudtrail_s3_object_lock_retention_days. Provides storage-layer WORM (write-once-read-many) immutability per PCI-DSS Requirement 10.5 audit-trail integrity, complementing the existing log file integrity validation + versioning + KMS + bucket policy controls. NOTE: Object Lock can ONLY be enabled at bucket creation time per AWS API constraint; on existing deployments toggling this true forces bucket replacement. For brownfield prod deployments, follow the bucket-replacement migration procedure documented in cloudtrail.tf comments. Default true so new deployments are secure-by-default; set false only when you must preserve an existing pre-Object-Lock bucket. Added in QA Checkpoint 9 Issue 2 remediation."
+  type        = bool
+  default     = true
+}
+
+variable "cloudtrail_s3_object_lock_mode" {
+  description = "Object Lock retention mode for the CloudTrail logs bucket default rule. COMPLIANCE — objects cannot be deleted or modified until the retention period elapses, even by the root account; this is the PCI-DSS recommendation for audit-of-record buckets. GOVERNANCE — objects can be deleted by principals with s3:BypassGovernanceRetention IAM permission; suitable only when an explicit business need for emergency override exists. Default COMPLIANCE matches the audit-of-record posture; only override when GOVERNANCE is explicitly required by an operational runbook. Added in QA Checkpoint 9 Issue 2 remediation."
+  type        = string
+  default     = "COMPLIANCE"
+  validation {
+    condition     = contains(["COMPLIANCE", "GOVERNANCE"], var.cloudtrail_s3_object_lock_mode)
+    error_message = "cloudtrail_s3_object_lock_mode must be COMPLIANCE (PCI-DSS recommended for audit-of-record) or GOVERNANCE (only when explicit business need for emergency override exists)."
+  }
+}
+
+variable "cloudtrail_s3_object_lock_retention_days" {
+  description = "Days for which CloudTrail log objects are immutable under Object Lock. Default 2557 days (~7 years) matches the existing s3_lifecycle_expiration_days retention floor so every object is immutable for its full retained lifetime. Must be a positive integer; AWS S3 Object Lock supports retention from 1 day up to 100 years. The lifecycle expiration policy (defined separately as s3_lifecycle_expiration_days) deletes objects after their retention expires — Object Lock prevents deletion BEFORE the retention window completes. Added in QA Checkpoint 9 Issue 2 remediation."
+  type        = number
+  default     = 2557
+  validation {
+    condition     = var.cloudtrail_s3_object_lock_retention_days >= 1 && var.cloudtrail_s3_object_lock_retention_days <= 36500
+    error_message = "cloudtrail_s3_object_lock_retention_days must be between 1 and 36500 (100 years, AWS S3 Object Lock maximum)."
+  }
+}

@@ -566,6 +566,102 @@ The CI/CD pipeline definitions live under `.github/workflows/`:
 
 <br/>
 
+### CloudTrail Audit Bucket — Object Lock and MFA Delete Runbooks
+
+The CloudTrail logs S3 bucket (`carddemo-${env}-cloudtrail-logs-${account_id}`) is
+configured as the audit-of-record per AAP §0.6.6 and PCI-DSS Requirement 10. Two
+defence-in-depth immutability controls layer on top of the standard versioning + KMS +
+log file integrity validation + bucket policy posture:
+
+1. **S3 Object Lock with COMPLIANCE retention** — provisioned automatically by Terraform
+   via `aws_s3_bucket.cloudtrail_logs.object_lock_enabled = true` and
+   `aws_s3_bucket_object_lock_configuration.cloudtrail_logs`. Retention defaults to 2557
+   days (~7 years) matching `s3_lifecycle_expiration_days`. COMPLIANCE mode prevents
+   delete/modify by any principal — including the root account — until retention
+   elapses. Added in QA Checkpoint 9 Issue 2 remediation.
+2. **S3 MFA Delete** — manual root-only enablement (not supported by Terraform / AWS
+   SDK). Adds a final layer of defence specifically against root-account
+   version-deletion attacks. Optional but recommended before production cutover per the
+   Code Review CP7 audit finding.
+
+#### CloudTrail Object Lock — Brownfield Migration
+
+Object Lock can ONLY be enabled at bucket CREATION time per an AWS S3 API constraint.
+Toggling `var.cloudtrail_s3_object_lock_enabled` to `true` against an existing
+pre-Object-Lock bucket therefore forces Terraform to REPLACE the bucket. The migration
+procedure for an existing production deployment is:
+
+```shell
+# 1. Create a sibling Object-Lock-enabled bucket via a temporary Terraform module
+#    (or via aws s3api create-bucket --object-lock-enabled-for-bucket).
+NEW_BUCKET="carddemo-prod-cloudtrail-logs-${AWS_ACCOUNT_ID}-v2"
+aws s3api create-bucket \
+    --bucket "${NEW_BUCKET}" \
+    --region "${AWS_REGION}" \
+    --create-bucket-configuration "LocationConstraint=${AWS_REGION}" \
+    --object-lock-enabled-for-bucket
+
+# 2. Apply the same versioning + SSE-KMS + BPA + bucket policy as the existing bucket.
+aws s3api put-bucket-versioning --bucket "${NEW_BUCKET}" \
+    --versioning-configuration Status=Enabled
+
+# 3. Apply the Object Lock configuration (COMPLIANCE retention, 2557 days).
+aws s3api put-object-lock-configuration --bucket "${NEW_BUCKET}" \
+    --object-lock-configuration \
+      'ObjectLockEnabled=Enabled,Rule={DefaultRetention={Mode=COMPLIANCE,Days=2557}}'
+
+# 4. Replicate historical log objects to the new bucket via S3 Batch Replication
+#    (or aws s3 sync for smaller volumes). Note that historical objects copied this
+#    way will inherit the new retention from the moment of copy.
+aws s3 sync s3://${OLD_BUCKET} s3://${NEW_BUCKET} --storage-class STANDARD_IA
+
+# 5. Switch CloudTrail to deliver to the new bucket. Schedule this during an
+#    audit-tolerant maintenance window — there is a brief gap in log delivery
+#    between trail update and confirmation of resumed delivery.
+aws cloudtrail update-trail --name carddemo-prod --s3-bucket-name "${NEW_BUCKET}"
+aws cloudtrail get-trail-status --name carddemo-prod    # confirm LatestDeliveryTime advances
+
+# 6. Update the Terraform configuration to reference ${NEW_BUCKET}, then
+#    `terraform import` the new bucket into the aws_s3_bucket.cloudtrail_logs
+#    resource address (replacing the old import). Run `terraform plan` to confirm
+#    drift is resolved before `terraform apply`.
+
+# 7. Retain the old bucket as a read-only archive until its lifecycle expires the
+#    last historical object; then `aws s3 rb s3://${OLD_BUCKET} --force` to remove.
+```
+
+For greenfield deployments (`terraform apply` on a fresh account / environment), the
+configuration is fully automated and no manual steps are required.
+
+#### MFA Delete on CloudTrail Bucket
+
+S3 MFA Delete cannot be enabled via Terraform or the AWS SDK; it requires an
+`aws s3api put-bucket-versioning` call performed by the AWS account ROOT user with an
+active hardware or virtual MFA token. The procedure is:
+
+```shell
+# Performed by the root user (NOT an IAM user / role) with an MFA token.
+# The serial is the MFA device's ARN; the code is the current 6-digit OTP.
+aws s3api put-bucket-versioning \
+    --bucket "carddemo-prod-cloudtrail-logs-${AWS_ACCOUNT_ID}" \
+    --versioning-configuration 'Status=Enabled,MFADelete=Enabled' \
+    --mfa "arn:aws:iam::${AWS_ACCOUNT_ID}:mfa/root-account-mfa-device 123456"
+
+# Verify:
+aws s3api get-bucket-versioning \
+    --bucket "carddemo-prod-cloudtrail-logs-${AWS_ACCOUNT_ID}"
+# Expected: { "Status": "Enabled", "MFADelete": "Enabled" }
+```
+
+Once enabled, MFA Delete is required for any subsequent versioning state change AND for
+any permanent (versioned) delete operation against the bucket — providing an additional
+control against root-account compromise. Note that the Object Lock COMPLIANCE retention
+already prevents version deletion within the retention window; MFA Delete defends
+against attempts to delete versions AFTER their retention has expired (e.g., during the
+lifecycle window between retention expiry and lifecycle expiration).
+
+<br/>
+
 ## Testing and Validation
 
 The Java target is validated end-to-end with the following layered testing strategy.
