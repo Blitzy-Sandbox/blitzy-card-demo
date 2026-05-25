@@ -163,6 +163,16 @@ public final class FileTransactionTypeRepository implements TransactionTypeRepos
     public void save(TranTypeRecord record) {
         Objects.requireNonNull(record, "record");
         byte[] buffer = record.encode();
+        // Defensive check: the domain record's compact canonical constructor and
+        // encode() implementation must always produce a 60-byte buffer per AAP
+        // §0.6.5 (byte-for-byte fidelity). Surfacing a mismatch here protects
+        // the on-disk dataset from corruption if a future refactor accidentally
+        // breaks that invariant.
+        if (buffer.length != TranTypeRecord.RECORD_LENGTH) {
+            throw new IllegalStateException(
+                    "TranTypeRecord.encode() returned " + buffer.length
+                            + " bytes; expected " + TranTypeRecord.RECORD_LENGTH);
+        }
         byte[] key = encodeKey(record.tranType());
         try {
             writer.upsert(key, KEY_OFFSET, buffer);
