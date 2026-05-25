@@ -832,6 +832,116 @@ public final class Decimals {
         return sb.toString();
     }
 
+    /**
+     * Formats a {@link BigDecimal} as a fixed-width display string with
+     * zero-padded integer digits, an embedded decimal point (when
+     * {@code decimalDigits > 0}), and zero-padded fractional digits, and
+     * <strong>no</strong> leading sign character. Corresponds to a DFSORT
+     * {@code EDIT=(T...T.T...T)} mask over an unsigned source field
+     * &mdash; the variant required by the {@code PRTCATBL.jcl}
+     * {@code OUTREC FIELDS=(...,TRAN-CAT-BAL,EDIT=(TTTTTTTTT.TT),...)}
+     * specification {@code [app/jcl/PRTCATBL.jcl:L53-L56]}.
+     *
+     * <h3>How this differs from {@link #formatEditMask(BigDecimal, int, int)}</h3>
+     * <p>{@link #formatEditMask(BigDecimal, int, int)} corresponds to the
+     * COBOL edit mask {@code PIC -9(integerDigits).9(decimalDigits)} which
+     * always emits a leading sign character ({@code ' '} for non-negative,
+     * {@code '-'} for negative). DFSORT EDIT-mask {@code T} digit positions
+     * are unsigned per the IBM DFSORT Application Programming Guide:
+     * {@code T} indicates a digit position with no associated sign. When the
+     * source field is {@code ZD} (zoned decimal) and the EDIT pattern uses
+     * only {@code T} symbols (no {@code S} sign symbol and no {@code SIGNS}
+     * subparameter), the rendered output contains only digits and the
+     * embedded literal decimal point. Negative values, if encountered, are
+     * rendered as their absolute value (the sign is dropped) &mdash; this is
+     * the DFSORT default for unsigned EDIT patterns and is the basis for
+     * the AAP key insight ("Negative balances are NOT expected for TCATBAL;
+     * if encountered, the EDIT mask would emit them as positive (DFSORT
+     * default)").
+     *
+     * <p>The output width is exactly
+     * {@code integerDigits + (decimalDigits > 0 ? 1 + decimalDigits : 0)}
+     * &mdash; the integer field plus the optional decimal point and
+     * fractional field (no sign character).
+     *
+     * <p>Examples (matching the JCL specification for
+     * {@code EDIT=(TTTTTTTTT.TT)} with 9 integer digits and 2 decimal digits):
+     * <ul>
+     *   <li>{@code formatEditMaskUnsigned(new BigDecimal("194.00"), 9, 2)} &rarr;
+     *       {@code "000000194.00"} (12 characters)</li>
+     *   <li>{@code formatEditMaskUnsigned(BigDecimal.ZERO, 9, 2)} &rarr;
+     *       {@code "000000000.00"} (12 characters)</li>
+     *   <li>{@code formatEditMaskUnsigned(new BigDecimal("-91.90"), 9, 2)} &rarr;
+     *       {@code "000000091.90"} (12 characters; absolute value, DFSORT
+     *       unsigned-EDIT default)</li>
+     *   <li>{@code formatEditMaskUnsigned(BigDecimal.ZERO, 5, 0)} &rarr;
+     *       {@code "00000"} (5 characters; no decimal point)</li>
+     * </ul>
+     *
+     * <p>Use this method to translate DFSORT {@code EDIT=(T...T.T...T)}
+     * OUTREC specifications on unsigned source fields. The value is rounded
+     * to {@code decimalDigits} via {@link #ROUNDED_MODE} (banker's rounding)
+     * consistent with the rounding default used by
+     * {@link #formatEditMask(BigDecimal, int, int)} above. In practice, the
+     * input value is almost always already at the target scale (the COBOL
+     * source field is {@code PIC S9(9)V99} with implicit scale 2 and the
+     * canonical constructor of {@code TranCatBalRecord} normalizes the
+     * scale on entry), so no rounding actually occurs &mdash; the
+     * {@code setScale} call is defensive.
+     *
+     * @param value         the value to format (must not be null)
+     * @param integerDigits the integer-part width (must be {@code >= 1})
+     * @param decimalDigits the decimal-part width (must be {@code >= 0})
+     * @return fixed-width display string of exactly
+     *         {@code integerDigits + (decimalDigits > 0 ? 1 + decimalDigits : 0)}
+     *         characters
+     * @throws NullPointerException if {@code value} is null
+     * @throws IllegalArgumentException if {@code integerDigits < 1},
+     *         {@code decimalDigits < 0}, or the integer part of the
+     *         (rounded) absolute value exceeds {@code integerDigits} digits
+     */
+    public static String formatEditMaskUnsigned(BigDecimal value, int integerDigits, int decimalDigits) {
+        Objects.requireNonNull(value, "value");
+        if (integerDigits < 1) {
+            throw new IllegalArgumentException(
+                    "integerDigits must be >= 1, got " + integerDigits);
+        }
+        if (decimalDigits < 0) {
+            throw new IllegalArgumentException(
+                    "decimalDigits must be >= 0, got " + decimalDigits);
+        }
+
+        // Round to the target scale using banker's rounding for parity with
+        // formatEditMask above; then drop the sign (DFSORT T unsigned-EDIT
+        // default treats negative values as their absolute value when the
+        // pattern contains no S sign symbol and no SIGNS subparameter).
+        BigDecimal scaledValue = value.setScale(decimalDigits, ROUNDED_MODE);
+        BigDecimal magnitude = scaledValue.abs();
+        // After movePointRight(decimalDigits), magnitude is an integer in
+        // BigDecimal form whose digit count equals the integer-digit count
+        // plus the decimal-digit count (no leading zeros).
+        String unscaledDigits = magnitude.movePointRight(decimalDigits).toBigInteger().toString();
+        int totalDigits = integerDigits + decimalDigits;
+        if (unscaledDigits.length() > totalDigits) {
+            int integerPartDigits = unscaledDigits.length() - decimalDigits;
+            throw new IllegalArgumentException(
+                    "Value '" + value + "' integer part requires "
+                            + integerPartDigits
+                            + " digits but integerDigits=" + integerDigits);
+        }
+        if (unscaledDigits.length() < totalDigits) {
+            unscaledDigits = "0".repeat(totalDigits - unscaledDigits.length()) + unscaledDigits;
+        }
+
+        StringBuilder sb = new StringBuilder(totalDigits + (decimalDigits > 0 ? 1 : 0));
+        sb.append(unscaledDigits, 0, integerDigits);
+        if (decimalDigits > 0) {
+            sb.append('.');
+            sb.append(unscaledDigits, integerDigits, totalDigits);
+        }
+        return sb.toString();
+    }
+
     // ---------------------------------------------------------------------
     // Internal helpers
     // ---------------------------------------------------------------------
