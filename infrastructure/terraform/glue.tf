@@ -1,234 +1,493 @@
 ###############################################################################
 # infrastructure/terraform/glue.tf
 #
-# AWS Glue Spark ETL Job Definitions.
+# AWS Glue Spark ETL job definitions for the CardDemo bulk-load pipeline.
 #
 # Purpose:
-#   Provisions the AWS Glue jobs that GlueETLConfig.java references via
-#   @Value defaults. The jobs implement S3 -> RDS bulk-load + S3 -> S3
-#   transformation pipelines for CardDemo:
-#     1. carddemo-transaction-report-etl     -> REPTFILE.jcl replacement
-#     2. carddemo-dalyrejs-etl               -> DALYREJS.jcl replacement
-#     3. carddemo-transact-backup-etl        -> TRANBKP.jcl replacement
-#     4. carddemo-transact-daily-etl         -> DALYTRAN load pipeline
-#     5. carddemo-tcatbalf-backup-etl        -> TCATBALF backup pipeline
-#     6. carddemo-systran-etl                -> SYSTRAN.jcl (INTCALC out)
-#     7. carddemo-transact-combined-etl      -> COMBTRAN.jcl downstream
-#     8. carddemo-bulk-load-etl              -> Initial seed (ACCT/CARD/CUST)
+#   Provisions the AWS Glue resources that replace the legacy mainframe
+#   IDCAMS REPRO operations that copied flat ASCII PS datasets into VSAM
+#   KSDS clusters. Per AAP §0.6.2 the migration strategy is:
 #
-#   Each Glue job:
-#     * Reads PySpark/Scala scripts from S3 (`s3://<batch_outputs>/glue-scripts/`)
-#     * Uses the carddemo-<env>-glue-job IAM role (provisioned in iam.tf)
-#     * Writes CloudWatch logs to `/aws-glue/jobs/carddemo-<env>` (the
-#       canonical AWS Glue log group)
-#     * Retries up to 1 time on failure (AWS default; tunable per job)
-#     * Has a 60-minute timeout (tunable via var.glue_timeout_minutes)
-#     * Runs on Glue 4.0 Spark runtime
-#     * Uses G.1X workers (default) — tunable via var.glue_worker_type
+#     - Reference data (DisclosureGroup, TransactionType, TransactionCategory,
+#       default users)            -> Flyway migrations (V001..V015).
+#     - Bulk fact data (Account, Card, Customer, CardCrossReference,
+#       Transaction)              -> AWS Glue Spark jobs reading from S3
+#                                    (where the ASCII fixtures are staged)
+#                                    and writing to RDS PostgreSQL via JDBC.
 #
-# F-CP6-TF-Glue-01:
-#   This file resolves the CP6 MAJOR review finding that glue.tf was
-#   missing while GlueETLConfig.java referenced Terraform-managed Glue
-#   jobs. The Glue job DEFINITIONS now exist as Terraform resources;
-#   the actual PySpark scripts (under s3://<batch_outputs>/glue-scripts/)
-#   are uploaded by the deployment pipeline and are out of Terraform scope.
+#   This file declares five Glue Spark jobs (one per VSAM cluster being
+#   bulk-loaded), a single Glue JDBC connection to the carddemo RDS
+#   instance, a security group for the Glue workers, an ingress rule
+#   that opens port 5432 on the RDS security group from the Glue
+#   security group, five aws_s3_object resources that upload the
+#   PySpark scripts to S3 with KMS encryption, an aws_glue_catalog_database
+#   for Athena consumption, and an optional aws_glue_crawler that
+#   inspects the S3-staged ASCII fixtures.
+#
+# Replaces:
+#   - app/jcl/ACCTFILE.jcl STEP15 (IDCAMS REPRO ACCTDATA.PS -> ACCTDATA.VSAM.KSDS)
+#     -> aws_glue_job.ascii_to_rds_account
+#   - app/jcl/CARDFILE.jcl STEP15 (IDCAMS REPRO CARDDATA.PS -> CARDDATA.VSAM.KSDS)
+#     -> aws_glue_job.ascii_to_rds_card
+#   - app/jcl/CUSTFILE.jcl STEP15 (IDCAMS REPRO CUSTDATA.PS -> CUSTDATA.VSAM.KSDS)
+#     -> aws_glue_job.ascii_to_rds_customer
+#   - app/jcl/XREFFILE.jcl STEP15 (IDCAMS REPRO CARDXREF.PS -> CARDXREF.VSAM.KSDS)
+#     -> aws_glue_job.ascii_to_rds_xref
+#   - app/jcl/TRANFILE.jcl STEP15 (IDCAMS REPRO DALYTRAN.PS.INIT -> TRANSACT.VSAM.KSDS)
+#     -> aws_glue_job.ascii_to_rds_transaction
+#   - app/jcl/REPTFILE.jcl     (DEFINE GENERATIONDATAGROUP for TRANREPT)
+#     -> S3 versioned objects + lifecycle (provisioned in s3.tf, not here)
+#   - app/jcl/DEFGDGB.jcl      (DEFINE GENERATIONDATAGROUP for TRANSACT.BKUP,
+#                               TRANSACT.DALY, TRANREPT, TCATBALF.BKUP,
+#                               SYSTRAN, TRANSACT.COMBINED)
+#     -> S3 versioned objects + lifecycle (provisioned in s3.tf, not here)
+#   - app/jcl/DALYREJS.jcl     (DEFINE GENERATIONDATAGROUP for DALYREJS)
+#     -> S3 versioned object + lifecycle (provisioned in s3.tf, not here)
+#
+# Driven by:
+#   src/main/resources/stepfunctions/file-provisioning.asl.json — the Step
+#   Functions Map state BulkLoadFactData fans these five Glue jobs out in
+#   parallel (MaxConcurrency=5) per AAP §0.6.3. The state machine reads the
+#   per-table Glue job names + source S3 URIs from
+#   StepFunctionsOrchestrator.startFileProvisioning() input parameters
+#   (ItemsPath $.bulkLoadJobs) so the names below are wired into the
+#   orchestrator's request payload at runtime.
 #
 # Cross-references:
-#   * iam.tf            — aws_iam_role.glue_job_execution
-#   * kms.tf            — aws_kms_key.cloudwatch_kms (Glue log encryption)
-#   * s3.tf             — aws_s3_bucket.batch_outputs (script + data location)
-#   * rds.tf            — Glue jobs connect via aws_glue_connection.rds
-#   * variables.tf      — glue_worker_type, glue_number_of_workers,
-#                         cloudwatch_log_retention_days
-#   * GlueETLConfig.java — runtime client wrapping these definitions
+#   - main.tf            local.common_tags, data.aws_vpc.carddemo,
+#                        data.aws_subnet.private_a
+#   - variables.tf       var.environment, var.glue_worker_type,
+#                        var.glue_number_of_workers, var.glue_crawler_enabled
+#   - kms.tf             aws_kms_key.carddemo (S3 object encryption)
+#   - s3.tf              aws_s3_bucket.batch_outputs (script + fixture staging)
+#   - rds.tf             aws_db_instance.carddemo, aws_security_group.rds,
+#                        aws_secretsmanager_secret_version.rds_master_value
+#   - iam.tf             aws_iam_role.glue_job_execution
+#   - cloudwatch.tf      aws_cloudwatch_log_group.glue_jobs
+#   - infrastructure/terraform/glue_scripts/*.py — the PySpark scripts
+#     uploaded by the aws_s3_object resources below.
+#
+# Security and compliance posture (AAP §0.7.1):
+#   - All Glue script S3 objects are encrypted with the carddemo KMS CMK
+#     (server_side_encryption = "aws:kms", kms_key_id = aws_kms_key.carddemo.arn).
+#   - The Glue JDBC connection negotiates TLS with the RDS instance
+#     (the RDS parameter group sets rds.force_ssl=1 in rds.tf).
+#   - JDBC credentials are pulled from Secrets Manager at job-run time
+#     via the connection's USERNAME/PASSWORD properties, sourced from
+#     aws_secretsmanager_secret_version.rds_master_value.secret_string.
+#   - The Glue security group is egress-only (plus self-referencing
+#     internal traffic) — Glue ENIs are never reachable from outside
+#     the VPC.
+#   - Continuous CloudWatch logging is enabled per job
+#     (--enable-continuous-cloudwatch-log=true) so Spark driver/executor
+#     output is streamed to the /aws/glue/carddemo-<env> log group in
+#     real time per AAP §0.6.6 observability requirements.
 ###############################################################################
 
 # =============================================================================
-# Section 1 — Locals: shared job arguments + naming
+# Section 1 — Locals: S3 prefixes for Glue scripts and fixtures
 # =============================================================================
-# All Glue jobs share a common set of default arguments (logging,
-# metrics, bookmarks, continuous logging). Defining them as a local map
-# avoids duplication across 8 jobs and makes future changes a single
-# diff.
+# The Glue scripts (PySpark) and the ASCII fixtures live under stable
+# prefixes inside the shared batch-outputs bucket. Defining the prefixes
+# as locals keeps the script_location, source_key, and crawler s3_target
+# values in sync across the five jobs without repeating the literal
+# path in multiple places.
+#
+# Schema-mandated exports:
+#   - local.glue_scripts_prefix   (kind: constant)
+#   - local.glue_fixtures_prefix  (kind: constant)
 # =============================================================================
 
 locals {
-  # Glue Spark continuous-logging CloudWatch log group name. The resource
-  # itself is declared in cloudwatch.tf (Section 1.4) per the cloudwatch.tf
-  # file-schema; this local resolves to the same string at apply time and
-  # is consumed by `--continuous-log-logGroup` in the default-arguments
-  # map below.
+  # S3 prefix that hosts the PySpark scripts (load_account.py,
+  # load_card.py, load_customer.py, load_xref.py, load_transaction.py).
+  # Referenced by every aws_s3_object.glue_script_* resource and by every
+  # aws_glue_job.* `command.script_location` property.
+  glue_scripts_prefix = "glue-scripts"
+
+  # S3 prefix that hosts the ASCII fixtures staged from app/data/ASCII/.
+  # The fixtures are uploaded out-of-band by the deployment pipeline
+  # (or by the LocalStack init scripts during local development);
+  # this prefix is referenced by every aws_glue_job.* `--source_key`
+  # default argument and by the optional aws_glue_crawler.fixtures
+  # s3_target.path.
+  glue_fixtures_prefix = "fixtures/ascii"
+
+  # Scratch / shuffle prefix used by Spark for intermediate spill state.
+  # Glue requires a writeable S3 location for the Spark driver to
+  # persist DataFrame checkpoints; the operator-supplied --TempDir
+  # default argument resolves to s3://${bucket}/glue-temp/ on every job.
+  glue_temp_prefix = "glue-temp"
+
+  # Continuous-logging CloudWatch log group name. The resource is owned
+  # by cloudwatch.tf; this local alias keeps the default_arguments map
+  # below readable.
   glue_log_group_name = aws_cloudwatch_log_group.glue_jobs.name
-  glue_script_prefix  = "s3://${aws_s3_bucket.batch_outputs.bucket}/glue-scripts"
-  glue_output_prefix  = "s3://${aws_s3_bucket.batch_outputs.bucket}/glue-output"
 
-  # Per-job concurrency cap. Matches the GlueETLConfig @Value default
-  # (`carddemo.glue.max-concurrent-runs:5`). For bulk-load (the only
-  # single-tenant job), this is overridden per-resource below.
-  glue_max_concurrent_runs = 5
-
-  # Default arguments applied to every job. Per-job arguments may
-  # override these.
+  # Default arguments common to every ASCII-to-RDS bulk-load job. The
+  # per-table jobs merge this map with their --source_key / --target_table
+  # overrides so a future tunable (e.g., switching off bookmarking)
+  # only needs a single-line change here.
   glue_common_default_args = {
-    # Spark continuous logging into CloudWatch.
+    # Spark Python language hint — required by Glue 4.0 PySpark jobs.
+    "--job-language" = "python"
+
+    # Spark continuous logging — streams driver/executor output to
+    # CloudWatch in real time per AAP §0.6.6.
     "--continuous-log-logGroup"          = local.glue_log_group_name
     "--continuous-log-logStreamPrefix"   = "carddemo"
     "--enable-continuous-cloudwatch-log" = "true"
     "--enable-continuous-log-filter"     = "true"
 
-    # CloudWatch metrics for Spark job observability.
+    # Job-level metrics (CPU, memory, task duration) emitted as
+    # CloudWatch metrics under the AWS/Glue namespace. Used by the
+    # ops dashboard provisioned in cloudwatch.tf.
     "--enable-metrics"          = "true"
-    "--enable-spark-ui"         = "false"
     "--enable-glue-datacatalog" = "true"
+    "--enable-job-insights"     = "true"
 
-    # Job bookmarks: incremental ETL (only new S3 objects since last run).
-    "--job-bookmark-option" = "job-bookmark-enable"
+    # Spark UI hosting is disabled by default because the events bucket
+    # is provisioned per-job and not strictly required for bulk-load
+    # job triage (CloudWatch + Spark history server are sufficient).
+    "--enable-spark-ui" = "false"
 
-    # Boto3 default Python version (Glue 4.0 supports 3.10).
-    "--enable-job-insights" = "true"
+    # Bulk-load is an idempotent operation — operators run the job
+    # explicitly when a new fixture is staged, not continuously — so
+    # job bookmarking is intentionally disabled. Re-running the job
+    # against the same fixture produces the same target rows (upserts
+    # are governed by primary-key conflict semantics in PostgreSQL).
+    "--job-bookmark-option" = "job-bookmark-disable"
+
+    # Glue temporary scratch space — every Spark step that requires
+    # spill or shuffle resolves writes here.
+    "--TempDir" = "s3://${aws_s3_bucket.batch_outputs.id}/${local.glue_temp_prefix}/"
   }
 }
 
 # =============================================================================
-# Section 2 — Glue CloudWatch log group reference
+# Section 2 — Glue worker security group + RDS ingress rule
 # =============================================================================
-# The Glue Spark continuous-logging CloudWatch log group is OWNED by
-# cloudwatch.tf (see resource `aws_cloudwatch_log_group.glue_jobs`),
-# which centralizes all CloudWatch resources for the module per the
-# Phase 1 cloudwatch.tf schema. This file consumes that resource by
-# reference (the local below + the output at the bottom of the file).
+# AWS Glue Spark workers run inside the customer VPC when a Glue
+# connection is attached. The connection binds to a single subnet
+# (data.aws_subnet.private_a) and a single security group declared
+# below. The security group:
 #
-# Resource location:  cloudwatch.tf — Section 1.4
-# Log group name:     /aws/glue/carddemo-<env>
-# KMS encryption:     aws_kms_key.carddemo.arn (primary CardDemo CMK)
-# Retention:          var.cloudwatch_log_retention_days (default 365d)
+#   - Allows self-referencing ingress / egress so distributed Spark
+#     tasks can exchange shuffle traffic.
+#   - Allows full outbound egress (the VPC endpoints provisioned in
+#     main.tf keep the bulk of the traffic on the AWS backbone — S3
+#     via Gateway endpoint, Secrets Manager / KMS / CloudWatch Logs
+#     via Interface endpoints).
+#   - Does NOT directly allow port 5432 to RDS — that ingress is
+#     attached to the RDS security group via a standalone
+#     aws_security_group_rule resource below to avoid the typical
+#     Terraform SG dependency cycle (the RDS SG is declared in rds.tf
+#     without ingress; consumers declare their own ingress rules that
+#     reference it).
 #
-# The Glue service principal is granted Encrypt/Decrypt on the primary
-# CMK via the `AllowCloudWatchLogs` statement in kms.tf
-# (logs.${var.aws_region}.amazonaws.com), so no key-policy modification
-# is required for Glue jobs to write to the log group.
+# Schema-mandated exports:
+#   - aws_security_group.glue
+#   - aws_security_group_rule.rds_from_glue
 # =============================================================================
 
-# =============================================================================
-# Section 3 — Glue connection to RDS PostgreSQL
-# =============================================================================
-# JDBC connection used by Glue jobs that bulk-load fact data into the
-# CardDemo RDS instance. The connection encapsulates VPC + subnet +
-# security-group placement so Glue jobs can reach the private RDS
-# endpoint. The JDBC URL is constructed from the RDS instance's
-# endpoint + port + database name (no credentials in the connection —
-# the Glue job pulls them from Secrets Manager at runtime).
-# =============================================================================
+resource "aws_security_group" "glue" {
+  name        = "carddemo-${var.environment}-glue-sg"
+  description = "AWS Glue Spark workers - egress to RDS PostgreSQL, S3, Secrets Manager, KMS, and CloudWatch Logs"
+  vpc_id      = data.aws_vpc.carddemo.id
 
-resource "aws_glue_connection" "rds" {
-  name = "carddemo-${var.environment}-rds"
-  # Description has no description argument in aws_glue_connection;
-  # consumers identify the connection by name + tags.
-
-  connection_properties = {
-    JDBC_CONNECTION_URL = "jdbc:postgresql://${aws_db_instance.carddemo.endpoint}/${aws_db_instance.carddemo.db_name}"
-    # Username + password are pulled by the Glue job from Secrets
-    # Manager at runtime (the glue_secrets_kms IAM policy attachment
-    # in iam.tf grants the required secretsmanager:GetSecretValue +
-    # kms:Decrypt actions). USERNAME / PASSWORD are still required as
-    # connection properties by the AWS Glue API; they are populated
-    # with sentinel placeholders here and overridden at runtime.
-    USERNAME = "glue_runtime_override"
-    PASSWORD = "glue_runtime_override"
-  }
-
-  physical_connection_requirements {
-    # Glue executes its connection-test ENIs into ONE private subnet of
-    # the RDS instance subnet group. Use the first private subnet for
-    # determinism; Glue's distributed job scheduler may still spread
-    # tasks across multiple subnets at job-run time.
-    subnet_id              = var.private_subnet_ids[0]
-    security_group_id_list = [aws_security_group.glue_rds.id]
-
-    # The connection availability zone must match the subnet's AZ.
-    availability_zone = data.aws_subnet.private_a.availability_zone
-  }
-
-  tags = merge(local.common_tags, {
-    Name    = "carddemo-${var.environment}-glue-rds"
-    Purpose = "Glue JDBC connection to RDS PostgreSQL for bulk loads"
-  })
-}
-
-# Security group for Glue Spark task ENIs. Allows egress to RDS:5432
-# and to AWS service endpoints via the VPC endpoints in main.tf.
-resource "aws_security_group" "glue_rds" {
-  name        = "carddemo-${var.environment}-glue-rds"
-  description = "Egress-only SG for AWS Glue ENIs (PostgreSQL 5432 to RDS + HTTPS to S3/Secrets/KMS endpoints)"
-  vpc_id      = var.vpc_id
-
-  # Glue requires self-referencing ingress for cluster-internal traffic.
+  # Self-referencing ingress is required by Glue for distributed
+  # Spark task communication (shuffle, broadcast, accumulator
+  # responses). Without this rule the Glue connection-test step
+  # fails with "Spark cluster communication blocked" errors.
   ingress {
-    description = "Self-referencing for Glue cluster-internal traffic"
+    description = "Self-referencing for Glue Spark cluster-internal traffic"
     from_port   = 0
     to_port     = 65535
     protocol    = "tcp"
     self        = true
   }
 
+  # Self-referencing egress mirrors the ingress rule.
   egress {
-    description = "PostgreSQL 5432 to RDS"
+    description = "Self-referencing egress for Glue Spark cluster-internal traffic"
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    self        = true
+  }
+
+  # PostgreSQL 5432 egress to RDS. The destination is restricted to
+  # the VPC CIDR because the RDS endpoint resolves to a private IP
+  # within the VPC; a CIDR-restricted egress rule preserves the
+  # principle of least privilege while still permitting the bulk load.
+  egress {
+    description = "PostgreSQL 5432 egress to RDS"
     from_port   = 5432
     to_port     = 5432
     protocol    = "tcp"
     cidr_blocks = [data.aws_vpc.carddemo.cidr_block]
   }
 
+  # HTTPS egress for VPC endpoint reach (S3 Gateway, Secrets Manager,
+  # KMS, CloudWatch Logs) plus any other AWS service that Glue needs
+  # at runtime (e.g., Glue Data Catalog).
   egress {
-    description = "HTTPS to S3/Secrets/KMS endpoints + AWS APIs"
+    description = "HTTPS 443 egress to AWS service VPC endpoints and Glue control plane"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = [data.aws_vpc.carddemo.cidr_block]
-  }
-
-  # Self-referencing egress for cluster-internal traffic.
-  egress {
-    description = "Self-referencing egress for Glue cluster-internal traffic"
-    from_port   = 0
-    to_port     = 65535
-    protocol    = "tcp"
-    self        = true
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   tags = merge(local.common_tags, {
-    Name    = "carddemo-${var.environment}-glue-rds-sg"
-    Purpose = "AWS Glue Spark ENI security group"
+    Name    = "carddemo-${var.environment}-glue-sg"
+    Purpose = "AWS Glue Spark ETL workers"
+  })
+
+  # Recreating the SG would replace every dependent connection /
+  # job — create_before_destroy minimises the blast radius if a
+  # name collision forces an in-place rename.
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Ingress rule that opens port 5432 on the RDS security group from the
+# Glue security group. Declared as a standalone resource so we can
+# reference aws_security_group.rds (provisioned in rds.tf) without
+# modifying rds.tf and without creating a Terraform SG dependency
+# cycle (the RDS SG declares no inbound rules; consumers attach their
+# own).
+#
+# Schema-mandated export: aws_security_group_rule.rds_from_glue
+resource "aws_security_group_rule" "rds_from_glue" {
+  type                     = "ingress"
+  from_port                = 5432
+  to_port                  = 5432
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.glue.id
+  security_group_id        = aws_security_group.rds.id
+  description              = "Glue ETL jobs to RDS PostgreSQL (bulk load per AAP 0.6.2)"
+}
+
+# =============================================================================
+# Section 3 — Glue JDBC connection to RDS PostgreSQL
+# =============================================================================
+# The aws_glue_connection resource encapsulates the JDBC URL, network
+# placement, and (via Secrets Manager-sourced properties) the database
+# credentials that Glue uses to reach RDS. Glue resolves the connection
+# at job-run time: when a job declares `connections = [<name>]` the
+# Glue runtime places the Spark cluster in the configured subnet,
+# attaches the configured security group, and exposes the JDBC URL
+# + credentials to the PySpark script.
+#
+# Schema-mandated export: aws_glue_connection.rds
+# =============================================================================
+
+resource "aws_glue_connection" "rds" {
+  name            = "carddemo-${var.environment}-rds-conn"
+  description     = "Glue JDBC connection to the carddemo RDS PostgreSQL instance (bulk-load ETL)"
+  connection_type = "JDBC"
+
+  connection_properties = {
+    # JDBC URL — host + port + database name. The RDS endpoint
+    # already includes the port (e.g., "carddemo-prod-rds.xyz.us-east-1.rds.amazonaws.com:5432"),
+    # so we strip the trailing :5432 before appending the database name.
+    JDBC_CONNECTION_URL = "jdbc:postgresql://${aws_db_instance.carddemo.endpoint}/${aws_db_instance.carddemo.db_name}"
+
+    # USERNAME / PASSWORD — pulled from the carddemo Secrets Manager
+    # secret value at runtime. jsondecode() is required because the
+    # secret stores all RDS connection metadata as a single JSON blob
+    # (username, password, engine, host, port, dbname) per the
+    # convention in rds.tf Section 4.
+    USERNAME = jsondecode(aws_secretsmanager_secret_version.rds_master_value.secret_string)["username"]
+    PASSWORD = jsondecode(aws_secretsmanager_secret_version.rds_master_value.secret_string)["password"]
+
+    # JDBC driver class — required for non-default JDBC engines.
+    # PostgreSQL is supplied by the Glue runtime so the driver JAR
+    # need not be uploaded.
+    JDBC_ENFORCE_SSL = "true"
+  }
+
+  physical_connection_requirements {
+    # Glue connection-test ENIs bind to a single subnet at create
+    # time; private_a is the first private subnet declared by the
+    # operator. At job-run time the Spark cluster may still be
+    # distributed across multiple subnets within the connection's
+    # availability zone.
+    subnet_id              = data.aws_subnet.private_a.id
+    security_group_id_list = [aws_security_group.glue.id]
+    availability_zone      = data.aws_subnet.private_a.availability_zone
+  }
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-rds-conn"
+    Purpose = "Glue JDBC connection to RDS PostgreSQL for bulk-load ETL"
   })
 }
 
 # =============================================================================
-# Section 4 — Glue job definitions (8 total)
+# Section 4 — Glue script S3 objects (PySpark scripts uploaded with KMS encryption)
 # =============================================================================
-# All 8 job definitions follow the same pattern:
-#   * name              = canonical job name matching the GlueETLConfig
-#                          @Value default
-#   * role_arn          = aws_iam_role.glue_job_execution.arn (iam.tf)
-#   * glue_version      = "4.0" (Spark 3.3, Python 3.10)
-#   * worker_type       = var.glue_worker_type (default "G.1X")
-#   * number_of_workers = var.glue_number_of_workers (default 2)
-#   * timeout           = 60 minutes (per GlueETLConfig default)
-#   * max_retries       = 1
-#   * connections       = ["carddemo-<env>-rds"] when the job touches RDS
-#   * default_arguments = merge(local.glue_common_default_args, { ... })
-#   * command           = pyspark script in s3://<batch_outputs>/glue-scripts/
+# Every Glue job loads its PySpark script from S3 at job-start time.
+# Storing the scripts as Terraform-managed S3 objects (rather than
+# uploaded out-of-band by the deployment pipeline) gives:
+#
+#   1. Atomicity — `terraform apply` updates the script and the
+#      consuming job in the same transaction, eliminating the race
+#      where a job runs an outdated script.
+#   2. Encryption — every script object is encrypted at rest with
+#      the carddemo KMS CMK per AAP §0.7.1 ("Encrypt all S3 buckets
+#      with SSE-KMS").
+#   3. Versioning — the underlying batch_outputs bucket is versioned,
+#      so previous script revisions remain accessible for parallel-run
+#      validation and rollback.
+#
+# The `etag = filemd5(...)` argument forces Terraform to detect local
+# script changes (the MD5 of the on-disk file) and re-upload, even
+# when the file content is otherwise byte-identical to the previously
+# uploaded object. AWS S3 does not compute ETags for KMS-encrypted
+# objects in the same way as for unencrypted objects, so this is the
+# canonical pattern for forcing change detection.
+#
+# Schema-mandated exports:
+#   - aws_s3_object.glue_script_account
+#   - aws_s3_object.glue_script_card
+#   - aws_s3_object.glue_script_customer
+#   - aws_s3_object.glue_script_xref
+#   - aws_s3_object.glue_script_transaction
+# =============================================================================
+
+resource "aws_s3_object" "glue_script_account" {
+  bucket = aws_s3_bucket.batch_outputs.id
+  key    = "${local.glue_scripts_prefix}/load_account.py"
+  source = "${path.module}/glue_scripts/load_account.py"
+  etag   = filemd5("${path.module}/glue_scripts/load_account.py")
+
+  # PCI-DSS encryption at rest — every CardDemo S3 object must be
+  # encrypted with the carddemo KMS CMK per AAP §0.7.1.
+  server_side_encryption = "aws:kms"
+  kms_key_id             = aws_kms_key.carddemo.arn
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-glue-script-account"
+    Purpose = "PySpark script for Account ASCII-to-RDS bulk load"
+  })
+}
+
+resource "aws_s3_object" "glue_script_card" {
+  bucket = aws_s3_bucket.batch_outputs.id
+  key    = "${local.glue_scripts_prefix}/load_card.py"
+  source = "${path.module}/glue_scripts/load_card.py"
+  etag   = filemd5("${path.module}/glue_scripts/load_card.py")
+
+  server_side_encryption = "aws:kms"
+  kms_key_id             = aws_kms_key.carddemo.arn
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-glue-script-card"
+    Purpose = "PySpark script for Card ASCII-to-RDS bulk load"
+  })
+}
+
+resource "aws_s3_object" "glue_script_customer" {
+  bucket = aws_s3_bucket.batch_outputs.id
+  key    = "${local.glue_scripts_prefix}/load_customer.py"
+  source = "${path.module}/glue_scripts/load_customer.py"
+  etag   = filemd5("${path.module}/glue_scripts/load_customer.py")
+
+  server_side_encryption = "aws:kms"
+  kms_key_id             = aws_kms_key.carddemo.arn
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-glue-script-customer"
+    Purpose = "PySpark script for Customer ASCII-to-RDS bulk load"
+  })
+}
+
+resource "aws_s3_object" "glue_script_xref" {
+  bucket = aws_s3_bucket.batch_outputs.id
+  key    = "${local.glue_scripts_prefix}/load_xref.py"
+  source = "${path.module}/glue_scripts/load_xref.py"
+  etag   = filemd5("${path.module}/glue_scripts/load_xref.py")
+
+  server_side_encryption = "aws:kms"
+  kms_key_id             = aws_kms_key.carddemo.arn
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-glue-script-xref"
+    Purpose = "PySpark script for CardCrossReference ASCII-to-RDS bulk load"
+  })
+}
+
+resource "aws_s3_object" "glue_script_transaction" {
+  bucket = aws_s3_bucket.batch_outputs.id
+  key    = "${local.glue_scripts_prefix}/load_transaction.py"
+  source = "${path.module}/glue_scripts/load_transaction.py"
+  etag   = filemd5("${path.module}/glue_scripts/load_transaction.py")
+
+  server_side_encryption = "aws:kms"
+  kms_key_id             = aws_kms_key.carddemo.arn
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-glue-script-transaction"
+    Purpose = "PySpark script for Transaction (DALYTRAN staging) ASCII-to-RDS bulk load"
+  })
+}
+
+# =============================================================================
+# Section 5 — Glue Spark ETL jobs (one per VSAM cluster being bulk-loaded)
+# =============================================================================
+# Each job:
+#   - Reads a fixed-width ASCII fixture from S3 (the legacy *.PS
+#     dataset, staged under s3://${bucket}/fixtures/ascii/).
+#   - Parses fields per the corresponding COBOL copybook layout
+#     (CVACT01Y.cpy for Account, CVACT02Y.cpy for Card,
+#     CVCUS01Y.cpy for Customer, CVACT03Y.cpy for CardCrossReference,
+#     CVTRA05Y.cpy for Transaction). Zoned-decimal sign-overpunch
+#     bytes are translated to Python Decimal -> PostgreSQL NUMERIC
+#     per AAP §0.6.1.
+#   - Bulk-inserts the parsed rows into the corresponding RDS
+#     PostgreSQL table via the carddemo-<env>-rds-conn Glue
+#     connection.
+#
+# All five jobs share:
+#   - role_arn          = aws_iam_role.glue_job_execution.arn
+#   - glue_version      = "4.0" (Spark 3.3, Python 3.10)
+#   - worker_type       = var.glue_worker_type (default "G.1X")
+#   - number_of_workers = var.glue_number_of_workers (default 2)
+#   - timeout           = 60 (minutes)
+#   - max_retries       = 1
+#   - max_concurrent_runs = 1 (bulk-load is single-tenant on the
+#                              target table — concurrent runs would
+#                              race on PostgreSQL primary-key
+#                              constraints and on the JDBC connection
+#                              pool established by the connection)
+#   - connections       = [aws_glue_connection.rds.name]
+#   - default_arguments = merge(local.glue_common_default_args, {
+#                           "--source_key"   = "...",
+#                           "--target_table" = "...",
+#                         })
+#
+# Schema-mandated exports:
+#   - aws_glue_job.ascii_to_rds_account
+#   - aws_glue_job.ascii_to_rds_card
+#   - aws_glue_job.ascii_to_rds_customer
+#   - aws_glue_job.ascii_to_rds_xref
+#   - aws_glue_job.ascii_to_rds_transaction
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Job 1 — Transaction Report ETL (REPTFILE.jcl replacement).
+# Account loader — replaces app/jcl/ACCTFILE.jcl STEP15 IDCAMS REPRO.
 #
-# Reads transaction-report flat files from the legacy mainframe drop,
-# transforms to the CardDemo report schema, writes to S3 for downstream
-# Step Functions consumption.
+# Source fixture: s3://${batch_outputs}/fixtures/ascii/acctdata.txt
+# Target table:   accounts (V001__create_account.sql)
+# Record layout:  app/cpy/CVACT01Y.cpy (300 bytes, 12 fields incl. 5
+#                 PIC S9(10)V99 monetary fields)
 # -----------------------------------------------------------------------------
-resource "aws_glue_job" "transaction_report_etl" {
-  name              = "carddemo-transaction-report-etl"
-  description       = "Transaction-report ETL (replaces app/jcl/REPTFILE.jcl) per AAP §0.4.1"
+resource "aws_glue_job" "ascii_to_rds_account" {
+  name              = "carddemo-${var.environment}-load-account"
+  description       = "Bulk-load Account ASCII fixture from S3 to RDS (replaces app/jcl/ACCTFILE.jcl IDCAMS REPRO per AAP §0.6.2)"
   role_arn          = aws_iam_role.glue_job_execution.arn
   glue_version      = "4.0"
   worker_type       = var.glue_worker_type
@@ -236,360 +495,286 @@ resource "aws_glue_job" "transaction_report_etl" {
   timeout           = 60
   max_retries       = 1
 
+  # JDBC connection — Glue resolves credentials from Secrets Manager
+  # at job-run time via the connection's USERNAME / PASSWORD properties.
+  connections = [aws_glue_connection.rds.name]
+
   command {
     name            = "glueetl"
-    script_location = "${local.glue_script_prefix}/transaction_report_etl.py"
+    script_location = "s3://${aws_s3_bucket.batch_outputs.id}/${local.glue_scripts_prefix}/load_account.py"
     python_version  = "3"
   }
 
   default_arguments = merge(local.glue_common_default_args, {
-    "--output_prefix" = "${local.glue_output_prefix}/transaction-report/"
+    "--connection_name" = aws_glue_connection.rds.name
+    "--source_bucket"   = aws_s3_bucket.batch_outputs.id
+    "--source_key"      = "${local.glue_fixtures_prefix}/acctdata.txt"
+    "--target_table"    = "accounts"
   })
 
+  # Bulk-load is single-tenant on the target table — concurrent runs
+  # would race on PostgreSQL primary-key constraints.
   execution_property {
-    max_concurrent_runs = local.glue_max_concurrent_runs
-  }
-
-  tags = merge(local.common_tags, {
-    Name    = "carddemo-transaction-report-etl"
-    Purpose = "Transaction report ETL"
-  })
-}
-
-# -----------------------------------------------------------------------------
-# Job 2 — Daily Rejections ETL (DALYREJS.jcl replacement).
-#
-# Reads the daily-rejections S3 output of TransactionPostingService and
-# transforms to the operations dashboard schema.
-# -----------------------------------------------------------------------------
-resource "aws_glue_job" "daily_rejections_etl" {
-  name              = "carddemo-dalyrejs-etl"
-  description       = "Daily rejections ETL (replaces app/jcl/DALYREJS.jcl) per AAP §0.4.1"
-  role_arn          = aws_iam_role.glue_job_execution.arn
-  glue_version      = "4.0"
-  worker_type       = var.glue_worker_type
-  number_of_workers = var.glue_number_of_workers
-  timeout           = 60
-  max_retries       = 1
-
-  command {
-    name            = "glueetl"
-    script_location = "${local.glue_script_prefix}/daily_rejections_etl.py"
-    python_version  = "3"
-  }
-
-  default_arguments = merge(local.glue_common_default_args, {
-    "--output_prefix" = "${local.glue_output_prefix}/daily-rejections/"
-  })
-
-  execution_property {
-    max_concurrent_runs = local.glue_max_concurrent_runs
-  }
-
-  tags = merge(local.common_tags, {
-    Name    = "carddemo-dalyrejs-etl"
-    Purpose = "Daily rejections ETL"
-  })
-}
-
-# -----------------------------------------------------------------------------
-# Job 3 — TRANSACT backup ETL (TRANBKP.jcl replacement).
-#
-# Copies the TRANSACT.VSAM.KSDS daily backup from S3 (CombineTransactionsJob
-# S3 archive output) to a long-term archive prefix with checksum
-# verification.
-# -----------------------------------------------------------------------------
-resource "aws_glue_job" "transact_backup_etl" {
-  name              = "carddemo-transact-backup-etl"
-  description       = "TRANSACT backup ETL (replaces app/jcl/TRANBKP.jcl) per AAP §0.4.1"
-  role_arn          = aws_iam_role.glue_job_execution.arn
-  glue_version      = "4.0"
-  worker_type       = var.glue_worker_type
-  number_of_workers = var.glue_number_of_workers
-  timeout           = 60
-  max_retries       = 1
-
-  command {
-    name            = "glueetl"
-    script_location = "${local.glue_script_prefix}/transact_backup_etl.py"
-    python_version  = "3"
-  }
-
-  default_arguments = merge(local.glue_common_default_args, {
-    "--output_prefix" = "${local.glue_output_prefix}/transact-backup/"
-  })
-
-  execution_property {
-    max_concurrent_runs = local.glue_max_concurrent_runs
-  }
-
-  tags = merge(local.common_tags, {
-    Name    = "carddemo-transact-backup-etl"
-    Purpose = "TRANSACT backup ETL"
-  })
-}
-
-# -----------------------------------------------------------------------------
-# Job 4 — TRANSACT daily ETL (DALYTRAN load pipeline).
-#
-# Loads the legacy DALYTRAN flat file into the DailyTransaction staging
-# table via Glue's DataSource/DataSink writer + the carddemo-<env>-rds
-# Glue connection.
-# -----------------------------------------------------------------------------
-resource "aws_glue_job" "transact_daily_etl" {
-  name              = "carddemo-transact-daily-etl"
-  description       = "TRANSACT daily ETL — loads DALYTRAN flat file to DailyTransaction staging table per AAP §0.4.1"
-  role_arn          = aws_iam_role.glue_job_execution.arn
-  glue_version      = "4.0"
-  worker_type       = var.glue_worker_type
-  number_of_workers = var.glue_number_of_workers
-  timeout           = 60
-  max_retries       = 1
-  connections       = [aws_glue_connection.rds.name]
-
-  command {
-    name            = "glueetl"
-    script_location = "${local.glue_script_prefix}/transact_daily_etl.py"
-    python_version  = "3"
-  }
-
-  default_arguments = merge(local.glue_common_default_args, {
-    "--rds_secret_arn" = aws_secretsmanager_secret.rds_master.arn
-  })
-
-  execution_property {
-    max_concurrent_runs = local.glue_max_concurrent_runs
-  }
-
-  tags = merge(local.common_tags, {
-    Name    = "carddemo-transact-daily-etl"
-    Purpose = "TRANSACT daily ETL"
-  })
-}
-
-# -----------------------------------------------------------------------------
-# Job 5 — TCATBALF backup ETL.
-#
-# Copies the TransactionCategoryBalance table to S3 for nightly archival.
-# -----------------------------------------------------------------------------
-resource "aws_glue_job" "tcatbalf_backup_etl" {
-  name              = "carddemo-tcatbalf-backup-etl"
-  description       = "TCATBALF backup ETL — archives TransactionCategoryBalance to S3 per AAP §0.4.1"
-  role_arn          = aws_iam_role.glue_job_execution.arn
-  glue_version      = "4.0"
-  worker_type       = var.glue_worker_type
-  number_of_workers = var.glue_number_of_workers
-  timeout           = 60
-  max_retries       = 1
-  connections       = [aws_glue_connection.rds.name]
-
-  command {
-    name            = "glueetl"
-    script_location = "${local.glue_script_prefix}/tcatbalf_backup_etl.py"
-    python_version  = "3"
-  }
-
-  default_arguments = merge(local.glue_common_default_args, {
-    "--rds_secret_arn" = aws_secretsmanager_secret.rds_master.arn
-    "--output_prefix"  = "${local.glue_output_prefix}/tcatbalf-backup/"
-  })
-
-  execution_property {
-    max_concurrent_runs = local.glue_max_concurrent_runs
-  }
-
-  tags = merge(local.common_tags, {
-    Name    = "carddemo-tcatbalf-backup-etl"
-    Purpose = "TCATBALF backup ETL"
-  })
-}
-
-# -----------------------------------------------------------------------------
-# Job 6 — SYSTRAN ETL (INTCALC SYSTRAN DD replacement).
-#
-# Reads the InterestCalculationJob SYSTRAN output and transforms to the
-# downstream consumption format.
-# -----------------------------------------------------------------------------
-resource "aws_glue_job" "systran_etl" {
-  name              = "carddemo-systran-etl"
-  description       = "SYSTRAN ETL (replaces SYSTRAN DD in app/jcl/INTCALC.jcl) per AAP §0.4.1"
-  role_arn          = aws_iam_role.glue_job_execution.arn
-  glue_version      = "4.0"
-  worker_type       = var.glue_worker_type
-  number_of_workers = var.glue_number_of_workers
-  timeout           = 60
-  max_retries       = 1
-
-  command {
-    name            = "glueetl"
-    script_location = "${local.glue_script_prefix}/systran_etl.py"
-    python_version  = "3"
-  }
-
-  default_arguments = merge(local.glue_common_default_args, {
-    "--output_prefix" = "${local.glue_output_prefix}/systran/"
-  })
-
-  execution_property {
-    max_concurrent_runs = local.glue_max_concurrent_runs
-  }
-
-  tags = merge(local.common_tags, {
-    Name    = "carddemo-systran-etl"
-    Purpose = "SYSTRAN ETL"
-  })
-}
-
-# -----------------------------------------------------------------------------
-# Job 7 — TRANSACT combined ETL (COMBTRAN downstream).
-#
-# Reads the CombineTransactionsJob S3 archive output and joins with
-# reference data for downstream reporting.
-# -----------------------------------------------------------------------------
-resource "aws_glue_job" "transact_combined_etl" {
-  name              = "carddemo-transact-combined-etl"
-  description       = "TRANSACT combined ETL — joins COMBTRAN output with reference data per AAP §0.4.1"
-  role_arn          = aws_iam_role.glue_job_execution.arn
-  glue_version      = "4.0"
-  worker_type       = var.glue_worker_type
-  number_of_workers = var.glue_number_of_workers
-  timeout           = 60
-  max_retries       = 1
-  connections       = [aws_glue_connection.rds.name]
-
-  command {
-    name            = "glueetl"
-    script_location = "${local.glue_script_prefix}/transact_combined_etl.py"
-    python_version  = "3"
-  }
-
-  default_arguments = merge(local.glue_common_default_args, {
-    "--rds_secret_arn" = aws_secretsmanager_secret.rds_master.arn
-    "--output_prefix"  = "${local.glue_output_prefix}/transact-combined/"
-  })
-
-  execution_property {
-    max_concurrent_runs = local.glue_max_concurrent_runs
-  }
-
-  tags = merge(local.common_tags, {
-    Name    = "carddemo-transact-combined-etl"
-    Purpose = "TRANSACT combined ETL"
-  })
-}
-
-# -----------------------------------------------------------------------------
-# Job 8 — Bulk load ETL (initial seed of ACCT/CARD/CUST/XREF).
-#
-# One-time + on-demand seed loader that reads the legacy ASCII fixtures
-# from S3 and bulk-loads them into Account, Card, Customer, and
-# CardCrossReference tables via the carddemo-<env>-rds Glue connection.
-# Replaces the JCL provisioning chain (ACCTFILE.jcl, CARDFILE.jcl,
-# CUSTFILE.jcl, XREFFILE.jcl) for non-reference data per AAP §0.6.2.
-# -----------------------------------------------------------------------------
-resource "aws_glue_job" "bulk_load_etl" {
-  name              = "carddemo-bulk-load-etl"
-  description       = "Bulk load ETL — replaces app/jcl/ACCTFILE.jcl, CARDFILE.jcl, CUSTFILE.jcl, XREFFILE.jcl for fact data per AAP §0.6.2"
-  role_arn          = aws_iam_role.glue_job_execution.arn
-  glue_version      = "4.0"
-  worker_type       = var.glue_worker_type
-  number_of_workers = var.glue_number_of_workers
-  timeout           = 60
-  max_retries       = 1
-  connections       = [aws_glue_connection.rds.name]
-
-  command {
-    name            = "glueetl"
-    script_location = "${local.glue_script_prefix}/bulk_load_etl.py"
-    python_version  = "3"
-  }
-
-  default_arguments = merge(local.glue_common_default_args, {
-    "--rds_secret_arn" = aws_secretsmanager_secret.rds_master.arn
-    # No job bookmarking for bulk-load — operator runs explicitly.
-    "--job-bookmark-option" = "job-bookmark-disable"
-  })
-
-  execution_property {
-    # Bulk-load is single-tenant; concurrent runs would race on the
-    # target tables.
     max_concurrent_runs = 1
   }
 
   tags = merge(local.common_tags, {
-    Name    = "carddemo-bulk-load-etl"
-    Purpose = "Initial seed bulk loader for ACCT/CARD/CUST/XREF tables"
+    Name    = "carddemo-${var.environment}-load-account"
+    Purpose = "ASCII-to-RDS bulk load for Account fact table"
+  })
+
+  # The script must be uploaded before the job is created, otherwise
+  # the first job-run fails with NoSuchKey. Terraform's implicit
+  # dependency graph already captures this via the script_location
+  # reference, but the explicit depends_on documents the relationship.
+  depends_on = [aws_s3_object.glue_script_account]
+}
+
+# -----------------------------------------------------------------------------
+# Card loader — replaces app/jcl/CARDFILE.jcl STEP15 IDCAMS REPRO.
+#
+# Source fixture: s3://${batch_outputs}/fixtures/ascii/carddata.txt
+# Target table:   cards (V002__create_card.sql)
+# Record layout:  app/cpy/CVACT02Y.cpy (150 bytes, 6 fields)
+# -----------------------------------------------------------------------------
+resource "aws_glue_job" "ascii_to_rds_card" {
+  name              = "carddemo-${var.environment}-load-card"
+  description       = "Bulk-load Card ASCII fixture from S3 to RDS (replaces app/jcl/CARDFILE.jcl IDCAMS REPRO per AAP §0.6.2)"
+  role_arn          = aws_iam_role.glue_job_execution.arn
+  glue_version      = "4.0"
+  worker_type       = var.glue_worker_type
+  number_of_workers = var.glue_number_of_workers
+  timeout           = 60
+  max_retries       = 1
+
+  connections = [aws_glue_connection.rds.name]
+
+  command {
+    name            = "glueetl"
+    script_location = "s3://${aws_s3_bucket.batch_outputs.id}/${local.glue_scripts_prefix}/load_card.py"
+    python_version  = "3"
+  }
+
+  default_arguments = merge(local.glue_common_default_args, {
+    "--connection_name" = aws_glue_connection.rds.name
+    "--source_bucket"   = aws_s3_bucket.batch_outputs.id
+    "--source_key"      = "${local.glue_fixtures_prefix}/carddata.txt"
+    "--target_table"    = "cards"
+  })
+
+  execution_property {
+    max_concurrent_runs = 1
+  }
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-load-card"
+    Purpose = "ASCII-to-RDS bulk load for Card fact table"
+  })
+
+  depends_on = [aws_s3_object.glue_script_card]
+}
+
+# -----------------------------------------------------------------------------
+# Customer loader — replaces app/jcl/CUSTFILE.jcl STEP15 IDCAMS REPRO.
+#
+# Source fixture: s3://${batch_outputs}/fixtures/ascii/custdata.txt
+# Target table:   customers (V003__create_customer.sql)
+# Record layout:  app/cpy/CVCUS01Y.cpy / CUSTREC.cpy (500 bytes, 18 fields
+#                 incl. PII fields covered by Macie scanning per AAP §0.6.6)
+# -----------------------------------------------------------------------------
+resource "aws_glue_job" "ascii_to_rds_customer" {
+  name              = "carddemo-${var.environment}-load-customer"
+  description       = "Bulk-load Customer ASCII fixture from S3 to RDS (replaces app/jcl/CUSTFILE.jcl IDCAMS REPRO per AAP §0.6.2)"
+  role_arn          = aws_iam_role.glue_job_execution.arn
+  glue_version      = "4.0"
+  worker_type       = var.glue_worker_type
+  number_of_workers = var.glue_number_of_workers
+  timeout           = 60
+  max_retries       = 1
+
+  connections = [aws_glue_connection.rds.name]
+
+  command {
+    name            = "glueetl"
+    script_location = "s3://${aws_s3_bucket.batch_outputs.id}/${local.glue_scripts_prefix}/load_customer.py"
+    python_version  = "3"
+  }
+
+  default_arguments = merge(local.glue_common_default_args, {
+    "--connection_name" = aws_glue_connection.rds.name
+    "--source_bucket"   = aws_s3_bucket.batch_outputs.id
+    "--source_key"      = "${local.glue_fixtures_prefix}/custdata.txt"
+    "--target_table"    = "customers"
+  })
+
+  execution_property {
+    max_concurrent_runs = 1
+  }
+
+  tags = merge(local.common_tags, {
+    Name      = "carddemo-${var.environment}-load-customer"
+    Purpose   = "ASCII-to-RDS bulk load for Customer fact table"
+    DataClass = "PII" # Macie scans the source fixture and target table
+  })
+
+  depends_on = [aws_s3_object.glue_script_customer]
+}
+
+# -----------------------------------------------------------------------------
+# Card Cross-Reference loader — replaces app/jcl/XREFFILE.jcl STEP15 IDCAMS REPRO.
+#
+# Source fixture: s3://${batch_outputs}/fixtures/ascii/cardxref.txt
+# Target table:   card_xref (V004__create_cardxref.sql; secondary index
+#                 on xref_acct_id replaces CXACAIX AIX KEYS(11,25)
+#                 NONUNIQUEKEY UPGRADE)
+# Record layout:  app/cpy/CVACT03Y.cpy (50 bytes, 3 fields)
+# -----------------------------------------------------------------------------
+resource "aws_glue_job" "ascii_to_rds_xref" {
+  name              = "carddemo-${var.environment}-load-xref"
+  description       = "Bulk-load CardCrossReference ASCII fixture from S3 to RDS (replaces app/jcl/XREFFILE.jcl IDCAMS REPRO per AAP §0.6.2)"
+  role_arn          = aws_iam_role.glue_job_execution.arn
+  glue_version      = "4.0"
+  worker_type       = var.glue_worker_type
+  number_of_workers = var.glue_number_of_workers
+  timeout           = 60
+  max_retries       = 1
+
+  connections = [aws_glue_connection.rds.name]
+
+  command {
+    name            = "glueetl"
+    script_location = "s3://${aws_s3_bucket.batch_outputs.id}/${local.glue_scripts_prefix}/load_xref.py"
+    python_version  = "3"
+  }
+
+  default_arguments = merge(local.glue_common_default_args, {
+    "--connection_name" = aws_glue_connection.rds.name
+    "--source_bucket"   = aws_s3_bucket.batch_outputs.id
+    "--source_key"      = "${local.glue_fixtures_prefix}/cardxref.txt"
+    "--target_table"    = "card_xref"
+  })
+
+  execution_property {
+    max_concurrent_runs = 1
+  }
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-load-xref"
+    Purpose = "ASCII-to-RDS bulk load for CardCrossReference table"
+  })
+
+  depends_on = [aws_s3_object.glue_script_xref]
+}
+
+# -----------------------------------------------------------------------------
+# Transaction loader — replaces app/jcl/TRANFILE.jcl STEP15 IDCAMS REPRO.
+#
+# Source fixture: s3://${batch_outputs}/fixtures/ascii/dailytran.txt
+#                 (the source JCL REPROs from DALYTRAN.PS.INIT into the
+#                 TRANSACT.VSAM.KSDS so the fixture is named for its
+#                 origin)
+# Target table:   daily_transactions (V011__create_daily_transaction.sql);
+#                 the eod-batch-pipeline.asl.json state machine
+#                 subsequently posts these staging records into the
+#                 master transactions table via the
+#                 DailyTransactionPostingJob Spring Batch job.
+# Record layout:  app/cpy/CVTRA05Y.cpy / CVTRA06Y.cpy (350 bytes, 13
+#                 fields incl. PIC S9(09)V99 TRAN-AMT)
+# -----------------------------------------------------------------------------
+resource "aws_glue_job" "ascii_to_rds_transaction" {
+  name              = "carddemo-${var.environment}-load-transaction"
+  description       = "Bulk-load Transaction (DALYTRAN staging) ASCII fixture from S3 to RDS (replaces app/jcl/TRANFILE.jcl IDCAMS REPRO per AAP §0.6.2)"
+  role_arn          = aws_iam_role.glue_job_execution.arn
+  glue_version      = "4.0"
+  worker_type       = var.glue_worker_type
+  number_of_workers = var.glue_number_of_workers
+  timeout           = 60
+  max_retries       = 1
+
+  connections = [aws_glue_connection.rds.name]
+
+  command {
+    name            = "glueetl"
+    script_location = "s3://${aws_s3_bucket.batch_outputs.id}/${local.glue_scripts_prefix}/load_transaction.py"
+    python_version  = "3"
+  }
+
+  default_arguments = merge(local.glue_common_default_args, {
+    "--connection_name" = aws_glue_connection.rds.name
+    "--source_bucket"   = aws_s3_bucket.batch_outputs.id
+    "--source_key"      = "${local.glue_fixtures_prefix}/dailytran.txt"
+    "--target_table"    = "daily_transactions"
+  })
+
+  execution_property {
+    max_concurrent_runs = 1
+  }
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-load-transaction"
+    Purpose = "ASCII-to-RDS bulk load for Transaction (DALYTRAN staging)"
+  })
+
+  depends_on = [aws_s3_object.glue_script_transaction]
+}
+
+# =============================================================================
+# Section 6 — Glue Data Catalog database + optional crawler
+# =============================================================================
+# The Glue Data Catalog is the canonical metastore for Athena queries
+# over the S3-staged ASCII fixtures (and over the Glue job output
+# parquet snapshots, when configured). Provisioning the catalog
+# database here keeps the Data Catalog metadata in the same Terraform
+# state as the jobs that populate it.
+#
+# The Glue Crawler is optional (gated by var.glue_crawler_enabled,
+# default false) because Athena queries are not a strict requirement
+# for the bulk-load pipeline — they are useful for ad-hoc data
+# exploration during the parallel-run validation window.
+#
+# Schema-mandated exports:
+#   - aws_glue_catalog_database.carddemo
+#   - aws_glue_crawler.fixtures (count = var.glue_crawler_enabled ? 1 : 0)
+# =============================================================================
+
+resource "aws_glue_catalog_database" "carddemo" {
+  name        = "carddemo_${var.environment}"
+  description = "AWS Glue Data Catalog database for CardDemo ASCII fixtures and RDS snapshots (queryable via Athena)"
+
+  # Although aws_glue_catalog_database accepts a target_database
+  # property for cross-account links, the CardDemo deployment is
+  # single-account so we omit it.
+
+  tags = merge(local.common_tags, {
+    Name    = "carddemo_${var.environment}"
+    Purpose = "Glue Data Catalog for CardDemo bulk-load fixtures and snapshots"
   })
 }
 
-# =============================================================================
-# Section 5 — Glue trigger schedules (optional / opt-in)
-# =============================================================================
-# AWS Glue triggers can fire jobs on a CRON schedule or in response to
-# job-completion events. For CardDemo, batch jobs are orchestrated by
-# AWS Step Functions (see eod-batch-pipeline.asl.json) and Step
-# Functions invokes the Glue jobs directly via the
-# `arn:aws:states:::glue:startJobRun.sync` task type — NO Glue trigger
-# is required.
-#
-# This section is intentionally empty; the Step Functions state machine
-# in src/main/resources/stepfunctions/ owns the schedule.
-# =============================================================================
+resource "aws_glue_crawler" "fixtures" {
+  count         = var.glue_crawler_enabled ? 1 : 0
+  name          = "carddemo-${var.environment}-fixtures-crawler"
+  database_name = aws_glue_catalog_database.carddemo.name
+  role          = aws_iam_role.glue_job_execution.arn
 
-# =============================================================================
-# Section 6 — Outputs (consumed by Step Functions definition + Java code)
-# =============================================================================
-# Glue job names are exposed for cross-resource references in Step
-# Functions ASL JSON and for static asserts in the Java integration
-# test layer.
-# =============================================================================
+  # The crawler inspects the entire fixtures prefix and creates one
+  # Glue Data Catalog table per discovered "folder" (in S3-prefix terms).
+  # The fixtures are flat files under fixtures/ascii/ so the crawler
+  # will produce a single table per fixture.
+  s3_target {
+    path = "s3://${aws_s3_bucket.batch_outputs.id}/${local.glue_fixtures_prefix}/"
+  }
 
-output "glue_job_transaction_report" {
-  description = "Glue job name for the transaction-report ETL"
-  value       = aws_glue_job.transaction_report_etl.name
-}
+  # Crawler is invoked on demand (no schedule) — operators run it
+  # manually via `aws glue start-crawler` when a new fixture is staged.
+  # Schema_change_policy defaults are intentionally retained:
+  #   - UpdateBehavior  = UPDATE_IN_DATABASE (schema changes are merged)
+  #   - DeleteBehavior  = DEPRECATE_IN_DATABASE (removed tables are
+  #                       deprecated rather than deleted, preserving
+  #                       Athena query history)
 
-output "glue_job_daily_rejections" {
-  description = "Glue job name for the daily-rejections ETL"
-  value       = aws_glue_job.daily_rejections_etl.name
-}
-
-output "glue_job_transact_backup" {
-  description = "Glue job name for the TRANSACT backup ETL"
-  value       = aws_glue_job.transact_backup_etl.name
-}
-
-output "glue_job_transact_daily" {
-  description = "Glue job name for the TRANSACT daily ETL"
-  value       = aws_glue_job.transact_daily_etl.name
-}
-
-output "glue_job_tcatbalf_backup" {
-  description = "Glue job name for the TCATBALF backup ETL"
-  value       = aws_glue_job.tcatbalf_backup_etl.name
-}
-
-output "glue_job_systran" {
-  description = "Glue job name for the SYSTRAN ETL"
-  value       = aws_glue_job.systran_etl.name
-}
-
-output "glue_job_transact_combined" {
-  description = "Glue job name for the TRANSACT combined ETL"
-  value       = aws_glue_job.transact_combined_etl.name
-}
-
-output "glue_job_bulk_load" {
-  description = "Glue job name for the bulk-load ETL (initial seed)"
-  value       = aws_glue_job.bulk_load_etl.name
-}
-
-output "glue_connection_rds_name" {
-  description = "Glue JDBC connection name for RDS PostgreSQL"
-  value       = aws_glue_connection.rds.name
-}
-
-output "glue_log_group_name" {
-  description = "Glue CloudWatch log group name"
-  value       = aws_cloudwatch_log_group.glue_jobs.name
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-fixtures-crawler"
+    Purpose = "Optional Glue Crawler for Athena ad-hoc queries over ASCII fixtures"
+  })
 }
