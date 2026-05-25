@@ -751,6 +751,217 @@ class BillPaymentServiceTest {
     }
 
     @Nested
+    @DisplayName("@Transactional rollback semantics (replaces implicit CICS SYNCPOINT)")
+    class TransactionalRollback {
+
+        /**
+         * Verifies that when the {@code WRITE-TRANSACT-FILE} step
+         * (COBIL00C.cbl L233 &mdash;
+         * {@link TransactionRepository#save(Object)} in the Java target)
+         * raises a runtime exception, the failure propagates up so the
+         * surrounding {@code @Transactional(rollbackFor = Exception.class,
+         * isolation = READ_COMMITTED)} boundary on
+         * {@link BillPaymentService#processBillPayment(BillPaymentDto)}
+         * triggers a Spring-managed rollback of the entire unit of
+         * work &mdash; the Java equivalent of the implicit CICS task-end
+         * {@code SYNCPOINT} that originally bracketed the
+         * {@code WRITE TRANSACT} + {@code REWRITE ACCTDAT} pair
+         * (AAP &sect;0.6.2). The test also locks in the
+         * <em>no-downstream-side-effects</em> invariant: when the
+         * transaction insert fails, no account rewrite, no cache
+         * eviction, no MSK publish, and no audit emission may run, so
+         * the rollback cannot leak phantom events to downstream
+         * consumers. Mirrors the CICS contract that a failed
+         * {@code WRITE} aborts the task before any other resource
+         * update can commit.
+         */
+        // COBOL: COBIL00C:WRITE-TRANSACT-FILE failure (L233)
+        @Test
+        @DisplayName("transactionRepository.save throws — propagates exception, skips downstream side effects")
+        void payBill_transactionSaveFails_propagatesException() {
+            // Arrange — stub the happy-path reads then make the
+            // TRANSACT save throw a runtime exception to simulate the
+            // FILE STATUS '22' (DUPKEY) condition or any other
+            // persistence-layer rejection on the journal insert.
+            when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(existingAccount));
+            when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of(new CardCrossReference(
+                            CARD_LOW, 999_999L, ACCOUNT_ID)));
+            when(transactionRepository.findTopByOrderByTranIdDesc())
+                    .thenReturn(Optional.empty());
+            when(transactionRepository.save(any(Transaction.class)))
+                    .thenThrow(new RuntimeException(
+                            "Simulated TRANSACT save failure"));
+
+            // Act + Assert — exception propagates so @Transactional
+            // boundary can trigger Spring-managed rollback of the
+            // whole UOW. The Mockito strict-stubs mode will fail this
+            // test if any of the downstream collaborators were
+            // unexpectedly invoked.
+            assertThatThrownBy(() -> service.processBillPayment(validRequest))
+                    .isInstanceOf(RuntimeException.class)
+                    .hasMessageContaining("Simulated TRANSACT save failure");
+
+            // No downstream side effects after the exception — the
+            // entire @Transactional UOW must roll back atomically.
+            verify(accountRepository, never()).save(any(Account.class));
+            verify(cacheService, never()).evict(anyString(), anyString());
+            verify(kafkaEventPublisher, never())
+                    .publishTransactionPosted(anyLong(), any(TransactionAddDto.class));
+            verify(kafkaEventPublisher, never())
+                    .publishAccountUpdated(anyLong(), any(AccountUpdateDto.class));
+            verify(auditLogService, never()).logTransactionEvent(
+                    anyString(), anyLong(), anyString(), anyString(),
+                    any(), anyMap(), any());
+        }
+
+        /**
+         * Verifies that when the account-rewrite step
+         * ({@code UPDATE-ACCTDAT-FILE} at COBIL00C.cbl L235 &mdash;
+         * {@link AccountRepository#save(Object)} in the Java target)
+         * raises a runtime exception <em>after</em> the journal
+         * insert has succeeded, the exception propagates up so Spring's
+         * {@code @Transactional(rollbackFor = Exception.class)}
+         * boundary triggers a rollback of BOTH the just-inserted
+         * transaction journal row AND the (failed) account balance
+         * update. In a unit test we cannot directly observe Spring's
+         * physical rollback (that requires {@code @DataJpaTest}); what
+         * we CAN confirm is that (a) the exception propagates, and
+         * (b) the post-write side effects (cache evict, MSK publishes,
+         * audit emission) DID NOT execute &mdash; which Spring requires
+         * to safely roll back without leaving phantom downstream
+         * events visible to projection consumers.
+         */
+        // COBOL: COBIL00C:UPDATE-ACCTDAT-FILE failure (L235)
+        @Test
+        @DisplayName("accountRepository.save throws after TRANSACT insert — propagates exception, no phantom events")
+        void payBill_accountSaveFails_propagatesException() {
+            // Arrange — TRANSACT save succeeds (returns the supplied
+            // entity), ACCTDAT save fails. This exercises the second
+            // half of the @Transactional dual-write boundary.
+            when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(existingAccount));
+            when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of(new CardCrossReference(
+                            CARD_LOW, 999_999L, ACCOUNT_ID)));
+            when(transactionRepository.findTopByOrderByTranIdDesc())
+                    .thenReturn(Optional.empty());
+            when(transactionRepository.save(any(Transaction.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(accountRepository.save(any(Account.class)))
+                    .thenThrow(new RuntimeException(
+                            "Simulated ACCTDAT save failure"));
+
+            // Act + Assert — exception propagates from the account
+            // rewrite; Spring's @Transactional rollback will then void
+            // the TRANSACT insert too (cannot observe directly in a
+            // unit test, but the absence of phantom side effects
+            // below proves the rollback path is safe).
+            assertThatThrownBy(() -> service.processBillPayment(validRequest))
+                    .isInstanceOf(RuntimeException.class)
+                    .hasMessageContaining("Simulated ACCTDAT save failure");
+
+            // The post-write side effects (cache evict, MSK publishes,
+            // audit emission) MUST NOT have been triggered. This is the
+            // "no phantom events" invariant: a rolled-back JPA write
+            // must NOT produce visible downstream MSK or OpenSearch
+            // documents (AAP §0.6.5 / §0.7.1).
+            verify(cacheService, never()).evict(anyString(), anyString());
+            verify(kafkaEventPublisher, never())
+                    .publishTransactionPosted(anyLong(), any(TransactionAddDto.class));
+            verify(kafkaEventPublisher, never())
+                    .publishAccountUpdated(anyLong(), any(AccountUpdateDto.class));
+            verify(auditLogService, never()).logTransactionEvent(
+                    anyString(), anyLong(), anyString(), anyString(),
+                    any(), anyMap(), any());
+        }
+
+        /**
+         * Verifies that an asynchronous Kafka publisher failure
+         * (returned as a failed {@link CompletableFuture} rather than
+         * a synchronous throw) does NOT propagate to the caller and
+         * does NOT roll back the just-committed JPA state. Confirms
+         * the fire-and-forget contract of
+         * {@link KafkaEventPublisher#publishTransactionPosted(Long,
+         * TransactionAddDto)} and
+         * {@link KafkaEventPublisher#publishAccountUpdated(Long,
+         * com.awsm2.carddemo.dto.AccountUpdateDto)} in the
+         * BillPaymentService (the service intentionally does NOT
+         * {@code .join()} the returned future, which would otherwise
+         * surface async broker failures as synchronous exceptions and
+         * unwind the @Transactional commit retrospectively).
+         *
+         * <p>This guards against an accidental regression where a
+         * future refactor adds a blocking {@code .join()} on the
+         * returned future &mdash; doing so would change the consistency
+         * model from "JPA committed, MSK best-effort" to "all-or-
+         * nothing", potentially preventing legitimate balance updates
+         * from being applied during MSK partition outages
+         * (AAP &sect;0.6.5 partition strategy).</p>
+         */
+        // COBOL: (NEW — no source equivalent; AAP §0.6.5 ordering invariant)
+        @Test
+        @DisplayName("kafka publish returns failed future — does not roll back committed JPA state")
+        void payBill_kafkaPublishFails_doesNotPreventCommit() {
+            // Arrange — happy-path stubs except the Kafka publishers
+            // each return a failed CompletableFuture (simulating an
+            // MSK broker error that surfaces AFTER the JPA commit has
+            // succeeded; e.g., partition leader unavailable, broker
+            // throttling, IAM auth refresh failure on rotation).
+            when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(existingAccount));
+            when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of(new CardCrossReference(
+                            CARD_LOW, 999_999L, ACCOUNT_ID)));
+            when(transactionRepository.findTopByOrderByTranIdDesc())
+                    .thenReturn(Optional.empty());
+            when(transactionRepository.save(any(Transaction.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(accountRepository.save(any(Account.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            // CompletableFuture.failedFuture(...) is the JDK 9+
+            // idiomatic factory for an already-failed future; the
+            // synchronous service code receives the future immediately
+            // and does NOT .join() it, so the failure remains async
+            // and unobservable on the caller thread.
+            when(kafkaEventPublisher.publishTransactionPosted(
+                            anyLong(), any(TransactionAddDto.class)))
+                    .thenReturn(CompletableFuture.failedFuture(
+                            new RuntimeException(
+                                    "Simulated MSK broker failure on transaction.posted")));
+            when(kafkaEventPublisher.publishAccountUpdated(
+                            anyLong(), any(AccountUpdateDto.class)))
+                    .thenReturn(CompletableFuture.failedFuture(
+                            new RuntimeException(
+                                    "Simulated MSK broker failure on account.updated")));
+
+            // Act — must NOT throw. The synchronous call sees only the
+            // CompletableFuture references; the broker failures are
+            // surfaced asynchronously via Spring's @Async error
+            // handler (configured in KafkaConfig per AAP §0.6.5).
+            BillPaymentDto response = service.processBillPayment(validRequest);
+
+            // Assert — service returned a fully-populated confirmation
+            // DTO (the JPA commit succeeded regardless of MSK state).
+            assertThat(response).isNotNull();
+            assertThat(response.transactionId()).isNotBlank();
+            assertThat(response.transactionId()).hasSize(16);
+            assertThat(response.amountPaid())
+                    .isEqualByComparingTo(STARTING_BALANCE);
+
+            // Both JPA writes committed; both Kafka publishes were
+            // invoked (their failure is async and irrelevant here).
+            verify(transactionRepository).save(any(Transaction.class));
+            verify(accountRepository).save(any(Account.class));
+            verify(kafkaEventPublisher).publishTransactionPosted(
+                    anyLong(), any(TransactionAddDto.class));
+            verify(kafkaEventPublisher).publishAccountUpdated(
+                    anyLong(), any(AccountUpdateDto.class));
+        }
+    }
+
+    @Nested
     @DisplayName("Response shape")
     class ResponseShape {
 
