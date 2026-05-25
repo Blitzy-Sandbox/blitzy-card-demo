@@ -214,15 +214,41 @@ public final class InterestCalculationApp {
                     + "discgrp={}, acctdata={}, transact={}",
                     tcatBalfPath, cardXrefPath, discGrpPath, acctDataPath, transactPath);
 
-            CbAct04C cbAct04C = new CbAct04C(tcatRepo, xrefRepo, discRepo, acctRepo,
-                    tranRepo, parmDate);
-            cbAct04C.run();
+            // CbAct04C constructor argument order per the file schema:
+            // (TransactionCategoryBalanceRepository, AccountRepository,
+            //  CardXrefRepository, DiscountGroupRepository,
+            //  TransactionRepository). See
+            // java/carddemo-application/.../account/CbAct04C.java schema.
+            CbAct04C cbAct04C = new CbAct04C(
+                    tcatRepo,       // TransactionCategoryBalanceRepository
+                    acctRepo,       // AccountRepository
+                    xrefRepo,       // CardXrefRepository
+                    discRepo,       // DiscountGroupRepository
+                    tranRepo);      // TransactionRepository
 
-            LOG.info("INTCALC job complete; rc={}", RC_OK);
-            return RC_OK;
+            // CbAct04C#run(LocalDate) consumes a date-only value. The COBOL
+            // PARM is a 10-character YYYYMMDDHH string; the new Java
+            // contract uses the date portion (first 8 chars) parsed via
+            // java.time. The hour suffix is preserved in run-level logging
+            // for traceability. Per AAP §0.6.4, ResolverStyle.STRICT
+            // catches malformed PARM-DATE values that COBOL would silently
+            // corrupt.
+            LocalDate processingDate = LocalDate.parse(
+                    parmDate.substring(0, 8),
+                    DateTimeFormatter.ofPattern("yyyyMMdd")
+                            .withResolverStyle(ResolverStyle.STRICT));
+            int applRc = cbAct04C.run(processingDate);
+
+            LOG.info("INTCALC job complete; CBACT04C APPL_RC={}, rc={}",
+                    applRc, applRc == CbAct04C.APPL_AOK ? RC_OK : RC_ERROR);
+            return applRc == CbAct04C.APPL_AOK ? RC_OK : RC_ERROR;
         } catch (AbendException ae) {
             LOG.error("INTCALC: CBACT04C abended with code={}: {}",
                     ae.abendCode(), ae.getMessage(), ae);
+            return RC_ERROR;
+        } catch (java.time.format.DateTimeParseException dtpe) {
+            LOG.error("INTCALC: invalid PARM date '{}': {}",
+                    resolveParmDate(), dtpe.getMessage(), dtpe);
             return RC_ERROR;
         }
     }
