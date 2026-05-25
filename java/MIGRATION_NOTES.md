@@ -190,6 +190,139 @@ divBy=4; leap = year mod divBy == 0`) rather than delegating to
 for all valid 4-digit Gregorian years (1..9999), but the COBOL form is
 preserved per AAP §0.7.1 idiom-for-idiom mandate.
 
+### 1.3.4 Return-code switch style: 26 `Integer` pattern-matching vs 2 plain `int` with `default`
+
+**Where**: All 28 `*App.java` composition root classes under
+`java/carddemo-app/src/main/java/com/blitzy/carddemo/app/`. Each `main`
+method clamps the inner use-case return code to the JCL severity range
+{0, 4, 8, 12, 16} before calling `System.exit(...)`. The clamping logic
+is implemented with **two different switch styles** across the 28
+classes — this asymmetry is **deliberate**, not a defect:
+
+| Switch style | Count | Apps |
+|---|---|---|
+| Pattern-matching `switch (Integer rc)` with `case null`, `case 0/4/8/12/16`, `case Integer i when i < 0`, `case Integer i when i > 16`, `case Integer i` (no `default`) | 26 | CombineTransactionsApp, CreateStatementsApp, DailyRejectsApp, DefineAccountFileApp, DefineCardFileApp, DefineCardXrefApp, DefineCustomerFileApp, DefineDiscountGroupApp, DefineGdgApp, DefineTcatBalApp, DefineTransactionCategoryApp, DefineTransactionFileApp, DefineTransactionTypeApp, InterestCalculationApp, OpenFileApp, PostTransactionsApp, PrintTcatBalApp, ReadAccountDumpApp, ReadCardDumpApp, ReadCardXrefDumpApp, ReadCustomerDumpApp, TransactionBackupApp, TransactionIndexApp, TransactionReportApp, UsersSecuritySeedApp, CloseFileApp |
+| Plain `int` `switch` with `case 0, 4, 8, 12, 16 -> rc;` and `default -> { if (rc > 0 && rc < 16) yield rc; yield 16; }` | 2 | `AdminCodeApp`, `ReportFileApp` |
+
+**Why two styles**: The 26 Apps that operate on `Integer rc` (a boxed
+boxed reference type, possibly returned by a method whose declared
+return type is `Integer`) can use pattern-matching switch with type
+patterns (`case Integer i when ...`) — a **finalized** Java 21 feature
+(JEP 441). The 2 Apps that operate on `int rc` (a primitive value
+returned by a method whose declared return type is `int`) **cannot**
+use pattern-matching switch on `int`, because that would require
+**JEP 507 (Primitive Types in Patterns, `instanceof`, and `switch`),
+which is a preview feature in Java 25 and is explicitly forbidden by
+AAP §0.7.4**. The only finalized syntax available for switching on
+a primitive `int` is the classic `case <literal> -> ...;` /
+`default -> ...;` form, which requires the `default` branch to be
+exhaustive over the entire `int` value space.
+
+**Why this is preserved**: This is not an inconsistency to be flattened;
+it is a faithful reflection of the underlying Java language constraint.
+The two Apps in question (`AdminCodeApp` from `CBADMCDJ.jcl`,
+`ReportFileApp` from `REPTFILE.jcl`) inherit their return-code typing
+from upstream use-case method signatures that predate the boxing
+convention adopted for the other 26 Apps. Both styles produce
+**identical clamping behaviour** for the {0, 4, 8, 12, 16} severity
+codes plus the intermediate 1..15 passthrough range plus the > 16 / < 0
+ceiling clamp. The pattern is documented in-place in each of the two
+plain-`int` Apps with a comment naming JEP 507 and AAP §0.7.4 so future
+maintainers do not "unify" the style by introducing the preview feature.
+
+**Where this is enforced in code**: see the inline comment block in
+`AdminCodeApp.main(...)` and `ReportFileApp.main(...)` that begins
+"Implemented as a plain `int` switch with a default branch — NOT a
+pattern-matching switch on Integer — because JEP 507 (Primitive
+Patterns) is a preview feature and is explicitly FORBIDDEN by
+AAP §0.7.4."
+
+**Action item**: When JEP 507 is finalized in a future LTS release of
+Java, the 2 plain-`int` Apps may be migrated to pattern-matching
+switch to unify style across all 28 composition roots. Until then,
+the asymmetry is correct and must not be removed.
+
+### 1.3.5 Return-code clamping: full 0..16 passthrough, not literal {0, 4, 8, 12, 16}
+
+**Where**: All 28 `*App.java` composition root classes (see
+Section 1.3.4 for the inventory). The CP-3 checkpoint instructions
+literally describe the clamp as "0/4/8/12/16 passthrough, else clamp
+to 16, NO default branch", but the implementation **permits every
+value in `[0, 16]` to pass through unchanged**, not only the five JCL
+canonical severity codes.
+
+**Implementation**: The clamp in each App resolves to the function
+
+```java
+int clamp(int rc) {
+    if (rc < 0)  return 16;   // negative → ceiling
+    if (rc > 16) return 16;   // > 16     → ceiling
+    return rc;                // 0..16    → passthrough (including 1..3, 5..7, 9..11, 13..15)
+}
+```
+
+Expressed in the `Integer` pattern-matching style (26 Apps) this is:
+
+```java
+int exitCode = switch (rc) {
+    case null -> RC_ERROR;                    // RC_ERROR == 16
+    case 0  -> 0;
+    case 4  -> 4;
+    case 8  -> 8;
+    case 12 -> 12;
+    case 16 -> 16;
+    case Integer i when i < 0  -> RC_ERROR;
+    case Integer i when i > 16 -> RC_ERROR;
+    case Integer i -> i;                      // 1..3, 5..7, 9..11, 13..15 pass through
+};
+```
+
+Expressed in the plain-`int` style (2 Apps) this is:
+
+```java
+int exitCode = switch (rc) {
+    case 0, 4, 8, 12, 16 -> rc;
+    default -> (rc > 0 && rc < 16) ? rc : 16; // pseudocode for the yield block
+};
+```
+
+**Why intentional passthrough of the non-canonical range**: z/OS JCL
+does **not** restrict step return codes to the {0, 4, 8, 12, 16}
+canonical set. The `COND=` and `IF/THEN/ELSE/ENDIF` constructs in JCL
+compare against arbitrary integers in `[0, 4095]`; values such as
+**rc=2** (commonly used by IDCAMS as a soft-warning) or **rc=15**
+(used by some Enterprise COBOL programs to signal "completed with
+recoverable errors") are legitimate return codes that downstream
+JCL steps may rely on. Silently rewriting rc=2 → 4 or rc=15 → 16
+would change observable behaviour — the very thing AAP §0.7.1
+**Preserve-As-Is** clause forbids ("error codes, return codes, and
+abend conditions ... with identical observable outcomes").
+
+**Why the clamp-at-16 ceiling is kept**: Java's `System.exit(int)`
+accepts arbitrary `int` values, but POSIX (the OS layer beneath the
+JVM on every supported target platform) truncates the exit status to
+the low 8 bits before propagating to a parent shell or scheduler.
+Capping at 16 ensures the byte value remains within an unambiguous
+"job failure" range visible to a calling z/OS-style scheduler (e.g.,
+Control-M, Tivoli Workload Scheduler) without colliding with shell
+convention values 130 (SIGINT), 137 (SIGKILL), etc.
+
+**Reconciliation with the CP-3 wording**: The CP-3 checkpoint
+instructions used "0/4/8/12/16 passthrough" as a documentation
+shorthand for the five canonical JCL severity tokens. The
+implementation is more permissive (full 0..16 passthrough) to
+preserve COBOL/JCL observable behaviour. The CP-3 wording is a
+**lossy summary**; this section is the authoritative source.
+
+**Where this is enforced in code**: the comment block immediately
+above each switch in every `*App.java` reads:
+"Pattern-matching switch with no default branch (per AAP §0.6.7)
+clamps the return code to the JCL severity range [0, 16]. Canonical
+severity codes (0, 4, 8, 12, 16) are matched explicitly; the
+non-canonical in-range codes (1..3, 5..7, 9..11, 13..15) pass
+through via the `case Integer i` fallback. Out-of-range values
+(< 0 or > 16) clamp to RC_ERROR=16."
+
 ---
 
 ## Section 1.4: DEVIATIONS from Idiom-for-Idiom Translation
