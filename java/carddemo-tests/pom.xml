@@ -4,89 +4,748 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
+    <!--
+        carddemo-tests — CONSUMER-MOST module of the multi-module build graph
+        and the NON-NEGOTIABLE quality gate for the Java 25 LTS CardDemo
+        implementation (AAP §0.3.6, §0.6.11).
+
+        Contents (per AAP §0.2.1, §0.3.1, §0.6.11):
+          * Golden-record harness — one *GoldenTest.java per COBOL program
+            from app/cbl/*.cbl, asserting byte-for-byte parity between Java
+            output and captured COBOL output. Test sources live under
+            src/test/java/com/blitzy/carddemo/tests/golden/. Captured COBOL
+            outputs live under src/test/resources/golden/&lt;program&gt;/expected/.
+          * jqwik property-based tests — DecimalsProperties.java in
+            src/test/java/com/blitzy/carddemo/tests/property/ achieves the
+            100% line coverage on monetary code mandated by AAP §0.6.1 and
+            §0.7.2 by generating random BigDecimal inputs in COBOL-valid
+            ranges and asserting Java/COBOL agreement on add/subtract/
+            multiply/divide/round operations with MathContext.DECIMAL128 and
+            the COBOL-mandated RoundingMode (HALF_EVEN for ROUNDED, DOWN for
+            default truncation).
+          * JFR-based performance regression tests — JfrBaseline.java in
+            src/test/java/com/blitzy/carddemo/tests/perf/ captures Java Flight
+            Recorder recordings of representative batch runs and asserts no
+            performance regression beyond a 10% band per AAP §0.6.11 and
+            §0.7.2. JFR recordings are written under
+            ${jfr.recording.dir} == ${project.build.directory}/jfr.
+
+        Reads the 9 ASCII fixtures in ../app/data/ASCII/ via classpath relative
+        path (NOT COPIED into this module per AAP §0.4.1 and §0.6.11).
+
+        Architectural rule (AAP §0.3.6):
+          * This is the CONSUMER-MOST module — it depends on carddemo-app
+            (the composition root) and transitively on every other internal
+            module (carddemo-batch, carddemo-application, carddemo-adapter-file,
+            carddemo-adapter-db, carddemo-domain).
+          * NO module depends on carddemo-tests — never the reverse.
+          * This is a JAR-packaged module with NO src/main/ — all code lives
+            in src/test/. This is a valid Maven idiom for a test-only module.
+          * The harness exercises the FULLY-ASSEMBLED system end-to-end,
+            instantiating carddemo-app main classes (PostTransactionsApp,
+            InterestCalculationApp, etc.) and running them against the 9
+            ASCII fixtures from ../app/data/ASCII/.
+
+        Forbidden in this module (AAP §0.1.1 architectural override, §0.6.7,
+        §0.6.12, §0.7.4, and the file's "Forbidden in this Module" list):
+          * Spring / Spring Boot Test / Spring Test / Spring Data / Spring
+            Batch Test / Spring Security Test / Spring MVC Test / Spring
+            Cloud AWS — NO Spring container exists in this refactor per AAP
+            §0.6.12, so there is nothing to test for Spring wiring.
+          * Mockito-Spring (mockito-spring) — no Spring context to mock.
+          * Mockito (in general) by default — Java 25 records and sealed types
+            enable plain test doubles without bytecode rewriting; if Mockito
+            is ever added later it must be justified in MIGRATION_NOTES.md.
+          * Testcontainers (org.testcontainers:*) — AAP §0.5.1 explicit
+            exclusion; file-based fixtures are the default.
+          * LocalStack (cloud.localstack.*) — AAP §0.5.1 explicit exclusion.
+          * Hibernate / JPA / jakarta.persistence — no Hibernate in this
+            project.
+          * Lombok — Java 25 records replace it.
+          * Flyway / Liquibase — no DB migration in this project (AAP §0.6.12).
+          * Micrometer / Prometheus / Grafana / Jaeger / OpenTelemetry —
+            JFR-only observability per AAP §0.6.12.
+          * PowerMock — Java 25 + records + sealed types make it
+            unnecessary and incompatible.
+          * H2 / HSQLDB embedded databases — file-based testing only.
+          * PostgreSQL / MySQL / DB2 JDBC drivers at test scope — AAP default
+            is file-based batch (AAP §0.7.5).
+          * The "enable-preview" JVM flag (the double-dash variant) in any
+            compiler/surefire configuration (AAP §0.6.7, §0.7.4 — only
+            finalized JEPs are permitted: JEP 506 ScopedValue, JEP 510 KDF,
+            JEP 511 Module
+            Import, JEP 513 Flexible Constructor Bodies, JEP 519 Compact
+            Headers, JEP 521 Generational Shenandoah).
+          * &lt;source&gt;/&lt;target&gt; tags — the parent POM's
+            &lt;release&gt;25&lt;/release&gt; is the single source of truth
+            for the Java language level.
+          * double / float for any monetary assertion — use BigDecimal with
+            explicit scale and RoundingMode (AAP §0.6.1, §0.7.4).
+          * ThreadLocal in any test fixture or helper — use ScopedValue
+            (JEP 506 Final) per AAP §0.6.6, §0.6.7.
+
+        Runs on every PR per AAP §0.6.11. Test failures here BLOCK MERGES.
+    -->
+
     <parent>
         <groupId>com.blitzy.carddemo</groupId>
         <artifactId>carddemo-parent</artifactId>
         <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
     </parent>
 
     <artifactId>carddemo-tests</artifactId>
     <packaging>jar</packaging>
 
-    <name>CardDemo Tests</name>
-
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-jar-plugin</artifactId>
-                <configuration>
-                    <!-- This module only hosts tests; no main jar is produced. -->
-                    <skipIfEmpty>true</skipIfEmpty>
-                </configuration>
-            </plugin>
-        </plugins>
-    </build>
+    <name>CardDemo Tests (Golden-Record Harness, Property Tests, JFR Baselines)</name>
     <description>
-        Cross-module test harness:
-          - Golden-record parity tests (byte-for-byte vs. captured COBOL output)
-          - jqwik property-based tests (100% coverage on monetary code per AAP §0.6.1)
-          - JFR-based performance regression baselines (no regression beyond 10% band)
-        Golden fixtures live under src/test/resources/golden/&lt;program&gt;/.
+        Non-negotiable quality-gate test harness for the Java 25 LTS CardDemo
+        implementation. Contains: (1) byte-for-byte golden-record parity tests
+        (one *GoldenTest.java per COBOL program from app/cbl/), (2) jqwik
+        property-based tests achieving 100% line coverage on the Decimals
+        utility per AAP §0.6.1 and §0.7.2, (3) JFR-based performance
+        regression assertions within a 10% band per AAP §0.6.11. Runs on
+        every PR per AAP §0.6.11. Reads ASCII fixtures from app/data/ASCII/
+        via classpath relative path (NOT copied per AAP §0.4.1).
+        Depends on carddemo-app (composition root) which transitively brings
+        in carddemo-batch, carddemo-application, carddemo-adapter-file,
+        carddemo-adapter-db, and carddemo-domain. NO Spring, NO Testcontainers,
+        NO LocalStack, NO --enable-preview per AAP §0.6.7, §0.6.12, §0.7.4.
     </description>
 
+    <properties>
+        <!--
+            Module-specific property overrides only. All library and plugin
+            versions are inherited from the parent POM's dependencyManagement
+            and pluginManagement (per AAP §0.5.1):
+              * JUnit Jupiter            5.13.1 (via junit-bom)
+              * JUnit Platform Launcher  1.13.1 (jqwik 1.9.3 minimum per AAP §0.5.1)
+              * AssertJ                  3.26.3
+              * jqwik                    1.9.3
+              * SLF4J                    2.0.16
+              * Logback                  1.5.12
+              * maven-compiler-plugin    3.13.0 with &lt;release&gt;25&lt;/release&gt;
+              * maven-surefire-plugin    3.5.2
+        -->
+
+        <!--
+            Integration-test toggle. By default ITs run as part of `mvn verify`;
+            CI may opt out via -DskipITs=true if a fast-feedback build is
+            desired. Per AAP §0.6.11 the golden-record harness, jqwik property
+            tests, and JFR baseline tests are non-negotiable PR-gate checks,
+            so the default is skipITs=false.
+        -->
+        <skipITs>false</skipITs>
+
+        <!--
+            JFR recording output directory used by
+            src/test/java/com/blitzy/carddemo/tests/perf/JfrBaseline.java to
+            persist Java Flight Recorder recordings during the test phase.
+            Resolved at maven-surefire-plugin invocation time and passed to
+            the forked test JVM as a system property (see &lt;systemPropertyVariables&gt;
+            below). The path is module-relative so each test run starts from a
+            clean directory (the parent `mvn clean` removes target/, including
+            target/jfr/). Per AAP §0.6.11, JFR recordings drive the 10%
+            regression band assertions.
+        -->
+        <jfr.recording.dir>${project.build.directory}/jfr</jfr.recording.dir>
+    </properties>
+
     <dependencies>
-        <!-- Test the full app stack -->
+        <!--
+            Internal dependency: carddemo-app — the COMPOSITION ROOT.
+            Required per AAP §0.4.1 ("carddemo-tests/pom.xml — Depends on
+            carddemo-app; JUnit 5, AssertJ, jqwik in test scope") and
+            §0.6.11 (the golden-record harness exercises the fully-assembled
+            system end-to-end).
+
+            Transitively brings in every other internal module:
+              * carddemo-batch          (orchestration layer)
+              * carddemo-application    (use-case layer — one class per
+                                         COBOL PROGRAM-ID)
+              * carddemo-adapter-file   (default file-based adapter)
+              * carddemo-adapter-db     (optional JDBC adapter, empty by
+                                         default per AAP §0.7.5)
+              * carddemo-domain         (innermost ring: records, sealed
+                                         types, ports, Decimals utility,
+                                         @CobolProgram annotation)
+
+            Also transitively brings in the logging stack (slf4j-api +
+            logback-classic) that carddemo-app supplies at runtime scope per
+            AAP §0.6.12.
+
+            The per-program GoldenTest classes (28 total per AAP §0.4.1) in
+            src/test/java/com/blitzy/carddemo/tests/golden/ instantiate the
+            carddemo-app main classes (PostTransactionsApp,
+            InterestCalculationApp, CombineTransactionsApp,
+            CreateStatementsApp, DailyRejectsApp, PrintTcatBalApp,
+            TransactionReportApp, UsersSecuritySeedApp,
+            DefineGdgApp, DefineAccountFileApp, DefineCardFileApp,
+            DefineCustomerFileApp, DefineDiscountGroupApp,
+            DefineTransactionFileApp, DefineTransactionCategoryApp,
+            DefineTransactionTypeApp, DefineCardXrefApp, DefineTcatBalApp,
+            TransactionBackupApp, TransactionIndexApp, OpenFileApp,
+            CloseFileApp, ReadAccountDumpApp, ReadCardDumpApp,
+            ReadCustomerDumpApp, ReadCardXrefDumpApp, ReportFileApp,
+            AdminCodeApp) and run them against the 9 ASCII fixtures in
+            app/data/ASCII/.
+
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT per AAP §0.5.1).
+        -->
+        <dependency>
+            <groupId>com.blitzy.carddemo</groupId>
+            <artifactId>carddemo-app</artifactId>
+        </dependency>
+
+        <!--
+            Internal dependency: carddemo-domain — INNERMOST RING.
+            Although reachable TRANSITIVELY through carddemo-app, declared
+            EXPLICITLY per the agent_prompt §1.3 "explicit deps for clarity"
+            mandate so this POM documents the complete module dependency
+            graph and any future refactor of carddemo-app cannot
+            inadvertently sever the test module's domain-layer access.
+
+            Provides (referenced directly by tests in src/test/java/):
+              * Java records translated from COBOL copybook 01-level groups
+                (AccountRecord, CardRecord, CardXrefRecord, CustomerRecord,
+                CustomerLegacyRecord, TranRecord, DalyTranRecord,
+                TranCatBalRecord, DisGroupRecord, TranTypeRecord,
+                TranCatRecord, SecUserData, TrnxRecord, CardDemoCommarea,
+                ReportHeaders, UnusedRecord — AAP §0.6.9). Golden-record
+                tests use these record types to parse expected COBOL output
+                fixtures and assert structural equality field-by-field.
+              * Sealed type hierarchies (UserType, PgmContext, AidKey,
+                CcAcctId, CcCardNum, CcCustId, WsCurDate, WsCurTime,
+                FileStatus, AccountStatus — AAP §0.6.10). Pattern-matching
+                switches in tests rely on these for compiler-enforced
+                exhaustiveness; no default branches.
+              * Repository port interfaces (AccountRepository,
+                CardRepository, CardXrefRepository, CustomerRepository,
+                TransactionRepository, DailyTransactionRepository,
+                DiscountGroupRepository, TransactionCategoryBalanceRepository,
+                TransactionTypeRepository, TransactionCategoryRepository,
+                UserSecurityRepository — AAP §0.3.1). Tests may stub these
+                with hand-rolled in-memory implementations for unit-level
+                isolation where a full-system run is not needed.
+              * Decimals utility — the BigDecimal facade with
+                MathContext.DECIMAL128 and explicit RoundingMode selection
+                (HALF_EVEN for COBOL ROUNDED clause, DOWN for default
+                truncation) per AAP §0.3.3, §0.6.1. The jqwik property tests
+                in src/test/java/com/blitzy/carddemo/tests/property/
+                DecimalsProperties.java reference Decimals directly to
+                achieve the 100% line coverage on monetary code mandated by
+                AAP §0.6.1 and §0.7.2.
+              * @CobolProgram traceability annotation — read by tests that
+                verify every translated class cites its original
+                PROGRAM-ID, source file path, and translation date per
+                AAP §0.2.1.
+
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT per AAP §0.5.1).
+        -->
         <dependency>
             <groupId>com.blitzy.carddemo</groupId>
             <artifactId>carddemo-domain</artifactId>
         </dependency>
+
+        <!--
+            Internal dependency: carddemo-application — USE-CASE LAYER.
+            Although reachable TRANSITIVELY through carddemo-app (via
+            carddemo-batch), declared EXPLICITLY per the agent_prompt §1.3
+            "explicit deps for clarity" mandate.
+
+            Provides one Java class per COBOL PROGRAM-ID from app/cbl/
+            (28 programs per AAP §0.6.8):
+              * Batch programs (11):
+                CbAct01C, CbAct02C, CbAct03C, CbAct04C, CbCus01C,
+                CbTrn01C, CbTrn02C, CbTrn03C, CbStm03A, CbStm03B,
+                DateValidator (CSUTLDTC)
+              * Online programs (17):
+                CoSgn00C, CoMen01C, CoAdm01C, CoActVwC, CoActUpC,
+                CoCrdLiC, CoCrdSlC, CoCrdUpC, CoTrn00C, CoTrn01C,
+                CoTrn02C, CoRpt00C, CoBil00C, CoUsr00C, CoUsr01C,
+                CoUsr02C, CoUsr03C
+              * Application-side utilities: ScreenAttributeSetter
+                (CSSETATY), PfKeyDecoder (CSSTRPFY)
+              * ProgramRegistry — dynamic CALL routing per AAP §0.3.2
+
+            The per-program GoldenTest classes invoke these use cases
+            directly to assert byte-for-byte parity with captured COBOL
+            output per AAP §0.6.11.
+
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT per AAP §0.5.1).
+        -->
         <dependency>
             <groupId>com.blitzy.carddemo</groupId>
             <artifactId>carddemo-application</artifactId>
         </dependency>
+
+        <!--
+            Internal dependency: carddemo-adapter-file — DEFAULT file-based
+            adapter. Although reachable TRANSITIVELY through carddemo-app,
+            declared EXPLICITLY per the agent_prompt §1.3 "explicit deps for
+            clarity" mandate.
+
+            Provides:
+              * FixedWidthReader / FixedWidthWriter — byte-for-byte
+                fixed-width record I/O via java.nio.file
+              * EbcdicTranscoder — Charset.forName("IBM-1047") default with
+                per-file codepage overrides
+              * One File*Repository implementation per port interface in
+                carddemo-domain.port (FileAccountRepository,
+                FileCardRepository, FileCustomerRepository,
+                FileTransactionRepository, FileDailyTransactionRepository,
+                etc. per AAP §0.6.5)
+
+            The golden-record harness directly exercises these adapters when
+            reading the 9 ASCII fixtures from ../app/data/ASCII/ via
+            classpath relative path and when writing expected outputs back
+            to target/ for byte-by-byte comparison per AAP §0.6.11.
+
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT per AAP §0.5.1).
+        -->
         <dependency>
             <groupId>com.blitzy.carddemo</groupId>
             <artifactId>carddemo-adapter-file</artifactId>
         </dependency>
+
+        <!--
+            Internal dependency: carddemo-adapter-db — OPTIONAL JDBC adapter,
+            empty by default per AAP §0.7.5 (the COBOL source contains no
+            EXEC SQL; verified by `grep -l "EXEC SQL" ../app/cbl/*.cbl`
+            returning empty).
+
+            Declared EXPLICITLY per the agent_prompt §1.3 "explicit deps for
+            clarity" mandate so the tests module has a complete and
+            consistent view of all sibling modules in the hexagonal
+            architecture (AAP §0.3.6 diagram). Declaring this dependency now
+            ensures that if a future JDBC implementation is added to
+            carddemo-adapter-db, the existing test infrastructure can
+            immediately exercise it without further POM changes.
+
+            Although also reachable TRANSITIVELY through carddemo-app, the
+            explicit declaration documents the complete module dependency
+            graph and prevents accidental severance.
+
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT per AAP §0.5.1).
+        -->
         <dependency>
             <groupId>com.blitzy.carddemo</groupId>
             <artifactId>carddemo-adapter-db</artifactId>
         </dependency>
+
+        <!--
+            Internal dependency: carddemo-batch — BATCH ORCHESTRATION LAYER.
+            Although reachable TRANSITIVELY through carddemo-app, declared
+            EXPLICITLY per the agent_prompt §1.3 "explicit deps for clarity"
+            mandate.
+
+            Provides batch orchestration drivers (AAP §0.3.1 / §0.6.6):
+              * PostTransactionsBatch       — composes CbTrn02C posting engine
+              * InterestCalculationBatch    — composes CbAct04C interest engine
+              * DailyRejectsBatch           — composes CbTrn02C reject flow
+              * PrintTcatBalBatch           — TCATBAL report writer
+              * CombineTransactionsBatch    — composes CbTrn01C daily merger
+              * CreateStatementsBatch       — composes CbStm03A statement generator
+            Each driver applies virtual-thread fan-out via
+            Executors.newVirtualThreadPerTaskExecutor() ONLY where reordering
+            does NOT change observable output per AAP §0.6.6, and propagates
+            BatchRunContext (run ID, processing date, tenant) via
+            ScopedValue&lt;BatchRunContext&gt; replacing ThreadLocal entirely
+            (JEP 506 Final).
+
+            The JFR-based performance regression tests in
+            src/test/java/com/blitzy/carddemo/tests/perf/JfrBaseline.java
+            execute these batch drivers to capture flight recordings and
+            assert no regression beyond the 10% band mandated by AAP §0.6.11
+            and §0.7.2.
+
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT per AAP §0.5.1).
+        -->
         <dependency>
             <groupId>com.blitzy.carddemo</groupId>
             <artifactId>carddemo-batch</artifactId>
         </dependency>
 
+        <!--
+            Production dependency: SLF4J API (compile scope).
+            Used by tests in this module to emit structured log messages
+            during test execution:
+              * Test setup / teardown banners (run ID, fixture set,
+                expected output path)
+              * Fixture-load diagnostics (file sizes, codepage, record
+                count, parse warnings)
+              * Byte-diff context emitted when parity assertions fail
+                (offset, expected byte, actual byte, surrounding ±16 bytes)
+              * JFR recording start / stop events with file paths and
+                event counts
+              * jqwik shrinking progress logs (counterexamples,
+                falsification reasons)
+              * PAN-masking enforcement check logs (mask all but last 4
+                digits per AAP §0.7.2 — verified in tests that scan log
+                output)
+
+            Version (2.0.16) inherited from the parent POM's
+            dependencyManagement per AAP §0.5.1. The concrete logging
+            implementation (logback-classic) is provided at &lt;scope&gt;test&lt;/scope&gt;
+            in this same module so the test JVM has a working SLF4J backend
+            during `mvn test`.
+        -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
         </dependency>
+
+        <!--
+            Logback Classic — SLF4J implementation (test scope).
+            Required so that golden-record harness, jqwik property tests,
+            and JFR baseline tests have a working SLF4J implementation
+            when `mvn test` runs; without it, SLF4J binds to the no-op
+            logger and test diagnostics are lost.
+
+            Logback configuration lives in src/test/resources/logback-test.xml
+            (created by a sibling agent) and provides JSON layout for
+            structured test logging when CI captures test output for
+            downstream analysis.
+
+            Declared at &lt;scope&gt;test&lt;/scope&gt; per the agent_prompt
+            §1.3 mandate to keep the test logging stack isolated from the
+            carddemo-app composition root's runtime logging configuration.
+            Version (1.5.12) inherited from the parent POM's
+            dependencyManagement per AAP §0.5.1.
+        -->
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
             <scope>test</scope>
         </dependency>
 
+
+        <!--
+            JUnit Jupiter 5 aggregator (test scope) — version 5.13.1 per
+            AAP §0.5.1, inherited transitively from the parent POM's
+            dependencyManagement which imports junit-bom 5.13.1 with
+            scope=import.
+
+            The aggregator transitively brings in:
+              * junit-jupiter-api    (@Test, @BeforeEach, @AfterEach,
+                                      Assertions, Assumptions, lifecycle)
+              * junit-jupiter-engine (TestEngine implementation for the
+                                      JUnit Platform)
+              * junit-jupiter-params (@ParameterizedTest, @ValueSource,
+                                      @CsvSource, @MethodSource,
+                                      @EnumSource, @ArgumentsSource)
+
+            Used by ALL *GoldenTest.java classes (28 total, one per COBOL
+            program from app/cbl/) in src/test/java/com/blitzy/carddemo/
+            tests/golden/ to define test methods with @Test, parameterized
+            fixture-driven tests, and assertion lifecycle.
+
+            Required by the agent_prompt §1.3 explicit dependency list and
+            AAP §0.7.2 (JUnit 5 + AssertJ tests at ≥ 90% line coverage,
+            100% for monetary code).
+        -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!--
+            JUnit Jupiter API (test scope) — provides @Test, @BeforeEach,
+            @AfterEach, @BeforeAll, @AfterAll, @DisplayName, @Disabled,
+            @Tag, Assertions, Assumptions used DIRECTLY by golden-record,
+            property, and JFR baseline test classes.
+
+            Declared EXPLICITLY per the agent_prompt §1.3 "explicit deps
+            for clarity" mandate (although it is transitively reachable
+            through the junit-jupiter aggregator above). The explicit
+            declaration makes the dependency intent visible to readers
+            and to dependency-graph tooling, and prevents accidental
+            severance if the aggregator artifact ever changes its
+            transitive composition.
+
+            Version (5.13.1) inherited from the parent POM's
+            dependencyManagement (junit-bom 5.13.1 with scope=import per
+            AAP §0.5.1).
+        -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            JUnit Jupiter engine (test scope) — the JUnit Platform
+            TestEngine implementation that discovers and executes
+            @Test-annotated tests at runtime. Required so that
+            maven-surefire-plugin 3.5.2 can run the JUnit 5 tests via the
+            JUnit Platform during the `test` phase.
+
+            Declared EXPLICITLY per the agent_prompt §1.3 "explicit deps
+            for clarity" mandate (although it is transitively reachable
+            through the junit-jupiter aggregator above).
+
+            Version (5.13.1) inherited from the parent POM's
+            dependencyManagement (junit-bom 5.13.1 per AAP §0.5.1).
+        -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            JUnit Jupiter parameterized tests (test scope) — provides
+            @ParameterizedTest, @ValueSource, @CsvSource, @MethodSource,
+            @EnumSource, @ArgumentsSource annotations.
+
+            Used by:
+              * Golden-record tests — one parameterized test method
+                iterates over the 9 ASCII fixtures in app/data/ASCII/
+                (acctdata.txt, carddata.txt, cardxref.txt, custdata.txt,
+                dailytran.txt, discgrp.txt, tcatbal.txt, trancatg.txt,
+                trantype.txt) per AAP §0.4.1 and §0.6.11.
+              * Decimals-related JUnit tests — drive arithmetic test cases
+                from CSV tables of (input, expected) pairs for add /
+                subtract / multiply / divide / round operations at every
+                COBOL-relevant scale (0, 2, 5).
+
+            Declared EXPLICITLY per the agent_prompt §1.3 "explicit deps
+            for clarity" mandate (although it is transitively reachable
+            through the junit-jupiter aggregator above).
+
+            Version (5.13.1) inherited from the parent POM's
+            dependencyManagement (junit-bom 5.13.1 per AAP §0.5.1).
+        -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-params</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            JUnit Platform Launcher (test scope) — REQUIRED as the
+            minimum-version dependency by jqwik 1.9.3 per AAP §0.5.1
+            ("The minimum required version of the JUnit platform is
+            1.13.1").
+
+            Provides the LauncherDiscoveryRequest, Launcher, and
+            TestExecutionListener APIs that maven-surefire-plugin 3.5.2
+            uses to discover and execute tests across BOTH the JUnit
+            Jupiter engine AND the jqwik engine in this module.
+
+            Version (1.13.1) inherited from the parent POM's
+            dependencyManagement per AAP §0.5.1; this is the CRITICAL
+            alignment point that makes jqwik + JUnit Jupiter +
+            Java 25 LTS coexist without conflicts.
+        -->
         <dependency>
             <groupId>org.junit.platform</groupId>
             <artifactId>junit-platform-launcher</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!--
+            AssertJ fluent assertion library (test scope) — used by ALL
+            test classes in this module to express:
+              * Byte-for-byte parity assertions for golden-record tests:
+                  assertThat(actualBytes).isEqualTo(expectedBytes)
+                per AAP §0.6.11.
+              * BigDecimal scale and RoundingMode assertions in
+                DecimalsProperties jqwik tests:
+                  assertThat(result.scale()).isEqualTo(2);
+                  assertThat(result).isEqualByComparingTo(expected);
+                per AAP §0.6.1.
+              * JFR recording duration and throughput band assertions in
+                JfrBaseline:
+                  assertThat(actualDuration).isBetween(
+                    baseline.multiply(0.9), baseline.multiply(1.1));
+                per AAP §0.6.11.
+              * Rich readable failure diagnostics on every PR gate check.
+
+            Version (3.26.3) inherited from the parent POM's
+            dependencyManagement per AAP §0.5.1.
+        -->
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!--
+            jqwik property-based testing library (test scope) — REQUIRED
+            for AAP §0.6.1 100% line coverage on monetary code mandate
+            and §0.7.2 explicit user mandate ("jqwik property-based
+            tests for Decimals").
+
+            Used by the DecimalsProperties.java test class in
+            src/test/java/com/blitzy/carddemo/tests/property/ which uses
+            jqwik's @Property annotation, @ForAll arbitraries, and
+            shrinking/falsification machinery to generate random
+            BigDecimal inputs in COBOL-valid ranges and assert
+            Java/COBOL agreement on:
+              * add / subtract / multiply / divide / round operations
+              * MathContext.DECIMAL128 (34-digit precision)
+              * COBOL-mandated RoundingMode — HALF_EVEN (banker's
+                rounding) for the COBOL ROUNDED clause; DOWN
+                (truncation) for default unrounded arithmetic
+              * Scale preservation (a BigDecimal value of 1.20 MUST NOT
+                be normalized to 1.2 — every monetary operation
+                preserves the COBOL implicit decimal position)
+              * Sign nybble handling for COMP-3
+                (parseSignedPacked / encodeSignedPacked round-trip)
+            per AAP §0.6.1.
+
+            jqwik 1.9.3 auto-registers its TestEngine via the
+            META-INF/services/org.junit.platform.engine.TestEngine
+            service entry; the JUnit Platform launcher 1.13.1 declared
+            above is the MINIMUM required version per AAP §0.5.1.
+
+            Version (1.9.3) inherited from the parent POM's
+            dependencyManagement per AAP §0.5.1.
+        -->
         <dependency>
             <groupId>net.jqwik</groupId>
             <artifactId>jqwik</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+                maven-compiler-plugin — activated for this module so the
+                parent's pluginManagement (version 3.13.0,
+                &lt;release&gt;25&lt;/release&gt;, no preview flag per
+                AAP §0.6.7 and §0.7.4, -parameters for record component
+                names, -Xlint:all -Xlint:-preview -Xlint:-serial)
+                applies during the test-compile phase.
+
+                The Java language level is set ONCE in the parent POM;
+                this child must NOT redeclare &lt;source&gt;,
+                &lt;target&gt;, or &lt;release&gt; per the agent_prompt
+                Phase 2 forbidden-items list.
+
+                CRITICAL: NO "enable-preview" compiler argument (the
+                double-dash CLI flag) anywhere in the build per AAP §0.6.7
+                and §0.7.4. The test code in
+                src/test/java/com/blitzy/carddemo/tests/ uses ONLY
+                finalized Java 25 features (records, sealed types,
+                pattern matching, java.nio.file, java.time, BigDecimal,
+                ScopedValue (JEP 506 Final), virtual threads,
+                Module Import Declarations (JEP 511 Final),
+                Flexible Constructor Bodies (JEP 513 Final)).
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+
+            <!--
+                maven-surefire-plugin — activated for this module to run
+                JUnit 5 + AssertJ + jqwik tests during the `test` phase
+                using JUnit Platform native support.
+
+                Plugin version 3.5.2 inherited from the parent POM's
+                pluginManagement (per AAP §0.5.1).
+
+                Module-specific configuration overrides:
+                  (1) &lt;includes&gt; — test inclusion patterns covering:
+                      * **/*Test.java        — golden-record harness
+                                                (e.g., CbAct01CGoldenTest)
+                      * **/*Tests.java       — plural-named test classes
+                      * **/*Properties.java  — jqwik property tests
+                                                (e.g., DecimalsProperties);
+                                                jqwik convention per AAP §0.6.11
+                                                ("DecimalsProperties.java")
+                      * **/*PropertyTest.java — alternate jqwik convention
+                  (2) &lt;forkCount&gt;1&lt;/forkCount&gt; +
+                      &lt;reuseForks&gt;true&lt;/reuseForks&gt; — JFR-friendly
+                      forked-VM lifecycle so the perf baseline tests in
+                      JfrBaseline.java can write JFR recordings that
+                      capture the full forked VM lifecycle per AAP §0.6.11.
+                  (3) &lt;encoding&gt;UTF-8&lt;/encoding&gt; — UTF-8 test
+                      output reporting.
+                  (4) &lt;systemPropertyVariables&gt; jfr.recording.dir —
+                      pointing to ${project.build.directory}/jfr so
+                      JfrBaseline.java can write JFR recordings under
+                      target/jfr/ per AAP §0.6.11.
+                  (5) NO "enable-preview" argument (the double-dash CLI
+                      flag) anywhere in the surefire configuration per AAP
+                      §0.6.7 and §0.7.4. The argLine inherited from the
+                      parent pluginManagement
+                      (-XX:+EnableDynamicAgentLoading -Xshare:auto) is
+                      preserved unmodified to avoid disabling the
+                      parent's dynamic-agent-loading suppression for
+                      AssertJ / Mockito-style bytecode helpers.
+
+                CRITICAL for running the non-negotiable PR-gate harness
+                per AAP §0.6.11: golden-record byte-for-byte parity,
+                jqwik property tests on Decimals, and JFR 10% regression
+                band assertions all execute through this plugin.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!--
+                        Test discovery patterns — covers BOTH JUnit
+                        Jupiter (@Test) and jqwik (@Property) conventions.
+                        The default surefire pattern *Test.java alone
+                        would miss jqwik property test class names that
+                        follow the *Properties.java convention used in
+                        AAP §0.6.11 ("DecimalsProperties.java") and the
+                        *PropertyTest.java convention.
+                    -->
+                    <includes>
+                        <include>**/*Test.java</include>
+                        <include>**/*Tests.java</include>
+                        <include>**/*Properties.java</include>
+                        <include>**/*PropertyTest.java</include>
+                    </includes>
+
+                    <!--
+                        Forked VM lifecycle for JFR — forkCount=1 +
+                        reuseForks=true is the JFR-friendly default
+                        because JFR captures the full forked VM
+                        lifecycle (startup, JIT compilation, GC events,
+                        thread births including virtual threads) which
+                        the 10% regression band assertions in
+                        JfrBaseline.java rely on per AAP §0.6.11.
+                    -->
+                    <forkCount>1</forkCount>
+                    <reuseForks>true</reuseForks>
+
+                    <!--
+                        UTF-8 test output reporting — required so that
+                        non-ASCII bytes captured from EBCDIC IBM-1047
+                        transcoding mismatches and from byte-diff
+                        diagnostics surface correctly in CI logs per
+                        AAP §0.6.5.
+                    -->
+                    <encoding>UTF-8</encoding>
+
+                    <!--
+                        System properties available to tests.
+                        jfr.recording.dir is consumed by
+                        src/test/java/com/blitzy/carddemo/tests/perf/
+                        JfrBaseline.java to choose where JFR recordings
+                        are written per AAP §0.6.11. The directory is
+                        cleaned by `mvn clean` along with the rest of
+                        target/.
+                    -->
+                    <systemPropertyVariables>
+                        <jfr.recording.dir>${jfr.recording.dir}</jfr.recording.dir>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>
+

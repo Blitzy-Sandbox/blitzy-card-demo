@@ -92,6 +92,11 @@
                 <artifactId>carddemo-batch</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>com.blitzy.carddemo</groupId>
+                <artifactId>carddemo-app</artifactId>
+                <version>${project.version}</version>
+            </dependency>
 
             <!-- Logging facade and backend -->
             <dependency>
