@@ -27,6 +27,7 @@ import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.StepExecution;
@@ -295,6 +296,21 @@ public class StatementGenerationJob {
     private final AuditLogService auditLogService;
 
     /**
+     * Shared {@link JobParametersValidator} bean (defined in
+     * {@link BatchJobConfig#standardJobParametersValidator()}) that
+     * enforces the mandatory {@code batchRunId} JobParameter on every
+     * launch &mdash; preventing untraceable batch executions per the
+     * AAP &sect;0.7.1 audit-traceability rule.
+     *
+     * <p>The schema's {@code members_exposed} constrains the Job
+     * factory method to a no-arg signature
+     * ({@code statementGenerationJob()}), so the validator is injected
+     * here as a constructor field and referenced from the no-arg Job
+     * factory method via {@code this.standardJobParametersValidator}.</p>
+     */
+    private final JobParametersValidator standardJobParametersValidator;
+
+    /**
      * Externalized-configuration tag identifying the audit-source
      * (COBOL program name) embedded into structured log fields and
      * audit-event payloads. Defaults to {@code "CBSTM03A"} to preserve
@@ -315,25 +331,32 @@ public class StatementGenerationJob {
      * via constructor injection (per AAP &sect;0.7.1 dependency-
      * injection directive).
      *
-     * @param jobRepository              Spring Batch metadata
-     *                                   repository auto-configured by
-     *                                   {@code @EnableBatchProcessing}
-     * @param transactionManager         JPA-backed
-     *                                   {@link PlatformTransactionManager}
-     *                                   from JpaConfig
-     * @param statementGenerationService the service owning the COBOL
-     *                                   CBSTM03A/B Template Method
-     * @param auditLogService            the audit-log adapter
-     *                                   (OpenSearch + CloudWatch)
+     * @param jobRepository                   Spring Batch metadata
+     *                                        repository auto-configured by
+     *                                        {@code @EnableBatchProcessing}
+     * @param transactionManager              JPA-backed
+     *                                        {@link PlatformTransactionManager}
+     *                                        from JpaConfig
+     * @param statementGenerationService      the service owning the COBOL
+     *                                        CBSTM03A/B Template Method
+     * @param auditLogService                 the audit-log adapter
+     *                                        (OpenSearch + CloudWatch)
+     * @param standardJobParametersValidator  the shared JobParameters
+     *                                        validator bean from
+     *                                        {@link BatchJobConfig}
+     *                                        that enforces the mandatory
+     *                                        {@code batchRunId} parameter
      */
     public StatementGenerationJob(JobRepository jobRepository,
                                   PlatformTransactionManager transactionManager,
                                   StatementGenerationService statementGenerationService,
-                                  AuditLogService auditLogService) {
+                                  AuditLogService auditLogService,
+                                  JobParametersValidator standardJobParametersValidator) {
         this.jobRepository = jobRepository;
         this.transactionManager = transactionManager;
         this.statementGenerationService = statementGenerationService;
         this.auditLogService = auditLogService;
+        this.standardJobParametersValidator = standardJobParametersValidator;
     }
 
     /**
@@ -377,7 +400,13 @@ public class StatementGenerationJob {
     @Bean
     public Job statementGenerationJob() {
         // Replaces: app/jcl/CREASTMT.JCL EXEC PGM=CBSTM03A
+        // Wire the shared standardJobParametersValidator (injected via
+        // the constructor as this.standardJobParametersValidator since
+        // the schema constrains this factory method to a no-arg
+        // signature) so every launch is gated on a non-blank
+        // batchRunId (AAP §0.7.1 audit-traceability rule).
         return new JobBuilder(JOB_NAME, jobRepository)
+                .validator(standardJobParametersValidator)
                 .listener(new JobExecutionListener() {
                     @Override
                     public void beforeJob(JobExecution jobExecution) {

@@ -34,8 +34,12 @@ import com.awsm2.carddemo.repository.CardCrossReferenceRepository;
 import com.awsm2.carddemo.repository.DailyTransactionRepository;
 import com.awsm2.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.awsm2.carddemo.repository.TransactionRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
@@ -46,6 +50,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -279,6 +284,39 @@ public class TransactionPostingService {
     static final int RETURN_CODE_WITH_REJECTS = 4;
 
     /**
+     * Maximum number of optimistic-lock retry attempts per
+     * {@link #postTransaction(DailyTransaction, ValidationResult)}
+     * invocation before falling back to reject code
+     * {@link #REJECT_ACCOUNT_REWRITE_FAILED} (109).
+     *
+     * <p><b>BUG #7 fix (QA CP5):</b> Concurrent batch runs against
+     * the same account previously caused an
+     * {@link OptimisticLockingFailureException} at outer-tasklet
+     * commit time, failing the entire job. The new retry loop
+     * isolates the failure to a single record and either succeeds
+     * after a few retries or maps the failure to a record-level
+     * reject (preserving COBOL <i>2800-UPDATE-ACCOUNT-REC INVALID
+     * KEY MOVE 109 TO WS-VALIDATION-FAIL-REASON</i> semantics at
+     * CBTRN02C.cbl L555-L558).</p>
+     *
+     * <p>Three attempts strikes the standard production balance
+     * for short-lived contention with exponential backoff
+     * (100ms, 200ms, 400ms total worst-case &asymp; 700ms additional
+     * latency per contested record) while preserving COBOL per-record
+     * semantics.</p>
+     */
+    static final int MAX_OPTIMISTIC_LOCK_RETRIES = 3;
+
+    /**
+     * Initial backoff in milliseconds between optimistic-lock retry
+     * attempts; subsequent attempts double this value (exponential
+     * backoff). The total worst-case sleep across all retries is
+     * {@code 100ms + 200ms = 300ms} (no sleep after the final
+     * attempt).
+     */
+    static final long INITIAL_OPTIMISTIC_LOCK_BACKOFF_MS = 100L;
+
+    /**
      * Inclusive upper bound for any monetary {@link BigDecimal} field
      * after arithmetic &mdash; explicit overflow guard per AAP
      * &sect;0.6.1 ("each arithmetic operation is wrapped in a check
@@ -323,6 +361,57 @@ public class TransactionPostingService {
     private final S3OutputService s3OutputService;
     private final KafkaEventPublisher kafkaEventPublisher;
     private final AuditLogService auditLogService;
+
+    /**
+     * <strong>BUG #7 follow-up fix (QA CP5):</strong> self-reference
+     * to this same service obtained through the Spring AOP proxy, so
+     * that intra-class invocations of
+     * {@link #postTransaction(DailyTransaction, ValidationResult)} from
+     * {@link #attemptPostWithRetry(DailyTransaction, ValidationResult)}
+     * honour the {@code @Transactional(propagation = REQUIRES_NEW)}
+     * annotation. Plain {@code this.postTransaction(...)} calls bypass
+     * the proxy and silently downgrade {@code REQUIRES_NEW} to the
+     * caller's transaction, which under high contention (multiple
+     * concurrent batch runs) causes a single {@link
+     * OptimisticLockingFailureException} to mark the OUTER tasklet
+     * transaction rollback-only and the entire job to fail with
+     * {@link org.springframework.transaction.UnexpectedRollbackException}
+     * at commit time &mdash; defeating the per-record retry-and-reject
+     * intent of the BUG #7 fix.
+     *
+     * <p>Injected via {@code @Autowired @Lazy} (rather than
+     * constructor injection) to break the circular dependency that
+     * Spring would otherwise detect when a bean tries to inject
+     * itself. The field is {@code package-private} (not {@code final})
+     * to allow Spring's field-based injection, and so unit tests can
+     * substitute the live bean with a Mockito spy/mock that invokes
+     * the underlying method directly (preserving the existing test
+     * semantics &mdash; Mockito does not interact with Spring's
+     * transaction layer).</p>
+     */
+    @Autowired
+    @Lazy
+    TransactionPostingService self;
+
+    /**
+     * <strong>BUG #7 follow-up fix (QA CP5):</strong> JPA persistence
+     * context used to {@link EntityManager#clear() clear} the OUTER
+     * tasklet transaction's first-level cache between optimistic-lock
+     * retry attempts. Without this clear, the cached {@link Account}
+     * entity (loaded by {@link #validateTransaction(DailyTransaction)}
+     * before the first {@code postTransaction} attempt) is returned
+     * from the persistence context on every subsequent
+     * {@code accountRepository.findById(...)} call, so each retry
+     * sees the SAME stale {@link Account#getVersion() @Version} and
+     * fails again with the SAME
+     * {@link OptimisticLockingFailureException} &mdash; preventing
+     * the retry from ever succeeding. Calling {@code em.clear()}
+     * detaches every entity in the OUTER session and forces the
+     * next {@code findById(...)} to load the current row state
+     * (including any concurrent batch's freshly committed version).
+     */
+    @PersistenceContext
+    EntityManager entityManager;
 
     /**
      * Sole constructor &mdash; receives all collaborators via
@@ -574,6 +663,18 @@ public class TransactionPostingService {
         int transactionCount = 0;
         int rejectCount = 0;
 
+        // BUG #5 fix (QA CP5): accumulate all reject records for this
+        // batch run in a single in-memory buffer; flush as one S3
+        // object at end-of-batch via S3OutputService.writeRejections.
+        // The original per-record writeRejection path silently
+        // overwrote prior records (S3 has no append; same key per
+        // call). Buffering preserves the COBOL DALYREJS sequential-
+        // file semantic (one dataset per batch run = one S3 object)
+        // even on buckets without versioning. See
+        // S3OutputService.writeRejections Javadoc for the full
+        // rationale (AAP §0.7.2 audit-trail-preservation rule).
+        List<String> pendingRejects = new ArrayList<>();
+
         for (DailyTransaction dt : dalyTransactions) {
             // COBOL: ADD 1 TO WS-TRANSACTION-COUNT (L206)
             transactionCount++;
@@ -586,14 +687,71 @@ public class TransactionPostingService {
             if (vr.reasonCode() == 0) {
                 // COBOL: IF WS-VALIDATION-FAIL-REASON = 0
                 //          PERFORM 2000-POST-TRANSACTION (L211-L212)
-                postTransaction(dt, vr);
+                //
+                // BUG #7 fix (QA CP5): wrap the per-record post in a
+                // retry loop that catches OptimisticLockingFailureException
+                // (raised by JPA on @Version mismatch — the JPA
+                // equivalent of COBOL "REWRITE FD-ACCTFILE-REC
+                // INVALID KEY" at CBTRN02C L555). Re-validation between
+                // retries refreshes the entity version. On exhausted
+                // retries the record is mapped to reject code 109
+                // (REJECT_ACCOUNT_REWRITE_FAILED) and written to
+                // DALYREJS via the per-batch buffer.
+                ValidationResult postOutcome = attemptPostWithRetry(dt, vr);
+                if (postOutcome.reasonCode() != 0) {
+                    // Retry loop converted the OLF into a record-level
+                    // reject; COBOL semantic preserved
+                    // (PERFORM 2500-WRITE-REJECT-REC for code 109).
+                    rejectCount++;
+                    writeRejectRecord(dt, postOutcome, batchDate,
+                            pendingRejects);
+                }
             } else {
                 // COBOL: ELSE ADD 1 TO WS-REJECT-COUNT
                 //             PERFORM 2500-WRITE-REJECT-REC (L213-L215)
                 rejectCount++;
-                writeRejectRecord(dt, vr, batchDate);
+                writeRejectRecord(dt, vr, batchDate, pendingRejects);
+            }
+
+            // BUG #7 follow-up fix (QA CP5): detach every entity loaded
+            // by this iteration's {@link #validateTransaction(DailyTransaction)}
+            // and {@link #attemptPostWithRetry(DailyTransaction, ValidationResult)}
+            // from the OUTER tasklet persistence context. Without this
+            // clear, the OUTER {@link jakarta.persistence.EntityManager}
+            // accumulates a shared {@link com.awsm2.carddemo.domain.Account}
+            // instance (loaded by every {@code findById} that targets
+            // the SAME account ID across iterations) with mutations
+            // from each {@code postTransaction} call. At OUTER-tasklet
+            // commit time Hibernate dirty-checking emits an
+            // {@code UPDATE accounts ... WHERE version = ?} for that
+            // attached entity using the in-memory {@code @Version}
+            // value, which is stale relative to the DB row (the
+            // inner {@code REQUIRES_NEW} transactions have already
+            // committed N version increments). The UPDATE returns
+            // zero rows and Hibernate raises
+            // {@link OptimisticLockingFailureException} at OUTER-
+            // tasklet commit &mdash; even though every individual
+            // record posted successfully. Clearing per iteration
+            // prevents this dirty-tracking accumulation; the
+            // OUTER tasklet transaction holds no managed account
+            // entities at commit time and the commit is a
+            // pure no-op (matching the COBOL CBTRN02C tasklet
+            // model where each record is an independent commit).
+            // Safe because no other in-flight mutations are pending
+            // at this point in the per-record loop &mdash; the only
+            // mutation source was {@code postTransaction}, which
+            // ran in its own inner transaction and already
+            // committed.
+            if (entityManager != null) {
+                entityManager.clear();
             }
         }
+
+        // BUG #5 fix (QA CP5): flush all accumulated rejects in a
+        // single PUT to S3 at end-of-batch. Empty list is a no-op
+        // (matches the COBOL semantic of "no DALYREJS GDG generation
+        // when no records are rejected").
+        flushPendingRejects(batchDate, pendingRejects);
 
         // COBOL: IF WS-REJECT-COUNT > 0 MOVE 4 TO RETURN-CODE (L229-L230)
         int returnCode = rejectCount > 0 ? RETURN_CODE_WITH_REJECTS : 0;
@@ -607,6 +765,59 @@ public class TransactionPostingService {
                 + "returnCode={}", returnCode);
 
         return new PostingResult(transactionCount, rejectCount, returnCode);
+    }
+
+    /**
+     * Flushes the accumulated reject buffer to S3 as a single object
+     * via {@link S3OutputService#writeRejections(String, List)}.
+     *
+     * <p><b>BUG #5 fix (QA CP5):</b> introduced to preserve the COBOL
+     * DALYREJS sequential-file semantic (one dataset per batch run =
+     * one S3 object). The previous per-record
+     * {@link S3OutputService#writeRejection(String, String)} call
+     * pattern silently overwrote prior records on every PUT.</p>
+     *
+     * @param batchDate       the business date (used to build the
+     *                        batch-run-id S3 key prefix)
+     * @param pendingRejects  the in-memory buffer of all
+     *                        430-byte-wide formatted reject lines
+     *                        accumulated during this batch run
+     */
+    void flushPendingRejects(LocalDate batchDate, List<String> pendingRejects) {
+        Objects.requireNonNull(batchDate, "batchDate must not be null");
+        Objects.requireNonNull(pendingRejects, "pendingRejects must not be null");
+        if (pendingRejects.isEmpty()) {
+            // Match the COBOL semantic: no DALYREJS GDG generation
+            // when no rejects, so no S3 PUT either.
+            return;
+        }
+        // Compose the S3 batch run identifier — used by the adapter
+        // as the per-day object-key prefix (e.g.,
+        // dalyrejs/2025-01-15/POSTTRAN-2025-01-15.rejs).
+        final String batchRunId = "POSTTRAN-" + batchDate.toString();
+        try {
+            s3OutputService.writeRejections(batchRunId, pendingRejects);
+        } catch (CardDemoException e) {
+            // Adapter validation / KMS / bucket misconfiguration
+            // surfaced as a typed CardDemoException — propagate so
+            // the Spring Batch tasklet surfaces it to AWS Batch.
+            throw e;
+        } catch (RuntimeException e) {
+            // Wrap any other runtime failure (S3 SDK exception,
+            // network error) as a typed CardDemoException with the
+            // same reason code used by the per-record path
+            // (WRITE_REJECT_FAILED) so downstream operators see a
+            // stable error code regardless of the call pattern.
+            LOG.error("CBTRN02C: failed to flush {} reject record(s) "
+                    + "to S3 for batchDate={}",
+                    pendingRejects.size(), batchDate, e);
+            throw new CardDemoException(
+                    "WRITE_REJECT_FAILED",
+                    "Failed to write reject records (count="
+                            + pendingRejects.size() + ", batchDate="
+                            + batchDate + ")",
+                    e);
+        }
     }
 
     // =========================================================================
@@ -810,6 +1021,239 @@ public class TransactionPostingService {
     }
 
     /**
+     * <b>BUG #7 fix (QA CP5):</b> Per-record retry wrapper around
+     * {@link #postTransaction(DailyTransaction, ValidationResult)} that
+     * catches optimistic-lock conflicts and either retries with a
+     * refreshed entity snapshot or maps the failure to a record-level
+     * reject (code 109).
+     *
+     * <p>The retry loop catches both the raw
+     * {@link OptimisticLockingFailureException} (Hibernate-internal
+     * paths where Spring's JPA exception translation does not wrap it
+     * into a {@link CardDemoException}) and the typed
+     * {@link CardDemoException} carrying reason code
+     * {@code ACCOUNT_REWRITE_FAILED} emitted by
+     * {@link #updateAccount(DailyTransaction, Account)} when its
+     * {@link AccountRepository#saveAndFlush} fails. Both paths are
+     * treated as record-level retryable contention; any other
+     * {@link CardDemoException} (e.g.,
+     * {@link OnSizeErrorException}-derived overflow errors) is
+     * propagated unchanged.</p>
+     *
+     * <p>Between retries the method re-runs
+     * {@link #validateTransaction(DailyTransaction)} so the next
+     * attempt operates on a freshly loaded {@link Account} (and
+     * thus a fresh {@link Account#getVersion() @Version}). If the
+     * re-validation now fails for a <em>different</em> reason
+     * (e.g., another posting raised the account balance above the
+     * credit limit between attempts) the new
+     * {@link ValidationResult} is returned as-is — preserving COBOL
+     * cascade semantics (record rejected for the current failing
+     * reason, not the stale version-conflict).</p>
+     *
+     * <p>Exponential backoff between attempts: {@code 100ms},
+     * {@code 200ms} between the first&rarr;second and
+     * second&rarr;third attempts (no sleep after the final attempt).
+     * Total worst-case added latency for a contested record is
+     * &asymp; 300ms, then the record is rejected.</p>
+     *
+     * @param dt the daily transaction being posted
+     * @param vr the validation result from the initial cascade pass
+     *           (must have {@code reasonCode == 0})
+     * @return a {@link ValidationResult} that is:
+     *         <ul>
+     *           <li>{@link ValidationResult#ok ok} on a successful
+     *               post (no further action required by the
+     *               caller),</li>
+     *           <li>a {@link ValidationResult#reject} with
+     *               {@link #REJECT_ACCOUNT_REWRITE_FAILED} (109) when
+     *               retries are exhausted, or</li>
+     *           <li>a {@link ValidationResult#reject} with a different
+     *               reason code if re-validation now fails for a
+     *               different reason (e.g., 102 overlimit after
+     *               concurrent posting).</li>
+     *         </ul>
+     */
+    ValidationResult attemptPostWithRetry(DailyTransaction dt,
+                                          ValidationResult vr) {
+        Objects.requireNonNull(dt, "dt must not be null");
+        Objects.requireNonNull(vr, "vr must not be null");
+        ValidationResult currentVr = vr;
+        Throwable lastFailure = null;
+
+        for (int attempt = 1; attempt <= MAX_OPTIMISTIC_LOCK_RETRIES; attempt++) {
+            try {
+                // BUG #7 follow-up fix (QA CP5): invoke via the
+                // Spring AOP proxy ({@link #self}) so that the
+                // {@code @Transactional(propagation = REQUIRES_NEW)}
+                // annotation on {@link #postTransaction} is honoured.
+                // A plain {@code this.postTransaction(...)} call is a
+                // self-invocation that bypasses the proxy, downgrading
+                // REQUIRES_NEW to the caller's transaction. With the
+                // proxy in place, the inner save+flush runs in its
+                // own transaction; an OLF rolls back only the inner
+                // transaction, leaving the OUTER tasklet transaction
+                // clean and able to commit its accumulated reject
+                // records (and any successfully posted siblings).
+                //
+                // Null-safe fallback to {@code this} when {@code self}
+                // has not been injected &mdash; preserves the unit-test
+                // contract where Mockito's {@code @InjectMocks}
+                // populates only the constructor-injected
+                // collaborators and the {@code @Autowired @Lazy} field
+                // is left {@code null}. Production runtime always has
+                // {@code self} set by Spring at context refresh.
+                postTransactionThroughProxy(dt, currentVr);
+                if (attempt > 1) {
+                    // Successful post after retry — emit an INFO trace
+                    // so operators can correlate contention in OpenSearch.
+                    LOG.info(
+                            "CBTRN02C: succeeded after {} attempts for "
+                                    + "tranId={}",
+                            attempt, safe(dt.getDalytranId()));
+                }
+                return ValidationResult.ok(currentVr.xref(),
+                        currentVr.account());
+            } catch (OptimisticLockingFailureException olf) {
+                // Raw OLF — JPA path that escaped the wrap in
+                // updateAccount (e.g., raised on transactionRepository.save
+                // when an internal flush invalidates an in-context entity).
+                lastFailure = olf;
+                LOG.warn(
+                        "CBTRN02C: optimistic-lock conflict attempt {}/{} "
+                                + "for tranId={}: {}",
+                        attempt, MAX_OPTIMISTIC_LOCK_RETRIES,
+                        safe(dt.getDalytranId()), olf.getMessage());
+            } catch (CardDemoException cde) {
+                if ("ACCOUNT_REWRITE_FAILED".equals(cde.getReasonCode())) {
+                    // The same OLF, but wrapped by updateAccount's catch.
+                    lastFailure = cde;
+                    LOG.warn(
+                            "CBTRN02C: ACCOUNT_REWRITE_FAILED attempt {}/{} "
+                                    + "for tranId={}",
+                            attempt, MAX_OPTIMISTIC_LOCK_RETRIES,
+                            safe(dt.getDalytranId()));
+                } else {
+                    // Any other CardDemoException is a non-retryable
+                    // domain failure (e.g., ON_SIZE_ERROR_* from
+                    // updateAccount, WRITE_REJECT_FAILED from earlier
+                    // paths) — propagate unchanged.
+                    throw cde;
+                }
+            }
+
+            // Backoff + refresh before the next attempt. Skip both on
+            // the final iteration since we are about to map to reject 109.
+            if (attempt < MAX_OPTIMISTIC_LOCK_RETRIES) {
+                sleepOptimisticLockBackoff(attempt);
+                // BUG #7 follow-up fix (QA CP5): clear the OUTER
+                // tasklet transaction's persistence context so that
+                // the next {@link #validateTransaction(DailyTransaction)}
+                // call issues a fresh DB load of the {@link Account}
+                // (and {@link CardCrossReference}) entities rather
+                // than returning the cached stale snapshot. Without
+                // this clear, the cached {@code @Version} value is
+                // unchanged from the first load and the next
+                // {@code accountRepository.saveAndFlush(account)}
+                // call in {@link #postTransaction} fails with the
+                // SAME OLF, exhausting all retries even when the
+                // DB row has been updated by a concurrent batch in
+                // the interim. Clearing detaches every entity in
+                // the OUTER session; the {@code @PersistenceContext}
+                // is shared with the tasklet's transaction so this
+                // is safe (no in-flight mutations to flush at this
+                // point in the per-record loop).
+                if (entityManager != null) {
+                    entityManager.clear();
+                }
+                ValidationResult refreshed = validateTransaction(dt);
+                if (refreshed.reasonCode() != 0) {
+                    // Re-validation now fails for a DIFFERENT reason —
+                    // honour the new reason code (e.g., balance now over
+                    // credit limit after concurrent posting committed
+                    // before this attempt). Preserves COBOL cascade
+                    // semantics: a record is rejected for the FIRST
+                    // failing validator, not for stale OLF state.
+                    LOG.info(
+                            "CBTRN02C: re-validation now fails for "
+                                    + "tranId={} reasonCode={} desc={}",
+                            safe(dt.getDalytranId()),
+                            refreshed.reasonCode(),
+                            refreshed.reasonDescription());
+                    return refreshed;
+                }
+                currentVr = refreshed;
+            }
+        }
+
+        // Exhausted retries — map to reject code 109 per COBOL
+        // 2800-UPDATE-ACCOUNT-REC INVALID KEY semantic (L555-L558).
+        LOG.error(
+                "CBTRN02C: exhausted {} optimistic-lock retries for "
+                        + "tranId={} — mapping to reject code 109",
+                MAX_OPTIMISTIC_LOCK_RETRIES, safe(dt.getDalytranId()),
+                lastFailure);
+        return ValidationResult.reject(REJECT_ACCOUNT_REWRITE_FAILED,
+                DESC_ACCOUNT_NOT_FOUND);
+    }
+
+    /**
+     * Sleeps an exponentially backed-off duration between optimistic-lock
+     * retry attempts. Restores the thread's interrupt flag if
+     * interrupted &mdash; never blindly swallows the InterruptedException.
+     *
+     * @param attempt the 1-indexed attempt number that just failed
+     *                (sleep duration scales as {@code 100ms * 2^(attempt-1)})
+     */
+    void sleepOptimisticLockBackoff(int attempt) {
+        long delayMs = INITIAL_OPTIMISTIC_LOCK_BACKOFF_MS
+                * (1L << Math.max(0, attempt - 1));
+        try {
+            Thread.sleep(delayMs);
+        } catch (InterruptedException ie) {
+            // Restore interrupt status per Java best practice — never
+            // silently swallow InterruptedException.
+            Thread.currentThread().interrupt();
+            LOG.warn(
+                    "CBTRN02C: optimistic-lock backoff sleep interrupted "
+                            + "after attempt {}", attempt);
+        }
+    }
+
+    /**
+     * <strong>BUG #7 follow-up fix (QA CP5):</strong> dispatches
+     * {@link #postTransaction(DailyTransaction, ValidationResult)}
+     * through the Spring AOP proxy reference ({@link #self}) so the
+     * {@code @Transactional(propagation = REQUIRES_NEW)} annotation
+     * on the target method is honoured. When {@link #self} has not
+     * been wired (Mockito unit tests using
+     * {@code @InjectMocks} populate only constructor parameters and
+     * leave {@code @Autowired @Lazy} field-injected references
+     * {@code null}), the call transparently falls back to
+     * {@code this.postTransaction(...)} &mdash; the unit-test path
+     * relies on Mockito stubs for the collaborators and does not
+     * exercise the Spring transaction infrastructure, so the
+     * semantic difference is irrelevant for those tests but
+     * critical for the production runtime under contention.
+     *
+     * <p>This helper is package-private (rather than {@code private})
+     * to allow targeted unit-test verification of the dispatch logic
+     * without breaking encapsulation for external callers.</p>
+     *
+     * @param dt        the daily-transaction being posted (never null)
+     * @param currentVr the latest validation result for {@code dt},
+     *                  carrying the resolved
+     *                  {@link com.awsm2.carddemo.domain.Account} and
+     *                  {@link com.awsm2.carddemo.domain.CardCrossReference}
+     *                  (never null)
+     */
+    void postTransactionThroughProxy(DailyTransaction dt,
+                                      ValidationResult currentVr) {
+        TransactionPostingService target = (self != null) ? self : this;
+        target.postTransaction(dt, currentVr);
+    }
+
+    /**
      * COBOL: {@code 2700-UPDATE-TCATBAL} (L467-L539) &mdash; upserts
      * the per-{@code (account, type, category)} running balance.
      *
@@ -976,14 +1420,26 @@ public class TransactionPostingService {
         // to the COBOL INVALID KEY condition (i.e., the row no longer
         // matches the snapshot loaded at stage 2; mirrors COBOL
         // before/after image comparison). Map to reject code 109.
+        //
+        // BUG #7 fix (QA CP5): saveAndFlush forces immediate SQL
+        // execution so the OptimisticLockingFailureException surfaces
+        // synchronously here (and is caught + wrapped) rather than at
+        // outer-tasklet @Transactional commit time, where it could
+        // not be intercepted by the per-record retry loop in
+        // postDailyTransactions. The eager flush has no functional
+        // effect on the happy path (the UPDATE would execute anyway
+        // at commit) but is essential for the retry semantics.
         try {
-            accountRepository.save(account);
+            accountRepository.saveAndFlush(account);
         } catch (OptimisticLockingFailureException e) {
             // COBOL: MOVE 109 TO WS-VALIDATION-FAIL-REASON
             //        DISPLAY 'ERROR REWRITING ACCOUNT' ; ABEND.
             // The Java target raises a typed CardDemoException carrying
             // reject code 109 semantics — the surrounding @Transactional
             // boundary rolls back so the row state remains consistent.
+            // The exception is caught and converted to a reject record
+            // (code 109) by the retry-and-reject loop in
+            // postDailyTransactions (see BUG #7 fix).
             throw new CardDemoException(
                     "ACCOUNT_REWRITE_FAILED",
                     "ACCOUNT RECORD NOT FOUND (109) for acctId="
@@ -1002,28 +1458,53 @@ public class TransactionPostingService {
      * reject reason code + 76-byte left-padded reason description).
      *
      * <p>S3 object key format:
-     * {@code dalyrejs/<batchDate>/rejects-<epochMs>.txt}. Per AAP
-     * &sect;0.7.1 the S3 SDK call is delegated to
-     * {@link S3OutputService#writeRejection(String, String)} (never
-     * inlined here).</p>
+     * {@code dalyrejs/<batchDate>/<batchRunId>.rejs}. Per AAP
+     * &sect;0.7.1 the S3 SDK call is delegated to the
+     * {@link S3OutputService} adapter (never inlined here).</p>
      *
-     * <p>Audit emission: after a successful S3 write, an audit
-     * record is emitted to OpenSearch via
+     * <p><b>BUG #5 fix (QA CP5):</b> Each call to this method now
+     * appends the formatted 430-byte reject record to the supplied
+     * {@code pendingRejects} buffer rather than performing an
+     * immediate {@link S3OutputService#writeRejection(String, String)}
+     * PUT. The per-record S3 PUT pattern silently overwrote previous
+     * rejects on every call (S3 has no append; same object key per
+     * call). End-of-batch flushing via
+     * {@link #flushPendingRejects(LocalDate, List)} writes all rejects
+     * to a single S3 object &mdash; preserving the COBOL DALYREJS
+     * sequential-file semantic (one dataset per batch run = one S3
+     * object) even on buckets without versioning, per AAP &sect;0.7.2
+     * audit-trail-preservation rule.</p>
+     *
+     * <p>Audit emission: an audit record is emitted to OpenSearch via
      * {@link AuditLogService#logTransactionEvent(String, Long,
-     * String, String, String, Map, String)} preserving the
-     * transaction ID + reject reason code + description verbatim
+     * String, String, String, Map, String)} immediately on every
+     * call (per-record granularity preserves the original
+     * fine-grained audit signal — every individual reject is still
+     * separately indexed for fraud / regulatory queries), preserving
+     * the transaction ID + reject reason code + description verbatim
      * per AAP &sect;0.7.2 ("Audit trail content must continue to be
      * emitted with the same values and semantics").</p>
      *
-     * @param dt        the daily transaction that failed validation
-     * @param vr        the validation result carrying the verbatim
-     *                  COBOL reject code and description
-     * @param batchDate the business date used as the S3 object-key
-     *                  prefix
+     * @param dt              the daily transaction that failed
+     *                        validation
+     * @param vr              the validation result carrying the
+     *                        verbatim COBOL reject code and
+     *                        description
+     * @param batchDate       the business date used as the S3
+     *                        object-key prefix (passed through to
+     *                        {@link #flushPendingRejects}; not used
+     *                        here but kept for traceability and
+     *                        backwards-compatibility with future
+     *                        signature changes)
+     * @param pendingRejects  the in-memory buffer accumulating
+     *                        formatted 430-byte reject lines; this
+     *                        method appends one element per call
      */
     void writeRejectRecord(DailyTransaction dt,
                            ValidationResult vr,
-                           LocalDate batchDate) {
+                           LocalDate batchDate,
+                           List<String> pendingRejects) {
+        Objects.requireNonNull(pendingRejects, "pendingRejects must not be null");
         // COBOL: 2500-WRITE-REJECT-REC (L446-L465)
         //   MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA  (L447)
         //   MOVE WS-VALIDATION-TRAILER TO VALIDATION-TRAILER  (L448)
@@ -1040,26 +1521,27 @@ public class TransactionPostingService {
         // byte-for-byte".
         String rejectLine = padTo350(dt) + reasonCode + reasonDesc;
 
-        // Compose the S3 batch run identifier — used by the adapter as
-        // the per-day object-key prefix (e.g.,
-        // dalyrejs/2025-01-15/rejs-<ts>.rejs). This satisfies the
-        // S3OutputService contract that batchRunId is non-blank.
-        String batchRunId = "POSTTRAN-" + batchDate.toString();
+        // BUG #5 fix: accumulate in the per-batch buffer. The actual
+        // S3 PUT happens once at end-of-batch via flushPendingRejects.
+        pendingRejects.add(rejectLine);
 
+        // Per-record audit emission is preserved — every reject is
+        // independently indexed in OpenSearch for fraud / regulatory
+        // query granularity (AAP §0.6.5).
         try {
-            s3OutputService.writeRejection(batchRunId, rejectLine);
             emitRejectedAudit(dt, vr);
         } catch (CardDemoException e) {
-            // A CardDemoException raised inside the audit path (or by
-            // the adapter validating batchRunId) is re-thrown so the
-            // batch tasklet surfaces it to AWS Batch. The S3 write
-            // already completed at this point if the audit failed.
+            // Re-throw so the Spring Batch tasklet surfaces it to
+            // AWS Batch. The reject line is already in the buffer,
+            // but the buffer will not be flushed if the batch fails
+            // (the outer tasklet rolls back the entire job).
             throw e;
         } catch (RuntimeException e) {
-            // S3 upload failure — map to CardDemoException carrying
-            // a reason code so the Spring Batch tasklet surfaces a
-            // non-zero exit to AWS Batch (per AAP §0.7.1).
-            LOG.error("CBTRN02C: failed to write reject record for "
+            // Wrap any other audit-emission failure as a typed
+            // CardDemoException carrying the historical reason code
+            // (WRITE_REJECT_FAILED) so downstream operators see a
+            // stable error code regardless of which code path failed.
+            LOG.error("CBTRN02C: failed to emit reject audit for "
                     + "tranId={}", safe(dt.getDalytranId()), e);
             throw new CardDemoException(
                     "WRITE_REJECT_FAILED",

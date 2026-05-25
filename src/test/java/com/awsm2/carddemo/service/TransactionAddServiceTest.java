@@ -369,7 +369,7 @@ class TransactionAddServiceTest {
         }
         Optional<Transaction> result = existing == null
                 ? Optional.empty() : Optional.of(existing);
-        lenient().when(transactionRepository.findTopByOrderByTranIdDesc())
+        lenient().when(transactionRepository.findTopByNumericTranIdOrderByTranIdDesc())
                 .thenReturn(result);
         lenient().when(transactionRepository.save(any(Transaction.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
@@ -409,7 +409,7 @@ class TransactionAddServiceTest {
      * </pre>
      * <p>The Java translation replaces the {@code STARTBR/READPREV/ENDBR}
      * browse with
-     * {@link TransactionRepository#findTopByOrderByTranIdDesc()} and the
+     * {@link TransactionRepository#findTopByNumericTranIdOrderByTranIdDesc()} and the
      * {@code ADD 1} with {@code BigDecimal.add(BigDecimal.ONE)} guarded
      * by an overflow check that throws {@link OnSizeErrorException}
      * matching the COBOL {@code ON SIZE ERROR} branch.</p>
@@ -506,7 +506,7 @@ class TransactionAddServiceTest {
             // adding 1 would overflow the COBOL PIC 9(16) field which
             // is the COBOL ON SIZE ERROR semantic per AAP §0.7.1.
             stubXrefByCard(CARD_NUMBER, ACCOUNT_ID);
-            lenient().when(transactionRepository.findTopByOrderByTranIdDesc())
+            lenient().when(transactionRepository.findTopByNumericTranIdOrderByTranIdDesc())
                     .thenReturn(Optional.of(new Transaction(
                             "9999999999999999", TRAN_TYPE, TRAN_CAT, SOURCE,
                             DESCRIPTION, AMOUNT, MERCHANT_ID, MERCHANT_NAME,
@@ -536,7 +536,7 @@ class TransactionAddServiceTest {
             stubXrefByCard(CARD_NUMBER, ACCOUNT_ID);
             Transaction corrupted = new Transaction();
             corrupted.setTranId("ABCDEFGHIJKLMNOP");
-            lenient().when(transactionRepository.findTopByOrderByTranIdDesc())
+            lenient().when(transactionRepository.findTopByNumericTranIdOrderByTranIdDesc())
                     .thenReturn(Optional.of(corrupted));
             lenient().when(transactionRepository.save(any(Transaction.class)))
                     .thenAnswer(inv -> inv.getArgument(0));

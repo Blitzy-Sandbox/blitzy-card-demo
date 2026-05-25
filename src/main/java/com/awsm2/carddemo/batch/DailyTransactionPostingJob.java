@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecutionListener;
+import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.StepExecution;
@@ -246,17 +247,39 @@ public class DailyTransactionPostingJob {
      * {@code sharedAuditJobExecutionListener} bean (defined in
      * {@link BatchJobConfig}) per F-CP6-Combine-06.</p>
      *
+     * <p>Parameter validation is enforced via the shared
+     * {@code standardJobParametersValidator} bean defined in
+     * {@link BatchJobConfig#standardJobParametersValidator()}. This
+     * validator rejects any launch attempt that omits the mandatory
+     * {@code batchRunId} JobParameter &mdash; preventing untraceable
+     * batch executions (AAP &sect;0.7.1 audit-traceability rule:
+     * every batch invocation MUST carry a {@code batchRunId} for
+     * AuditLogService correlation across OpenSearch / CloudTrail /
+     * CloudWatch).</p>
+     *
      * @param sharedAuditJobExecutionListener the shared lifecycle audit
      *                                        listener bean from
      *                                        {@link BatchJobConfig}
+     * @param standardJobParametersValidator  the shared JobParameters
+     *                                        validator bean from
+     *                                        {@link BatchJobConfig}
+     *                                        that enforces the mandatory
+     *                                        {@code batchRunId} parameter
      * @return the configured {@link Job} bean &mdash; registered in the
      *         {@code ApplicationContext} under the name
      *         {@value #JOB_NAME}
      */
     @Bean
-    public Job dailyTransactionPostingJob(JobExecutionListener sharedAuditJobExecutionListener) {
+    public Job dailyTransactionPostingJob(JobExecutionListener sharedAuditJobExecutionListener,
+                                          JobParametersValidator standardJobParametersValidator) {
         // Replaces: app/jcl/POSTTRAN.jcl STEP15 EXEC PGM=CBTRN02C
+        // Wire the standardJobParametersValidator so every launch is
+        // validated for the mandatory batchRunId parameter. This is the
+        // single audit-traceability gate that ties every batch run to a
+        // unique identifier used downstream by AuditLogService and
+        // CloudTrail (AAP §0.7.1).
         return new JobBuilder(JOB_NAME, jobRepository)
+                .validator(standardJobParametersValidator)
                 .listener(sharedAuditJobExecutionListener)
                 .start(postDailyTransactionsStep())
                 .build();

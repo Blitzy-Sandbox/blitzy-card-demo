@@ -229,7 +229,21 @@ spring:
       connection-timeout: 30000         # 30 seconds
       keepalive-time: 60000             # 1 minute TCP keepalive
       leak-detection-threshold: 60000   # warn on >60s connection holds
-      auto-commit: false                # explicit @Transactional boundaries
+      # BUG #1 fix (QA CP5 — refined): autoCommit=true is the JDBC
+      # default. Spring's @Transactional sets autoCommit=false at tx
+      # begin, then resets to true on commit/rollback via
+      # DataSourceUtils.resetConnectionAfterTransaction — explicit
+      # transactional boundaries are preserved. The previous
+      # `auto-commit: false` setting left every leased connection in
+      # PostgreSQL's non-IDLE implicit-transaction state, causing
+      # Spring's setTransactionIsolation call to fail mid-tx. Spring
+      # Batch's SimpleJobRepository (annotated @Transactional(isolation =
+      # Isolation.SERIALIZABLE)) hits this on every metadata operation,
+      # blocking direct JobLauncher invocations entirely.
+      auto-commit: true
+      # Defence in depth: harmless when autoCommit=true (Hikari ignores
+      # this flag in that mode) but documented for future safety.
+      isolate-internal-queries: true
       connection-test-query: SELECT 1
 
   # ---------------------------------------------------------------------------

@@ -77,7 +77,7 @@ import static org.mockito.Mockito.when;
  *       {@link CardCrossReferenceRepository#findByXrefAcctId(Long)}
  *       per the file schema {@code internal_imports} contract.</li>
  *   <li><b>MAX-TRAN-ID + 1 generator</b> &mdash; reads
- *       {@link TransactionRepository#findTopByOrderByTranIdDesc()} and
+ *       {@link TransactionRepository#findTopByNumericTranIdOrderByTranIdDesc()} and
  *       generates the next 16-digit zero-padded ID.</li>
  *   <li><b>Balance arithmetic</b> &mdash; new balance is
  *       {@code current.subtract(amountPaid)} with
@@ -186,7 +186,7 @@ class BillPaymentServiceTest {
         lenient().when(cardCrossReferenceRepository
                         .findByXrefAcctId(ACCOUNT_ID))
                 .thenReturn(xrefRows);
-        lenient().when(transactionRepository.findTopByOrderByTranIdDesc())
+        lenient().when(transactionRepository.findTopByNumericTranIdOrderByTranIdDesc())
                 .thenReturn(Optional.empty());
         lenient().when(transactionRepository.save(any(Transaction.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
@@ -539,7 +539,7 @@ class BillPaymentServiceTest {
                     new CardCrossReference(CARD_LOW, 999_999L, ACCOUNT_ID));
             stubHappyPathRepositories(STARTING_BALANCE, xrefs);
             // No transactions exist yet
-            when(transactionRepository.findTopByOrderByTranIdDesc())
+            when(transactionRepository.findTopByNumericTranIdOrderByTranIdDesc())
                     .thenReturn(Optional.empty());
 
             service.processBillPayment(validRequest);
@@ -559,7 +559,7 @@ class BillPaymentServiceTest {
             stubHappyPathRepositories(STARTING_BALANCE, xrefs);
             Transaction existing = new Transaction();
             existing.setTranId("0000000000000042");
-            when(transactionRepository.findTopByOrderByTranIdDesc())
+            when(transactionRepository.findTopByNumericTranIdOrderByTranIdDesc())
                     .thenReturn(Optional.of(existing));
 
             service.processBillPayment(validRequest);
@@ -788,7 +788,7 @@ class BillPaymentServiceTest {
             when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
                     .thenReturn(List.of(new CardCrossReference(
                             CARD_LOW, 999_999L, ACCOUNT_ID)));
-            when(transactionRepository.findTopByOrderByTranIdDesc())
+            when(transactionRepository.findTopByNumericTranIdOrderByTranIdDesc())
                     .thenReturn(Optional.empty());
             when(transactionRepository.save(any(Transaction.class)))
                     .thenThrow(new RuntimeException(
@@ -845,7 +845,7 @@ class BillPaymentServiceTest {
             when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
                     .thenReturn(List.of(new CardCrossReference(
                             CARD_LOW, 999_999L, ACCOUNT_ID)));
-            when(transactionRepository.findTopByOrderByTranIdDesc())
+            when(transactionRepository.findTopByNumericTranIdOrderByTranIdDesc())
                     .thenReturn(Optional.empty());
             when(transactionRepository.save(any(Transaction.class)))
                     .thenAnswer(inv -> inv.getArgument(0));
@@ -914,7 +914,7 @@ class BillPaymentServiceTest {
             when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
                     .thenReturn(List.of(new CardCrossReference(
                             CARD_LOW, 999_999L, ACCOUNT_ID)));
-            when(transactionRepository.findTopByOrderByTranIdDesc())
+            when(transactionRepository.findTopByNumericTranIdOrderByTranIdDesc())
                     .thenReturn(Optional.empty());
             when(transactionRepository.save(any(Transaction.class)))
                     .thenAnswer(inv -> inv.getArgument(0));
@@ -1006,7 +1006,7 @@ class BillPaymentServiceTest {
                     .thenAnswer(inv -> inv.getArgument(0));
             lenient().when(cardCrossReferenceRepository.findByXrefAcctId(smallAcctId))
                     .thenReturn(xrefs);
-            lenient().when(transactionRepository.findTopByOrderByTranIdDesc())
+            lenient().when(transactionRepository.findTopByNumericTranIdOrderByTranIdDesc())
                     .thenReturn(Optional.empty());
             lenient().when(transactionRepository.save(any(Transaction.class)))
                     .thenAnswer(inv -> inv.getArgument(0));

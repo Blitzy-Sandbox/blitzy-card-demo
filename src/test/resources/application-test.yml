@@ -230,9 +230,18 @@ spring:
       # already been closed.
       minimum-idle: 0
       connection-test-query: SELECT 1
-      # Explicit transaction boundaries — every @Transactional service test
-      # opens its own JDBC tx; nothing auto-commits silently.
-      auto-commit: false
+      # BUG #1 fix (QA CP5 — refined): autoCommit=true matches the JDBC
+      # default. Spring's @Transactional toggles autoCommit=false at tx
+      # begin and restores autoCommit=true on commit/rollback — explicit
+      # transactional boundaries are preserved. Setting auto-commit=false
+      # at the pool level left every leased connection in PostgreSQL's
+      # non-IDLE implicit-transaction state, causing Spring's
+      # setTransactionIsolation call to fail mid-tx in any test that
+      # exercises Spring Batch's SimpleJobRepository (annotated
+      # @Transactional(isolation = Isolation.SERIALIZABLE)). Aligning
+      # the test profile with prod/local prevents the runtime drift
+      # exposed by direct JobLauncher invocations.
+      auto-commit: true
       idle-timeout: 300000
       max-lifetime: 600000
       connection-timeout: 20000

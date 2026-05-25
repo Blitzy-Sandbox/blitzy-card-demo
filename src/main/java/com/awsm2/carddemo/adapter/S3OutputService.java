@@ -343,6 +343,124 @@ public class S3OutputService {
     }
 
     /**
+     * Writes <em>all</em> rejection records for a single batch run as
+     * one S3 object, preserving the COBOL DALYREJS sequential-file
+     * semantics from {@code app/jcl/POSTTRAN.jcl} (DD {@code DALYREJS}
+     * &mdash; GDG {@code (+1)} = "one dataset per batch run").
+     *
+     * <p><b>BUG #5 fix (QA CP5):</b> The original
+     * {@link #writeRejection(String, String) writeRejection(String, String)}
+     * call path was invoked once per reject record; because S3 does not
+     * support an append operation, each PUT to the same
+     * {@code dalyrejs/yyyy/MM/dd/{batchRunId}.rejs} key replaced the
+     * previous object content. Only S3 versioning preserved the older
+     * rejects, and a current-version GET returned solely the last
+     * record written. In any environment without bucket versioning the
+     * earlier records were permanently lost &mdash; a confirmed
+     * violation of the AAP &sect;0.7.2 "Audit trail content must be
+     * preserved exactly" rule.</p>
+     *
+     * <p>This method accepts the full list of formatted rejection
+     * records for a batch run, joins them with {@code \n} separators
+     * (matching the line-by-line semantics of the original
+     * {@code WRITE FD-DALYREJS-REC} statements), and performs a
+     * <em>single</em> {@link #putObject} call. The resulting S3 object
+     * &mdash; one per batch run, identical key format
+     * {@code dalyrejs/yyyy/MM/dd/{batchRunId}.rejs} &mdash; contains
+     * every reject for that run in the order they were appended,
+     * directly comparable to the original DALYREJS GDG dataset.</p>
+     *
+     * <h3>Idempotency &amp; Re-runs</h3>
+     *
+     * <p>Because the bucket has versioning enabled (Terraform), a
+     * re-run with the same {@code batchRunId} creates a new version of
+     * the object rather than overwriting historical data. Auditors
+     * can still enumerate prior versions via the S3 ListObjectVersions
+     * API. This preserves the "one immutable dataset per batch run"
+     * regulatory guarantee inherited from the original GDG generations
+     * pattern.</p>
+     *
+     * <h3>Empty Lists</h3>
+     *
+     * <p>If the supplied {@code records} list is empty, no S3 PUT is
+     * performed and the method returns silently. The COBOL job emits
+     * no DALYREJS GDG generation when no records are rejected, so the
+     * empty-list short-circuit faithfully preserves that semantic.
+     * Callers may therefore unconditionally invoke this method at the
+     * end of every batch run without first checking the list size.</p>
+     *
+     * <h3>SSE-KMS, Metadata, and Provenance</h3>
+     *
+     * <p>The PUT uses the same SSE-KMS encryption (customer-managed
+     * CMK ARN from {@code carddemo.aws.kms.key-arn}) and provenance
+     * metadata as
+     * {@link #writeRejection(String, String) writeRejection}:
+     * {@code cobol-source = "CBTRN02C.2500-WRITE-REJECT-REC"},
+     * {@code jcl-dd = "DALYREJS"}, and
+     * {@code batch-run-id = batchRunId}. This guarantees byte-for-byte
+     * compatibility with any downstream tooling that reads the
+     * provenance metadata from the per-record {@code writeRejection}
+     * objects.</p>
+     *
+     * @param batchRunId unique batch execution identifier (typically
+     *                   the Step Functions execution ARN suffix); used
+     *                   both as the S3 key sequence and as the
+     *                   {@code x-amz-meta-batch-run-id} metadata
+     *                   header. Must not be {@code null} or blank
+     * @param records    list of pre-formatted 430-byte rejection
+     *                   records (each containing the original 350-byte
+     *                   transaction body + the 80-byte validation
+     *                   trailer with reason code + description). Must
+     *                   not be {@code null}; may be empty (in which
+     *                   case this method is a no-op). Individual
+     *                   record elements must not be {@code null}.
+     * @throws IllegalArgumentException if {@code batchRunId} is
+     *                                  null/blank or {@code records}
+     *                                  is null or contains null
+     *                                  elements
+     * @throws CardDemoException with reason code
+     *         {@link #REASON_CODE_KMS_KEY_MISSING},
+     *         {@link #REASON_CODE_BUCKET_MISSING}, or
+     *         {@link #REASON_CODE_PUT_ERROR}
+     */
+    // Replaces: CBTRN02C 2500-WRITE-REJECT-REC (multi-record batch flush) +
+    //           POSTTRAN.jcl DALYREJS DD allocation (one GDG generation per batch run)
+    public void writeRejections(String batchRunId, List<String> records) {
+        validateBatchRunId(batchRunId);
+        Objects.requireNonNull(records, "records must not be null");
+        // Empty short-circuit — the COBOL job emits no DALYREJS GDG
+        // generation when no records are rejected, so we faithfully
+        // preserve that semantic (no S3 PUT either). Callers may
+        // unconditionally invoke this method at end of batch.
+        if (records.isEmpty()) {
+            return;
+        }
+        // Validate every element before any IO — fail-fast guard.
+        for (int i = 0; i < records.size(); i++) {
+            if (records.get(i) == null) {
+                throw new IllegalArgumentException(
+                        "records[" + i + "] must not be null");
+            }
+        }
+        // Sequential-file semantic: one line per record, trailing LF
+        // after the last record so downstream UNIX/Linux readers can
+        // split via `wc -l` / `split` / etc. without missing the last
+        // line. String.join + a trailing '\n' precisely reproduces the
+        // byte layout of N consecutive `WRITE FD-DALYREJS-REC` calls
+        // in the original COBOL.
+        final String payload = String.join("\n", records) + '\n';
+        final byte[] bytes = payload.getBytes(StandardCharsets.US_ASCII);
+
+        final String key = buildKey("dalyrejs", batchRunId, "rejs");
+        final Map<String, String> metadata = buildMetadata(
+                "CBTRN02C.2500-WRITE-REJECT-REC", "DALYREJS", batchRunId);
+        // Single PUT with the assembled byte array — the central PUT
+        // method enforces SSE-KMS encryption and content-length headers
+        // (AAP §0.7.1).
+        putObject(outputBucket, key, bytes, CONTENT_TYPE_TEXT_ASCII, metadata);
+    }
+
+    /**
      * Writes a single system-generated transaction line to the
      * {@code systran/} S3 prefix.
      *

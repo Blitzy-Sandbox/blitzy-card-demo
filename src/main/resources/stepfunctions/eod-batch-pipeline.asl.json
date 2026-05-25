@@ -57,12 +57,24 @@
             {
               "Name": "MSK_BOOTSTRAP_SERVERS",
               "Value.$": "$.context.kafkaBootstrapServers"
+            },
+            {
+              "Name": "AWS_REGION",
+              "Value.$": "$.context.awsRegion"
+            },
+            {
+              "Name": "ECS_CLUSTER_NAME",
+              "Value.$": "$.context.ecsClusterName"
+            },
+            {
+              "Name": "OPENSEARCH_ENDPOINT",
+              "Value.$": "$.context.openSearchEndpoint"
             }
           ]
         }
       },
       "ResultPath": "$.postTransResult",
-      "TimeoutSeconds": 3600,
+      "TimeoutSeconds": 7200,
       "Retry": [
         {
           "ErrorEquals": [
@@ -134,12 +146,24 @@
             {
               "Name": "MSK_BOOTSTRAP_SERVERS",
               "Value.$": "$.context.kafkaBootstrapServers"
+            },
+            {
+              "Name": "AWS_REGION",
+              "Value.$": "$.context.awsRegion"
+            },
+            {
+              "Name": "ECS_CLUSTER_NAME",
+              "Value.$": "$.context.ecsClusterName"
+            },
+            {
+              "Name": "OPENSEARCH_ENDPOINT",
+              "Value.$": "$.context.openSearchEndpoint"
             }
           ]
         }
       },
       "ResultPath": "$.intCalcResult",
-      "TimeoutSeconds": 3600,
+      "TimeoutSeconds": 7200,
       "Retry": [
         {
           "ErrorEquals": [
@@ -203,12 +227,28 @@
             {
               "Name": "KMS_KEY_ARN",
               "Value.$": "$.context.kmsKeyArn"
+            },
+            {
+              "Name": "AWS_REGION",
+              "Value.$": "$.context.awsRegion"
+            },
+            {
+              "Name": "ECS_CLUSTER_NAME",
+              "Value.$": "$.context.ecsClusterName"
+            },
+            {
+              "Name": "OPENSEARCH_ENDPOINT",
+              "Value.$": "$.context.openSearchEndpoint"
+            },
+            {
+              "Name": "MSK_BOOTSTRAP_SERVERS",
+              "Value.$": "$.context.mskBootstrapServers"
             }
           ]
         }
       },
       "ResultPath": "$.combTranResult",
-      "TimeoutSeconds": 3600,
+      "TimeoutSeconds": 7200,
       "Retry": [
         {
           "ErrorEquals": [

@@ -238,7 +238,22 @@ spring:
       # connections beyond 60 s) — emits a warning with the full stack
       # trace identifying the leaking caller.
       leak-detection-threshold: 60000
-      auto-commit: false                # explicit @Transactional boundaries
+      # BUG #1 fix (QA CP5 — refined): autoCommit=true matches the JDBC
+      # default and keeps the connection IDLE between leases. Spring's
+      # @Transactional toggles autoCommit=false at tx begin, executes
+      # SQL, commits/rolls back, and resets to autoCommit=true via
+      # DataSourceUtils.resetConnectionAfterTransaction — transactional
+      # boundaries remain explicit. The previous `auto-commit: false`
+      # setting left every leased connection in PostgreSQL's non-IDLE
+      # implicit-transaction state, causing Spring's
+      # setTransactionIsolation call to fail mid-tx. Spring Batch's
+      # SimpleJobRepository (annotated @Transactional(isolation =
+      # Isolation.SERIALIZABLE)) hits this on every metadata operation,
+      # blocking AWS Batch / direct JobLauncher invocations entirely.
+      auto-commit: true
+      # Defence in depth: harmless when autoCommit=true (Hikari ignores
+      # this flag in that mode) but documented for future safety.
+      isolate-internal-queries: true
       connection-test-query: SELECT 1
 
   # ---------------------------------------------------------------------------

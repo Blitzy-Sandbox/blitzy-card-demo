@@ -27,6 +27,7 @@ import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepContribution;
 import org.springframework.batch.core.StepExecution;
@@ -294,6 +295,20 @@ public class TransactionReportJob {
     private final AuditLogService auditLogService;
 
     /**
+     * Shared {@link JobParametersValidator} bean (defined in
+     * {@link BatchJobConfig#standardJobParametersValidator()}) that
+     * enforces the mandatory {@code batchRunId} JobParameter on every
+     * launch &mdash; preventing untraceable batch executions per the
+     * AAP &sect;0.7.1 audit-traceability rule.
+     *
+     * <p>The schema's exposed Job factory signature is the no-arg
+     * {@code transactionReportJob()}, so the validator is injected
+     * here as a constructor field and referenced from the no-arg Job
+     * factory method via {@code this.standardJobParametersValidator}.</p>
+     */
+    private final JobParametersValidator standardJobParametersValidator;
+
+    /**
      * Externalized configuration knob that lets operators tag the
      * audit document with a deployment-specific label without
      * recompiling. Defaults to the COBOL program identifier
@@ -319,23 +334,30 @@ public class TransactionReportJob {
      * {@code auditSourceLabel} is property-injection (separate from
      * bean DI) and therefore not a constructor parameter.
      *
-     * @param jobRepository            Spring Batch metadata repository
-     *                                 (from {@code BatchConfig})
-     * @param transactionManager       JPA transaction manager (from
-     *                                 {@code JpaConfig} via Spring Boot
-     *                                 auto-configuration)
-     * @param transactionReportService the COBOL CBTRN03C report-
-     *                                 generation service
-     * @param auditLogService          the audit-log adapter
+     * @param jobRepository                  Spring Batch metadata repository
+     *                                       (from {@code BatchConfig})
+     * @param transactionManager             JPA transaction manager (from
+     *                                       {@code JpaConfig} via Spring Boot
+     *                                       auto-configuration)
+     * @param transactionReportService       the COBOL CBTRN03C report-
+     *                                       generation service
+     * @param auditLogService                the audit-log adapter
+     * @param standardJobParametersValidator the shared JobParameters
+     *                                       validator bean from
+     *                                       {@link BatchJobConfig} that
+     *                                       enforces the mandatory
+     *                                       {@code batchRunId} parameter
      */
     public TransactionReportJob(JobRepository jobRepository,
                                 PlatformTransactionManager transactionManager,
                                 TransactionReportService transactionReportService,
-                                AuditLogService auditLogService) {
+                                AuditLogService auditLogService,
+                                JobParametersValidator standardJobParametersValidator) {
         this.jobRepository = jobRepository;
         this.transactionManager = transactionManager;
         this.transactionReportService = transactionReportService;
         this.auditLogService = auditLogService;
+        this.standardJobParametersValidator = standardJobParametersValidator;
     }
 
     /**
@@ -362,7 +384,13 @@ public class TransactionReportJob {
     @Bean
     public Job transactionReportJob() {
         // Replaces: app/jcl/TRANREPT.jcl EXEC PGM=CBTRN03C
+        // Wire the shared standardJobParametersValidator (injected via
+        // the constructor as this.standardJobParametersValidator since
+        // the schema-exposed signature is the no-arg
+        // transactionReportJob()) so every launch is gated on a
+        // non-blank batchRunId (AAP §0.7.1 audit-traceability rule).
         return new JobBuilder(JOB_NAME, jobRepository)
+                .validator(standardJobParametersValidator)
                 .listener(new JobExecutionListener() {
 
                     @Override

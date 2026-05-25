@@ -1456,4 +1456,243 @@ class S3OutputServiceTest {
                     "Trailing .rpt must be stripped from reportId to avoid duplicate suffix");
         }
     }
+
+    // =========================================================================
+    // Phase 13 — writeRejections (BUG #5 fix) tests
+    // =========================================================================
+
+    /**
+     * Phase 13 groups all
+     * {@link S3OutputService#writeRejections(String, List)} tests. These
+     * tests verify the BUG #5 (QA CP5) fix: the multi-record DALYREJS flush
+     * MUST execute exactly one S3 PUT per batch run with all rejection
+     * records joined by {@code \n} separators plus a trailing {@code \n},
+     * preserving the COBOL DALYREJS GDG ("one dataset per batch run")
+     * semantic. The previous per-record {@code writeRejection(String, String)}
+     * call path silently overwrote previous PUTs to the same key, requiring
+     * S3 versioning to recover prior rejects &mdash; a violation of the
+     * AAP &sect;0.7.2 "Audit trail content must be preserved exactly" rule.
+     *
+     * <p>Test scope:</p>
+     * <ul>
+     *   <li>Single PUT semantics (multi-record buffer flushed once)</li>
+     *   <li>Key format identical to per-record writeRejection
+     *       ({@code dalyrejs/yyyy/MM/dd/{batchRunId}.rejs})</li>
+     *   <li>SSE-KMS encryption with the configured CMK ARN</li>
+     *   <li>{@code text/plain; charset=US-ASCII} content type</li>
+     *   <li>Provenance metadata identical to per-record writeRejection</li>
+     *   <li>Newline join contract: {@code \n} between records + trailing
+     *       {@code \n} after final record</li>
+     *   <li>Empty-list short-circuit (no S3 PUT, no exception)</li>
+     *   <li>Null/blank batchRunId rejection (IllegalArgumentException)</li>
+     *   <li>Null list rejection (NullPointerException)</li>
+     *   <li>Null element in list rejection (IllegalArgumentException with
+     *       precise index in the message)</li>
+     *   <li>US-ASCII charset encoding for every byte uploaded</li>
+     * </ul>
+     */
+    @Nested
+    @DisplayName("writeRejections — BUG #5 fix: multi-record DALYREJS flush as a single S3 PUT")
+    class WriteRejectionsTests {
+
+        @Test
+        @DisplayName("Test 13.1: multi-record batch issues exactly one PUT with newline-joined payload")
+        void writeRejections_multiRecord_issuesSinglePutWithJoinedPayload() throws Exception {
+            List<String> rejects = Arrays.asList(
+                    "REJECT-RECORD-001",
+                    "REJECT-RECORD-002",
+                    "REJECT-RECORD-003");
+
+            service.writeRejections(BATCH_RUN_ID, rejects);
+
+            // Exactly one PUT — multi-record flush MUST collapse into a
+            // single S3 object per batch run (DALYREJS GDG semantic).
+            ArgumentCaptor<PutObjectRequest> reqCaptor =
+                    ArgumentCaptor.forClass(PutObjectRequest.class);
+            ArgumentCaptor<RequestBody> bodyCaptor =
+                    ArgumentCaptor.forClass(RequestBody.class);
+            verify(s3Client, times(1))
+                    .putObject(reqCaptor.capture(), bodyCaptor.capture());
+
+            // Payload bytes — records joined by '\n' with trailing '\n'
+            // (matches sequential WRITE FD-DALYREJS-REC byte layout).
+            byte[] uploaded = bodyCaptor.getValue()
+                    .contentStreamProvider().newStream().readAllBytes();
+            byte[] expected = "REJECT-RECORD-001\nREJECT-RECORD-002\nREJECT-RECORD-003\n"
+                    .getBytes(StandardCharsets.US_ASCII);
+            assertArrayEquals(expected, uploaded,
+                    "Payload must be records joined by '\\n' with a trailing '\\n'");
+        }
+
+        @Test
+        @DisplayName("Test 13.2: PUT carries dalyrejs/yyyy/MM/dd/{batchRunId}.rejs key (identical to writeRejection)")
+        void writeRejections_carriesIdenticalKeyAsWriteRejection() {
+            service.writeRejections(BATCH_RUN_ID,
+                    Collections.singletonList("REJECT-PAYLOAD"));
+
+            ArgumentCaptor<PutObjectRequest> reqCaptor =
+                    ArgumentCaptor.forClass(PutObjectRequest.class);
+            verify(s3Client).putObject(reqCaptor.capture(), any(RequestBody.class));
+
+            PutObjectRequest req = reqCaptor.getValue();
+            assertEquals(BUCKET, req.bucket(),
+                    "PutObjectRequest.bucket() must equal the configured output bucket");
+            assertEquals("dalyrejs/" + today() + "/" + BATCH_RUN_ID + ".rejs", req.key(),
+                    "Key MUST be byte-identical to writeRejection so downstream "
+                            + "tooling reading the DALYREJS prefix sees no behavioral change");
+        }
+
+        @Test
+        @DisplayName("Test 13.3: PUT enforces SSE-KMS with the configured CMK ARN (AAP §0.7.1)")
+        void writeRejections_enforcesSseKmsWithConfiguredArn() {
+            service.writeRejections(BATCH_RUN_ID,
+                    Collections.singletonList("REJ-1"));
+
+            ArgumentCaptor<PutObjectRequest> reqCaptor =
+                    ArgumentCaptor.forClass(PutObjectRequest.class);
+            verify(s3Client).putObject(reqCaptor.capture(), any(RequestBody.class));
+
+            PutObjectRequest req = reqCaptor.getValue();
+            assertEquals(ServerSideEncryption.AWS_KMS, req.serverSideEncryption(),
+                    "Server-side encryption MUST be AWS_KMS — SSE-S3/AES256 forbidden");
+            assertEquals(KMS_ARN, req.ssekmsKeyId(),
+                    "ssekmsKeyId MUST be the configured customer-managed key ARN");
+        }
+
+        @Test
+        @DisplayName("Test 13.4: content type is text/plain; charset=US-ASCII (DALYREJS COBOL-fixed-width contract)")
+        void writeRejections_setsUsAsciiContentType() {
+            service.writeRejections(BATCH_RUN_ID,
+                    Collections.singletonList("R1"));
+
+            ArgumentCaptor<PutObjectRequest> reqCaptor =
+                    ArgumentCaptor.forClass(PutObjectRequest.class);
+            verify(s3Client).putObject(reqCaptor.capture(), any(RequestBody.class));
+            assertEquals("text/plain; charset=US-ASCII",
+                    reqCaptor.getValue().contentType(),
+                    "Content-Type MUST be text/plain; charset=US-ASCII to match "
+                            + "the COBOL fixed-width DALYREJS record encoding");
+        }
+
+        @Test
+        @DisplayName("Test 13.5: provenance metadata matches per-record writeRejection (cobol-source, jcl-dd, batch-run-id)")
+        void writeRejections_attachesIdenticalProvenanceMetadata() {
+            service.writeRejections(BATCH_RUN_ID,
+                    Arrays.asList("R1", "R2"));
+
+            ArgumentCaptor<PutObjectRequest> reqCaptor =
+                    ArgumentCaptor.forClass(PutObjectRequest.class);
+            verify(s3Client).putObject(reqCaptor.capture(), any(RequestBody.class));
+
+            Map<String, String> metadata = reqCaptor.getValue().metadata();
+            assertNotNull(metadata, "metadata must be populated");
+            assertEquals("CBTRN02C.2500-WRITE-REJECT-REC",
+                    metadata.get("cobol-source"),
+                    "metadata.cobol-source must record the COBOL paragraph per AAP §0.7.3");
+            assertEquals("DALYREJS", metadata.get("jcl-dd"),
+                    "metadata.jcl-dd must record the JCL DD allocation per AAP §0.7.3");
+            assertEquals(BATCH_RUN_ID, metadata.get("batch-run-id"),
+                    "metadata.batch-run-id must record the supplied batch run id");
+        }
+
+        @Test
+        @DisplayName("Test 13.6: empty list short-circuits (no S3 PUT, no exception) — matches GDG no-generation semantic")
+        void writeRejections_emptyList_shortCircuitsWithoutPut() {
+            // The COBOL job emits no DALYREJS GDG generation when no
+            // records are rejected (AAP §0.7.2 "must preserve all
+            // financial transaction logic"); the empty-list short-circuit
+            // faithfully preserves that semantic.
+            service.writeRejections(BATCH_RUN_ID, Collections.emptyList());
+
+            verify(s3Client, never())
+                    .putObject(any(PutObjectRequest.class), any(RequestBody.class));
+        }
+
+        @Test
+        @DisplayName("Test 13.7: single-record list still produces a trailing '\\n' (sequential file semantic)")
+        void writeRejections_singleRecord_hasTrailingNewline() throws Exception {
+            service.writeRejections(BATCH_RUN_ID,
+                    Collections.singletonList("R-SINGLE"));
+
+            ArgumentCaptor<RequestBody> bodyCaptor =
+                    ArgumentCaptor.forClass(RequestBody.class);
+            verify(s3Client).putObject(any(PutObjectRequest.class), bodyCaptor.capture());
+
+            byte[] uploaded = bodyCaptor.getValue()
+                    .contentStreamProvider().newStream().readAllBytes();
+            assertArrayEquals(
+                    "R-SINGLE\n".getBytes(StandardCharsets.US_ASCII),
+                    uploaded,
+                    "Single-record flush MUST still emit a trailing '\\n' so "
+                            + "downstream line-counting (wc -l) discovers the record");
+        }
+
+        @Test
+        @DisplayName("Test 13.8: payload bytes are US-ASCII (PCI-DSS log discipline + COBOL EBCDIC-translated text)")
+        void writeRejections_payloadIsUsAsciiEncoded() throws Exception {
+            // The COBOL FD-DALYREJS-REC fixture is a fixed-width ASCII
+            // record (per app/cbl/CBTRN02C.cbl and POSTTRAN.jcl DD); we
+            // assert the upload bytes equal the US-ASCII encoded payload
+            // to defend against any future encoding regression (e.g.
+            // UTF-8 BOM injection).
+            String record = "ABC123-DEF456";  // pure ASCII fixture
+            service.writeRejections(BATCH_RUN_ID,
+                    Collections.singletonList(record));
+
+            ArgumentCaptor<RequestBody> bodyCaptor =
+                    ArgumentCaptor.forClass(RequestBody.class);
+            verify(s3Client).putObject(any(PutObjectRequest.class), bodyCaptor.capture());
+
+            byte[] uploaded = bodyCaptor.getValue()
+                    .contentStreamProvider().newStream().readAllBytes();
+            assertArrayEquals(
+                    (record + "\n").getBytes(StandardCharsets.US_ASCII),
+                    uploaded,
+                    "Payload bytes MUST be US-ASCII encoded — no UTF-8/UTF-16/EBCDIC");
+        }
+
+        // ------ Input validation: batchRunId -------------------------------
+
+        @Test
+        @DisplayName("Test 13.9: null batchRunId raises IllegalArgumentException, no SDK call")
+        void writeRejections_nullBatchRunId_throwsIllegalArgumentException() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> service.writeRejections(null,
+                            Collections.singletonList("R1")));
+            verifyNoInteractions(s3Client);
+        }
+
+        @Test
+        @DisplayName("Test 13.10: blank batchRunId raises IllegalArgumentException, no SDK call")
+        void writeRejections_blankBatchRunId_throwsIllegalArgumentException() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> service.writeRejections("   ",
+                            Collections.singletonList("R1")));
+            verifyNoInteractions(s3Client);
+        }
+
+        // ------ Input validation: records argument ------------------------
+
+        @Test
+        @DisplayName("Test 13.11: null records list raises NullPointerException (Objects.requireNonNull contract)")
+        void writeRejections_nullList_throwsNullPointer() {
+            assertThrows(NullPointerException.class,
+                    () -> service.writeRejections(BATCH_RUN_ID, null));
+            verifyNoInteractions(s3Client);
+        }
+
+        @Test
+        @DisplayName("Test 13.12: null element inside records list raises IllegalArgumentException with index")
+        void writeRejections_listWithNullElement_throwsIllegalArgumentException() {
+            // Arrays.asList permits null elements, so this fixture
+            // exercises the per-element null guard in the SUT.
+            List<String> bad = Arrays.asList("R1", null, "R3");
+            IllegalArgumentException ex = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> service.writeRejections(BATCH_RUN_ID, bad));
+            assertTrue(ex.getMessage().contains("records[1]"),
+                    "Exception message MUST identify the null index for diagnostics");
+            verifyNoInteractions(s3Client);
+        }
+    }
 }

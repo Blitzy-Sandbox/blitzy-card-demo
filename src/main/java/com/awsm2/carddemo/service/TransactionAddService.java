@@ -313,26 +313,59 @@ public class TransactionAddService {
      * {@code ADD 1 TO WS-TRAN-ID-N} arithmetic (per AAP &sect;0.7.1
      * implementation rules).
      *
-     * <p>Per AAP &sect;0.7.3, the
-     * {@link TransactionRepository#findTopByOrderByTranIdDesc()}
-     * derived query returns the {@link Transaction} entity (not just
-     * the ID) per Spring Data JPA convention; the {@code tranId} field
-     * is extracted via {@link Transaction#getTranId()} and an empty
-     * journal (initial install) is seeded with {@link #SEED_TRAN_ID}.</p>
+     * <p><b>BUG #6 fix (QA CP5):</b> The lookup is scoped to
+     * <em>16-digit all-numeric</em> {@code tran_id} values only, via
+     * {@link TransactionRepository#findTopByNumericTranIdOrderByTranIdDesc()}.
+     * The previous implementation used the unfiltered
+     * {@link TransactionRepository#findTopByOrderByTranIdDesc()} method,
+     * which could return a non-numeric ID inserted by the CP5 batch
+     * (e.g. {@code "HAPPY00000000099"} from the daily-transaction
+     * journal). In that case {@code new BigDecimal(maxId)} threw
+     * {@link NumberFormatException}, the catch block reseeded
+     * {@code numeric} to {@link BigDecimal#ZERO}, and this method
+     * returned {@code "0000000000000001"} &mdash; colliding with any
+     * other reseed caller (notably
+     * {@code BillPaymentService.nextTransactionId()}) and causing JPA
+     * {@code save()} to silently UPDATE the prior record on the
+     * duplicate primary key. By filtering at the SQL layer to
+     * {@code tran_id ~ '^[0-9]{16}$'} we guarantee {@code maxId} is
+     * always parseable as a positive integer, so the
+     * {@code NumberFormatException} catch becomes a defensive
+     * (theoretically unreachable) safeguard instead of a load-bearing
+     * code path.</p>
+     *
+     * <p>Per AAP &sect;0.7.3, the new repository method returns the
+     * {@link Transaction} entity (not just the ID) per Spring Data
+     * convention; the {@code tranId} field is extracted via
+     * {@link Transaction#getTranId()} and an empty numeric-ID journal
+     * (initial install <em>or</em> a journal that contains only
+     * non-numeric batch IDs) is seeded with {@link #SEED_TRAN_ID}.</p>
      */
     private String nextTransactionId() {
-        String maxId = transactionRepository.findTopByOrderByTranIdDesc()
-                                            .map(Transaction::getTranId)
-                                            .orElse(SEED_TRAN_ID);
+        // BUG #6 fix: filter to all-numeric 16-digit tran_ids so the
+        // CP5 batch's alphanumeric DALYTRAN-IDs cannot poison this
+        // online sequence (AAP §0.7.2 financial-data-integrity rule).
+        String maxId = transactionRepository
+                .findTopByNumericTranIdOrderByTranIdDesc()
+                .map(Transaction::getTranId)
+                .orElse(SEED_TRAN_ID);
 
         BigDecimal numeric;
         try {
             numeric = new BigDecimal(maxId);
         } catch (NumberFormatException nfe) {
-            // Defensive — COBOL stores tran_id as 16-character numeric;
-            // a non-numeric value in the table indicates a corruption
-            // upstream. Treat as max+1 from the seed.
-            LOG.warn("TransactionAddService: non-numeric tran_id encountered; reseeding");
+            // Defensive — the regex filter `^[0-9]{16}$` already
+            // guarantees an all-digit string of length 16, so this
+            // branch should be unreachable. We keep it as a safety
+            // net against future schema/seeding changes that could
+            // introduce e.g. unicode-digit characters that match the
+            // POSIX regex but not Java's BigDecimal numeric parser.
+            // The reseed to ZERO is preserved (rather than thrown)
+            // to maintain the existing public contract: this method
+            // never propagates parse failures.
+            LOG.warn("TransactionAddService: non-numeric tran_id "
+                    + "encountered after numeric filter; reseeding "
+                    + "(should be impossible — investigate)");
             numeric = BigDecimal.ZERO;
         }
 

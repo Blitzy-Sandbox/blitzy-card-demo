@@ -32,6 +32,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecutionListener;
+import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.job.builder.JobBuilder;
@@ -308,17 +309,31 @@ public class CombineTransactionsJob {
      * inline anonymous listener that previously duplicated lifecycle-
      * audit logic.</p>
      *
+     * <p>Parameter validation is enforced via the shared
+     * {@code standardJobParametersValidator} bean defined in
+     * {@link BatchJobConfig#standardJobParametersValidator()}. This
+     * validator rejects any launch attempt that omits the mandatory
+     * {@code batchRunId} JobParameter &mdash; preventing untraceable
+     * batch executions (AAP &sect;0.7.1 audit-traceability rule).</p>
+     *
      * @param sharedAuditJobExecutionListener the shared lifecycle audit
      *                                        listener bean from
+     *                                        {@link BatchJobConfig}
+     * @param standardJobParametersValidator  the shared JobParameters
+     *                                        validator bean from
      *                                        {@link BatchJobConfig}
      * @return the configured {@link Job} bean — registered in the
      *         {@code ApplicationContext} under the name
      *         {@value #JOB_NAME}
      */
     @Bean
-    public Job combineTransactionsJob(JobExecutionListener sharedAuditJobExecutionListener) {
+    public Job combineTransactionsJob(JobExecutionListener sharedAuditJobExecutionListener,
+                                      JobParametersValidator standardJobParametersValidator) {
         // Replaces: app/jcl/COMBTRAN.jcl entire job stream (STEP05R DFSORT + STEP10 IDCAMS REPRO)
+        // Wire the validator so every launch is gated on a non-blank
+        // batchRunId (AAP §0.7.1 audit-traceability).
         return new JobBuilder(JOB_NAME, jobRepository)
+                .validator(standardJobParametersValidator)
                 .listener(sharedAuditJobExecutionListener)
                 .start(combineAndLoadStep(sharedAuditJobExecutionListener))
                 .build();

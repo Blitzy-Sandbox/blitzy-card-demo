@@ -935,6 +935,24 @@ public class BillPaymentService {
      * non-numeric existing ID (defensive guard against data-quality
      * issues) re-seeds from zero with a warning log.</p>
      *
+     * <p><b>BUG #6 fix (QA CP5):</b> The lookup is scoped to
+     * <em>16-digit all-numeric</em> {@code tran_id} values only via
+     * {@link TransactionRepository#findTopByNumericTranIdOrderByTranIdDesc()}.
+     * The previous implementation used the unfiltered
+     * {@link TransactionRepository#findTopByOrderByTranIdDesc()},
+     * which could return an alphanumeric batch ID (e.g.
+     * {@code "HAPPY00000000099"}) because {@code 'H' > '9'} under
+     * lexical sort. That caused {@code new BigDecimal(maxId)} to throw,
+     * the catch block to reseed to {@code 0}, and this method to emit
+     * {@code "0000000000000001"} &mdash; colliding with any other
+     * reseed caller (notably
+     * {@code TransactionAddService.nextTransactionId()}) and causing
+     * JPA {@code save()} to silently UPDATE the prior record on the
+     * duplicate primary key (confirmed data loss in QA CP5 regression
+     * tests). Filtering at the SQL layer to
+     * {@code tran_id ~ '^[0-9]{16}$'} guarantees {@code maxId} is
+     * always parseable.</p>
+     *
      * @return the new 16-digit zero-padded transaction ID
      * @throws OnSizeErrorException if the 16-digit ID space has been
      *                              exhausted (i.e., MAX-TRAN-ID + 1
@@ -942,12 +960,16 @@ public class BillPaymentService {
      */
     // COBOL: COBIL00C:PROCESS-ENTER-KEY (L212-L217)
     private String nextTransactionId() {
-        // findTopByOrderByTranIdDesc() returns Optional<Transaction> —
-        // we extract the tranId field (the COBOL TRAN-ID PIC 9(16))
-        // before incrementing. An empty journal (no rows yet) is
-        // treated as "0000000000000000" so ADD 1 yields the canonical
-        // first ID.
-        final String maxId = transactionRepository.findTopByOrderByTranIdDesc()
+        // BUG #6 fix: filter to all-numeric 16-digit tran_ids only so
+        // the CP5 batch's alphanumeric DALYTRAN-IDs cannot poison this
+        // online sequence (AAP §0.7.2 financial-data-integrity rule).
+        // findTopByNumericTranIdOrderByTranIdDesc() returns
+        // Optional<Transaction> — we extract the tranId field (the
+        // COBOL TRAN-ID PIC 9(16)) before incrementing. An empty
+        // numeric-id journal (no numeric rows yet) is treated as
+        // "0000000000000000" so ADD 1 yields the canonical first ID.
+        final String maxId = transactionRepository
+                .findTopByNumericTranIdOrderByTranIdDesc()
                 .map(Transaction::getTranId)
                 .orElse(SEED_TRAN_ID);
 
@@ -955,12 +977,15 @@ public class BillPaymentService {
         try {
             numeric = new BigDecimal(maxId.trim());
         } catch (NumberFormatException nfe) {
-            // Defensive: in production COBOL data the TRAN-ID column
-            // is always 16 decimal digits, but golden-output fixtures
-            // and test seeds could theoretically inject non-numeric
-            // values. Log and re-seed rather than fail.
-            LOG.warn("Non-numeric tranId encountered; re-seeding from zero ({})",
-                    maxId);
+            // Defensive: the regex filter `^[0-9]{16}$` already
+            // guarantees an all-digit string of length 16, so this
+            // branch should be unreachable. Kept as a safety net in
+            // case future fixtures introduce e.g. unicode-digit
+            // characters that match POSIX regex but fail Java's
+            // BigDecimal numeric parser. Log and re-seed rather than
+            // fail to preserve the existing public contract.
+            LOG.warn("Non-numeric tranId encountered after numeric "
+                    + "filter; re-seeding from zero ({})", maxId);
             numeric = BigDecimal.ZERO;
         }
         final BigDecimal next = numeric.add(BigDecimal.ONE);

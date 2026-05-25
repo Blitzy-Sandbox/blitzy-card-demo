@@ -124,9 +124,29 @@ spring:
     hikari:
       pool-name: CardDemoHikariCP
       connection-test-query: SELECT 1
-      # Explicit transaction boundaries: each Spring @Transactional method
-      # opens its own JDBC transaction; nothing is auto-committed.
-      auto-commit: false
+      # BUG #1 fix (QA CP5 — refined): Hikari hands out connections with
+      # autoCommit=true (the JDBC default). Spring's @Transactional
+      # toggles autoCommit=false at transaction begin, executes SQL,
+      # commits/rolls back, then restores autoCommit=true via
+      # DataSourceUtils.resetConnectionAfterTransaction. The previous
+      # `auto-commit: false` setting left every leased connection in
+      # PostgreSQL's implicit-transaction state (not IDLE), causing
+      # Spring's prepareConnectionForTransaction → setTransactionIsolation
+      # call to fail with "Cannot change transaction isolation level in
+      # the middle of a transaction." That blocked direct JobLauncher
+      # invocations (QA/admin paths) AND every @Transactional method
+      # that declares an explicit isolation level (Spring Batch's
+      # SimpleJobRepository is annotated @Transactional(isolation =
+      # Isolation.SERIALIZABLE) — every JobRepository operation goes
+      # through that interceptor). With autoCommit=true Hikari leases
+      # connections in IDLE state, Spring's setTransactionIsolation
+      # succeeds, and @Transactional semantics remain identical.
+      auto-commit: true
+      # Defence in depth: even with autoCommit=true the flag is harmless
+      # (HikariCP only honours it when autoCommit=false), so we keep it
+      # to document intent and to remain safe if anyone later flips
+      # auto-commit back.
+      isolate-internal-queries: true
       maximum-pool-size: 10
       minimum-idle: 2
       idle-timeout: 300000           # 5 minutes

@@ -17,6 +17,8 @@
 package com.awsm2.carddemo.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.apache.http.Header;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpEntityEnclosingRequest;
@@ -364,7 +366,28 @@ public class OpenSearchConfig {
         // signed connection serves all OpenSearch-bound operations across
         // both legacy (RestHighLevelClient) and typed (OpenSearchClient) APIs.
         final RestClient lowLevel = restHighLevelClient.getLowLevelClient();
-        return new RestClientTransport(lowLevel, new JacksonJsonpMapper(new ObjectMapper()));
+        //
+        // BUG #2 fix (QA CP5): Register JavaTimeModule on the ObjectMapper
+        // used by the OpenSearch typed client's JSON-P mapper. Without this
+        // module, the typed client serializes audit documents containing
+        // java.time.LocalDateTime / LocalDate fields (e.g., tranProcTs,
+        // postedTs) via Jackson default rules, which raise
+        // InvalidDefinitionException: "Java 8 date/time type
+        // `java.time.LocalDateTime` not supported by default". Every audit
+        // emission from AuditLogService.logTransactionEvent and
+        // logBatchJobLifecycle therefore fails, violating the AAP §0.6.5
+        // / §0.7.2 audit-trail requirement that OpenSearch indexes
+        // transaction logs and lifecycle events for regulatory queries.
+        //
+        // Disabling WRITE_DATES_AS_TIMESTAMPS additionally ensures the
+        // serialized form is an ISO-8601 string (e.g.
+        // "2026-05-20T11:30:00") rather than an epoch-millis number,
+        // matching the canonical OpenSearch date format and preserving
+        // human-readable audit traces.
+        final ObjectMapper objectMapper = new ObjectMapper();
+        objectMapper.registerModule(new JavaTimeModule());
+        objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        return new RestClientTransport(lowLevel, new JacksonJsonpMapper(objectMapper));
     }
 
     /**

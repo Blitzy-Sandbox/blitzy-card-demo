@@ -24,6 +24,7 @@ import java.util.Optional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -165,6 +166,75 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *         {@link Optional#empty()} if no transactions exist
      */
     Optional<Transaction> findTopByOrderByTranIdDesc();
+
+    /**
+     * Returns the transaction with the lexicographically highest
+     * <strong>16-character all-numeric</strong> {@code tran_id}, or
+     * {@link Optional#empty()} if no such transaction exists.
+     *
+     * <p><b>BUG #6 fix (QA CP5):</b> The original
+     * {@link #findTopByOrderByTranIdDesc()} method ignores the lexical
+     * domain of {@code tran_id} values. The CP5 batch
+     * ({@code TransactionPostingService.postDailyTransactions}) writes
+     * the {@code DALYTRAN-ID} verbatim into {@code Transaction.tran_id},
+     * and the COBOL daily-transaction journal often carries non-numeric
+     * identifiers (e.g. {@code "HAPPY00000000099"}). Because
+     * {@code 'H' > '9'} under {@code ORDER BY tran_id DESC}, the
+     * unfiltered query returns the batch's alphanumeric ID. Both
+     * {@code TransactionAddService.nextTransactionId()} and
+     * {@code BillPaymentService.nextTransactionId()} then attempt
+     * {@code new BigDecimal(maxId)}, catch the
+     * {@link NumberFormatException}, reseed to {@code 0}, and re-emit
+     * {@code "0000000000000001"} for every subsequent online posting.
+     * The second posting silently UPDATEs the first via JPA
+     * {@code save()} on the duplicate primary key &mdash; a confirmed
+     * data-loss violation of the AAP &sect;0.7.2 "must preserve all
+     * financial transaction logic" rule.</p>
+     *
+     * <p>This method scopes the query to {@code tran_id} values that
+     * match the strict 16-digit numeric mask used by the COBOL
+     * {@code WS-TRAN-ID-NUM} field
+     * ({@code app/cbl/COTRN02C.cbl} L444-L449), guaranteeing that
+     * {@code new BigDecimal(maxId).add(BigDecimal.ONE)} succeeds and
+     * therefore the next ID never collides with an existing record.</p>
+     *
+     * <p>The PostgreSQL regular-expression operator {@code ~} (POSIX
+     * regex match) is used directly via a {@link Query @Query}
+     * annotation rather than a derived method name because Spring Data
+     * JPA derived-query syntax does not support regex constraints.
+     * The pattern {@code ^[0-9]{16}$} matches exactly 16 ASCII digits
+     * with no other characters &mdash; the canonical form of the COBOL
+     * {@code WS-TRAN-ID-NUM PIC 9(16)} field.</p>
+     *
+     * <p>The COBOL {@code STARTBR} / {@code READPREV} / {@code ENDBR}
+     * MAX-ID pattern in {@code COTRN02C.cbl} returns the largest existing
+     * value; this method preserves that semantic exactly within the
+     * numeric-only sub-domain. Batch-inserted rows with non-numeric IDs
+     * still exist in the journal; they are simply excluded from this
+     * MAX-ID-generation lookup so they cannot poison the online
+     * ID-generation sequence.</p>
+     *
+     * <h3>Performance</h3>
+     *
+     * <p>PostgreSQL evaluates the regex against every row, but the
+     * {@code LIMIT 1} on the {@code ORDER BY tran_id DESC} primary-key
+     * B-tree means at most one matching row is fetched. For tables up
+     * to the demo-ready cutover scale (millions of rows) this is
+     * acceptable; if the production volume warrants further
+     * optimization, a partial functional index
+     * ({@code CREATE INDEX ... ON transactions (tran_id DESC) WHERE
+     * tran_id ~ '^[0-9]{16}$'}) can be added later via a Flyway
+     * migration without changing this method's contract.</p>
+     *
+     * @return the transaction with the highest 16-digit all-numeric
+     *         {@code tran_id}, or {@link Optional#empty()} if no
+     *         all-numeric transaction exists
+     */
+    @Query(value = "SELECT t.* FROM transactions t "
+            + "WHERE t.tran_id ~ '^[0-9]{16}$' "
+            + "ORDER BY t.tran_id DESC LIMIT 1",
+            nativeQuery = true)
+    Optional<Transaction> findTopByNumericTranIdOrderByTranIdDesc();
 
     /**
      * Returns transactions for a given card that fall within a

@@ -56,6 +56,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -237,6 +238,13 @@ class TransactionPostingServiceTest {
                 .thenReturn(Optional.of(xref));
         lenient().when(accountRepository.findById(ACCOUNT_ID))
                 .thenReturn(Optional.of(account));
+        // BUG #7 fix: production updateAccount now uses saveAndFlush
+        // (not save) to surface OptimisticLockingFailureException
+        // synchronously. Update mock accordingly. The save mock is
+        // kept for any legacy paths or future tests but the primary
+        // verification target is saveAndFlush.
+        lenient().when(accountRepository.saveAndFlush(any(Account.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
         lenient().when(accountRepository.save(any(Account.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
         lenient().when(tcatbalRepository.findById(any(
@@ -279,8 +287,11 @@ class TransactionPostingServiceTest {
             assertThat(result.returnCode()).isEqualTo(0);
 
             // No S3 writes, no Kafka publishes, no audit events
+            // (BUG #5 fix: writeRejections is the new buffered API).
             verify(s3OutputService, never()).writeRejection(
                     anyString(), anyString());
+            verify(s3OutputService, never()).writeRejections(
+                    anyString(), anyList());
             verify(kafkaEventPublisher, never()).publishTransactionPosted(
                     anyLong(), any(TransactionAddDto.class));
             verify(auditLogService, never()).logTransactionEvent(
@@ -313,8 +324,9 @@ class TransactionPostingServiceTest {
             // Cascade short-circuited: account lookup never invoked
             verify(accountRepository, never()).findById(anyLong());
             // S3 rejection write happened with the reject record
-            verify(s3OutputService).writeRejection(
-                    eq(EXPECTED_BATCH_RUN_ID), anyString());
+            // (BUG #5 fix: now via writeRejections buffered flush)
+            verify(s3OutputService).writeRejections(
+                    eq(EXPECTED_BATCH_RUN_ID), anyList());
         }
 
         @Test
@@ -580,7 +592,9 @@ class TransactionPostingServiceTest {
 
             ArgumentCaptor<Account> acctCaptor =
                     ArgumentCaptor.forClass(Account.class);
-            verify(accountRepository).save(acctCaptor.capture());
+            // BUG #7 fix: production now uses saveAndFlush so OLF
+            // surfaces synchronously for the retry loop.
+            verify(accountRepository).saveAndFlush(acctCaptor.capture());
             Account saved = acctCaptor.getValue();
             // ACCT-CURR-BAL increased by 100.00
             assertThat(saved.getAcctCurrBal())
@@ -605,7 +619,7 @@ class TransactionPostingServiceTest {
 
             ArgumentCaptor<Account> acctCaptor =
                     ArgumentCaptor.forClass(Account.class);
-            verify(accountRepository).save(acctCaptor.capture());
+            verify(accountRepository).saveAndFlush(acctCaptor.capture());
             Account saved = acctCaptor.getValue();
             // ACCT-CURR-BAL decreased by 75.00
             assertThat(saved.getAcctCurrBal())
@@ -630,7 +644,7 @@ class TransactionPostingServiceTest {
 
             ArgumentCaptor<Account> acctCaptor =
                     ArgumentCaptor.forClass(Account.class);
-            verify(accountRepository).save(acctCaptor.capture());
+            verify(accountRepository).saveAndFlush(acctCaptor.capture());
             // CYC-CREDIT unchanged at 100.00; CYC-DEBIT unchanged
             assertThat(acctCaptor.getValue().getAcctCurrCycCredit())
                     .isEqualByComparingTo(new BigDecimal("100.00"));
@@ -648,7 +662,7 @@ class TransactionPostingServiceTest {
 
             ArgumentCaptor<Account> acctCaptor =
                     ArgumentCaptor.forClass(Account.class);
-            verify(accountRepository).save(acctCaptor.capture());
+            verify(accountRepository).saveAndFlush(acctCaptor.capture());
             assertThat(acctCaptor.getValue().getAcctCurrBal().scale())
                     .isEqualTo(2);
             assertThat(acctCaptor.getValue().getAcctCurrCycCredit().scale())
@@ -656,20 +670,73 @@ class TransactionPostingServiceTest {
         }
 
         @Test
-        @DisplayName("OptimisticLockingFailureException at save wraps as CardDemoException with 109 semantics")
-        void optimisticLockFailure_wrappedAs109() {
+        @DisplayName("BUG #7: OptimisticLockingFailureException retries 3 times then writes reject 109 (no exception propagated)")
+        void optimisticLockFailure_retriesThenRejects109() {
+            // BUG #7 fix: the retry loop in attemptPostWithRetry catches
+            // CardDemoException("ACCOUNT_REWRITE_FAILED") (the wrapped
+            // OLF from updateAccount) up to MAX_OPTIMISTIC_LOCK_RETRIES
+            // times. On exhaustion, the record is written as a reject
+            // 109 (REJECT_ACCOUNT_REWRITE_FAILED) — NOT propagated as
+            // an exception. This preserves COBOL CBTRN02C L555-L558
+            // semantics where INVALID KEY sets reason 109 in working
+            // storage and the program continues with the next record.
             stubHappyPathSingleTransaction();
-            when(accountRepository.save(any(Account.class)))
+            when(accountRepository.saveAndFlush(any(Account.class)))
                     .thenThrow(new OptimisticLockingFailureException(
                             "version mismatch"));
 
-            // The exception propagates from the @Transactional postTransaction
-            // method back through postDailyTransactions to the caller.
-            assertThatThrownBy(() -> service.postDailyTransactions(BATCH_DATE))
-                    .isInstanceOf(CardDemoException.class)
-                    .hasMessageContaining("ACCOUNT RECORD NOT FOUND (109)")
-                    .extracting("reasonCode")
-                    .isEqualTo("ACCOUNT_REWRITE_FAILED");
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
+
+            // Job completes with rejectCount=1 and returnCode=4
+            assertThat(result.transactionCount()).isEqualTo(1);
+            assertThat(result.rejectCount()).isEqualTo(1);
+            assertThat(result.returnCode()).isEqualTo(4);
+
+            // saveAndFlush attempted MAX_OPTIMISTIC_LOCK_RETRIES (3) times
+            verify(accountRepository, times(3))
+                    .saveAndFlush(any(Account.class));
+
+            // Reject record buffered + flushed to S3 with code 109
+            ArgumentCaptor<List<String>> recordsCaptor =
+                    ArgumentCaptor.forClass(List.class);
+            verify(s3OutputService)
+                    .writeRejections(eq(EXPECTED_BATCH_RUN_ID),
+                            recordsCaptor.capture());
+            List<String> records = recordsCaptor.getValue();
+            assertThat(records).hasSize(1);
+            // 4-digit reject code starts at byte 350 (BODY_LENGTH)
+            assertThat(records.get(0)
+                    .substring(BODY_LENGTH, REASON_CODE_END))
+                    .isEqualTo("0109");
+        }
+
+        @Test
+        @DisplayName("BUG #7: OptimisticLockingFailureException recovers on retry attempt 2")
+        void optimisticLockFailure_recoversOnRetry() {
+            // Verifies the happy retry path: 1st attempt throws OLF,
+            // 2nd attempt succeeds — no reject record produced.
+            stubHappyPathSingleTransaction();
+            when(accountRepository.saveAndFlush(any(Account.class)))
+                    .thenThrow(new OptimisticLockingFailureException(
+                            "version mismatch"))
+                    .thenAnswer(inv -> inv.getArgument(0));
+
+            TransactionPostingService.PostingResult result =
+                    service.postDailyTransactions(BATCH_DATE);
+
+            // Successful posting after retry: no rejects
+            assertThat(result.transactionCount()).isEqualTo(1);
+            assertThat(result.rejectCount()).isEqualTo(0);
+            assertThat(result.returnCode()).isEqualTo(0);
+
+            // Exactly 2 saveAndFlush attempts (1 failure + 1 success)
+            verify(accountRepository, times(2))
+                    .saveAndFlush(any(Account.class));
+
+            // No S3 reject write occurred
+            verify(s3OutputService, never())
+                    .writeRejections(anyString(), anyList());
         }
     }
 
@@ -829,6 +896,15 @@ class TransactionPostingServiceTest {
     @DisplayName("S3 rejection output (COBOL: 2500-WRITE-REJECT-REC)")
     class RejectionOutput {
 
+        // BUG #5 fix (QA CP5): rejection records are now buffered
+        // in TransactionPostingService.postDailyTransactions and
+        // flushed at end-of-batch via
+        // S3OutputService.writeRejections(batchRunId, List<String>)
+        // — replacing the previous per-record
+        // S3OutputService.writeRejection(batchRunId, String) PUTs
+        // that silently overwrote each other on the same S3 key.
+        // Tests assert against the new writeRejections capture.
+
         @Test
         @DisplayName("writeReject emits a 430-byte record (350 + 4-digit reason + 76-char desc)")
         void writeReject_emitsFullRecord() {
@@ -838,12 +914,15 @@ class TransactionPostingServiceTest {
 
             service.postDailyTransactions(BATCH_DATE);
 
-            ArgumentCaptor<String> recordCaptor =
-                    ArgumentCaptor.forClass(String.class);
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<List<String>> recordsCaptor =
+                    ArgumentCaptor.forClass(List.class);
             verify(s3OutputService)
-                    .writeRejection(eq(EXPECTED_BATCH_RUN_ID),
-                            recordCaptor.capture());
-            assertThat(recordCaptor.getValue()).hasSize(RECORD_LENGTH);
+                    .writeRejections(eq(EXPECTED_BATCH_RUN_ID),
+                            recordsCaptor.capture());
+            assertThat(recordsCaptor.getValue()).hasSize(1);
+            assertThat(recordsCaptor.getValue().get(0))
+                    .hasSize(RECORD_LENGTH);
         }
 
         @Test
@@ -855,12 +934,13 @@ class TransactionPostingServiceTest {
 
             service.postDailyTransactions(BATCH_DATE);
 
-            ArgumentCaptor<String> recordCaptor =
-                    ArgumentCaptor.forClass(String.class);
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<List<String>> recordsCaptor =
+                    ArgumentCaptor.forClass(List.class);
             verify(s3OutputService)
-                    .writeRejection(eq(EXPECTED_BATCH_RUN_ID),
-                            recordCaptor.capture());
-            String record = recordCaptor.getValue();
+                    .writeRejections(eq(EXPECTED_BATCH_RUN_ID),
+                            recordsCaptor.capture());
+            String record = recordsCaptor.getValue().get(0);
             // First 4 chars after the body are the 4-digit reason code.
             String reasonCode =
                     record.substring(BODY_LENGTH, REASON_CODE_END);
@@ -878,12 +958,13 @@ class TransactionPostingServiceTest {
 
             service.postDailyTransactions(BATCH_DATE);
 
-            ArgumentCaptor<String> recordCaptor =
-                    ArgumentCaptor.forClass(String.class);
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<List<String>> recordsCaptor =
+                    ArgumentCaptor.forClass(List.class);
             verify(s3OutputService)
-                    .writeRejection(eq(EXPECTED_BATCH_RUN_ID),
-                            recordCaptor.capture());
-            assertThat(recordCaptor.getValue()
+                    .writeRejections(eq(EXPECTED_BATCH_RUN_ID),
+                            recordsCaptor.capture());
+            assertThat(recordsCaptor.getValue().get(0)
                             .substring(BODY_LENGTH, REASON_CODE_END))
                     .isEqualTo("0102");
         }
@@ -897,14 +978,15 @@ class TransactionPostingServiceTest {
 
             service.postDailyTransactions(BATCH_DATE);
 
-            ArgumentCaptor<String> recordCaptor =
-                    ArgumentCaptor.forClass(String.class);
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<List<String>> recordsCaptor =
+                    ArgumentCaptor.forClass(List.class);
             verify(s3OutputService)
-                    .writeRejection(eq(EXPECTED_BATCH_RUN_ID),
-                            recordCaptor.capture());
+                    .writeRejections(eq(EXPECTED_BATCH_RUN_ID),
+                            recordsCaptor.capture());
             // Description starts after the 4-digit reason code and
             // ends padded right to the 80-byte trailer (76 chars).
-            String description = recordCaptor.getValue()
+            String description = recordsCaptor.getValue().get(0)
                     .substring(REASON_CODE_END).trim();
             assertThat(description).isEqualTo("INVALID CARD NUMBER FOUND");
         }
@@ -918,29 +1000,33 @@ class TransactionPostingServiceTest {
 
             service.postDailyTransactions(BATCH_DATE);
 
-            ArgumentCaptor<String> recordCaptor =
-                    ArgumentCaptor.forClass(String.class);
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<List<String>> recordsCaptor =
+                    ArgumentCaptor.forClass(List.class);
             verify(s3OutputService)
-                    .writeRejection(eq(EXPECTED_BATCH_RUN_ID),
-                            recordCaptor.capture());
-            String record = recordCaptor.getValue();
+                    .writeRejections(eq(EXPECTED_BATCH_RUN_ID),
+                            recordsCaptor.capture());
+            String record = recordsCaptor.getValue().get(0);
             // First 16 bytes = DALYTRAN-ID PIC X(16)
             assertThat(record.substring(0, 16)).isEqualTo(TRAN_ID);
         }
 
         @Test
-        @DisplayName("S3 write failure raises CardDemoException with WRITE_REJECT_FAILED")
+        @DisplayName("BUG #5: S3 write failure raises CardDemoException with WRITE_REJECT_FAILED")
         void s3WriteFailure_wrappedAsCardDemoException() {
+            // BUG #5 fix: S3 errors now surface from
+            // flushPendingRejects -> S3OutputService.writeRejections
+            // (not the per-record writeRejection that was removed).
             stubHappyPathSingleTransaction();
             when(xrefRepository.findById(CARD_NUM))
                     .thenReturn(Optional.empty());
             org.mockito.Mockito.doThrow(new RuntimeException("S3 down"))
                     .when(s3OutputService)
-                    .writeRejection(anyString(), anyString());
+                    .writeRejections(anyString(), anyList());
 
             assertThatThrownBy(() -> service.postDailyTransactions(BATCH_DATE))
                     .isInstanceOf(CardDemoException.class)
-                    .hasMessageContaining("Failed to write reject record")
+                    .hasMessageContaining("Failed to write reject records")
                     .extracting("reasonCode")
                     .isEqualTo("WRITE_REJECT_FAILED");
         }
@@ -1002,6 +1088,9 @@ class TransactionPostingServiceTest {
                     .thenReturn(Optional.empty());
             lenient().when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.of(account));
+            // BUG #7 fix: production uses saveAndFlush
+            lenient().when(accountRepository.saveAndFlush(any(Account.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
             lenient().when(accountRepository.save(any(Account.class)))
                     .thenAnswer(inv -> inv.getArgument(0));
             lenient().when(tcatbalRepository.findById(any()))
@@ -1018,10 +1107,16 @@ class TransactionPostingServiceTest {
             assertThat(result.rejectCount()).isEqualTo(1);
             assertThat(result.returnCode()).isEqualTo(4);
 
-            // One transaction.posted (for row 1) + one rejection
+            // One transaction.posted (for row 1) + one rejection.
+            // BUG #5 fix: rejections are buffered into a single
+            // writeRejections call at end-of-batch (not per-record).
             verify(transactionRepository, times(1)).save(any(Transaction.class));
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<List<String>> recordsCaptor =
+                    ArgumentCaptor.forClass(List.class);
             verify(s3OutputService, times(1))
-                    .writeRejection(anyString(), anyString());
+                    .writeRejections(anyString(), recordsCaptor.capture());
+            assertThat(recordsCaptor.getValue()).hasSize(1);
         }
     }
 
