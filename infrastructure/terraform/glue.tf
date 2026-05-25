@@ -53,7 +53,12 @@
 # =============================================================================
 
 locals {
-  glue_log_group_name = "/aws-glue/jobs/carddemo-${var.environment}"
+  # Glue Spark continuous-logging CloudWatch log group name. The resource
+  # itself is declared in cloudwatch.tf (Section 1.4) per the cloudwatch.tf
+  # file-schema; this local resolves to the same string at apply time and
+  # is consumed by `--continuous-log-logGroup` in the default-arguments
+  # map below.
+  glue_log_group_name = aws_cloudwatch_log_group.glue_jobs.name
   glue_script_prefix  = "s3://${aws_s3_bucket.batch_outputs.bucket}/glue-scripts"
   glue_output_prefix  = "s3://${aws_s3_bucket.batch_outputs.bucket}/glue-output"
 
@@ -85,23 +90,24 @@ locals {
 }
 
 # =============================================================================
-# Section 2 — Glue CloudWatch log group
+# Section 2 — Glue CloudWatch log group reference
 # =============================================================================
-# Encrypted log group for Glue Spark continuous-logging output. The Glue
-# service principal is granted Encrypt/Decrypt on the cloudwatch_kms key
-# in kms.tf via the AllowCloudWatchLogs key-policy statement.
+# The Glue Spark continuous-logging CloudWatch log group is OWNED by
+# cloudwatch.tf (see resource `aws_cloudwatch_log_group.glue_jobs`),
+# which centralizes all CloudWatch resources for the module per the
+# Phase 1 cloudwatch.tf schema. This file consumes that resource by
+# reference (the local below + the output at the bottom of the file).
+#
+# Resource location:  cloudwatch.tf — Section 1.4
+# Log group name:     /aws/glue/carddemo-<env>
+# KMS encryption:     aws_kms_key.carddemo.arn (primary CardDemo CMK)
+# Retention:          var.cloudwatch_log_retention_days (default 365d)
+#
+# The Glue service principal is granted Encrypt/Decrypt on the primary
+# CMK via the `AllowCloudWatchLogs` statement in kms.tf
+# (logs.${var.aws_region}.amazonaws.com), so no key-policy modification
+# is required for Glue jobs to write to the log group.
 # =============================================================================
-
-resource "aws_cloudwatch_log_group" "glue_jobs" {
-  name              = local.glue_log_group_name
-  retention_in_days = var.cloudwatch_log_retention_days
-  kms_key_id        = aws_kms_key.cloudwatch_kms.arn
-
-  tags = merge(local.common_tags, {
-    Name    = "carddemo-${var.environment}-glue-log"
-    Purpose = "AWS Glue Spark continuous-logging output"
-  })
-}
 
 # =============================================================================
 # Section 3 — Glue connection to RDS PostgreSQL
