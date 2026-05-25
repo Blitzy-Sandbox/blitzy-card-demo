@@ -126,10 +126,28 @@ public final class ReadAccountDumpApp {
         try (FileAccountRepository acctRepo = new FileAccountRepository(acctDataPath)) {
             LOG.info("READACCT: wiring CbAct01C; acctdata={}", acctDataPath);
             CbAct01C cbAct01C = new CbAct01C(acctRepo);
-            cbAct01C.run();
+            // CbAct01C.run() returns an APPL-RESULT-style int per AAP §0.4.1
+            // (CBACT01C translation): APPL_AOK (0) on success, APPL_ERROR
+            // (12) on any I/O failure that would have triggered the COBOL
+            // 9999-ABEND-PROGRAM paragraph. Errors are NOT thrown out of
+            // run() — they are surfaced via the return code. We map any
+            // non-zero application result to RC_ERROR so the process exit
+            // code reflects the failure (matching the observable outcome
+            // of the COBOL CEE3ABD abend).
+            int applResult = cbAct01C.run();
+            if (applResult != CbAct01C.APPL_AOK) {
+                LOG.error("READACCT: CBACT01C returned non-zero APPL_RESULT={}; "
+                        + "mapping to RC_ERROR={}", applResult, RC_ERROR);
+                return RC_ERROR;
+            }
             LOG.info("READACCT job complete; rc={}", RC_OK);
             return RC_OK;
         } catch (AbendException ae) {
+            // Defensive catch retained for any AbendException raised by
+            // collaborators other than CbAct01C (e.g., the adapter layer
+            // or future shared utilities). CbAct01C itself no longer
+            // throws AbendException — it surfaces failures via the int
+            // return value above per AAP §0.4.1.
             LOG.error("READACCT: CBACT01C abended with code={}: {}",
                     ae.abendCode(), ae.getMessage(), ae);
             return RC_ERROR;
