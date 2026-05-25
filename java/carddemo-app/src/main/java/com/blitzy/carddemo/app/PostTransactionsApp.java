@@ -260,8 +260,10 @@ public final class PostTransactionsApp {
                     dailyTranPath, dalyRejsPath, transactPath, cardXrefPath,
                     acctDataPath, tcatBalfPath);
 
-            CbTrn02C cbTrn02C = new CbTrn02C(dailyTranRepo, tranRepo, xrefRepo,
-                    acctRepo, tcatRepo);
+            // Constructor parameter order per file schema and AAP §0.5.3:
+            //   (DailyTransaction, CardXref, Account, Transaction, TcatBal)
+            CbTrn02C cbTrn02C = new CbTrn02C(dailyTranRepo, xrefRepo, acctRepo,
+                    tranRepo, tcatRepo);
             cbTrn02C.run();
 
             int rc = cbTrn02C.returnCode();

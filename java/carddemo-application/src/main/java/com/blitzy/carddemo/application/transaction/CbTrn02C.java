@@ -25,7 +25,6 @@ import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.Objects;
 import java.util.Optional;
@@ -118,9 +117,9 @@ public final class CbTrn02C {
     public static final int RETURN_CODE_WITH_REJECTS = 4;
 
     private final DailyTransactionRepository dailyTransactionRepository;
-    private final TransactionRepository transactionRepository;
     private final CardXrefRepository xrefRepository;
     private final AccountRepository accountRepository;
+    private final TransactionRepository transactionRepository;
     private final TransactionCategoryBalanceRepository tcatBalRepository;
 
     /** COBOL WS-TRANSACTION-COUNT PIC 9(09). */
@@ -142,24 +141,30 @@ public final class CbTrn02C {
      * port (the COBOL FD-REJS-RECORD is layered onto DalyTranRecord via
      * {@link DailyTransactionRepository#appendReject(DalyTranRecord, int, String)}).
      *
+     * <p>Parameter order is dictated by the file schema and matches the
+     * AAP &sect;0.5.3 dependency ordering:
+     * {@code DailyTransactionRepository}, {@code CardXrefRepository},
+     * {@code AccountRepository}, {@code TransactionRepository},
+     * {@code TransactionCategoryBalanceRepository}.
+     *
      * @param dailyTransactionRepository      port for DALYTRAN sequential reads and DALYREJS sequential writes
-     * @param transactionRepository           port for TRANSACT sequential writes
      * @param xrefRepository                  port for XREFFILE random reads by card number
      * @param accountRepository               port for ACCTFILE I-O (random read + REWRITE)
+     * @param transactionRepository           port for TRANSACT sequential writes
      * @param tcatBalRepository               port for TCATBAL I-O (random read + REWRITE + WRITE)
      */
     public CbTrn02C(DailyTransactionRepository dailyTransactionRepository,
-                    TransactionRepository transactionRepository,
                     CardXrefRepository xrefRepository,
                     AccountRepository accountRepository,
+                    TransactionRepository transactionRepository,
                     TransactionCategoryBalanceRepository tcatBalRepository) {
         this.dailyTransactionRepository = Objects.requireNonNull(dailyTransactionRepository,
                 "dailyTransactionRepository");
-        this.transactionRepository = Objects.requireNonNull(transactionRepository,
-                "transactionRepository");
         this.xrefRepository = Objects.requireNonNull(xrefRepository, "xrefRepository");
         this.accountRepository = Objects.requireNonNull(accountRepository,
                 "accountRepository");
+        this.transactionRepository = Objects.requireNonNull(transactionRepository,
+                "transactionRepository");
         this.tcatBalRepository = Objects.requireNonNull(tcatBalRepository,
                 "tcatBalRepository");
     }
@@ -192,7 +197,18 @@ public final class CbTrn02C {
 
         try (Stream<DalyTranRecord> records = dailyTransactionRepository.streamSequential()) {
             records.forEach(this::processTransaction);
+        } catch (AbendException ae) {
+            // Per-record paragraphs (2500/2700/2800/2900) already log their
+            // specific error message and call abendProgram() before throwing.
+            // Re-throw without re-logging to preserve the COBOL behavior where
+            // each paragraph's own DISPLAY message identifies the failure
+            // surface. Still attempt to close files (9000-9500) on the way out.
+            closeAll();
+            throw ae;
         } catch (RuntimeException e) {
+            // Genuine stream/read error from the DALYTRAN iterator
+            // (mirrors COBOL 1000-DALYTRAN-GET-NEXT error path:
+            // DISPLAY 'ERROR READING DALYTRAN FILE' then 9999-ABEND-PROGRAM).
             log.error("ERROR READING DALYTRAN FILE");
             displayIoStatus("12");
             closeAll();
@@ -371,23 +387,22 @@ public final class CbTrn02C {
                 TranRecord.emptyFiller());
 
         // PERFORM 2700-UPDATE-TCATBAL
-        ValidationResult tcatResult = updateTcatBal(record);
-        if (tcatResult.reason() != 0) {
-            // The COBOL paragraph performs ABEND on any TCATBAL error other than
-            // 23 (NOT FOUND, which triggers create). If updateTcatBal returned
-            // a non-zero reason, we treat that as a runtime error and reject.
-            rejectCount++;
-            writeRejectRec(record, tcatResult);
-            return;
-        }
+        // The COBOL paragraph ABENDs on any TCATBAL file-status error other
+        // than '00' or '23' (NOT FOUND triggers create). The Java port mirrors
+        // that by calling abendProgram() (which throws AbendException) on
+        // any RuntimeException from the repository; updateTcatBal therefore
+        // always returns ValidationResult.OK on the happy path.
+        updateTcatBal(record);
 
         // PERFORM 2800-UPDATE-ACCOUNT-REC
+        // COBOL: REWRITE FD-ACCTFILE-REC ... INVALID KEY -> reason 109.
+        // The paragraph does NOT call 2500-WRITE-REJECT-REC on INVALID KEY
+        // (it only sets WS-VALIDATION-FAIL-REASON / DESC), and there is no
+        // EVALUATE on ACCTFILE-STATUS after the END-REWRITE; flow falls
+        // through to 2900-WRITE-TRANSACTION-FILE unconditionally. The Java
+        // translation matches this: log the trailer but proceed.
         ValidationResult acctResult = updateAccountRec(record);
         if (acctResult.reason() != 0) {
-            // The COBOL paragraph only records reason 109 in the trailer and
-            // does NOT increment the reject count or write the reject file;
-            // it continues to 2900-WRITE-TRANSACTION-FILE regardless. Match
-            // that semantics: log the trailer but proceed.
             log.warn("VALIDATION FAILURE IN 2800: reason={} desc={}",
                     acctResult.reason(), acctResult.description());
         }
@@ -435,9 +450,12 @@ public final class CbTrn02C {
     /**
      * Mirrors {@code 2700-UPDATE-TCATBAL}: reads TCATBAL by composite key;
      * if found, REWRITEs with new balance; if not found, performs
-     * {@code 2700-A-CREATE-TCATBAL-REC}.
+     * {@code 2700-A-CREATE-TCATBAL-REC}. On any I/O error other than
+     * NOT FOUND, the helper methods call {@link #abendProgram(Throwable)}
+     * (mirroring the COBOL {@code EVALUATE TCATBALF-STATUS '00' OR '23'}
+     * accept-list followed by ABEND on any other status).
      */
-    private ValidationResult updateTcatBal(DalyTranRecord record) {
+    private void updateTcatBal(DalyTranRecord record) {
         long acctId = currentXref.xrefAcctId();
         String typeCd = record.dalytranTypeCd();
         int catCd = record.dalytranCatCd();
@@ -446,7 +464,13 @@ public final class CbTrn02C {
                 tcatBalRepository.findByKey(acctId, typeCd, catCd);
 
         if (existing.isEmpty()) {
-            log.info("TCATBAL record not found for key : {} {} {} .. Creating.",
+            // COBOL: DISPLAY 'TCATBAL record not found for key : '
+            //                FD-TRAN-CAT-KEY '.. Creating.'
+            // FD-TRAN-CAT-KEY is the concatenated 17-byte composite key with
+            // NO separators (11-digit acctId + 2-char typeCd + 4-digit catCd).
+            // PIC 9(11) values are zero-padded on the left; PIC X(02) is the
+            // raw type code; PIC 9(04) is zero-padded on the left.
+            log.info("TCATBAL record not found for key : {}{}{}.. Creating.",
                     formatAcctId(acctId), typeCd, formatCatCd(catCd));
             // 2700-A-CREATE-TCATBAL-REC
             createTcatBalRec(record);
@@ -454,7 +478,6 @@ public final class CbTrn02C {
             // 2700-B-UPDATE-TCATBAL-REC
             updateExistingTcatBal(existing.get(), record);
         }
-        return ValidationResult.OK;
     }
 
     /**
@@ -489,13 +512,17 @@ public final class CbTrn02C {
      * Mirrors {@code 2700-B-UPDATE-TCATBAL-REC}: adds the
      * daily-transaction amount to the existing TCATBAL balance and
      * REWRITEs the record.
+     *
+     * <p>The COBOL statement {@code ADD DALYTRAN-AMT TO TRAN-CAT-BAL} is
+     * carried out by {@link TranCatBalRecord#withBalanceAdjustment(BigDecimal)},
+     * which internally uses {@code Decimals.add(tranCatBal, delta,
+     * TRAN_CAT_BAL_SCALE, Decimals.DEFAULT_MODE)} — i.e., scale 2 with
+     * {@link RoundingMode#DOWN} per AAP &sect;0.6.1 (no COBOL ROUNDED
+     * clause is present).
      */
     private void updateExistingTcatBal(TranCatBalRecord existing, DalyTranRecord record) {
         // COBOL: ADD DALYTRAN-AMT TO TRAN-CAT-BAL; REWRITE TCATBAL
-        BigDecimal newBal = Decimals.add(existing.tranCatBal(), record.dalytranAmt(),
-                MONETARY_SCALE, RoundingMode.DOWN);
-        TranCatBalRecord updated = existing.withBalanceAdjustment(
-                newBal.subtract(existing.tranCatBal()));
+        TranCatBalRecord updated = existing.withBalanceAdjustment(record.dalytranAmt());
         try {
             tcatBalRepository.save(updated);
         } catch (RuntimeException e) {
