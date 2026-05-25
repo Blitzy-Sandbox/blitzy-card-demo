@@ -41,6 +41,7 @@ import com.awsm2.carddemo.adapter.AuditLogService;
 import com.awsm2.carddemo.adapter.CacheService;
 import com.awsm2.carddemo.adapter.SecretsManagerService;
 import com.awsm2.carddemo.domain.Account;
+import com.awsm2.carddemo.domain.Card;
 import com.awsm2.carddemo.domain.CardCrossReference;
 import com.awsm2.carddemo.domain.Customer;
 import com.awsm2.carddemo.domain.UserSecurity;
@@ -54,6 +55,7 @@ import com.awsm2.carddemo.dto.SignonRequestDto;
 import com.awsm2.carddemo.dto.SignonResponseDto;
 import com.awsm2.carddemo.repository.AccountRepository;
 import com.awsm2.carddemo.repository.CardCrossReferenceRepository;
+import com.awsm2.carddemo.repository.CardRepository;
 import com.awsm2.carddemo.repository.CustomerRepository;
 import com.awsm2.carddemo.repository.UserSecurityRepository;
 import com.awsm2.carddemo.security.JwtTokenProvider;
@@ -496,6 +498,17 @@ class EndToEndAccountWorkflowIT {
     @Autowired
     private CardCrossReferenceRepository xrefRepository;
 
+    /**
+     * Card repository — seeds the {@code Card} parent row required by
+     * the {@code fk_cardxref_card} foreign-key constraint declared in
+     * Flyway migration {@code V004__create_cardxref.sql}.  Without a
+     * matching {@code cards} row, every {@code card_xref} INSERT (and
+     * therefore every {@code seedDatabase()} invocation) fails with a
+     * {@code DataIntegrityViolationException}.
+     */
+    @Autowired
+    private CardRepository cardRepository;
+
     /** User-security repository — seed BCrypt-hashed credential rows. */
     @Autowired
     private UserSecurityRepository userRepository;
@@ -566,12 +579,16 @@ class EndToEndAccountWorkflowIT {
     @BeforeEach
     void seedDatabase() {
         // ---- Truncate in FK-safe order ---------------------------------
-        // CardCrossReference references account and customer indirectly
-        // via the application logic but the schema does not declare FK
-        // constraints between accounts / customer / card_xref — the
-        // ordering here is defensive (parent-after-child) to remain
-        // safe under future schema tightening.
+        // V004__create_cardxref.sql declares THREE foreign-key
+        // constraints on card_xref:
+        //   * fk_cardxref_card -> cards(card_num)
+        //   * fk_cardxref_cust -> customers(cust_id)
+        //   * fk_cardxref_acct -> accounts(acct_id)
+        // Children MUST be truncated before parents.  card_xref is the
+        // pure child, then cards / accounts / customers can be cleared
+        // in any order (no inter-parent FKs declared today).
         xrefRepository.deleteAll();
+        cardRepository.deleteAll();
         accountRepository.deleteAll();
         customerRepository.deleteAll();
         userRepository.deleteAll();
@@ -628,12 +645,34 @@ class EndToEndAccountWorkflowIT {
         account.setVersion(0L);
         accountRepository.save(account);
 
+        // ---- Seed Card -------------------------------------------------
+        // Per AAP §0.4.1 the Card entity ports CVACT02Y.cpy.  A Card
+        // parent row is REQUIRED before card_xref can be inserted
+        // because V004__create_cardxref.sql declares
+        // fk_cardxref_card -> cards(card_num).  The card carries:
+        //   * cardNum  — TEST_CARD_NUM (PK + FK target)
+        //   * acctId   — TEST_ACCT_ID  (must match the seeded account)
+        //   * embossed — printable account-holder name
+        //   * expiryDt — sentinel future date (2099-12-31) so card-expiry
+        //                checks in TransactionPostingService and
+        //                CardController never reject the test workflow
+        //   * status   — "Y" (active) so the Card is usable
+        Card card = new Card(
+                TEST_CARD_NUM,
+                TEST_ACCT_ID,
+                "TEST T CUSTOMER",                            // cardEmbossedName
+                LocalDate.of(2099, 12, 31),                   // cardExpirationDate
+                "Y"                                           // cardActiveStatus
+        );
+        cardRepository.save(card);
+
         // ---- Seed CardCrossReference -----------------------------------
         // Replaces the COBOL CXACAIX VSAM alternate index — one card
         // points to one customer + one account, and
         // CardCrossReferenceRepository.findByXrefAcctId returns the row
         // for AccountViewService's join + AccountUpdateService's customer
-        // lookup.
+        // lookup.  Inserted AFTER the Card seed above so the
+        // fk_cardxref_card FK constraint is satisfied.
         CardCrossReference xref = new CardCrossReference(
                 TEST_CARD_NUM, TEST_CUST_ID, TEST_ACCT_ID);
         xrefRepository.save(xref);
@@ -687,7 +726,10 @@ class EndToEndAccountWorkflowIT {
     @AfterEach
     void cleanupDatabase() {
         try {
+            // FK-safe cleanup order: child (card_xref) -> Card parent ->
+            // Account / Customer parents -> independent UserSecurity.
             xrefRepository.deleteAll();
+            cardRepository.deleteAll();
             accountRepository.deleteAll();
             customerRepository.deleteAll();
             userRepository.deleteAll();
