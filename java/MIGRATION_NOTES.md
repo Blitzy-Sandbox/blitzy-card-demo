@@ -814,24 +814,168 @@ applies.
 ### 1.4.12 `CbTrn03C` duplicate paragraph names anomaly
 
 **Status**: IMPLEMENTED — the COBOL paginated transaction report writer
-program contains duplicate paragraph names that are preserved in the
-Java translation as distinct private methods with disambiguating
-numeric suffixes.
+program contains five paragraphs that share two numeric prefixes
+(1110 and 1120). Each is preserved in the Java translation as a
+distinct private method with a purpose-specific Java name.
 
-**COBOL source**: `app/cbl/CBTRN03C.cbl`. The program declares two
-paragraphs with the same name (likely `1100-PRINT-HEADERS` or
-similar — the duplicate is observable when grepping the source).
+**COBOL source**: `app/cbl/CBTRN03C.cbl`. Two prefix collisions are
+observable:
+
+- `1110-` prefix is shared by:
+  - `1110-WRITE-PAGE-TOTALS` (line 293) — writes the page-total
+    accumulator, folds it into the grand total, and emits the
+    all-dashes separator
+  - `1110-WRITE-GRAND-TOTALS` (line 318) — writes the grand-total
+    accumulator on a single line at end-of-file
+- `1120-` prefix is shared by:
+  - `1120-WRITE-ACCOUNT-TOTALS` (line 306) — writes the per-card
+    (account) total accumulator
+  - `1120-WRITE-HEADERS` (line 324) — writes the four-line header
+    block (name, blank, header-1, header-2) at top of each page
+  - `1120-WRITE-DETAIL` (line 361) — writes the detail line for one
+    in-window transaction
+
 COBOL does not enforce paragraph-name uniqueness when paragraphs are
-performed by `PERFORM THRU` ranges, and the program relies on this
-relaxation. The duplicate is preserved per AAP §0.7.1.
+not the target of a `PERFORM THRU` range that crosses the duplicates,
+and CBTRN03C relies on this relaxation. The duplicate names are
+preserved per AAP §0.7.1 (faithful translation).
 
 **Java translation**:
 `com.blitzy.carddemo.application.transaction.CbTrn03C` translates each
-duplicate paragraph as a separate private method, naming them
-`paragraphName()` and `paragraphName2()` with Javadoc explaining the
-COBOL source naming collision. Call sites that target the first
-occurrence call `paragraphName()`; call sites that target the second
-occurrence call `paragraphName2()`.
+of the five collision-suffering paragraphs as a separate private
+method with a purpose-specific name:
+
+| COBOL paragraph             | Java method               |
+|-----------------------------|---------------------------|
+| `1110-WRITE-PAGE-TOTALS`    | `writePageTotals()`       |
+| `1110-WRITE-GRAND-TOTALS`   | `writeGrandTotals()`      |
+| `1120-WRITE-ACCOUNT-TOTALS` | `writeAccountTotals()`    |
+| `1120-WRITE-HEADERS`        | `writeHeaders()`          |
+| `1120-WRITE-DETAIL`         | `writeDetail(TranRecord)` |
+
+Each method's Javadoc cites the original COBOL paragraph name and
+line range. Call sites in `writeTransactionReport()` and the
+end-of-file branch in `run()` invoke the appropriately-named Java
+method directly; no PERFORM THRU range is used so the COBOL ambiguity
+that the prefix collision could have caused is moot in Java.
+
+### 1.4.12.bis `CbTrn03C` EOF-branch stale TRAN-AMT double-add (suspected COBOL bug)
+
+**Status**: IMPLEMENTED — preserved verbatim per AAP §0.7.1 "If a COBOL
+paragraph contains dead code or obvious bugs, translate it faithfully
+and flag it in a MIGRATION_NOTES.md; do not 'fix' it in this refactor."
+
+**COBOL source**: `app/cbl/CBTRN03C.cbl`, lines 197-203 inside MAIN-PARA.
+After `1000-TRANFILE-GET-NEXT` sets `END-OF-FILE = 'Y'`, the COBOL FD
+buffer `TRAN-RECORD` retains the bytes of the last successfully read
+record. The EOF branch then executes:
+
+```
+DISPLAY 'TRAN-AMT ' TRAN-AMT
+DISPLAY 'WS-PAGE-TOTAL' WS-PAGE-TOTAL
+ADD TRAN-AMT TO WS-PAGE-TOTAL WS-ACCOUNT-TOTAL
+PERFORM 1110-WRITE-PAGE-TOTALS
+PERFORM 1110-WRITE-GRAND-TOTALS
+```
+
+Reading `TRAN-AMT` from the FD buffer after EOF is a defect: the
+value is the last successfully read record's amount, which has
+already been added to both accumulators by `1100-WRITE-TRANSACTION-REPORT`
+on the previous iteration. This causes the final record's amount to
+appear **twice** in the page total and the account total (but only
+once in the grand total because the page total has not yet been
+folded into it at this point).
+
+The defect is masked in practice because:
+
+1. The TRANREPT.jcl SORT step pre-filters input so records can be
+   excluded entirely, making the "last record" semantically
+   meaningful only when at least one record passed the SORT filter.
+2. The page-total line is written before the grand-total line, so
+   the double-counted amount appears in the page total then folds
+   into the grand total during `1110-WRITE-PAGE-TOTALS`, producing
+   a grand total that is *also* inflated by the final record's
+   amount. Both the page total and grand total are off by the same
+   amount; the discrepancy is only apparent in the *account* total
+   if the input contains records for a single card number.
+
+**Java translation**:
+`com.blitzy.carddemo.application.transaction.CbTrn03C#run()` preserves
+this behavior verbatim: when the iterator returns `endOfFile = true`,
+the method calls `Decimals.add(pageTotal, lastTran.tranAmt(), 2,
+RoundingMode.DOWN)` and the same for `accountTotal`, then calls
+`writePageTotals()` (which folds page total into grand total) and
+`writeGrandTotals()`. The implementation explicitly handles the
+"empty input" edge case (`lastTran == null`) by skipping the addition
+entirely; this matches the COBOL behavior because PIC 9 fields are
+zero-initialized by the COBOL runtime, so ADD against zeros is a
+no-op even if the buffer is in an undefined state.
+
+**Diagnostic logging preservation**: the two COBOL `DISPLAY`
+statements `'TRAN-AMT ' TRAN-AMT` and `'WS-PAGE-TOTAL' WS-PAGE-TOTAL`
+are preserved as SLF4J `LOGGER.info("TRAN-AMT {}", ...)` and
+`LOGGER.info("WS-PAGE-TOTAL {}", ...)` calls in the same order.
+
+**Future remediation**: A fix would be to reset `lastTran = null`
+after the EOF read sets `endOfFile = true`, or to elide the EOF
+branch's addition entirely. Either change is BEHAVIORAL and out of
+scope for this idiom-for-idiom migration. Any future bug-fix effort
+should land as a separate PR with its own golden-record baseline
+update.
+
+### 1.4.12.ter `CbTrn03C` `NEXT SENTENCE` on out-of-window date
+
+**Status**: IMPLEMENTED — apparent-intent interpretation chosen because
+the upstream `STEP05R SORT` step in TRANREPT.jcl pre-filters records
+to fit the window, making strict and apparent-intent semantics
+observationally identical.
+
+**COBOL source**: `app/cbl/CBTRN03C.cbl`, lines 173-178 inside MAIN-PARA:
+
+```
+IF TRAN-PROC-TS (1:10) >= WS-START-DATE
+   AND TRAN-PROC-TS (1:10) <= WS-END-DATE
+    CONTINUE
+ELSE
+    NEXT SENTENCE
+END-IF
+```
+
+In strict Enterprise COBOL semantics, `NEXT SENTENCE` transfers
+control to the statement immediately following the *next sentence-
+terminating period* (not the next statement). The next period in
+CBTRN03C is the `END-PERFORM.` on line 206 — the closing period of
+the outer `PERFORM UNTIL END-OF-FILE = 'Y'` loop. So strict
+interpretation would have `NEXT SENTENCE` literally **exit the outer
+loop** on the first out-of-window record, terminating report
+generation prematurely.
+
+**Driving JCL**: `app/jcl/TRANREPT.jcl` step `STEP05R` runs SORT with
+`OUTREC FIELDS=(...)` and `INCLUDE COND=(TRAN-PROC-DT,GE,
+PARM-START-DATE,AND,TRAN-PROC-DT,LE,PARM-END-DATE)`. Because the
+SORT step pre-filters input to fit the date window before CBTRN03C
+runs, the COBOL `ELSE NEXT SENTENCE` branch is **never reached in
+production**. Both the strict interpretation (exit loop) and the
+apparent-intent interpretation (skip-and-continue) are
+observationally identical because there are no out-of-window records
+to test the branch against.
+
+**Java translation**:
+`com.blitzy.carddemo.application.transaction.CbTrn03C#run()` uses the
+apparent-intent interpretation: when the date check fails, the
+`continue` statement skips to the next loop iteration without
+exiting. This matches the AAP file schema (`agent_prompt`) which
+explicitly states "ELSE → NEXT SENTENCE (no action; loop
+continues)".
+
+**Future remediation**: If a future effort removes the upstream SORT
+filter (e.g., to support unfiltered input), the strict COBOL
+semantics must be re-evaluated. The current Java implementation will
+gracefully ignore out-of-window records; the strict-COBOL
+implementation would terminate the report at the first out-of-window
+record. Neither matches the obvious developer intent (which would be
+to skip the record), but the Java choice produces useful output
+where the strict COBOL choice would not.
 
 ### 1.4.13 COACTUPC verbatim message preservation list
 

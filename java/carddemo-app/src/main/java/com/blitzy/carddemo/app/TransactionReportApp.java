@@ -203,10 +203,18 @@ public final class TransactionReportApp {
             }
         }
 
+        // Final references for use inside the DateParamsSource lambda.
+        final String resolvedStartDate = startDate;
+        final String resolvedEndDate = endDate;
+
         try (FileTransactionRepository tranRepo =
                      new FileTransactionRepository(transactPath);
              FileCardXrefRepository xrefRepo =
-                     new FileCardXrefRepository(cardXrefPath)) {
+                     new FileCardXrefRepository(cardXrefPath);
+             OutputStream reportOut = Files.newOutputStream(tranReptPath,
+                     StandardOpenOption.CREATE,
+                     StandardOpenOption.TRUNCATE_EXISTING,
+                     StandardOpenOption.WRITE)) {
 
             // TransactionType + TransactionCategory repositories don't extend
             // AutoCloseable, so they're constructed outside the try-with-resources.
@@ -219,8 +227,32 @@ public final class TransactionReportApp {
                     + "trantype={}, trancatg={}, tranrept={}",
                     transactPath, cardXrefPath, tranTypePath, tranCatgPath, tranReptPath);
 
+            // DATEPARM source: the COBOL DD points at a small dataset holding
+            // the start and end dates; this composition root resolves them
+            // from CLI args / env / sysprop and yields a single record. The
+            // status is always "00" because the caller has already validated
+            // that both dates are present (defaults applied otherwise).
+            CbTrn03C.DateParamsSource dateParams = () ->
+                    new CbTrn03C.DateParams(resolvedStartDate, resolvedEndDate, "00");
+
+            // REPTFILE sink: every WRITE from CBTRN03C is a 133-byte fixed
+            // record; append a single newline separator to ease downstream
+            // text inspection (a record-mode dataset on z/OS would not have
+            // this delimiter). Errors are surfaced as UncheckedIOException
+            // so the CbTrn03C abend path can react to them.
+            CbTrn03C.ReportSink sink = line -> {
+                try {
+                    reportOut.write(line);
+                    reportOut.write('\n');
+                    return "00";
+                } catch (IOException ioe) {
+                    throw new UncheckedIOException(
+                            "Failed writing TRANREPT line", ioe);
+                }
+            };
+
             CbTrn03C cbTrn03C = new CbTrn03C(tranRepo, xrefRepo, tranTypeRepo,
-                    tranCatgRepo, tranReptPath, startDate, endDate);
+                    tranCatgRepo, dateParams, sink);
             cbTrn03C.run();
 
             LOG.info("TRANREPT job complete; rc={}", RC_OK);
@@ -228,6 +260,9 @@ public final class TransactionReportApp {
         } catch (AbendException ae) {
             LOG.error("TRANREPT: CBTRN03C abended with code={}: {}",
                     ae.abendCode(), ae.getMessage(), ae);
+            return RC_ERROR;
+        } catch (IOException ioe) {
+            LOG.error("TRANREPT: I/O failure: {}", ioe.getMessage(), ioe);
             return RC_ERROR;
         }
     }
