@@ -1126,6 +1126,57 @@ trimmed input is empty or exactly `"*"`, and the raw value otherwise.
 Every per-field receive site invokes this helper before downstream
 processing. The convention is consistent across all 17 online programs.
 
+### 1.4.17 `CoCrdSlC` blank-card filter allows AIX (9150) read path
+
+**Status**: IMPLEMENTED — Java translation of `app/cbl/COCRDSLC.cbl`
+deviates from COBOL strict semantics to support an account-only card
+lookup via the CARDAIX alternate index.
+
+**COBOL source**: `2220-EDIT-CARD` paragraph
+(`app/cbl/COCRDSLC.cbl:L685-L722`) UNCONDITIONALLY sets `INPUT-ERROR`
+when `CC-CARD-NUM` is blank / spaces / zeros (lines 693-700). This
+means the COBOL `0000-MAIN` re-entry path
+(`app/cbl/COCRDSLC.cbl:L356-L378`) short-circuits to
+`1000-SEND-MAP` before reaching `9000-READ-DATA` whenever the user
+leaves the card number blank. The 9150-GETCARD-BYACCT paragraph
+(`app/cbl/COCRDSLC.cbl:L779-L810`) — the AIX read path — is therefore
+defined but unreachable from re-entry mode; it is only reachable from
+first-entry XCTL hand-offs that pre-populate both
+`CDEMO-ACCT-ID` and `CDEMO-CARD-NUM`.
+
+**Java translation deviation**: per the AAP file-implementation
+schema for `CoCrdSlC.java`, both read paths (9100 by primary key when
+both filters supplied; 9150 by AIX when only the account filter is
+supplied) are wired. To honour this mandate while preserving the
+cross-field "No input received" semantics (both filters blank →
+`NO-SEARCH-CRITERIA-RECEIVED`), `editCard()` in `CoCrdSlC.java`:
+
+- Sets `cardFlag = BLANK` when the card is blank/zeros (matching COBOL).
+- Does NOT set `inputError = true` on the blank-card branch (deviation).
+- Does NOT set `MSG_PROMPT_FOR_CARD` on the blank-card branch
+  (deviation; the constant is still declared for COBOL fidelity).
+
+The cross-field check in `editMapInputs()` continues to set both
+`MSG_NO_INPUT` AND `inputError = true` when BOTH filters are blank,
+preserving the COBOL `NO-SEARCH-CRITERIA-RECEIVED` semantics.
+
+Other validation paths are preserved verbatim:
+- Card non-numeric → `inputError = true`, `MSG_CARD_NOT_NUMERIC`.
+- Account blank/zeros → `inputError = true`, `MSG_PROMPT_FOR_ACCT`.
+- Account non-numeric → `inputError = true`, `MSG_ACCT_NOT_NUMERIC`.
+
+**Rationale**: the deviation enables the meaningful user behaviour the
+schema mandates (account-only lookup via AIX) without changing any
+other observable output for the four primary input combinations:
+- Both blank → "No input received" (unchanged from COBOL).
+- Account-only → AIX read (NEW path; COBOL is unreachable in this case).
+- Both supplied → primary-key read (unchanged from COBOL).
+- Card-only, account blank → "Account number not provided" (unchanged).
+
+**Reference**: file schema for
+`java/carddemo-application/src/main/java/com/blitzy/carddemo/application/card/CoCrdSlC.java`,
+"Two-path read" insight section and `readData(MutableState)` javadoc.
+
 ---
 
 ## Section 1.5: BEHAVIORAL PARITY PRESERVATIONS
