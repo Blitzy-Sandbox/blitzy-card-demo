@@ -91,11 +91,24 @@
 #   * stepfunctions.tf  — state machines that submit to the queue defined here
 #
 # Operational notes:
-#   * The container image tag is `:latest` for development. In production
-#     the CI/CD pipeline (.github/workflows/docker-build.yml) pushes the
-#     immutable digest and the job definition revision should be updated
-#     to reference that digest instead — documented in
-#     infrastructure/README.md.
+#   * The container image tag is driven by `var.app_image_tag` (defined
+#     in variables.tf). The default of `"latest"` is intended ONLY for
+#     local development against a registry that always carries a latest
+#     pointer. In production deploys, the CI/CD pipeline
+#     (.github/workflows/deploy.yml) overrides this variable with the
+#     immutable commit SHA (or, optionally, an image digest reference)
+#     pushed by .github/workflows/docker-build.yml. The same variable
+#     is consumed by ecs.tf for the ALB-fronted online service, so the
+#     same Terraform `apply` updates both the ECS task definition AND
+#     every Batch job definition in lockstep — eliminating the previous
+#     drift where Batch jobs continued pointing at `:latest` even after
+#     a new immutable image was deployed to ECS.
+#   * Because the ECR repository is configured with
+#     `image_tag_mutability = "IMMUTABLE"` (ecr.tf), each commit SHA
+#     can only be pushed once. Re-deploying a previously-released SHA
+#     therefore guarantees byte-identical containers across ECS and
+#     Batch — meeting the AAP §0.6.6 / §0.7.2 supply-chain immutability
+#     contract.
 #   * `retry_strategy.attempts = 1` deliberately disables AWS Batch's
 #     built-in retry so that Step Functions remains the single retry
 #     authority (its Catch / Retry policies model the legacy JCL
@@ -300,10 +313,21 @@ resource "aws_batch_job_queue" "carddemo" {
   priority = 1
 
   # Single compute environment — the priority-1 Fargate CE defined
-  # in Section 2. Adding additional compute_environments here would
-  # define a fallback chain (jobs flow to the second CE when the
-  # first is exhausted).
-  compute_environments = [aws_batch_compute_environment.carddemo.arn]
+  # in Section 2. Adding additional compute_environment_order blocks
+  # below would define a fallback chain (jobs flow to the second CE
+  # when the first is exhausted).
+  #
+  # Migrated from the legacy `compute_environments = [...]` argument
+  # to the modern `compute_environment_order { order, compute_environment }`
+  # nested block per AWS provider deprecation notice (Code Review CP7
+  # Terraform Maintainability finding). The nested block form is
+  # required by AWS Batch >= 1.0 and lets us pin an explicit priority
+  # value per environment when multiple compute environments are
+  # introduced in the future.
+  compute_environment_order {
+    order               = 1
+    compute_environment = aws_batch_compute_environment.carddemo.arn
+  }
 
   tags = merge(local.common_tags, {
     Name    = "carddemo-${var.environment}-batch-queue"
@@ -444,9 +468,12 @@ locals {
 # Shared properties across all six definitions:
 #   * type                  = "container"
 #   * platform_capabilities = ["FARGATE"]
-#   * image                 = ECR repo + :latest tag (production replaces
-#                             :latest with the immutable digest pushed
-#                             by .github/workflows/docker-build.yml)
+#   * image                 = ECR repo + var.app_image_tag (the CI/CD
+#                             pipeline overrides the variable with the
+#                             commit SHA pushed by docker-build.yml so
+#                             that every Batch job definition is
+#                             updated to the new immutable image in
+#                             lockstep with the ECS task definition).
 #   * jobRoleArn            = aws_iam_role.batch_job_role.arn
 #                             (application runtime permissions)
 #   * executionRoleArn      = aws_iam_role.batch_execution_role.arn
@@ -490,7 +517,7 @@ resource "aws_batch_job_definition" "daily_transaction_posting" {
   # (lists / objects) while letting Terraform serialize the resulting
   # JSON at plan time. This avoids brittle heredoc string templates.
   container_properties = jsonencode({
-    image            = "${aws_ecr_repository.carddemo.repository_url}:latest"
+    image            = "${aws_ecr_repository.carddemo.repository_url}:${var.app_image_tag}"
     command          = ["java", "-jar", "/app/carddemo.jar", "--spring.batch.job.name=dailyTransactionPostingJob"]
     jobRoleArn       = aws_iam_role.batch_job_role.arn
     executionRoleArn = aws_iam_role.batch_execution_role.arn
@@ -566,7 +593,7 @@ resource "aws_batch_job_definition" "interest_calculation" {
   platform_capabilities = ["FARGATE"]
 
   container_properties = jsonencode({
-    image            = "${aws_ecr_repository.carddemo.repository_url}:latest"
+    image            = "${aws_ecr_repository.carddemo.repository_url}:${var.app_image_tag}"
     command          = ["java", "-jar", "/app/carddemo.jar", "--spring.batch.job.name=interestCalculationJob"]
     jobRoleArn       = aws_iam_role.batch_job_role.arn
     executionRoleArn = aws_iam_role.batch_execution_role.arn
@@ -631,7 +658,7 @@ resource "aws_batch_job_definition" "combine_transactions" {
   platform_capabilities = ["FARGATE"]
 
   container_properties = jsonencode({
-    image            = "${aws_ecr_repository.carddemo.repository_url}:latest"
+    image            = "${aws_ecr_repository.carddemo.repository_url}:${var.app_image_tag}"
     command          = ["java", "-jar", "/app/carddemo.jar", "--spring.batch.job.name=combineTransactionsJob"]
     jobRoleArn       = aws_iam_role.batch_job_role.arn
     executionRoleArn = aws_iam_role.batch_execution_role.arn
@@ -695,7 +722,7 @@ resource "aws_batch_job_definition" "statement_generation" {
   platform_capabilities = ["FARGATE"]
 
   container_properties = jsonencode({
-    image            = "${aws_ecr_repository.carddemo.repository_url}:latest"
+    image            = "${aws_ecr_repository.carddemo.repository_url}:${var.app_image_tag}"
     command          = ["java", "-jar", "/app/carddemo.jar", "--spring.batch.job.name=statementGenerationJob"]
     jobRoleArn       = aws_iam_role.batch_job_role.arn
     executionRoleArn = aws_iam_role.batch_execution_role.arn
@@ -760,7 +787,7 @@ resource "aws_batch_job_definition" "transaction_report" {
   platform_capabilities = ["FARGATE"]
 
   container_properties = jsonencode({
-    image            = "${aws_ecr_repository.carddemo.repository_url}:latest"
+    image            = "${aws_ecr_repository.carddemo.repository_url}:${var.app_image_tag}"
     command          = ["java", "-jar", "/app/carddemo.jar", "--spring.batch.job.name=transactionReportJob"]
     jobRoleArn       = aws_iam_role.batch_job_role.arn
     executionRoleArn = aws_iam_role.batch_execution_role.arn
@@ -828,7 +855,7 @@ resource "aws_batch_job_definition" "print_category_balance" {
   platform_capabilities = ["FARGATE"]
 
   container_properties = jsonencode({
-    image            = "${aws_ecr_repository.carddemo.repository_url}:latest"
+    image            = "${aws_ecr_repository.carddemo.repository_url}:${var.app_image_tag}"
     command          = ["java", "-jar", "/app/carddemo.jar", "--spring.batch.job.name=printCategoryBalanceJob"]
     jobRoleArn       = aws_iam_role.batch_job_role.arn
     executionRoleArn = aws_iam_role.batch_execution_role.arn
@@ -872,5 +899,173 @@ resource "aws_batch_job_definition" "print_category_balance" {
     Name      = "carddemo-${var.environment}-print-category-balance"
     Purpose   = "Spring Batch PrintCategoryBalanceJob (replaces app/jcl/PRTCATBL.jcl - DFSORT + report)"
     SourceJCL = "PRTCATBL.jcl"
+  })
+}
+
+# -----------------------------------------------------------------------------
+# 5.7 — Flyway schema migration (file-provisioning workflow)
+# Replaces: All IDCAMS DEFINE CLUSTER + REPRO operations across
+#           ACCTFILE.jcl, CARDFILE.jcl, CUSTFILE.jcl, XREFFILE.jcl,
+#           TRANFILE.jcl, DISCGRP.jcl, TCATBALF.jcl, TRANCATG.jcl,
+#           TRANTYPE.jcl, DUSRSECJ.jcl per AAP §0.4.1 and §0.6.3.
+# Java impl: Spring Boot bootstrap with `spring.flyway.enabled=true`
+#            applies V001..V017 migrations against RDS PostgreSQL.
+#            Invoked by the file-provisioning Step Functions state
+#            machine's ApplyFlywayMigrations Task per
+#            src/main/resources/stepfunctions/file-provisioning.asl.json.
+# -----------------------------------------------------------------------------
+resource "aws_batch_job_definition" "flyway_migrate" {
+  name                  = "carddemo-${var.environment}-flyway-migrate"
+  type                  = "container"
+  platform_capabilities = ["FARGATE"]
+
+  container_properties = jsonencode({
+    image = "${aws_ecr_repository.carddemo.repository_url}:${var.app_image_tag}"
+    # Flyway-only entry: the migrate command runs the Flyway migrate
+    # CLI shipped by the Spring Boot fat jar. The `-Dspring.flyway.enabled=true`
+    # ensures Flyway runs even when the Spring Boot app would otherwise
+    # not start its full context (Spring Boot 3.x can migrate via
+    # `--spring.flyway.locations=classpath:db/migration --spring.profiles.active=migrate`).
+    # The container exits 0 on success and a non-zero code on any
+    # migration failure, allowing the Step Functions Catch policy to
+    # route failures to the DLQ.
+    command = [
+      "java",
+      "-jar",
+      "/app/carddemo.jar",
+      "--spring.main.web-application-type=none",
+      "--spring.batch.job.enabled=false",
+      "--spring.flyway.enabled=true",
+      "--carddemo.bootstrap.exit-after-migrate=true"
+    ]
+    jobRoleArn       = aws_iam_role.batch_job_role.arn
+    executionRoleArn = aws_iam_role.batch_execution_role.arn
+
+    resourceRequirements = [
+      { type = "VCPU", value = tostring(var.batch_job_vcpu) },
+      { type = "MEMORY", value = tostring(var.batch_job_memory) },
+    ]
+
+    fargatePlatformConfiguration = {
+      platformVersion = "LATEST"
+    }
+
+    networkConfiguration = {
+      assignPublicIp = "DISABLED"
+    }
+
+    environment = local.batch_common_environment
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.batch_jobs.name
+        awslogs-region        = var.aws_region
+        awslogs-stream-prefix = "flyway-migrate"
+      }
+    }
+  })
+
+  retry_strategy {
+    attempts = 1
+  }
+
+  # 30-minute SLA — Flyway migrations are typically sub-second per
+  # migration; 30 minutes is more than sufficient for the V001..V017
+  # set including initial schema creation on a freshly-provisioned
+  # RDS instance.
+  timeout {
+    attempt_duration_seconds = 1800
+  }
+
+  propagate_tags = true
+
+  tags = merge(local.common_tags, {
+    Name      = "carddemo-${var.environment}-flyway-migrate"
+    Purpose   = "Flyway schema migration job (file-provisioning workflow ApplyFlywayMigrations Task — replaces IDCAMS DEFINE CLUSTER across all VSAM provisioning JCL members per AAP §0.6.3)"
+    SourceJCL = "ACCTFILE.jcl, CARDFILE.jcl, CUSTFILE.jcl, XREFFILE.jcl, TRANFILE.jcl, DISCGRP.jcl, TCATBALF.jcl, TRANCATG.jcl, TRANTYPE.jcl, DUSRSECJ.jcl"
+  })
+}
+
+# -----------------------------------------------------------------------------
+# 5.8 — Row-count validation (file-provisioning workflow)
+# Replaces: Implicit IDCAMS LISTCAT verification documented in
+#           README §Running full batch as the operator's manual sanity
+#           check after the provisioning chain completes.
+# Java impl: Spring Boot bootstrap that issues SELECT COUNT(*) against
+#            each table loaded by Flyway + Glue, compares each count
+#            against an expected-rows configuration, and exits 0 if
+#            every table matches its expectation (else exits non-zero).
+#            Invoked by the file-provisioning Step Functions state
+#            machine's ValidateRowCounts Task per
+#            src/main/resources/stepfunctions/file-provisioning.asl.json.
+# -----------------------------------------------------------------------------
+resource "aws_batch_job_definition" "validate_rowcounts" {
+  name                  = "carddemo-${var.environment}-validate-rowcounts"
+  type                  = "container"
+  platform_capabilities = ["FARGATE"]
+
+  container_properties = jsonencode({
+    image = "${aws_ecr_repository.carddemo.repository_url}:${var.app_image_tag}"
+    # Row-count validation entry: a dedicated Spring Boot @Component
+    # (RowCountValidator) reads `carddemo.bootstrap.expected-row-counts`
+    # from configuration and compares each `SELECT COUNT(*) FROM
+    # <table>` result against the expectation. Exits non-zero if any
+    # mismatch is detected.
+    command = [
+      "java",
+      "-jar",
+      "/app/carddemo.jar",
+      "--spring.main.web-application-type=none",
+      "--spring.batch.job.enabled=false",
+      "--carddemo.bootstrap.validate-rowcounts=true",
+      "--carddemo.bootstrap.exit-after-validate=true"
+    ]
+    jobRoleArn       = aws_iam_role.batch_job_role.arn
+    executionRoleArn = aws_iam_role.batch_execution_role.arn
+
+    resourceRequirements = [
+      { type = "VCPU", value = tostring(var.batch_job_vcpu) },
+      { type = "MEMORY", value = tostring(var.batch_job_memory) },
+    ]
+
+    fargatePlatformConfiguration = {
+      platformVersion = "LATEST"
+    }
+
+    networkConfiguration = {
+      assignPublicIp = "DISABLED"
+    }
+
+    environment = local.batch_common_environment
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.batch_jobs.name
+        awslogs-region        = var.aws_region
+        awslogs-stream-prefix = "validate-rowcounts"
+      }
+    }
+  })
+
+  retry_strategy {
+    attempts = 1
+  }
+
+  # 15-minute SLA — COUNT(*) on the largest CardDemo table (Transaction)
+  # completes in seconds even at production volumes; 15 minutes is a
+  # generous buffer for cold-start, connection pool warm-up, and any
+  # cross-AZ network latency.
+  timeout {
+    attempt_duration_seconds = 900
+  }
+
+  propagate_tags = true
+
+  tags = merge(local.common_tags, {
+    Name      = "carddemo-${var.environment}-validate-rowcounts"
+    Purpose   = "Row-count validation job (file-provisioning workflow ValidateRowCounts Task — replaces implicit IDCAMS LISTCAT verification per AAP §0.6.3)"
+    SourceJCL = "README §Running full batch (operational sanity check after provisioning)"
   })
 }

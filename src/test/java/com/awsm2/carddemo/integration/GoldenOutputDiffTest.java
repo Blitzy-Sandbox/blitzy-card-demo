@@ -832,18 +832,23 @@ class GoldenOutputDiffTest {
      *   <li>Assert {@code assertArrayEquals(originalBytes, regeneratedBytes)}.</li>
      * </ol>
      *
-     * <p>Every test in this nested class is currently {@link Disabled @Disabled} because
-     * the production parse/format methods on the corresponding entity classes
-     * ({@link Account}, {@link Card}, etc.) are not yet exposed as static parsers and
-     * formatters &mdash; their primary purpose is JPA persistence, not COBOL fixed-width
-     * record marshalling. When those methods are added (likely as part of the Spring
-     * Batch ItemReader / ItemWriter implementations for the bulk-load Glue jobs), each
-     * {@code @Disabled} annotation should be removed and the test fleshed out per the
-     * contract above.</p>
+     * <p>Code Review CP7 FINAL &mdash; CRITICAL: every test in this nested class
+     * is now <b>enabled</b>. Each of the nine COBOL entity classes
+     * ({@link Account}, {@link Card}, {@link CardCrossReference},
+     * {@link Customer}, {@link DailyTransaction}, {@link DisclosureGroup},
+     * {@link TransactionCategoryBalance}, {@link TransactionCategory},
+     * {@link TransactionType}) exposes a {@code public static parse(byte[])}
+     * method and a {@code public byte[] format()} method that delegate to
+     * {@link com.awsm2.carddemo.util.CobolCodec}. The
+     * {@link #roundTripPlaceholder(Class, byte[])} helper drives those
+     * methods via reflection, parsing each newline-separated record and
+     * re-emitting the byte stream. The test fails if any byte drifts,
+     * which is the operational gate that proves the AAP &sect;0.2.2
+     * byte-identical regulatory-output guarantee.</p>
      *
-     * <p>The structural tests in the outer class (Phases 6&ndash;16) remain enabled and
-     * provide a strong baseline even before the round-trip parsers exist. See the AAP
-     * &sect;0.2.2 byte-identical guarantee for the regulatory motivation.</p>
+     * <p>The structural tests in the outer class (Phases 6&ndash;16)
+     * provide additional independent baselines for header, structure,
+     * and field-level invariants.</p>
      */
     @Nested
     @DisplayName("Round-trip parse → format byte-identical invariants (Phase 13)")
@@ -857,7 +862,7 @@ class GoldenOutputDiffTest {
          * @throws IOException if the fixture cannot be read
          */
         @Test
-        @Disabled("TODO: enable when Account.parse(byte[]) and Account.format() exist")
+        // CP7 FINAL — round-trip enabled: AAP §0.2.2 byte-identical proof
         @DisplayName("acctdata.txt → Account → bytes round-trip")
         void acctdata_roundTrip() throws IOException {
             // AAP §0.2.2 — byte-identical parse/format round-trip invariant
@@ -876,7 +881,7 @@ class GoldenOutputDiffTest {
          * @throws IOException if the fixture cannot be read
          */
         @Test
-        @Disabled("TODO: enable when Card.parse(byte[]) and Card.format() exist")
+        // CP7 FINAL — round-trip enabled: AAP §0.2.2 byte-identical proof
         @DisplayName("carddata.txt → Card → bytes round-trip")
         void carddata_roundTrip() throws IOException {
             // AAP §0.2.2 — byte-identical parse/format round-trip invariant
@@ -895,7 +900,7 @@ class GoldenOutputDiffTest {
          * @throws IOException if the fixture cannot be read
          */
         @Test
-        @Disabled("TODO: enable when CardCrossReference.parse(byte[]) and .format() exist")
+        // CP7 FINAL — round-trip enabled: AAP §0.2.2 byte-identical proof
         @DisplayName("cardxref.txt → CardCrossReference → bytes round-trip")
         void cardxref_roundTrip() throws IOException {
             // AAP §0.2.2 — byte-identical parse/format round-trip invariant
@@ -913,7 +918,7 @@ class GoldenOutputDiffTest {
          * @throws IOException if the fixture cannot be read
          */
         @Test
-        @Disabled("TODO: enable when Customer.parse(byte[]) and Customer.format() exist")
+        // CP7 FINAL — round-trip enabled: AAP §0.2.2 byte-identical proof
         @DisplayName("custdata.txt → Customer → bytes round-trip")
         void custdata_roundTrip() throws IOException {
             // AAP §0.2.2 — byte-identical parse/format round-trip invariant
@@ -933,7 +938,7 @@ class GoldenOutputDiffTest {
          * @throws IOException if the fixture cannot be read
          */
         @Test
-        @Disabled("TODO: enable when DailyTransaction.parse(byte[]) and .format() exist")
+        // CP7 FINAL — round-trip enabled: AAP §0.2.2 byte-identical proof
         @DisplayName("dailytran.txt → DailyTransaction → bytes round-trip")
         void dailytran_roundTrip() throws IOException {
             // AAP §0.2.2 — byte-identical parse/format round-trip invariant
@@ -952,7 +957,7 @@ class GoldenOutputDiffTest {
          * @throws IOException if the fixture cannot be read
          */
         @Test
-        @Disabled("TODO: enable when DisclosureGroup.parse(byte[]) and .format() exist")
+        // CP7 FINAL — round-trip enabled: AAP §0.2.2 byte-identical proof
         @DisplayName("discgrp.txt → DisclosureGroup → bytes round-trip")
         void discgrp_roundTrip() throws IOException {
             // AAP §0.2.2 — byte-identical parse/format round-trip invariant
@@ -971,7 +976,7 @@ class GoldenOutputDiffTest {
          * @throws IOException if the fixture cannot be read
          */
         @Test
-        @Disabled("TODO: enable when TransactionCategoryBalance.parse(byte[]) and .format() exist")
+        // CP7 FINAL — round-trip enabled: AAP §0.2.2 byte-identical proof
         @DisplayName("tcatbal.txt → TransactionCategoryBalance → bytes round-trip")
         void tcatbal_roundTrip() throws IOException {
             // AAP §0.2.2 — byte-identical parse/format round-trip invariant
@@ -991,7 +996,7 @@ class GoldenOutputDiffTest {
          * @throws IOException if the fixture cannot be read
          */
         @Test
-        @Disabled("TODO: enable when TransactionCategory.parse(byte[]) and .format() exist")
+        // CP7 FINAL — round-trip enabled: AAP §0.2.2 byte-identical proof
         @DisplayName("trancatg.txt → TransactionCategory → bytes round-trip")
         void trancatg_roundTrip() throws IOException {
             // AAP §0.2.2 — byte-identical parse/format round-trip invariant
@@ -1010,7 +1015,7 @@ class GoldenOutputDiffTest {
          * @throws IOException if the fixture cannot be read
          */
         @Test
-        @Disabled("TODO: enable when TransactionType.parse(byte[]) and .format() exist")
+        // CP7 FINAL — round-trip enabled: AAP §0.2.2 byte-identical proof
         @DisplayName("trantype.txt → TransactionType → bytes round-trip")
         void trantype_roundTrip() throws IOException {
             // AAP §0.2.2 — byte-identical parse/format round-trip invariant
@@ -1022,37 +1027,68 @@ class GoldenOutputDiffTest {
         }
 
         /**
-         * Placeholder for the future entity-specific parse-then-format chain. When the
-         * production code exposes {@code static parse(byte[])} and {@code byte[] format()}
-         * methods on the entity classes, this method's body should be replaced with the
-         * actual round-trip call. Currently returns the input unchanged &mdash; tests that
-         * invoke this helper are all {@code @Disabled} until the production-side
-         * parser/formatter is wired in.
+         * Drives the canonical fixture-level round-trip: read the
+         * newline-separated COBOL records from {@code input}, invoke each
+         * entity's {@code static parse(byte[])} to construct a domain
+         * object, invoke that object's {@code byte[] format()} to re-emit
+         * the record, and reassemble the newline-separated output.
          *
-         * <p>The {@link Transaction} entity reference is intentionally retained in the
-         * outer class's import set even though the round-trip is exercised via the
-         * {@link DailyTransaction} fixture &mdash; both copybooks
-         * ({@code CVTRA05Y.cpy} and {@code CVTRA06Y.cpy}) share the same 350-byte
-         * layout and BigDecimal-precision contract.</p>
+         * <p>Code Review CP7 FINAL — CRITICAL: this implementation
+         * replaces the previous placeholder helper so that the nine
+         * round-trip tests below actually prove the AAP &sect;0.2.2
+         * byte-identical regulatory-output guarantee.</p>
          *
-         * @param entityClass the target entity class (informational only at this stage)
-         * @param input       the original fixture bytes
-         * @return the bytes that the round-trip should produce; currently returns input
-         *         unchanged. Once production parsers/formatters exist, this should invoke
-         *         them and return the re-formatted bytes.
+         * <p>The {@link Transaction} entity is exercised through the
+         * {@link DailyTransaction} fixture because both copybooks
+         * ({@code CVTRA05Y.cpy} and {@code CVTRA06Y.cpy}) share the same
+         * 350-byte layout and BigDecimal-precision contract — the
+         * assertion below also guards the import.</p>
+         *
+         * @param entityClass the target entity class — must expose a
+         *                    {@code public static parse(byte[])} method
+         *                    and a {@code public byte[] format()} method
+         * @param input       the original fixture bytes (records separated
+         *                    by 0x0A)
+         * @return the byte stream produced by parse → format on every
+         *         record, reassembled with the original newline separators
          */
         private byte[] roundTripPlaceholder(Class<?> entityClass, byte[] input) {
-            // Reference the imported entity classes to keep the imports compiled even
-            // before the round-trip implementations are wired in. Once each entity
-            // class exposes parse(byte[]) and format() methods, this body should be
-            // replaced with: parsed = parse(input); return format(parsed);
-            // The Transaction.class is referenced explicitly to satisfy the schema
-            // requirement that Transaction is imported and used somewhere in the test.
-            assertThat(entityClass).isNotNull();
+            assertThat(entityClass).as("entity class must be supplied").isNotNull();
             assertThat(Transaction.class.getSimpleName())
                 .as("Transaction entity must be on the classpath for future round-trip use")
                 .isEqualTo("Transaction");
-            return input;
+            try {
+                java.lang.reflect.Method parse = entityClass.getMethod("parse", byte[].class);
+                java.lang.reflect.Method format = entityClass.getMethod("format");
+                java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(input.length);
+                int start = 0;
+                for (int i = 0; i <= input.length; i++) {
+                    if (i == input.length || input[i] == (byte) '\n') {
+                        int len = i - start;
+                        if (len > 0) {
+                            byte[] record = new byte[len];
+                            System.arraycopy(input, start, record, 0, len);
+                            Object entity = parse.invoke(null, (Object) record);
+                            byte[] formatted = (byte[]) format.invoke(entity);
+                            out.write(formatted);
+                        }
+                        if (i < input.length) {
+                            out.write('\n');
+                        }
+                        start = i + 1;
+                    }
+                }
+                return out.toByteArray();
+            } catch (NoSuchMethodException ex) {
+                throw new AssertionError(
+                    entityClass.getSimpleName() + " must expose static parse(byte[]) and byte[] format() per AAP §0.2.2", ex);
+            } catch (ReflectiveOperationException ex) {
+                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                throw new AssertionError(
+                    "round-trip parse/format failed for " + entityClass.getSimpleName() + ": " + cause.getMessage(), cause);
+            } catch (java.io.IOException ex) {
+                throw new AssertionError("buffer assembly failed for " + entityClass.getSimpleName(), ex);
+            }
         }
     }
 }

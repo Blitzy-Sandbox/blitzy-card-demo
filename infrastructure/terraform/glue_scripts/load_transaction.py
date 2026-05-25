@@ -43,6 +43,23 @@ PIC layout exactly. Monetary values are parsed to Python ``Decimal``
 and written as PostgreSQL NUMERIC(11,2) per V005 Flyway migration and
 AAP 0.6.1 (BigDecimal precision contract for COBOL PIC S9(9)V99).
 
+Schema Contract with V005__create_transaction.sql (Code Review CP7 fix):
+    Both ``tran_orig_ts`` and ``tran_proc_ts`` are declared
+    ``timestamp(6) not null`` in Flyway. The previous Glue schema
+    mapped them as ``StringType`` nullable, which (a) would have
+    allowed blank values to pass Spark validation and trigger a JDBC
+    NOT NULL violation that abandons the entire DataFrame, and (b)
+    failed to negotiate the PostgreSQL ``timestamp(6)`` type — JDBC
+    would have attempted an implicit string-to-timestamp conversion
+    on every row.
+
+    This version parses each 26-byte field with the canonical COBOL
+    format string ``%Y-%m-%d %H:%M:%S.%f`` (matching AAP §0.6.2's
+    ``YYYY-MM-DD HH24:MI:SS.mmmmmm`` specification) into a
+    ``datetime.datetime`` instance. Spark sees ``TimestampType`` and
+    the PostgreSQL JDBC driver writes a properly typed timestamp
+    with microsecond precision.
+
 Job arguments (Terraform default_arguments / Step Functions Arguments):
 
     --connection_name   Name of the aws_glue_connection.rds resource.
@@ -58,6 +75,7 @@ Job arguments (Terraform default_arguments / Step Functions Arguments):
 
 from __future__ import annotations
 
+import datetime
 import sys
 from decimal import Decimal, ROUND_HALF_EVEN
 from typing import Optional
@@ -74,7 +92,40 @@ from pyspark.sql.types import (
     StringType,
     StructField,
     StructType,
+    TimestampType,
 )
+
+
+# COBOL timestamp format string -- matches V005__create_transaction.sql's
+# 'YYYY-MM-DD HH24:MI:SS.mmmmmm' spec and AAP §0.6.2. Used to parse the
+# 26-byte TRAN-ORIG-TS / TRAN-PROC-TS fields into datetime.datetime
+# objects (Spark TimestampType, PostgreSQL timestamp(6)).
+COBOL_TS_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
+
+
+def _required_timestamp(value: str, field_name: str) -> datetime.datetime:
+    """Parse a 26-byte 'YYYY-MM-DD HH24:MI:SS.mmmmmm' string into a
+    ``datetime.datetime`` after asserting it is present and well-formed.
+
+    Used for NOT NULL timestamp(6) columns so a missing or malformed
+    value fails fast in Spark (clear ValueError + reject record)
+    rather than triggering a JDBC NOT NULL violation that aborts the
+    entire DataFrame.
+    """
+    if value is None:
+        raise ValueError(f"{field_name} is None (NOT NULL required)")
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(
+            f"{field_name} is blank or whitespace-only (NOT NULL required)"
+        )
+    try:
+        return datetime.datetime.strptime(stripped, COBOL_TS_FORMAT)
+    except ValueError as exc:
+        raise ValueError(
+            f"{field_name} must be 'YYYY-MM-DD HH24:MI:SS.mmmmmm' "
+            f"(COBOL PIC X(26)); got {stripped!r}"
+        ) from exc
 
 
 # Zoned-decimal overpunch translation tables (identical convention to
@@ -179,8 +230,12 @@ TRANSACTION_SCHEMA = StructType(
         StructField("tran_merchant_city", StringType(), nullable=True),
         StructField("tran_merchant_zip", StringType(), nullable=True),
         StructField("tran_card_num", StringType(), nullable=False),
-        StructField("tran_orig_ts", StringType(), nullable=True),
-        StructField("tran_proc_ts", StringType(), nullable=True),
+        # tran_orig_ts and tran_proc_ts are TIMESTAMP(6) NOT NULL in
+        # V005__create_transaction.sql; Spark TimestampType + Python
+        # datetime.datetime preserves microsecond precision over the
+        # PostgreSQL JDBC bridge.
+        StructField("tran_orig_ts", TimestampType(), nullable=False),
+        StructField("tran_proc_ts", TimestampType(), nullable=False),
     ]
 )
 
@@ -236,8 +291,11 @@ def parse_transaction_record(line: str) -> dict:
         "tran_merchant_city": _opt_strip(line[202:252]),
         "tran_merchant_zip": _opt_strip(line[252:262]),
         "tran_card_num": line[262:278],
-        "tran_orig_ts": _opt_strip(line[278:304]),
-        "tran_proc_ts": _opt_strip(line[304:330]),
+        # V005 declares both timestamps NOT NULL; parse to
+        # datetime.datetime so Spark TimestampType + PostgreSQL
+        # timestamp(6) preserves microsecond precision.
+        "tran_orig_ts": _required_timestamp(line[278:304], "tran_orig_ts"),
+        "tran_proc_ts": _required_timestamp(line[304:330], "tran_proc_ts"),
     }
 
 

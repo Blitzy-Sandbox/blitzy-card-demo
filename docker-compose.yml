@@ -211,7 +211,25 @@ services:
   # single-broker durability overrides necessary for the local dev quorum.
   # ---------------------------------------------------------------------------
   kafka:
-    image: apache/kafka:latest
+    # ---------------------------------------------------------------------------
+    # Code Review CP7 (MAJOR — Dependency Pinning / AAP §0.5.1):
+    # AAP §0.5.1 forbids `:latest` or other floating tags for any container
+    # image — every dependency must be pinned to a specific version so local
+    # development runs against a known-compatible broker and CI builds are
+    # reproducible.
+    #
+    # Pin: apache/kafka:3.8.1 — the latest 3.8.x patch at the time of this
+    # remediation. 3.8.x is the Spring for Apache Kafka 3.3.x baseline
+    # (Spring Boot 3.3.5 uses Spring Kafka 3.2.x which is wire-compatible
+    # with brokers 3.x). The image is the official Apache Software
+    # Foundation distribution that supports KRaft mode without Zookeeper.
+    #
+    # Upgrade cadence: review when Apache Kafka issues a new 3.8.x patch
+    # (security/critical fixes) or when a new minor (3.9.x, 4.0.x) becomes
+    # the Spring for Apache Kafka baseline. Update Spring Kafka first,
+    # rebuild the test matrix, then bump this tag.
+    # ---------------------------------------------------------------------------
+    image: apache/kafka:3.8.1
     container_name: carddemo-kafka
     ports:
       - "9092:9092"

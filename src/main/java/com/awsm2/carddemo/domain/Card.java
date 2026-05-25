@@ -16,10 +16,12 @@
  */
 package com.awsm2.carddemo.domain;
 
+import com.awsm2.carddemo.util.CobolCodec;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import jakarta.persistence.Version;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
@@ -518,6 +520,36 @@ public class Card implements Serializable {
     @Column(name = "version", nullable = false)
     private Long version;
 
+    /**
+     * Transient holder for the COBOL CARD-CVV-CD field (PIC 9(03), 3 bytes
+     * at offset 27 of the CARD-RECORD per CVACT02Y.cpy). The {@code cards}
+     * table dropped this column in V017 for PCI-DSS posture, but the CVV
+     * bytes must be preserved here verbatim so that the
+     * {@link #parse(byte[])} / {@link #format()} round-trip is byte-
+     * identical against the canonical {@code app/data/ASCII/carddata.txt}
+     * fixture (AAP &sect;0.2.2).
+     *
+     * <p>This field is marked {@link Transient @Transient} because it has
+     * no SQL representation in the {@code cards} table (V002 minus V017);
+     * Hibernate ignores it during persistence. It is package-private to
+     * keep the CVV value strictly contained within the {@code domain}
+     * package and prevent accidental leakage via Jackson serialisation,
+     * logging, or downstream DTO conversion.</p>
+     *
+     * <p>In production runtime this field is left {@code null}; it is
+     * populated only during ETL fixture round-tripping (V017 compliance).</p>
+     */
+    @Transient
+    String cobolCvv;
+
+    /**
+     * Transient holder for the 59-byte COBOL FILLER trailer of the
+     * CARD-RECORD layout (CVACT02Y.cpy). Preserved verbatim for the
+     * byte-identical round-trip required by AAP &sect;0.2.2.
+     */
+    @Transient
+    private byte[] cobolFiller;
+
     // -------------------------------------------------------------------------
     // Constructors
     //
@@ -845,5 +877,84 @@ public class Card implements Serializable {
         // last four digits of the PAN. The hyphenated 4-4-4-4 grouping
         // is the spec-mandated rendering and matches the CP4 checklist.
         return "****-****-****-" + card.substring(card.length() - 4);
+    }
+
+    // -------------------------------------------------------------------------
+    // COBOL fixed-width record marshalling
+    //
+    // Code Review CP7 FINAL — CRITICAL: parse(byte[]) and format() are
+    // required by GoldenOutputDiffTest#carddata_roundTrip to prove the AAP
+    // §0.2.2 byte-identical regulatory-output guarantee against the
+    // canonical app/data/ASCII/carddata.txt fixture.
+    //
+    // Layout per CVACT02Y.cpy (150 bytes total):
+    //   CARD-NUM             PIC X(16)  offset 0,  length 16
+    //   CARD-ACCT-ID         PIC 9(11)  offset 16, length 11
+    //   CARD-CVV-CD          PIC 9(03)  offset 27, length 3  (transient — V017 drop)
+    //   CARD-EMBOSSED-NAME   PIC X(50)  offset 30, length 50
+    //   CARD-EXPIRAION-DATE  PIC X(10)  offset 80, length 10
+    //   CARD-ACTIVE-STATUS   PIC X(01)  offset 90, length 1
+    //   FILLER               PIC X(59)  offset 91, length 59 (SPACES)
+    // -------------------------------------------------------------------------
+
+    /** Byte length of one CARD-RECORD per CVACT02Y.cpy. */
+    public static final int COBOL_RECORD_LENGTH = 150;
+
+    /**
+     * Parse a single 150-byte COBOL CARD-RECORD into a {@link Card}.
+     *
+     * <p>The 3-byte CVV is captured in the transient {@link #cobolCvv}
+     * field for byte-identical round-trip purposes only — it is never
+     * persisted (V017 dropped the corresponding column for PCI-DSS).</p>
+     *
+     * @param record exactly 150 bytes per CVACT02Y.cpy
+     * @return the parsed {@link Card} (transient — not yet persisted)
+     */
+    public static Card parse(byte[] record) {
+        if (record == null || record.length != COBOL_RECORD_LENGTH) {
+            throw new IllegalArgumentException(
+                    "CARD-RECORD must be exactly " + COBOL_RECORD_LENGTH
+                            + " bytes per CVACT02Y.cpy; got "
+                            + (record == null ? "null" : record.length));
+        }
+        Card c = new Card();
+        c.cardNum = CobolCodec.parseText(record, 0, 16);
+        c.cardAcctId = CobolCodec.parseLong(record, 16, 11);
+        c.cobolCvv = CobolCodec.parseText(record, 27, 3);
+        c.cardEmbossedName = CobolCodec.parseText(record, 30, 50);
+        c.cardExpirationDate = CobolCodec.parseLocalDate(record, 80, 10);
+        c.cardActiveStatus = CobolCodec.parseText(record, 90, 1);
+        c.cobolFiller = new byte[59];
+        System.arraycopy(record, 91, c.cobolFiller, 0, 59);
+        return c;
+    }
+
+    /**
+     * Format this {@link Card} as a 150-byte COBOL CARD-RECORD.
+     *
+     * @return exactly 150 bytes per CVACT02Y.cpy
+     */
+    public byte[] format() {
+        byte[] out = new byte[COBOL_RECORD_LENGTH];
+        CobolCodec.put(out, 0, CobolCodec.formatText(cardNum, 16));
+        CobolCodec.put(out, 16, CobolCodec.formatLong(cardAcctId == null ? 0L : cardAcctId, 11));
+        // CVV: use the transient holder if present, otherwise emit "000".
+        // The COBOL field is always 3 digits; production runtime leaves this
+        // empty (V017 dropped the column), but ETL/migration tests preserve
+        // the original CVV via the transient field.
+        if (cobolCvv != null && cobolCvv.length() == 3) {
+            CobolCodec.put(out, 27, cobolCvv.getBytes(CobolCodec.ASCII));
+        } else {
+            CobolCodec.fillZeros(out, 27, 3);
+        }
+        CobolCodec.put(out, 30, CobolCodec.formatText(cardEmbossedName, 50));
+        CobolCodec.put(out, 80, CobolCodec.formatLocalDate(cardExpirationDate));
+        CobolCodec.put(out, 90, CobolCodec.formatText(cardActiveStatus, 1));
+        if (cobolFiller != null && cobolFiller.length == 59) {
+            System.arraycopy(cobolFiller, 0, out, 91, 59);
+        } else {
+            CobolCodec.fillSpaces(out, 91, 59);
+        }
+        return out;
     }
 }

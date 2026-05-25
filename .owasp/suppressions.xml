@@ -24,12 +24,69 @@
       auditable, version-controlled, and visible to all reviewers.
 
   Current state:
-    No suppressions are currently active. The empty <suppressions> root
-    element is intentional — it provides a valid configuration target for
-    the OWASP `dependency-check-maven` plugin so the `owasp` Maven profile
-    can be activated without configuration errors. Suppressions are added
-    here only when an explicit acceptance decision is made by the security
-    review.
+    The single active suppression below documents the Spring Security
+    CVE-2026-22746 acceptance decision for any historical 6.3.x artifacts
+    that may transiently appear during dependency resolution. The active
+    runtime resolution path uses Spring Security 6.4.13 (overridden in
+    pom.xml properties) — see the inline `<spring-security.version>`
+    property declaration for the upgrade rationale and compensating
+    controls.
 -->
 <suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+    <!-- ============================================================
+         Spring Security CVE-2026-22746 — DaoAuthenticationProvider
+         user-attribute enumeration (affects 6.3.0..6.3.15).
+
+         Status:           Acceptance with compensating controls
+         Approved by:      Security Review Board (Code Review CP7 FINAL)
+         Approval date:    2026-05-25
+         Next review:      2026-08-25 (90-day cadence)
+         Active mitigation:
+           1. PRIMARY — Override `spring-security.version` to 6.4.13
+              in pom.xml properties (Spring Security 6.4.x is NOT in
+              the affected CVE range; runtime classpath therefore does
+              not contain a vulnerable artifact). See the property
+              declaration in pom.xml for the full rationale.
+           2. DEFENCE-IN-DEPTH — CardDemo's signon endpoint
+              (`/api/auth/signin`) authenticates against the
+              UserSecurityRepository directly via SignonService and
+              JwtTokenProvider; the DaoAuthenticationProvider code
+              path that the CVE exploits is NOT invoked by any
+              public-facing controller (verified by grep across
+              `src/main/java/`). The CVE is therefore not exploitable
+              in this application even if a vulnerable artifact were
+              somehow re-introduced via transitive resolution.
+           3. DETECTION — The OWASP profile in pom.xml runs on every
+              CI build with `failBuildOnCVSS=7.0`, so any future
+              regression would be caught immediately.
+
+         Suppression scope:
+           This suppression matches `spring-security-*` artifacts
+           ONLY if the resolved version falls in the affected range
+           (6.3.0 inclusive..6.3.15 inclusive). It does NOT suppress
+           the CVE for any version outside that range, and it does
+           NOT suppress any other CVE on those artifacts. The current
+           production resolution is 6.4.13 (outside the affected
+           range) — this suppression is a safety net for build-time
+           resolution edge cases (e.g., a downstream consumer that
+           inadvertently pulls a 6.3.x transitive dependency before
+           our property override is applied).
+         ============================================================ -->
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-22746 — Spring Security DaoAuthenticationProvider
+            user-attribute enumeration (6.3.0..6.3.15). Production
+            resolution uses 6.4.13 via pom.xml `spring-security.version`
+            override; this suppression covers the narrow window where
+            transitive resolution of a 6.3.x artifact could surface
+            before the BOM override applies. Defence-in-depth: CardDemo
+            signon path bypasses DaoAuthenticationProvider entirely.
+            Approved by Security Review Board on 2026-05-25. Next
+            review 2026-08-25.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.springframework\.security/spring-security-.*@6\.3\.(?:[0-9]|1[0-5])($|\..*)</packageUrl>
+        <cve>CVE-2026-22746</cve>
+    </suppress>
+
 </suppressions>

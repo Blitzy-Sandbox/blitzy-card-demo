@@ -47,7 +47,7 @@
 #                                     provided.
 #
 #     2. `carddemo-${env}-file-provisioning`
-#        Data-store provisioning workflow. Runs Flyway V001-V015 schema
+#        Data-store provisioning workflow. Runs Flyway V001-V017 schema
 #        migrations + parallel Glue Spark bulk-load of ASCII fixture
 #        data + post-load row-count validation. Replaces the JCL chain:
 #            app/jcl/ACCTFILE.jcl   → IDCAMS DELETE/DEFINE CLUSTER +
@@ -184,18 +184,16 @@
 #     entry in the `vars` map, regardless of whether the reference is in
 #     a Comment field or in an executable State definition.
 #
-#   * `flyway_migrate_predicted_arn` and `validate_rowcounts_predicted_arn`
-#     — referenced by Task states in `file-provisioning.asl.json` that
-#     execute Flyway schema migrations and post-load row-count validation
-#     respectively. These two Batch job definitions are out of scope for
-#     the current checkpoint and will be provisioned in a later phase of
-#     the migration; until they exist, the file-provisioning state
-#     machine is valid Terraform but its `ApplyFlywayMigrations` and
-#     `ValidateRowCounts` Task states will fail at execution time with a
-#     `ClientException: JobDefinition does not exist` error. Operators
-#     wanting to dry-run the workflow today should mock those steps via
-#     the `StepFunctionsOrchestrator.startFileProvisioning(...)` adapter
-#     and skip the missing Task states with a Catch block.
+#   * `flyway_migrate` and `validate_rowcounts` — referenced by Task
+#     states in `file-provisioning.asl.json` that execute Flyway schema
+#     migrations and post-load row-count validation respectively. These
+#     two Batch job definitions are NOW provisioned in `batch.tf`
+#     Sections 5.7 and 5.8 (per the CP7 remediation that closed the
+#     review gap "Terraform substitutes predicted local ARNs for
+#     job definitions that do not exist in batch.tf"). The substitution
+#     map below therefore references the actual Terraform resource
+#     ARNs instead of constructed predicted strings — guaranteeing the
+#     ASL JSON is wired to live resources at every apply.
 #
 # Centralising the predicted ARNs in `locals` keeps the two state
 # machine resources below readable and ensures the same convention is
@@ -207,16 +205,6 @@ locals {
   # backup job. Referenced only by the Comment block in
   # eod-batch-pipeline.asl.json.
   stepfunctions_tranbkp_predicted_arn = "arn:${local.partition}:batch:${var.aws_region}:${local.account_id}:job-definition/carddemo-${var.environment}-transaction-backup"
-
-  # Predicted Batch job definition ARN for the Flyway migration job
-  # executed by the file-provisioning state machine's
-  # ApplyFlywayMigrations Task state.
-  stepfunctions_flyway_migrate_predicted_arn = "arn:${local.partition}:batch:${var.aws_region}:${local.account_id}:job-definition/carddemo-${var.environment}-flyway-migrate"
-
-  # Predicted Batch job definition ARN for the row-count validation job
-  # executed by the file-provisioning state machine's ValidateRowCounts
-  # Task state.
-  stepfunctions_validate_rowcounts_predicted_arn = "arn:${local.partition}:batch:${var.aws_region}:${local.account_id}:job-definition/carddemo-${var.environment}-validate-rowcounts"
 
   # Predicted S3 bucket name for the seed-data fixtures that the
   # file-provisioning state machine's BulkLoadFactData Map state reads
@@ -398,7 +386,7 @@ resource "aws_sfn_state_machine" "eod_batch_pipeline" {
 #     TRANTYPE → TRANCATG → TRANFILE → DUSRSECJ
 # with a one-shot / on-demand Step Functions state machine that:
 #
-#   1. Applies Flyway V001-V015 schema migrations to the RDS PostgreSQL
+#   1. Applies Flyway V001-V017 schema migrations to the RDS PostgreSQL
 #      instance via a Spring Boot Batch job (`flyway_migrate` — predicted
 #      ARN; see Section 1).
 #   2. Fans out 5 parallel AWS Glue Spark jobs (one per fact table:
@@ -453,17 +441,19 @@ resource "aws_sfn_state_machine" "file_provisioning" {
   #       Task states submit jobs here.
   #
   #   FLYWAY_MIGRATE_JOB_DEFINITION_ARN
-  #     ← local.stepfunctions_flyway_migrate_predicted_arn — predicted
-  #       ARN for a Batch job definition that will run the Spring Boot
-  #       Flyway-only entry point. Not yet provisioned in `batch.tf`
-  #       (out of scope for the current checkpoint). See Section 1.
+  #     ← aws_batch_job_definition.flyway_migrate.arn — provisioned in
+  #       `batch.tf` Section 5.7 (CP7 remediation that closed the
+  #       review gap "Terraform substitutes predicted local ARNs for
+  #       job definitions that do not exist in batch.tf"). Runs the
+  #       Spring Boot Flyway-only entry point applying V001..V017
+  #       migrations to RDS PostgreSQL.
   #
   #   VALIDATE_ROWCOUNTS_JOB_DEFINITION_ARN
-  #     ← local.stepfunctions_validate_rowcounts_predicted_arn —
-  #       predicted ARN for a Batch job definition that will run the
-  #       row-count validation Spring Boot job. Not yet provisioned in
-  #       `batch.tf` (out of scope for the current checkpoint). See
-  #       Section 1.
+  #     ← aws_batch_job_definition.validate_rowcounts.arn —
+  #       provisioned in `batch.tf` Section 5.8 (CP7 remediation).
+  #       Runs the Spring Boot row-count validator that verifies the
+  #       expected row counts after Flyway + Glue have loaded the
+  #       reference and fact data.
   #
   #   S3_SEED_DATA_BUCKET
   #     ← local.stepfunctions_seed_data_bucket_predicted_name —
@@ -491,8 +481,8 @@ resource "aws_sfn_state_machine" "file_provisioning" {
     "${path.module}/../../src/main/resources/stepfunctions/file-provisioning.asl.json",
     {
       BATCH_JOB_QUEUE_ARN                   = aws_batch_job_queue.carddemo.arn
-      FLYWAY_MIGRATE_JOB_DEFINITION_ARN     = local.stepfunctions_flyway_migrate_predicted_arn
-      VALIDATE_ROWCOUNTS_JOB_DEFINITION_ARN = local.stepfunctions_validate_rowcounts_predicted_arn
+      FLYWAY_MIGRATE_JOB_DEFINITION_ARN     = aws_batch_job_definition.flyway_migrate.arn
+      VALIDATE_ROWCOUNTS_JOB_DEFINITION_ARN = aws_batch_job_definition.validate_rowcounts.arn
       S3_SEED_DATA_BUCKET                   = local.stepfunctions_seed_data_bucket_predicted_name
     }
   )
@@ -546,6 +536,136 @@ resource "aws_sfn_state_machine" "file_provisioning" {
     aws_glue_job.ascii_to_rds_customer,
     aws_glue_job.ascii_to_rds_xref,
     aws_glue_job.ascii_to_rds_transaction,
+    aws_batch_job_definition.flyway_migrate,
+    aws_batch_job_definition.validate_rowcounts,
+  ]
+}
+
+# =============================================================================
+# Section 3b — Transaction Report state machine (online → batch bridge)
+# =============================================================================
+# Replaces the COBOL CORPT00C → CICS TDQ JOBS → JES submission bridge per
+# AAP §0.1.1 (sole online-to-batch bridge) and §0.6.3 (JCL → Step Functions
+# Orchestration). The Spring REST endpoint POST /api/reports/submit accepts
+# a report request, the application publishes a `report.requested` Kafka
+# event partitioned by user ID (AAP §0.6.5), and KafkaEventConsumer
+# .onReportRequested(...) consumes the event and starts an execution of
+# this state machine via the AWS SDK v2 SfnClient (wired through
+# StepFunctionsOrchestrator).
+#
+# State machine flow (see report-pipeline.asl.json for the full ASL):
+#   InitializeReportPipeline → RouteByReportType
+#     ├── MONTHLY / CUSTOM → RunTransactionReport (TRANREPT batch) → ...
+#     └── YEARLY → YearlyReportFanOut (Parallel { RunTransactionReport,
+#                                                  CreateStatements }) → ...
+#
+# Same `STANDARD` type, `templatefile()`-driven definition, CloudWatch
+# Logs destination, and X-Ray configuration as the EOD pipeline; the
+# state machine differs only in the ASL JSON it consumes and in the
+# `${VAR}` placeholders it substitutes.
+# =============================================================================
+
+resource "aws_sfn_state_machine" "report_pipeline" {
+  # ---------------------------------------------------------------------------
+  # State machine name — same `carddemo-${env}-...` convention. Surfaced
+  # to the Spring Boot application as STATE_MACHINE_REPORT_PIPELINE_ARN
+  # (see ecs.tf) and consumed by StepFunctionsOrchestrator
+  # .startReportPipeline(...). Operators triggering a report from the
+  # admin REST endpoint indirectly start an execution of THIS state
+  # machine via the `report.requested` Kafka topic.
+  # ---------------------------------------------------------------------------
+  name = "carddemo-${var.environment}-report-pipeline"
+
+  # ---------------------------------------------------------------------------
+  # Shares the same execution role as the EOD pipeline. The role's
+  # runtime policy in `iam.tf` Section 8 grants batch:SubmitJob,
+  # batch:DescribeJobs, batch:TerminateJob — exactly the permissions
+  # this state machine's RunTransactionReport and CreateStatements
+  # Task states need.
+  # ---------------------------------------------------------------------------
+  role_arn = aws_iam_role.step_functions_execution.arn
+
+  # ---------------------------------------------------------------------------
+  # STANDARD — report generation can run for tens of minutes (the
+  # CBTRN03C-equivalent date-filtered transaction report processes the
+  # full TRANSACT table for the requested date window). EXPRESS would
+  # time out at 5 minutes.
+  # ---------------------------------------------------------------------------
+  type = "STANDARD"
+
+  # ---------------------------------------------------------------------------
+  # ASL JSON definition. The report-pipeline ASL references three
+  # `${VAR}` placeholders:
+  #
+  #   BATCH_JOB_QUEUE_ARN
+  #     ← aws_batch_job_queue.carddemo.arn — same queue as the EOD
+  #       pipeline; the RunTransactionReport and CreateStatements Task
+  #       states submit jobs here.
+  #
+  #   TRANREPT_JOB_DEFINITION_ARN
+  #     ← aws_batch_job_definition.transaction_report.arn — the same
+  #       AWS Batch job definition that the EOD pipeline uses for the
+  #       Stage 4b TRANREPT step. Reusing the definition keeps a single
+  #       source of truth for the CBTRN03C-equivalent job container.
+  #
+  #   CREASTMT_JOB_DEFINITION_ARN
+  #     ← aws_batch_job_definition.statement_generation.arn — same
+  #       reuse rationale as TRANREPT_JOB_DEFINITION_ARN. Invoked only
+  #       on YEARLY reports per the year-end statement chain.
+  # ---------------------------------------------------------------------------
+  definition = templatefile(
+    "${path.module}/../../src/main/resources/stepfunctions/report-pipeline.asl.json",
+    {
+      BATCH_JOB_QUEUE_ARN         = aws_batch_job_queue.carddemo.arn
+      TRANREPT_JOB_DEFINITION_ARN = aws_batch_job_definition.transaction_report.arn
+      CREASTMT_JOB_DEFINITION_ARN = aws_batch_job_definition.statement_generation.arn
+    }
+  )
+
+  # ---------------------------------------------------------------------------
+  # Execution event logging — same configuration as the EOD pipeline.
+  # See the inline comments in Section 2 above for rationale. The same
+  # CloudWatch Logs group is shared between the three state machines;
+  # the stream name includes the state machine name + execution ID, so
+  # they are easy to distinguish in the console.
+  # ---------------------------------------------------------------------------
+  logging_configuration {
+    log_destination        = "${aws_cloudwatch_log_group.step_functions.arn}:*"
+    include_execution_data = false
+    level                  = var.stepfunctions_logging_enabled ? "ALL" : "ERROR"
+  }
+
+  # ---------------------------------------------------------------------------
+  # AWS X-Ray tracing — same rationale as the EOD pipeline. Allows the
+  # end-to-end trace (REST request → Kafka publish → consumer →
+  # StepFunctions → Batch container → S3 report write) to be
+  # reconstructed for any execution.
+  # ---------------------------------------------------------------------------
+  tracing_configuration {
+    enabled = true
+  }
+
+  # ---------------------------------------------------------------------------
+  # Tags — same pattern as the EOD pipeline. Reuses local.common_tags
+  # for the project-wide four-key set and adds the per-resource Name
+  # and Purpose tags.
+  # ---------------------------------------------------------------------------
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-report-pipeline"
+    Purpose = "Transaction-report pipeline (replaces CORPT00C -> CICS TDQ JOBS -> JES TRANREPT.jcl bridge per AAP §0.1.1 / §0.6.3)"
+  })
+
+  # ---------------------------------------------------------------------------
+  # Explicit dependency on the Batch job definitions referenced by the
+  # ASL JSON. Although Terraform's implicit dependency graph captures
+  # these via the `templatefile()` substitution, declaring depends_on
+  # makes the relationship explicit and ensures the Batch job
+  # definitions reach the ACTIVE state before this state machine is
+  # created.
+  # ---------------------------------------------------------------------------
+  depends_on = [
+    aws_batch_job_definition.transaction_report,
+    aws_batch_job_definition.statement_generation,
   ]
 }
 

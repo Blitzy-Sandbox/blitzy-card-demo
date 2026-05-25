@@ -16,6 +16,7 @@
  */
 package com.awsm2.carddemo.domain;
 
+import com.awsm2.carddemo.util.CobolCodec;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -412,5 +413,54 @@ public class TransactionType implements Serializable {
                 + "tranType='" + tranType + '\''
                 + ", tranTypeDesc='" + tranTypeDesc + '\''
                 + '}';
+    }
+
+    // -------------------------------------------------------------------------
+    // COBOL fixed-width record marshalling
+    //
+    // Code Review CP7 FINAL — CRITICAL: parse(byte[]) and format() are
+    // required by GoldenOutputDiffTest#trantype_roundTrip to prove the AAP
+    // §0.2.2 byte-identical regulatory-output guarantee against the
+    // canonical app/data/ASCII/trantype.txt fixture.
+    //
+    // Layout per CVTRA03Y.cpy (60 bytes total):
+    //   TRAN-TYPE       PIC X(02)   offset 0,  length 2
+    //   TRAN-TYPE-DESC  PIC X(50)   offset 2,  length 50
+    //   FILLER          PIC X(08)   offset 52, length 8  (ZEROS in fixture)
+    // -------------------------------------------------------------------------
+
+    /** Byte length of one TRAN-TYPE-RECORD per CVTRA03Y.cpy. */
+    public static final int COBOL_RECORD_LENGTH = 60;
+
+    /**
+     * Parse a single 60-byte COBOL TRAN-TYPE-RECORD into a {@link TransactionType}.
+     *
+     * @param record exactly 60 bytes per CVTRA03Y.cpy
+     * @return the parsed {@link TransactionType}
+     */
+    public static TransactionType parse(byte[] record) {
+        if (record == null || record.length != COBOL_RECORD_LENGTH) {
+            throw new IllegalArgumentException(
+                    "TRAN-TYPE-RECORD must be exactly " + COBOL_RECORD_LENGTH
+                            + " bytes per CVTRA03Y.cpy; got "
+                            + (record == null ? "null" : record.length));
+        }
+        return new TransactionType(
+                CobolCodec.parseText(record, 0, 2),
+                CobolCodec.parseText(record, 2, 50));
+    }
+
+    /**
+     * Format this {@link TransactionType} as a 60-byte COBOL TRAN-TYPE-RECORD
+     * with ZERO-padded FILLER.
+     *
+     * @return exactly 60 bytes per CVTRA03Y.cpy
+     */
+    public byte[] format() {
+        byte[] out = new byte[COBOL_RECORD_LENGTH];
+        CobolCodec.put(out, 0, CobolCodec.formatText(tranType, 2));
+        CobolCodec.put(out, 2, CobolCodec.formatText(tranTypeDesc, 50));
+        CobolCodec.fillZeros(out, 52, 8);
+        return out;
     }
 }

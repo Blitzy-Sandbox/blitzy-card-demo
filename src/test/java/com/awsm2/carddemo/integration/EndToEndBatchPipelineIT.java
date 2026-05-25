@@ -1452,4 +1452,3 @@ class EndToEndBatchPipelineIT {
         }
     }
 }
-

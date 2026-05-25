@@ -632,3 +632,49 @@ variable "cloudwatch_log_retention_days" {
   type        = number
   default     = 365
 }
+
+###############################################################################
+# Section 18 — PCI-DSS Hardening Variables (Code Review CP7 Final fixes)
+#
+# These knobs were introduced to close PCI-DSS Major findings from
+# Checkpoint 7 Final code review:
+#
+#   * cloudtrail_is_organization_trail — promote the audit trail to an
+#     AWS Organizations-level trail when CardDemo is deployed inside
+#     a Control Tower / Organizations-enabled account. The default is
+#     false so single-account demo environments work without
+#     additional Organizations privileges.
+#   * alb_route53_health_check_enabled — toggle creation of the
+#     Route 53 health check + Shield Protection health-check
+#     association in shield.tf. Required for Shield Advanced
+#     incident-response automation; disabled by default for non-prod.
+#   * alb_health_check_fqdn — DNS name for the Route 53 health check
+#     (must resolve to the ALB or a CNAME that does so). Empty string
+#     leaves the health check unprovisioned.
+#   * opensearch_deletion_protection_enabled — guard against
+#     accidental destroy of the audit log domain.
+###############################################################################
+
+variable "cloudtrail_is_organization_trail" {
+  description = "When true, create the CardDemo CloudTrail as an AWS Organizations-level trail that captures activity from every member account. Requires the deploying principal to be in the Organizations management account with cloudtrail:CreateTrail permitted on the org. Default false (single-account trail) so demo and standalone environments do not require Organizations privileges. AAP §0.6.6 + Code Review CP7 PCI-DSS finding."
+  type        = bool
+  default     = false
+}
+
+variable "alb_route53_health_check_enabled" {
+  description = "When true, provision an aws_route53_health_check pointing at the ALB and associate it with the Shield Protection resource. Required for Shield Advanced incident-response automation per Code Review CP7 DDoS Resilience finding. The health check publishes status to CloudWatch and enables Shield's automated mitigation playbooks. Has no effect when var.shield_advanced_enabled = false."
+  type        = bool
+  default     = false
+}
+
+variable "alb_health_check_fqdn" {
+  description = "Public DNS name used by the Route 53 health check (and the Shield Protection health-check association). Typically the ALB's Route 53 alias record (carddemo-<env>.<domain>). Empty string disables the health-check provisioning even when var.alb_route53_health_check_enabled = true."
+  type        = string
+  default     = ""
+}
+
+variable "opensearch_deletion_protection_enabled" {
+  description = "When true, enable deletion protection on the CardDemo OpenSearch domain so a single terraform destroy cannot remove the audit-log index. Recommended default for production (true) to satisfy PCI-DSS audit-log retention; false for dev / staging where teardown is routine. Defaults to true so resilience is opt-out, not opt-in. AAP §0.6.6 + Code Review CP7 Resilience finding."
+  type        = bool
+  default     = true
+}

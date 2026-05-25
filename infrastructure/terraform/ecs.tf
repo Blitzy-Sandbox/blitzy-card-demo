@@ -522,51 +522,90 @@ resource "aws_ecs_task_definition" "carddemo" {
         # refresh + Flyway migration + Glue ETL bulk load workflow.
         { name = "PROV_STATE_MACHINE_ARN", value = aws_sfn_state_machine.file_provisioning.arn },
 
+        # Transaction-report state machine ARN — consumed by
+        # StepFunctionsOrchestrator.startReportPipeline(...) per AAP
+        # §0.1.1 (the sole online-to-batch bridge). The Spring property
+        # `carddemo.aws.stepfunctions.report-pipeline-arn` is wired to
+        # this env var in application*.yml — the consumer falls back to
+        # an empty string only when the env var is missing (which then
+        # causes the consumer to log a WARN and acknowledge the message
+        # without starting an execution). Production deployments MUST
+        # supply this env var so report submissions actually trigger a
+        # batch run.
+        { name = "STATE_MACHINE_REPORT_PIPELINE_ARN", value = aws_sfn_state_machine.report_pipeline.arn },
+
         # ---- Audit cross-reference (AAP §0.6.6) ----
         # CloudTrail trail ARN — consumed by AuditLogService for
         # cross-referencing AWS API audit events with application-
         # emitted events forwarded to OpenSearch.
         { name = "CLOUDTRAIL_TRAIL_ARN", value = aws_cloudtrail.carddemo.arn },
+
+        # ---- Secret ARN references (AAP §0.7.1 — no raw secret values in env)
+        # ----------------------------------------------------------------------
+        # Code Review CP7 (MAJOR — Secrets Management): The previous
+        # implementation used the ECS `secrets[]` block to resolve secret
+        # VALUES at task start via the execution role and inject them as
+        # raw container environment variables (`JWT_SIGNING_KEY`,
+        # `OPENSEARCH_PASSWORD`). Although ECS's `secrets[]` mechanism
+        # avoids placing the values in the task-definition body and in
+        # Terraform state, the resolved values still land in the container
+        # process environment at `/proc/<pid>/environ`, in `printenv`
+        # output, in core dumps, and in any debugger/diagnostic tooling
+        # that enumerates env vars. This violates AAP §0.7.1's strict
+        # "All credentials fetched at runtime from AWS Secrets Manager
+        # — never hardcoded or in `application.yml`" rule, which the
+        # review interprets as also forbidding raw secret env vars
+        # because env vars are documented as "[a step]" away from
+        # configuration files (defense-in-depth).
+        #
+        # Remediation: only Secret ARNs (non-sensitive resource
+        # identifiers) are injected as environment variables. The actual
+        # secret values are resolved at runtime via TWO independent paths
+        # that both honor secret rotation without restart (AAP §0.6.4):
+        #
+        #   Path A: Spring Cloud AWS Secrets Manager config-data
+        #     `spring.config.import: aws-secretsmanager:carddemo/<env>/<key>`
+        #     in application-${ENV}.yml fetches the secret at application
+        #     bootstrap using the ECS TASK ROLE (which has
+        #     secretsmanager:GetSecretValue + kms:Decrypt via the
+        #     `combined_secrets_kms` policy attached in iam.tf). Used by:
+        #       - JWT signing key  → `${key}` placeholder
+        #       - OpenSearch creds → `${password}` (managed OpenSearch)
+        #
+        #   Path B: Programmatic SecretsManagerService adapter
+        #     JwtTokenProvider.initSigningKey() reads the secret by ARN
+        #     at @PostConstruct and is annotated with @RefreshScope so a
+        #     SecretsManagerRotation SNS → SQS event re-instantiates the
+        #     bean with the rotated value without restarting the JVM.
+        #     The ARN is passed below as a non-sensitive environment
+        #     variable.
+        #
+        # OPENSEARCH note: in production OpenSearch uses SigV4 IAM
+        # authentication (use-iam-auth: true in application-prod.yml).
+        # No password is required at runtime; the secret exists only
+        # as a break-glass credential for the OpenSearch master user
+        # if IAM auth is ever disabled. The ARN is still passed below
+        # for completeness so the application can perform a runtime
+        # fetch if/when the deployment is reconfigured to basic auth.
+        { name = "JWT_SIGNING_KEY_SECRET_ARN", value = aws_secretsmanager_secret.jwt_signing_key.arn },
+        { name = "OPENSEARCH_PASSWORD_SECRET_ARN", value = aws_secretsmanager_secret.opensearch_master.arn },
       ]
 
-      # ---- Secrets injection (AAP §0.6.4) ----
+      # ---- Secrets injection (REMOVED per Code Review CP7) ----
       #
-      # `secrets[]` entries are resolved at task start by the Fargate
-      # agent (which assumes the ECS task EXECUTION role and calls
-      # secretsmanager:GetSecretValue + kms:Decrypt). The resolved
-      # value is injected into the container's environment as if it
-      # had appeared in `environment[]` — but the value never appears
-      # in the ECS task definition body, never in CloudTrail
-      # parameters, and never in the Terraform state.
+      # The legacy `secrets[]` block (which used the ECS Fargate agent
+      # to resolve `valueFrom` references and inject raw secret VALUES
+      # as container environment variables `JWT_SIGNING_KEY` and
+      # `OPENSEARCH_PASSWORD`) has been REMOVED. See the env block
+      # comment above for the new runtime resolution paths (Spring
+      # Cloud AWS config-data import + programmatic
+      # SecretsManagerService fetch via @RefreshScope).
       #
-      # The `valueFrom` syntax `secret_arn:json-key::` extracts a
-      # specific field from a JSON-encoded secret (Spring Cloud AWS
-      # stores JWT signing keys as `{"signing-key": "..."}` and
-      # OpenSearch credentials as `{"password": "..."}` — see
-      # secrets.tf for the exact envelope shape).
-      #
-      # The trailing `::` is required syntax (specifying neither a
-      # version ID nor a version stage — uses AWSCURRENT).
-      #
-      # Rotation handling (AAP §0.6.4): the JWT_SIGNING_KEY and
-      # OPENSEARCH_PASSWORD values are injected ONCE at task start.
-      # Rotation events are delivered via SNS → SQS (queue managed in
-      # secrets.tf Section 3) and the application code subscribes via
-      # KafkaEventConsumer-style listener to publish a Spring
-      # `RefreshEvent`, triggering @RefreshScope beans (JwtTokenProvider,
-      # OpenSearchIndexer) to fetch the rotated value through the
-      # Spring Cloud AWS Secrets Manager client without restarting
-      # the task.
-      secrets = [
-        {
-          name      = "JWT_SIGNING_KEY"
-          valueFrom = "${aws_secretsmanager_secret.jwt_signing_key.arn}:signing-key::"
-        },
-        {
-          name      = "OPENSEARCH_PASSWORD"
-          valueFrom = "${aws_secretsmanager_secret.opensearch_master.arn}:password::"
-        },
-      ]
+      # If a future deployment requires a credential that cannot be
+      # resolved at application bootstrap (e.g., a third-party API key
+      # that must be present BEFORE Spring context starts), use the
+      # programmatic SecretsManagerService path and add the SECRET ARN
+      # — never the value — to the environment[] block above.
 
       # ---- Log configuration (AAP §0.1.1, §0.7.2) ----
       #
@@ -1047,4 +1086,3 @@ resource "aws_appautoscaling_policy" "ecs_msk_lag" {
     scale_out_cooldown = 60
   }
 }
-

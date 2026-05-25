@@ -16,10 +16,12 @@
  */
 package com.awsm2.carddemo.domain;
 
+import com.awsm2.carddemo.util.CobolCodec;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 
 // Hibernate-specific imports — REQUIRED for runtime correctness when
 // Hibernate's spring.jpa.hibernate.ddl-auto: validate compares the
@@ -41,6 +43,7 @@ import org.hibernate.type.SqlTypes;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Objects;
 
 /**
@@ -1099,5 +1102,137 @@ public class Transaction implements Serializable {
             return "****";
         }
         return "************" + card.substring(card.length() - 4);
+    }
+
+    // -------------------------------------------------------------------------
+    // COBOL fixed-width record marshalling
+    //
+    // Code Review CP7 FINAL — CRITICAL: parse(byte[]) and format() are
+    // required by GoldenOutputDiffTest to prove the AAP §0.2.2 byte-identical
+    // regulatory-output guarantee against COBOL TRAN-RECORD fixtures.
+    //
+    // Layout per CVTRA05Y.cpy (350 bytes total):
+    //   TRAN-ID             PIC X(16)      offset 0,   length 16
+    //   TRAN-TYPE-CD        PIC X(02)      offset 16,  length 2
+    //   TRAN-CAT-CD         PIC 9(04)      offset 18,  length 4
+    //   TRAN-SOURCE         PIC X(10)      offset 22,  length 10
+    //   TRAN-DESC           PIC X(100)     offset 32,  length 100
+    //   TRAN-AMT            PIC S9(09)V99  offset 132, length 11 (zoned)
+    //   TRAN-MERCHANT-ID    PIC 9(09)      offset 143, length 9
+    //   TRAN-MERCHANT-NAME  PIC X(50)      offset 152, length 50
+    //   TRAN-MERCHANT-CITY  PIC X(50)      offset 202, length 50
+    //   TRAN-MERCHANT-ZIP   PIC X(10)      offset 252, length 10
+    //   TRAN-CARD-NUM       PIC X(16)      offset 262, length 16
+    //   TRAN-ORIG-TS        PIC X(26)      offset 278, length 26
+    //   TRAN-PROC-TS        PIC X(26)      offset 304, length 26
+    //   FILLER              PIC X(20)      offset 330, length 20 (SPACES)
+    // -------------------------------------------------------------------------
+
+    /** Byte length of one TRAN-RECORD per CVTRA05Y.cpy. */
+    public static final int COBOL_RECORD_LENGTH = 350;
+
+    /**
+     * COBOL timestamp format used by TRAN-ORIG-TS and TRAN-PROC-TS
+     * (PIC X(26)). The pattern emits exactly 26 ASCII characters when the
+     * timestamp is populated; an empty/null timestamp renders as 26 SPACEs.
+     */
+    static final DateTimeFormatter COBOL_TIMESTAMP =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
+
+    /**
+     * Transient holder for the 20-byte COBOL FILLER trailer of the
+     * TRAN-RECORD layout (CVTRA05Y.cpy). Preserved verbatim for the
+     * byte-identical round-trip required by AAP &sect;0.2.2.
+     */
+    @Transient
+    private byte[] cobolFiller;
+
+    /**
+     * Parse a single 350-byte COBOL TRAN-RECORD into a {@link Transaction}.
+     *
+     * @param record exactly 350 bytes per CVTRA05Y.cpy
+     * @return the parsed {@link Transaction} (transient — not yet persisted)
+     */
+    public static Transaction parse(byte[] record) {
+        if (record == null || record.length != COBOL_RECORD_LENGTH) {
+            throw new IllegalArgumentException(
+                    "TRAN-RECORD must be exactly " + COBOL_RECORD_LENGTH
+                            + " bytes per CVTRA05Y.cpy; got "
+                            + (record == null ? "null" : record.length));
+        }
+        Transaction t = new Transaction();
+        t.tranId = CobolCodec.parseText(record, 0, 16);
+        t.tranTypeCd = CobolCodec.parseText(record, 16, 2);
+        t.tranCatCd = CobolCodec.parseInt(record, 18, 4);
+        t.tranSource = CobolCodec.parseText(record, 22, 10);
+        t.tranDesc = CobolCodec.parseText(record, 32, 100);
+        t.tranAmt = CobolCodec.parseZonedDecimal(record, 132, 11, 2);
+        t.tranMerchantId = CobolCodec.parseLong(record, 143, 9);
+        t.tranMerchantName = CobolCodec.parseText(record, 152, 50);
+        t.tranMerchantCity = CobolCodec.parseText(record, 202, 50);
+        t.tranMerchantZip = CobolCodec.parseText(record, 252, 10);
+        t.tranCardNum = CobolCodec.parseText(record, 262, 16);
+        t.tranOrigTs = parseCobolTs(record, 278);
+        t.tranProcTs = parseCobolTs(record, 304);
+        t.cobolFiller = new byte[20];
+        System.arraycopy(record, 330, t.cobolFiller, 0, 20);
+        return t;
+    }
+
+    /**
+     * Format this {@link Transaction} as a 350-byte COBOL TRAN-RECORD.
+     *
+     * @return exactly 350 bytes per CVTRA05Y.cpy
+     */
+    public byte[] format() {
+        byte[] out = new byte[COBOL_RECORD_LENGTH];
+        CobolCodec.put(out, 0, CobolCodec.formatText(tranId, 16));
+        CobolCodec.put(out, 16, CobolCodec.formatText(tranTypeCd, 2));
+        CobolCodec.put(out, 18, CobolCodec.formatInt(tranCatCd == null ? 0 : tranCatCd, 4));
+        CobolCodec.put(out, 22, CobolCodec.formatText(tranSource, 10));
+        CobolCodec.put(out, 32, CobolCodec.formatText(tranDesc, 100));
+        CobolCodec.put(out, 132, CobolCodec.formatZonedDecimal(tranAmt, 11, 2));
+        CobolCodec.put(out, 143, CobolCodec.formatLong(tranMerchantId == null ? 0L : tranMerchantId, 9));
+        CobolCodec.put(out, 152, CobolCodec.formatText(tranMerchantName, 50));
+        CobolCodec.put(out, 202, CobolCodec.formatText(tranMerchantCity, 50));
+        CobolCodec.put(out, 252, CobolCodec.formatText(tranMerchantZip, 10));
+        CobolCodec.put(out, 262, CobolCodec.formatText(tranCardNum, 16));
+        CobolCodec.put(out, 278, formatCobolTs(tranOrigTs));
+        CobolCodec.put(out, 304, formatCobolTs(tranProcTs));
+        if (cobolFiller != null && cobolFiller.length == 20) {
+            System.arraycopy(cobolFiller, 0, out, 330, 20);
+        } else {
+            CobolCodec.fillSpaces(out, 330, 20);
+        }
+        return out;
+    }
+
+    /**
+     * Parse a 26-byte COBOL timestamp slice into a {@link LocalDateTime}.
+     * Returns {@code null} when the field is blank (26 SPACES — an unposted
+     * or otherwise unset timestamp).
+     */
+    static LocalDateTime parseCobolTs(byte[] record, int offset) {
+        String s = CobolCodec.parseText(record, offset, 26);
+        if (s.trim().isEmpty()) {
+            return null;
+        }
+        return LocalDateTime.parse(s, COBOL_TIMESTAMP);
+    }
+
+    /**
+     * Format a {@link LocalDateTime} as a 26-byte COBOL timestamp slice
+     * (PIC X(26)). {@code null} renders as 26 SPACES to match the COBOL
+     * convention for unposted records.
+     */
+    static byte[] formatCobolTs(LocalDateTime ts) {
+        if (ts == null) {
+            byte[] out = new byte[26];
+            for (int i = 0; i < 26; i++) {
+                out[i] = CobolCodec.ASCII_SPACE;
+            }
+            return out;
+        }
+        return ts.format(COBOL_TIMESTAMP).getBytes(CobolCodec.ASCII);
     }
 }

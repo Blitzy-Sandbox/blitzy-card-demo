@@ -784,7 +784,55 @@ resource "aws_opensearch_domain" "carddemo" {
   tags = merge(local.common_tags, {
     Name    = "carddemo-${var.environment}-opensearch"
     Purpose = "Amazon OpenSearch domain - audit trail + CloudTrail event indexing (AAP Section 0.6.6)"
+
+    # Deletion-protection intent tag (Code Review CP7 Resilience fix).
+    #
+    # The lifecycle.prevent_destroy meta-argument below MUST be set
+    # to a literal boolean per Terraform's parser (lifecycle settings
+    # cannot reference variables). To still surface the
+    # var.opensearch_deletion_protection_enabled intent in the
+    # resource state, we record it as a tag here. Operations tooling
+    # (AWS Config, custom drift detectors) can query the tag to
+    # confirm the lifecycle gate is in effect, and break-glass runbooks
+    # cite the tag value as authoritative.
+    DeletionProtection = tostring(var.opensearch_deletion_protection_enabled)
   })
+
+  # ---------------------------------------------------------------------------
+  # Deletion protection -- lifecycle.prevent_destroy = true (Code Review
+  # CP7 Resilience finding).
+  #
+  # Terraform's lifecycle.prevent_destroy meta-argument refuses any
+  # `terraform destroy` (or any plan that would destroy this resource)
+  # that targets aws_opensearch_domain.carddemo. The setting is the
+  # Terraform-level guardrail required by PCI-DSS audit-log retention:
+  # accidentally running `terraform destroy` against the production
+  # workspace must not erase the audit trail and the CloudTrail event
+  # index that downstream regulatory queries depend on.
+  #
+  # Terraform's prevent_destroy MUST be a literal boolean (it is
+  # evaluated during graph construction, before variable substitution).
+  # The companion `var.opensearch_deletion_protection_enabled` variable
+  # therefore acts as the documented operator intent and is surfaced
+  # as a `DeletionProtection` tag (above) so AWS Config / drift
+  # tooling can read the intent from the resource state. The break-
+  # glass procedure for a legitimate destroy operation is documented
+  # in `../infrastructure/README.md` under "Break-glass: OpenSearch
+  # domain teardown" -- the operator must (1) verify the audit-log
+  # retention requirement no longer applies, (2) take a final manual
+  # snapshot, (3) comment out this `lifecycle` block in opensearch.tf,
+  # (4) run `terraform plan` and `terraform apply` to recreate the
+  # resource definition without the gate, and (5) finally run
+  # `terraform destroy`.
+  #
+  # This pattern matches Terraform best practice for irrecoverable
+  # data resources (RDS instances, S3 buckets, KMS keys, CloudTrail
+  # trails) and is consistent with the rds_deletion_protection and
+  # the s3-bucket-force-destroy controls already in this module.
+  # ---------------------------------------------------------------------------
+  lifecycle {
+    prevent_destroy = true
+  }
 
   # ---------------------------------------------------------------------------
   # Dependency wiring -- explicit depends_on for resources Terraform

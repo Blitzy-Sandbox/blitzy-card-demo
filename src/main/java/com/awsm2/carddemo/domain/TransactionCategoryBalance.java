@@ -16,6 +16,7 @@
  */
 package com.awsm2.carddemo.domain;
 
+import com.awsm2.carddemo.util.CobolCodec;
 import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.EmbeddedId;
@@ -979,5 +980,65 @@ public class TransactionCategoryBalance implements Serializable {
                     + ", trancatCd=" + trancatCd
                     + '}';
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // COBOL fixed-width record marshalling
+    //
+    // Code Review CP7 FINAL — CRITICAL: parse(byte[]) and format() are
+    // required by GoldenOutputDiffTest#tcatbal_roundTrip to prove the AAP
+    // §0.2.2 byte-identical regulatory-output guarantee against the
+    // canonical app/data/ASCII/tcatbal.txt fixture.
+    //
+    // Layout per CVTRA01Y.cpy (50 bytes total):
+    //   TRANCAT-ACCT-ID  PIC 9(11)      offset 0,  length 11
+    //   TRANCAT-TYPE-CD  PIC X(02)      offset 11, length 2
+    //   TRANCAT-CD       PIC 9(04)      offset 13, length 4
+    //   TRAN-CAT-BAL     PIC S9(09)V99  offset 17, length 11 (zoned)
+    //   FILLER           PIC X(22)      offset 28, length 22 (ZEROS in fixture)
+    // -------------------------------------------------------------------------
+
+    /** Byte length of one TRAN-CAT-BAL-RECORD per CVTRA01Y.cpy. */
+    public static final int COBOL_RECORD_LENGTH = 50;
+
+    /**
+     * Parse a single 50-byte COBOL TRAN-CAT-BAL-RECORD into a
+     * {@link TransactionCategoryBalance}.
+     *
+     * @param record exactly 50 bytes per CVTRA01Y.cpy
+     * @return the parsed {@link TransactionCategoryBalance}
+     */
+    public static TransactionCategoryBalance parse(byte[] record) {
+        if (record == null || record.length != COBOL_RECORD_LENGTH) {
+            throw new IllegalArgumentException(
+                    "TRAN-CAT-BAL-RECORD must be exactly " + COBOL_RECORD_LENGTH
+                            + " bytes per CVTRA01Y.cpy; got "
+                            + (record == null ? "null" : record.length));
+        }
+        TransactionCategoryBalanceId id = new TransactionCategoryBalanceId(
+                CobolCodec.parseLong(record, 0, 11),
+                CobolCodec.parseText(record, 11, 2),
+                CobolCodec.parseInt(record, 13, 4));
+        BigDecimal bal = CobolCodec.parseZonedDecimal(record, 17, 11, 2);
+        return new TransactionCategoryBalance(id, bal);
+    }
+
+    /**
+     * Format this {@link TransactionCategoryBalance} as a 50-byte COBOL
+     * TRAN-CAT-BAL-RECORD with ZERO-padded FILLER.
+     *
+     * @return exactly 50 bytes per CVTRA01Y.cpy
+     */
+    public byte[] format() {
+        byte[] out = new byte[COBOL_RECORD_LENGTH];
+        Long acctId = id != null ? id.getTrancatAcctId() : null;
+        String typeCd = id != null ? id.getTrancatTypeCd() : null;
+        Integer catCd = id != null ? id.getTrancatCd() : null;
+        CobolCodec.put(out, 0, CobolCodec.formatLong(acctId == null ? 0L : acctId, 11));
+        CobolCodec.put(out, 11, CobolCodec.formatText(typeCd, 2));
+        CobolCodec.put(out, 13, CobolCodec.formatInt(catCd == null ? 0 : catCd, 4));
+        CobolCodec.put(out, 17, CobolCodec.formatZonedDecimal(tranCatBal, 11, 2));
+        CobolCodec.fillZeros(out, 28, 22);
+        return out;
     }
 }

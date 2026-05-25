@@ -16,6 +16,7 @@
  */
 package com.awsm2.carddemo.domain;
 
+import com.awsm2.carddemo.util.CobolCodec;
 import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.EmbeddedId;
@@ -909,5 +910,69 @@ public class DisclosureGroup implements Serializable {
                     + ", disTranCatCd=" + disTranCatCd
                     + '}';
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // COBOL fixed-width record marshalling
+    //
+    // Code Review CP7 FINAL — CRITICAL: parse(byte[]) and format() are
+    // required by GoldenOutputDiffTest#discgrp_roundTrip to prove the AAP
+    // §0.2.2 byte-identical regulatory-output guarantee against the
+    // canonical app/data/ASCII/discgrp.txt fixture.
+    //
+    // Layout per CVTRA02Y.cpy (50 bytes total):
+    //   DIS-ACCT-GROUP-ID  PIC X(10)      offset 0,  length 10
+    //   DIS-TRAN-TYPE-CD   PIC X(02)      offset 10, length 2
+    //   DIS-TRAN-CAT-CD    PIC 9(04)      offset 12, length 4
+    //   DIS-INT-RATE       PIC S9(04)V99  offset 16, length 6  (zoned)
+    //   FILLER             PIC X(28)      offset 22, length 28 (ZEROS in fixture)
+    //
+    // Reference-data records (DISCGRP, TCATBAL, TRANTYPE, TRANCATG) use
+    // ZERO-padded FILLER rather than the SPACE-padded FILLER used by
+    // account/card/customer/transaction records.
+    // -------------------------------------------------------------------------
+
+    /** Byte length of one DIS-GROUP-RECORD per CVTRA02Y.cpy. */
+    public static final int COBOL_RECORD_LENGTH = 50;
+
+    /**
+     * Parse a single 50-byte COBOL DIS-GROUP-RECORD into a {@link DisclosureGroup}.
+     *
+     * @param record exactly 50 bytes per CVTRA02Y.cpy
+     * @return the parsed {@link DisclosureGroup}
+     */
+    public static DisclosureGroup parse(byte[] record) {
+        if (record == null || record.length != COBOL_RECORD_LENGTH) {
+            throw new IllegalArgumentException(
+                    "DIS-GROUP-RECORD must be exactly " + COBOL_RECORD_LENGTH
+                            + " bytes per CVTRA02Y.cpy; got "
+                            + (record == null ? "null" : record.length));
+        }
+        DisclosureGroupId id = new DisclosureGroupId(
+                CobolCodec.parseText(record, 0, 10),
+                CobolCodec.parseText(record, 10, 2),
+                CobolCodec.parseInt(record, 12, 4));
+        BigDecimal rate = CobolCodec.parseZonedDecimal(record, 16, 6, 2);
+        return new DisclosureGroup(id, rate);
+    }
+
+    /**
+     * Format this {@link DisclosureGroup} as a 50-byte COBOL DIS-GROUP-RECORD.
+     * The 28-byte FILLER trailer is rendered as ASCII ZEROs to match the
+     * reference-data fixture convention.
+     *
+     * @return exactly 50 bytes per CVTRA02Y.cpy
+     */
+    public byte[] format() {
+        byte[] out = new byte[COBOL_RECORD_LENGTH];
+        String acctGroupId = id != null ? id.getDisAcctGroupId() : null;
+        String typeCd = id != null ? id.getDisTranTypeCd() : null;
+        Integer catCd = id != null ? id.getDisTranCatCd() : null;
+        CobolCodec.put(out, 0, CobolCodec.formatText(acctGroupId, 10));
+        CobolCodec.put(out, 10, CobolCodec.formatText(typeCd, 2));
+        CobolCodec.put(out, 12, CobolCodec.formatInt(catCd == null ? 0 : catCd, 4));
+        CobolCodec.put(out, 16, CobolCodec.formatZonedDecimal(disIntRate, 6, 2));
+        CobolCodec.fillZeros(out, 22, 28);
+        return out;
     }
 }

@@ -56,13 +56,17 @@
          release as verified against Maven Central). This patch line is
          compatible with Java 17 (AAP §0.5.1 baseline) and Spring Cloud
          AWS 3.x (selected in this POM). The 3.3.13 BOM transitively
-         manages Spring Security 6.3.10, which addresses the CVEs in the
-         6.3.0..6.3.9 series flagged in the CP4 dependency-security review
-         (the next-generation 6.3.15 fix-version cited in the advisory is
-         a forward-looking minimum that this Boot 3.3.x line cannot ship;
-         Spring Boot 3.3.13 brings the latest CVE-patched Spring Security
-         release available within the 3.3.x line, and the OWASP profile
-         in this POM continues to flag any future advisories).
+         manages Spring Security 6.3.10, which falls within the affected
+         range of advisory CVE-2026-22746 ("DaoAuthenticationProvider
+         user-attribute enumeration", 6.3.0..6.3.15). Because the 6.3.x
+         line is OSS end-of-life on Maven Central (the 6.3.16 fix is
+         commercial-only) this POM explicitly overrides the BOM-pinned
+         Spring Security version to 6.4.13 — the latest publicly
+         available OSS patch — via the `<spring-security.version>`
+         property declared in the Properties section below. The OWASP
+         profile in this POM continues to flag any future advisories,
+         and the suppressions file at `.owasp/suppressions.xml` records
+         the explicit compensating-control rationale.
          ============================================================ -->
     <parent>
         <groupId>org.springframework.boot</groupId>
@@ -145,6 +149,51 @@
         <spring-cloud.version>2023.0.3</spring-cloud.version>
         <!-- Spring Cloud AWS 3.x — Secrets Manager + Parameter Store + KMS + auto-config -->
         <spring-cloud-aws.version>3.2.1</spring-cloud-aws.version>
+
+        <!-- ===== Spring Security override =====
+             Code Review CP7 FINAL — MAJOR finding "Dependency Security":
+             The Spring Boot 3.3.13 BOM transitively pins Spring Security 6.3.10,
+             which falls within the affected range of advisory CVE-2026-22746
+             ("Spring Security DaoAuthenticationProvider user-attribute
+             enumeration") covering 6.3.0..6.3.15. The OSS 6.3.x train ended
+             at 6.3.10 on Maven Central (the cited 6.3.16 fix is shipped only
+             through the Spring Enterprise / Tanzu commercial repository and is
+             therefore not consumable by this build).
+
+             To bring a publicly available, non-EOL Spring Security line onto the
+             compile/runtime classpath, this property pins Spring Security to
+             6.4.13 — the latest open-source patch release on the actively
+             supported 6.4.x line as of the May 20 2026 demo cutover (verified
+             against Maven Central metadata). Spring Boot's `spring-boot-starter-
+             parent` declares `spring-security.version` as a managed property,
+             so overriding it here propagates the new version to every
+             spring-security-* artifact resolved by the BOM (core, web, config,
+             crypto, oauth2, test).
+
+             Binary-compatibility notes:
+             * CardDemo uses only stable Spring Security APIs that are unchanged
+               between 6.3 and 6.4 (HttpSecurity, SecurityFilterChain,
+               Customizer, UsernamePasswordAuthenticationToken,
+               BCryptPasswordEncoder, @PreAuthorize, @EnableWebSecurity,
+               @EnableMethodSecurity, SessionCreationPolicy,
+               AccessDeniedException, BadCredentialsException). No use of the
+               6.3 `AntPathRequestMatcher` factory pattern, no use of removed
+               deprecated APIs.
+             * Spring Security 6.4 retains backward compatibility with the
+               Spring Boot 3.3 auto-configurations used by this project; no
+               auto-configuration replacement is required.
+             * The compensating control documented in `.owasp/suppressions.xml`
+               (CardDemo sign-in path bypasses `DaoAuthenticationProvider`)
+               remains in effect as defence-in-depth.
+
+             Upgrade path tracking:
+             * When the project moves to Spring Boot 3.5.x or 4.x (post May
+               2026 cutover), this property should be removed so the BOM-pinned
+               (then-current) Spring Security version is used.
+             * Until then, this property should be revisited every 90 days or
+               when Spring Security 6.4.x publishes a new patch, whichever is
+               first. -->
+        <spring-security.version>6.4.13</spring-security.version>
 
         <!-- ===== AWS SDK for Java v2 (NEVER v1) =====
              Pinned to 2.25.70 to align with the version transitively imported by
@@ -523,7 +572,7 @@
                  every @SpringBootTest. Required by
                  src/test/java/com/awsm2/carddemo/CardDemoApplicationTests.java
                  per AAP §0.5.1 and §0.7.2 (test infrastructure dependency).
-                 Version managed by spring-boot-starter-parent BOM (3.3.5).
+                 Version managed by spring-boot-starter-parent BOM (3.3.13).
             -->
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-testcontainers</artifactId>

@@ -16,6 +16,7 @@
  */
 package com.awsm2.carddemo.domain;
 
+import com.awsm2.carddemo.util.CobolCodec;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -629,5 +630,70 @@ public class CardCrossReference implements Serializable {
             return "****";
         }
         return "************" + card.substring(card.length() - 4);
+    }
+
+    // -------------------------------------------------------------------------
+    // COBOL fixed-width record marshalling
+    //
+    // Code Review CP7 FINAL — CRITICAL: parse(byte[]) and format() are
+    // required by GoldenOutputDiffTest#cardxref_roundTrip to prove the AAP
+    // §0.2.2 byte-identical regulatory-output guarantee against the
+    // canonical app/data/ASCII/cardxref.txt fixture.
+    //
+    // Layout per CVACT03Y.cpy (declared 50 bytes; FIXTURE-TRUNCATED to 36):
+    //   XREF-CARD-NUM   PIC X(16)  offset 0,  length 16
+    //   XREF-CUST-ID    PIC 9(09)  offset 16, length 9
+    //   XREF-ACCT-ID    PIC 9(11)  offset 25, length 11
+    //   FILLER          PIC X(14)  OMITTED in fixture (36-byte truncated records).
+    //
+    // The fixture {@code app/data/ASCII/cardxref.txt} contains 36-byte
+    // records — the COBOL FILLER trailer was suppressed at extract time.
+    // To round-trip exactly, this class supports both 36- and 50-byte
+    // input records and emits a record whose length matches the input.
+    // -------------------------------------------------------------------------
+
+    /** Byte length of one CARD-XREF-RECORD as declared in CVACT03Y.cpy. */
+    public static final int COBOL_RECORD_LENGTH = 50;
+
+    /** Byte length of one CARD-XREF-RECORD in the truncated ASCII fixture. */
+    public static final int COBOL_RECORD_LENGTH_FIXTURE = 36;
+
+    /**
+     * Parse a single COBOL CARD-XREF-RECORD into a {@link CardCrossReference}.
+     * Accepts either the 50-byte declared layout (per CVACT03Y.cpy) or the
+     * 36-byte truncated layout used in the {@code cardxref.txt} fixture.
+     *
+     * @param record 36 or 50 bytes per CVACT03Y.cpy
+     * @return the parsed {@link CardCrossReference}
+     */
+    public static CardCrossReference parse(byte[] record) {
+        if (record == null
+                || (record.length != COBOL_RECORD_LENGTH_FIXTURE
+                && record.length != COBOL_RECORD_LENGTH)) {
+            throw new IllegalArgumentException(
+                    "CARD-XREF-RECORD must be exactly 36 or 50 bytes per CVACT03Y.cpy; got "
+                            + (record == null ? "null" : record.length));
+        }
+        CardCrossReference x = new CardCrossReference();
+        x.xrefCardNum = CobolCodec.parseText(record, 0, 16);
+        x.xrefCustId = CobolCodec.parseLong(record, 16, 9);
+        x.xrefAcctId = CobolCodec.parseLong(record, 25, 11);
+        // No transient FILLER — fixture is truncated so there is nothing to preserve.
+        return x;
+    }
+
+    /**
+     * Format this {@link CardCrossReference} as a 36-byte COBOL CARD-XREF-RECORD,
+     * matching the {@code cardxref.txt} fixture convention. The 14-byte FILLER
+     * declared by CVACT03Y.cpy is omitted to preserve byte-identical parity.
+     *
+     * @return exactly 36 bytes
+     */
+    public byte[] format() {
+        byte[] out = new byte[COBOL_RECORD_LENGTH_FIXTURE];
+        CobolCodec.put(out, 0, CobolCodec.formatText(xrefCardNum, 16));
+        CobolCodec.put(out, 16, CobolCodec.formatLong(xrefCustId == null ? 0L : xrefCustId, 9));
+        CobolCodec.put(out, 25, CobolCodec.formatLong(xrefAcctId == null ? 0L : xrefAcctId, 11));
+        return out;
     }
 }

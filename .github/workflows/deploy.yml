@@ -410,6 +410,20 @@ jobs:
             exit 1
           fi
 
+          # ----------------------------------------------------------------
+          # Capture the PREVIOUS revision ARN for automatic rollback (Code
+          # Review CP7 Release Safety finding). The ARN is in the form
+          # arn:aws:ecs:<region>:<account>:task-definition/<family>:<rev>.
+          # On smoke-test failure (Step 8b below), we restore the service
+          # to this revision and wait for stability before failing the
+          # workflow — so the unhealthy new revision never traps the
+          # production ALB target group.
+          # ----------------------------------------------------------------
+          PREVIOUS_TASKDEF_ARN=$(jq -r '.taskDefinitionArn' taskdef.json)
+          echo "previous_task_definition_arn=${PREVIOUS_TASKDEF_ARN}" \
+            >> "$GITHUB_OUTPUT"
+          echo "Previous task definition (for rollback): ${PREVIOUS_TASKDEF_ARN}"
+
           echo "task_definition_path=taskdef.json" >> "$GITHUB_OUTPUT"
 
       # -----------------------------------------------------------------------
@@ -524,11 +538,16 @@ jobs:
       #     during database / Kafka / Redis warm-up. The retry loop
       #     absorbs these benign transients.
       #
-      # Failure mode:
+      # Failure mode (Code Review CP7 Release Safety fix):
       #   - If no attempt returns 200 with status=UP within the budget,
-      #     the workflow fails. ECS does NOT auto-rollback (rollback is
-      #     a manual operator action or a separate workflow); the failure
-      #     signals the operator that the new revision is unhealthy.
+      #     the workflow proceeds to Step 8b which AUTOMATICALLY rolls
+      #     back the ECS service to the previous task definition
+      #     revision (captured in Step 4 as
+      #     previous_task_definition_arn). After the rollback completes
+      #     and the service is stable on the previous revision, the
+      #     workflow exits with failure so the operator is alerted
+      #     about the bad release while the production fleet is
+      #     already restored.
       # -----------------------------------------------------------------------
       - name: Smoke test /actuator/health
         id: smoke-test
@@ -582,7 +601,63 @@ jobs:
 
           echo "::error::Smoke test FAILED after ${MAX_ATTEMPTS} attempts"
           echo "::error::(~5 minutes elapsed). Service may be unhealthy."
+          echo "::error::Step 8b will roll back to the previous task definition."
           exit 1
+
+      # -----------------------------------------------------------------------
+      # Step 8b: Automatic rollback on smoke-test failure.
+      #
+      # Triggered ONLY when the smoke-test step (id: smoke-test) failed.
+      # This step restores the ECS service to the previous task definition
+      # captured in Step 4 (steps.fetch-taskdef.outputs.previous_task_definition_arn)
+      # and waits for the service to become STABLE on that prior revision
+      # before failing the workflow. The rollback uses the same
+      # aws-actions/amazon-ecs-deploy-task-definition action so we get the
+      # same ECS stability semantics (waits for desired = running,
+      # pending = 0) used for the forward deployment.
+      #
+      # Why automatic rollback (per Code Review CP7 Major finding):
+      #   The original deploy workflow documented that rollback was a
+      #   "manual operator action or a separate workflow." That violates
+      #   the CP7 release-safety requirement, since a failed smoke test
+      #   would leave the production ALB target group bound to a
+      #   non-functional task definition revision until a human operator
+      #   intervened. This step closes that gap: a smoke-test failure
+      #   immediately drives the service back to the last-known-good
+      #   revision while still signalling failure to the operator.
+      #
+      # Failure mode:
+      #   If the rollback itself fails (e.g., the previous task definition
+      #   has been deregistered, or ECS cannot stabilize), the workflow
+      #   still exits with failure (because the smoke-test step already
+      #   failed). Operators must then engage manually via CodeDeploy
+      #   blue/green or by inspecting the ECS console.
+      # -----------------------------------------------------------------------
+      - name: Roll back to previous task definition on smoke-test failure
+        id: rollback
+        if: failure() && steps.smoke-test.outcome == 'failure'
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: >-
+            ${{ steps.fetch-taskdef.outputs.previous_task_definition_arn }}
+          service: ${{ steps.meta.outputs.ecs_service_name }}
+          cluster: ${{ steps.meta.outputs.ecs_cluster_name }}
+          wait-for-service-stability: true
+          wait-for-minutes: 20
+
+      - name: Annotate rollback outcome
+        if: always() && steps.smoke-test.outcome == 'failure'
+        env:
+          PREVIOUS_TASKDEF_ARN: >-
+            ${{ steps.fetch-taskdef.outputs.previous_task_definition_arn }}
+          ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
+        run: |
+          if [ "${ROLLBACK_OUTCOME}" = "success" ]; then
+            echo "::notice::Automatic rollback succeeded — service restored to ${PREVIOUS_TASKDEF_ARN}"
+          else
+            echo "::error::Automatic rollback FAILED (outcome=${ROLLBACK_OUTCOME}). Manual intervention required."
+            echo "::error::Previous task definition was: ${PREVIOUS_TASKDEF_ARN}"
+          fi
 
       # -----------------------------------------------------------------------
       # Step 9: Write a workflow summary visible at the top of the run page.
@@ -605,6 +680,9 @@ jobs:
           ALB_DNS: ${{ steps.alb-dns.outputs.alb_dns_name }}
           DEPLOY_STATUS: ${{ steps.deploy.outcome }}
           SMOKE_STATUS: ${{ steps.smoke-test.outcome }}
+          ROLLBACK_STATUS: ${{ steps.rollback.outcome }}
+          PREVIOUS_TASKDEF_ARN: >-
+            ${{ steps.fetch-taskdef.outputs.previous_task_definition_arn }}
         run: |
           {
             echo "## CardDemo Deployment Summary"
@@ -620,6 +698,10 @@ jobs:
             echo "| ALB DNS | ${ALB_DNS:-unresolved} |"
             echo "| Deploy step outcome | ${DEPLOY_STATUS:-unknown} |"
             echo "| Smoke-test outcome | ${SMOKE_STATUS:-unknown} |"
+            if [ -n "${ROLLBACK_STATUS:-}" ] && [ "${ROLLBACK_STATUS}" != "skipped" ]; then
+              echo "| Auto-rollback outcome | ${ROLLBACK_STATUS} |"
+              echo "| Rolled back to | \`${PREVIOUS_TASKDEF_ARN:-unknown}\` |"
+            fi
             echo "| Triggered by | ${{ github.actor }} |"
             echo "| Trigger | ${{ github.event_name }} |"
             echo "| Ref | ${{ github.ref }} |"

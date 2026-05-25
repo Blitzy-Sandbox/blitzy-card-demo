@@ -443,3 +443,93 @@ resource "aws_shield_application_layer_automatic_response" "alb" {
 # regulatory requirement (e.g., PCI-DSS Service Provider attestation)
 # that mandates Shield Advanced.
 # =============================================================================
+
+# =============================================================================
+# Section 4 — Route 53 health check + Shield Protection health-check
+#             association (Code Review CP7 DDoS Resilience fix)
+# =============================================================================
+# Per AWS Shield Advanced best practice (and the Checkpoint 7 Final
+# review finding), a Route 53 health check should be associated with
+# every Shield-protected resource. Shield uses the health-check signal
+# to detect application-level impact during DDoS events and to invoke
+# the Shield Response Team (SRT) playbooks faster:
+#
+#   * If the protected resource is healthy but Shield observes elevated
+#     traffic, Shield treats the elevation as legitimate (no escalation).
+#   * If the protected resource becomes UNhealthy WHILE Shield observes
+#     elevated traffic, Shield treats this as confirmation of an attack
+#     and accelerates mitigation playbooks / SRT engagement.
+#
+# This pairing matters because — without a health-check signal — Shield
+# must rely purely on traffic patterns and cannot distinguish a flash-
+# crowd from a denial-of-service. Adding the health check materially
+# improves time-to-detect and time-to-mitigate for the ALB.
+#
+# Both resources are gated by `var.alb_route53_health_check_enabled`
+# AND a non-empty `var.alb_health_check_fqdn` AND
+# `var.shield_advanced_enabled`. The default is to leave them
+# unprovisioned so demo / single-account environments without a public
+# DNS name continue to apply cleanly.
+#
+# Why not always create them?
+#   The Route 53 health check requires a publicly resolvable FQDN
+#   (typically the ALB's Route 53 alias record); demo environments
+#   often expose the ALB through its AWS-generated DNS name
+#   (carddemo-<env>-<id>.<region>.elb.amazonaws.com) without a custom
+#   Route 53 record, in which case the health-check probe would have
+#   no stable FQDN to target. Production environments with a published
+#   domain set both variables in their tfvars overlay.
+# =============================================================================
+
+resource "aws_route53_health_check" "alb" {
+  # Gated by the same `var.shield_advanced_enabled` flag as the Shield
+  # protection (no point in a health check without a Shield protection
+  # to associate it with) PLUS the dedicated
+  # var.alb_route53_health_check_enabled toggle so production can opt
+  # in independently when a stable FQDN is published.
+  count = (
+    var.shield_advanced_enabled
+    && var.alb_route53_health_check_enabled
+    && length(var.alb_health_check_fqdn) > 0
+  ) ? 1 : 0
+
+  # Probe configuration. HTTPS_STR_MATCH lets us verify both transport
+  # reachability AND application-layer health by string-matching the
+  # Spring Actuator response body for the substring '"status":"UP"',
+  # mirroring the smoke-test grep in ../.github/workflows/deploy.yml.
+  type              = "HTTPS_STR_MATCH"
+  fqdn              = var.alb_health_check_fqdn
+  port              = 443
+  resource_path     = "/actuator/health"
+  search_string     = "\"status\":\"UP\""
+  request_interval  = 30
+  failure_threshold = 3
+  measure_latency   = true
+
+  # Tag the health check so the Shield console can surface it under the
+  # CardDemo Shield protection alongside the ALB.
+  tags = merge(local.common_tags, {
+    Name    = "carddemo-${var.environment}-alb-shield-healthcheck"
+    Purpose = "Route 53 health check feeding Shield Advanced DDoS detection (AAP §0.6.6 + Code Review CP7)"
+  })
+}
+
+resource "aws_shield_protection_health_check_association" "alb" {
+  count = (
+    var.shield_advanced_enabled
+    && var.alb_route53_health_check_enabled
+    && length(var.alb_health_check_fqdn) > 0
+  ) ? 1 : 0
+
+  # The Shield protection ARN (from Section 1 above). Count guards
+  # ensure both this resource and aws_shield_protection.alb exist
+  # under the same condition set.
+  shield_protection_id = aws_shield_protection.alb[0].id
+
+  # The Route 53 health check ARN — exposes Shield's link to the
+  # application-layer health signal. Health-check IDs are formatted as
+  # ARNs by Route 53 (arn:aws:route53:::healthcheck/<id>) so we must
+  # construct the full ARN from the resource's id attribute.
+  health_check_arn = aws_route53_health_check.alb[0].arn
+}
+# =============================================================================

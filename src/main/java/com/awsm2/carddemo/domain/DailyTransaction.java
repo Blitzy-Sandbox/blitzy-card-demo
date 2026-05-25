@@ -16,16 +16,19 @@
  */
 package com.awsm2.carddemo.domain;
 
+import com.awsm2.carddemo.util.CobolCodec;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Objects;
 
 /**
@@ -776,5 +779,127 @@ public class DailyTransaction implements Serializable {
             return "****";
         }
         return "************" + card.substring(card.length() - 4);
+    }
+
+    // -------------------------------------------------------------------------
+    // COBOL fixed-width record marshalling
+    //
+    // Code Review CP7 FINAL — CRITICAL: parse(byte[]) and format() are
+    // required by GoldenOutputDiffTest#dailytran_roundTrip to prove the AAP
+    // §0.2.2 byte-identical regulatory-output guarantee against the
+    // canonical app/data/ASCII/dailytran.txt fixture.
+    //
+    // Layout per CVTRA06Y.cpy (identical to CVTRA05Y.cpy, 350 bytes total):
+    //   DALYTRAN-ID             PIC X(16)      offset 0,   length 16
+    //   DALYTRAN-TYPE-CD        PIC X(02)      offset 16,  length 2
+    //   DALYTRAN-CAT-CD         PIC 9(04)      offset 18,  length 4
+    //   DALYTRAN-SOURCE         PIC X(10)      offset 22,  length 10
+    //   DALYTRAN-DESC           PIC X(100)     offset 32,  length 100
+    //   DALYTRAN-AMT            PIC S9(09)V99  offset 132, length 11 (zoned)
+    //   DALYTRAN-MERCHANT-ID    PIC 9(09)      offset 143, length 9
+    //   DALYTRAN-MERCHANT-NAME  PIC X(50)      offset 152, length 50
+    //   DALYTRAN-MERCHANT-CITY  PIC X(50)      offset 202, length 50
+    //   DALYTRAN-MERCHANT-ZIP   PIC X(10)      offset 252, length 10
+    //   DALYTRAN-CARD-NUM       PIC X(16)      offset 262, length 16
+    //   DALYTRAN-ORIG-TS        PIC X(26)      offset 278, length 26
+    //   DALYTRAN-PROC-TS        PIC X(26)      offset 304, length 26 (may be SPACES)
+    //   FILLER                  PIC X(20)      offset 330, length 20 (SPACES)
+    // -------------------------------------------------------------------------
+
+    /** Byte length of one DALYTRAN-RECORD per CVTRA06Y.cpy. */
+    public static final int COBOL_RECORD_LENGTH = 350;
+
+    /**
+     * COBOL timestamp format used by DALYTRAN-ORIG-TS and DALYTRAN-PROC-TS
+     * (PIC X(26)). See {@link com.awsm2.carddemo.domain.Transaction} for
+     * notes on round-trip semantics.
+     */
+    static final DateTimeFormatter COBOL_TIMESTAMP =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
+
+    /**
+     * Transient holder for the 20-byte COBOL FILLER trailer of the
+     * DALYTRAN-RECORD layout (CVTRA06Y.cpy).
+     */
+    @Transient
+    private byte[] cobolFiller;
+
+    /**
+     * Parse a single 350-byte COBOL DALYTRAN-RECORD into a {@link DailyTransaction}.
+     *
+     * @param record exactly 350 bytes per CVTRA06Y.cpy
+     * @return the parsed {@link DailyTransaction}
+     */
+    public static DailyTransaction parse(byte[] record) {
+        if (record == null || record.length != COBOL_RECORD_LENGTH) {
+            throw new IllegalArgumentException(
+                    "DALYTRAN-RECORD must be exactly " + COBOL_RECORD_LENGTH
+                            + " bytes per CVTRA06Y.cpy; got "
+                            + (record == null ? "null" : record.length));
+        }
+        DailyTransaction t = new DailyTransaction();
+        t.dalytranId = CobolCodec.parseText(record, 0, 16);
+        t.dalytranTypeCd = CobolCodec.parseText(record, 16, 2);
+        t.dalytranCatCd = CobolCodec.parseInt(record, 18, 4);
+        t.dalytranSource = CobolCodec.parseText(record, 22, 10);
+        t.dalytranDesc = CobolCodec.parseText(record, 32, 100);
+        t.dalytranAmt = CobolCodec.parseZonedDecimal(record, 132, 11, 2);
+        t.dalytranMerchantId = CobolCodec.parseLong(record, 143, 9);
+        t.dalytranMerchantName = CobolCodec.parseText(record, 152, 50);
+        t.dalytranMerchantCity = CobolCodec.parseText(record, 202, 50);
+        t.dalytranMerchantZip = CobolCodec.parseText(record, 252, 10);
+        t.dalytranCardNum = CobolCodec.parseText(record, 262, 16);
+        t.dalytranOrigTs = parseCobolTs(record, 278);
+        t.dalytranProcTs = parseCobolTs(record, 304);
+        t.cobolFiller = new byte[20];
+        System.arraycopy(record, 330, t.cobolFiller, 0, 20);
+        return t;
+    }
+
+    /**
+     * Format this {@link DailyTransaction} as a 350-byte COBOL DALYTRAN-RECORD.
+     *
+     * @return exactly 350 bytes per CVTRA06Y.cpy
+     */
+    public byte[] format() {
+        byte[] out = new byte[COBOL_RECORD_LENGTH];
+        CobolCodec.put(out, 0, CobolCodec.formatText(dalytranId, 16));
+        CobolCodec.put(out, 16, CobolCodec.formatText(dalytranTypeCd, 2));
+        CobolCodec.put(out, 18, CobolCodec.formatInt(dalytranCatCd == null ? 0 : dalytranCatCd, 4));
+        CobolCodec.put(out, 22, CobolCodec.formatText(dalytranSource, 10));
+        CobolCodec.put(out, 32, CobolCodec.formatText(dalytranDesc, 100));
+        CobolCodec.put(out, 132, CobolCodec.formatZonedDecimal(dalytranAmt, 11, 2));
+        CobolCodec.put(out, 143, CobolCodec.formatLong(dalytranMerchantId == null ? 0L : dalytranMerchantId, 9));
+        CobolCodec.put(out, 152, CobolCodec.formatText(dalytranMerchantName, 50));
+        CobolCodec.put(out, 202, CobolCodec.formatText(dalytranMerchantCity, 50));
+        CobolCodec.put(out, 252, CobolCodec.formatText(dalytranMerchantZip, 10));
+        CobolCodec.put(out, 262, CobolCodec.formatText(dalytranCardNum, 16));
+        CobolCodec.put(out, 278, formatCobolTs(dalytranOrigTs));
+        CobolCodec.put(out, 304, formatCobolTs(dalytranProcTs));
+        if (cobolFiller != null && cobolFiller.length == 20) {
+            System.arraycopy(cobolFiller, 0, out, 330, 20);
+        } else {
+            CobolCodec.fillSpaces(out, 330, 20);
+        }
+        return out;
+    }
+
+    static LocalDateTime parseCobolTs(byte[] record, int offset) {
+        String s = CobolCodec.parseText(record, offset, 26);
+        if (s.trim().isEmpty()) {
+            return null;
+        }
+        return LocalDateTime.parse(s, COBOL_TIMESTAMP);
+    }
+
+    static byte[] formatCobolTs(LocalDateTime ts) {
+        if (ts == null) {
+            byte[] out = new byte[26];
+            for (int i = 0; i < 26; i++) {
+                out[i] = CobolCodec.ASCII_SPACE;
+            }
+            return out;
+        }
+        return ts.format(COBOL_TIMESTAMP).getBytes(CobolCodec.ASCII);
     }
 }

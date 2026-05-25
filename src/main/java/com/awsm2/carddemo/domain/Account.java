@@ -16,10 +16,12 @@
  */
 package com.awsm2.carddemo.domain;
 
+import com.awsm2.carddemo.util.CobolCodec;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import jakarta.persistence.Version;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
@@ -644,6 +646,22 @@ public class Account implements Serializable {
     @Column(name = "version", nullable = false)
     private Long version;
 
+    /**
+     * Transient holder for the 178-byte COBOL FILLER trailer of the
+     * ACCOUNT-RECORD layout (CVACT01Y.cpy). The CardDemo COBOL programs
+     * historically initialised this region to SPACES, but the bytes are
+     * preserved here verbatim so that the {@link #parse(byte[])} /
+     * {@link #format()} round-trip is byte-identical against the
+     * canonical {@code app/data/ASCII/acctdata.txt} fixture (AAP &sect;0.2.2).
+     *
+     * <p>This field is marked {@link Transient @Transient} because it has
+     * no SQL representation in the {@code accounts} table (V001 schema);
+     * it lives only in memory during fixed-width record marshalling for
+     * ETL/migration purposes. Hibernate ignores it during persistence.</p>
+     */
+    @Transient
+    private byte[] cobolFiller;
+
     // -------------------------------------------------------------------------
     // Constructors
     //
@@ -1076,5 +1094,103 @@ public class Account implements Serializable {
                 // Cycle credit/debit and ZIP omitted to keep log lines
                 // concise; full state available via the getters.
                 + '}';
+    }
+
+    // -------------------------------------------------------------------------
+    // COBOL fixed-width record marshalling
+    //
+    // Code Review CP7 FINAL — CRITICAL: parse(byte[]) and format() are
+    // required by GoldenOutputDiffTest#acctdata_roundTrip to prove the AAP
+    // §0.2.2 byte-identical regulatory-output guarantee against the
+    // canonical app/data/ASCII/acctdata.txt fixture.
+    //
+    // Layout per CVACT01Y.cpy (300 bytes total):
+    //   ACCT-ID                 PIC 9(11)      offset 0,   length 11
+    //   ACCT-ACTIVE-STATUS      PIC X(01)      offset 11,  length 1
+    //   ACCT-CURR-BAL           PIC S9(10)V99  offset 12,  length 12 (zoned)
+    //   ACCT-CREDIT-LIMIT       PIC S9(10)V99  offset 24,  length 12 (zoned)
+    //   ACCT-CASH-CREDIT-LIMIT  PIC S9(10)V99  offset 36,  length 12 (zoned)
+    //   ACCT-OPEN-DATE          PIC X(10)      offset 48,  length 10
+    //   ACCT-EXPIRAION-DATE     PIC X(10)      offset 58,  length 10
+    //   ACCT-REISSUE-DATE       PIC X(10)      offset 68,  length 10
+    //   ACCT-CURR-CYC-CREDIT    PIC S9(10)V99  offset 78,  length 12 (zoned)
+    //   ACCT-CURR-CYC-DEBIT     PIC S9(10)V99  offset 90,  length 12 (zoned)
+    //   ACCT-ADDR-ZIP           PIC X(10)      offset 102, length 10
+    //   ACCT-GROUP-ID           PIC X(10)      offset 112, length 10
+    //   FILLER                  PIC X(178)     offset 122, length 178 (SPACES)
+    // -------------------------------------------------------------------------
+
+    /** Byte length of one ACCOUNT-RECORD per CVACT01Y.cpy. */
+    public static final int COBOL_RECORD_LENGTH = 300;
+
+    /**
+     * Parse a single 300-byte COBOL ACCOUNT-RECORD into an {@link Account}.
+     *
+     * <p>The parser is the inverse of {@link #format()}: given the byte
+     * output of {@code format()}, this method reconstructs the equivalent
+     * {@link Account} including the transient FILLER trailer. The version
+     * field is left {@code null} because COBOL records do not encode JPA
+     * optimistic-lock state.</p>
+     *
+     * @param record exactly 300 bytes per CVACT01Y.cpy
+     * @return the parsed {@link Account} (transient — not yet persisted)
+     * @throws IllegalArgumentException if {@code record} is not exactly
+     *                                  {@value #COBOL_RECORD_LENGTH} bytes
+     */
+    public static Account parse(byte[] record) {
+        if (record == null || record.length != COBOL_RECORD_LENGTH) {
+            throw new IllegalArgumentException(
+                    "ACCOUNT-RECORD must be exactly " + COBOL_RECORD_LENGTH
+                            + " bytes per CVACT01Y.cpy; got "
+                            + (record == null ? "null" : record.length));
+        }
+        Account a = new Account();
+        a.acctId = CobolCodec.parseLong(record, 0, 11);
+        a.acctActiveStatus = CobolCodec.parseText(record, 11, 1);
+        a.acctCurrBal = CobolCodec.parseZonedDecimal(record, 12, 12, 2);
+        a.acctCreditLimit = CobolCodec.parseZonedDecimal(record, 24, 12, 2);
+        a.acctCashCreditLimit = CobolCodec.parseZonedDecimal(record, 36, 12, 2);
+        a.acctOpenDate = CobolCodec.parseLocalDate(record, 48, 10);
+        a.acctExpirationDate = CobolCodec.parseLocalDate(record, 58, 10);
+        a.acctReissueDate = CobolCodec.parseLocalDate(record, 68, 10);
+        a.acctCurrCycCredit = CobolCodec.parseZonedDecimal(record, 78, 12, 2);
+        a.acctCurrCycDebit = CobolCodec.parseZonedDecimal(record, 90, 12, 2);
+        a.acctAddrZip = CobolCodec.parseText(record, 102, 10);
+        a.acctGroupId = CobolCodec.parseText(record, 112, 10);
+        a.cobolFiller = new byte[178];
+        System.arraycopy(record, 122, a.cobolFiller, 0, 178);
+        return a;
+    }
+
+    /**
+     * Format this {@link Account} as a 300-byte COBOL ACCOUNT-RECORD.
+     *
+     * <p>The output is byte-identical to the input that produced this
+     * entity via {@link #parse(byte[])}. If the entity was created by some
+     * means other than {@link #parse(byte[])}, the FILLER trailer is
+     * filled with 178 ASCII SPACE bytes (the COBOL default).</p>
+     *
+     * @return exactly 300 bytes per CVACT01Y.cpy
+     */
+    public byte[] format() {
+        byte[] out = new byte[COBOL_RECORD_LENGTH];
+        CobolCodec.put(out, 0, CobolCodec.formatLong(acctId == null ? 0L : acctId, 11));
+        CobolCodec.put(out, 11, CobolCodec.formatText(acctActiveStatus, 1));
+        CobolCodec.put(out, 12, CobolCodec.formatZonedDecimal(acctCurrBal, 12, 2));
+        CobolCodec.put(out, 24, CobolCodec.formatZonedDecimal(acctCreditLimit, 12, 2));
+        CobolCodec.put(out, 36, CobolCodec.formatZonedDecimal(acctCashCreditLimit, 12, 2));
+        CobolCodec.put(out, 48, CobolCodec.formatLocalDate(acctOpenDate));
+        CobolCodec.put(out, 58, CobolCodec.formatLocalDate(acctExpirationDate));
+        CobolCodec.put(out, 68, CobolCodec.formatLocalDate(acctReissueDate));
+        CobolCodec.put(out, 78, CobolCodec.formatZonedDecimal(acctCurrCycCredit, 12, 2));
+        CobolCodec.put(out, 90, CobolCodec.formatZonedDecimal(acctCurrCycDebit, 12, 2));
+        CobolCodec.put(out, 102, CobolCodec.formatText(acctAddrZip, 10));
+        CobolCodec.put(out, 112, CobolCodec.formatText(acctGroupId, 10));
+        if (cobolFiller != null && cobolFiller.length == 178) {
+            System.arraycopy(cobolFiller, 0, out, 122, 178);
+        } else {
+            CobolCodec.fillSpaces(out, 122, 178);
+        }
+        return out;
     }
 }

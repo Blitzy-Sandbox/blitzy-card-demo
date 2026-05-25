@@ -1,0 +1,186 @@
+# =============================================================================
+# CardDemo AWS CodeBuild Build Specification
+# =============================================================================
+#
+# Purpose:
+#   Alternative CI/CD build definition for AWS CodeBuild. The canonical CI/CD
+#   pipeline for CardDemo runs on GitHub Actions (see ../.github/workflows/
+#   for build.yml, docker-build.yml, deploy.yml). This buildspec is the
+#   AWS-native equivalent — it provides feature parity for organizations
+#   that standardise on CodeBuild / CodePipeline rather than GitHub Actions,
+#   or that need an AWS-native build path for compliance reasons.
+#
+#   The buildspec runs the same logical phases as the GitHub Actions
+#   workflows, with the same security guardrails:
+#
+#     1. install  — verify Java 17, Maven, Docker, AWS CLI on the build host
+#     2. pre_build — authenticate to ECR via the build project's IAM role
+#                    (NO long-lived AWS credentials; CodeBuild uses the
+#                    service role's STS session — same model as
+#                    GitHub Actions OIDC role assumption per AAP §0.6.6)
+#     3. build    — ./mvnw -B clean verify (tests + JaCoCo + OWASP scan)
+#                   and docker build with the multi-stage Dockerfile,
+#                   tagging the image with the immutable short-SHA
+#                   (CODEBUILD_RESOLVED_SOURCE_VERSION) — NEVER `:latest`
+#                   (Code Review CP7 supply-chain finding; ECR repositories
+#                   have image_tag_mutability=IMMUTABLE per ecr.tf)
+#     4. post_build — docker push to ECR and emit deployment artifacts
+#                     (imagedefinitions.json) for CodePipeline ECS deploy.
+#
+# AAP refs:
+#   §0.6.3  (Step Functions + AWS Batch JCL replacement orchestration)
+#   §0.6.6  (PCI-DSS posture — KMS encryption, supply-chain control)
+#   §0.7.1  (No long-lived AWS credentials; CMK encryption mandates)
+#   §0.7.2  (Build / runtime instructions; demo-ready by May 20, 2026)
+#
+# Required CodeBuild project configuration:
+#   - Service role with permissions to:
+#       * ecr:GetAuthorizationToken (account-level)
+#       * ecr:BatchCheckLayerAvailability, ecr:CompleteLayerUpload,
+#         ecr:InitiateLayerUpload, ecr:PutImage, ecr:UploadLayerPart on
+#         the carddemo-<env> ECR repository
+#       * cloudwatch:PutMetricData (for build-time metric emission)
+#       * s3:PutObject, s3:GetObject on the CodePipeline artifact bucket
+#         (when used in a CodePipeline)
+#   - Privileged: TRUE (required to run docker build inside the build
+#     container)
+#   - Environment image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+#     (or newer; provides Java 17, Maven, Docker, AWS CLI v2)
+#   - Environment variables (set on the CodeBuild project, NOT in this YAML):
+#       * AWS_DEFAULT_REGION              — target AWS region
+#       * ECR_REGISTRY                    — <account-id>.dkr.ecr.<region>.amazonaws.com
+#       * ECR_REPOSITORY                  — carddemo-<env>
+#       * ENVIRONMENT                     — dev | staging | prod
+#
+# IMPORTANT — Supply-chain controls:
+#   - The image is tagged with CODEBUILD_RESOLVED_SOURCE_VERSION (full
+#     commit SHA) and a derived 8-character short SHA. The `:latest`
+#     tag is NEVER pushed (matches the GitHub Actions discipline; see
+#     ../.github/workflows/docker-build.yml header for rationale).
+#   - The push uses the build project's IAM role STS session — no
+#     long-lived AWS credentials are stored anywhere in this YAML.
+#   - The Dockerfile at the repository root performs the multi-stage
+#     build (Maven build stage with Eclipse Temurin JDK 17, runtime
+#     stage with Eclipse Temurin JRE 17). The buildspec only invokes
+#     `docker build` once with the correct context and tag.
+
+version: 0.2
+
+env:
+  variables:
+    # Buildspec-level defaults; can be overridden by the CodeBuild project's
+    # environment variables. These are non-sensitive (the actual AWS account
+    # ID is masked from logs by the CodeBuild service role configuration).
+    MAVEN_OPTS: "-Dmaven.repo.local=/root/.m2/repository -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn"
+    DOCKER_BUILDKIT: "1"
+
+phases:
+  install:
+    runtime-versions:
+      java: corretto17
+    commands:
+      # Verify the build environment matches AAP §0.7.2 — Java 17+,
+      # Maven 3.8+, Docker, AWS CLI v2.
+      - echo "----- Build environment versions -----"
+      - java -version
+      - mvn --version
+      - docker --version
+      - aws --version
+      - echo "Source revision: ${CODEBUILD_RESOLVED_SOURCE_VERSION}"
+      - echo "Build environment: ${CODEBUILD_BUILD_ID}"
+
+  pre_build:
+    commands:
+      # Compute the immutable short SHA. The CodeBuild
+      # CODEBUILD_RESOLVED_SOURCE_VERSION is the full Git commit SHA; we
+      # truncate to the canonical 8-character form used by the GitHub
+      # Actions docker-build.yml so deploy.yml and AWS Batch job
+      # definitions (driven by var.app_image_tag in
+      # ./terraform/batch.tf) share a single canonical reference.
+      - export SHORT_SHA="${CODEBUILD_RESOLVED_SOURCE_VERSION:0:8}"
+      - echo "Short SHA tag: ${SHORT_SHA}"
+      - export IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${SHORT_SHA}"
+      - echo "Target image URI: ${IMAGE_URI}"
+
+      # Authenticate to ECR using the CodeBuild service role's STS
+      # session — NO long-lived AWS credentials in this YAML (matches
+      # AAP §0.7.1 + the GitHub Actions OIDC discipline).
+      - echo "----- ECR login -----"
+      - aws ecr get-login-password --region "${AWS_DEFAULT_REGION}"
+          | docker login
+              --username AWS
+              --password-stdin
+              "${ECR_REGISTRY}"
+
+  build:
+    commands:
+      # Step 1: Maven build, test, and OWASP dependency scan.
+      # ./mvnw is the Maven Wrapper checked into the repo root; it pins
+      # the exact Maven version per .mvn/wrapper/maven-wrapper.properties.
+      # -B (batch mode) prevents interactive prompts.
+      - echo "----- Maven build + test + OWASP -----"
+      - ./mvnw -B clean verify
+
+      # Step 2: Docker build. The Dockerfile is at the repository root.
+      # BUILD_VERSION / BUILD_COMMIT mirror the GitHub Actions
+      # docker-build.yml build-args so the in-container build metadata
+      # is identical regardless of which CI/CD path produced the image.
+      - echo "----- Docker build -----"
+      - docker build
+          --file Dockerfile
+          --tag "${IMAGE_URI}"
+          --build-arg "BUILD_VERSION=${SHORT_SHA}"
+          --build-arg "BUILD_COMMIT=${CODEBUILD_RESOLVED_SOURCE_VERSION}"
+          --label "org.opencontainers.image.title=carddemo"
+          --label "org.opencontainers.image.revision=${CODEBUILD_RESOLVED_SOURCE_VERSION}"
+          --label "org.opencontainers.image.source=https://github.com/aws-samples/aws-mainframe-modernization-carddemo"
+          --label "org.opencontainers.image.licenses=Apache-2.0"
+          .
+
+  post_build:
+    commands:
+      # Push the immutable short-SHA tag to ECR. The `:latest` tag is
+      # intentionally NOT pushed — ECR repositories created by
+      # ./terraform/ecr.tf have image_tag_mutability=IMMUTABLE which
+      # rejects re-push of an existing tag, and using `:latest` would
+      # break the canonical short-SHA reference that ECS task
+      # definitions and AWS Batch job definitions consume (per Code
+      # Review CP7 supply-chain finding).
+      - echo "----- Docker push -----"
+      - docker push "${IMAGE_URI}"
+
+      # Emit imagedefinitions.json for downstream CodePipeline ECS
+      # deploy actions. The structure follows the AWS-defined contract
+      # for "Amazon ECS Standard Deployment" action providers.
+      - echo "----- Emit imagedefinitions.json -----"
+      - printf
+          '[{"name":"carddemo-app","imageUri":"%s"}]'
+          "${IMAGE_URI}"
+          > imagedefinitions.json
+      - cat imagedefinitions.json
+
+      # Optional: publish a build success metric so CloudWatch can alert
+      # on long-running or repeatedly-failing builds.
+      - aws cloudwatch put-metric-data
+          --namespace "CardDemo/CI"
+          --metric-name "BuildSuccess"
+          --value 1
+          --dimensions "Environment=${ENVIRONMENT}"
+          --unit "Count"
+          || true
+
+artifacts:
+  files:
+    # The imagedefinitions.json feeds CodePipeline's ECS deploy action.
+    # The Spring Boot fat-JAR is published as a secondary artifact for
+    # release auditing (it is the same JAR baked into the Docker image).
+    - imagedefinitions.json
+    - target/*.jar
+  discard-paths: no
+
+# Cache the Maven local repository between builds. CodeBuild's
+# S3-backed cache stores ~/.m2/repository so subsequent builds skip the
+# dependency download phase.
+cache:
+  paths:
+    - "/root/.m2/repository/**/*"

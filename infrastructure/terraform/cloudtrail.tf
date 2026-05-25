@@ -594,6 +594,34 @@ resource "aws_cloudtrail" "carddemo" {
   # Captures activity across every AWS region — not just the home region.
   is_multi_region_trail = true
 
+  # Organization-level trail (PCI-DSS hardening — Code Review CP7 fix).
+  #
+  # When CardDemo is deployed inside an AWS Organizations / Control
+  # Tower-enabled account, setting is_organization_trail = true causes
+  # the trail to capture API activity from EVERY member account, not
+  # just the deployer's. This is the audit posture that PCI-DSS
+  # Requirement 10 expects in a multi-account landing zone and the
+  # Checkpoint 7 review explicitly called for.
+  #
+  # The default value of var.cloudtrail_is_organization_trail is false
+  # so single-account demo / development environments work without
+  # the additional Organizations privileges required to create an
+  # org-level trail. Production deployments set the variable to true
+  # via the prod tfvars overlay.
+  #
+  # Operational note — MFA Delete on the cloudtrail_logs bucket:
+  #   S3 MFA Delete cannot be enabled via Terraform / SDK; it requires
+  #   an `aws s3api put-bucket-versioning` call performed by the root
+  #   user with an active MFA token. The CardDemo runbook documents
+  #   the manual enablement procedure under
+  #   ../README.md#mfa-delete-on-cloudtrail-bucket. Until that manual
+  #   step is performed, the bucket retains the standard versioning
+  #   guarantee from `aws_s3_bucket_versioning.cloudtrail_logs` above
+  #   (versioning is mandatory; MFA Delete is the additional defence-
+  #   in-depth control). Operators must complete this step BEFORE
+  #   production cutover per the Code Review CP7 audit finding.
+  is_organization_trail = var.cloudtrail_is_organization_trail
+
   # Hourly digest files with SHA-256 hashes of each log file; operators
   # can verify the integrity of any log file at any point in time with
   # `aws cloudtrail validate-logs --trail-arn <arn> --start-time <t>

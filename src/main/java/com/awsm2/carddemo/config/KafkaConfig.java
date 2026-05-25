@@ -23,6 +23,7 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
+import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.annotation.EnableKafka;
@@ -320,7 +321,25 @@ public class KafkaConfig {
      * @return the configured producer factory, ready to instantiate
      *         {@code KafkaProducer} instances
      */
+    // -------------------------------------------------------------------------
+    // Code Review CP7 (MAJOR — Secrets Rotation / AAP §0.6.4):
+    // {@link RefreshScope @RefreshScope} causes this bean to be destroyed and
+    // re-instantiated whenever {@link
+    // org.springframework.cloud.context.refresh.ContextRefresher#refresh()} is
+    // invoked by {@link com.awsm2.carddemo.config.SecretsManagerConfig} on
+    // receiving an AWS Secrets Manager rotation event. Re-instantiation rebuilds
+    // the producer property map from {@code kafkaProperties.buildProducerProperties(...)}
+    // — which itself reads from the (now-refreshed) Spring Environment, so any
+    // rotated MSK SASL/IAM credential or bootstrap-server endpoint is picked up
+    // without restarting the JVM.
+    //
+    // The downstream {@link #kafkaTemplate(ProducerFactory)} bean is also
+    // annotated {@code @RefreshScope} so it picks up the rebuilt
+    // {@link ProducerFactory} on rotation; existing in-flight sends drain via
+    // the producer's own {@code delivery.timeout.ms} envelope.
+    // -------------------------------------------------------------------------
     @Bean
+    @RefreshScope
     public ProducerFactory<String, Object> producerFactory() {
         // Replaces: CICS TDQ producer semantics (EXEC CICS WRITEQ TD)
         //           + sequential PS / GDG file output (DALYREJS, SYSTRAN, TRANREPT)
@@ -360,7 +379,16 @@ public class KafkaConfig {
      *                        through Spring's bean container
      * @return the configured {@code KafkaTemplate} singleton
      */
+    // -------------------------------------------------------------------------
+    // Code Review CP7 (MAJOR — Secrets Rotation / AAP §0.6.4):
+    // The template holds a strong reference to its {@link ProducerFactory}, so
+    // refreshing only the factory bean would leave the template's cached
+    // reference pointing at the old factory. Annotating this bean
+    // {@code @RefreshScope} forces it to be re-instantiated alongside the
+    // factory, ensuring rotated SASL/IAM credentials propagate end-to-end.
+    // -------------------------------------------------------------------------
     @Bean
+    @RefreshScope
     public KafkaTemplate<String, Object> kafkaTemplate(ProducerFactory<String, Object> producerFactory) {
         // Replaces: CICS EXEC CICS WRITEQ TD QUEUE(JOBS)
         return new KafkaTemplate<>(producerFactory);
@@ -416,7 +444,30 @@ public class KafkaConfig {
      * @return the configured consumer factory, ready to instantiate
      *         {@code KafkaConsumer} instances inside the listener container
      */
+    // -------------------------------------------------------------------------
+    // Code Review CP7 (MAJOR — Secrets Rotation / AAP §0.6.4):
+    // Symmetric to {@link #producerFactory()}: refresh-scoped so that rotated
+    // MSK SASL/IAM credentials are picked up on the next listener container
+    // restart cycle without restarting the JVM. The downstream
+    // {@link #kafkaListenerContainerFactory(ConsumerFactory, KafkaTemplate)}
+    // is also annotated {@code @RefreshScope} so it picks up the rebuilt
+    // {@link ConsumerFactory}.
+    //
+    // Note on consumer rotation semantics: refreshing the
+    // {@link ConsumerFactory} does NOT immediately disconnect existing
+    // KafkaConsumer instances already polling inside running listener
+    // containers — those continue to use the credentials they were configured
+    // with at creation time. When MSK's IAM credential expires (which it does
+    // continuously under SASL_SSL+IAM auth — the AWS MSK IAM client refreshes
+    // credentials transparently from the ECS task role on each authentication
+    // round-trip), the next reconnect cycle uses the rotated configuration.
+    // For a forced consumer rebuild, operators can invoke the
+    // {@code KafkaListenerEndpointRegistry} bean to stop and restart the
+    // containers after rotation; the recommended pattern is to rely on the
+    // continuous credential refresh that MSK IAM auth provides.
+    // -------------------------------------------------------------------------
     @Bean
+    @RefreshScope
     public ConsumerFactory<String, Object> consumerFactory() {
         // Replaces: CICS EXEC CICS READQ TD QUEUE(JOBS)
         Map<String, Object> props = new HashMap<>(kafkaProperties.buildConsumerProperties(null));

@@ -16,6 +16,7 @@
  */
 package com.awsm2.carddemo.domain;
 
+import com.awsm2.carddemo.util.CobolCodec;
 import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.EmbeddedId;
@@ -823,5 +824,59 @@ public class TransactionCategory implements Serializable {
                     + ", tranCatCd=" + tranCatCd
                     + '}';
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // COBOL fixed-width record marshalling
+    //
+    // Code Review CP7 FINAL — CRITICAL: parse(byte[]) and format() are
+    // required by GoldenOutputDiffTest#trancatg_roundTrip to prove the AAP
+    // §0.2.2 byte-identical regulatory-output guarantee against the
+    // canonical app/data/ASCII/trancatg.txt fixture.
+    //
+    // Layout per CVTRA04Y.cpy (60 bytes total):
+    //   TRAN-TYPE-CD        PIC X(02)   offset 0,  length 2
+    //   TRAN-CAT-CD         PIC 9(04)   offset 2,  length 4
+    //   TRAN-CAT-TYPE-DESC  PIC X(50)   offset 6,  length 50
+    //   FILLER              PIC X(04)   offset 56, length 4  (ZEROS in fixture)
+    // -------------------------------------------------------------------------
+
+    /** Byte length of one TRAN-CAT-RECORD per CVTRA04Y.cpy. */
+    public static final int COBOL_RECORD_LENGTH = 60;
+
+    /**
+     * Parse a single 60-byte COBOL TRAN-CAT-RECORD into a {@link TransactionCategory}.
+     *
+     * @param record exactly 60 bytes per CVTRA04Y.cpy
+     * @return the parsed {@link TransactionCategory}
+     */
+    public static TransactionCategory parse(byte[] record) {
+        if (record == null || record.length != COBOL_RECORD_LENGTH) {
+            throw new IllegalArgumentException(
+                    "TRAN-CAT-RECORD must be exactly " + COBOL_RECORD_LENGTH
+                            + " bytes per CVTRA04Y.cpy; got "
+                            + (record == null ? "null" : record.length));
+        }
+        TransactionCategoryId id = new TransactionCategoryId(
+                CobolCodec.parseText(record, 0, 2),
+                CobolCodec.parseInt(record, 2, 4));
+        return new TransactionCategory(id, CobolCodec.parseText(record, 6, 50));
+    }
+
+    /**
+     * Format this {@link TransactionCategory} as a 60-byte COBOL
+     * TRAN-CAT-RECORD with ZERO-padded FILLER.
+     *
+     * @return exactly 60 bytes per CVTRA04Y.cpy
+     */
+    public byte[] format() {
+        byte[] out = new byte[COBOL_RECORD_LENGTH];
+        String typeCd = id != null ? id.getTranTypeCd() : null;
+        Integer catCd = id != null ? id.getTranCatCd() : null;
+        CobolCodec.put(out, 0, CobolCodec.formatText(typeCd, 2));
+        CobolCodec.put(out, 2, CobolCodec.formatInt(catCd == null ? 0 : catCd, 4));
+        CobolCodec.put(out, 6, CobolCodec.formatText(tranCatTypeDesc, 50));
+        CobolCodec.fillZeros(out, 56, 4);
+        return out;
     }
 }

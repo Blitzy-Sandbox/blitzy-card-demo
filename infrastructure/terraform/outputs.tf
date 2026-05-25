@@ -396,6 +396,11 @@ output "prov_state_machine_arn" {
   value       = aws_sfn_state_machine.file_provisioning.arn
 }
 
+output "report_pipeline_state_machine_arn" {
+  description = "Step Functions ARN for the Transaction-Report state machine (consumed by STATE_MACHINE_REPORT_PIPELINE_ARN env var). Replaces the CORPT00C -> CICS TDQ JOBS -> JES TRANREPT.jcl bridge per AAP §0.1.1 / §0.6.3. KafkaEventConsumer.onReportRequested invokes StepFunctionsOrchestrator.startReportPipeline(...) which starts an execution of this state machine via the AWS SDK v2 SfnClient."
+  value       = aws_sfn_state_machine.report_pipeline.arn
+}
+
 
 # =============================================================================
 # Section 11 — AWS Batch outputs (from batch.tf)

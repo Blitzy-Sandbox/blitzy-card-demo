@@ -16,10 +16,12 @@
  */
 package com.awsm2.carddemo.domain;
 
+import com.awsm2.carddemo.util.CobolCodec;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -589,6 +591,16 @@ public class Customer implements Serializable {
      */
     @Column(name = "cust_fico_credit_score", nullable = false, precision = 3)
     private Integer custFicoCreditScore;
+
+    /**
+     * Transient holder for the 168-byte COBOL FILLER trailer of the
+     * CUSTOMER-RECORD layout (CVCUS01Y.cpy). Preserved verbatim so the
+     * {@link #parse(byte[])} / {@link #format()} round-trip is byte-
+     * identical against the canonical {@code app/data/ASCII/custdata.txt}
+     * fixture (AAP &sect;0.2.2).
+     */
+    @Transient
+    private byte[] cobolFiller;
 
     // -------------------------------------------------------------------------
     // Constructors
@@ -1161,5 +1173,108 @@ public class Customer implements Serializable {
             return null;
         }
         return "GOVT-****";
+    }
+
+    // -------------------------------------------------------------------------
+    // COBOL fixed-width record marshalling
+    //
+    // Code Review CP7 FINAL — CRITICAL: parse(byte[]) and format() are
+    // required by GoldenOutputDiffTest#custdata_roundTrip to prove the AAP
+    // §0.2.2 byte-identical regulatory-output guarantee against the
+    // canonical app/data/ASCII/custdata.txt fixture.
+    //
+    // Layout per CVCUS01Y.cpy (500 bytes total):
+    //   CUST-ID                   PIC 9(09)  offset 0,   length 9
+    //   CUST-FIRST-NAME           PIC X(25)  offset 9,   length 25
+    //   CUST-MIDDLE-NAME          PIC X(25)  offset 34,  length 25
+    //   CUST-LAST-NAME            PIC X(25)  offset 59,  length 25
+    //   CUST-ADDR-LINE-1          PIC X(50)  offset 84,  length 50
+    //   CUST-ADDR-LINE-2          PIC X(50)  offset 134, length 50
+    //   CUST-ADDR-LINE-3          PIC X(50)  offset 184, length 50
+    //   CUST-ADDR-STATE-CD        PIC X(02)  offset 234, length 2
+    //   CUST-ADDR-COUNTRY-CD      PIC X(03)  offset 236, length 3
+    //   CUST-ADDR-ZIP             PIC X(10)  offset 239, length 10
+    //   CUST-PHONE-NUM-1          PIC X(15)  offset 249, length 15
+    //   CUST-PHONE-NUM-2          PIC X(15)  offset 264, length 15
+    //   CUST-SSN                  PIC 9(09)  offset 279, length 9
+    //   CUST-GOVT-ISSUED-ID       PIC X(20)  offset 288, length 20
+    //   CUST-DOB-YYYY-MM-DD       PIC X(10)  offset 308, length 10
+    //   CUST-EFT-ACCOUNT-ID       PIC X(10)  offset 318, length 10
+    //   CUST-PRI-CARD-HOLDER-IND  PIC X(01)  offset 328, length 1
+    //   CUST-FICO-CREDIT-SCORE    PIC 9(03)  offset 329, length 3
+    //   FILLER                    PIC X(168) offset 332, length 168 (SPACES)
+    // -------------------------------------------------------------------------
+
+    /** Byte length of one CUSTOMER-RECORD per CVCUS01Y.cpy. */
+    public static final int COBOL_RECORD_LENGTH = 500;
+
+    /**
+     * Parse a single 500-byte COBOL CUSTOMER-RECORD into a {@link Customer}.
+     *
+     * @param record exactly 500 bytes per CVCUS01Y.cpy
+     * @return the parsed {@link Customer} (transient — not yet persisted)
+     */
+    public static Customer parse(byte[] record) {
+        if (record == null || record.length != COBOL_RECORD_LENGTH) {
+            throw new IllegalArgumentException(
+                    "CUSTOMER-RECORD must be exactly " + COBOL_RECORD_LENGTH
+                            + " bytes per CVCUS01Y.cpy; got "
+                            + (record == null ? "null" : record.length));
+        }
+        Customer c = new Customer();
+        c.custId = CobolCodec.parseLong(record, 0, 9);
+        c.custFirstName = CobolCodec.parseText(record, 9, 25);
+        c.custMiddleName = CobolCodec.parseText(record, 34, 25);
+        c.custLastName = CobolCodec.parseText(record, 59, 25);
+        c.custAddrLine1 = CobolCodec.parseText(record, 84, 50);
+        c.custAddrLine2 = CobolCodec.parseText(record, 134, 50);
+        c.custAddrLine3 = CobolCodec.parseText(record, 184, 50);
+        c.custAddrStateCd = CobolCodec.parseText(record, 234, 2);
+        c.custAddrCountryCd = CobolCodec.parseText(record, 236, 3);
+        c.custAddrZip = CobolCodec.parseText(record, 239, 10);
+        c.custPhoneNum1 = CobolCodec.parseText(record, 249, 15);
+        c.custPhoneNum2 = CobolCodec.parseText(record, 264, 15);
+        c.custSsn = CobolCodec.parseLong(record, 279, 9);
+        c.custGovtIssuedId = CobolCodec.parseText(record, 288, 20);
+        c.custDobYyyyMmDd = CobolCodec.parseLocalDate(record, 308, 10);
+        c.custEftAccountId = CobolCodec.parseText(record, 318, 10);
+        c.custPriCardHolderInd = CobolCodec.parseText(record, 328, 1);
+        c.custFicoCreditScore = CobolCodec.parseInt(record, 329, 3);
+        c.cobolFiller = new byte[168];
+        System.arraycopy(record, 332, c.cobolFiller, 0, 168);
+        return c;
+    }
+
+    /**
+     * Format this {@link Customer} as a 500-byte COBOL CUSTOMER-RECORD.
+     *
+     * @return exactly 500 bytes per CVCUS01Y.cpy
+     */
+    public byte[] format() {
+        byte[] out = new byte[COBOL_RECORD_LENGTH];
+        CobolCodec.put(out, 0, CobolCodec.formatLong(custId == null ? 0L : custId, 9));
+        CobolCodec.put(out, 9, CobolCodec.formatText(custFirstName, 25));
+        CobolCodec.put(out, 34, CobolCodec.formatText(custMiddleName, 25));
+        CobolCodec.put(out, 59, CobolCodec.formatText(custLastName, 25));
+        CobolCodec.put(out, 84, CobolCodec.formatText(custAddrLine1, 50));
+        CobolCodec.put(out, 134, CobolCodec.formatText(custAddrLine2, 50));
+        CobolCodec.put(out, 184, CobolCodec.formatText(custAddrLine3, 50));
+        CobolCodec.put(out, 234, CobolCodec.formatText(custAddrStateCd, 2));
+        CobolCodec.put(out, 236, CobolCodec.formatText(custAddrCountryCd, 3));
+        CobolCodec.put(out, 239, CobolCodec.formatText(custAddrZip, 10));
+        CobolCodec.put(out, 249, CobolCodec.formatText(custPhoneNum1, 15));
+        CobolCodec.put(out, 264, CobolCodec.formatText(custPhoneNum2, 15));
+        CobolCodec.put(out, 279, CobolCodec.formatLong(custSsn == null ? 0L : custSsn, 9));
+        CobolCodec.put(out, 288, CobolCodec.formatText(custGovtIssuedId, 20));
+        CobolCodec.put(out, 308, CobolCodec.formatLocalDate(custDobYyyyMmDd));
+        CobolCodec.put(out, 318, CobolCodec.formatText(custEftAccountId, 10));
+        CobolCodec.put(out, 328, CobolCodec.formatText(custPriCardHolderInd, 1));
+        CobolCodec.put(out, 329, CobolCodec.formatInt(custFicoCreditScore == null ? 0 : custFicoCreditScore, 3));
+        if (cobolFiller != null && cobolFiller.length == 168) {
+            System.arraycopy(cobolFiller, 0, out, 332, 168);
+        } else {
+            CobolCodec.fillSpaces(out, 332, 168);
+        }
+        return out;
     }
 }

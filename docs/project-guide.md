@@ -46,7 +46,12 @@ pie title Target Artifact Inventory (Approximate Counts, AAP §0.3.1)
 
 ### 1.4 Key Accomplishments
 
-- ✅ All **28 COBOL programs** translated to Java `@Service` classes under `src/main/java/com/awsm2/carddemo/service/` with one-to-one program-to-service mapping (AAP §0.7.1)
+- ✅ All **28 COBOL programs** translated to **25 Java `@Service` classes** under `src/main/java/com/awsm2/carddemo/service/` with traceable program-to-service mapping (AAP §0.7.1). The mapping is one-to-one for 22 programs; three pairs are intentionally combined per the AAP transformation mapping table in §0.4.1:
+  - `MenuService` covers `COMEN01C.cbl` + `COADM01C.cbl` (explicit AAP mapping; menu structures share `COMEN02Y.cpy` / `COADM02Y.cpy` literal-storage tables)
+  - `TransactionPostingService` covers `CBTRN01C.cbl` + `CBTRN02C.cbl` (input read + posting orchestration are an atomic Spring Batch step; CBTRN03C lives in `TransactionReportService`)
+  - `StatementGenerationService` covers `CBSTM03A.CBL` + `CBSTM03B.CBL` (text and HTML template variants of the same statement model — Template Method pattern per AAP §0.3.3)
+
+  All three combined-service rationales are captured as inline `// COBOL: <PROGRAM>` traceability comments on the merged service classes per AAP §0.7.3 refactor discipline (zero behavior is lost — only physical files are merged).
 - ✅ All **10 VSAM KSDS clusters + 2 AIX/PATH chains** mapped to JPA `@Entity` classes with Flyway migrations under `src/main/resources/db/migration/V*.sql`
 - ✅ Complete **5-stage Spring Batch + AWS Batch pipeline** orchestrated via AWS Step Functions: **POSTTRAN → INTCALC → COMBTRAN → Parallel { CREASTMT, TRANREPT }**
 - ✅ **8 REST controllers** replacing 17 BMS terminal screens, documented via springdoc-openapi (OpenAPI 3 + Swagger UI)
@@ -56,7 +61,7 @@ pie title Target Artifact Inventory (Approximate Counts, AAP §0.3.1)
 - ✅ **`@Transactional(rollbackFor = Exception.class)`** for multi-dataset writes (replaces CICS `SYNCPOINT` and `SYNCPOINT ROLLBACK`)
 - ✅ **MSK Kafka event-driven pipeline** with `acks=all`, `enable.idempotence=true`, and account-ID partition keys for per-account ordering guarantees
 - ✅ **ElastiCache Redis cache-aside** pattern for high-frequency account balance reads with `allkeys-lru` eviction
-- ✅ **AWS Secrets Manager + Parameter Store + `@RefreshScope`** for dynamic credential rotation without Spring Boot restart
+- ✅ **AWS Secrets Manager + Parameter Store + `@RefreshScope`** for dynamic credential rotation without Spring Boot restart — covers `DataSource` (HikariCP), Kafka producer/consumer factories + `KafkaTemplate`, JWT signing key, and OpenSearch client credentials (AAP §0.6.4)
 - ✅ **AWS KMS customer-managed keys (CMKs)** for encryption at rest of RDS, S3, ElastiCache, and CloudWatch Logs
 - ✅ **AWS WAF + Shield + ACM** on the ALB for TLS 1.2+ termination and L7 protection
 - ✅ **AWS CloudTrail + OpenSearch** for immutable audit trail and indexed log search

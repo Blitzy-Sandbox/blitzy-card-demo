@@ -171,7 +171,7 @@ Required tools and minimum versions (per AAP §0.5.1 and §0.7.2):
 
 | Tool | Minimum version | Purpose |
 | --- | --- | --- |
-| Terraform CLI | 1.5 (pin to 1.6.x or 1.7.x via `required_version` in `main.tf`) | Plan / apply / destroy infrastructure |
+| Terraform CLI | 1.5+ (currently pinned to `~> 1.9.5` via `required_version` in `terraform/main.tf`) | Plan / apply / destroy infrastructure (see [Terraform Version Pinning Policy](#terraform-version-pinning-policy)) |
 | AWS CLI | v2 | Bootstrap the remote state backend; ad-hoc AWS interactions |
 | `jq` | 1.6+ | Parse `terraform output -json` in shell scripts |
 | Docker | latest stable | Build the application image; run local stack |
@@ -208,6 +208,106 @@ docker version
 docker compose version
 localstack --version
 ```
+
+### Terraform Version Pinning Policy
+
+Code Review CP7 FINAL — INFO finding: local engineers' Terraform CLIs drift across
+minor versions over time (one operator reported `1.9.5` while the latest available
+release is `1.15.x`). To guarantee that `terraform plan` / `apply` produces
+deterministic output across every operator, CI pipeline, and audit replay, the
+following pinning policy is enforced.
+
+**Why pin the Terraform CLI and providers?**
+
+* Terraform state files are tied to a specific schema version. Running an older
+  CLI against a state written by a newer CLI will fail with
+  `state snapshot was created by Terraform vX.Y.Z, which is newer than current
+  vA.B.C`, blocking the operator until they upgrade. Running a newer CLI
+  against an older state can silently upgrade the schema, which a downstream
+  operator on the older CLI then cannot read — exactly the kind of asymmetric
+  drift that audit / compliance flows must avoid.
+* AWS provider releases occasionally rename arguments (e.g.,
+  `compute_environments` → `compute_environment_order` on
+  `aws_batch_job_queue`), and unpinned providers will pick up these renames
+  at arbitrary `terraform init` times, breaking reproducible builds.
+* The PCI-DSS audit trail requires byte-identical replay of every
+  infrastructure change. That is only achievable when every operator runs the
+  same CLI + provider versions against the same `.tf` source.
+
+**Current pins (single source of truth: `terraform/main.tf`)**:
+
+| Constraint | Current value | Location |
+| --- | --- | --- |
+| Terraform CLI `required_version` | `>= 1.6.0, < 2.0.0` | `terraform/main.tf` `terraform { required_version = ... }` |
+| AWS provider | `~> 5.0` (latest 5.x) | `terraform/main.tf` `required_providers.aws.version` |
+| Random provider | `~> 3.6` | `terraform/main.tf` `required_providers.random.version` |
+| Kafka provider (Mongey) | `~> 0.7` | `terraform/main.tf` `required_providers.kafka.version` |
+| Provider hashes | locked | `terraform/.terraform.lock.hcl` (commit alongside `.tf` changes) |
+
+The `~>` operator pins the major version: `~> 5.0` allows any `5.x` release
+but blocks `6.0.0`. Patch updates within the allowed range are picked up by
+`terraform init`; lock-file hashes prevent silent supply-chain substitution.
+
+**Provider lock file (`terraform/.terraform.lock.hcl`)**:
+
+* Commit `terraform/.terraform.lock.hcl` alongside the `.tf` files. It records
+  the SHA256 hashes of every provider plug-in for every supported platform.
+* Run `terraform init -upgrade` **only** when a provider upgrade is
+  intentional. The upgrade must be in a separate commit referenced by the
+  related `.tf` changes.
+* In CI, run `terraform init -lockfile=readonly` so any drift between
+  `.terraform.lock.hcl` and the providers downloaded at init time fails the
+  pipeline.
+
+**CI/CD enforcement (`.github/workflows/*.yml`)**:
+
+* Every GitHub Actions workflow that runs Terraform calls
+  `hashicorp/setup-terraform@v3` with an explicit
+  `terraform_version: 1.9.5` (or whatever is current — bumping is a separate
+  PR reviewed by a Cloud Architect).
+* CI executes `terraform fmt -check -recursive`, `terraform validate`, and
+  `terraform plan -detailed-exitcode` in that order. Any non-zero exit code
+  fails the workflow.
+* Provider downloads use the lock file: the workflow runs
+  `terraform init -input=false -lockfile=readonly` to assert that providers
+  match the committed hashes.
+
+**Local developer workflow**:
+
+* Install Terraform via `tfenv` or `asdf` and run `tfenv use 1.9.5` (or the
+  version recorded in `.terraform-version`, if present in the repository).
+* Before opening a PR, run `terraform fmt -recursive` and
+  `terraform validate` from `infrastructure/terraform/` to mirror the CI
+  checks.
+* **Local override**: if an operator must use a newer CLI for a one-off task
+  (e.g., to test a `1.10.x` feature), they must (a) document the override in
+  the PR description, (b) revert to the pinned version before committing, and
+  (c) ensure `terraform/main.tf` `required_version` is bumped in a separate
+  PR if the change must be permanent.
+
+**Upgrade cadence**:
+
+* Review Terraform CLI and provider versions every 90 days, or earlier if a
+  CVE or critical bugfix is announced.
+* **Patch** upgrades (e.g., `1.9.5` → `1.9.6`) — applied automatically by the
+  `~>` operator at the next `terraform init`. No PR required unless lock-file
+  hashes change.
+* **Minor** upgrades (e.g., `1.9.x` → `1.10.0`) — require an architect review
+  PR that updates `required_version`, regenerates `.terraform.lock.hcl`, and
+  produces a successful `terraform plan` against a non-production environment.
+* **Major** upgrades (e.g., `1.x` → `2.0.0` or AWS provider `5.x` → `6.x`) —
+  require a full integration test against a non-production environment, an
+  updated PCI-DSS change-management record, and sign-off by the Cloud
+  Architect + Security teams.
+
+**Deprecation tracking**:
+
+* `terraform validate` emits warnings for deprecated arguments (for example,
+  `compute_environments` → `compute_environment_order` on
+  `aws_batch_job_queue` in AWS provider 5.x). These warnings are tracked as
+  INFO-severity findings in the code review log and must be remediated
+  **before** the next major provider upgrade — otherwise the upgrade will
+  flip them from warnings to hard errors and block the apply.
 
 ## Bootstrap (one-time setup)
 
@@ -1074,11 +1174,26 @@ The CI/CD flow under `../.github/workflows/`:
    `dependency-check-maven` for OWASP scanning, publishes coverage via JaCoCo,
    and uploads the artifact for downstream jobs. Does **not** touch infrastructure.
 
-2. **`docker-build.yml`** — Triggered on merge to the main branch. Builds the
-   multi-stage Docker image from `../Dockerfile`, tags it with the short SHA and
-   the `latest` tag, and pushes to the ECR repository provisioned by `ecr.tf`.
+2. **`docker-build.yml`** — Triggered on merge to the main branch and on
+   semver tag pushes (`v*.*.*`). Builds the multi-stage Docker image from
+   `../Dockerfile` and pushes it to the ECR repository provisioned by `ecr.tf`.
    Authenticates to ECR via the OIDC role provisioned by `iam.tf`. The image is
    scanned on push (`scan_on_push = true` in `ecr.tf`).
+
+   **Immutable image tagging policy (Code Review CP7 supply-chain fix)**:
+   The workflow pushes ONLY immutable tags — the canonical short-SHA tag
+   (always) and an optional semver tag on tag-push triggers. The `:latest`
+   tag is **never** pushed because `ecr.tf` configures
+   `image_tag_mutability = "IMMUTABLE"`, which would reject any re-push.
+   This is also why the SLSA `provenance: mode=max` attestation and the
+   BuildKit `sbom: true` attestation are now enabled (they require a
+   stable, non-overwritten manifest).
+
+   Downstream consumers — `ecs.tf` (via the `app_image_tag` variable),
+   `batch.tf` (six AWS Batch job definitions, each pinned to
+   `var.app_image_tag`), and `deploy.yml` — all reference the same
+   immutable short-SHA tag, so every deployed artifact in production is
+   tied to a single, traceable Git commit.
 
 3. **`deploy.yml`** — Triggered on a tagged release (e.g., `v1.0.0`). Reads
    `terraform output -json` from the appropriate workspace state, renders the
@@ -1088,6 +1203,24 @@ The CI/CD flow under `../.github/workflows/`:
    behind the ALB target group from `alb.tf`. Authenticates to AWS via the OIDC
    role provisioned by `iam.tf`. **No long-lived IAM user credentials are used
    anywhere in this pipeline** per AAP §0.7.2.
+
+   **Automatic rollback on smoke-test failure (Code Review CP7 release-
+   safety fix)**: Before deploying the new task definition, the workflow
+   captures the current task definition ARN. If the post-deploy
+   `/actuator/health` smoke test fails, the workflow automatically calls
+   `aws-actions/amazon-ecs-deploy-task-definition@v2` against the previous
+   ARN and waits for service stability, then fails the workflow so the
+   operator is alerted. The production ALB target group is never left
+   bound to a non-functional revision.
+
+4. **`../infrastructure/buildspec.yml`** — AWS-native CodeBuild equivalent
+   of `docker-build.yml`. Provides the same Maven-build → Docker-build →
+   ECR-push contract using the CodeBuild service-role STS session in
+   place of the GitHub Actions OIDC role. The buildspec emits
+   `imagedefinitions.json` for downstream CodePipeline ECS deploy
+   actions and writes the same immutable short-SHA tag (never `:latest`).
+   This file is provided for organizations standardising on AWS-native
+   CI/CD (CodeBuild + CodePipeline) rather than GitHub Actions.
 
 The Terraform configuration itself is currently applied **outside** of the
 GitHub Actions workflow — it runs on the engineer workstation or a designated

@@ -15,7 +15,7 @@
 #                           short-SHA image tag
 #
 # Triggers:
-#   - push to main         — builds and pushes <short-sha> + latest tags
+#   - push to main         — builds and pushes <short-sha> tag (immutable)
 #   - push of tag v*.*.*   — builds and pushes <short-sha> + <semver> tags
 #                            against the prod ECR repository
 #   - workflow_dispatch    — manual trigger with environment selection
@@ -23,13 +23,24 @@
 #
 # Tags pushed (by trigger):
 #   - <short-sha>          — ALWAYS pushed; canonical immutable reference
-#                            consumed by deploy.yml
-#   - latest               — pushed only on push to refs/heads/main; treated
-#                            as best-effort because ECR repositories created
-#                            by `ecr.tf` have `image_tag_mutability=IMMUTABLE`
-#                            which rejects re-push of an existing tag — the
-#                            short-SHA tag is the canonical reference
-#   - <semver>             — pushed only on push of a tag matching `v*.*.*`
+#                            consumed by deploy.yml and AWS Batch job
+#                            definitions (via var.app_image_tag in
+#                            infrastructure/terraform/batch.tf). This is
+#                            the ONLY canonical reference used downstream.
+#   - <semver>             — pushed only on push of a tag matching `v*.*.*`;
+#                            cut once per release tag, never re-pushed, so
+#                            it is also IMMUTABLE-safe
+#
+# Why no `latest` tag (Code Review CP7 fix):
+#   ECR repositories created by `ecr.tf` have
+#   `image_tag_mutability = IMMUTABLE`. Re-pushing `latest` on every
+#   merge to main would fail with `TagImmutabilityException`, and even
+#   if the policy were relaxed, `latest` would not tie ECS or Batch job
+#   definitions to a specific, traceable, reproducible image. All
+#   downstream consumers (ECS task definitions, Batch job definitions
+#   wrapped by `var.app_image_tag`) must reference the immutable short-
+#   SHA tag instead. See AAP §0.6.6 and the Deployment / Supply Chain
+#   finding in Checkpoint 7 Final review.
 #
 # Security guardrails:
 #   - NO long-lived AWS credentials in GitHub secrets. The workflow uses AWS
@@ -262,13 +273,13 @@ jobs:
 
           # -------------------------------------------------------------------
           # Build the tag list. Each tag is a fully qualified ECR URI.
+          # The `:latest` tag is NOT pushed (Code Review CP7 fix):
+          #   ECR is IMMUTABLE, so a second push of `latest` would fail.
+          #   ECS task definitions and AWS Batch job definitions (driven
+          #   by `var.app_image_tag` in `infrastructure/terraform/batch.tf`)
+          #   are pinned to the immutable short-SHA tag instead.
           # -------------------------------------------------------------------
           TAGS="${ECR_URL}:${SHORT_SHA}"
-
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            TAGS="${TAGS}"$'\n'"${ECR_URL}:latest"
-            echo "Adding latest tag (main branch)"
-          fi
 
           if [ "${{ github.ref_type }}" = "tag" ]; then
             SEMVER="${GITHUB_REF#refs/tags/}"
@@ -343,14 +354,16 @@ jobs:
       #   cache-from  — read from GitHub Actions cache (gha backend)
       #   cache-to    — write to GitHub Actions cache (mode=max — every
       #                 intermediate layer is cached for maximum reuse)
-      #   provenance  — false: ECR with IMMUTABLE tag policy cannot accept
-      #                 the OCI provenance attestation under the same tag,
-      #                 so we skip provenance generation to keep the push
-      #                 contract simple. If supply-chain attestation is
-      #                 required, generate signatures via `cosign sign` in
-      #                 a separate workflow step after this push.
-      #   sbom        — false: same reason as `provenance`. SBOMs may be
-      #                 generated via `syft` in a separate workflow step.
+      #   provenance  — mode=max: emit SLSA provenance attestations.
+      #                 Now that we no longer push `latest` (only the
+      #                 immutable short-SHA / semver tags), the IMMUTABLE
+      #                 ECR policy is compatible with provenance/SBOM
+      #                 attestations published alongside the image
+      #                 manifest (Code Review CP7 supply-chain finding).
+      #   sbom        — true: emit the BuildKit-generated SBOM. Stored
+      #                 as a referenced attestation accessible via
+      #                 `cosign download attestation` and consumable by
+      #                 Amazon Inspector v2 supply-chain analyzers.
       # -----------------------------------------------------------------------
       - name: Build and push Docker image
         id: docker-build
@@ -374,8 +387,8 @@ jobs:
             BUILD_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          provenance: false
-          sbom: false
+          provenance: mode=max
+          sbom: true
 
       # -----------------------------------------------------------------------
       # Step 8: Verify the image was pushed and the CVE scan was initiated.
@@ -435,9 +448,9 @@ jobs:
             if [ -n "${SEMVER:-}" ]; then
               echo "| Semver tag | \`${SEMVER}\` |"
             fi
-            if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-              echo "| Latest tag pushed | yes (best-effort under IMMUTABLE policy) |"
-            fi
+            echo "| Latest tag | not pushed (ECR IMMUTABLE; canonical = short-SHA) |"
+            echo "| Provenance | enabled (SLSA mode=max attestation) |"
+            echo "| SBOM | enabled (BuildKit attestation) |"
             echo "| Triggered by | ${{ github.actor }} |"
             echo "| Trigger | ${{ github.event_name }} |"
             echo "| Ref | ${{ github.ref }} |"

@@ -1756,4 +1756,3 @@ class EndToEndTransactionWorkflowIT {
         return new BigDecimal(literal).setScale(2, RoundingMode.HALF_EVEN);
     }
 }
-

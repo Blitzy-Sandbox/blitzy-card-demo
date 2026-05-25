@@ -2387,4 +2387,3 @@ class TransactionControllerTest {
         }
     }
 }
-
