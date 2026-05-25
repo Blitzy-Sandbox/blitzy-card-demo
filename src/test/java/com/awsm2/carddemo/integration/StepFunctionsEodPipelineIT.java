@@ -450,6 +450,43 @@ class StepFunctionsEodPipelineIT {
                 () -> "false");
         registry.add("spring.cloud.aws.parameterstore.enabled",
                 () -> "false");
+
+        // ---------------------------------------------------------------
+        // QA CP8 MAJOR-02 FIX — explicit DataSource override
+        // ---------------------------------------------------------------
+        // The {@link ServiceConnection &#64;ServiceConnection} annotation
+        // on the {@link #POSTGRES} container is supposed to auto-bind
+        // {@code spring.datasource.*} properties to the container at
+        // context-refresh time. However, the {@code application-test.yml}
+        // baseline configuration sets
+        // {@code spring.datasource.url=jdbc:tc:postgresql:16-alpine:///carddemo_test?TC_DAEMON=true}
+        // (the Testcontainers JDBC URL scheme). When Spring Boot resolves
+        // properties at startup, the explicit URL in {@code
+        // application-test.yml} wins over the auto-binding contributed
+        // by {@code @ServiceConnection} — Flyway then migrates the
+        // {@code @ServiceConnection} container while Hibernate validates
+        // against the OTHER PostgreSQL instance materialized by the TC
+        // JDBC daemon URL, causing every test to fail with
+        // {@code Schema-validation: missing table [accounts]}.
+        //
+        // The mechanical fix below adopts the same {@link
+        // DynamicPropertySource &#64;DynamicPropertySource} pattern that
+        // already works in {@code EndToEndBatchPipelineIT.java}
+        // (lines 247-256): explicit dynamic registrations take highest
+        // precedence and force both Flyway AND Hibernate validation
+        // onto the SAME {@link #POSTGRES} container, restoring schema
+        // consistency.
+        //
+        // Production code paths are NOT affected — production deploys
+        // against real RDS Multi-AZ (AAP §0.6.2), never against
+        // Testcontainers. This change touches only the integration-test
+        // harness wiring.
+        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.username", POSTGRES::getUsername);
+        registry.add("spring.datasource.password", POSTGRES::getPassword);
+        registry.add("spring.datasource.driver-class-name",
+                POSTGRES::getDriverClassName);
+        registry.add("spring.datasource.hikari.auto-commit", () -> "true");
     }
 
     // -------------------------------------------------------------------------
