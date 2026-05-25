@@ -166,6 +166,16 @@ public final class FileTransactionCategoryRepository
     public void save(TranCatRecord record) {
         Objects.requireNonNull(record, "record");
         byte[] buffer = record.encode();
+        // Defensive check: the domain record's compact canonical constructor and
+        // encode() implementation must always produce a 60-byte buffer per AAP
+        // §0.6.5 (byte-for-byte fidelity). Surfacing a mismatch here protects
+        // the on-disk dataset from corruption if a future refactor accidentally
+        // breaks that invariant.
+        if (buffer.length != TranCatRecord.RECORD_LENGTH) {
+            throw new IllegalStateException(
+                    "TranCatRecord.encode() returned " + buffer.length
+                            + " bytes; expected " + TranCatRecord.RECORD_LENGTH);
+        }
         TranCatRecord.TranCatKey k = record.tranCatKey();
         byte[] key = encodeKey(k.tranTypeCd(), k.tranCatCd());
         try {
