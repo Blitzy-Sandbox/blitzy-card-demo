@@ -96,6 +96,22 @@ import static org.mockito.Mockito.when;
  *   <li><b>MSK + audit emission</b> &mdash; per-account
  *       {@code ledger.balanced} event partitioned by acct ID, plus per-
  *       transaction and per-run audit events.</li>
+ *   <li><b>Multi-account batch (TransactionalBoundary)</b> &mdash;
+ *       per-account isolation across multiple accounts, with exactly
+ *       one {@link Transaction} and one {@link Account} save per
+ *       account boundary (COBOL {@code IF TRANCAT-ACCT-ID NOT=
+ *       WS-LAST-ACCT-NUM}).</li>
+ *   <li><b>Banker's-rounding boundary cases</b> &mdash; explicit
+ *       even/odd preceding-digit cases at the exact 0.5 boundary
+ *       confirm {@link java.math.RoundingMode#HALF_EVEN} behaviour
+ *       verbatim with COBOL fixed-point arithmetic.</li>
+ *   <li><b>Negative-balance handling</b> &mdash; sign preserved on
+ *       both the {@code InterestResult.grandTotal()} aggregate and
+ *       the emitted {@link Transaction#getTranAmt()} field.</li>
+ *   <li><b>Overflow atomicity</b> &mdash; on
+ *       {@link OnSizeErrorException}, NO partial DB writes
+ *       ({@code transactionRepository.save}, {@code accountRepository.save})
+ *       and NO Kafka events occur.</li>
  * </ol>
  *
  * <p>External AWS interactions are fully mocked through
@@ -268,6 +284,117 @@ class InterestCalculationServiceTest {
 
             assertThat(result.grandTotal())
                     .isEqualByComparingTo(new BigDecimal("1.00"));
+            assertThat(result.grandTotal().scale()).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("zero balance produces zero interest — no transaction posted")
+        void zeroBalance_returnsZero() {
+            // COBOL: CBACT04C:1300-COMPUTE-INTEREST — when TRAN-CAT-BAL is
+            // zero, (0 * rate) / 1200 = 0 → per-account totalInt becomes
+            // zero → postAccountInterest short-circuits, no save, no event.
+            stubHappyPath(
+                    List.of(buildBalance(BigDecimal.ZERO)),
+                    List.of(new CardCrossReference(CARD_LOW, 999L, ACCOUNT_ID)),
+                    buildDisclosureGroup(GROUP_ID, new BigDecimal("18.99")));
+
+            InterestCalculationService.InterestResult result =
+                    service.calculateInterest(PARM_DATE);
+
+            assertThat(result.grandTotal())
+                    .isEqualByComparingTo(BigDecimal.ZERO);
+            verify(transactionRepository, never()).save(any(Transaction.class));
+            verify(accountRepository, never()).save(any(Account.class));
+        }
+
+        @Test
+        @DisplayName("HALF_EVEN even-boundary: (125 * 6) / 1200 = 0.625 → 0.62")
+        void halfEvenEvenBoundary() {
+            // COBOL: CBACT04C:1300-COMPUTE-INTEREST — banker's rounding
+            // (HALF_EVEN) at exactly 0.5 boundary: 0.625 → 0.62 because
+            // the preceding digit (2) is even (AAP §0.6.1 mandates
+            // RoundingMode.HALF_EVEN to match COBOL fixed-point behaviour).
+            stubHappyPath(
+                    List.of(buildBalance(new BigDecimal("125.00"))),
+                    List.of(new CardCrossReference(CARD_LOW, 999L, ACCOUNT_ID)),
+                    buildDisclosureGroup(GROUP_ID, new BigDecimal("6.00")));
+
+            InterestCalculationService.InterestResult result =
+                    service.calculateInterest(PARM_DATE);
+
+            // (125 × 6) ÷ 1200 = 750 / 1200 = 0.625 → HALF_EVEN to 2dp:
+            // discarded digit is 5; preceding digit 2 is EVEN → keep 2 → 0.62
+            assertThat(result.grandTotal())
+                    .isEqualByComparingTo(new BigDecimal("0.62"));
+            assertThat(result.grandTotal().scale()).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("HALF_EVEN odd-boundary: (175 * 6) / 1200 = 0.875 → 0.88")
+        void halfEvenOddBoundary() {
+            // COBOL: CBACT04C:1300-COMPUTE-INTEREST — banker's rounding
+            // (HALF_EVEN) at exactly 0.5 boundary: 0.875 → 0.88 because
+            // the preceding digit (7) is odd, rounded up to the nearest
+            // even digit (8). This is the canonical HALF_EVEN behaviour
+            // mandated by AAP §0.6.1.
+            stubHappyPath(
+                    List.of(buildBalance(new BigDecimal("175.00"))),
+                    List.of(new CardCrossReference(CARD_LOW, 999L, ACCOUNT_ID)),
+                    buildDisclosureGroup(GROUP_ID, new BigDecimal("6.00")));
+
+            InterestCalculationService.InterestResult result =
+                    service.calculateInterest(PARM_DATE);
+
+            // (175 × 6) ÷ 1200 = 1050 / 1200 = 0.875 → HALF_EVEN to 2dp:
+            // discarded digit is 5; preceding digit 7 is ODD → round up to even → 0.88
+            assertThat(result.grandTotal())
+                    .isEqualByComparingTo(new BigDecimal("0.88"));
+            assertThat(result.grandTotal().scale()).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("negative balance: (-100 * 18.99) / 1200 = -1.58 (HALF_EVEN truncates 25)")
+        void negativeBalance_handlesAsCobol() {
+            // COBOL: CBACT04C:1300-COMPUTE-INTEREST — preserves sign for
+            // negative balances. -100 × 18.99 = -1899; / 1200 = -1.5825
+            // → HALF_EVEN drops "25" (digit 2 < 5, round toward zero) → -1.58.
+            stubHappyPath(
+                    List.of(buildBalance(new BigDecimal("-100.00"))),
+                    List.of(new CardCrossReference(CARD_LOW, 999L, ACCOUNT_ID)),
+                    buildDisclosureGroup(GROUP_ID, new BigDecimal("18.99")));
+
+            InterestCalculationService.InterestResult result =
+                    service.calculateInterest(PARM_DATE);
+
+            assertThat(result.grandTotal())
+                    .isEqualByComparingTo(new BigDecimal("-1.58"));
+            assertThat(result.grandTotal().scale()).isEqualTo(2);
+
+            // Sign is preserved on the emitted interest transaction.
+            ArgumentCaptor<Transaction> txCaptor =
+                    ArgumentCaptor.forClass(Transaction.class);
+            verify(transactionRepository).save(txCaptor.capture());
+            assertThat(txCaptor.getValue().getTranAmt())
+                    .isEqualByComparingTo(new BigDecimal("-1.58"));
+        }
+
+        @Test
+        @DisplayName("non-rounding case: (1000 * 18.99) / 1200 = 15.825 → 15.82 (HALF_EVEN)")
+        void standardValueMatchesHalfEvenRule() {
+            // COBOL: CBACT04C:1300-COMPUTE-INTEREST — the canonical
+            // worked example from AAP §0.6.1. 1000 × 18.99 = 18990;
+            // / 1200 = 15.825 → HALF_EVEN to 2dp: discarded digit is 5;
+            // preceding digit 2 is EVEN → keep 2 → 15.82.
+            stubHappyPath(
+                    List.of(buildBalance(new BigDecimal("1000.00"))),
+                    List.of(new CardCrossReference(CARD_LOW, 999L, ACCOUNT_ID)),
+                    buildDisclosureGroup(GROUP_ID, new BigDecimal("18.99")));
+
+            InterestCalculationService.InterestResult result =
+                    service.calculateInterest(PARM_DATE);
+
+            assertThat(result.grandTotal())
+                    .isEqualByComparingTo(new BigDecimal("15.82"));
             assertThat(result.grandTotal().scale()).isEqualTo(2);
         }
     }
@@ -681,6 +808,7 @@ class InterestCalculationServiceTest {
         @Test
         @DisplayName("monthly interest overflow throws OnSizeErrorException")
         void monthlyInterestOverflow_throwsOnSizeError() {
+            // COBOL: CBACT04C:1300-COMPUTE-INTEREST — ON SIZE ERROR.
             // (10_000_000_000_000 × 100) ÷ 1200 = 833_333_333_333.33,
             // which is > MAX_AMOUNT (99,999,999,999.99) per
             // InterestCalculationService.MAX_AMOUNT (PIC S9(10)V99 ceiling).
@@ -691,6 +819,332 @@ class InterestCalculationServiceTest {
 
             assertThatThrownBy(() -> service.calculateInterest(PARM_DATE))
                     .isInstanceOf(OnSizeErrorException.class);
+        }
+
+        @Test
+        @DisplayName("overflow reasonCode is ARITHMETIC_OVERFLOW (per OnSizeErrorException contract)")
+        void overflow_reasonCodeIsArithmeticOverflow() {
+            // COBOL: CBACT04C:1300-COMPUTE-INTEREST — ON SIZE ERROR
+            // surfaces as the typed OnSizeErrorException with the
+            // canonical reasonCode 'ARITHMETIC_OVERFLOW' (AAP §0.7.1
+            // mandates exception hierarchy with stable reasonCodes).
+            stubHappyPath(
+                    List.of(buildBalance(new BigDecimal("10000000000000.00"))),
+                    List.of(new CardCrossReference(CARD_LOW, 999L, ACCOUNT_ID)),
+                    buildDisclosureGroup(GROUP_ID, new BigDecimal("100.00")));
+
+            assertThatThrownBy(() -> service.calculateInterest(PARM_DATE))
+                    .isInstanceOf(OnSizeErrorException.class)
+                    .hasFieldOrPropertyWithValue("reasonCode",
+                            OnSizeErrorException.DEFAULT_REASON_CODE);
+        }
+
+        @Test
+        @DisplayName("overflow does NOT save Transaction (no partial DB writes)")
+        void overflow_neverSavesTransaction() {
+            // COBOL: CBACT04C — ON SIZE ERROR rolls back the transactional
+            // boundary; the corresponding Java contract is that no
+            // Transaction row is persisted when the arithmetic overflows.
+            // AAP §0.6.1 strict ordering: the formula throws BEFORE the
+            // save call is reached.
+            stubHappyPath(
+                    List.of(buildBalance(new BigDecimal("10000000000000.00"))),
+                    List.of(new CardCrossReference(CARD_LOW, 999L, ACCOUNT_ID)),
+                    buildDisclosureGroup(GROUP_ID, new BigDecimal("100.00")));
+
+            assertThatThrownBy(() -> service.calculateInterest(PARM_DATE))
+                    .isInstanceOf(OnSizeErrorException.class);
+
+            verify(transactionRepository, never()).save(any(Transaction.class));
+        }
+
+        @Test
+        @DisplayName("overflow does NOT save Account balance update (no partial DB writes)")
+        void overflow_neverSavesAccount() {
+            // COBOL: CBACT04C — ON SIZE ERROR aborts before the account
+            // balance is updated, preserving transactional atomicity
+            // (no half-applied interest).
+            stubHappyPath(
+                    List.of(buildBalance(new BigDecimal("10000000000000.00"))),
+                    List.of(new CardCrossReference(CARD_LOW, 999L, ACCOUNT_ID)),
+                    buildDisclosureGroup(GROUP_ID, new BigDecimal("100.00")));
+
+            assertThatThrownBy(() -> service.calculateInterest(PARM_DATE))
+                    .isInstanceOf(OnSizeErrorException.class);
+
+            verify(accountRepository, never()).save(any(Account.class));
+        }
+
+        @Test
+        @DisplayName("overflow does NOT publish a Kafka ledger.balanced event")
+        void overflow_neverPublishesKafkaEvent() {
+            // AAP §0.6.5 — Kafka publish is downstream of the financial
+            // transaction commit; when the underlying arithmetic
+            // overflows, no event is emitted (no false signal to
+            // consumers about a successful posting).
+            stubHappyPath(
+                    List.of(buildBalance(new BigDecimal("10000000000000.00"))),
+                    List.of(new CardCrossReference(CARD_LOW, 999L, ACCOUNT_ID)),
+                    buildDisclosureGroup(GROUP_ID, new BigDecimal("100.00")));
+
+            assertThatThrownBy(() -> service.calculateInterest(PARM_DATE))
+                    .isInstanceOf(OnSizeErrorException.class);
+
+            verify(kafkaEventPublisher, never())
+                    .publishLedgerBalanced(anyLong(), any());
+        }
+    }
+
+    @Nested
+    @DisplayName("Transactional boundary semantics (CBACT04C account-boundary detection)")
+    class TransactionalBoundary {
+
+        private static final Long ACCOUNT_ID_2 = 10_000_000_002L;
+        private static final Long ACCOUNT_ID_3 = 10_000_000_003L;
+
+        @Test
+        @DisplayName("multi-account batch: each account posted in isolation, totals aggregated")
+        void multiAccountBatch_postsEachAccountOnce() {
+            // COBOL: CBACT04C:L188-L222 — outer PERFORM UNTIL loop with
+            // IF TRANCAT-ACCT-ID NOT= WS-LAST-ACCT-NUM boundary detection.
+            // For each distinct account, the SUT must:
+            //   1. resolve disclosure group and compute per-category interest
+            //   2. invoke postAccountInterest exactly once per account
+            //   3. emit exactly one Transaction per account
+            //   4. update exactly one Account per account
+            // Account 1: balance 1000 × 12% / 1200 = 10.00
+            // Account 2: balance 500 × 12% / 1200 = 5.00
+            // Grand total = 15.00 (per acctCount=2 / tcatCount=2 aggregation).
+
+            Account account2 = new Account();
+            account2.setAcctId(ACCOUNT_ID_2);
+            account2.setAcctGroupId(GROUP_ID);
+            account2.setAcctCurrBal(new BigDecimal("200.00"));
+            account2.setAcctCurrCycCredit(new BigDecimal("10.00"));
+            account2.setAcctCurrCycDebit(new BigDecimal("5.00"));
+            account2.setAcctActiveStatus("Y");
+
+            TransactionCategoryBalance bal1 = new TransactionCategoryBalance(
+                    ACCOUNT_ID, TRAN_TYPE_CD, TRAN_CAT_CD,
+                    new BigDecimal("1000.00"));
+            TransactionCategoryBalance bal2 = new TransactionCategoryBalance(
+                    ACCOUNT_ID_2, TRAN_TYPE_CD, TRAN_CAT_CD,
+                    new BigDecimal("500.00"));
+
+            when(balanceRepository.findAll())
+                    .thenReturn(new ArrayList<>(List.of(bal1, bal2)));
+            when(disclosureGroupRepository.findById(
+                    new DisclosureGroupId(GROUP_ID, TRAN_TYPE_CD, TRAN_CAT_CD)))
+                    .thenReturn(Optional.of(buildDisclosureGroup(
+                            GROUP_ID, new BigDecimal("12.00"))));
+            when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(account));
+            when(accountRepository.findById(ACCOUNT_ID_2))
+                    .thenReturn(Optional.of(account2));
+            when(accountRepository.save(any(Account.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(xrefRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(List.of(new CardCrossReference(
+                            CARD_LOW, 999L, ACCOUNT_ID)));
+            when(xrefRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID_2))
+                    .thenReturn(List.of(new CardCrossReference(
+                            CARD_HIGH, 998L, ACCOUNT_ID_2)));
+            when(transactionRepository.save(any(Transaction.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+
+            InterestCalculationService.InterestResult result =
+                    service.calculateInterest(PARM_DATE);
+
+            assertThat(result.acctCount()).isEqualTo(2);
+            assertThat(result.tcatCount()).isEqualTo(2);
+            assertThat(result.grandTotal())
+                    .isEqualByComparingTo(new BigDecimal("15.00"));
+
+            // Exactly two Transaction.save invocations (one per account).
+            verify(transactionRepository,
+                    org.mockito.Mockito.times(2)).save(any(Transaction.class));
+            // Exactly two Account.save invocations (one per account).
+            verify(accountRepository,
+                    org.mockito.Mockito.times(2)).save(any(Account.class));
+        }
+
+        @Test
+        @DisplayName("multi-account batch: each account's Transaction carries its own acctId")
+        void multiAccountBatch_eachTransactionHasItsOwnAccountId() {
+            // COBOL: CBACT04C:L485-L488 — each emitted Transaction's
+            // TRAN-DESC carries the corresponding ACCT-ID (zero-padded
+            // to 11 digits). The Java port preserves this contract:
+            // the description is computed against the boundary account,
+            // not any global state.
+            Account account2 = new Account();
+            account2.setAcctId(ACCOUNT_ID_2);
+            account2.setAcctGroupId(GROUP_ID);
+            account2.setAcctCurrBal(new BigDecimal("200.00"));
+            account2.setAcctCurrCycCredit(new BigDecimal("10.00"));
+            account2.setAcctCurrCycDebit(new BigDecimal("5.00"));
+            account2.setAcctActiveStatus("Y");
+
+            TransactionCategoryBalance bal1 = new TransactionCategoryBalance(
+                    ACCOUNT_ID, TRAN_TYPE_CD, TRAN_CAT_CD,
+                    new BigDecimal("1000.00"));
+            TransactionCategoryBalance bal2 = new TransactionCategoryBalance(
+                    ACCOUNT_ID_2, TRAN_TYPE_CD, TRAN_CAT_CD,
+                    new BigDecimal("500.00"));
+
+            when(balanceRepository.findAll())
+                    .thenReturn(new ArrayList<>(List.of(bal1, bal2)));
+            when(disclosureGroupRepository.findById(
+                    new DisclosureGroupId(GROUP_ID, TRAN_TYPE_CD, TRAN_CAT_CD)))
+                    .thenReturn(Optional.of(buildDisclosureGroup(
+                            GROUP_ID, new BigDecimal("12.00"))));
+            when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(account));
+            when(accountRepository.findById(ACCOUNT_ID_2))
+                    .thenReturn(Optional.of(account2));
+            when(accountRepository.save(any(Account.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(xrefRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(List.of(new CardCrossReference(
+                            CARD_LOW, 999L, ACCOUNT_ID)));
+            when(xrefRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID_2))
+                    .thenReturn(List.of(new CardCrossReference(
+                            CARD_HIGH, 998L, ACCOUNT_ID_2)));
+            when(transactionRepository.save(any(Transaction.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+
+            service.calculateInterest(PARM_DATE);
+
+            ArgumentCaptor<Transaction> txCaptor =
+                    ArgumentCaptor.forClass(Transaction.class);
+            verify(transactionRepository,
+                    org.mockito.Mockito.times(2)).save(txCaptor.capture());
+
+            // Both accounts produced a Transaction with its own
+            // zero-padded acctId embedded in the TRAN-DESC.
+            String desc1 = txCaptor.getAllValues().get(0).getTranDesc();
+            String desc2 = txCaptor.getAllValues().get(1).getTranDesc();
+            assertThat(desc1).contains(String.format("%011d", ACCOUNT_ID));
+            assertThat(desc2).contains(String.format("%011d", ACCOUNT_ID_2));
+        }
+
+        @Test
+        @DisplayName("multi-account batch: publishLedgerBalanced invoked once per account with that account's id")
+        void multiAccountBatch_publishesPerAccountKafka() {
+            // AAP §0.6.5 — Kafka events are partitioned by accountId
+            // and must be emitted exactly once per posted account so
+            // that consumers (audit, ledger reconciliation) preserve
+            // per-account ordering.
+            Account account2 = new Account();
+            account2.setAcctId(ACCOUNT_ID_2);
+            account2.setAcctGroupId(GROUP_ID);
+            account2.setAcctCurrBal(new BigDecimal("200.00"));
+            account2.setAcctCurrCycCredit(new BigDecimal("10.00"));
+            account2.setAcctCurrCycDebit(new BigDecimal("5.00"));
+            account2.setAcctActiveStatus("Y");
+
+            TransactionCategoryBalance bal1 = new TransactionCategoryBalance(
+                    ACCOUNT_ID, TRAN_TYPE_CD, TRAN_CAT_CD,
+                    new BigDecimal("1000.00"));
+            TransactionCategoryBalance bal2 = new TransactionCategoryBalance(
+                    ACCOUNT_ID_2, TRAN_TYPE_CD, TRAN_CAT_CD,
+                    new BigDecimal("500.00"));
+
+            when(balanceRepository.findAll())
+                    .thenReturn(new ArrayList<>(List.of(bal1, bal2)));
+            when(disclosureGroupRepository.findById(
+                    new DisclosureGroupId(GROUP_ID, TRAN_TYPE_CD, TRAN_CAT_CD)))
+                    .thenReturn(Optional.of(buildDisclosureGroup(
+                            GROUP_ID, new BigDecimal("12.00"))));
+            when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(account));
+            when(accountRepository.findById(ACCOUNT_ID_2))
+                    .thenReturn(Optional.of(account2));
+            when(accountRepository.save(any(Account.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(xrefRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(List.of(new CardCrossReference(
+                            CARD_LOW, 999L, ACCOUNT_ID)));
+            when(xrefRepository.findByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID_2))
+                    .thenReturn(List.of(new CardCrossReference(
+                            CARD_HIGH, 998L, ACCOUNT_ID_2)));
+            when(transactionRepository.save(any(Transaction.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+
+            service.calculateInterest(PARM_DATE);
+
+            ArgumentCaptor<Long> keyCaptor =
+                    ArgumentCaptor.forClass(Long.class);
+            verify(kafkaEventPublisher,
+                    org.mockito.Mockito.times(2)).publishLedgerBalanced(
+                    keyCaptor.capture(), any());
+
+            assertThat(keyCaptor.getAllValues())
+                    .containsExactlyInAnyOrder(ACCOUNT_ID, ACCOUNT_ID_2);
+        }
+
+        @Test
+        @DisplayName("three-account batch: aggregate counts and grand total preserved")
+        void threeAccountBatch_aggregateCorrect() {
+            // COBOL: CBACT04C — verify the InterestResult record
+            // (tcatCount, acctCount, grandTotal) aggregates correctly
+            // across three accounts. Per-account computations:
+            //   acct1: 1000 × 12 / 1200 = 10.00
+            //   acct2:  500 × 12 / 1200 =  5.00
+            //   acct3:  100 × 12 / 1200 =  1.00
+            //   grand total = 16.00, acctCount = 3, tcatCount = 3
+            Account account2 = new Account();
+            account2.setAcctId(ACCOUNT_ID_2);
+            account2.setAcctGroupId(GROUP_ID);
+            account2.setAcctCurrBal(new BigDecimal("200.00"));
+            account2.setAcctCurrCycCredit(BigDecimal.ZERO);
+            account2.setAcctCurrCycDebit(BigDecimal.ZERO);
+            account2.setAcctActiveStatus("Y");
+
+            Account account3 = new Account();
+            account3.setAcctId(ACCOUNT_ID_3);
+            account3.setAcctGroupId(GROUP_ID);
+            account3.setAcctCurrBal(new BigDecimal("50.00"));
+            account3.setAcctCurrCycCredit(BigDecimal.ZERO);
+            account3.setAcctCurrCycDebit(BigDecimal.ZERO);
+            account3.setAcctActiveStatus("Y");
+
+            TransactionCategoryBalance bal1 = new TransactionCategoryBalance(
+                    ACCOUNT_ID, TRAN_TYPE_CD, TRAN_CAT_CD,
+                    new BigDecimal("1000.00"));
+            TransactionCategoryBalance bal2 = new TransactionCategoryBalance(
+                    ACCOUNT_ID_2, TRAN_TYPE_CD, TRAN_CAT_CD,
+                    new BigDecimal("500.00"));
+            TransactionCategoryBalance bal3 = new TransactionCategoryBalance(
+                    ACCOUNT_ID_3, TRAN_TYPE_CD, TRAN_CAT_CD,
+                    new BigDecimal("100.00"));
+
+            when(balanceRepository.findAll())
+                    .thenReturn(new ArrayList<>(List.of(bal1, bal2, bal3)));
+            when(disclosureGroupRepository.findById(
+                    new DisclosureGroupId(GROUP_ID, TRAN_TYPE_CD, TRAN_CAT_CD)))
+                    .thenReturn(Optional.of(buildDisclosureGroup(
+                            GROUP_ID, new BigDecimal("12.00"))));
+            when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(account));
+            when(accountRepository.findById(ACCOUNT_ID_2))
+                    .thenReturn(Optional.of(account2));
+            when(accountRepository.findById(ACCOUNT_ID_3))
+                    .thenReturn(Optional.of(account3));
+            when(accountRepository.save(any(Account.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(xrefRepository.findByXrefAcctIdOrderByXrefCardNumAsc(any()))
+                    .thenReturn(List.of(new CardCrossReference(
+                            CARD_LOW, 999L, ACCOUNT_ID)));
+            when(transactionRepository.save(any(Transaction.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+
+            InterestCalculationService.InterestResult result =
+                    service.calculateInterest(PARM_DATE);
+
+            assertThat(result.acctCount()).isEqualTo(3);
+            assertThat(result.tcatCount()).isEqualTo(3);
+            assertThat(result.grandTotal())
+                    .isEqualByComparingTo(new BigDecimal("16.00"));
         }
     }
 
