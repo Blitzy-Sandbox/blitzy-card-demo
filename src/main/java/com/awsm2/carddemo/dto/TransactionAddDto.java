@@ -517,12 +517,48 @@ public record TransactionAddDto(
          * endpoint into parity.
          *
          * <p>The field is request-side optional (defaults to {@code null})
-         * and response-side populated. The Bean Validation annotations
-         * on the request fields above are skipped because Jackson's
-         * deserializer reads the (likely-absent) {@code transactionId}
-         * property as {@code null} when present in the inbound payload;
-         * the service ignores any client-supplied value and uses its
-         * own generator.
+         * and response-side populated. The service ignores any
+         * client-supplied {@code transactionId} on inbound requests and
+         * uses its own MAX(TRAN-ID)+1 generator
+         * ({@link com.awsm2.carddemo.service.TransactionAddService});
+         * see the service implementation for the authoritative
+         * server-side override behavior. The OpenAPI {@code @Schema}
+         * still documents the field as response-only via
+         * {@code accessMode = READ_ONLY} so API consumers reading the
+         * generated OpenAPI/Swagger contract continue to see it as a
+         * read-only response field.
+         *
+         * <p><b>QA Final-CP7 Finding F-CRITICAL-01 (CRITICAL) fix:</b>
+         * The previous declaration used
+         * {@code @JsonProperty(value = "transactionId",
+         * access = JsonProperty.Access.READ_ONLY)}, which suppressed the
+         * property name for the deserialization-path property-based
+         * Creator. Because the 15-arg compact canonical constructor is
+         * annotated {@link JsonCreator}, Jackson 2.x must build a
+         * property-based Creator that names every constructor parameter
+         * &mdash; including this one. With {@code READ_ONLY} suppressing
+         * the {@code transactionId} parameter name, the factory walk in
+         * {@code BasicDeserializerFactory._validateNamedPropertyParameter}
+         * raised {@code InvalidDefinitionException}: <i>"Argument #14 of
+         * constructor has no property name (and is not Injectable): can
+         * not use as property-based Creator"</i>. The
+         * {@code transaction.posted} Kafka topic consumer
+         * ({@code KafkaEventConsumer#onTransactionPosted}) therefore
+         * routed 100% of inbound records to {@code transaction.posted.DLT}
+         * via {@code DeadLetterPublishingRecoverer}, silently breaking
+         * the PCI-DSS audit trail for transaction events (AAP
+         * &sect;0.6.6).
+         *
+         * <p>Removing {@code access = JsonProperty.Access.READ_ONLY}
+         * restores Jackson's ability to bind {@code transactionId} from
+         * inbound JSON, preserving the Kafka consumer's
+         * deserialization path while leaving the
+         * server-ignores-client-supplied-value contract intact at the
+         * service layer (the only code that reads {@code transactionId}
+         * on the request path is the response builder, never the
+         * persistence layer). The {@code @Schema(accessMode =
+         * Schema.AccessMode.READ_ONLY)} annotation continues to surface
+         * the response-only intent in the OpenAPI contract.
          *
          * <p>COBOL: maps to {@code TRAN-ID PIC X(16)} on
          * {@code CVTRA05Y.cpy} line 7. The COBOL paragraph
@@ -543,7 +579,14 @@ public record TransactionAddDto(
                 example = "0000000000000023",
                 maxLength = 16,
                 accessMode = Schema.AccessMode.READ_ONLY)
-        @JsonProperty(value = "transactionId", access = JsonProperty.Access.READ_ONLY)
+        // QA Final-CP7 F-CRITICAL-01: access = JsonProperty.Access.READ_ONLY
+        // was removed so Jackson's record-property-based Creator can resolve
+        // a name for this constructor parameter. Without a usable property
+        // name on every parameter, Jackson 2.x refuses to build the
+        // property-based Creator and the consumer pipeline routes every
+        // transaction.posted record to the DLT. The OpenAPI @Schema above
+        // still surfaces the response-only contract to API consumers.
+        @JsonProperty("transactionId")
         String transactionId
 ) {
 
@@ -566,7 +609,19 @@ public record TransactionAddDto(
      * minimal-change resolution prescribed by Jackson's record
      * support semantics introduced in Jackson 2.12.</p>
      *
-     * <p>QA Final-CP6 Finding M2 follow-up.</p>
+     * <p>For this creator to function, every component declared in
+     * the record signature above must expose a property name to
+     * Jackson's deserialization path. The {@code transactionId}
+     * component is annotated with {@code @JsonProperty("transactionId")}
+     * (no {@code Access.READ_ONLY}) for exactly that reason &mdash;
+     * see QA Final-CP7 Finding F-CRITICAL-01 (CRITICAL) for the
+     * forensic trace of the previous regression that suppressed the
+     * property name on that one parameter and routed 100% of
+     * {@code transaction.posted} records to the DLT.</p>
+     *
+     * <p>QA Final-CP6 Finding M2 introduced this annotation; QA
+     * Final-CP7 Finding F-CRITICAL-01 hardened the property-name
+     * exposure on every parameter.</p>
      */
     @JsonCreator
     public TransactionAddDto {

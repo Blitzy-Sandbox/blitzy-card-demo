@@ -722,6 +722,112 @@ resource "kafka_topic" "report_requested" {
     "cleanup.policy"      = "delete"
   }
 }
+
+# =============================================================================
+# Dead-Letter Topics (DLT) — quarantine for poison messages
+# =============================================================================
+# QA Final-CP7 Finding F-INFO-04 (INFO) fix: every main CardDemo topic has a
+# corresponding "<source-topic>.DLT" topic that Spring Kafka's
+# DeadLetterPublishingRecoverer publishes to when the configured retry
+# policy is exhausted (FixedBackOff(1000ms, 3 attempts) + non-retryable
+# DeserializationException — see src/main/java/com/awsm2/carddemo/config/
+# KafkaConfig.java#kafkaListenerContainerFactory and the DLT routing
+# function:
+#
+#     (record, exception) ->
+#         new TopicPartition(record.topic() + DLT_SUFFIX, record.partition())
+#
+# where DLT_SUFFIX = ".DLT". Without these pre-declared resources, Spring
+# Kafka lazily creates the DLT on first failure via the broker's
+# auto.create.topics.enable=false override (configured in Section 2 above) —
+# but because we explicitly disable auto-creation, that lazy attempt would
+# fail and the recoverer would log a UnknownTopicOrPartitionException
+# instead of preserving the poison message. Pre-declaring the DLTs here
+# avoids that first-failure latency penalty AND ensures DLT records remain
+# under the same partition/replication/encryption posture as their source
+# topics for forensic analysis.
+#
+# DLT-specific tuning rationale:
+#   * Same partition count and replication factor as the source topic so
+#     the DeadLetterPublishingRecoverer can preserve partition affinity
+#     (it re-publishes to the same partition number, NOT the same partition
+#     identity, so partition counts must match).
+#   * min.insync.replicas=2 mirrors the source — durable acks=all writes.
+#   * retention.ms=2592000000 (30 days) — longer than the 7-day source
+#     retention so operators have time to forensically inspect poison
+#     messages before they are purged. PCI-DSS Requirement 10.7 mandates
+#     at least 90 days of immediate audit history; the DLT itself is not
+#     the canonical audit trail (CloudTrail + OpenSearch are), but 30 days
+#     of poison-message quarantine balances operational forensic needs
+#     against MSK storage cost.
+#   * compression.type=snappy and cleanup.policy=delete match the source
+#     topics — operators inspecting DLT records via kafka-console-consumer
+#     should see identical compression/cleanup behavior.
+#
+# AAP references:
+#   * AAP §0.6.5  MSK Topic Ordering Guarantees (per-partition affinity
+#                 preserved by the .DLT suffix convention).
+#   * AAP §0.6.6  Cross-Cutting Audit/Observability (DLTs feed forensic
+#                 tooling; CloudWatch alarms on DLT depth alert on poison
+#                 storms).
+# =============================================================================
+
+resource "kafka_topic" "transaction_posted_dlt" {
+  name               = "transaction.posted.DLT"
+  partitions         = var.msk_topic_partitions
+  replication_factor = var.msk_topic_replication_factor
+
+  # 30-day retention preserves poison messages long enough for forensic
+  # inspection (typical incident-response cycle is 7-14 days; 30 days
+  # provides margin). Same partition count as the source topic so
+  # DeadLetterPublishingRecoverer's same-partition-number routing remains
+  # consistent.
+  config = {
+    "compression.type"    = "snappy"
+    "min.insync.replicas" = "2"
+    "retention.ms"        = "2592000000"
+    "cleanup.policy"      = "delete"
+  }
+}
+
+resource "kafka_topic" "account_updated_dlt" {
+  name               = "account.updated.DLT"
+  partitions         = var.msk_topic_partitions
+  replication_factor = var.msk_topic_replication_factor
+
+  config = {
+    "compression.type"    = "snappy"
+    "min.insync.replicas" = "2"
+    "retention.ms"        = "2592000000"
+    "cleanup.policy"      = "delete"
+  }
+}
+
+resource "kafka_topic" "ledger_balanced_dlt" {
+  name               = "ledger.balanced.DLT"
+  partitions         = var.msk_topic_partitions
+  replication_factor = var.msk_topic_replication_factor
+
+  config = {
+    "compression.type"    = "snappy"
+    "min.insync.replicas" = "2"
+    "retention.ms"        = "2592000000"
+    "cleanup.policy"      = "delete"
+  }
+}
+
+resource "kafka_topic" "report_requested_dlt" {
+  name               = "report.requested.DLT"
+  partitions         = var.msk_topic_partitions
+  replication_factor = var.msk_topic_replication_factor
+
+  config = {
+    "compression.type"    = "snappy"
+    "min.insync.replicas" = "2"
+    "retention.ms"        = "2592000000"
+    "cleanup.policy"      = "delete"
+  }
+}
 #
 # Bootstrap servers (consumed by outputs.tf and by Spring Boot
 # KafkaConfig via the MSK_BOOTSTRAP_SERVERS env var):
@@ -735,5 +841,10 @@ resource "kafka_topic" "report_requested" {
 #   4. AWS/Kafka CloudWatch namespace shows MaxOffsetLag metric (the
 #      ECS auto-scaling target per AAP S0.1.1)
 #   5. kafka-topics.sh --bootstrap-server <brokers> --list
-#        --command-config msk-iam.properties shows the four topics
+#        --command-config msk-iam.properties shows the four main topics
+#        AND the four DLT topics (added per QA F-INFO-04):
+#          transaction.posted     transaction.posted.DLT
+#          account.updated        account.updated.DLT
+#          ledger.balanced        ledger.balanced.DLT
+#          report.requested       report.requested.DLT
 # =============================================================================

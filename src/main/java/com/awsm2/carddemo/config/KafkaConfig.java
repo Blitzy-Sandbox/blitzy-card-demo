@@ -359,6 +359,25 @@ public class KafkaConfig {
         props.putIfAbsent(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 5);
         props.put(ProducerConfig.RETRIES_CONFIG, Integer.MAX_VALUE);
 
+        // -----------------------------------------------------------------
+        // QA Final-CP7 Finding F-MINOR-01 (MINOR) fix: propagate SLF4J MDC
+        // entries (correlationId, traceId, tenant) onto outbound Kafka
+        // record headers via the MdcHeaderProducerInterceptor below.
+        // Headers are populated only when the per-thread MDC carries the
+        // corresponding key — absent MDC entries do not emit empty
+        // placeholder headers. See
+        // {@link com.awsm2.carddemo.adapter.MdcHeaderProducerInterceptor}
+        // for the full propagation contract.
+        //
+        // `putIfAbsent` lets profile overlays chain additional
+        // interceptors (e.g., a security-headers interceptor) without
+        // overriding the MDC propagator; the Kafka client invokes
+        // interceptors in the comma-separated declaration order.
+        // -----------------------------------------------------------------
+        props.putIfAbsent(
+                ProducerConfig.INTERCEPTOR_CLASSES_CONFIG,
+                "com.awsm2.carddemo.adapter.MdcHeaderProducerInterceptor");
+
         return new DefaultKafkaProducerFactory<>(props);
     }
 
