@@ -18,6 +18,7 @@ package com.awsm2.carddemo.controller;
 
 import com.awsm2.carddemo.dto.AccountUpdateDto;
 import com.awsm2.carddemo.dto.AccountViewDto;
+import com.awsm2.carddemo.dto.ApiResponse;
 import com.awsm2.carddemo.exception.ConcurrentModificationException;
 import com.awsm2.carddemo.exception.GlobalExceptionHandler;
 import com.awsm2.carddemo.exception.RecordNotFoundException;
@@ -423,6 +424,32 @@ class AccountControllerTest {
 
             verifyNoInteractions(accountViewService);
         }
+
+        /**
+         * Agent-prompt checklist item: every success response must
+         * carry a {@code timestamp} on the {@link ApiResponse}
+         * envelope. The {@link ApiResponse#success(Object)} factory
+         * always stamps {@link java.time.Instant#now()} at invocation
+         * time so the envelope can be correlated with CloudWatch /
+         * OpenSearch / CloudTrail entries at the same moment in
+         * time per AAP &sect;0.6.6 observability requirements.
+         */
+        @Test
+        @DisplayName("GET — successful response carries non-empty timestamp")
+        @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+        void getAccount_successEnvelope_carriesTimestamp() throws Exception {
+            AccountViewDto view = buildAccountView(ACCOUNT_ID);
+            when(accountViewService.getAccountView(ACCOUNT_ID)).thenReturn(view);
+
+            mockMvc.perform(get("/api/accounts/{id}", ACCOUNT_ID)
+                            .accept(MediaType.APPLICATION_JSON))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.timestamp").exists())
+                    // Instant.now().toString() serialization produces
+                    // an ISO-8601 string ending in 'Z' (UTC zone) when
+                    // Jackson's JavaTimeModule is on the classpath.
+                    .andExpect(jsonPath("$.timestamp").isString());
+        }
     }
 
     // ==================================================================
@@ -793,6 +820,233 @@ class AccountControllerTest {
                     .andExpect(status().is4xxClientError());
 
             verifyNoInteractions(accountUpdateService);
+        }
+
+        /**
+         * Agent-prompt checklist item:
+         * {@code updateAccount_returns400ForMissingVersion}.
+         *
+         * <p>The optimistic-lock {@code version} field is annotated
+         * {@code @NotNull} on {@link AccountUpdateDto} (per AAP
+         * &sect;0.6.2 optimistic locking requirement). Submitting a
+         * request body with {@code version: null} (in particular,
+         * with every other field present and valid) must surface a
+         * field-level validation error for {@code version} and
+         * return HTTP 400 without ever consulting the service. This
+         * isolates the {@code version} constraint from the other 21
+         * {@code @NotNull}/{@code @NotBlank} fields that
+         * {@code updateAccount_emptyBody_returns400} already
+         * exercises in aggregate.</p>
+         */
+        @Test
+        @DisplayName("PUT with version=null → HTTP 400 with version field error")
+        @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+        void updateAccount_missingVersion_returns400() throws Exception {
+            // Build the otherwise-valid request, then surgically null
+            // out the version field on the JSON wire so the rest of
+            // the body still parses cleanly. Records are immutable so
+            // we string-replace at the JSON layer rather than build
+            // a separate "valid except version" fixture.
+            AccountUpdateDto request = buildValidUpdateRequest(ACCOUNT_ID, INITIAL_VERSION);
+            String body = objectMapper.writeValueAsString(request)
+                    .replaceFirst("\"version\":0", "\"version\":null");
+
+            mockMvc.perform(put("/api/accounts/{id}", ACCOUNT_ID)
+                            .with(org.springframework.security.test.web.servlet.request
+                                    .SecurityMockMvcRequestPostProcessors.csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .accept(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.fieldErrors").isArray())
+                    .andExpect(jsonPath(
+                            "$.fieldErrors[?(@.field=='version')]").exists());
+
+            verifyNoInteractions(accountUpdateService);
+        }
+
+        /**
+         * Agent-prompt checklist item:
+         * {@code updateAccount_returns400ForInvalidActiveStatus}.
+         *
+         * <p>{@code activeStatus} carries the constraint
+         * {@code @Pattern(regexp = "^[YN]$")} on
+         * {@link AccountUpdateDto} (mirroring the COBOL 88-level
+         * {@code FLG-ACCT-STATUS-ISVALID} from
+         * {@code COACTUPC.cbl} line 193 which restricts
+         * {@code ACCT-ACTIVE-STATUS PIC X(01)} to {@code 'Y'} or
+         * {@code 'N'}). Submitting {@code "X"} violates the pattern
+         * and must surface as a field-level error returning HTTP
+         * 400 without consulting the service.</p>
+         */
+        @Test
+        @DisplayName("PUT with activeStatus='X' → HTTP 400 (violates @Pattern '^[YN]$')")
+        @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+        void updateAccount_invalidActiveStatus_returns400() throws Exception {
+            AccountUpdateDto request = buildValidUpdateRequest(ACCOUNT_ID, INITIAL_VERSION);
+            // Replace activeStatus="Y" with activeStatus="X" — violates
+            // the @Pattern("^[YN]$") constraint on the DTO record.
+            String body = objectMapper.writeValueAsString(request)
+                    .replaceFirst("\"activeStatus\":\"Y\"", "\"activeStatus\":\"X\"");
+
+            mockMvc.perform(put("/api/accounts/{id}", ACCOUNT_ID)
+                            .with(org.springframework.security.test.web.servlet.request
+                                    .SecurityMockMvcRequestPostProcessors.csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .accept(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.fieldErrors").isArray())
+                    .andExpect(jsonPath(
+                            "$.fieldErrors[?(@.field=='activeStatus')]").exists());
+
+            verifyNoInteractions(accountUpdateService);
+        }
+
+        /**
+         * Agent-prompt checklist item:
+         * {@code updateAccount_returns400ForInvalidStateCode}.
+         *
+         * <p>{@code stateCode} carries the constraint
+         * {@code @Pattern(regexp = "^[A-Z]{2}$")} on
+         * {@link AccountUpdateDto}. The valid form is a 2-letter
+         * uppercase US state / territory code (matching the COBOL
+         * {@code CSLKPCDY.cpy} {@code WS-US-STATE-AND-TERRITORIES}
+         * lookup table). Submitting a 3-character or lowercase value
+         * violates the pattern and must surface as a field-level
+         * error returning HTTP 400.</p>
+         */
+        @Test
+        @DisplayName("PUT with stateCode='ny' (lowercase) → HTTP 400 (violates @Pattern '^[A-Z]{2}$')")
+        @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+        void updateAccount_invalidStateCode_returns400() throws Exception {
+            AccountUpdateDto request = buildValidUpdateRequest(ACCOUNT_ID, INITIAL_VERSION);
+            // Replace stateCode="NY" with stateCode="ny" — violates
+            // the @Pattern("^[A-Z]{2}$") constraint (lowercase rejected).
+            String body = objectMapper.writeValueAsString(request)
+                    .replaceFirst("\"stateCode\":\"NY\"", "\"stateCode\":\"ny\"");
+
+            mockMvc.perform(put("/api/accounts/{id}", ACCOUNT_ID)
+                            .with(org.springframework.security.test.web.servlet.request
+                                    .SecurityMockMvcRequestPostProcessors.csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .accept(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.fieldErrors").isArray())
+                    .andExpect(jsonPath(
+                            "$.fieldErrors[?(@.field=='stateCode')]").exists());
+
+            verifyNoInteractions(accountUpdateService);
+        }
+
+        /**
+         * Agent-prompt checklist item:
+         * {@code updateAccount_returns400ForInvalidPhone}.
+         *
+         * <p>{@code phoneNumber1} carries the constraint
+         * {@code @Pattern(regexp = "^\\d{10}$")} on
+         * {@link AccountUpdateDto}. Submitting a non-numeric value
+         * like {@code "abc1234567"} violates the pattern and must
+         * surface as a field-level error returning HTTP 400.</p>
+         */
+        @Test
+        @DisplayName("PUT with phoneNumber1 non-numeric → HTTP 400 (violates @Pattern '^\\d{10}$')")
+        @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+        void updateAccount_invalidPhoneNumber_returns400() throws Exception {
+            AccountUpdateDto request = buildValidUpdateRequest(ACCOUNT_ID, INITIAL_VERSION);
+            // Replace phoneNumber1="2125551234" with non-numeric — violates
+            // the @Pattern("^\\d{10}$") constraint on the DTO record.
+            String body = objectMapper.writeValueAsString(request)
+                    .replaceFirst("\"phoneNumber1\":\"2125551234\"",
+                            "\"phoneNumber1\":\"abc1234567\"");
+
+            mockMvc.perform(put("/api/accounts/{id}", ACCOUNT_ID)
+                            .with(org.springframework.security.test.web.servlet.request
+                                    .SecurityMockMvcRequestPostProcessors.csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .accept(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.fieldErrors").isArray())
+                    .andExpect(jsonPath(
+                            "$.fieldErrors[?(@.field=='phoneNumber1')]").exists());
+
+            verifyNoInteractions(accountUpdateService);
+        }
+
+        /**
+         * Agent-prompt checklist item:
+         * {@code updateAccount_returns400ForInvalidZip}.
+         *
+         * <p>{@code zipCode} carries the constraint
+         * {@code @Pattern(regexp = "^\\d{5}(-\\d{4})?$")} on
+         * {@link AccountUpdateDto}. Submitting only 3 digits violates
+         * the pattern and must surface as a field-level error
+         * returning HTTP 400.</p>
+         */
+        @Test
+        @DisplayName("PUT with zipCode='123' (too short) → HTTP 400 (violates @Pattern)")
+        @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+        void updateAccount_invalidZipCode_returns400() throws Exception {
+            AccountUpdateDto request = buildValidUpdateRequest(ACCOUNT_ID, INITIAL_VERSION);
+            // Replace zipCode="10001" with "123" — violates the
+            // @Pattern("^\\d{5}(-\\d{4})?$") constraint (too short).
+            String body = objectMapper.writeValueAsString(request)
+                    .replaceFirst("\"zipCode\":\"10001\"", "\"zipCode\":\"123\"");
+
+            mockMvc.perform(put("/api/accounts/{id}", ACCOUNT_ID)
+                            .with(org.springframework.security.test.web.servlet.request
+                                    .SecurityMockMvcRequestPostProcessors.csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .accept(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.fieldErrors").isArray())
+                    .andExpect(jsonPath(
+                            "$.fieldErrors[?(@.field=='zipCode')]").exists());
+
+            verifyNoInteractions(accountUpdateService);
+        }
+
+        /**
+         * Agent-prompt checklist item:
+         * {@code updateAccount_returns500WhenServiceThrowsRuntime}.
+         *
+         * <p>When the {@link AccountUpdateService} raises an
+         * unexpected {@link RuntimeException} (e.g., transient
+         * database connectivity failure that isn't translated by a
+         * more specific Spring data-access exception type), the
+         * {@link GlobalExceptionHandler}'s last-resort
+         * {@code @ExceptionHandler(Exception.class)} translates it to
+         * HTTP 500 Internal Server Error with the
+         * {@code INTERNAL_ERROR} reason code so the wire-level
+         * contract is uniform regardless of the underlying cause.
+         * This is the controller-boundary realization of the AAP
+         * &sect;0.7.1 mandate that uncaught exceptions surface as
+         * 500 with the standardized {@link ApiResponse} envelope.</p>
+         */
+        @Test
+        @DisplayName("PUT — service throws RuntimeException → HTTP 500 INTERNAL_ERROR")
+        @WithMockUser(username = "ADMIN001", roles = "ADMIN")
+        void updateAccount_serviceRuntimeException_returns500() throws Exception {
+            AccountUpdateDto request = buildValidUpdateRequest(ACCOUNT_ID, INITIAL_VERSION);
+            when(accountUpdateService.updateAccount(eq(ACCOUNT_ID), any(AccountUpdateDto.class)))
+                    .thenThrow(new RuntimeException("DB unreachable"));
+
+            mockMvc.perform(put("/api/accounts/{id}", ACCOUNT_ID)
+                            .with(org.springframework.security.test.web.servlet.request
+                                    .SecurityMockMvcRequestPostProcessors.csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .accept(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(request)))
+                    .andExpect(status().isInternalServerError())
+                    // The fallback @ExceptionHandler(Exception.class) in
+                    // GlobalExceptionHandler emits "INTERNAL_ERROR" as the
+                    // reason code (see GlobalExceptionHandler line ~1400).
+                    .andExpect(jsonPath("$.code").value("INTERNAL_ERROR"));
+
+            verify(accountUpdateService).updateAccount(eq(ACCOUNT_ID), any(AccountUpdateDto.class));
         }
     }
 
