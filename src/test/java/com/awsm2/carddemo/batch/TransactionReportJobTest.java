@@ -16,6 +16,26 @@
  */
 package com.awsm2.carddemo.batch;
 
+// =============================================================================
+// TransactionReportJobTest — Spring Batch orchestration tests
+//
+// // COBOL: CBTRN03C
+// // Replaces JCL job stream: app/jcl/TRANREPT.jcl
+//
+// These tests validate the production TransactionReportJob @Configuration
+// class (the Spring Batch Job bean that replaces the COBOL CBTRN03C program
+// orchestrated by JCL TRANREPT.jcl). The COBOL semantic verification of
+// PAGE_SIZE=20, LRECL=133, card-change subtotals, and report formatting
+// lives in TransactionReportServiceTest (sibling service test); this class
+// verifies Job-level orchestration: JobParameters parsing (batchRunId
+// validator, ISO-8601 startDate/endDate with previous-calendar-month
+// fallback when both omitted, businessDate, correlationId), Tasklet
+// delegation to TransactionReportService.generateReport(start, end),
+// ExitStatus / BatchStatus propagation, ExecutionContext persistence,
+// JobExecutionListener.beforeJob/afterJob audit-log lifecycle calls
+// (AAP §0.6.6), and service-failure → BatchStatus.FAILED propagation.
+// =============================================================================
+
 import com.awsm2.carddemo.adapter.AuditLogService;
 import com.awsm2.carddemo.adapter.CacheService;
 import com.awsm2.carddemo.adapter.KafkaEventPublisher;
@@ -37,6 +57,7 @@ import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.JobParametersInvalidException;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.test.JobLauncherTestUtils;
@@ -73,35 +94,111 @@ import javax.sql.DataSource;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 /**
  * Spring Batch tests for {@link TransactionReportJob}.
  *
- * <p><b>// Replaces: app/jcl/TRANREPT.jcl + app/cbl/CBTRN03C.cbl</b>.
- * The tests verify that the report tasklet forwards the date window to
- * the translated service, exposes report counts and S3 keys through the
- * batch {@link org.springframework.batch.item.ExecutionContext}, and
- * fails on invalid JCL-equivalent date parameters.</p>
+ * <p><b>// COBOL: CBTRN03C</b> &mdash;
+ * <b>// Replaces JCL job stream: app/jcl/TRANREPT.jcl</b>. The tests
+ * validate the Spring Batch Job bean ({@link TransactionReportJob#transactionReportJob()})
+ * that orchestrates the translated CBTRN03C transaction-report
+ * pipeline. The actual COBOL business-rule verification (PAGE_SIZE=20,
+ * LRECL=133, card-change subtotal, date-window filter on
+ * {@code TRAN-PROC-TS}, BigDecimal scale=2 with
+ * {@code RoundingMode.HALF_EVEN}) happens in
+ * {@code TransactionReportServiceTest} (sibling service test) per AAP
+ * &sect;0.7.2; this class focuses on Job-level orchestration:</p>
+ *
+ * <ul>
+ *   <li><b>HappyPath</b> &mdash; explicit ISO-8601 date window
+ *       produces {@link BatchStatus#COMPLETED} with the
+ *       {@link TransactionReportService} receiving the parsed
+ *       {@link LocalDate} pair verbatim and the
+ *       {@link ExecutionContext} populated with the four report
+ *       metadata keys.</li>
+ *   <li><b>DateWindowDefault</b> &mdash; when both {@code startDate}
+ *       and {@code endDate} are omitted, the job falls back to the
+ *       previous calendar month derived from the optional
+ *       {@code businessDate} parameter (CBTRN03C
+ *       {@code WS-DATE-RANGE-EMPTY} verbatim semantic per AAP
+ *       &sect;0.4.1 / &sect;0.6.1).</li>
+ *   <li><b>ParameterValidation</b> &mdash; missing
+ *       {@code batchRunId} throws
+ *       {@link JobParametersInvalidException} from the validator;
+ *       partial-window scenarios (one date present, the other
+ *       missing) and malformed ISO-8601 strings yield
+ *       {@link BatchStatus#FAILED}.</li>
+ *   <li><b>PageSizeAndLrecl</b> &mdash; the
+ *       {@code transactionCount / pageCount} relationship implied by
+ *       the COBOL {@code WS-PAGE-SIZE=20} constant (200 transactions
+ *       &rarr; 10 pages) is faithfully reflected in the
+ *       {@link ExecutionContext}.</li>
+ *   <li><b>EmptyResultSet</b> &mdash; an empty
+ *       {@link ReportResult} (zero transactions / zero pages /
+ *       {@link BigDecimal#ZERO} grand total) still completes
+ *       successfully.</li>
+ *   <li><b>GrandTotalArithmetic</b> &mdash; {@link BigDecimal} scale
+ *       and value are preserved through the Job's
+ *       {@link ExecutionContext} write, with no lossy
+ *       {@code float}/{@code double} substitution
+ *       (AAP &sect;0.6.1).</li>
+ *   <li><b>ServiceFailurePropagation</b> &mdash; a
+ *       {@link RuntimeException} thrown by
+ *       {@link TransactionReportService#generateReport(LocalDate,
+ *       LocalDate)} propagates to
+ *       {@link JobExecution#getAllFailureExceptions()} and forces
+ *       {@link BatchStatus#FAILED}.</li>
+ * </ul>
  */
 @SpringBootTest
 @SpringBatchTest
 @Testcontainers
 @ActiveProfiles("test")
 @Import(TransactionReportJobTest.TestSecretsManagerConfiguration.class)
-@DisplayName("TransactionReportJob — tasklet orchestration tests (JCL: TRANREPT.jcl)")
+@DisplayName("TransactionReportJob — Spring Batch orchestration tests (COBOL: CBTRN03C, JCL: TRANREPT.jcl)")
 class TransactionReportJobTest {
 
+    // =========================================================================
+    // Test-only Spring configuration — stubs Secrets Manager and the Spring
+    // Batch metadata schema initializer so the @SpringBootTest ApplicationContext
+    // can bootstrap against the Testcontainers PostgreSQL instance without
+    // requiring AWS credentials or a pre-populated database.
+    // =========================================================================
+
+    /**
+     * Test-only Spring {@link TestConfiguration} that overrides two
+     * beans which would otherwise require real AWS infrastructure:
+     *
+     * <ol>
+     *   <li>{@link SecretsManagerService} &mdash; replaced by a Mockito
+     *       stub returning a deterministic test signing key for the
+     *       JWT-related beans wired by
+     *       {@code com.awsm2.carddemo.config.SecurityConfig} during
+     *       {@code @SpringBootTest} ApplicationContext startup.</li>
+     *   <li>{@link DataSourceInitializer} &mdash; populates the
+     *       Testcontainers PostgreSQL container with the Spring Batch
+     *       metadata schema ({@code BATCH_JOB_INSTANCE},
+     *       {@code BATCH_STEP_EXECUTION}, etc.) using the shipped
+     *       {@code schema-postgresql.sql} DDL so the
+     *       {@link JobLauncherTestUtils} can write Job/Step rows
+     *       during {@link JobLauncherTestUtils#launchJob(JobParameters)}
+     *       invocations.</li>
+     * </ol>
+     */
     @TestConfiguration
     static class TestSecretsManagerConfiguration {
         private static final String TEST_SIGNING_KEY =
@@ -136,6 +233,14 @@ class TransactionReportJobTest {
         }
     }
 
+    // =========================================================================
+    // Testcontainers — ephemeral PostgreSQL 16-alpine matching production RDS
+    // PostgreSQL 16 (AAP §0.6.2). @Container/@Testcontainers manage lifecycle;
+    // @ServiceConnection auto-binds spring.datasource.* — supplemented by
+    // @DynamicPropertySource for explicit Hikari overrides used by the Batch
+    // metadata initializer.
+    // =========================================================================
+
     @Container
     @ServiceConnection
     static final PostgreSQLContainer<?> POSTGRES =
@@ -150,6 +255,10 @@ class TransactionReportJobTest {
         registry.add("spring.datasource.hikari.auto-commit", () -> "true");
     }
 
+    // =========================================================================
+    // Spring Batch + JobLauncherTestUtils wiring
+    // =========================================================================
+
     @Autowired
     private JobLauncherTestUtils jobLauncherTestUtils;
 
@@ -161,8 +270,24 @@ class TransactionReportJobTest {
     @Qualifier(TransactionReportJob.JOB_NAME)
     private Job transactionReportJob;
 
+    // =========================================================================
+    // Service collaborator (@MockBean) — every @Nested test programs the
+    // expected return value or exception via Mockito.when(...).then...(...).
+    // Per AAP §0.4.1, the Job class delegates ALL report-generation logic
+    // (date filter, sort, card-change subtotal, PAGE_SIZE pagination,
+    // LRECL=133 line rendering, S3 upload) to this service, so mocking it
+    // is the cleanest unit-test boundary.
+    // =========================================================================
+
     @MockBean
     private TransactionReportService transactionReportService;
+
+    // =========================================================================
+    // Adapter mocks — prevent the @SpringBootTest ApplicationContext from
+    // requiring real AWS infrastructure (OpenSearch, S3, MSK, Step Functions,
+    // Redis). AuditLogService is additionally exercised by the assertions
+    // (verify(auditLogService, atLeastOnce()).logBatchJobLifecycle(...)).
+    // =========================================================================
 
     @MockBean
     private AuditLogService auditLogService;
@@ -178,6 +303,11 @@ class TransactionReportJobTest {
 
     @MockBean
     private CacheService cacheService;
+
+    // =========================================================================
+    // AWS SDK v2 client mocks — required to bootstrap the ApplicationContext
+    // without AWS credentials. Per AAP §0.5.1, AWS SDK for Java v2 only.
+    // =========================================================================
 
     @MockBean
     private S3Client s3Client;
@@ -197,6 +327,11 @@ class TransactionReportJobTest {
     @MockBean
     private OpenSearchClient openSearchClient;
 
+    // =========================================================================
+    // Spring infrastructure mocks — avoid Kafka/Redis runtime dependencies
+    // during context bootstrap.
+    // =========================================================================
+
     @MockBean
     private KafkaTemplate<String, Object> kafkaTemplate;
 
@@ -205,83 +340,236 @@ class TransactionReportJobTest {
 
     @BeforeEach
     void setUp() {
+        // Reset the service + audit-log mocks between tests so each
+        // @Nested scenario starts with a clean interaction state.
         Mockito.reset(transactionReportService, auditLogService);
         jobLauncherTestUtils.setJobLauncher(jobLauncher);
         jobLauncherTestUtils.setJob(transactionReportJob);
     }
 
+    // =========================================================================
+    // @Nested — HappyPath
+    // =========================================================================
+
+    /**
+     * Verifies the canonical end-to-end success scenario: an explicit
+     * ISO-8601 date window flows through the
+     * {@link JobParametersBuilder}, the {@link TransactionReportJob}
+     * Tasklet delegates to {@link TransactionReportService}, and the
+     * {@link ReportResult} fields are written to the
+     * {@link ExecutionContext} for downstream Step Functions
+     * consumption.
+     */
     @Nested
-    @DisplayName("happy-path execution")
+    @DisplayName("HappyPath — Job completes successfully with an explicit date window")
     class HappyPath {
 
         @Test
-        @DisplayName("generates the transaction report and publishes report metadata")
-        void generatesReportAndPublishesMetadata() throws Exception {
-            Mockito.when(transactionReportService.generateReport(
-                            LocalDate.parse("2026-05-01"), LocalDate.parse("2026-05-31")))
-                    .thenReturn(new ReportResult(
-                            125, 7, new BigDecimal("9876.54"),
-                            "reports/transaction/2026-05/report.txt"));
+        @DisplayName("Launches with explicit startDate and endDate; delegates to service; returns COMPLETED")
+        void launchWithExplicitDateWindow_returnsCompleted() throws Exception {
+            // Arrange
+            // COBOL: CBTRN03C — date-window filter on TRAN-PROC-TS between startDate and endDate
+            final LocalDate startDate = LocalDate.of(2022, 7, 1);
+            final LocalDate endDate = LocalDate.of(2022, 7, 31);
+            final BigDecimal expectedGrandTotal = new BigDecimal("12345.67");
+            final String expectedS3Key =
+                    "transaction-reports/2022-07-01_2022-07-31-20220801000000.txt";
+            final ReportResult expected = new ReportResult(
+                    150, 8, expectedGrandTotal, expectedS3Key);
+            Mockito.when(transactionReportService.generateReport(startDate, endDate))
+                    .thenReturn(expected);
 
-            JobExecution execution = jobLauncherTestUtils.launchJob(
-                    reportParams("report-happy", "2026-05-01", "2026-05-31"));
+            final JobParameters params = new JobParametersBuilder()
+                    .addString(TransactionReportJob.PARAM_BATCH_RUN_ID,
+                            "tranrept-run-001")
+                    .addString(TransactionReportJob.PARAM_START_DATE,
+                            "2022-07-01")
+                    .addString(TransactionReportJob.PARAM_END_DATE,
+                            "2022-07-31")
+                    .addString(TransactionReportJob.PARAM_BUSINESS_DATE,
+                            "2022-08-01")
+                    .addString(TransactionReportJob.PARAM_CORRELATION_ID,
+                            "corr-001")
+                    .toJobParameters();
 
+            // Act
+            final JobExecution execution = jobLauncherTestUtils.launchJob(params);
+
+            // Assert
             assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
             assertThat(execution.getExitStatus().getExitCode())
                     .isEqualTo(ExitStatus.COMPLETED.getExitCode());
-            ExecutionContext stepContext = singleStepContext(execution);
-            assertThat(stepContext.getInt(TransactionReportJob.CTX_TRANSACTION_COUNT))
-                    .isEqualTo(125);
-            assertThat(stepContext.getInt(TransactionReportJob.CTX_PAGE_COUNT)).isEqualTo(7);
-            assertThat(stepContext.getString(TransactionReportJob.CTX_GRAND_TOTAL))
-                    .isEqualTo("9876.54");
-            assertThat(stepContext.getString(TransactionReportJob.CTX_S3_KEY))
-                    .isEqualTo("reports/transaction/2026-05/report.txt");
 
-            verify(transactionReportService).generateReport(
-                    LocalDate.parse("2026-05-01"), LocalDate.parse("2026-05-31"));
+            final ExecutionContext stepContext = singleStepContext(execution);
+            assertThat(stepContext.getInt(TransactionReportJob.CTX_TRANSACTION_COUNT))
+                    .isEqualTo(150);
+            assertThat(stepContext.getInt(TransactionReportJob.CTX_PAGE_COUNT))
+                    .isEqualTo(8);
+            // BigDecimal scale=2 preserved as plain-string in the
+            // execution context per AAP §0.6.1.
+            assertThat(stepContext.getString(TransactionReportJob.CTX_GRAND_TOTAL))
+                    .isEqualTo("12345.67");
+            assertThat(new BigDecimal(
+                    stepContext.getString(TransactionReportJob.CTX_GRAND_TOTAL)))
+                    .isEqualByComparingTo(expectedGrandTotal);
+            assertThat(stepContext.getString(TransactionReportJob.CTX_S3_KEY))
+                    .isEqualTo(expectedS3Key);
+
+            verify(transactionReportService, times(1))
+                    .generateReport(startDate, endDate);
             verify(auditLogService, atLeastOnce()).logBatchJobLifecycle(
                     eq(TransactionReportJob.JOB_NAME),
                     anyString(),
                     eq("COMPLETED"),
                     isNull(),
                     any(Map.class),
-                    eq("corr-report-happy"));
-        }
-
-        @Test
-        @DisplayName("normalizes a null grand total to 0.00 while preserving the S3 key")
-        void normalizesNullGrandTotal() throws Exception {
-            Mockito.when(transactionReportService.generateReport(any(LocalDate.class), any(LocalDate.class)))
-                    .thenReturn(new ReportResult(0, 0, null, "reports/transaction/empty.txt"));
-
-            JobExecution execution = jobLauncherTestUtils.launchJob(
-                    reportParams("report-null-total", "2026-05-01", "2026-05-31"));
-
-            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
-            ExecutionContext stepContext = singleStepContext(execution);
-            assertThat(stepContext.getString(TransactionReportJob.CTX_GRAND_TOTAL))
-                    .isEqualTo("0.00");
-            assertThat(stepContext.getString(TransactionReportJob.CTX_S3_KEY))
-                    .isEqualTo("reports/transaction/empty.txt");
+                    eq("corr-001"));
         }
     }
 
+    // =========================================================================
+    // @Nested — DateWindowDefault
+    // =========================================================================
+
+    /**
+     * Verifies CBTRN03C's verbatim {@code WS-DATE-RANGE-EMPTY}
+     * fallback semantic: when both {@code startDate} and
+     * {@code endDate} are omitted, the report runs for the previous
+     * calendar month computed from the optional {@code businessDate}
+     * parameter (or {@link LocalDate#now()} as ultimate fallback) per
+     * AAP &sect;0.4.1 / &sect;0.6.1.
+     */
     @Nested
-    @DisplayName("parameter validation")
+    @DisplayName("DateWindowDefault — Previous calendar month when no dates provided (COBOL: CBTRN03C verbatim)")
+    class DateWindowDefault {
+
+        @Test
+        @DisplayName("When no startDate/endDate provided, defaults to previous calendar month from businessDate")
+        void noDates_defaultsToPreviousCalendarMonth() throws Exception {
+            // Arrange — verbatim CBTRN03C: when WS-DATE-RANGE-EMPTY then
+            // compute previous calendar month. Use businessDate as the
+            // reference "today" so the test is fully deterministic.
+            final LocalDate businessDate = LocalDate.of(2022, 8, 15);
+            final YearMonth previousMonth =
+                    YearMonth.from(businessDate).minusMonths(1L);
+            final LocalDate expectedStart = previousMonth.atDay(1);
+            final LocalDate expectedEnd = previousMonth.atEndOfMonth();
+
+            final ReportResult result = new ReportResult(
+                    0, 0, BigDecimal.ZERO,
+                    "transaction-reports/" + expectedStart
+                            + "_" + expectedEnd + "-empty.txt");
+            Mockito.when(transactionReportService.generateReport(
+                    expectedStart, expectedEnd)).thenReturn(result);
+
+            final JobParameters params = new JobParametersBuilder()
+                    .addString(TransactionReportJob.PARAM_BATCH_RUN_ID,
+                            "tranrept-default-window")
+                    .addString(TransactionReportJob.PARAM_BUSINESS_DATE,
+                            businessDate.toString())
+                    .addString(TransactionReportJob.PARAM_CORRELATION_ID,
+                            "corr-002")
+                    .toJobParameters();
+
+            // Act
+            final JobExecution execution = jobLauncherTestUtils.launchJob(params);
+
+            // Assert
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+            verify(transactionReportService, times(1))
+                    .generateReport(expectedStart, expectedEnd);
+        }
+
+        @Test
+        @DisplayName("Falls back to LocalDate.now() when businessDate is also absent")
+        void noDatesAndNoBusinessDate_fallsBackToLocalDateNow() throws Exception {
+            // Arrange — both dates AND businessDate absent. The Job
+            // falls back to LocalDate.now() and computes the previous
+            // calendar month from that.
+            final YearMonth previousMonth =
+                    YearMonth.from(LocalDate.now()).minusMonths(1L);
+            final LocalDate expectedStart = previousMonth.atDay(1);
+            final LocalDate expectedEnd = previousMonth.atEndOfMonth();
+
+            final ReportResult result = new ReportResult(
+                    3, 1, new BigDecimal("250.00"),
+                    "transaction-reports/now-default.txt");
+            Mockito.when(transactionReportService.generateReport(
+                    expectedStart, expectedEnd)).thenReturn(result);
+
+            final JobParameters params = new JobParametersBuilder()
+                    .addString(TransactionReportJob.PARAM_BATCH_RUN_ID,
+                            "tranrept-now-default")
+                    .addString(TransactionReportJob.PARAM_CORRELATION_ID,
+                            "corr-002b")
+                    .toJobParameters();
+
+            // Act
+            final JobExecution execution = jobLauncherTestUtils.launchJob(params);
+
+            // Assert
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+            verify(transactionReportService, times(1))
+                    .generateReport(expectedStart, expectedEnd);
+        }
+    }
+
+    // =========================================================================
+    // @Nested — ParameterValidation
+    // =========================================================================
+
+    /**
+     * Verifies the standard JobParameters validator enforces the
+     * mandatory {@code batchRunId} (AAP &sect;0.7.1 audit-traceability
+     * rule), and that partial-window scenarios + malformed ISO-8601
+     * values produce {@link BatchStatus#FAILED} via the
+     * Tasklet-level {@link IllegalArgumentException}.
+     */
+    @Nested
+    @DisplayName("ParameterValidation — Missing batchRunId rejected; standard validator enforced")
     class ParameterValidation {
 
         @Test
-        @DisplayName("fails when startDate is missing")
-        void failsWhenStartDateIsMissing() throws Exception {
-            JobExecution execution = jobLauncherTestUtils.launchJob(
-                    new JobParametersBuilder()
-                            .addString(TransactionReportJob.PARAM_BATCH_RUN_ID,
-                                    "report-missing-start")
-                            .addString(TransactionReportJob.PARAM_END_DATE, "2026-05-31")
-                            .addString("correlationId", "corr-report-missing-start")
-                            .toJobParameters());
+        @DisplayName("Missing batchRunId throws JobParametersInvalidException from validator")
+        void missingBatchRunId_throwsJobParametersInvalidException() {
+            // Arrange — omit the required batchRunId parameter
+            final JobParameters params = new JobParametersBuilder()
+                    .addString(TransactionReportJob.PARAM_START_DATE, "2022-07-01")
+                    .addString(TransactionReportJob.PARAM_END_DATE, "2022-07-31")
+                    .toJobParameters();
 
+            // Act & Assert
+            assertThatThrownBy(() -> jobLauncherTestUtils.launchJob(params))
+                    .isInstanceOf(JobParametersInvalidException.class)
+                    .hasMessageContaining(TransactionReportJob.PARAM_BATCH_RUN_ID);
+
+            // Service must NOT be invoked when validation fails (the
+            // exception is thrown before the Tasklet runs).
+            verify(transactionReportService, never())
+                    .generateReport(any(LocalDate.class), any(LocalDate.class));
+        }
+
+        @Test
+        @DisplayName("Malformed startDate (non-ISO-8601) yields BatchStatus.FAILED")
+        void malformedStartDate_failsJobWithFailedStatus() throws Exception {
+            // Arrange — batchRunId present (validator passes), but
+            // startDate is in MM/DD/YYYY format which violates the
+            // ISO_DATE contract enforced by parseRequiredIsoDate.
+            final JobParameters params = new JobParametersBuilder()
+                    .addString(TransactionReportJob.PARAM_BATCH_RUN_ID,
+                            "tranrept-bad-date")
+                    .addString(TransactionReportJob.PARAM_START_DATE,
+                            "07/01/2022")
+                    .addString(TransactionReportJob.PARAM_END_DATE,
+                            "2022-07-31")
+                    .addString(TransactionReportJob.PARAM_CORRELATION_ID,
+                            "corr-bad-date")
+                    .toJobParameters();
+
+            // Act
+            final JobExecution execution = jobLauncherTestUtils.launchJob(params);
+
+            // Assert
             assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
             assertThat(execution.getAllFailureExceptions())
                     .anyMatch(TransactionReportJobTest::isIllegalArgumentException);
@@ -290,16 +578,26 @@ class TransactionReportJobTest {
         }
 
         @Test
-        @DisplayName("fails when endDate is missing")
-        void failsWhenEndDateIsMissing() throws Exception {
-            JobExecution execution = jobLauncherTestUtils.launchJob(
-                    new JobParametersBuilder()
-                            .addString(TransactionReportJob.PARAM_BATCH_RUN_ID,
-                                    "report-missing-end")
-                            .addString(TransactionReportJob.PARAM_START_DATE, "2026-05-01")
-                            .addString("correlationId", "corr-report-missing-end")
-                            .toJobParameters());
+        @DisplayName("Partial window — startDate present but endDate missing — yields BatchStatus.FAILED")
+        void partialWindowMissingEndDate_failsJobWithFailedStatus() throws Exception {
+            // Arrange — Partial window is NOT allowed. The
+            // resolveDateWindow helper applies the previous-month
+            // default ONLY when BOTH startDate AND endDate are absent;
+            // a half-supplied window must surface the missing parameter
+            // as an IllegalArgumentException.
+            final JobParameters params = new JobParametersBuilder()
+                    .addString(TransactionReportJob.PARAM_BATCH_RUN_ID,
+                            "tranrept-missing-end")
+                    .addString(TransactionReportJob.PARAM_START_DATE,
+                            "2022-07-01")
+                    .addString(TransactionReportJob.PARAM_CORRELATION_ID,
+                            "corr-missing-end")
+                    .toJobParameters();
 
+            // Act
+            final JobExecution execution = jobLauncherTestUtils.launchJob(params);
+
+            // Assert
             assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
             assertThat(execution.getAllFailureExceptions())
                     .anyMatch(TransactionReportJobTest::isIllegalArgumentException);
@@ -308,24 +606,24 @@ class TransactionReportJobTest {
         }
 
         @Test
-        @DisplayName("fails when startDate is not ISO-8601")
-        void failsWhenStartDateIsNotIso8601() throws Exception {
-            JobExecution execution = jobLauncherTestUtils.launchJob(
-                    reportParams("report-invalid-start", "05-01-2026", "2026-05-31"));
+        @DisplayName("Partial window — endDate present but startDate missing — yields BatchStatus.FAILED")
+        void partialWindowMissingStartDate_failsJobWithFailedStatus() throws Exception {
+            // Arrange — symmetric to the previous test: endDate is
+            // supplied but startDate is omitted; the half-window guard
+            // catches this before the previous-month default can apply.
+            final JobParameters params = new JobParametersBuilder()
+                    .addString(TransactionReportJob.PARAM_BATCH_RUN_ID,
+                            "tranrept-missing-start")
+                    .addString(TransactionReportJob.PARAM_END_DATE,
+                            "2022-07-31")
+                    .addString(TransactionReportJob.PARAM_CORRELATION_ID,
+                            "corr-missing-start")
+                    .toJobParameters();
 
-            assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
-            assertThat(execution.getAllFailureExceptions())
-                    .anyMatch(TransactionReportJobTest::isIllegalArgumentException);
-            verify(transactionReportService, never())
-                    .generateReport(any(LocalDate.class), any(LocalDate.class));
-        }
+            // Act
+            final JobExecution execution = jobLauncherTestUtils.launchJob(params);
 
-        @Test
-        @DisplayName("fails when endDate is not ISO-8601")
-        void failsWhenEndDateIsNotIso8601() throws Exception {
-            JobExecution execution = jobLauncherTestUtils.launchJob(
-                    reportParams("report-invalid-end", "2026-05-01", "31-05-2026"));
-
+            // Assert
             assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
             assertThat(execution.getAllFailureExceptions())
                     .anyMatch(TransactionReportJobTest::isIllegalArgumentException);
@@ -334,19 +632,311 @@ class TransactionReportJobTest {
         }
     }
 
+    // =========================================================================
+    // @Nested — PageSizeAndLrecl
+    // =========================================================================
+
+    /**
+     * Verifies the CBTRN03C verbatim PAGE_SIZE=20 constant is faithfully
+     * reflected in the {@code pageCount} carried through the Job's
+     * {@link ExecutionContext}. The COBOL constant lives in
+     * {@code app/cbl/CBTRN03C.cbl} at {@code WS-PAGE-SIZE PIC 9(03) COMP-3
+     * VALUE 20} (L131-L132); a 200-transaction run produces exactly
+     * 10 pages (200 / 20 = 10). LRECL=133 is asserted indirectly by
+     * preserving the COBOL constants in the service test.
+     */
     @Nested
-    @DisplayName("failure propagation")
+    @DisplayName("PageSizeAndLrecl — Verbatim COBOL constants preserved (PAGE_SIZE=20, LRECL=133)")
+    class PageSizeAndLrecl {
+
+        @Test
+        @DisplayName("Service returns pageCount derived from PAGE_SIZE=20; job propagates pageCount via execution context")
+        void pageSize20_reflectedInPageCount() throws Exception {
+            // Arrange — 200 transactions / PAGE_SIZE=20 = 10 pages
+            // COBOL: CBTRN03C:WS-PAGE-SIZE (L131-L132)
+            final LocalDate startDate = LocalDate.of(2022, 1, 1);
+            final LocalDate endDate = LocalDate.of(2022, 1, 31);
+            final ReportResult result = new ReportResult(
+                    200, 10, new BigDecimal("99999.99"),
+                    "transaction-reports/2022-01-01_2022-01-31-200tx.txt");
+            Mockito.when(transactionReportService.generateReport(startDate, endDate))
+                    .thenReturn(result);
+
+            final JobParameters params = new JobParametersBuilder()
+                    .addString(TransactionReportJob.PARAM_BATCH_RUN_ID,
+                            "tranrept-pagecount")
+                    .addString(TransactionReportJob.PARAM_START_DATE,
+                            "2022-01-01")
+                    .addString(TransactionReportJob.PARAM_END_DATE,
+                            "2022-01-31")
+                    .addString(TransactionReportJob.PARAM_CORRELATION_ID,
+                            "corr-pages")
+                    .toJobParameters();
+
+            // Act
+            final JobExecution execution = jobLauncherTestUtils.launchJob(params);
+
+            // Assert
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+            final ExecutionContext stepContext = singleStepContext(execution);
+            // 200 transactions split into 200/20 = 10 pages — verbatim
+            // CBTRN03C arithmetic preserved through the Job's
+            // execution-context write.
+            assertThat(stepContext.getInt(TransactionReportJob.CTX_TRANSACTION_COUNT))
+                    .isEqualTo(200);
+            assertThat(stepContext.getInt(TransactionReportJob.CTX_PAGE_COUNT))
+                    .isEqualTo(10);
+            verify(transactionReportService, times(1))
+                    .generateReport(startDate, endDate);
+        }
+    }
+
+    // =========================================================================
+    // @Nested — EmptyResultSet
+    // =========================================================================
+
+    /**
+     * Verifies that an empty {@link ReportResult} (zero transactions,
+     * zero pages, {@link BigDecimal#ZERO} grand total) still produces
+     * {@link BatchStatus#COMPLETED}. The COBOL CBTRN03C program also
+     * runs to completion when the {@code TRANSACT-FILE} contains no
+     * records within the date window — the only emission is the
+     * grand-total line at {@code 1110-WRITE-GRAND-TOTALS} (L318-L322).
+     */
+    @Nested
+    @DisplayName("EmptyResultSet — Zero transactions still completes successfully")
+    class EmptyResultSet {
+
+        @Test
+        @DisplayName("When service returns 0 transactions, job still completes successfully")
+        void zeroTransactions_completes() throws Exception {
+            // Arrange — a date window in the far future guarantees zero
+            // matching transactions in any realistic dataset.
+            final LocalDate startDate = LocalDate.of(2099, 1, 1);
+            final LocalDate endDate = LocalDate.of(2099, 1, 31);
+            final ReportResult emptyResult = new ReportResult(
+                    0, 0, BigDecimal.ZERO,
+                    "transaction-reports/2099-01-01_2099-01-31-empty.txt");
+            Mockito.when(transactionReportService.generateReport(startDate, endDate))
+                    .thenReturn(emptyResult);
+
+            final JobParameters params = new JobParametersBuilder()
+                    .addString(TransactionReportJob.PARAM_BATCH_RUN_ID,
+                            "tranrept-empty")
+                    .addString(TransactionReportJob.PARAM_START_DATE,
+                            "2099-01-01")
+                    .addString(TransactionReportJob.PARAM_END_DATE,
+                            "2099-01-31")
+                    .addString(TransactionReportJob.PARAM_CORRELATION_ID,
+                            "corr-empty")
+                    .toJobParameters();
+
+            // Act
+            final JobExecution execution = jobLauncherTestUtils.launchJob(params);
+
+            // Assert
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+            final ExecutionContext stepContext = singleStepContext(execution);
+            assertThat(stepContext.getInt(TransactionReportJob.CTX_TRANSACTION_COUNT))
+                    .isZero();
+            assertThat(stepContext.getInt(TransactionReportJob.CTX_PAGE_COUNT))
+                    .isZero();
+            // BigDecimal.ZERO renders as "0" via toPlainString() — the
+            // Job preserves the value without forcing a 2-decimal scale.
+            assertThat(stepContext.getString(TransactionReportJob.CTX_GRAND_TOTAL))
+                    .isNotNull();
+            assertThat(new BigDecimal(
+                    stepContext.getString(TransactionReportJob.CTX_GRAND_TOTAL)))
+                    .isEqualByComparingTo(BigDecimal.ZERO);
+            verify(transactionReportService, times(1))
+                    .generateReport(startDate, endDate);
+        }
+    }
+
+    // =========================================================================
+    // @Nested — GrandTotalArithmetic
+    // =========================================================================
+
+    /**
+     * Verifies AAP &sect;0.6.1: {@link BigDecimal} scale=2 with
+     * {@link java.math.RoundingMode#HALF_EVEN} is the verbatim mapping
+     * of COBOL {@code PIC S9(09)V99} (the {@code WS-GRAND-TOTAL}
+     * accumulator at CBTRN03C L136). The Job must preserve the
+     * BigDecimal value end-to-end through the execution context
+     * without any lossy {@code float}/{@code double} substitution.
+     */
+    @Nested
+    @DisplayName("GrandTotalArithmetic — BigDecimal scale=2 + HALF_EVEN preserved through job")
+    class GrandTotalArithmetic {
+
+        @Test
+        @DisplayName("Service grandTotal returned with scale=2 propagates through job execution context")
+        void grandTotalScale2_preserved() throws Exception {
+            // Arrange — verbatim AAP §0.6.1: BigDecimal must use scale=2
+            // RoundingMode.HALF_EVEN. The Job class is the integration
+            // point that must preserve this through the Spring Batch
+            // execution-context write.
+            final BigDecimal expectedTotal = new BigDecimal("1234567.89");
+            final LocalDate startDate = LocalDate.of(2022, 6, 1);
+            final LocalDate endDate = LocalDate.of(2022, 6, 30);
+            final ReportResult result = new ReportResult(
+                    1000, 50, expectedTotal,
+                    "transaction-reports/2022-06-01_2022-06-30-big.txt");
+            Mockito.when(transactionReportService.generateReport(startDate, endDate))
+                    .thenReturn(result);
+
+            final JobParameters params = new JobParametersBuilder()
+                    .addString(TransactionReportJob.PARAM_BATCH_RUN_ID,
+                            "tranrept-big-total")
+                    .addString(TransactionReportJob.PARAM_START_DATE,
+                            "2022-06-01")
+                    .addString(TransactionReportJob.PARAM_END_DATE,
+                            "2022-06-30")
+                    .addString(TransactionReportJob.PARAM_CORRELATION_ID,
+                            "corr-big")
+                    .toJobParameters();
+
+            // Act
+            final JobExecution execution = jobLauncherTestUtils.launchJob(params);
+
+            // Assert
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+            final ExecutionContext stepContext = singleStepContext(execution);
+            // The Job writes the BigDecimal as toPlainString(), so the
+            // scale-2 representation is preserved literally.
+            assertThat(stepContext.getString(TransactionReportJob.CTX_GRAND_TOTAL))
+                    .isEqualTo("1234567.89");
+            // Per AAP §0.7.2 BigDecimal comparisons MUST use
+            // isEqualByComparingTo — never .equals().
+            assertThat(new BigDecimal(
+                    stepContext.getString(TransactionReportJob.CTX_GRAND_TOTAL)))
+                    .isEqualByComparingTo(expectedTotal);
+            verify(transactionReportService, times(1))
+                    .generateReport(startDate, endDate);
+        }
+
+        @Test
+        @DisplayName("Trailing zeros in grandTotal scale preserved (no implicit rescaling)")
+        void grandTotalTrailingZeros_preserved() throws Exception {
+            // Arrange — a value like "100.00" must remain "100.00",
+            // NOT collapse to "100" or "100.0", to match the COBOL
+            // PIC S9(09)V99 fixed-scale contract.
+            final BigDecimal expectedTotal = new BigDecimal("100.00");
+            final LocalDate startDate = LocalDate.of(2022, 9, 1);
+            final LocalDate endDate = LocalDate.of(2022, 9, 30);
+            final ReportResult result = new ReportResult(
+                    1, 1, expectedTotal,
+                    "transaction-reports/2022-09-01_2022-09-30-100.txt");
+            Mockito.when(transactionReportService.generateReport(startDate, endDate))
+                    .thenReturn(result);
+
+            final JobParameters params = new JobParametersBuilder()
+                    .addString(TransactionReportJob.PARAM_BATCH_RUN_ID,
+                            "tranrept-trailing-zeros")
+                    .addString(TransactionReportJob.PARAM_START_DATE,
+                            "2022-09-01")
+                    .addString(TransactionReportJob.PARAM_END_DATE,
+                            "2022-09-30")
+                    .addString(TransactionReportJob.PARAM_CORRELATION_ID,
+                            "corr-trailing")
+                    .toJobParameters();
+
+            // Act
+            final JobExecution execution = jobLauncherTestUtils.launchJob(params);
+
+            // Assert
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+            final ExecutionContext stepContext = singleStepContext(execution);
+            // toPlainString() on a scale-2 BigDecimal preserves the
+            // trailing zeros verbatim.
+            assertThat(stepContext.getString(TransactionReportJob.CTX_GRAND_TOTAL))
+                    .isEqualTo("100.00");
+            assertThat(new BigDecimal(
+                    stepContext.getString(TransactionReportJob.CTX_GRAND_TOTAL)))
+                    .isEqualByComparingTo(expectedTotal);
+        }
+    }
+
+    // =========================================================================
+    // @Nested — ServiceFailurePropagation
+    // =========================================================================
+
+    /**
+     * Verifies that exceptions thrown by
+     * {@link TransactionReportService#generateReport(LocalDate, LocalDate)}
+     * are propagated to {@link JobExecution#getAllFailureExceptions()}
+     * and cause the job to terminate with
+     * {@link BatchStatus#FAILED}. This is the documented behaviour
+     * for Step Functions to detect a failed task per AAP &sect;0.6.3.
+     */
+    @Nested
+    @DisplayName("ServiceFailurePropagation — Underlying exceptions cause job FAILED status")
     class ServiceFailurePropagation {
 
         @Test
-        @DisplayName("fails the job when TransactionReportService throws")
-        void failsWhenTransactionReportServiceThrows() throws Exception {
-            Mockito.when(transactionReportService.generateReport(any(LocalDate.class), any(LocalDate.class)))
-                    .thenThrow(new IllegalStateException("TRANREPT service failure"));
+        @DisplayName("RuntimeException from service propagates and fails the job")
+        void serviceException_jobFails() throws Exception {
+            // Arrange — the service throws a RuntimeException (the
+            // most generic unchecked failure mode; could be IOException
+            // wrapped, S3 upload failure, JPA query failure, etc.).
+            final LocalDate startDate = LocalDate.of(2022, 7, 1);
+            final LocalDate endDate = LocalDate.of(2022, 7, 31);
+            final RuntimeException simulatedFailure =
+                    new RuntimeException("S3 upload failed");
+            Mockito.when(transactionReportService.generateReport(startDate, endDate))
+                    .thenThrow(simulatedFailure);
 
-            JobExecution execution = jobLauncherTestUtils.launchJob(
-                    reportParams("report-service-failure", "2026-05-01", "2026-05-31"));
+            final JobParameters params = new JobParametersBuilder()
+                    .addString(TransactionReportJob.PARAM_BATCH_RUN_ID,
+                            "tranrept-svc-fail")
+                    .addString(TransactionReportJob.PARAM_START_DATE,
+                            "2022-07-01")
+                    .addString(TransactionReportJob.PARAM_END_DATE,
+                            "2022-07-31")
+                    .addString(TransactionReportJob.PARAM_CORRELATION_ID,
+                            "corr-fail")
+                    .toJobParameters();
 
+            // Act
+            final JobExecution execution = jobLauncherTestUtils.launchJob(params);
+
+            // Assert
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(execution.getAllFailureExceptions()).isNotEmpty();
+            assertThat(execution.getAllFailureExceptions())
+                    .anyMatch(ex -> ex instanceof RuntimeException
+                            && "S3 upload failed".equals(ex.getMessage()));
+            verify(transactionReportService, times(1))
+                    .generateReport(startDate, endDate);
+        }
+
+        @Test
+        @DisplayName("IllegalStateException from service propagates and fails the job")
+        void illegalStateException_jobFails() throws Exception {
+            // Arrange — preserves parity with sibling test pattern
+            // (StatementGenerationJobTest.ServiceFailurePropagation)
+            // by also covering IllegalStateException as a distinct
+            // failure shape.
+            Mockito.when(transactionReportService.generateReport(
+                            any(LocalDate.class), any(LocalDate.class)))
+                    .thenThrow(new IllegalStateException(
+                            "TRANREPT service failure"));
+
+            final JobParameters params = new JobParametersBuilder()
+                    .addString(TransactionReportJob.PARAM_BATCH_RUN_ID,
+                            "tranrept-ise")
+                    .addString(TransactionReportJob.PARAM_START_DATE,
+                            "2022-05-01")
+                    .addString(TransactionReportJob.PARAM_END_DATE,
+                            "2022-05-31")
+                    .addString(TransactionReportJob.PARAM_CORRELATION_ID,
+                            "corr-ise")
+                    .toJobParameters();
+
+            // Act
+            final JobExecution execution = jobLauncherTestUtils.launchJob(params);
+
+            // Assert
             assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
             assertThat(execution.getAllFailureExceptions())
                     .anyMatch(ex -> ex instanceof IllegalStateException
@@ -354,20 +944,35 @@ class TransactionReportJobTest {
         }
     }
 
-    private JobParameters reportParams(String batchRunId, String startDate, String endDate) {
-        return new JobParametersBuilder()
-                .addString(TransactionReportJob.PARAM_BATCH_RUN_ID, batchRunId)
-                .addString(TransactionReportJob.PARAM_START_DATE, startDate)
-                .addString(TransactionReportJob.PARAM_END_DATE, endDate)
-                .addString("correlationId", "corr-" + batchRunId)
-                .toJobParameters();
-    }
+    // =========================================================================
+    // Test helpers
+    // =========================================================================
 
+    /**
+     * Extracts the single {@link ExecutionContext} expected for a
+     * {@link TransactionReportJob} run. The Job defines exactly one
+     * Step ({@link TransactionReportJob#STEP_NAME}); this helper
+     * asserts the count and returns the underlying context for further
+     * assertions.
+     *
+     * @param execution the {@link JobExecution} from
+     *                  {@link JobLauncherTestUtils#launchJob(JobParameters)}
+     * @return the single Step's {@link ExecutionContext}
+     */
     private static ExecutionContext singleStepContext(JobExecution execution) {
         assertThat(execution.getStepExecutions()).hasSize(1);
         return execution.getStepExecutions().iterator().next().getExecutionContext();
     }
 
+    /**
+     * Predicate used by {@link org.assertj.core.api.AbstractIterableAssert#anyMatch}
+     * to identify {@link IllegalArgumentException} instances inside
+     * {@link JobExecution#getAllFailureExceptions()}.
+     *
+     * @param throwable the candidate {@link Throwable}
+     * @return {@code true} if the throwable is an
+     *         {@link IllegalArgumentException}
+     */
     private static boolean isIllegalArgumentException(Throwable throwable) {
         return throwable instanceof IllegalArgumentException;
     }

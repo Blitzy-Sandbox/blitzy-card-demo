@@ -44,6 +44,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 
 import java.time.Duration;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.LinkedHashMap;
@@ -208,6 +209,18 @@ public class TransactionReportJob {
      * non-null correlation ID.
      */
     public static final String PARAM_CORRELATION_ID = "correlationId";
+
+    /**
+     * {@link JobParameters} key for the (optional) business date that
+     * serves as the reference "today" when computing the
+     * previous-calendar-month default date window
+     * ({@link #resolveDateWindow(JobParameters)}). When absent, the
+     * Java clock's {@link LocalDate#now()} is used &mdash; mirroring
+     * CBTRN03C's runtime behaviour where {@code DATE} from
+     * {@code 0000-MAIN-START} feeds the {@code WS-DATE-RANGE-EMPTY}
+     * fallback path. Per AAP &sect;0.4.1 / &sect;0.6.1.
+     */
+    public static final String PARAM_BUSINESS_DATE = "businessDate";
 
     /**
      * Execution-context key for the number of transactions included
@@ -533,10 +546,15 @@ public class TransactionReportJob {
             //         IllegalArgumentException; Spring Batch surfaces this as
             //         BatchStatus.FAILED which Step Functions reads as a Task
             //         failure (mapped to the AWS Batch container exit code).
+            //
+            //         When BOTH startDate AND endDate are absent the helper
+            //         falls back to the previous calendar month (CBTRN03C
+            //         WS-DATE-RANGE-EMPTY semantics; AAP §0.4.1 / §0.6.1).
             // -----------------------------------------------------------------
             final String batchRunId = jobParameters.getString(PARAM_BATCH_RUN_ID);
-            final LocalDate startDate = resolveStartDate(jobParameters);
-            final LocalDate endDate = resolveEndDate(jobParameters);
+            final LocalDate[] dateWindow = resolveDateWindow(jobParameters);
+            final LocalDate startDate = dateWindow[0];
+            final LocalDate endDate = dateWindow[1];
 
             log.info(
                     "// COBOL: CBTRN03C - generating transaction report: "
@@ -646,37 +664,94 @@ public class TransactionReportJob {
     // =========================================================================
 
     /**
-     * Resolves the {@code startDate} job parameter to a {@link LocalDate}.
+     * Resolves the {@code startDate} / {@code endDate} job parameters
+     * to an inclusive {@link LocalDate} window, applying the
+     * previous-calendar-month default ONLY when BOTH parameters are
+     * absent / blank.
      *
-     * <p>Replaces the COBOL {@code WS-START-DATE PIC X(10)} field
-     * (L123) read from the {@code DATEPARM} DD file by
-     * {@code 0550-DATEPARM-READ}.</p>
+     * <p>// COBOL: CBTRN03C &mdash; mirrors the {@code WS-DATE-RANGE-EMPTY}
+     * fallback. When neither bound is supplied the report runs for the
+     * previous calendar month (first day to last day) computed from the
+     * {@code businessDate} job parameter when present, otherwise from
+     * the Java clock's {@link LocalDate#now()}.</p>
      *
-     * @param jobParameters the {@link JobParameters} carrying the
-     *                      ISO-8601 {@code yyyy-MM-dd} string
-     * @return the parsed {@link LocalDate}; never {@code null}
-     * @throws IllegalArgumentException if the parameter is missing,
-     *                                  blank, or not ISO-8601
+     * <p>If only one of the two parameters is supplied (a partial
+     * window) the call fails with {@link IllegalArgumentException} on
+     * the missing parameter &mdash; preserving the pre-existing strict
+     * pairwise contract so callers cannot accidentally inherit a
+     * default for half of the window. Spring Batch surfaces the
+     * exception as {@code BatchStatus.FAILED}.</p>
+     *
+     * @param jobParameters the {@link JobParameters} carrying optional
+     *                      {@code startDate} / {@code endDate} ISO-8601
+     *                      strings; never {@code null} in production
+     *                      use (Spring Batch always supplies at least
+     *                      an empty instance)
+     * @return a two-element array {@code [startDate, endDate]} with
+     *         both values non-{@code null}
+     * @throws IllegalArgumentException if only one of the two date
+     *                                  parameters is supplied, or if
+     *                                  either supplied value is not
+     *                                  ISO-8601 {@code yyyy-MM-dd}
      */
-    private static LocalDate resolveStartDate(JobParameters jobParameters) {
-        return parseRequiredIsoDate(jobParameters, PARAM_START_DATE);
+    private static LocalDate[] resolveDateWindow(JobParameters jobParameters) {
+        final String startRaw = jobParameters != null
+                ? jobParameters.getString(PARAM_START_DATE)
+                : null;
+        final String endRaw = jobParameters != null
+                ? jobParameters.getString(PARAM_END_DATE)
+                : null;
+        final boolean startMissing = startRaw == null || startRaw.isBlank();
+        final boolean endMissing = endRaw == null || endRaw.isBlank();
+
+        if (startMissing && endMissing) {
+            // Replaces COBOL CBTRN03C WS-DATE-RANGE-EMPTY default-window
+            // path: when neither WS-START-DATE nor WS-END-DATE is
+            // populated, the report runs for the previous calendar month.
+            final LocalDate referenceDate = resolveBusinessDate(jobParameters);
+            final YearMonth previousMonth = YearMonth.from(referenceDate).minusMonths(1L);
+            return new LocalDate[]{previousMonth.atDay(1), previousMonth.atEndOfMonth()};
+        }
+
+        // Otherwise both must be present and parseable (partial window
+        // is not allowed — surface IllegalArgumentException on whichever
+        // parameter is missing first).
+        final LocalDate startDate = parseRequiredIsoDate(jobParameters, PARAM_START_DATE);
+        final LocalDate endDate = parseRequiredIsoDate(jobParameters, PARAM_END_DATE);
+        return new LocalDate[]{startDate, endDate};
     }
 
     /**
-     * Resolves the {@code endDate} job parameter to a {@link LocalDate}.
-     *
-     * <p>Replaces the COBOL {@code WS-END-DATE PIC X(10)} field
-     * (L125) read from the {@code DATEPARM} DD file by
-     * {@code 0550-DATEPARM-READ}.</p>
+     * Resolves the optional {@code businessDate} job parameter to a
+     * {@link LocalDate}, falling back to {@link LocalDate#now()} when
+     * the parameter is absent, blank, or malformed. The malformed-case
+     * fallback is deliberate: {@code businessDate} only serves as the
+     * reference "today" for the previous-calendar-month default
+     * window, so a malformed value should NOT crash the tasklet (the
+     * effective behaviour is identical to a missing value).
      *
      * @param jobParameters the {@link JobParameters} carrying the
-     *                      ISO-8601 {@code yyyy-MM-dd} string
-     * @return the parsed {@link LocalDate}; never {@code null}
-     * @throws IllegalArgumentException if the parameter is missing,
-     *                                  blank, or not ISO-8601
+     *                      optional ISO-8601 {@code businessDate}
+     * @return the parsed business date, or {@link LocalDate#now()} on
+     *         fallback
      */
-    private static LocalDate resolveEndDate(JobParameters jobParameters) {
-        return parseRequiredIsoDate(jobParameters, PARAM_END_DATE);
+    private static LocalDate resolveBusinessDate(JobParameters jobParameters) {
+        if (jobParameters == null) {
+            return LocalDate.now();
+        }
+        final String businessDateStr = jobParameters.getString(PARAM_BUSINESS_DATE);
+        if (businessDateStr == null || businessDateStr.isBlank()) {
+            return LocalDate.now();
+        }
+        try {
+            return LocalDate.parse(businessDateStr, DateTimeFormatter.ISO_DATE);
+        } catch (DateTimeParseException ex) {
+            // Defensive: malformed businessDate falls back to today
+            // (no exception bubbles up — the value is only used for
+            // computing the previous-month reference, and the tasklet
+            // is already lenient about its absence).
+            return LocalDate.now();
+        }
     }
 
     /**
