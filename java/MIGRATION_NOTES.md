@@ -2734,6 +2734,155 @@ which is exactly the safety guarantee AAP §0.6.10 requires.
 
 ---
 
+## M18. Per-Environment Configuration Templates (Refine-PR Item 3)
+
+**Status**: ADDED — three per-environment configuration templates
+were created under `java/config/` to give operators a tracked,
+reviewable starting point for DEV, STAGING, and PROD deployments.
+This is purely additive infrastructure work; it does not change any
+translated program's runtime behavior, does not modify any record
+layout, and does not introduce any new dependency.
+
+### M18.1 Files added
+
+| Template | Path | Purpose |
+|----------|------|---------|
+| DEV       | `java/config/application-dev.properties`     | Local-workstation defaults. Workspace-relative paths under `./build/dev-data/`. Per-file codepage overrides commented-but-documented for switching ASCII fixtures back to `US-ASCII` for fast inner-loop testing. `carddemo.batch.tenant=dev`, `carddemo.batch.run-id=dev-${user.name}` interpolation, JDBC disabled. |
+| STAGING   | `java/config/application-staging.properties` | Pre-production POSIX paths under `/var/carddemo/staging/{in,out,gdg,work}`. IBM-1047 codepage default (matches PROD's mainframe-coordinated EBCDIC contract). `carddemo.batch.tenant=staging`, run-id committed blank (orchestration tier injects). Includes systemd `EnvironmentFile` deployment guidance. |
+| PROD      | `java/config/application-prod.properties`    | Live production. POSIX paths under `/var/carddemo/prod/{in,out,gdg,work}`. IBM-1047 codepage binding. `carddemo.batch.tenant=prod`, run-id committed blank (orchestration tier injects). PARM and date-range values committed blank deliberately so a misconfigured launch fails fast. JDBC credentials MUST come from `/etc/carddemo/prod.env` (mode 0600, owner root) sourced via systemd `EnvironmentFile`. |
+
+All three files are derived from `java/application.properties.example`
+(the CANONICAL template). They share the same 12-section structure
+so an operator who knows the canonical template can navigate any of
+the three by section number.
+
+### M18.2 SafePathResolver allowed-roots per environment
+
+Each template sets `carddemo.data.root` and `carddemo.output.root`
+which act as the explicit allowed-roots that constrain every
+operator-supplied DD path resolved through
+`SafePathResolver.resolve(key, default, allowedRoot)` per the
+CWE-22 path-containment mitigation documented in AAP §0.6.5 / §0.7.2:
+
+| Environment | `carddemo.data.root` | `carddemo.output.root` |
+|-------------|----------------------|------------------------|
+| DEV         | `./build/dev-data/in`           | `./build/dev-data/out`           |
+| STAGING     | `/var/carddemo/staging/in`      | `/var/carddemo/staging/out`      |
+| PROD        | `/var/carddemo/prod/in`         | `/var/carddemo/prod/out`         |
+
+Paths that try to escape via `..` segments are rejected at
+resolution time regardless of environment. Operators MUST NOT
+override the allowed-roots; the only way to widen them is to edit
+the template, raise a PR, and have SRE approve.
+
+### M18.3 `CARDDEMO_CONFIG` env-var loading pattern
+
+The recommended layered precedence for resolving any configuration
+key is:
+
+1. **System property** — `-Dcarddemo.<key>=<value>` on the JVM
+   command line. Highest precedence; useful for one-off ad-hoc
+   runs and for `mvn` test invocations.
+2. **Environment variable** — `CARDDEMO_<KEY_WITH_UNDERSCORES>`
+   (e.g., `carddemo.data.root` → `CARDDEMO_DATA_ROOT`). The
+   recommended PROD pattern: orchestration tier (Airflow / Argo /
+   systemd / etc.) exports per-run variables like
+   `CARDDEMO_BATCH_RUN_ID`, `CARDDEMO_INTCALC_PARM`, and any
+   secrets like `CARDDEMO_JDBC_PASSWORD` from a secrets store.
+3. **External properties file** — pointed at by
+   `CARDDEMO_CONFIG=/etc/carddemo/application-<env>.properties`.
+   If `CARDDEMO_CONFIG` is unset, the application falls back to
+   the file `application.properties` next to the launched jar.
+4. **Embedded properties** — the
+   `application.properties` shipped inside each shaded jar at
+   `carddemo-app/src/main/resources/application.properties` is
+   the last-resort default. PROD deployments should NOT rely on
+   the embedded defaults; the orchestration tier should always
+   set `CARDDEMO_CONFIG`.
+5. **Per-app defaults** — `SafePathResolver.resolveTrusted(key,
+   default, allowedRoot)` injects per-app default literals like
+   `dailytran.dat` when no other layer supplies a value.
+
+### M18.4 Recommended deployment procedure (PROD)
+
+```bash
+# 1) Install the canonical template at a stable path
+sudo install -m 0640 -o carddemo -g carddemo \
+    java/config/application-prod.properties \
+    /etc/carddemo/application-prod.properties
+
+# 2) Install the secrets file (NOT in source control) at a strict path
+sudo install -m 0600 -o root -g root \
+    /secure/prod.env /etc/carddemo/prod.env
+
+# 3) Point the systemd unit at both files
+cat <<'UNIT' | sudo tee /etc/systemd/system/carddemo-posttran.service
+[Unit]
+Description=CardDemo POSTTRAN nightly batch
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=carddemo
+Group=carddemo
+EnvironmentFile=/etc/carddemo/prod.env
+Environment=CARDDEMO_CONFIG=/etc/carddemo/application-prod.properties
+ExecStart=/usr/bin/java -XX:+UseCompactObjectHeaders \
+                       -XX:+UseShenandoahGC \
+                       -XX:ShenandoahGCMode=generational \
+                       -jar /opt/carddemo/carddemo-posttran.jar
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+# 4) Reload systemd and start the service
+sudo systemctl daemon-reload
+sudo systemctl start carddemo-posttran
+```
+
+The same pattern is repeated for the other 27 shaded jars per
+`java/RUNBOOK.md` §1 (the 28-jar inventory grouped by JCL job
+category).
+
+### M18.5 Hard constraints honored
+
+Every template observes the hard constraints from AAP §0.7.2 and
+the Refine-PR scope:
+
+* **No plaintext password migration is attempted.** SEC-USR-PWD
+  remains plaintext per CSUSR01Y.cpy preservation mandate. The
+  templates do NOT introduce any bcrypt/argon2/scrypt step; the
+  follow-on PR that introduces password hashing will need its
+  own AAP entry.
+* **No JDBC credentials in source control.** The PROD template
+  sets `carddemo.jdbc.enabled=false` and leaves username/password
+  blank. If JDBC is ever enabled, credentials MUST come from
+  `/etc/carddemo/prod.env` (mode 0600, owner root) sourced via
+  systemd EnvironmentFile.
+* **IBM-1047 default.** STAGING and PROD pin
+  `carddemo.file.charset=IBM-1047` per AAP §0.6.5; DEV uses
+  IBM-1047 by default but documents the path to switch to
+  US-ASCII for fast inner-loop testing against the `app/data/
+  ASCII/` fixtures.
+* **No Spring / Hibernate / PostgreSQL / preview features.** The
+  templates introduce zero new dependencies; they only set values
+  that are read by the existing `SafePathResolver`-backed config
+  layer.
+
+### M18.6 Verification
+
+After adding the three templates, `mvn -B -ntp clean verify`
+continues to report all unit tests passing with zero failures,
+zero errors, and the JaCoCo Decimals coverage gate at 100%. The
+Refine-PR Item 2 forbidden-artifact / preview-flag enforcer rules
+also continue to PASS (no forbidden artifact transitively pulled
+in; zero hits in the workflow YAML scan).
+
+---
+
 _End of MIGRATION_NOTES.md. Future translation agents append to the
 relevant section above; they MUST NOT rewrite history. Each new entry
 cites its source file using the AAP §0.8.1 citation discipline._

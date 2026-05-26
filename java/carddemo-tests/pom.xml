@@ -149,6 +149,22 @@
             regression band assertions.
         -->
         <jfr.recording.dir>${project.build.directory}/jfr</jfr.recording.dir>
+
+        <!--
+            Refine-PR Item 6 — JUnit Platform tag-filter property
+            propagated to BOTH Surefire and Failsafe so the operator
+            flag `mvn -DexcludedGroups=integration verify` works
+            symmetrically across both plugins. The default empty
+            value is the no-op (no tags excluded). Operators
+            override on the command line:
+              * `mvn verify`                                  → run everything (default)
+              * `mvn -DexcludedGroups=integration verify`      → skip @Tag("integration") tests
+              * `mvn -DexcludedGroups=integration,perf verify` → skip both groups
+            The literal value `integration` matches the JUnit
+            Jupiter `@Tag("integration")` annotation on
+            FullBatchChainIT added by Refine-PR Item 6.
+        -->
+        <excludedGroups></excludedGroups>
     </properties>
 
     <dependencies>
@@ -711,6 +727,57 @@
                     </includes>
 
                     <!--
+                        Refine-PR Item 6 — exclude integration-test
+                        classes (the Failsafe-style `*IT.java`
+                        convention) from Surefire so they DO NOT run
+                        during the `test` phase. Failsafe (configured
+                        below) runs them during the `integration-test`
+                        phase instead, which (a) keeps the fast
+                        unit-test suite separable from the slow IT
+                        suite and (b) gives operators a clean
+                        Surefire-passes/Failsafe-passes signal pair
+                        in CI artifacts.
+
+                        Without this exclude the `FullBatchChainIT`
+                        added by Refine-PR Item 6 would be picked up
+                        twice (once by Surefire's default *Test
+                        include patterns, once by Failsafe's default
+                        *IT include patterns), inflating the test
+                        count and potentially producing
+                        environment-dependent failures during the
+                        `test` phase (e.g., missing fixtures, missing
+                        env vars).
+                    -->
+                    <excludes>
+                        <exclude>**/*IT.java</exclude>
+                    </excludes>
+
+                    <!--
+                        Refine-PR Item 6 — propagate the
+                        `excludedGroups` JUnit Platform filter
+                        through to Surefire so the operator flag
+                        `mvn -DexcludedGroups=integration verify`
+                        works symmetrically with the Failsafe
+                        configuration below. The property
+                        `excludedGroups` is declared with an empty
+                        default in this module's `<properties>`
+                        block above, so the unfiltered case is the
+                        no-op default; `-DexcludedGroups=integration`
+                        on the command line overrides the default
+                        and propagates here.
+
+                        Note: Surefire already excludes `**/*IT.java`
+                        above, so the `excludedGroups=integration`
+                        filter on this plugin is a defence-in-depth
+                        measure. If a developer ever forgets to
+                        rename a new file to follow the `*IT.java`
+                        convention but tags it `@Tag("integration")`,
+                        Surefire will still skip it when the
+                        operator passes `-DexcludedGroups=integration`.
+                    -->
+                    <excludedGroups>${excludedGroups}</excludedGroups>
+
+                    <!--
                         Forked VM lifecycle for JFR — forkCount=1 +
                         reuseForks=true is the JFR-friendly default
                         because JFR captures the full forked VM
@@ -744,6 +811,116 @@
                         <jfr.recording.dir>${jfr.recording.dir}</jfr.recording.dir>
                     </systemPropertyVariables>
                 </configuration>
+            </plugin>
+
+            <!--
+                ================================================================
+                maven-failsafe-plugin — integration-test runner for
+                Refine-PR Item 6 (FullBatchChainIT). Activated in this
+                module because carddemo-tests is the only module that
+                hosts integration-test sources (`*IT.java` files tagged
+                `@Tag("integration")`).
+
+                Phase bindings:
+                  * `integration-test` (phase) → goal `integration-test`
+                    — discovers `**/*IT.java`, forks a test JVM, runs
+                    the ITs, and writes per-test XML reports under
+                    `target/failsafe-reports/`. Crucially, this goal
+                    does NOT fail the build on test failures; it
+                    records them.
+                  * `verify` (phase) → goal `verify` — reads the
+                    `target/failsafe-reports/failsafe-summary.xml`
+                    produced by the previous goal and FAILS the build
+                    if any IT failed. Splitting integration-test and
+                    verify lets post-IT phases (e.g., the JaCoCo
+                    `report-aggregate` execution below) run their
+                    cleanup before the final build verdict is rendered.
+
+                Why this lives in `<plugins>` (active) not just
+                `<pluginManagement>` (inherited): only this module has
+                integration tests, so only this module needs Failsafe
+                executions. The parent POM's pluginManagement entry
+                pins the version (3.5.2 per AAP §0.5.1) and supplies
+                the JaCoCo-friendly `@{argLine}` so the agent
+                instruments the Failsafe-forked JVM the same way it
+                instruments the Surefire-forked JVM.
+
+                Configuration:
+                  * `<excludedGroups>${excludedGroups}</excludedGroups>`
+                    — propagates the operator-supplied
+                    `-DexcludedGroups=integration` flag through to
+                    JUnit Platform, allowing
+                    `mvn -DexcludedGroups=integration verify` to skip
+                    every `@Tag("integration")` test (including
+                    FullBatchChainIT). Default empty == no exclusion.
+                  * `<systemPropertyVariables>jfr.recording.dir</systemPropertyVariables>`
+                    — symmetric with the Surefire configuration above
+                    so JFR-aware ITs (if any) can write recordings to
+                    `target/jfr/` exactly as the unit tests do.
+
+                The default Failsafe include patterns are:
+                  * `**/IT*.java`
+                  * `**/*IT.java`     ← matches FullBatchChainIT
+                  * `**/*ITCase.java`
+                These are NOT overridden here; the default matches our
+                naming convention (Refine-PR Item 6 specifies
+                `FullBatchChainIT.java`).
+
+                NO "enable-preview" argument (the double-dash CLI flag)
+                anywhere in the Failsafe configuration per AAP §0.6.7
+                and §0.7.4. The argLine inherited from parent
+                pluginManagement (`@{argLine} -XX:+EnableDynamicAgentLoading
+                -Xshare:auto`) is preserved unmodified.
+                ================================================================
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>integration-tests</id>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                        <configuration>
+                            <!--
+                                Propagate operator-supplied JUnit
+                                Platform tag-filter through to the
+                                forked test JVM. Empty default means
+                                no tags excluded.
+                            -->
+                            <excludedGroups>${excludedGroups}</excludedGroups>
+
+                            <!--
+                                UTF-8 reporting symmetric with Surefire
+                                so byte-diff diagnostics in IT logs
+                                surface non-ASCII bytes correctly per
+                                AAP §0.6.5.
+                            -->
+                            <encoding>UTF-8</encoding>
+
+                            <!--
+                                Forked-VM lifecycle identical to
+                                Surefire for JFR symmetry.
+                            -->
+                            <forkCount>1</forkCount>
+                            <reuseForks>true</reuseForks>
+
+                            <!--
+                                System properties propagated to ITs;
+                                jfr.recording.dir is shared with the
+                                Surefire JFR path so any IT that
+                                captures a recording lands it under
+                                the same `target/jfr/` cleaned by
+                                `mvn clean`.
+                            -->
+                            <systemPropertyVariables>
+                                <jfr.recording.dir>${jfr.recording.dir}</jfr.recording.dir>
+                            </systemPropertyVariables>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
 
             <!--
