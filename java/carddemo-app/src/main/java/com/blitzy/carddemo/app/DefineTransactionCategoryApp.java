@@ -167,8 +167,8 @@ import org.slf4j.LoggerFactory;
  *       AAP &sect;0.6.12.</li>
  * </ul>
  *
- * @see app/jcl/TRANCATG.jcl  the originating JCL job (three-step DELETE/DEFINE/REPRO)
- * @see app/cpy/CVTRA04Y.cpy  the TRAN-CAT-RECORD copybook defining the 60-byte layout
+ * @see "app/jcl/TRANCATG.jcl  the originating JCL job (three-step DELETE/DEFINE/REPRO)"
+ * @see "app/cpy/CVTRA04Y.cpy  the TRAN-CAT-RECORD copybook defining the 60-byte layout"
  * @see DefineTransactionTypeApp  the sibling DEFINE/REPRO app pattern this class mirrors
  * @see BatchRunContext       the immutable context bound to {@link #BATCH_CTX}
  * @since 1.0.0

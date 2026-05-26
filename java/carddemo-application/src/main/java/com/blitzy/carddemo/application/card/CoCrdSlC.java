@@ -75,7 +75,7 @@ import org.slf4j.LoggerFactory;
  *   <tr><td>{@code 0000-MAIN}</td><td>{@link #execute(CardDemoCommarea, AidKey, CoCrdSlInput)} / {@link #mainEntry(CardDemoCommarea, AidKey, CoCrdSlInput)}</td></tr>
  *   <tr><td>{@code 1000-SEND-MAP}</td><td>{@link #sendScreen(MutableState)}</td></tr>
  *   <tr><td>{@code 1200-SETUP-SCREEN-VARS}</td><td>{@link #setupScreenVars(MutableState, CardRecord)}</td></tr>
- *   <tr><td>{@code 2000-PROCESS-INPUTS}</td><td>{@link #processInputs(CoCrdSlInput, MutableState)}</td></tr>
+ *   <tr><td>{@code 2000-PROCESS-INPUTS}</td><td>{@link #processEnter(CardDemoCommarea, MutableState)} (renamed from {@code processInputs}: the ENTER-key processing branch is the only path that invokes {@code 2000-PROCESS-INPUTS} in COBOL)</td></tr>
  *   <tr><td>{@code 2100-RECEIVE-MAP}</td><td>{@link #receiveMap(CoCrdSlInput, MutableState)}</td></tr>
  *   <tr><td>{@code 2200-EDIT-MAP-INPUTS}</td><td>{@link #editMapInputs(MutableState)}</td></tr>
  *   <tr><td>{@code 2210-EDIT-ACCOUNT}</td><td>{@link #editAccount(MutableState)}</td></tr>

@@ -676,7 +676,7 @@ public final class FileCardXrefRepository implements CardXrefRepository {
      * cleartext PAN. Per AAP &sect;0.7.2 the cleartext PAN MUST NOT
      * appear in any log line.
      *
-     * <h3>Byte-fidelity check</h3>
+     * <h4>Byte-fidelity check</h4>
      * The encoded buffer length is asserted to be exactly
      * {@value #RECORD_LENGTH} bytes before writing; this is a defence
      * against a future refactor of {@link CardXrefRecord#encode()}

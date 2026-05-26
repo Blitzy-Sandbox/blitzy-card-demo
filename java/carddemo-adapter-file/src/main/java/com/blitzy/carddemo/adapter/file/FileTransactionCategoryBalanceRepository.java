@@ -458,7 +458,7 @@ public final class FileTransactionCategoryBalanceRepository
      *   END-READ.
      * }</pre>
      *
-     * <h3>Implementation</h3>
+     * <h4>Implementation</h4>
      * <ol>
      *   <li>Builds the 17-byte composite key via
      *       {@link #buildKey(long, String, int)} which validates the
@@ -558,7 +558,7 @@ public final class FileTransactionCategoryBalanceRepository
      * the correct key-sorted position (matching VSAM KSDS physical
      * ordering) or overwrites the existing record with the same key.
      *
-     * <h3>Implementation</h3>
+     * <h4>Implementation</h4>
      * <ol>
      *   <li>Verifies the supplied {@link TranCatBalRecord} is
      *       non-null.</li>
@@ -650,7 +650,7 @@ public final class FileTransactionCategoryBalanceRepository
      * composition root uses this method to express the reset-and-reload
      * idiom symmetrically with sibling apps.
      *
-     * <h3>Implementation</h3>
+     * <h4>Implementation</h4>
      * <ol>
      *   <li>Builds the 17-byte composite key via
      *       {@link #buildKey(long, String, int)} (which also performs

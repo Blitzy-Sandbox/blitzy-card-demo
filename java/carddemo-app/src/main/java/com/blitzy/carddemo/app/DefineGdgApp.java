@@ -176,7 +176,7 @@ import org.slf4j.LoggerFactory;
  *       {@code DEFGDGB.jcl} are preserved verbatim.</li>
  * </ul>
  *
- * @see app/jcl/DEFGDGB.jcl    the originating JCL job
+ * @see "app/jcl/DEFGDGB.jcl    the originating JCL job"
  * @see BatchRunContext        the immutable per-job context bound to
  *                             {@link #BATCH_CTX}
  * @see DailyRejectsApp        the single-base GDG-define sibling

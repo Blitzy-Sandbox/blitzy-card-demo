@@ -882,7 +882,7 @@ public final class CbTrn01C {
      *       return code.</li>
      * </ol>
      *
-     * <h3>{@code GOBACK} translation</h3>
+     * <h4>{@code GOBACK} translation</h4>
      * <p>COBOL {@code GOBACK} terminates the program and returns
      * control to the caller with whatever value is in the
      * {@code RETURN-CODE} special register (defaulting to 0). The
@@ -890,7 +890,7 @@ public final class CbTrn01C {
      * composition root may map to a process exit code in the shaded
      * jar's {@code main}.
      *
-     * <h3>Abend semantics</h3>
+     * <h4>Abend semantics</h4>
      * <p>Per AAP &sect;0.7.1 ("identical observable outcomes"), any
      * I/O failure that the COBOL program would have abended on
      * (file open / close / read failure) is translated to an
@@ -1607,7 +1607,7 @@ public final class CbTrn01C {
      *     EXIT.
      * }</pre>
      *
-     * <h3>Suspected COBOL bug (preserved per AAP &sect;0.7.1)</h3>
+     * <h4>Suspected COBOL bug (preserved per AAP &sect;0.7.1)</h4>
      * <p>The COBOL error branch at {@code app/cbl/CBTRN01C.cbl:L372-L374}
      * appears to contain a copy-paste error:
      * <ul>

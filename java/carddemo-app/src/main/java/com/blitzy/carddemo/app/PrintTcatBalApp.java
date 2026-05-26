@@ -169,8 +169,8 @@ import org.slf4j.LoggerFactory;
  *       reads the input as plain bytes per AAP &sect;0.6.12.</li>
  * </ul>
  *
- * @see app/jcl/PRTCATBL.jcl  the originating JCL job
- * @see app/proc/REPROC.prc  the cataloged IDCAMS REPRO procedure invoked by STEP05R
+ * @see "app/jcl/PRTCATBL.jcl  the originating JCL job"
+ * @see "app/proc/REPROC.prc  the cataloged IDCAMS REPRO procedure invoked by STEP05R"
  * @see BatchRunContext  the immutable context bound to {@link #BATCH_CTX}
  * @since 1.0.0
  */

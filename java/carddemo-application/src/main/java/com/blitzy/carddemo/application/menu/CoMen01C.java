@@ -128,7 +128,7 @@ import java.util.Objects;
  * {@code java.util.Date}/{@code Calendar}, no {@code java.io.File}, no
  * reflection, no mutable static state.
  *
- * @see app/cbl/COMEN01C.cbl
+ * @see "app/cbl/COMEN01C.cbl"
  * @see CoMen01Input
  * @see CoMen01Output
  * @see ProgramRegistry
@@ -411,7 +411,7 @@ public final class CoMen01C {
      * Faithfully translates the COBOL {@code 0000-MAIN-PARA} paragraph
      * (lines 75-110 of {@code app/cbl/COMEN01C.cbl}).
      *
-     * <h3>Logic flow</h3>
+     * <h4>Logic flow</h4>
      * <ol>
      *   <li>If {@code eibcalen == 0} (or {@code commarea == null}): set
      *       {@code CDEMO-FROM-PROGRAM} to {@link #SIGNON_PROGRAM} and dispatch
@@ -438,7 +438,7 @@ public final class CoMen01C {
      *   </li>
      * </ol>
      *
-     * <h3>Pattern-matching exhaustiveness</h3>
+     * <h4>Pattern-matching exhaustiveness</h4>
      * The {@code switch} over {@link AidKey} lists all 16 permits explicitly
      * (no {@code default} branch). The Java&nbsp;25 compiler enforces
      * exhaustiveness; if a new permit is ever added to {@code AidKey}, this

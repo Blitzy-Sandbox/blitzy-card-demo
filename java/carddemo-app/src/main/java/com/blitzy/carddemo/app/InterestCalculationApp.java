@@ -177,8 +177,8 @@ import org.slf4j.LoggerFactory;
  *
  * @see CbAct04C
  * @see BatchRunContext
- * @see app/jcl/INTCALC.jcl
- * @see app/cbl/CBACT04C.cbl
+ * @see "app/jcl/INTCALC.jcl"
+ * @see "app/cbl/CBACT04C.cbl"
  * @since 1.0.0
  */
 @CobolProgram(

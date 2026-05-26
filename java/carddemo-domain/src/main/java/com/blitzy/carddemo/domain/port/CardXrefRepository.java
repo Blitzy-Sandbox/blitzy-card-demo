@@ -238,7 +238,7 @@ public interface CardXrefRepository extends AutoCloseable {
      *       }</pre></li>
      * </ul>
      *
-     * <h3>Return semantics</h3>
+     * <h4>Return semantics</h4>
      * <ul>
      *   <li>{@code Optional.of(record)} &mdash; corresponds to the
      *       {@code NOT INVALID KEY} (batch) or
@@ -258,7 +258,7 @@ public interface CardXrefRepository extends AutoCloseable {
      *       file-status or DFHRESP / DFHRESP2 codes verbatim.</li>
      * </ul>
      *
-     * <h3>Parameter contract</h3>
+     * <h4>Parameter contract</h4>
      * {@code cardNumber} carries the {@code XREF-CARD-NUM} key
      * (PIC X(16) per {@code app/cpy/CVACT03Y.cpy:L5}) &mdash;
      * alphanumeric, preserving leading zeros and any non-digit bytes
@@ -268,7 +268,7 @@ public interface CardXrefRepository extends AutoCloseable {
      * parameter as-is so adapters may report a richer diagnostic for
      * malformed keys.
      *
-     * <h3>Logging</h3>
+     * <h4>Logging</h4>
      * Implementations MUST NOT log this value in plaintext per AAP
      * &sect;0.7.2; mask all but the last 4 digits.
      *
@@ -328,7 +328,7 @@ public interface CardXrefRepository extends AutoCloseable {
      *       ({@code app/cbl/COACTVWC.cbl:L739-L740}).</li>
      * </ul>
      *
-     * <h3>Return semantics</h3>
+     * <h4>Return semantics</h4>
      * <ul>
      *   <li>{@code Optional.of(record)} &mdash; corresponds to the
      *       {@code WHEN DFHRESP(NORMAL)} branch.</li>
@@ -341,7 +341,7 @@ public interface CardXrefRepository extends AutoCloseable {
      *       {@code WHEN OTHER} branch of the COBOL CICS EVALUATE.</li>
      * </ul>
      *
-     * <h3>Multi-card accounts</h3>
+     * <h4>Multi-card accounts</h4>
      * Because the AIX is <strong>not unique</strong> in the general
      * case (one account may have multiple cards), this method returns
      * only the <strong>first</strong> matching record per AIX
@@ -350,7 +350,7 @@ public interface CardXrefRepository extends AutoCloseable {
      * enumerate every card linked to an account MUST use
      * {@link #streamByAccountId(long)} instead.
      *
-     * <h3>Parameter contract</h3>
+     * <h4>Parameter contract</h4>
      * {@code accountId} carries the {@code XREF-ACCT-ID} key
      * (PIC 9(11) per {@code app/cpy/CVACT03Y.cpy:L7}) &mdash; valid
      * range is {@code 0..99_999_999_999L} inclusive. The
@@ -380,21 +380,21 @@ public interface CardXrefRepository extends AutoCloseable {
      * for a given account without resorting to a sequential scan of
      * the entire primary-key space.
      *
-     * <h3>Ordering</h3>
+     * <h4>Ordering</h4>
      * Records are returned in AIX iteration order &mdash; typically
      * ascending {@code XREF-CARD-NUM} within the account, matching
      * the VSAM AIX implementation order. Implementations MUST
      * preserve this order so that observable downstream behavior is
      * deterministic.
      *
-     * <h3>Empty-result semantics</h3>
+     * <h4>Empty-result semantics</h4>
      * If no record exists with the supplied {@code accountId}, this
      * method returns an empty {@link Stream}, NOT {@code null} and
      * NOT a stream that throws on first read. This matches the
      * common-case adapter behavior where the AIX lookup yields zero
      * rows.
      *
-     * <h3>Resource lifecycle</h3>
+     * <h4>Resource lifecycle</h4>
      * The returned {@link Stream} backs an underlying file channel
      * or DB cursor. Callers MUST close the stream &mdash; typically
      * via try-with-resources:
@@ -432,7 +432,7 @@ public interface CardXrefRepository extends AutoCloseable {
      * output byte-stream is identical between the COBOL baseline and
      * the Java implementation (AAP &sect;0.6.5).
      *
-     * <h3>Resource lifecycle</h3>
+     * <h4>Resource lifecycle</h4>
      * The returned {@link Stream} backs an underlying file channel
      * or DB cursor. Callers MUST close the stream &mdash; typically
      * via try-with-resources:
@@ -462,7 +462,7 @@ public interface CardXrefRepository extends AutoCloseable {
      * operation primarily covers the IDCAMS {@code REPRO} bulk load
      * exercised by {@code app/jcl/XREFFILE.jcl}.
      *
-     * <h3>Byte fidelity (AAP &sect;0.6.5)</h3>
+     * <h4>Byte fidelity (AAP &sect;0.6.5)</h4>
      * Implementations MUST persist the entire 50-byte fixed-width
      * record image including the trailing 14-byte {@code FILLER}
      * ({@link CardXrefRecord#filler()}). The FILLER is structural
@@ -472,7 +472,7 @@ public interface CardXrefRepository extends AutoCloseable {
      * Truncating, normalising, or synthesising the FILLER bytes is
      * FORBIDDEN.
      *
-     * <h3>AIX maintenance</h3>
+     * <h4>AIX maintenance</h4>
      * The AIX on {@code XREF-ACCT-ID} is a derived structure; when a
      * record is saved, the adapter MUST:
      * <ul>
@@ -488,7 +488,7 @@ public interface CardXrefRepository extends AutoCloseable {
      * adapters MUST update both the primary index and the AIX in a
      * single logical operation.
      *
-     * <h3>Logging</h3>
+     * <h4>Logging</h4>
      * Implementations MUST NOT log
      * {@link CardXrefRecord#xrefCardNum()} or any other field that
      * would expose the full PAN. See the class-level PCI / security
@@ -515,7 +515,7 @@ public interface CardXrefRepository extends AutoCloseable {
      * {@code DELETE} / {@code DEFINE} cycle exercised by
      * {@code app/jcl/XREFFILE.jcl} during dataset (re-)load.
      *
-     * <h3>Not-found semantics</h3>
+     * <h4>Not-found semantics</h4>
      * If no record exists with the supplied key, implementations
      * MUST throw a {@link RuntimeException} (typically a typed
      * adapter-level exception). This mirrors the
@@ -523,7 +523,7 @@ public interface CardXrefRepository extends AutoCloseable {
      * against a missing key &mdash; there is no compensating no-op
      * in the COBOL idiom.
      *
-     * <h3>Logging</h3>
+     * <h4>Logging</h4>
      * Implementations MUST NOT log the full 16-character key in
      * plaintext. Mask all but the last 4 digits per AAP &sect;0.7.2.
      *

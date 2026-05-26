@@ -141,7 +141,8 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
  * {@code CORPT0AO} except for the dynamic-color byte {@code ERRMSGC} and the
  * synthetic {@code focusField} hint:
  *
- * <table summary="BMS-to-record component mapping">
+ * <table>
+ * <caption>BMS-to-record component mapping</caption>
  *   <thead>
  *     <tr><th>BMS field (CORPT0AO)</th><th>PIC</th><th>Record component</th></tr>
  *   </thead>

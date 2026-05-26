@@ -390,14 +390,14 @@ public final class CbAct01C {
      *       a clean run, {@link #APPL_ERROR} (12) on any failure.</li>
      * </ol>
      *
-     * <h3>{@code GOBACK} translation</h3>
+     * <h4>{@code GOBACK} translation</h4>
      * <p>COBOL {@code GOBACK} terminates the program and returns control
      * to the caller with the value of the {@code RETURN-CODE} special
      * register. The Java equivalent is this method's int return value,
      * which the composition root maps to a process exit code in the
      * shaded jar's {@code main}.
      *
-     * <h3>Error handling vs. abend</h3>
+     * <h4>Error handling vs. abend</h4>
      * <p>Per AAP &sect;0.7.1 (&quot;identical observable outcomes&quot;),
      * I/O errors do NOT raise a checked or unchecked exception out of
      * {@code run()}. Instead they are translated to a non-zero return
@@ -575,7 +575,7 @@ public final class CbAct01C {
      * preserves the imperative structure of the COBOL paragraph and
      * makes the DOUBLE-DISPLAY sequencing transparent).
      *
-     * <h3>DOUBLE-DISPLAY anomaly (preserved per AAP &sect;0.7.1)</h3>
+     * <h4>DOUBLE-DISPLAY anomaly (preserved per AAP &sect;0.7.1)</h4>
      * For each successfully-read record, the COBOL emits TWO displays
      * in the following order:
      * <ol>
@@ -590,7 +590,7 @@ public final class CbAct01C {
      * Both displays are preserved verbatim; the order is preserved
      * exactly to match the byte-for-byte output of CBACT01C.
      *
-     * <h3>End-of-file translation</h3>
+     * <h4>End-of-file translation</h4>
      * <p>The COBOL paragraph sets {@code END-OF-FILE = 'Y'} when
      * {@code ACCTFILE-STATUS = '10'}, which exits the outer
      * {@code PERFORM UNTIL} loop. In Java, end-of-stream is signaled by

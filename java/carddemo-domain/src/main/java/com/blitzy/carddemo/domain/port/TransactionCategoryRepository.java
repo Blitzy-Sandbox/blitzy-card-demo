@@ -142,7 +142,7 @@ public interface TransactionCategoryRepository {
      * interest computation when the engine needs to validate that the
      * synthesized posting's category code exists in the lookup table.
      *
-     * <h3>Empty Optional semantics</h3>
+     * <h4>Empty Optional semantics</h4>
      * Returns {@link Optional#empty()} when no record matches the
      * composite key &mdash; this corresponds exactly to the COBOL
      * {@code INVALID KEY} clause / {@code FILE STATUS '23'} (record
@@ -153,7 +153,7 @@ public interface TransactionCategoryRepository {
      * non-fatal lookups (e.g. report enrichment with a {@code "UNKNOWN"}
      * fallback description) may handle the empty case themselves.
      *
-     * <h3>Parameter constraints</h3>
+     * <h4>Parameter constraints</h4>
      * <ul>
      *   <li>{@code tranTypeCd}: non-null, exactly 2 characters
      *       (COBOL {@code PIC X(02)}
@@ -198,7 +198,7 @@ public interface TransactionCategoryRepository {
      * end-to-end fixture comparison by the golden-record harness
      * (AAP &sect;0.6.11).
      *
-     * <h3>Ordering guarantee</h3>
+     * <h4>Ordering guarantee</h4>
      * Records are emitted in ascending order of the 6-byte composite
      * key &mdash; {@code TRAN-TYPE-CD} first, then {@code TRAN-CAT-CD}
      * &mdash; matching the lexicographic ordering of the underlying
@@ -207,7 +207,7 @@ public interface TransactionCategoryRepository {
      * is FORBIDDEN per AAP &sect;0.1.3 (preserve sort orders / batch
      * sequencing).
      *
-     * <h3>Resource ownership</h3>
+     * <h4>Resource ownership</h4>
      * The returned {@link Stream} is {@link AutoCloseable} and holds
      * an open file handle (or underlying cursor) for the lifetime of
      * the stream. Callers MUST close the stream via try-with-resources
@@ -240,7 +240,7 @@ public interface TransactionCategoryRepository {
      * {@code TRANCATG} (it is a static lookup table per AAP
      * &sect;0.6.10).
      *
-     * <h3>FILLER preservation (AAP &sect;0.6.5)</h3>
+     * <h4>FILLER preservation (AAP &sect;0.6.5)</h4>
      * The trailing 4-byte {@code FILLER PIC X(04)}
      * {@code [app/cpy/CVTRA04Y.cpy:L9]} MUST be persisted verbatim
      * exactly as carried on the supplied {@link TranCatRecord}; the
@@ -250,7 +250,7 @@ public interface TransactionCategoryRepository {
      * hold (the formal byte-for-byte fidelity contract asserted by
      * the golden-record harness on every PR).
      *
-     * <h3>Validation</h3>
+     * <h4>Validation</h4>
      * Implementations MUST verify that the {@link TranCatRecord} is
      * non-null. Field-level validation (key components in range,
      * description length, FILLER length) is already enforced by the
@@ -274,7 +274,7 @@ public interface TransactionCategoryRepository {
      * {@code TRANCATG} (it is a static lookup table per AAP
      * &sect;0.6.10).
      *
-     * <h3>Not-found behaviour</h3>
+     * <h4>Not-found behaviour</h4>
      * Implementations MUST throw a
      * {@link java.util.NoSuchElementException} when no record with
      * the supplied composite key exists &mdash; this mirrors the COBOL
@@ -284,7 +284,7 @@ public interface TransactionCategoryRepository {
      * {@link #findByKey(String, int)} first and skip the delete when
      * the optional is empty.
      *
-     * <h3>Parameter constraints</h3>
+     * <h4>Parameter constraints</h4>
      * Same as {@link #findByKey(String, int)}: {@code tranTypeCd}
      * must be non-null and at most 2 characters long; {@code tranCatCd}
      * must be in the inclusive range {@code 0..9999}.

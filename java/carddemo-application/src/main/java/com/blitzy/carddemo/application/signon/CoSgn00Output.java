@@ -62,7 +62,8 @@ import java.util.Objects;
  * at runtime.
  *
  * <h2>Field inventory</h2>
- * <table border="1" summary="BMS-to-record component mapping">
+ * <table border="1">
+ * <caption>BMS-to-record component mapping</caption>
  *   <thead>
  *     <tr><th>BMS field</th><th>Symbolic name</th><th>Width</th>
  *         <th>Record component</th></tr>

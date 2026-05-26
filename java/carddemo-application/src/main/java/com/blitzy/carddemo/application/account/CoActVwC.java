@@ -60,8 +60,8 @@ import org.slf4j.LoggerFactory;
  *     <ul>
  *       <li>{@code 0000-MAIN} &rarr; {@link #execute(CardDemoCommarea, AidKey,
  *           CoActVwInput)}</li>
- *       <li>{@code 1000-SEND-MAP} &rarr; {@link #sendMap(CardDemoCommarea,
- *           CoActVwInput, String, String, AccountRecord, CustomerRecord)}</li>
+ *       <li>{@code 1000-SEND-MAP} &rarr; {@link #buildPromptOutcome(CardDemoCommarea,
+ *           MutableState, CoActVwInput, AccountRecord, CustomerRecord)}</li>
  *       <li>{@code 2000-PROCESS-INPUTS} &rarr; {@link
  *           #processInputs(CoActVwInput, MutableState)}</li>
  *       <li>{@code 2200-EDIT-MAP-INPUTS} / {@code 2210-EDIT-ACCOUNT} &rarr;

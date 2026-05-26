@@ -274,7 +274,7 @@ public interface DiscountGroupRepository extends AutoCloseable {
      * {@code [app/cbl/CBACT04C.cbl:L210-L212]} before the {@code READ}
      * fires.
      *
-     * <h3>Empty Optional semantics &mdash; FILE STATUS = '23'</h3>
+     * <h4>Empty Optional semantics &mdash; FILE STATUS = '23'</h4>
      * Returns {@link Optional#empty()} when no record matches the
      * supplied composite key. This maps exactly to the COBOL
      * {@code INVALID KEY} clause on {@code READ DISCGRP-FILE}
@@ -300,7 +300,7 @@ public interface DiscountGroupRepository extends AutoCloseable {
      * {@code "DEFAULT"}) when the first call returns
      * {@link Optional#empty()}.
      *
-     * <h3>Parameter constraints (DIS-GROUP-KEY layout)</h3>
+     * <h4>Parameter constraints (DIS-GROUP-KEY layout)</h4>
      * <ul>
      *   <li>{@code accountGroupId}: non-null. The COBOL field
      *       {@code FD-DIS-ACCT-GROUP-ID PIC X(10)}
@@ -370,7 +370,7 @@ public interface DiscountGroupRepository extends AutoCloseable {
      * IDCAMS-style seed-load verification, and end-to-end fixture
      * comparison by the golden-record harness per AAP &sect;0.6.11).
      *
-     * <h3>Ordering guarantee</h3>
+     * <h4>Ordering guarantee</h4>
      * Records are emitted in ascending order of the 16-byte
      * {@code DIS-GROUP-KEY} composite primary key, matching the
      * lexicographic byte ordering of the underlying VSAM KSDS index.
@@ -378,7 +378,7 @@ public interface DiscountGroupRepository extends AutoCloseable {
      * and batch sequencing): any implementation that returns records in
      * a different order changes observable output and is a defect.
      *
-     * <h3>Resource ownership &mdash; AutoCloseable contract</h3>
+     * <h4>Resource ownership &mdash; AutoCloseable contract</h4>
      * The returned {@link Stream} is {@link AutoCloseable} (via
      * {@link java.util.stream.BaseStream}) and may hold an open file
      * handle (or underlying cursor) for the lifetime of the stream.
@@ -416,7 +416,7 @@ public interface DiscountGroupRepository extends AutoCloseable {
      * {@code DISCGRP} at runtime (it is a static reference dataset
      * per AAP &sect;0.6.10).
      *
-     * <h3>Byte-for-byte fidelity (AAP &sect;0.6.5)</h3>
+     * <h4>Byte-for-byte fidelity (AAP &sect;0.6.5)</h4>
      * Implementations MUST persist the record byte-for-byte identical
      * to its COBOL representation:
      * <ul>
@@ -450,7 +450,7 @@ public interface DiscountGroupRepository extends AutoCloseable {
      * hold &mdash; the formal byte-for-byte fidelity contract asserted
      * by the golden-record harness on every PR per AAP &sect;0.6.11.
      *
-     * <h3>Validation</h3>
+     * <h4>Validation</h4>
      * Implementations MUST verify that {@code record} is non-null.
      * Field-level validation (key component lengths, category-code
      * range, FILLER length, rate scale normalisation) is already
@@ -462,7 +462,7 @@ public interface DiscountGroupRepository extends AutoCloseable {
      * at record construction time so implementations do not need to
      * re-clone.
      *
-     * <h3>Concurrency</h3>
+     * <h4>Concurrency</h4>
      * Implementations are not required to be thread-safe for this
      * write operation; it is only invoked from the single-threaded
      * IDCAMS-step translation ({@code DefineDiscountGroupApp}).
@@ -487,7 +487,7 @@ public interface DiscountGroupRepository extends AutoCloseable {
      * against {@code DISCGRP} at runtime (it is a static reference
      * dataset per AAP &sect;0.6.10).
      *
-     * <h3>Not-found behaviour</h3>
+     * <h4>Not-found behaviour</h4>
      * Implementations MUST throw a
      * {@link java.util.NoSuchElementException} when no record with the
      * supplied composite key exists &mdash; this mirrors the COBOL
@@ -498,7 +498,7 @@ public interface DiscountGroupRepository extends AutoCloseable {
      * {@link #findByKey(String, String, int)} first and skip the
      * delete when the optional is empty.
      *
-     * <h3>Parameter constraints</h3>
+     * <h4>Parameter constraints</h4>
      * Same as {@link #findByKey(String, String, int)}:
      * <ul>
      *   <li>{@code accountGroupId}: non-null; at most 10 characters
@@ -512,7 +512,7 @@ public interface DiscountGroupRepository extends AutoCloseable {
      *       ({@code DIS-TRAN-CAT-CD PIC 9(04)}).</li>
      * </ul>
      *
-     * <h3>Concurrency</h3>
+     * <h4>Concurrency</h4>
      * Implementations are not required to be thread-safe for this
      * write operation; it is only invoked from the single-threaded
      * IDCAMS-step translation ({@code DefineDiscountGroupApp}).
@@ -559,7 +559,7 @@ public interface DiscountGroupRepository extends AutoCloseable {
      * unconditionally even when an earlier paragraph reported a
      * non-zero {@code FILE STATUS}.
      *
-     * <h3>Idempotence</h3>
+     * <h4>Idempotence</h4>
      * Implementations MAY be no-op for in-memory adapters and MUST be
      * idempotent so that callers can defensively close the same
      * repository multiple times without observable side-effects. A
@@ -567,7 +567,7 @@ public interface DiscountGroupRepository extends AutoCloseable {
      * be a no-op; it MUST NOT raise an
      * {@link IllegalStateException} or any other exception.
      *
-     * <h3>Checked-exception narrowing</h3>
+     * <h4>Checked-exception narrowing</h4>
      * This override declares {@code close()} without
      * {@code throws Exception} so that callers do not need
      * checked-exception handling boilerplate. Concrete adapter close

@@ -168,7 +168,7 @@ public interface TransactionTypeRepository {
      * {@code [app/cbl/CBACT04C.cbl:L194,L212]} corresponds to a known
      * transaction type before computing interest.
      *
-     * <h3>Empty Optional semantics</h3>
+     * <h4>Empty Optional semantics</h4>
      * Returns {@link Optional#empty()} when no record matches the supplied
      * code &mdash; this corresponds exactly to the COBOL
      * {@code INVALID KEY} clause on
@@ -185,7 +185,7 @@ public interface TransactionTypeRepository {
      * case themselves. The port itself does NOT throw on missing
      * keys &mdash; that policy belongs to the caller.
      *
-     * <h3>Parameter constraints</h3>
+     * <h4>Parameter constraints</h4>
      * <ul>
      *   <li>{@code tranTypeCd}: non-null. The COBOL key
      *       {@code FD-TRAN-TYPE PIC X(02)}
@@ -227,7 +227,7 @@ public interface TransactionTypeRepository {
      * construction per AAP &sect;0.6.10, and end-to-end fixture
      * comparison by the golden-record harness per AAP &sect;0.6.11).
      *
-     * <h3>Ordering guarantee</h3>
+     * <h4>Ordering guarantee</h4>
      * Records are emitted in ascending order of the 2-byte
      * {@code TRAN-TYPE} primary key &mdash; matching the lexicographic
      * ordering of the underlying VSAM KSDS index defined by
@@ -237,7 +237,7 @@ public interface TransactionTypeRepository {
      * implementation that returns records in a different order changes
      * observable output and is a defect.
      *
-     * <h3>Resource ownership</h3>
+     * <h4>Resource ownership</h4>
      * The returned {@link Stream} is {@link AutoCloseable} and holds an
      * open file handle (or underlying cursor) for the lifetime of the
      * stream. Callers MUST close the stream via try-with-resources to
@@ -273,7 +273,7 @@ public interface TransactionTypeRepository {
      * against {@code TRANTYPE} (it is a static reference dataset per
      * AAP &sect;0.6.10).
      *
-     * <h3>FILLER preservation (AAP &sect;0.6.5)</h3>
+     * <h4>FILLER preservation (AAP &sect;0.6.5)</h4>
      * The trailing 8-byte {@code FILLER PIC X(08)}
      * {@code [app/cpy/CVTRA03Y.cpy:L7]} MUST be persisted verbatim
      * exactly as carried on the supplied {@link TranTypeRecord}; the
@@ -286,7 +286,7 @@ public interface TransactionTypeRepository {
      * hold &mdash; the formal byte-for-byte fidelity contract asserted
      * by the golden-record harness on every PR per AAP &sect;0.6.11.
      *
-     * <h3>Validation</h3>
+     * <h4>Validation</h4>
      * Implementations MUST verify that the {@link TranTypeRecord} is
      * non-null. Field-level validation (key length, description length,
      * FILLER length) is already enforced by the compact canonical
@@ -313,7 +313,7 @@ public interface TransactionTypeRepository {
      * issues a runtime {@code DELETE} against {@code TRANTYPE} (it is
      * a static reference dataset per AAP &sect;0.6.10).
      *
-     * <h3>Not-found behaviour</h3>
+     * <h4>Not-found behaviour</h4>
      * Implementations MUST throw a
      * {@link java.util.NoSuchElementException} when no record with the
      * supplied code exists &mdash; this mirrors the COBOL
@@ -323,7 +323,7 @@ public interface TransactionTypeRepository {
      * call {@link #findByCode(String)} first and skip the delete when
      * the optional is empty.
      *
-     * <h3>Parameter constraints</h3>
+     * <h4>Parameter constraints</h4>
      * Same as {@link #findByCode(String)}: {@code tranTypeCd} must be
      * non-null and at most 2 characters long. Implementations MAY
      * right-pad shorter values with ASCII spaces to match the COBOL

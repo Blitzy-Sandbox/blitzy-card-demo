@@ -68,7 +68,8 @@ import com.blitzy.carddemo.domain.util.Decimals;
  * </ol>
  *
  * <h2>COBOL Paragraph &rarr; Java Method Mapping</h2>
- * <table border="1" summary="Paragraph mapping">
+ * <table border="1">
+ * <caption>Paragraph mapping</caption>
  *   <tr><th>COBOL paragraph</th><th>Java method</th></tr>
  *   <tr><td>{@code MAIN-PARA}</td>
  *       <td>{@link #execute(CoBil00Input, CardDemoCommarea, AidKey)}</td></tr>
@@ -81,7 +82,11 @@ import com.blitzy.carddemo.domain.util.Decimals;
  *   <tr><td>{@code SEND-BILLPAY-SCREEN}</td>
  *       <td>{@link #sendBillpayScreen(MutableState)}</td></tr>
  *   <tr><td>{@code POPULATE-HEADER-INFO}</td>
- *       <td>{@link #populateHeaderInfo(MutableState)}</td></tr>
+ *       <td>folded into {@link #sendBillpayScreen(MutableState)} (see the
+ *       note at the {@code POPULATE-HEADER-INFO} comment in the source);
+ *       header field population is performed inline within the single
+ *       {@code CoBil00Output.builder()} chain to keep the entire screen
+ *       projection atomic.</td></tr>
  *   <tr><td>{@code READ-ACCTDAT-FILE}</td>
  *       <td>{@link #readAcctDatFile(MutableState, long)}</td></tr>
  *   <tr><td>{@code UPDATE-ACCTDAT-FILE}</td>

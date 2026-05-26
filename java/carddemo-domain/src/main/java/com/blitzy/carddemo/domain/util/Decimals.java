@@ -857,7 +857,7 @@ public final class Decimals {
      * {@code OUTREC FIELDS=(...,TRAN-CAT-BAL,EDIT=(TTTTTTTTT.TT),...)}
      * specification {@code [app/jcl/PRTCATBL.jcl:L53-L56]}.
      *
-     * <h3>How this differs from {@link #formatEditMask(BigDecimal, int, int)}</h3>
+     * <h4>How this differs from {@link #formatEditMask(BigDecimal, int, int)}</h4>
      * <p>{@link #formatEditMask(BigDecimal, int, int)} corresponds to the
      * COBOL edit mask {@code PIC -9(integerDigits).9(decimalDigits)} which
      * always emits a leading sign character ({@code ' '} for non-negative,

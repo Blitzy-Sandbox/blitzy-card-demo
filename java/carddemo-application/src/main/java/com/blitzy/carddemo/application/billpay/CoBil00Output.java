@@ -96,7 +96,8 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
  * value is pass-through (zero, the default, means "no hint").
  *
  * <h2>Component inventory</h2>
- * <table border="1" summary="BMS-to-record component mapping">
+ * <table border="1">
+ * <caption>BMS-to-record component mapping</caption>
  *   <thead>
  *     <tr><th>BMS field</th><th>BMS attrs / position</th><th>Record component</th></tr>
  *   </thead>

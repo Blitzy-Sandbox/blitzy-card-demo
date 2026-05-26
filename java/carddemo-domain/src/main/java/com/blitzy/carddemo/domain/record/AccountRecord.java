@@ -78,7 +78,7 @@ import java.util.Objects;
  *       the sign via overpunch:
  *       <code>'&#123;'</code>=+0, {@code A}..{@code I}=+1..+9,
  *       <code>'&#125;'</code>=-0, {@code J}..{@code R}=-1..-9.
- *       Example: {@code "00000001940{"} decodes to {@code +194.00}.
+ *       Example: <code>"00000001940{"</code> decodes to {@code +194.00}.
  *       This is decoded via {@link Decimals#parseZonedDecimal} and re-encoded
  *       via {@link Decimals#encodeZonedDecimal}.</li>
  *   <li>Date {@code PIC X(10)} fields: ISO-8601 {@code YYYY-MM-DD}

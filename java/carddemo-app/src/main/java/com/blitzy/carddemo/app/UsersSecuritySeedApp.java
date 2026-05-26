@@ -153,8 +153,8 @@ import org.slf4j.LoggerFactory;
  *       per AAP &sect;0.7.2.</li>
  * </ul>
  *
- * @see app/jcl/DUSRSECJ.jcl  the original source JCL
- * @see app/cpy/CSUSR01Y.cpy  the SEC-USER-DATA copybook defining the layout
+ * @see "app/jcl/DUSRSECJ.jcl  the original source JCL"
+ * @see "app/cpy/CSUSR01Y.cpy  the SEC-USER-DATA copybook defining the layout"
  * @see BatchRunContext       the immutable context bound to {@link #BATCH_CTX}
  * @since 1.0.0
  */

@@ -355,7 +355,7 @@ public interface DailyTransactionRepository extends AutoCloseable {
      *       instead of {@code END-OF-DAILY-TRANS-FILE}).</li>
      * </ul>
      *
-     * <h3>End-of-file semantics</h3>
+     * <h4>End-of-file semantics</h4>
      * The COBOL loop terminates when {@code DALYTRAN-STATUS = '10'}
      * (end-of-file) sets {@code END-OF-FILE = 'Y'}. The Java
      * translation expresses the same condition by having the
@@ -368,7 +368,7 @@ public interface DailyTransactionRepository extends AutoCloseable {
      * {@code '10'}; implementations MUST treat this as a normal
      * termination, not an error.
      *
-     * <h3>I/O error semantics</h3>
+     * <h4>I/O error semantics</h4>
      * Adapter-level I/O failures (the COBOL {@code DALYTRAN-STATUS
      * NOT = '00' AND NOT = '10'} branch &mdash; e.g., dataset
      * missing, file-system error, codepage decode failure) MUST be
@@ -380,7 +380,7 @@ public interface DailyTransactionRepository extends AutoCloseable {
      * FORBIDDEN per the Folder Rule (no checked exceptions on port
      * interfaces, matching the consistent sibling-port style).
      *
-     * <h3>Ordering</h3>
+     * <h4>Ordering</h4>
      * Records are returned in <em>physical input-file order</em>
      * &mdash; the order produced by the COBOL sequential
      * {@code READ}. Implementations MUST NOT sort, deduplicate, or
@@ -393,7 +393,7 @@ public interface DailyTransactionRepository extends AutoCloseable {
      * back into the original input order before calling
      * {@link #appendReject(DalyTranRecord, int, String)}).
      *
-     * <h3>Lazy evaluation</h3>
+     * <h4>Lazy evaluation</h4>
      * The returned stream is LAZY &mdash; records are decoded
      * one-at-a-time as the stream is consumed, NOT eagerly into a
      * collection. This matches the memory profile of the COBOL
@@ -402,7 +402,7 @@ public interface DailyTransactionRepository extends AutoCloseable {
      * essential for batches that may process millions of records
      * without blowing the heap.
      *
-     * <h3>Resource lifecycle</h3>
+     * <h4>Resource lifecycle</h4>
      * The returned {@link Stream} extends {@link AutoCloseable}.
      * Callers MUST close the stream (typically via
      * try-with-resources) so the adapter can release the underlying
@@ -454,7 +454,7 @@ public interface DailyTransactionRepository extends AutoCloseable {
      *     EXIT.
      * }</pre>
      *
-     * <h3>Reject-record layout (430 bytes)</h3>
+     * <h4>Reject-record layout (430 bytes)</h4>
      * The adapter MUST serialise the call as the following byte
      * image, matching the COBOL {@code REJECT-RECORD} layout at
      * {@code app/cbl/CBTRN02C.cbl:L176-L182}:
@@ -470,7 +470,7 @@ public interface DailyTransactionRepository extends AutoCloseable {
      * supplied {@code record} argument, preserving the original
      * {@link DalyTranRecord#filler()} byte-for-byte.
      *
-     * <h3>Parameter constraints</h3>
+     * <h4>Parameter constraints</h4>
      * <ul>
      *   <li>{@code record} &mdash; the offending daily transaction
      *       record (350 bytes). MUST NOT be {@code null}. Its
@@ -508,7 +508,7 @@ public interface DailyTransactionRepository extends AutoCloseable {
      *       outcome and MUST NOT be reported as an error.</li>
      * </ul>
      *
-     * <h3>Atomicity and ordering</h3>
+     * <h4>Atomicity and ordering</h4>
      * Each {@code appendReject} call is atomic with respect to the
      * single 430-byte record it writes &mdash; matching the COBOL
      * single {@code WRITE} verb. Implementations MUST NOT split a
@@ -521,7 +521,7 @@ public interface DailyTransactionRepository extends AutoCloseable {
      * the upstream {@link #streamSequential()} loop with the same
      * input.
      *
-     * <h3>I/O error semantics</h3>
+     * <h4>I/O error semantics</h4>
      * Adapter-level I/O failures (the COBOL
      * {@code DALYREJS-STATUS NOT = '00'} branch at
      * {@code app/cbl/CBTRN02C.cbl:L454-L463} &mdash; e.g., disk
@@ -530,7 +530,7 @@ public interface DailyTransactionRepository extends AutoCloseable {
      * corresponds to the COBOL {@code PERFORM 9999-ABEND-PROGRAM}
      * branch which abends the entire batch step.
      *
-     * <h3>Not surfaced here</h3>
+     * <h4>Not surfaced here</h4>
      * <ul>
      *   <li>There is NO random-access write to {@code DALYREJS}
      *       (no {@code REWRITE}, no {@code DELETE}); only

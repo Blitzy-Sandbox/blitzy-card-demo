@@ -200,8 +200,8 @@ import org.slf4j.LoggerFactory;
  *       per the matching note in {@link DefineGdgApp}.</li>
  * </ul>
  *
- * @see app/jcl/TRANBKP.jcl  the original source JCL
- * @see app/proc/REPROC.prc  the cataloged REPRO procedure
+ * @see "app/jcl/TRANBKP.jcl  the original source JCL"
+ * @see "app/proc/REPROC.prc  the cataloged REPRO procedure"
  * @see BatchRunContext      the immutable context bound to {@link #BATCH_CTX}
  * @see DefineGdgApp         creates the GDG base directories that this app populates
  * @since 1.0.0

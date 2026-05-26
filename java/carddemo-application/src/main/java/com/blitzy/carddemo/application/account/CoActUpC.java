@@ -100,6 +100,7 @@ import org.slf4j.LoggerFactory;
  * sealed {@link ChangeAction} hierarchy, which maps 1:1 to the COBOL
  * {@code ACUP-CHANGE-ACTION PIC X(1)} 88-level conditions (lines 770-810):
  * <table>
+ *   <caption>{@link ChangeAction} sealed-type to COBOL 88-level mapping</caption>
  *   <tr><th>{@link ChangeAction} permit</th><th>COBOL value</th><th>Meaning</th></tr>
  *   <tr><td>{@link ChangeAction.DetailsNotFetched}</td><td>{@code LOW-VALUES} / {@code SPACES}</td><td>Initial state; no account fetched.</td></tr>
  *   <tr><td>{@link ChangeAction.ShowDetails}</td><td>{@code 'S'}</td><td>Account fetched; awaiting edits.</td></tr>
@@ -480,8 +481,8 @@ public final class CoActUpC {
         /**
          * Translation of {@code EXEC CICS XCTL PROGRAM(...) COMMAREA(...)} —
          * transfer control to the named program. The caller is expected to
-         * route via {@link ProgramRegistry#invoke(String, byte[])} or
-         * equivalent.
+         * route via {@link ProgramRegistry#invoke(String, CardDemoCommarea)}
+         * or equivalent.
          *
          * @param targetProgram non-null COBOL program-id of the XCTL target
          *                      (e.g., {@link CoActUpC#LIT_MENU_PGM}).

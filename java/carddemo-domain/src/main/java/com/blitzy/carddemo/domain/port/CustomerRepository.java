@@ -197,7 +197,7 @@ public interface CustomerRepository extends AutoCloseable {
      * point for customer-file dumps (JCL {@code READCUST.jcl}) and seed
      * loads (JCL {@code CUSTFILE.jcl}, {@code DEFCUST.jcl}).
      *
-     * <h3>Resource management</h3>
+     * <h4>Resource management</h4>
      * The returned stream is backed by an open file channel (or database
      * cursor) and therefore <strong>extends {@link AutoCloseable}</strong>
      * (per the {@link Stream} contract). Callers <strong>MUST</strong>
@@ -209,7 +209,7 @@ public interface CustomerRepository extends AutoCloseable {
      * }</pre>
      * Failing to close the stream leaks an OS file handle.
      *
-     * <h3>Ordering invariant</h3>
+     * <h4>Ordering invariant</h4>
      * Per AAP &sect;0.1.3, reordering is FORBIDDEN: the JVM batch
      * implementation MUST emit records in the same ascending-CUST-ID
      * order as the COBOL baseline; any virtual-thread fan-out applied
@@ -249,7 +249,7 @@ public interface CustomerRepository extends AutoCloseable {
      *       affect the contract of this port.</li>
      * </ul>
      *
-     * <h3>Byte-fidelity contract</h3>
+     * <h4>Byte-fidelity contract</h4>
      * Implementations MUST persist the record so that a subsequent
      * {@link #findById(long)} returns a {@link CustomerRecord} whose
      * {@link CustomerRecord#encode()} produces exactly the bytes that

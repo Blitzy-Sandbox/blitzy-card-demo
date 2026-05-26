@@ -163,7 +163,7 @@ public interface UserSecurityRepository {
      * ({@code app/cbl/COUSR03C.cbl:L269-L278}) as the prelude to their
      * update / delete operations.
      *
-     * <h3>Return semantics</h3>
+     * <h4>Return semantics</h4>
      * <ul>
      *   <li>{@code Optional.of(user)} corresponds to COBOL
      *       {@code WS-RESP-CD = 0} (DFHRESP NORMAL): the record was
@@ -178,7 +178,7 @@ public interface UserSecurityRepository {
      *       app/cbl/COUSR03C.cbl:L287-L292}).</li>
      * </ul>
      *
-     * <h3>Key normalization</h3>
+     * <h4>Key normalization</h4>
      * COBOL space-pads {@code SEC-USR-ID} to 8 characters on the right;
      * implementations SHOULD apply the same right-space-padding to the
      * input key before comparison so a caller passing {@code "ADMIN"}
@@ -188,7 +188,7 @@ public interface UserSecurityRepository {
      * {@link IllegalArgumentException}; this contract does not mandate
      * one over the other.
      *
-     * <h3>Error handling</h3>
+     * <h4>Error handling</h4>
      * Any COBOL {@code WS-RESP-CD} value other than {@code 0} or
      * {@code 13} (e.g., I/O failure, dataset unavailable, KSDS index
      * corruption) corresponds to an unchecked exception thrown by the
@@ -217,7 +217,7 @@ public interface UserSecurityRepository {
      * read used by batch seed utilities (e.g., the IEBGENER copy of
      * {@code DUSRSECJ.jcl}).
      *
-     * <h3>Ordering invariant</h3>
+     * <h4>Ordering invariant</h4>
      * The returned stream MUST emit records in ascending key order
      * &mdash; the same order in which VSAM KSDS sequential
      * {@code READNEXT} returns them. Implementations MUST NOT reorder,
@@ -226,7 +226,7 @@ public interface UserSecurityRepository {
      * AAP &sect;0.1.3 (virtual-thread fan-out is not a license to
      * reorder records).
      *
-     * <h3>Resource lifecycle</h3>
+     * <h4>Resource lifecycle</h4>
      * The returned {@link Stream} typically backs an open file channel,
      * VSAM cursor, or JDBC {@code ResultSet}. Callers MUST close it
      * deterministically, preferably via {@code try-with-resources}:
@@ -240,13 +240,13 @@ public interface UserSecurityRepository {
      * Terminal short-circuiting operations such as {@link Stream#findFirst()}
      * close the underlying source automatically.
      *
-     * <h3>Empty dataset</h3>
+     * <h4>Empty dataset</h4>
      * If the dataset is empty (analogous to COBOL {@code DFHRESP(NOTFND)}
      * on the initial {@code STARTBR}, see
      * {@code app/cbl/COUSR00C.cbl:L600-L613}), the returned stream is
      * empty &mdash; it does NOT throw.
      *
-     * <h3>Error handling</h3>
+     * <h4>Error handling</h4>
      * Implementations throw an unchecked exception (typically
      * {@link java.io.UncheckedIOException} for the file adapter) on
      * underlying I/O failures during iteration. The COBOL counterpart
@@ -268,7 +268,7 @@ public interface UserSecurityRepository {
      * COUSR00C ({@code app/cbl/COUSR00C.cbl:L588}) for forward
      * pagination from a user-supplied starting key.
      *
-     * <h3>Equality vs. greater-than-or-equal positioning</h3>
+     * <h4>Equality vs. greater-than-or-equal positioning</h4>
      * VSAM {@code STARTBR} with no {@code EQUAL} qualifier (which is the
      * COUSR00C pattern, where the {@code GTEQ} is commented out at
      * {@code app/cbl/COUSR00C.cbl:L592}) positions the browse at the
@@ -279,7 +279,7 @@ public interface UserSecurityRepository {
      * any, is the record whose key is the smallest value
      * {@code >= startUserId}.
      *
-     * <h3>Null and blank handling</h3>
+     * <h4>Null and blank handling</h4>
      * If {@code startUserId} is {@code null}, empty, or contains only
      * whitespace, this method behaves identically to
      * {@link #streamSequential()} &mdash; the stream begins at the
@@ -288,13 +288,13 @@ public interface UserSecurityRepository {
      * to the lowest position in KSDS key order and causes
      * {@code STARTBR} to position at the first physical record.
      *
-     * <h3>Past-end-of-dataset positioning</h3>
+     * <h4>Past-end-of-dataset positioning</h4>
      * If {@code startUserId} is lexicographically greater than every
      * existing key, the returned stream is empty &mdash; analogous to
      * COBOL {@code DFHRESP(NOTFND)} on the initial {@code STARTBR}
      * ({@code app/cbl/COUSR00C.cbl:L600-L606}).
      *
-     * <h3>Ordering invariant and resource lifecycle</h3>
+     * <h4>Ordering invariant and resource lifecycle</h4>
      * Same as {@link #streamSequential()}: ascending key order, MUST be
      * closed by the caller (typically via {@code try-with-resources}).
      *
@@ -312,7 +312,7 @@ public interface UserSecurityRepository {
      * RIDFLD(SEC-USR-ID)} pattern in COUSR01C ({@code
      * app/cbl/COUSR01C.cbl:L240-L248}).
      *
-     * <h3>Duplicate-key contract</h3>
+     * <h4>Duplicate-key contract</h4>
      * If a record with the same {@code SEC-USR-ID} already exists,
      * implementations MUST throw an unchecked exception (typically
      * {@link IllegalStateException}, or an adapter-defined sealed
@@ -326,7 +326,7 @@ public interface UserSecurityRepository {
      * SEC-USR-ID} in its message to aid diagnostics, with the
      * password masked to prevent credential leakage.
      *
-     * <h3>Preconditions</h3>
+     * <h4>Preconditions</h4>
      * <ul>
      *   <li>{@code user} must not be {@code null}.</li>
      *   <li>{@code user.secUsrId()} must not be {@code null} or blank
@@ -335,14 +335,14 @@ public interface UserSecurityRepository {
      *       before reaching the WRITE).</li>
      * </ul>
      *
-     * <h3>Atomicity</h3>
+     * <h4>Atomicity</h4>
      * The duplicate-key check and the actual write SHOULD be atomic
      * from the perspective of a single caller. Implementations backed
      * by VSAM or a relational database satisfy this naturally; in-memory
      * adapters MUST synchronize the check-then-write internally if they
      * are exposed to multiple threads.
      *
-     * <h3>Error handling for non-duplicate failures</h3>
+     * <h4>Error handling for non-duplicate failures</h4>
      * Any COBOL {@code WS-RESP-CD} value indicating an I/O failure
      * (dataset unavailable, KSDS index corruption, disk full, etc.)
      * corresponds to an adapter-specific unchecked exception
@@ -368,7 +368,7 @@ public interface UserSecurityRepository {
      * {@code EXEC CICS REWRITE DATASET(WS-USRSEC-FILE) FROM(SEC-USER-DATA)}
      * ({@code app/cbl/COUSR02C.cbl:L360-L366}).
      *
-     * <h3>Not-found contract</h3>
+     * <h4>Not-found contract</h4>
      * If no record with the given {@code SEC-USR-ID} exists, the
      * implementation MUST throw an unchecked exception &mdash; the
      * conventional choice is {@link java.util.NoSuchElementException},
@@ -376,7 +376,7 @@ public interface UserSecurityRepository {
      * ({@code app/cbl/COUSR02C.cbl:L340-L345}) which displays the
      * user-visible message {@code "User ID NOT found..."}.
      *
-     * <h3>Read-then-rewrite locking semantics</h3>
+     * <h4>Read-then-rewrite locking semantics</h4>
      * On the mainframe, {@code EXEC CICS READ ... UPDATE} acquires an
      * exclusive lock on the record that is released by the subsequent
      * {@code REWRITE} (or {@code UNLOCK} on rollback). File-based
@@ -389,7 +389,7 @@ public interface UserSecurityRepository {
      * synchronize externally or use an adapter that explicitly
      * documents stronger guarantees.
      *
-     * <h3>Identity preservation</h3>
+     * <h4>Identity preservation</h4>
      * The {@code SEC-USR-ID} field of the supplied {@code user} record
      * IS the lookup key; implementations MUST NOT permit changing the
      * primary key via {@code update}. To change a user's ID the caller
@@ -400,7 +400,7 @@ public interface UserSecurityRepository {
      * key under which the prior {@code READ ... UPDATE} positioned the
      * record.
      *
-     * <h3>Preconditions</h3>
+     * <h4>Preconditions</h4>
      * <ul>
      *   <li>{@code user} must not be {@code null}.</li>
      *   <li>{@code user.secUsrId()} must not be {@code null} or blank.</li>
@@ -440,7 +440,7 @@ public interface UserSecurityRepository {
      * caller does not know whether the file is being rebuilt from
      * scratch (insert path) or topped-up incrementally (update path).
      *
-     * <h3>Atomicity caveat (race conditions)</h3>
+     * <h4>Atomicity caveat (race conditions)</h4>
      * Because {@code save} is implemented as
      * <i>findById-then-insert-or-update</i>, there is a TOCTOU
      * (time-of-check-to-time-of-use) window between the lookup and the
@@ -456,7 +456,7 @@ public interface UserSecurityRepository {
      * directly and handle the duplicate-key / not-found exception
      * paths explicitly.
      *
-     * <h3>Behavior summary</h3>
+     * <h4>Behavior summary</h4>
      * <table border="1">
      *   <caption>save(user) behavior</caption>
      *   <tr><th>findById(user.secUsrId())</th><th>delegated call</th></tr>
@@ -496,7 +496,7 @@ public interface UserSecurityRepository {
      * {@code EXEC CICS DELETE DATASET(WS-USRSEC-FILE)}
      * ({@code app/cbl/COUSR03C.cbl:L307-L311}).
      *
-     * <h3>Not-found contract</h3>
+     * <h4>Not-found contract</h4>
      * If no record with the given {@code userId} exists, the
      * implementation MUST throw an unchecked exception &mdash; the
      * conventional choice is {@link java.util.NoSuchElementException},
@@ -504,13 +504,13 @@ public interface UserSecurityRepository {
      * ({@code app/cbl/COUSR03C.cbl:L287-L292}) which displays the
      * user-visible message {@code "User ID NOT found..."}.
      *
-     * <h3>Key normalization</h3>
+     * <h4>Key normalization</h4>
      * As with {@link #findById(String)}, implementations SHOULD apply
      * COBOL-style right-space-padding to the input key before lookup
      * so a caller passing {@code "ADMIN"} matches the stored value
      * {@code "ADMIN   "}.
      *
-     * <h3>Atomicity</h3>
+     * <h4>Atomicity</h4>
      * The lookup and the actual delete SHOULD be atomic from the
      * perspective of a single caller. Implementations backed by VSAM
      * or a relational database satisfy this through their native
@@ -518,7 +518,7 @@ public interface UserSecurityRepository {
      * adapters MUST synchronize the operation internally if they are
      * exposed to multiple threads.
      *
-     * <h3>Error handling for non-not-found failures</h3>
+     * <h4>Error handling for non-not-found failures</h4>
      * Any COBOL {@code WS-RESP-CD} value indicating an I/O failure
      * (dataset unavailable, KSDS index corruption, etc.) corresponds
      * to an adapter-specific unchecked exception (typically

@@ -245,8 +245,8 @@ import org.slf4j.LoggerFactory;
  *       descriptors per AAP &sect;0.6.12.</li>
  * </ul>
  *
- * @see app/jcl/TRANFILE.jcl   the originating JCL job (seven-step DELETE/DEFINE/REPRO/AIX, sandwiched between SDSF CEMT close/open)
- * @see app/cpy/CVTRA05Y.cpy   the TRAN-RECORD copybook defining the 350-byte layout
+ * @see "app/jcl/TRANFILE.jcl   the originating JCL job (seven-step DELETE/DEFINE/REPRO/AIX, sandwiched between SDSF CEMT close/open)"
+ * @see "app/cpy/CVTRA05Y.cpy   the TRAN-RECORD copybook defining the 350-byte layout"
  * @see BatchRunContext        the immutable context bound to {@link #BATCH_CTX}
  * @see DefineCardXrefApp      the sibling XREFFILE bootstrap (also KSDS + AIX, no SDSF)
  * @since 1.0.0

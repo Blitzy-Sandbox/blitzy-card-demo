@@ -765,14 +765,14 @@ public final class CbAct04C {
      *       a clean run, {@link #APPL_ERROR} (12) on any failure.</li>
      * </ol>
      *
-     * <h3>{@code GOBACK} translation</h3>
+     * <h4>{@code GOBACK} translation</h4>
      * <p>COBOL {@code GOBACK} terminates the program with the value of
      * the {@code RETURN-CODE} special register. The Java equivalent is
      * this method's {@code int} return value, which
      * {@code carddemo-app/InterestCalculationApp} maps to a process
      * exit code in the shaded jar's {@code main}.
      *
-     * <h3>Error handling vs. abend</h3>
+     * <h4>Error handling vs. abend</h4>
      * <p>Per AAP &sect;0.7.1 ("identical observable outcomes"), I/O
      * errors do NOT raise a checked or unchecked exception out of
      * {@code run}; instead they are translated to a non-zero return

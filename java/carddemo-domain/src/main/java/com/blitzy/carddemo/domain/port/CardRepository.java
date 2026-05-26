@@ -137,7 +137,7 @@ public interface CardRepository extends AutoCloseable {
      * read in COCRDSLC {@code 9100-GETCARD-BYACCTCARD} at
      * {@code app/cbl/COCRDSLC.cbl:L742}.
      *
-     * <h3>Return semantics</h3>
+     * <h4>Return semantics</h4>
      * <ul>
      *   <li>{@code Optional.of(record)} &mdash; corresponds to the
      *       {@code WHEN DFHRESP(NORMAL)} branch of the COBOL
@@ -155,7 +155,7 @@ public interface CardRepository extends AutoCloseable {
      *       DFHRESP / DFHRESP2 codes verbatim.</li>
      * </ul>
      *
-     * <h3>Parameter contract</h3>
+     * <h4>Parameter contract</h4>
      * {@code cardNumber} carries the {@code CARD-NUM} key (PIC X(16) per
      * {@code app/cpy/CVACT02Y.cpy}) &mdash; alphanumeric, preserving
      * leading zeros. The {@link CardRecord} canonical constructor
@@ -185,7 +185,7 @@ public interface CardRepository extends AutoCloseable {
      * KSDS in primary-key order &mdash; the Java translation MUST emit
      * the same order.
      *
-     * <h3>Resource lifecycle</h3>
+     * <h4>Resource lifecycle</h4>
      * The returned {@link Stream} backs an underlying file channel or
      * DB cursor. Callers MUST close the stream &mdash; typically via
      * try-with-resources:
@@ -215,7 +215,7 @@ public interface CardRepository extends AutoCloseable {
      * honor the same "at-or-after" semantics so that the COBOL paging
      * behavior is preserved bit-for-bit.
      *
-     * <h3>Null / blank start-key</h3>
+     * <h4>Null / blank start-key</h4>
      * If {@code startCardNumber} is {@code null} or {@link String#isBlank()
      * blank}, this method behaves identically to
      * {@link #streamSequential()} &mdash; that is, it starts at the
@@ -226,7 +226,7 @@ public interface CardRepository extends AutoCloseable {
      * at the beginning of the file when no explicit starting key has
      * been supplied by the user.
      *
-     * <h3>Resource lifecycle</h3>
+     * <h4>Resource lifecycle</h4>
      * Same as {@link #streamSequential()} &mdash; callers MUST close
      * the returned stream.
      *
@@ -250,7 +250,7 @@ public interface CardRepository extends AutoCloseable {
      * This method also covers the bulk IDCAMS REPRO load of CARDDATA
      * via {@code app/jcl/CARDFILE.jcl}.
      *
-     * <h3>Byte fidelity (AAP &sect;0.6.5)</h3>
+     * <h4>Byte fidelity (AAP &sect;0.6.5)</h4>
      * Implementations MUST persist the entire 150-byte fixed-width
      * record image including the 59-byte {@code FILLER}
      * ({@link CardRecord#filler()}). The FILLER is structural padding
@@ -259,7 +259,7 @@ public interface CardRepository extends AutoCloseable {
      * external file consumers per AAP &sect;0.6.5. Truncating,
      * normalising, or synthesising the FILLER bytes is FORBIDDEN.
      *
-     * <h3>Logging</h3>
+     * <h4>Logging</h4>
      * Implementations MUST NOT log {@link CardRecord#cardNum()} or any
      * other field that would expose the full PAN. See the class-level
      * PCI / security note.
@@ -279,14 +279,14 @@ public interface CardRepository extends AutoCloseable {
      * {@code DELETE} / {@code DEFINE} cycle exercised by
      * {@code app/jcl/CARDFILE.jcl} during dataset (re-)load.
      *
-     * <h3>Not-found semantics</h3>
+     * <h4>Not-found semantics</h4>
      * If no card exists with the supplied key, implementations MUST
      * throw a {@link RuntimeException} (typically a typed adapter-level
      * exception). This mirrors the {@code DFHRESP(NOTFND)} fall-through
      * on a {@code DELETE} against a missing key &mdash; there is no
      * compensating no-op in the COBOL idiom.
      *
-     * <h3>Logging</h3>
+     * <h4>Logging</h4>
      * Implementations MUST NOT log the full 16-character key in
      * plaintext. Mask all but the last 4 digits per AAP &sect;0.7.2.
      *

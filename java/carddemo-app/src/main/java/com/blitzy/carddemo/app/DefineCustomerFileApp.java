@@ -221,9 +221,9 @@ import org.slf4j.LoggerFactory;
  *       per AAP &sect;0.7.1 and flagged in {@code java/MIGRATION_NOTES.md}.</li>
  * </ul>
  *
- * @see app/jcl/CUSTFILE.jcl  the production five-step customer-file bootstrap
- * @see app/jcl/DEFCUST.jcl   the alternate two-step define WITH preserved bug
- * @see app/cpy/CVCUS01Y.cpy  the CUSTOMER-RECORD 500-byte layout
+ * @see "app/jcl/CUSTFILE.jcl  the production five-step customer-file bootstrap"
+ * @see "app/jcl/DEFCUST.jcl   the alternate two-step define WITH preserved bug"
+ * @see "app/cpy/CVCUS01Y.cpy  the CUSTOMER-RECORD 500-byte layout"
  * @see DefineDiscountGroupApp sibling DEFINE/REPRO job sharing the same pattern
  * @see BatchRunContext       the immutable context bound to {@link #BATCH_CTX}
  * @since 1.0.0

@@ -233,7 +233,7 @@ public final class ScreenAttributeSetter {
      * {@code isReenter} from a pattern match such as
      * {@code commarea.cdemoGeneralInfo().pgmContext() instanceof PgmContext.Reenter}.
      *
-     * <h3>Behavior table</h3>
+     * <h4>Behavior table</h4>
      * <table border="1">
      *   <caption>Outcome of {@code applyFieldHighlight} for every
      *            ({@code flag} &times; {@code isReenter}) combination</caption>
@@ -281,7 +281,7 @@ public final class ScreenAttributeSetter {
      *   </tr>
      * </table>
      *
-     * <h3>Exhaustiveness guarantee</h3>
+     * <h4>Exhaustiveness guarantee</h4>
      * The pattern-matching {@code switch} expression over {@link ValidityFlag}
      * is exhaustive with <strong>no</strong> {@code default} branch (per AAP
      * &sect;0.7.3). The Java 25 compiler enforces this because

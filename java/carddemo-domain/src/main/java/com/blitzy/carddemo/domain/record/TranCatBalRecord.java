@@ -96,8 +96,8 @@ import java.util.Objects;
  * the rightmost byte, which combines the rightmost digit with the sign
  * via overpunch (per AAP &sect;0.6.5). For example, the
  * {@code app/data/ASCII/tcatbal.txt} fixture's first record
- * {@code "000000000010100010000000000{0000000000000000000000"} carries
- * {@code TRAN-CAT-BAL = +0.00} with the trailing {@code '{'} overpunch
+ * <code>"000000000010100010000000000{0000000000000000000000"</code> carries
+ * {@code TRAN-CAT-BAL = +0.00} with the trailing <code>'{'</code> overpunch
  * indicating positive zero. The codec is delegated to
  * {@link Decimals#parseZonedDecimal(byte[], int, int, int)} and
  * {@link Decimals#encodeZonedDecimal(BigDecimal, int, int)}, consistent
@@ -121,7 +121,7 @@ import java.util.Objects;
  * the canonicalization notes on
  * {@link Decimals#encodeZonedDecimal(BigDecimal, int, int)} (plain-digit
  * unsigned-style inputs in the last byte of {@code TRAN-CAT-BAL} are
- * decoded as positive and re-encoded with the canonical {@code '{'}/...
+ * decoded as positive and re-encoded with the canonical <code>'{'</code>/...
  * overpunch).
  *
  * <h2>Encoding rules (per AAP &sect;0.6.5 and binding agent-prompt

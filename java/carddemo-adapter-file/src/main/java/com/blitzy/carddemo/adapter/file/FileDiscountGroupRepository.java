@@ -22,6 +22,8 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
 import com.blitzy.carddemo.domain.port.DiscountGroupRepository;
 import com.blitzy.carddemo.domain.record.DisGroupRecord;
 
+import java.math.BigDecimal;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -447,7 +449,7 @@ public final class FileDiscountGroupRepository implements DiscountGroupRepositor
      *   END-READ.
      * }</pre>
      *
-     * <h3>Implementation</h3>
+     * <h4>Implementation</h4>
      * <ol>
      *   <li>Builds the 16-byte composite key via
      *       {@link #buildKey(String, String, int)} which validates
@@ -543,7 +545,7 @@ public final class FileDiscountGroupRepository implements DiscountGroupRepositor
      * against {@code DISCGRP} at runtime (it is a static reference
      * dataset per AAP &sect;0.6.10).
      *
-     * <h3>Implementation</h3>
+     * <h4>Implementation</h4>
      * <ol>
      *   <li>Verifies the supplied {@link DisGroupRecord} is
      *       non-null.</li>
@@ -637,7 +639,7 @@ public final class FileDiscountGroupRepository implements DiscountGroupRepositor
      * method to express the reset-and-reload idiom symmetrically
      * with sibling apps.
      *
-     * <h3>Implementation</h3>
+     * <h4>Implementation</h4>
      * <ol>
      *   <li>Builds the 16-byte composite key via
      *       {@link #buildKey(String, String, int)} (which also

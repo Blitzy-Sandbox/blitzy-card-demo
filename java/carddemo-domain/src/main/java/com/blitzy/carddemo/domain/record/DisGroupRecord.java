@@ -95,10 +95,10 @@ import java.util.Objects;
  * rightmost byte, which combines the rightmost digit with the sign via
  * overpunch (per AAP &sect;0.6.5). For example, the
  * {@code app/data/ASCII/discgrp.txt} fixture's first record
- * {@code "A00000000001000100150{0000000000000000000000000000"} carries
- * {@code DIS-INT-RATE = +15.00} &mdash; the substring {@code "00150{"} at
+ * <code>"A00000000001000100150{0000000000000000000000000000"</code> carries
+ * {@code DIS-INT-RATE = +15.00} &mdash; the substring <code>"00150{"</code> at
  * offset 16 decodes via the overpunch table as digits {@code "001500"}
- * with positive sign ({@code '{'} = positive zero at the trailing
+ * with positive sign (<code>'{'</code> = positive zero at the trailing
  * position), then scaled to two decimal places yields {@code 15.00}. The
  * codec is delegated to
  * {@link Decimals#parseZonedDecimal(byte[], int, int, int)} and
@@ -126,7 +126,7 @@ import java.util.Objects;
  * the canonicalization notes on
  * {@link Decimals#encodeZonedDecimal(BigDecimal, int, int)} (plain-digit
  * unsigned-style inputs in the last byte of {@code DIS-INT-RATE} are
- * decoded as positive and re-encoded with the canonical {@code '{'}-style
+ * decoded as positive and re-encoded with the canonical <code>'{'</code>-style
  * overpunch).
  *
  * <h2>Encoding rules (per AAP &sect;0.6.5 and binding agent-prompt
@@ -425,8 +425,8 @@ public record DisGroupRecord(
      *       {@link Decimals#parseZonedDecimal(byte[], int, int, int)}
      *       ({@code USAGE DISPLAY} zoned-decimal with sign overpunch on
      *       the rightmost byte; see {@link Decimals} for the full
-     *       overpunch table {@code '{'}/{@code 'A'}-{@code 'I'} for
-     *       non-negative, {@code '}'}/{@code 'J'}-{@code 'R'} for
+     *       overpunch table <code>'{'</code>/{@code 'A'}-{@code 'I'} for
+     *       non-negative, <code>'}'</code>/{@code 'J'}-{@code 'R'} for
      *       negative).</li>
      *   <li>{@code FILLER} (offset 22, length 28) &rarr;
      *       {@link Arrays#copyOfRange(byte[], int, int)} (opaque trailer

@@ -156,7 +156,8 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
  * </ol>
  *
  * <h2>BMS field-by-field mapping (per agent prompt Phase 2 syntactic checklist)</h2>
- * <table border="1" summary="BMS-to-record component mapping">
+ * <table border="1">
+ * <caption>BMS-to-record component mapping</caption>
  *   <thead>
  *     <tr><th>BMS field</th><th>BMS attrs / position</th><th>Record component</th></tr>
  *   </thead>

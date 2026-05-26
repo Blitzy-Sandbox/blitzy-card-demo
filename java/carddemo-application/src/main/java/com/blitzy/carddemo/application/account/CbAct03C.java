@@ -312,7 +312,7 @@ public final class CbAct03C {
      *   GOBACK.
      * }</pre>
      *
-     * <h3>Error handling (COBOL {@code 9999-ABEND-PROGRAM} translation)</h3>
+     * <h4>Error handling (COBOL {@code 9999-ABEND-PROGRAM} translation)</h4>
      * Any {@link Exception} thrown from
      * {@link CardXrefRepository#streamSequential()} (the open) or from
      * the stream's iteration (a read failure) is logged and surfaced as

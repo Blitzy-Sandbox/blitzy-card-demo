@@ -338,7 +338,7 @@ public interface TransactionRepository extends AutoCloseable {
      *       contract.</li>
      * </ul>
      *
-     * <h3>Return semantics</h3>
+     * <h4>Return semantics</h4>
      * <ul>
      *   <li>{@link Optional#of(Object) Optional.of(record)} &mdash;
      *       mirrors the COBOL {@code WHEN DFHRESP(NORMAL)} branch at
@@ -359,7 +359,7 @@ public interface TransactionRepository extends AutoCloseable {
      *       {@code DFHRESP} / {@code DFHRESP2} codes verbatim.</li>
      * </ul>
      *
-     * <h3>Parameter contract</h3>
+     * <h4>Parameter contract</h4>
      * {@code tranId} carries the {@code TRAN-ID} key
      * ({@code PIC X(16)} per {@code app/cpy/CVTRA05Y.cpy:L5})
      * &mdash; a 16-character alphanumeric value. Implementations MAY
@@ -411,7 +411,7 @@ public interface TransactionRepository extends AutoCloseable {
      * record. Preserving this idiom matters for byte-fidelity of
      * generated {@code TRAN-ID} values.
      *
-     * <h3>Return semantics</h3>
+     * <h4>Return semantics</h4>
      * <ul>
      *   <li>{@link Optional#of(Object) Optional.of(record)} &mdash;
      *       the record with the lexicographically largest
@@ -426,7 +426,7 @@ public interface TransactionRepository extends AutoCloseable {
      *       is the desired next-ID seed.</li>
      * </ul>
      *
-     * <h3>Implementation contract</h3>
+     * <h4>Implementation contract</h4>
      * Implementations MAY scan the dataset linearly, query a
      * secondary index, or maintain a high-water mark &mdash; the
      * public contract is "return the record with the
@@ -470,7 +470,7 @@ public interface TransactionRepository extends AutoCloseable {
      *       {@link #streamFrom(String)} instead.</li>
      * </ul>
      *
-     * <h3>Ordering invariant</h3>
+     * <h4>Ordering invariant</h4>
      * Ascending {@code TRAN-ID} order (lexicographic / byte-wise) is
      * part of the observable contract. Per AAP &sect;0.1.3,
      * reordering is FORBIDDEN: virtual threads "are NOT a license
@@ -479,7 +479,7 @@ public interface TransactionRepository extends AutoCloseable {
      * CBTRN03C's paginated report and the COTRN00C browse, breaking
      * the golden-record harness (AAP &sect;0.6.11).
      *
-     * <h3>Resource lifecycle</h3>
+     * <h4>Resource lifecycle</h4>
      * The returned {@link Stream} backs an underlying file channel
      * or DB cursor. Callers MUST close the stream &mdash; typically
      * via try-with-resources:
@@ -492,7 +492,7 @@ public interface TransactionRepository extends AutoCloseable {
      * processes such as the nightly transaction-posting (CBTRN02C)
      * or detail-reporting (CBTRN03C) flows.
      *
-     * <h3>Empty-dataset semantics</h3>
+     * <h4>Empty-dataset semantics</h4>
      * If the dataset is empty, this method returns an empty
      * (closeable) {@link Stream} rather than {@code null}. This
      * matches the COBOL behavior where the
@@ -545,7 +545,7 @@ public interface TransactionRepository extends AutoCloseable {
      *       stream (via try-with-resources) is the equivalent.</li>
      * </ul>
      *
-     * <h3>Parameter contract</h3>
+     * <h4>Parameter contract</h4>
      * <ul>
      *   <li>If {@code startTranId} is {@code null} or
      *       {@link String#isBlank() blank} (all-space or empty
@@ -566,13 +566,13 @@ public interface TransactionRepository extends AutoCloseable {
      *       {@code app/cbl/COTRN00C.cbl:L596}.</li>
      * </ul>
      *
-     * <h3>Ordering and lifecycle</h3>
+     * <h4>Ordering and lifecycle</h4>
      * Same as {@link #streamSequential()}: ascending lexicographic
      * {@code TRAN-ID} order; closeable stream; caller MUST close
      * via try-with-resources to release the underlying file channel
      * or DB cursor.
      *
-     * <h3>Empty-result semantics</h3>
+     * <h4>Empty-result semantics</h4>
      * If no records satisfy {@code TRAN-ID >= startTranId} (i.e.,
      * {@code startTranId} is lexicographically greater than every
      * existing key, or the dataset is empty), this method returns
@@ -608,7 +608,7 @@ public interface TransactionRepository extends AutoCloseable {
      * online bill-payment program (COBIL00C inspects a customer's
      * recent transactions before applying a payment).
      *
-     * <h3>Ordering</h3>
+     * <h4>Ordering</h4>
      * Records are returned in ascending {@code TRAN-CARD-NUM} order
      * &mdash; matching the AIX traversal order &mdash; with the
      * secondary tiebreaker of ascending {@code TRAN-ID} for stable
@@ -620,7 +620,7 @@ public interface TransactionRepository extends AutoCloseable {
      * order; reordering would change observable output and is
      * FORBIDDEN by AAP &sect;0.1.3 and AAP &sect;0.7.1.
      *
-     * <h3>Parameter contract</h3>
+     * <h4>Parameter contract</h4>
      * <ul>
      *   <li>{@code cardNumber} carries the 16-character
      *       {@code TRAN-CARD-NUM} value. Implementations SHOULD
@@ -634,7 +634,7 @@ public interface TransactionRepository extends AutoCloseable {
      *       &mdash; not {@code null}.</li>
      * </ul>
      *
-     * <h3>Resource lifecycle</h3>
+     * <h4>Resource lifecycle</h4>
      * Same as {@link #streamSequential()}: closeable stream; caller
      * MUST close via try-with-resources:
      * <pre>{@code
@@ -700,7 +700,7 @@ public interface TransactionRepository extends AutoCloseable {
      *       call.</li>
      * </ul>
      *
-     * <h3>Upsert semantics</h3>
+     * <h4>Upsert semantics</h4>
      * The COBOL semantics differ between the sequential-output and
      * KSDS call sites &mdash; see the class-level
      * "Duplicate-key semantics" section for the full taxonomy. To
@@ -723,7 +723,7 @@ public interface TransactionRepository extends AutoCloseable {
      * single {@code save} call simplifies the application layer and
      * matches the conventional Java repository-pattern idiom.
      *
-     * <h3>Byte fidelity (AAP &sect;0.6.5)</h3>
+     * <h4>Byte fidelity (AAP &sect;0.6.5)</h4>
      * Implementations MUST persist the entire 350-byte fixed-width
      * record image (including the 20-byte FILLER trailing the
      * {@code TRAN-PROC-TS} field at
@@ -732,7 +732,7 @@ public interface TransactionRepository extends AutoCloseable {
      * equal {@link TranRecord#encode()} for the supplied
      * {@code transaction}.
      *
-     * <h3>Error semantics</h3>
+     * <h4>Error semantics</h4>
      * Implementations SHOULD raise an unchecked
      * {@link RuntimeException} on any underlying I/O failure,
      * corresponding to the COBOL

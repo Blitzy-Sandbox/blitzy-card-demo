@@ -1224,6 +1224,417 @@ other observable output for the four primary input combinations:
 
 ---
 
+### 1.4.18 `CoRpt00C` "report submitted for printing ..." trailing-space STRING anomaly
+
+**Status**: PRESERVED VERBATIM — the Java translation in
+`java/carddemo-application/src/main/java/com/blitzy/carddemo/application/report/CoRpt00C.java`
+reproduces the COBOL `STRING` concatenation byte-for-byte, including
+the leading literal space inside the second STRING fragment and the
+exact trailing-space-and-ellipsis ending of the resulting message.
+
+**COBOL source**: `app/cbl/CORPT00C.cbl:L445-L454` — the
+`PROCESS-ENTER-KEY` branch (and its sibling SUBMIT-JOB-TO-INTRDR
+success path) builds the success message via:
+
+```cobol
+STRING WS-REPORT-NAME   DELIMITED BY SPACE
+  ' report submitted for printing ...'
+                        DELIMITED BY SIZE
+  INTO WS-MESSAGE
+```
+
+`WS-REPORT-NAME` is declared `PIC X(10) VALUE SPACES`
+(`app/cbl/CORPT00C.cbl:L58`) and receives one of three SPACE-padded
+report-type labels (`'Monthly'`, `'Yearly'`, `'Custom'` — assignments
+at lines 214, 240, 433). The `DELIMITED BY SPACE` clause causes the
+STRING to copy only the non-space prefix of `WS-REPORT-NAME` (e.g.,
+`Monthly`, 7 chars). The second fragment, the literal
+`' report submitted for printing ...'` (note the LEADING space before
+the word `report`), is then appended `DELIMITED BY SIZE` (i.e., all
+34 characters including the leading space). The resulting message
+therefore reads `"Monthly report submitted for printing ..."` with
+exactly one space between the report-type word and the verb. This is
+the intended COBOL behaviour; the single leading space inside the
+second literal compensates for the SPACE-delimited prefix and is
+NOT a defect.
+
+**Java translation**:
+`java/carddemo-application/src/main/java/com/blitzy/carddemo/application/report/CoRpt00C.java`
+at the success branch following `processEnterKey` (around line 1257)
+implements the same concatenation idiomatically:
+
+```java
+state.message = state.reportName + " report submitted for printing ...";
+```
+
+Where `state.reportName` is one of the three literal strings
+(`"Monthly"`, `"Yearly"`, `"Custom"`) assigned earlier in the
+program. Because the Java literals contain no trailing whitespace
+and the Java string concatenation does not implicitly trim, the
+output of the two implementations is byte-identical: 41 characters
+for `Monthly`/`Yearly` and 40 characters for `Custom`, with exactly
+one space between the report-type word and `report`.
+
+**Why preserved**: per AAP &sect;0.7.1 (Preserve-As-Is) and
+&sect;0.6.5 (byte-for-byte file fidelity), the success message that
+`CoRpt00C` writes into the `WS-MESSAGE` field flows back to the
+3270 screen and (post-translation) into the `CoRpt00Output.message`
+field. Any external consumer parsing the screen capture sees an
+identical byte sequence. The trailing `...` (three literal dots,
+not a Unicode ellipsis) and the surrounding spacing must be
+reproduced exactly.
+
+**Reference**: see also the Javadoc-level discussion at
+`CoRpt00C.java:L1250-L1257` (inline COBOL line-number citation
+to `app/cbl/CORPT00C.cbl:L445-L454`).
+
+---
+
+### 1.4.19 `CBTRN02C` reject codes 101 and 109 share `'ACCOUNT RECORD NOT FOUND'` description
+
+**Status**: PRESERVED VERBATIM — both codes intentionally use the
+same human-readable description in the COBOL source; the Java
+translation in
+`java/carddemo-application/src/main/java/com/blitzy/carddemo/application/transaction/CbTrn02C.java`
+preserves both code/description pairs byte-for-byte.
+
+**COBOL source**: two distinct paragraphs in `app/cbl/CBTRN02C.cbl`
+move different validation-fail-reason codes followed by the
+identical description literal:
+
+- `1500-B-LOOKUP-ACCT` paragraph at `app/cbl/CBTRN02C.cbl:L395-L401`:
+  ```cobol
+  READ ACCOUNT-FILE INTO ACCOUNT-RECORD
+     INVALID KEY
+       MOVE 101 TO WS-VALIDATION-FAIL-REASON
+       MOVE 'ACCOUNT RECORD NOT FOUND'
+         TO WS-VALIDATION-FAIL-REASON-DESC
+  ```
+  Code 101 is raised when the ACCOUNT-FILE primary-key READ fails
+  on lookup of the cross-referenced account (i.e., the XREF row
+  found an account ID but that account ID is not present in
+  `ACCTDATA`).
+
+- `2800-UPDATE-ACCOUNT-REC` paragraph at
+  `app/cbl/CBTRN02C.cbl:L554-L560`:
+  ```cobol
+  REWRITE FD-ACCTFILE-REC FROM  ACCOUNT-RECORD
+     INVALID KEY
+       MOVE 109 TO WS-VALIDATION-FAIL-REASON
+       MOVE 'ACCOUNT RECORD NOT FOUND'
+         TO WS-VALIDATION-FAIL-REASON-DESC
+  END-REWRITE.
+  ```
+  Code 109 is raised when the REWRITE on the same record after a
+  successful read fails with INVALID KEY (a transient condition
+  that should be vanishingly rare under VSAM but is defended
+  against by the COBOL programmer).
+
+**Analysis**: although the two codes are semantically distinct
+(101 = "read miss"; 109 = "rewrite miss after successful read"), the
+COBOL author chose to use the same English description for both. A
+downstream consumer that switches on the numeric `REASON` code can
+distinguish them; a consumer that switches on the description string
+cannot. This is the COBOL author's choice and is preserved.
+
+**Java translation**: per the CBTRN02C use case translation, the
+reject record's `validationFailReason` field carries the numeric
+code (101 or 109) and the `validationFailReasonDesc` field carries
+the literal string `"ACCOUNT RECORD NOT FOUND"` in BOTH cases. The
+reject record is written to `DALYREJS` (430-byte fixed format per
+the JCL `LRECL=430` setting) where downstream consumers can
+distinguish codes 101 and 109 via the numeric field. Any change
+that introduces distinct description strings for codes 101 and 109
+would constitute an enhancement beyond migration scope and is
+explicitly FORBIDDEN under AAP &sect;0.7.1 ("preserve current
+behavior … with minimal risk").
+
+**Why preserved**: per AAP &sect;0.7.1 Preserve-As-Is mandate — "All
+error codes, return codes, and abend conditions (translated to typed
+exceptions but with identical observable outcomes)." The reject
+record's byte layout, including the literal `'ACCOUNT RECORD NOT
+FOUND'` description for both codes, must be reproduced exactly.
+
+---
+
+### 1.4.20 `CoAdm01C` "coming soon" message — option-name interpolation commented out in COBOL
+
+**Status**: PRESERVED VERBATIM — the Java translation in
+`java/carddemo-domain/src/main/java/com/blitzy/carddemo/domain/menu/AdminMenuTable.java`
+(constant `COMING_SOON_MSG`) and
+`java/carddemo-application/src/main/java/com/blitzy/carddemo/application/menu/CoAdm01C.java`
+both reproduce the COBOL fallback message exactly:
+`"This option is coming soon ..."` with NO interpolated option name.
+
+**COBOL source**: `app/cbl/COADM01C.cbl:L144-L156` — in the
+`PROCESS-ENTER-KEY` branch that handles a selected admin option,
+when the option's target program is not yet implemented the program
+constructs a fallback message via STRING with the option-name
+interpolation EXPLICITLY COMMENTED OUT:
+
+```cobol
+STRING 'This option '       DELIMITED BY SIZE
+*      CDEMO-ADMIN-OPT-NAME(WS-OPTION)
+*                           DELIMITED BY SIZE
+        'is coming soon ...'   DELIMITED BY SIZE
+   INTO WS-MESSAGE
+```
+
+The two commented lines (`*` in column 7 = COBOL line comment
+marker) mean only two STRING fragments execute: `'This option '`
+(literal, 12 chars including a trailing space) and `'is coming soon
+...'` (literal, 18 chars). The result is `"This option is coming
+soon ..."` — exactly one space between `option` and `is` because the
+first fragment ends with one trailing space and the second begins
+with no leading space. Critically: the option's actual name
+(`CDEMO-ADMIN-OPT-NAME(WS-OPTION)`) does NOT appear in the rendered
+message.
+
+**Analysis**: the commented-out interpolation suggests that an
+earlier development iteration intended to produce messages like
+`"This option Card Management is coming soon ..."` but the feature
+was deliberately disabled — either because the option-name padding
+to PIC X(35) would produce excessive trailing whitespace
+(`"Card Management                    "`) or because the developer
+chose a terser message during integration. The commented-out lines
+were left in place rather than deleted, which is a common COBOL
+maintenance convention.
+
+**Java translation**:
+- `AdminMenuTable.java` declares the constant
+  `public static final String COMING_SOON_MSG = "This option is coming soon ..."`
+  with class-level Javadoc citing
+  `app/cbl/COADM01C.cbl:L149-L152` and explaining the
+  commented-out interpolation.
+- `CoAdm01C.java` (the use case) references `COMING_SOON_MSG`
+  verbatim when a selected admin option resolves to a program name
+  that is not yet wired into the `ProgramRegistry`; class-level
+  Javadoc at `CoAdm01C.java:L78-L92` cross-references this entry.
+
+**Why preserved**: per AAP &sect;0.7.1 Refactor Discipline — "If a
+COBOL paragraph contains dead code or obvious bugs, translate it
+faithfully and flag it in a MIGRATION_NOTES.md; do not 'fix' it in
+this refactor." Activating the commented-out interpolation would
+change the rendered message length and content (a behaviour change),
+so the dead-code comment IS the COBOL behaviour and is preserved.
+Any future enablement (e.g., adding the option name with explicit
+trim) belongs to a separate follow-up effort, not this migration.
+
+---
+
+### 1.4.21 `app/jcl/CREASTMT.JCL` line 90 — malformed `STMTFILE` DD garbled trailing tokens
+
+**Status**: PRESERVED VERBATIM — the Java translation in
+`java/carddemo-app/src/main/java/com/blitzy/carddemo/app/CreateStatementsApp.java`
+documents the JCL defect verbatim in class-level Javadoc and does
+NOT attempt to "clean up" the dataset definition; the runtime
+behaviour relies on the `DSN=` line that immediately follows the
+garbled fragment to establish the actual dataset name.
+
+**COBOL/JCL source**: `app/jcl/CREASTMT.JCL:L87-L92` — the
+`STMTFILE` DD card is constructed as:
+
+```jcl
+//STMTFILE DD DISP=(NEW,CATLG,DELETE),
+//         UNIT=SYSDA,
+//         DCB=(LRECL=80,BLKSIZE=8000,RECFM=FB),
+//         SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS
+//         DSN=AWS.M2.CARDDEMO.STATEMNT.PS
+```
+
+Line 90 ends with `RLSE), 00,RECFM=FB), ATA.VSAM.KSDS` — a textual
+artifact that appears to be the malformed remnant of a prior edit
+where part of an `LRECL=80` / `DSN=ACCTDATA.VSAM.KSDS` fragment was
+copy-pasted into the wrong DD card and only partially overwritten.
+The garbled tokens are syntactically OUTSIDE the JCL keyword/operand
+grammar because they fall after the `SPACE=(...)` operand and have
+no `,` continuation; on most z/OS JCL parsers they are silently
+treated as a trailing comment because the JCL line-continuation
+column rules (column 16 for operand, column 71 for continuation)
+position them in the "comment field." The line-91 `DSN=` then
+correctly establishes the dataset name.
+
+**Analysis**: the garbled tokens have no effect on runtime
+behaviour because the JCL parser treats them as comment text. The
+DD card is functionally equivalent to a clean version that omits
+them. However, the malformed fragment is preserved because:
+
+1. Removing it would alter the byte content of `app/jcl/CREASTMT.JCL`
+   — and per AAP &sect;0.2.2 the `app/` tree is IMMUTABLE.
+2. The malformed fragment is a useful forensic marker; if the
+   STMTFILE allocation ever exhibits unexpected behaviour, the
+   maintenance team can trace back to this comment.
+
+**Java translation**:
+`java/carddemo-app/src/main/java/com/blitzy/carddemo/app/CreateStatementsApp.java`
+class-level Javadoc at lines 129-145 cites
+`app/jcl/CREASTMT.JCL:L90` and documents that the Java composition
+root resolves the output file path from the `application.properties`
+key `carddemo.file.stmtfile.path` (defaulting to
+`./statemnt.ps`) — bypassing the JCL string entirely. The use case
+itself (`CbStm03A`) sees only a `Path` parameter and is oblivious to
+the JCL syntax.
+
+**Why preserved**: per AAP &sect;0.2.2 the original `app/` tree
+remains unmodified. Per AAP &sect;0.7.1 the JCL anomaly is documented
+here rather than "fixed" in the source. The Java implementation is
+functionally equivalent to a clean JCL because the parser-ignored
+fragment has no semantic effect.
+
+---
+
+### 1.4.22 `AdminMenuTable` `CDEMO-ADMIN-OPT-COUNT VALUE 4` vs `OCCURS 9 TIMES` slot allocation
+
+**Status**: PRESERVED VERBATIM — the Java translation in
+`java/carddemo-domain/src/main/java/com/blitzy/carddemo/domain/menu/AdminMenuTable.java`
+populates exactly 4 entries (matching `CDEMO-ADMIN-OPT-COUNT VALUE
+4`); the remaining 5 of 9 OCCURS slots are intentionally
+unrepresented because they are uninitialized filler in COBOL.
+
+**COBOL source**: `app/cpy/COADM02Y.cpy:L20-L48` — the copybook
+declares:
+
+```cobol
+05 CDEMO-ADMIN-OPT-COUNT           PIC 9(02) VALUE 4.
+05 CDEMO-ADMIN-OPTIONS-DATA.
+   ...
+05 CDEMO-ADMIN-OPTIONS REDEFINES CDEMO-ADMIN-OPTIONS-DATA.
+   10 CDEMO-ADMIN-OPT OCCURS 9 TIMES.
+     15 CDEMO-ADMIN-OPT-NUM           PIC 9(02).
+     15 CDEMO-ADMIN-OPT-NAME          PIC X(35).
+     15 CDEMO-ADMIN-OPT-PGMNAME       PIC X(08).
+```
+
+The COBOL author allocates physical storage for 9 admin-option
+slots (9 &times; 45-byte slots = 405 bytes of `CDEMO-ADMIN-OPTIONS-DATA`)
+but VALUE-clauses initialise only the first 4 (the literal
+declarations in the un-shown lines 23-43 of the copybook). The
+remaining slots 5-9 receive their default uninitialised content,
+which for a `WORKING-STORAGE SECTION` 01-level group is
+implementation-defined (typically `LOW-VALUES` or `SPACES`
+depending on the COBOL compiler / runtime defaults). The `COUNT`
+field at line 20 is `VALUE 4`, and the program (`COADM01C`)
+treats this as the upper bound when iterating the table.
+
+**Analysis**: the OCCURS 9 vs COUNT 4 mismatch is a deliberate
+COBOL design choice that provides room to add up to 5 more admin
+options without recompiling the copybook layout. Programs that
+iterate the table MUST use `CDEMO-ADMIN-OPT-COUNT` as the upper
+bound; iterating to slot 9 unconditionally would read uninitialised
+storage. The mismatch is intentional capacity-planning, not a bug.
+
+**Java translation**:
+`AdminMenuTable.java` declares `public static final int OPT_COUNT
+= 4` matching the COBOL `VALUE 4` and a `public static final
+List<AdminMenuEntry> ENTRIES` populated via `List.of(...)` with
+exactly 4 immutable entries (one per active admin option). The
+empty 5 slots are NOT represented as `null` or sentinel entries
+because:
+
+1. The COBOL `LOW-VALUES`/`SPACES` content of the empty slots has
+   no defined semantics; representing them as null would invent
+   information.
+2. `List.of(...)` produces a deeply-immutable list whose `.size()`
+   equals `OPT_COUNT` exactly; consumers iterate `ENTRIES` directly
+   and the slot-count mismatch is invisible.
+3. If a future admin option is added (slot 5 or beyond), the
+   addition is made by appending to `List.of(...)` and incrementing
+   `OPT_COUNT`; the OCCURS storage slot is no longer relevant
+   because Java arrays/lists size dynamically.
+
+**Why preserved**: per AAP &sect;0.6.1 (Records pattern) the Java
+translation produces structures that hold meaningful data only.
+Per AAP &sect;0.7.1 Preserve-As-Is, the OBSERVABLE behaviour
+(iteration produces exactly 4 admin options in declaration order)
+is preserved exactly. Reserving 5 unused slots in the Java
+representation would be a faithful but semantically empty
+translation; allocating a `List` of size 4 is the idiomatic Java
+expression of the same constraint.
+
+---
+
+### 1.4.23 `CoTrn01C` COBOL `READ … UPDATE` clause is vestigial — Java translation is read-only
+
+**Status**: PRESERVED VERBATIM AT OBSERVABLE-BEHAVIOUR LEVEL — the
+COBOL `READ … UPDATE` keyword is a vestigial artifact because the
+program issues NO subsequent `REWRITE` or `UNLOCK`; the Java
+translation in
+`java/carddemo-application/src/main/java/com/blitzy/carddemo/application/transaction/CoTrn01C.java`
+performs a plain read-only `findById` lookup, which produces
+identical observable outcomes.
+
+**COBOL source**: `app/cbl/COTRN01C.cbl:L267-L279` — the
+`READ-TRANSACT-FILE` paragraph contains:
+
+```cobol
+READ-TRANSACT-FILE.
+    EXEC CICS READ
+         DATASET   (WS-TRANSACT-FILE)
+         INTO      (TRAN-RECORD)
+         LENGTH    (LENGTH OF TRAN-RECORD)
+         RIDFLD    (TRAN-ID)
+         KEYLENGTH (LENGTH OF TRAN-ID)
+         UPDATE
+         RESP      (WS-RESP-CD)
+         RESP2     (WS-REAS-CD)
+    END-EXEC.
+```
+
+The `UPDATE` clause normally acquires an exclusive record lock that
+must be released either by a subsequent `EXEC CICS REWRITE` (writes
+the modified buffer back and releases the lock) or by `EXEC CICS
+UNLOCK` (releases the lock without writing). However, a full scan
+of `app/cbl/COTRN01C.cbl` shows that this program issues NEITHER
+`REWRITE` nor `UNLOCK` after the READ. The program's downstream
+logic (paragraphs `1000-SEND-MAP`, `2000-PROCESS-ENTER-KEY`,
+`9000-SEND-TRNVIEW-SCREEN`) only displays the fetched record on
+the 3270 screen and accepts a PF-key for navigation; no field is
+ever modified and the record is never written back.
+
+**Analysis**: the `UPDATE` clause appears to be a copy-paste
+artifact from a similar program (likely `COTRN02C` or `COACTUPC`
+which DO perform record updates). Under CICS the lock is implicitly
+released when the task ends (RETURN executes), so the missing
+REWRITE/UNLOCK does not cause a deadlock — but it does briefly hold
+the lock from READ time until task termination, blocking concurrent
+updates by other tasks. This is a (very minor) functional defect
+in the COBOL program, but per AAP &sect;0.7.1 we do not fix it;
+we preserve observable behaviour and document the artifact.
+
+**Java translation**:
+`CoTrn01C.java` invokes `TransactionRepository.findById(String)`
+which is a plain read-only lookup returning `Optional<TranRecord>`.
+The class-level Javadoc and the method-level Javadoc above the
+`readTransactFile(...)` private method explicitly cite this entry
+and explain the deviation from a literal translation. Observable
+outcomes are identical:
+
+- Record present → `state.tranRecord = record`, no error message.
+- Record absent → `state.errFlgOn = true`,
+  `state.message = "Transaction ID NOT found..."` (verbatim from
+  COBOL line 287).
+- I/O failure → `state.errFlgOn = true`,
+  `state.message = "Unable to lookup Transaction..."` (verbatim).
+
+The locking difference is not observable from outside the
+transaction boundary because:
+
+1. The COBOL lock window (READ → task end) is &sim;milliseconds.
+2. There is no Java-side equivalent lock because the file adapter
+   is per-call (no long-held cursors) and Java code paths that
+   modify `TransactionRepository` use their own write transactions.
+3. No external consumer observes the inter-task locking state.
+
+**Why preserved**: per AAP &sect;0.7.1 — "If a COBOL paragraph
+contains dead code or obvious bugs, translate it faithfully and
+flag it in a MIGRATION_NOTES.md; do not 'fix' it in this refactor."
+The vestigial `UPDATE` keyword is dead code (the lock has no
+purpose because no REWRITE follows). The Java translation
+faithfully reproduces the observable behaviour (read, display,
+return) and documents the COBOL artifact here.
+
+---
+
 ## Section 1.5: BEHAVIORAL PARITY PRESERVATIONS
 
 This section enumerates behaviours that look like defects or

@@ -62,7 +62,8 @@ import java.util.Objects;
  * mainframe BMS contract.
  *
  * <h2>Component inventory (BMS field &rarr; record component)</h2>
- * <table border="1" summary="BMS-to-record component mapping">
+ * <table border="1">
+ * <caption>BMS-to-record component mapping</caption>
  *   <thead>
  *     <tr><th>BMS field</th><th>BMS width / position</th>
  *         <th>Record component</th></tr>

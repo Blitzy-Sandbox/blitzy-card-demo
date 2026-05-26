@@ -173,8 +173,8 @@ import org.slf4j.LoggerFactory;
  *       AAP &sect;0.6.12.</li>
  * </ul>
  *
- * @see app/jcl/DISCGRP.jcl   the originating JCL job (three-step DELETE/DEFINE/REPRO)
- * @see app/cpy/CVTRA02Y.cpy  the DIS-GROUP-RECORD copybook defining the 50-byte layout
+ * @see "app/jcl/DISCGRP.jcl   the originating JCL job (three-step DELETE/DEFINE/REPRO)"
+ * @see "app/cpy/CVTRA02Y.cpy  the DIS-GROUP-RECORD copybook defining the 50-byte layout"
  * @see DefineTcatBalApp      sibling DEFINE/REPRO job sharing the same pattern
  * @see BatchRunContext       the immutable context bound to {@link #BATCH_CTX}
  * @since 1.0.0

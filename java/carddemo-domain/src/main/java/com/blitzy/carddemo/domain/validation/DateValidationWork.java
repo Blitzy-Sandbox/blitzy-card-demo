@@ -957,20 +957,20 @@ public record DateValidationWork(
          * (see CSUTLDWY.cpy lines 60-85 for the source field declarations):
          * <table>
          *   <caption>Position layout (80 bytes total)</caption>
-         *   <tr><td>severity</td>          <td align="right"> 4</td></tr>
-         *   <tr><td>"Mesg Code: "</td>     <td align="right">11</td></tr>
-         *   <tr><td>msgNo</td>             <td align="right"> 4</td></tr>
-         *   <tr><td>SPACE</td>             <td align="right"> 1</td></tr>
-         *   <tr><td>result</td>            <td align="right">15</td></tr>
-         *   <tr><td>SPACE</td>             <td align="right"> 1</td></tr>
-         *   <tr><td>"TstDate: "</td>       <td align="right"> 9</td></tr>
-         *   <tr><td>testDate</td>          <td align="right">10</td></tr>
-         *   <tr><td>SPACE</td>             <td align="right"> 1</td></tr>
-         *   <tr><td>"Mask used:"</td>      <td align="right">10</td></tr>
-         *   <tr><td>dateFormat</td>        <td align="right">10</td></tr>
-         *   <tr><td>SPACE</td>             <td align="right"> 1</td></tr>
-         *   <tr><td>SPACES (3)</td>        <td align="right"> 3</td></tr>
-         *   <tr><td><strong>TOTAL</strong></td><td align="right"><strong>80</strong></td></tr>
+         *   <tr><td>severity</td>          <td style="text-align:right"> 4</td></tr>
+         *   <tr><td>"Mesg Code: "</td>     <td style="text-align:right">11</td></tr>
+         *   <tr><td>msgNo</td>             <td style="text-align:right"> 4</td></tr>
+         *   <tr><td>SPACE</td>             <td style="text-align:right"> 1</td></tr>
+         *   <tr><td>result</td>            <td style="text-align:right">15</td></tr>
+         *   <tr><td>SPACE</td>             <td style="text-align:right"> 1</td></tr>
+         *   <tr><td>"TstDate: "</td>       <td style="text-align:right"> 9</td></tr>
+         *   <tr><td>testDate</td>          <td style="text-align:right">10</td></tr>
+         *   <tr><td>SPACE</td>             <td style="text-align:right"> 1</td></tr>
+         *   <tr><td>"Mask used:"</td>      <td style="text-align:right">10</td></tr>
+         *   <tr><td>dateFormat</td>        <td style="text-align:right">10</td></tr>
+         *   <tr><td>SPACE</td>             <td style="text-align:right"> 1</td></tr>
+         *   <tr><td>SPACES (3)</td>        <td style="text-align:right"> 3</td></tr>
+         *   <tr><td><strong>TOTAL</strong></td><td style="text-align:right"><strong>80</strong></td></tr>
          * </table>
          *
          * <p>Note that the COBOL {@code FILLER PIC X(11) VALUE 'Mesg Code:'} declaration

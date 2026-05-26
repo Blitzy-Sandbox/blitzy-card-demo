@@ -333,7 +333,7 @@ public interface TransactionCategoryBalanceRepository extends AutoCloseable {
      * }</pre>
      * &mdash; {@code [app/cbl/CBTRN02C.cbl:L469-L479]}.
      *
-     * <h3>Return semantics</h3>
+     * <h4>Return semantics</h4>
      * <ul>
      *   <li>{@link Optional#of(Object) Optional.of(record)} &mdash;
      *       mirrors the COBOL {@code FILE STATUS = '00'} branch at
@@ -366,7 +366,7 @@ public interface TransactionCategoryBalanceRepository extends AutoCloseable {
      *       {@code FILE STATUS} code verbatim.</li>
      * </ul>
      *
-     * <h3>Parameter constraints</h3>
+     * <h4>Parameter constraints</h4>
      * <ul>
      *   <li>{@code accountId}: in the inclusive range
      *       {@code 0L..99_999_999_999L} (COBOL
@@ -398,7 +398,7 @@ public interface TransactionCategoryBalanceRepository extends AutoCloseable {
      *       {@link TranCatBalRecord.TranCatKey#trancatCd()}.</li>
      * </ul>
      *
-     * <h3>Composite-key ordering</h3>
+     * <h4>Composite-key ordering</h4>
      * <p>The parameter order {@code (accountId, tranTypeCd, tranCatCd)}
      * matches the byte-positional layout of {@code FD-TRAN-CAT-KEY}
      * {@code [app/cbl/CBTRN02C.cbl:L93-L96]}: account-id at bytes
@@ -467,7 +467,7 @@ public interface TransactionCategoryBalanceRepository extends AutoCloseable {
      *       composite-key sequential order observed by CBACT04C.</li>
      * </ul>
      *
-     * <h3>Ordering invariant</h3>
+     * <h4>Ordering invariant</h4>
      * <p>Ascending composite-key order
      * ({@code TRANCAT-ACCT-ID} ascending, then
      * {@code TRANCAT-TYPE-CD} ascending, then {@code TRANCAT-CD}
@@ -479,7 +479,7 @@ public interface TransactionCategoryBalanceRepository extends AutoCloseable {
      * PRTCATBL paginated print, breaking the golden-record harness
      * (AAP &sect;0.6.11).
      *
-     * <h3>Resource lifecycle</h3>
+     * <h4>Resource lifecycle</h4>
      * <p>The returned {@link Stream} backs an underlying file channel
      * or DB cursor. Callers MUST close the stream &mdash; typically
      * via try-with-resources:
@@ -492,7 +492,7 @@ public interface TransactionCategoryBalanceRepository extends AutoCloseable {
      * processes such as the monthly interest computation (CBACT04C)
      * or the PRTCATBL print pass.
      *
-     * <h3>Empty-dataset semantics</h3>
+     * <h4>Empty-dataset semantics</h4>
      * <p>If the dataset is empty, this method returns an empty
      * (closeable) {@link Stream} rather than {@code null}. This
      * matches the COBOL behavior where the
@@ -554,7 +554,7 @@ public interface TransactionCategoryBalanceRepository extends AutoCloseable {
      *       method.</li>
      * </ul>
      *
-     * <h3>Why upsert collapses two COBOL paragraphs</h3>
+     * <h4>Why upsert collapses two COBOL paragraphs</h4>
      * <p>Per the binding agent prompt &sect;4.3 and AAP &sect;0.1.2
      * (translation rule), splitting WRITE and REWRITE into separate
      * Java methods would force every Java caller to first call
@@ -571,7 +571,7 @@ public interface TransactionCategoryBalanceRepository extends AutoCloseable {
      * {@code REWRITE} after a prior {@code READ} for an existing key
      * (file-status {@code '00'}).
      *
-     * <h3>FILLER preservation (AAP &sect;0.6.5)</h3>
+     * <h4>FILLER preservation (AAP &sect;0.6.5)</h4>
      * <p>The trailing 22-byte {@code FILLER PIC X(22)}
      * {@code [app/cpy/CVTRA01Y.cpy:L10]} MUST be persisted verbatim
      * exactly as carried on the supplied {@link TranCatBalRecord};
@@ -582,7 +582,7 @@ public interface TransactionCategoryBalanceRepository extends AutoCloseable {
      * hold &mdash; the formal byte-for-byte fidelity contract
      * asserted by the golden-record harness on every PR.
      *
-     * <h3>Decimal encoding (TRAN-CAT-BAL)</h3>
+     * <h4>Decimal encoding (TRAN-CAT-BAL)</h4>
      * <p>The {@code TRAN-CAT-BAL PIC S9(09)V99} field MUST be
      * encoded as signed packed-decimal-equivalent {@code USAGE
      * DISPLAY} zoned-decimal byte-for-byte identical to the COBOL
@@ -596,7 +596,7 @@ public interface TransactionCategoryBalanceRepository extends AutoCloseable {
      * re-encode (which would risk losing trailing zeros or
      * normalising the sign nybble).
      *
-     * <h3>Validation</h3>
+     * <h4>Validation</h4>
      * <p>Implementations MUST verify that the
      * {@link TranCatBalRecord} is non-null. Field-level validation
      * (composite-key components in range, balance scale exactly 2,
@@ -606,7 +606,7 @@ public interface TransactionCategoryBalanceRepository extends AutoCloseable {
      * constructed record is always safe to persist
      * {@code [TranCatBalRecord.java:L295-L357]}.
      *
-     * <h3>Error semantics</h3>
+     * <h4>Error semantics</h4>
      * <p>Any non-{@code '00'} VSAM file-status code on the underlying
      * {@code WRITE} or {@code REWRITE} corresponds to the COBOL
      * {@code MOVE 12 TO APPL-RESULT} branch at
@@ -647,7 +647,7 @@ public interface TransactionCategoryBalanceRepository extends AutoCloseable {
      * idiom symmetrically with the corresponding sibling apps for
      * {@code TRANSACT}, {@code TRANCATG}, etc.
      *
-     * <h3>Not-found behaviour</h3>
+     * <h4>Not-found behaviour</h4>
      * <p>Implementations MUST throw a
      * {@link java.util.NoSuchElementException} when no record with
      * the supplied composite key exists &mdash; this mirrors the
@@ -660,14 +660,14 @@ public interface TransactionCategoryBalanceRepository extends AutoCloseable {
      * {@link TransactionCategoryRepository#delete(String, int)} and
      * keeps delete behavior consistent across the port package.
      *
-     * <h3>Parameter constraints</h3>
+     * <h4>Parameter constraints</h4>
      * <p>Same as {@link #findByKey(long, String, int)}:
      * {@code accountId} must be in the inclusive range
      * {@code 0L..99_999_999_999L}; {@code tranTypeCd} must be
      * non-null and at most 2 characters long; {@code tranCatCd}
      * must be in the inclusive range {@code 0..9999}.
      *
-     * <h3>Composite-key ordering</h3>
+     * <h4>Composite-key ordering</h4>
      * <p>The parameter order {@code (accountId, tranTypeCd, tranCatCd)}
      * matches the byte-positional layout of {@code FD-TRAN-CAT-KEY}
      * {@code [app/cbl/CBTRN02C.cbl:L93-L96]}: account-id at bytes

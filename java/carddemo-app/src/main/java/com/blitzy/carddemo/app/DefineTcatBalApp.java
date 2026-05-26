@@ -168,8 +168,8 @@ import org.slf4j.LoggerFactory;
  *       AAP &sect;0.6.12.</li>
  * </ul>
  *
- * @see app/jcl/TCATBALF.jcl  the originating JCL job (three-step DELETE/DEFINE/REPRO)
- * @see app/cpy/CVTRA01Y.cpy  the TRAN-CAT-BAL-RECORD copybook defining the 50-byte layout
+ * @see "app/jcl/TCATBALF.jcl  the originating JCL job (three-step DELETE/DEFINE/REPRO)"
+ * @see "app/cpy/CVTRA01Y.cpy  the TRAN-CAT-BAL-RECORD copybook defining the 50-byte layout"
  * @see PrintTcatBalApp       the downstream report job that reads the file this app produces
  * @see BatchRunContext       the immutable context bound to {@link #BATCH_CTX}
  * @since 1.0.0

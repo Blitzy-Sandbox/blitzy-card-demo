@@ -312,7 +312,7 @@ public final class ReadAccountDumpApp {
      * configuration arrives via JCL DD statements (translated to
      * environment variables / system properties per AAP &sect;0.5.4).
      *
-     * <h3>Control flow</h3>
+     * <h4>Control flow</h4>
      * <ol>
      *   <li>Build a {@link BatchRunContext} from the environment via
      *       {@link BatchRunContext#fromEnvironment()}. This consults
@@ -327,7 +327,7 @@ public final class ReadAccountDumpApp {
      *       application-result {@code int}.</li>
      *   <li>Catch any propagated {@link Exception} (including the
      *       checked exception declared by
-     *       {@link ScopedValue.Carrier#call(java.util.concurrent.Callable)});
+     *       {@link ScopedValue.Carrier#call(ScopedValue.CallableOp)});
      *       log it and substitute {@link #RC_ERROR} as the return code.</li>
      *   <li>Map the (possibly {@code null}) {@link Integer} return code
      *       to a process exit code via an exhaustive
@@ -336,8 +336,8 @@ public final class ReadAccountDumpApp {
      *   <li>Call {@link System#exit(int)} with the mapped exit code.</li>
      * </ol>
      *
-     * <h3>Why {@code Integer} (boxed), not {@code int}?</h3>
-     * <p>{@link ScopedValue.Carrier#call(java.util.concurrent.Callable)
+     * <h4>Why {@code Integer} (boxed), not {@code int}?</h4>
+     * <p>{@link ScopedValue.Carrier#call(ScopedValue.CallableOp)
      * call(Callable&lt;? extends R&gt;)} returns {@code R} &mdash; a
      * reference type, since {@link java.util.concurrent.Callable Callable}
      * is generic over a reference parameter. The {@code int} returned by
@@ -349,7 +349,7 @@ public final class ReadAccountDumpApp {
      * primitive-pattern matching of JEP 507 (which is explicitly
      * forbidden by AAP &sect;0.7.4).
      *
-     * <h3>Why no {@code default} branch?</h3>
+     * <h4>Why no {@code default} branch?</h4>
      * <p>Per AAP &sect;0.6.7, pattern-matching switches in CardDemo Java
      * code never use a {@code default} branch &mdash; exhaustiveness is
      * enforced by the compiler through a total pattern
@@ -422,7 +422,7 @@ public final class ReadAccountDumpApp {
      * returns the use-case's application-result code.
      *
      * <p>This method is the {@link java.util.concurrent.Callable Callable}
-     * passed to {@link ScopedValue.Carrier#call(java.util.concurrent.Callable)}
+     * passed to {@link ScopedValue.Carrier#call(ScopedValue.CallableOp)}
      * in {@link #main(String[])}; it MUST therefore have a signature
      * compatible with a {@code Callable<Integer>} when used as a
      * method reference. Its visibility is {@code private} because it is
@@ -431,7 +431,7 @@ public final class ReadAccountDumpApp {
      * {@link #BATCH_CTX}); the {@code ReadAccountDumpApp::execute}
      * method reference site is internal to this class.
      *
-     * <h3>Hexagonal wiring (AAP &sect;0.3.2)</h3>
+     * <h4>Hexagonal wiring (AAP &sect;0.3.2)</h4>
      * <ol>
      *   <li>Resolve the ACCTFILE input path via
      *       {@link #getProp(String, String)} &mdash; the JCL
@@ -466,7 +466,7 @@ public final class ReadAccountDumpApp {
      *       exit code).</li>
      * </ol>
      *
-     * <h3>Resource lifecycle</h3>
+     * <h4>Resource lifecycle</h4>
      * <p>The adapter is opened inside a try-with-resources block to
      * guarantee that the underlying file channels are released on every
      * exit path &mdash; matching the COBOL convention that the

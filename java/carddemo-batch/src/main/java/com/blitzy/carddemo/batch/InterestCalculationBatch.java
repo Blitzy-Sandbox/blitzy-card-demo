@@ -746,7 +746,7 @@ public final class InterestCalculationBatch {
      * {@link BatchRunContext} should invoke the no-arg
      * {@link #execute()} overload.
      *
-     * <h3>Examples</h3>
+     * <h4>Examples</h4>
      * <ul>
      *   <li>{@code parseParmDate("2022071800")} returns
      *       {@code LocalDate.of(2022, 7, 18)} &mdash; matches the JCL

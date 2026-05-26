@@ -125,8 +125,9 @@ import org.slf4j.LoggerFactory;
  *       {@link CbAct03C#run()} surfaces I/O failures via its {@code int}
  *       return value ({@link CbAct03C#APPL_ERROR} = 12 falls through this
  *       app's switch as a pass-through value); any uncaught
- *       {@link Exception} propagating out of {@link ScopedValue#call} is
- *       logged and mapped to RC_ERROR by {@link #main(String[])}.</li>
+ *       {@link Exception} propagating out of
+ *       {@link ScopedValue.Carrier#call(ScopedValue.CallableOp)}
+ *       is logged and mapped to RC_ERROR by {@link #main(String[])}.</li>
  * </ul>
  *
  * <h2>Batch-run context propagation (AAP &sect;0.6.6)</h2>

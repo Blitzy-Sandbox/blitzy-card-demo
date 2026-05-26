@@ -500,7 +500,7 @@ public final class CreateStatementsBatch {
      * the use case itself takes responsibility for any pre-existing
      * output file cleanup before opening {@code STMTFILE}/{@code HTMLFILE}).
      *
-     * <h2>Return-code semantics</h2>
+     * <h4>Return-code semantics</h4>
      *
      * <p>The returned {@code int} is the verbatim result of
      * {@link CbStm03A#run()}. Per the {@link CbStm03A} class-level
@@ -525,7 +525,7 @@ public final class CreateStatementsBatch {
      * that chains {@code CreateStatementsBatch} with downstream cleanup
      * steps).
      *
-     * <h2>Conditional execution ({@code COND=(0,NE)})</h2>
+     * <h4>Conditional execution ({@code COND=(0,NE)})</h4>
      *
      * <p>The JCL {@code COND=(0,NE)} predicate on STEP040 means
      * "execute only if every prior step returned 0." This driver does
@@ -535,7 +535,7 @@ public final class CreateStatementsBatch {
      * the composition root will catch the exception before this
      * {@code execute()} is invoked.
      *
-     * <h2>Timing and logging</h2>
+     * <h4>Timing and logging</h4>
      *
      * <p>The method captures wall-clock elapsed time around the
      * {@link CbStm03A#run()} call via {@link Instant#now()} bracketing

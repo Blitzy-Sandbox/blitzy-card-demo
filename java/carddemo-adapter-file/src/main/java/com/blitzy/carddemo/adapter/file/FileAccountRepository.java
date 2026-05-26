@@ -367,7 +367,7 @@ public final class FileAccountRepository implements AccountRepository {
      *       {@code app/cbl/COBIL00C.cbl:L345-L354}.</li>
      * </ul>
      *
-     * <h3>Implementation</h3>
+     * <h4>Implementation</h4>
      * <ol>
      *   <li>Validates {@code acctId} is in the {@code PIC 9(11)} range
      *       {@code [0, 99_999_999_999]} (fail-fast per AAP &sect;0.6.3
@@ -411,7 +411,7 @@ public final class FileAccountRepository implements AccountRepository {
      * (iterates every account, computes interest from transaction-category
      * balances, then rewrites via {@link #save(AccountRecord)}).
      *
-     * <h3>Resource lifecycle</h3>
+     * <h4>Resource lifecycle</h4>
      * The returned stream wraps an underlying
      * {@link java.nio.channels.SeekableByteChannel}; callers MUST close
      * the stream (typically via try-with-resources) to release the
@@ -446,7 +446,7 @@ public final class FileAccountRepository implements AccountRepository {
      * {@code app/cbl/COBIL00C.cbl:L379-L385}, and the IDCAMS REPRO bulk
      * load from {@code app/data/ASCII/acctdata.txt}.
      *
-     * <h3>Implementation</h3>
+     * <h4>Implementation</h4>
      * <ol>
      *   <li>Null-checks the record argument (fail-fast per port contract).</li>
      *   <li>Encodes the record via {@link AccountRecord#encode()} and
@@ -510,13 +510,13 @@ public final class FileAccountRepository implements AccountRepository {
      * (re-)load, as well as fixture reset in the golden-record harness
      * (AAP &sect;0.6.11).
      *
-     * <h3>Not-found semantics</h3>
+     * <h4>Not-found semantics</h4>
      * If no account exists with the supplied key, throws
      * {@link NoSuchElementException} &mdash; mirroring the COBOL
      * {@code DELETE} with {@code INVALID KEY} branch (FILE STATUS '23';
      * NOTFND is not a silent no-op).
      *
-     * <h3>Implementation</h3>
+     * <h4>Implementation</h4>
      * <ol>
      *   <li>Validates {@code acctId} is in the {@code PIC 9(11)} range
      *       {@code [0, 99_999_999_999]}.</li>

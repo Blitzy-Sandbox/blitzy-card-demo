@@ -147,7 +147,7 @@ import java.util.Objects;
  * All declared state is immutable. The {@link DateTimeFormatter} instances
  * are documented as thread-safe and immutable in the JDK; the constants
  * declared here may be safely shared across virtual threads (per AAP
- * &sect;0.6.6) and {@link java.util.concurrent.ScopedValue} scopes without
+ * &sect;0.6.6) and {@link java.lang.ScopedValue} scopes without
  * synchronization.
  *
  * <h2>Forbidden references (AAP &sect;0.6.4)</h2>

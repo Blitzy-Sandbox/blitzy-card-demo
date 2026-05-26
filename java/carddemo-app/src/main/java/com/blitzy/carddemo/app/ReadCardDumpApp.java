@@ -112,7 +112,8 @@ import org.slf4j.LoggerFactory;
  *       {@link CbAct02C#run()} surfaces I/O failures via its {@code int}
  *       return value (APPL-RESULT = 12 maps to RC_ERROR here); any
  *       uncaught {@link Exception} propagating out of
- *       {@link ScopedValue#call} is logged and mapped to RC_ERROR by
+ *       {@link ScopedValue.Carrier#call(ScopedValue.CallableOp)}
+ *       is logged and mapped to RC_ERROR by
  *       {@link #main(String[])}.</li>
  * </ul>
  *

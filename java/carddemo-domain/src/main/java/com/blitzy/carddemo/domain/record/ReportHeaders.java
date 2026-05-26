@@ -120,7 +120,9 @@ import java.util.Objects;
  * alphanumeric item to a longer one right-pads the destination with
  * spaces. The {@code encode()} methods on this class produce buffers at
  * the natural CVTRA07Y record length; the I/O adapter is responsible for
- * padding to 133 bytes via {@link FileLineWriter} or equivalent.
+ * padding to 133 bytes via the file adapter's report writer (see
+ * {@code com.blitzy.carddemo.adapter.file.FixedWidthWriter}) or
+ * equivalent.
  *
  * <h2>Numeric edit pictures (Z suppression and sign control)</h2>
  * <ul>

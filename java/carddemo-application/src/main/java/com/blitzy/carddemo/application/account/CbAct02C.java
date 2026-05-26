@@ -287,7 +287,7 @@ public final class CbAct02C {
      *   GOBACK.
      * }</pre>
      *
-     * <h3>Error handling (COBOL {@code 9999-ABEND-PROGRAM} translation)</h3>
+     * <h4>Error handling (COBOL {@code 9999-ABEND-PROGRAM} translation)</h4>
      * Any {@link RuntimeException} thrown from
      * {@link CardRepository#streamSequential()} (the open) or from the
      * stream's iteration (a read failure) is logged and surfaced as a

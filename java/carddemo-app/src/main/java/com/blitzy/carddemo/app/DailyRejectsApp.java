@@ -151,7 +151,7 @@ import org.slf4j.LoggerFactory;
  *       {@code MIGRATION_NOTES.md}.</li>
  * </ul>
  *
- * @see app/jcl/DALYREJS.jcl  the originating JCL job
+ * @see "app/jcl/DALYREJS.jcl  the originating JCL job"
  * @see BatchRunContext        the immutable per-job context bound to
  *                             {@link #BATCH_CTX}
  * @see PostTransactionsApp    the downstream job that writes the

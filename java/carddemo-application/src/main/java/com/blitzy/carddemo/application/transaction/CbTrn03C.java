@@ -91,7 +91,7 @@ import com.blitzy.carddemo.domain.util.Decimals;
  *   <li>{@code 9500-DATEPARM-CLOSE} &rarr; {@link #closeDateParm()}</li>
  *   <li>{@code 9910-DISPLAY-IO-STATUS} &rarr;
  *       {@link #displayIoStatus(String)}</li>
- *   <li>{@code 9999-ABEND-PROGRAM} &rarr; {@link #abendProgram(String)}</li>
+ *   <li>{@code 9999-ABEND-PROGRAM} &rarr; {@link #abendProgram(String, Throwable)}</li>
  * </ul>
  *
  * <h2>COBOL anomalies preserved verbatim (AAP &sect;0.7.1)</h2>

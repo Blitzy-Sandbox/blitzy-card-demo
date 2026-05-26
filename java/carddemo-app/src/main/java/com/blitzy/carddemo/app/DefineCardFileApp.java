@@ -246,8 +246,8 @@ import org.slf4j.LoggerFactory;
  *       descriptors per AAP &sect;0.6.12.</li>
  * </ul>
  *
- * @see app/jcl/CARDFILE.jcl  the originating JCL job (eight-step SDSF/IDCAMS bootstrap)
- * @see app/cpy/CVACT02Y.cpy  the CARD-RECORD copybook defining the 150-byte layout
+ * @see "app/jcl/CARDFILE.jcl  the originating JCL job (eight-step SDSF/IDCAMS bootstrap)"
+ * @see "app/cpy/CVACT02Y.cpy  the CARD-RECORD copybook defining the 150-byte layout"
  * @see BatchRunContext       the immutable context bound to {@link #BATCH_CTX}
  * @see DefineCardXrefApp     the sibling XREFFILE bootstrap (KSDS + AIX, no CEMT)
  * @since 1.0.0

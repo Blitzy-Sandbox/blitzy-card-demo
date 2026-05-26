@@ -167,9 +167,9 @@ import org.slf4j.LoggerFactory;
  *       AAP &sect;0.6.12.</li>
  * </ul>
  *
- * @see app/jcl/ACCTFILE.jcl    the originating JCL job (three-step IDCAMS bootstrap)
- * @see app/cpy/CVACT01Y.cpy    the ACCOUNT-RECORD copybook defining the 300-byte layout
- * @see app/data/ASCII/acctdata.txt the 50-record ASCII fixture loaded by STEP15 REPRO
+ * @see "app/jcl/ACCTFILE.jcl    the originating JCL job (three-step IDCAMS bootstrap)"
+ * @see "app/cpy/CVACT01Y.cpy    the ACCOUNT-RECORD copybook defining the 300-byte layout"
+ * @see "app/data/ASCII/acctdata.txt the 50-record ASCII fixture loaded by STEP15 REPRO"
  * @see BatchRunContext         the immutable context bound to {@link #BATCH_CTX}
  * @see DefineCardFileApp       the sibling CARDFILE bootstrap (KSDS + AIX, 8 steps)
  * @since 1.0.0
@@ -353,7 +353,7 @@ public final class DefineAccountFileApp {
      * {@code default} branch is permitted per AAP &sect;0.7.3 &mdash; the
      * Java compiler enforces exhaustiveness over {@code Integer} via these
      * cases. The leading {@code case null} guards against the (theoretical)
-     * possibility of {@link ScopedValue.Carrier#call(java.util.concurrent.Callable)}
+     * possibility of {@link ScopedValue.Carrier#call(ScopedValue.CallableOp)}
      * returning {@code null} through the {@code Integer} autoboxing path.
      *
      * @param args command-line arguments. Currently unused; configuration

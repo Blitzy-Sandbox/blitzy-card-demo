@@ -185,8 +185,8 @@ import java.util.stream.Stream;
  * {@link java.math.RoundingMode#HALF_EVEN} (banker's rounding); callers
  * passing a {@link AccountRecord} to {@link #save(AccountRecord)} can
  * therefore rely on the encoded byte image preserving trailing zeros
- * (i.e., {@code 1.20} is encoded as {@code "00000001940{"} via zoned
- * decimal, never {@code "0000000194{"}). Implementations MUST NOT
+ * (i.e., {@code 1.20} is encoded as <code>"00000001940{"</code> via zoned
+ * decimal, never <code>"0000000194{"</code>). Implementations MUST NOT
  * rescale or truncate monetary fields beyond what
  * {@link AccountRecord} has already enforced.
  *
@@ -270,7 +270,7 @@ public interface AccountRepository extends AutoCloseable {
      *       value-read contract.</li>
      * </ul>
      *
-     * <h3>Return semantics</h3>
+     * <h4>Return semantics</h4>
      * <ul>
      *   <li>{@link Optional#of(Object) Optional.of(record)} &mdash;
      *       mirrors the COBOL {@code NOT INVALID KEY} branch (e.g.,
@@ -296,7 +296,7 @@ public interface AccountRepository extends AutoCloseable {
      *       codes verbatim.</li>
      * </ul>
      *
-     * <h3>Parameter contract</h3>
+     * <h4>Parameter contract</h4>
      * {@code acctId} carries the {@code ACCT-ID} key
      * ({@code PIC 9(11)} per {@code app/cpy/CVACT01Y.cpy:L5})
      * &mdash; an unsigned 11-digit numeric value in the range
@@ -339,7 +339,7 @@ public interface AccountRepository extends AutoCloseable {
      * transaction-category balances, and rewrites the post-interest
      * balance via {@link #save(AccountRecord)}).
      *
-     * <h3>Ordering invariant</h3>
+     * <h4>Ordering invariant</h4>
      * Ascending {@code ACCT-ID} order is part of the observable
      * contract. Per AAP &sect;0.1.3, reordering is FORBIDDEN: virtual
      * threads "are NOT a license to reorder records, change sort
@@ -348,7 +348,7 @@ public interface AccountRepository extends AutoCloseable {
      * ACCOUNT-RECORD} loop, breaking the golden-record harness
      * (AAP &sect;0.6.11).
      *
-     * <h3>Resource lifecycle</h3>
+     * <h4>Resource lifecycle</h4>
      * The returned {@link Stream} backs an underlying file channel or
      * DB cursor. Callers MUST close the stream &mdash; typically via
      * try-with-resources:
@@ -360,7 +360,7 @@ public interface AccountRepository extends AutoCloseable {
      * Failure to close may leak file handles in long-running processes
      * such as nightly batch posting jobs.
      *
-     * <h3>Empty-dataset semantics</h3>
+     * <h4>Empty-dataset semantics</h4>
      * If the dataset is empty, this method returns an empty
      * (closeable) {@link Stream} rather than {@code null}. This
      * matches the COBOL behavior where the
@@ -411,7 +411,7 @@ public interface AccountRepository extends AutoCloseable {
      *       {@code save} call.</li>
      * </ul>
      *
-     * <h3>Upsert semantics</h3>
+     * <h4>Upsert semantics</h4>
      * If a record with the same {@link AccountRecord#acctId()} already
      * exists, it is REWRITTEN (replaced wholesale, including the
      * 178-byte FILLER). If no such record exists, a new record is
@@ -422,7 +422,7 @@ public interface AccountRepository extends AutoCloseable {
      * application layer and matches the conventional Java
      * repository-pattern idiom.
      *
-     * <h3>Byte fidelity (AAP &sect;0.6.5)</h3>
+     * <h4>Byte fidelity (AAP &sect;0.6.5)</h4>
      * Implementations MUST persist the entire 300-byte fixed-width
      * record image including the 178-byte {@code FILLER}
      * ({@link AccountRecord#filler()}). The FILLER is structural
@@ -431,7 +431,7 @@ public interface AccountRepository extends AutoCloseable {
      * with external file consumers per AAP &sect;0.6.5. Truncating,
      * normalising, or synthesising the FILLER bytes is FORBIDDEN.
      *
-     * <h3>Decimal scale (AAP &sect;0.6.1)</h3>
+     * <h4>Decimal scale (AAP &sect;0.6.1)</h4>
      * Implementations MUST encode the five monetary
      * {@link java.math.BigDecimal} components
      * ({@code ACCT-CURR-BAL}, {@code ACCT-CREDIT-LIMIT},
@@ -443,7 +443,7 @@ public interface AccountRepository extends AutoCloseable {
      * normalises the scale; the {@link com.blitzy.carddemo.domain.util.Decimals}
      * utility centralises the codec.
      *
-     * <h3>Atomicity</h3>
+     * <h4>Atomicity</h4>
      * Each {@code save} call is atomic with respect to the single
      * record it writes. Multi-record transactional boundaries (e.g.,
      * the COACTUPC ACCOUNT-plus-CUSTOMER atomic update at
@@ -475,7 +475,7 @@ public interface AccountRepository extends AutoCloseable {
      * support seed / teardown operations such as fixture reset in the
      * golden-record harness (AAP &sect;0.6.11).
      *
-     * <h3>Not-found semantics</h3>
+     * <h4>Not-found semantics</h4>
      * If no account exists with the supplied key, implementations MUST
      * throw a {@link RuntimeException} (typically a typed adapter-level
      * exception). This mirrors the {@code DFHRESP(NOTFND)} fall-through
@@ -484,7 +484,7 @@ public interface AccountRepository extends AutoCloseable {
      * tolerate missing records SHOULD probe with
      * {@link #findById(long)} first.
      *
-     * <h3>Parameter contract</h3>
+     * <h4>Parameter contract</h4>
      * {@code acctId} carries the {@code ACCT-ID} key
      * ({@code PIC 9(11)} per {@code app/cpy/CVACT01Y.cpy:L5})
      * &mdash; an unsigned 11-digit numeric value in the range

@@ -69,7 +69,8 @@ import java.util.Objects;
  * mainframe BMS contract.
  *
  * <h2>Component inventory (BMS field &rarr; record component)</h2>
- * <table border="1" summary="BMS-to-record component mapping">
+ * <table border="1">
+ * <caption>BMS-to-record component mapping</caption>
  *   <thead>
  *     <tr><th>BMS field</th><th>BMS width / position</th>
  *         <th>Record component</th></tr>
@@ -131,7 +132,8 @@ import java.util.Objects;
  * {@link CoAdm01Input} / {@code CoAdm01C}, the AID key (ENTER, PF3, etc.)
  * is <strong>not</strong> a component of this DTO. The 3270 attention
  * identifier is decoded by the BMS adapter and passed to
- * {@link CoMen01C#run} as a separate parameter, drawing from the central
+ * {@link CoMen01C#process(com.blitzy.carddemo.domain.commarea.CardDemoCommarea,
+ * CoMen01Input, byte, int)} as a separate parameter, drawing from the central
  * {@code com.blitzy.carddemo.domain.text.CcWorkAreas.AidKey} sealed
  * hierarchy (AAP &sect;0.6.10). This avoids duplicating the AID-key
  * taxonomy across every BMS DTO and matches AAP &sect;0.6.7's "sealed

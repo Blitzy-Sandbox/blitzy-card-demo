@@ -203,9 +203,13 @@ carddemo.file.printcatbl.path=./output/tcatbalf.rept
 # Allowed values: any java.nio.charset.Charset name resolvable on the running
 # JVM (e.g., IBM-1047, IBM-037, US-ASCII, UTF-8, ISO-8859-1).
 
-# carddemo.codepage.default — fallback charset when no per-file override is
-# set. Default: IBM-1047.
-carddemo.codepage.default=IBM-1047
+# carddemo.file.default.charset — fallback charset when no per-file override
+# is set. Default: IBM-1047. This is the key consumed by
+# com.blitzy.carddemo.adapter.file.EbcdicTranscoder.DEFAULT_KEY; any other
+# spelling (e.g., the legacy "carddemo.codepage.default") is silently
+# ignored because no code consumer reads it. Set this to "US-ASCII" when
+# pointing at the pre-transcoded ASCII fixtures under app/data/ASCII/.
+carddemo.file.default.charset=IBM-1047
 
 # Per-file codepage overrides. Set to US-ASCII when pointing at the
 # pre-transcoded ASCII fixtures under app/data/ASCII/.

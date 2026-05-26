@@ -111,7 +111,8 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
  * {@code CoRpt00Output} record instead.
  *
  * <h2>Field-for-field translation</h2>
- * <table summary="CORPT0AI to record component mapping">
+ * <table>
+ * <caption>CORPT0AI to record component mapping</caption>
  *   <thead>
  *     <tr><th>BMS field (CORPT0AI)</th><th>PIC</th><th>Record component</th>
  *         <th>Notes</th></tr>
@@ -319,7 +320,7 @@ public record CoRpt00Input(
      * subsequent record-instance reflection of any component will return
      * the post-normalization value (never {@code null}).
      *
-     * <h3>Normalization rules (run in order)</h3>
+     * <h4>Normalization rules (run in order)</h4>
      * <ol>
      *   <li>Each of the ten {@link String} components: {@code null} is
      *       replaced with the empty {@link String} {@code ""}.</li>
