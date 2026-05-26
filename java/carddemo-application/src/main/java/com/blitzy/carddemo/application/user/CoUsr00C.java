@@ -701,9 +701,8 @@ public final class CoUsr00C {
             case PF03_BACK      -> returnToAdminMenu(commarea);
             case PF07_PAGE_BACK -> processPageBack(commarea, paging);
             case PF08_PAGE_FWD  -> processPageForward(commarea, paging);
-            case OTHER          -> buildSendMap(commarea, paging,
-                                                rowsFromInput(input),
-                                                /* searchEcho */ input.userIdSearch(),
+            case OTHER          -> rerenderCurrentPage(commarea, paging,
+                                                /* searchEcho */ input.searchUserId(),
                                                 MSG_INVALID_KEY);
         };
     }
@@ -764,17 +763,25 @@ public final class CoUsr00C {
     private Outcome processEnterKey(CardDemoCommarea commarea,
                                     PagingState paging,
                                     CoUsr00Input input) {
-        // ---- Step 1: scan rows 1-10 for first non-blank selection ----
+        // ---- Step 1: scan rows 1-10 for first non-None selection ----
+        // The selections list carries exactly PAGE_SIZE entries (per the
+        // CoUsr00Input compact constructor); we look for the first entry
+        // that is NOT UserAction.None — i.e. Update or Delete.
         int selRow = firstSelectedRow(input);
-        String selectionErrorMessage = null;
 
         if (selRow >= 0) {
-            CoUsr00Input.Row row = input.rows().get(selRow);
-            String selFlag = trim(row.selection());
-            String selectedUserId = trim(row.userId());
+            // Recover the selected user-id by re-iterating the current
+            // page from USRSEC (positioned at paging.userIdFirst()).
+            // This replaces the COBOL idiom of reading USRID0nI from the
+            // BMS symbolic map: the BMS echo carried the row labels
+            // already shown to the operator, but we instead trust the
+            // backing store and the externalised paging cursor, which
+            // is robust against BMS / network anomalies and matches the
+            // closed-taxonomy design of UserAction.
+            CoUsr00C.UserAction action = input.selections().get(selRow);
+            String selectedUserId = lookupUserIdAtRowIndex(paging, selRow);
 
-            if (!selFlag.isEmpty() && !selectedUserId.isEmpty()) {
-                UserAction action = UserAction.fromIndicator(selFlag.charAt(0));
+            if (!selectedUserId.isEmpty()) {
                 switch (action) {
                     case UserAction.Update u -> {
                         return xctlToUpdate(commarea, selectedUserId);
@@ -783,14 +790,19 @@ public final class CoUsr00C {
                         return xctlToDelete(commarea, selectedUserId);
                     }
                     case UserAction.None n -> {
-                        // The selection character was something other than
-                        // U/u/D/d (e.g. 'X', 'Y'). COBOL line 215 sets the
-                        // "Invalid selection" message but FALLS THROUGH to
-                        // the page-forward scan below.
-                        selectionErrorMessage = MSG_INVALID_SELECTION;
+                        // Unreachable: firstSelectedRow only returns
+                        // indices of non-None entries. The compiler
+                        // requires this case for exhaustiveness on the
+                        // sealed UserAction hierarchy (AAP §0.1.3 closed
+                        // taxonomies).
                     }
                 }
             }
+            // If selectedUserId was empty (the page produced fewer rows
+            // than expected — e.g. a race with concurrent USRSEC delete),
+            // fall through to a forward scan from the search prefix below.
+            // This preserves the COBOL behavior where an unrecognized or
+            // already-empty selection rolls forward into the page scan.
         }
 
         // ---- Step 2: forward scan from USRIDINI (or LOW-VALUES if blank) ----
@@ -798,30 +810,42 @@ public final class CoUsr00C {
         // returns the first row >= start-key inclusive). When the operator
         // typed a search prefix, this is the GTEQ positioning. When blank,
         // start at LOW-VALUES (the file's first record).
-        String searchKey = trim(input.userIdSearch());
+        String searchKey = trim(input.searchUserId());
         return readForwardPage(commarea,
                 paging.withPageNum(0),
                 /* startKey */ searchKey,
                 /* skipStart */ false,
-                /* errorMessage */ selectionErrorMessage);
+                /* errorMessage */ null);
     }
 
     /**
      * Returns the 0-based index of the first row in {@code input} whose
-     * selection field is non-blank and non-low-values. Mirrors the COBOL
-     * {@code EVALUATE TRUE} cascade at {@code app/cbl/COUSR00C.cbl}
-     * lines 152-186 which uses "first match wins" semantics.
+     * selection action is NOT {@link UserAction.None} &mdash; i.e. the
+     * first row where the operator typed a non-blank, non-LOW-VALUES
+     * character into the corresponding {@code SEL0nnI} field. Mirrors
+     * the COBOL {@code EVALUATE TRUE} cascade at
+     * {@code app/cbl/COUSR00C.cbl} lines 152-186 which uses
+     * "first match wins" semantics.
+     *
+     * <p>Per the closed-taxonomy design (AAP &sect;0.1.3), a selection
+     * character of {@code 'U'} / {@code 'u'} maps to
+     * {@link UserAction.Update}, {@code 'D'} / {@code 'd'} maps to
+     * {@link UserAction.Delete}, and anything else (including SPACES,
+     * LOW-VALUES, or stray characters like {@code 'X'}) maps to
+     * {@link UserAction.None}. The "first match" here is therefore the
+     * first row where the operator typed an actionable U / D selection.
      *
      * @param input the input DTO
      * @return the 0-based row index of the first selected row, or
-     *         {@code -1} if no row has a selection
+     *         {@code -1} if no row has a U / D selection
      */
     private static int firstSelectedRow(CoUsr00Input input) {
-        List<CoUsr00Input.Row> rows = input.rows();
-        for (int i = 0; i < rows.size(); i++) {
-            String sel = rows.get(i).selection();
-            if (sel != null && !sel.isEmpty() && !sel.trim().isEmpty()) {
-                // COBOL "NOT = SPACES AND LOW-VALUES" — any non-blank char
+        List<CoUsr00C.UserAction> selections = input.selections();
+        for (int i = 0; i < selections.size(); i++) {
+            // pattern-matching switch with the sealed UserAction
+            // hierarchy: any permit other than None is a "selection".
+            CoUsr00C.UserAction action = selections.get(i);
+            if (!(action instanceof CoUsr00C.UserAction.None)) {
                 return i;
             }
         }
@@ -1486,27 +1510,106 @@ public final class CoUsr00C {
     }
 
     /**
-     * Converts the {@code rows} list from a {@link CoUsr00Input} (i.e.
-     * what came back from RECEIVE-MAP) into a list of
-     * {@link CoUsr00Output.UserRow}s. Used for the {@link AidKey#OTHER}
-     * branch where the COBOL "WHEN OTHER" handler re-renders the current
-     * screen state without re-fetching from USRSEC.
+     * Re-renders the <em>current</em> USRSEC page (i.e. the same 10 rows
+     * that were last shown to the operator) and emits a {@link Outcome.SendMap}
+     * with an optional overlay message. Used for the
+     * {@link AidKey#OTHER} dispatch branch where the COBOL
+     * {@code WHEN OTHER} handler simply sets the error message and
+     * resends the screen (relying on the 3270 terminal to preserve the
+     * row labels across the SEND-MAP / RECEIVE-MAP cycle).
      *
-     * @param input the input DTO
-     * @return a list of up to {@link #PAGE_SIZE} {@link CoUsr00Output.UserRow}
-     *         entries copied from the input rows; never {@code null}
+     * <p>The Java port cannot rely on BMS-side preservation because the
+     * minimal {@link CoUsr00Input} model does not carry the echoed row
+     * data (the operator never edits those cells; preserving them on the
+     * input DTO would be redundant). Instead, this helper re-fetches the
+     * page from USRSEC starting at {@code paging.userIdFirst()} (with
+     * {@code skipStart=false}) and yields up to {@link #PAGE_SIZE} rows.
+     *
+     * <p>The {@code paging} cursor is passed through <em>unchanged</em>
+     * &mdash; the operation does not advance {@code pageNum} or rewrite
+     * {@code userIdFirst} / {@code userIdLast}; it is purely a re-render.
+     *
+     * @param commarea     the outbound commarea
+     * @param paging       the current paging state (preserved verbatim)
+     * @param searchEcho   the search-prefix value to echo into
+     *                     {@code USRIDINO} (typically the operator's
+     *                     previous input)
+     * @param errorMessage the message to overlay (typically
+     *                     {@link #MSG_INVALID_KEY})
+     * @return the SendMap outcome; never {@code null}
      */
-    private static List<CoUsr00Output.UserRow> rowsFromInput(CoUsr00Input input) {
-        List<CoUsr00Output.UserRow> rows = new ArrayList<>(input.rows().size());
-        for (CoUsr00Input.Row r : input.rows()) {
-            rows.add(new CoUsr00Output.UserRow(
-                    r.selection(),
-                    r.userId(),
-                    r.firstName(),
-                    r.lastName(),
-                    r.userType()));
+    private Outcome rerenderCurrentPage(CardDemoCommarea commarea,
+                                        PagingState paging,
+                                        String searchEcho,
+                                        String errorMessage) {
+        String startKey = trim(paging.userIdFirst());
+        List<SecUserData> users = new ArrayList<>(PAGE_SIZE);
+        try (java.util.stream.Stream<SecUserData> stream =
+                     userSecurityRepository.streamFrom(startKey)) {
+            for (SecUserData u : (Iterable<SecUserData>) stream::iterator) {
+                if (users.size() >= PAGE_SIZE) {
+                    break;
+                }
+                users.add(u);
+            }
+        } catch (RuntimeException unexpected) {
+            log.error("CICS RESP unexpected on USRSEC re-render from key '{}'",
+                      startKey, unexpected);
+            // Fall through with whatever rows we managed to collect; the
+            // error message overlay (MSG_INVALID_KEY) takes precedence.
         }
-        return rows;
+        List<CoUsr00Output.UserRow> rows = toOutputRows(users);
+        return buildSendMap(commarea, paging, rows, searchEcho, errorMessage);
+    }
+
+    /**
+     * Looks up the user-id at the given 0-based row index on the current
+     * USRSEC page (positioned at {@code paging.userIdFirst()}). Used by
+     * {@link #processEnterKey} to recover the {@code USRID0nI} value
+     * that COBOL would have read directly from the BMS symbolic map.
+     *
+     * <p>The Java port re-iterates the backing store rather than trusting
+     * the BMS echo because the minimal {@link CoUsr00Input} model
+     * intentionally omits the per-row user-id columns &mdash; the
+     * operator never edits them, so they are redundant on the input DTO
+     * (AAP &sect;0.3.5).
+     *
+     * <p>If the page produces fewer than {@code rowIndex + 1} entries
+     * (which can happen if USRSEC was concurrently mutated between the
+     * previous SEND-MAP and the current RECEIVE-MAP), an empty string is
+     * returned. The caller treats this as "no selection" and falls
+     * through to the page-forward scan, preserving COBOL "selection
+     * fall-through" semantics.
+     *
+     * @param paging   the current paging state
+     * @param rowIndex the 0-based row index on the current page
+     *                 ({@code 0} = first row, {@code PAGE_SIZE - 1} =
+     *                 last row)
+     * @return the trimmed user-id at the given row; empty string if the
+     *         page did not produce that many rows
+     */
+    private String lookupUserIdAtRowIndex(PagingState paging, int rowIndex) {
+        if (rowIndex < 0) {
+            return "";
+        }
+        String startKey = trim(paging.userIdFirst());
+        try (java.util.stream.Stream<SecUserData> stream =
+                     userSecurityRepository.streamFrom(startKey)) {
+            int idx = 0;
+            for (SecUserData u : (Iterable<SecUserData>) stream::iterator) {
+                if (idx == rowIndex) {
+                    return trim(u.secUsrId());
+                }
+                idx++;
+                if (idx >= PAGE_SIZE) {
+                    break;
+                }
+            }
+        } catch (RuntimeException unexpected) {
+            log.error("CICS RESP unexpected on USRSEC row lookup at index {} from key '{}'",
+                      rowIndex, startKey, unexpected);
+        }
+        return "";
     }
 
     /**
