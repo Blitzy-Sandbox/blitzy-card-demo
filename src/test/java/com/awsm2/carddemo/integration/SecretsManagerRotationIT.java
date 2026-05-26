@@ -60,6 +60,8 @@ import org.junit.jupiter.api.TestMethodOrder;
 // -----------------------------------------------------------------------------
 // Spring Boot test bootstrap & test-context infrastructure
 // -----------------------------------------------------------------------------
+import org.springframework.aop.framework.Advised;
+import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -519,49 +521,22 @@ class SecretsManagerRotationIT {
         // LOCALSTACK.isRunning() at this point because both containers are
         // declared with @Container static and the extension starts them
         // before the test class is constructed.
-
-        // Step 1 — build standalone AWS SDK v2 clients for LocalStack.
-        bootstrapSecretsClient = buildSecretsManagerClient();
-        bootstrapSqsClient = buildSqsClient();
-
-        // Step 2 — seed both secrets BEFORE context refresh.
         //
-        // The RDS-credentials secret is seeded for completeness (stage 5
-        // exercises it) but the application's @Primary DataSource bean is
-        // wired via spring.datasource.* properties (set below) rather than
-        // via Spring Cloud AWS Secrets Manager config import. This
-        // intentional decoupling lets the test mutate credentials via the
-        // AtomicReference suppliers WITHOUT also having to drive the
-        // Spring Cloud AWS PropertySource reload — keeping the test focused
-        // on the @RefreshScope mechanism rather than the
-        // PropertySource-source-replacement plumbing.
-        CreateSecretResponse rdsResponse = bootstrapSecretsClient.createSecret(
-                CreateSecretRequest.builder()
-                        .name(RDS_SECRET_NAME)
-                        .description("Test-only RDS credentials for SecretsManagerRotationIT")
-                        .secretString(INITIAL_RDS_SECRET_JSON)
-                        .build());
-        rdsSecretArn = rdsResponse.arn();
+        // QA Fix (Final Checkpoint 13 Crit-1): The bootstrap client + secret
+        // creation logic was extracted to {@link #initializeBootstrapResources()},
+        // an idempotent helper that is invoked from BOTH this method AND
+        // {@link #verifyFixtures()} (@BeforeAll). The JUnit 5 + Spring
+        // TestContext interaction does not guarantee that
+        // @DynamicPropertySource runs before user @BeforeAll under all
+        // JUnit Platform versions — initializing in both call sites means
+        // whichever runs first establishes the state, and the second
+        // becomes a cheap no-op. The static field guard inside
+        // initializeBootstrapResources() ensures secret / queue creation
+        // happens exactly once.
 
-        // The JWT signing-key secret MUST exist before context refresh
-        // because JwtTokenProvider.initSigningKey() runs in @PostConstruct
-        // and synchronously fetches the secret via SecretsManagerService.
-        // Without this seed step, context refresh would throw
-        // IllegalStateException("JWT signing key not found in Secrets
-        // Manager").
-        CreateSecretResponse jwtResponse = bootstrapSecretsClient.createSecret(
-                CreateSecretRequest.builder()
-                        .name(JWT_SECRET_NAME)
-                        .description("Test-only JWT signing key for SecretsManagerRotationIT")
-                        .secretString(JWT_SECRET_JSON)
-                        .build());
-        jwtSecretArn = jwtResponse.arn();
-
-        // Step 3 — create the rotation notification SQS queue.
-        rotationQueueUrl = bootstrapSqsClient.createQueue(
-                CreateQueueRequest.builder()
-                        .queueName(ROTATION_QUEUE_NAME)
-                        .build()).queueUrl();
+        // Initialize bootstrap clients, seed secrets, and create the
+        // rotation queue (idempotent — safe to call multiple times).
+        initializeBootstrapResources();
 
         // Step 4 — register AWS endpoint / credentials properties so every
         // Spring-managed AWS SDK v2 client (S3Client, SfnClient,
@@ -678,36 +653,164 @@ class SecretsManagerRotationIT {
     }
 
     // -------------------------------------------------------------------------
+    // Idempotent bootstrap helper — QA Final Checkpoint 13 Crit-1 fix
+    // -------------------------------------------------------------------------
+    // QA FIX (QA Checkpoint 13 Crit-1):
+    //   The QA test report identified a JUnit 5 + Spring TestContext lifecycle
+    //   ordering defect where @DynamicPropertySource could run AFTER user
+    //   @BeforeAll (verifyFixtures), depending on JUnit Platform / Spring
+    //   versions and extension registration order. The previous implementation
+    //   relied on @DynamicPropertySource to populate static fields used by
+    //   verifyFixtures() — when the order flipped, the fields were null and
+    //   verifyFixtures() failed with "bootstrapSecretsClient must be
+    //   initialised by @DynamicPropertySource".
+    //
+    //   The fix extracts the bootstrap logic into this idempotent helper,
+    //   which is invoked from BOTH @DynamicPropertySource AND @BeforeAll.
+    //   Whichever runs first establishes the LocalStack-backed resources;
+    //   the second call short-circuits via the static field guard. This
+    //   pattern mirrors the working approach in StepFunctionsEodPipelineIT
+    //   (where bootstrap clients are created in @BeforeAll directly) while
+    //   preserving the @DynamicPropertySource integration with Spring's
+    //   property registry.
+    //
+    //   The guard is the {@code bootstrapSecretsClient} field itself:
+    //   a non-null value means initialization has already completed and
+    //   this method exits without side effect. The synchronized block
+    //   prevents a thread race between @DynamicPropertySource and @BeforeAll
+    //   (though JUnit 5 invokes both on the test runner thread, the
+    //   synchronization is a small belt-and-braces measure that documents
+    //   the at-most-once semantics).
+
+    /**
+     * Bootstraps LocalStack-backed AWS SDK v2 clients, creates the RDS-
+     * credentials and JWT-signing-key secrets, and provisions the rotation
+     * notification SQS queue. Safe to invoke multiple times — the first
+     * invocation performs the work; subsequent invocations are no-ops via
+     * the {@code bootstrapSecretsClient != null} guard.
+     *
+     * <p>Invoked from both
+     * {@link #registerDynamicProperties(DynamicPropertyRegistry)} and
+     * {@link #verifyFixtures()} so the test class is robust to any
+     * JUnit 5 + Spring TestContext lifecycle ordering. The LocalStack
+     * container is guaranteed to be running before either entry point
+     * because the {@code @Testcontainers} extension starts {@code @Container}
+     * static fields before the test class is constructed and before any
+     * Spring infrastructure runs.</p>
+     */
+    private static synchronized void initializeBootstrapResources() {
+        // Idempotency guard — the static field bootstrapSecretsClient is
+        // null until this method completes its first invocation; once set,
+        // subsequent calls return without side effect. The static fields
+        // {@link #bootstrapSqsClient}, {@link #rdsSecretArn},
+        // {@link #jwtSecretArn}, and {@link #rotationQueueUrl} are all
+        // populated together inside this method so a single null check
+        // is sufficient to detect prior completion.
+        if (bootstrapSecretsClient != null) {
+            return;
+        }
+
+        // Step 1 — build standalone AWS SDK v2 clients for LocalStack.
+        SecretsManagerClient newSecretsClient = buildSecretsManagerClient();
+        SqsClient newSqsClient = buildSqsClient();
+
+        // Step 2 — seed both secrets BEFORE context refresh.
+        //
+        // The RDS-credentials secret is seeded for completeness (stage 5
+        // exercises it) but the application's @Primary DataSource bean is
+        // wired via spring.datasource.* properties (set in
+        // @DynamicPropertySource) rather than via Spring Cloud AWS Secrets
+        // Manager config import. This intentional decoupling lets the test
+        // mutate credentials via the AtomicReference suppliers WITHOUT also
+        // having to drive the Spring Cloud AWS PropertySource reload —
+        // keeping the test focused on the @RefreshScope mechanism rather
+        // than the PropertySource-source-replacement plumbing.
+        CreateSecretResponse rdsResponse = newSecretsClient.createSecret(
+                CreateSecretRequest.builder()
+                        .name(RDS_SECRET_NAME)
+                        .description("Test-only RDS credentials for SecretsManagerRotationIT")
+                        .secretString(INITIAL_RDS_SECRET_JSON)
+                        .build());
+
+        // The JWT signing-key secret MUST exist before context refresh
+        // because JwtTokenProvider.initSigningKey() runs in @PostConstruct
+        // and synchronously fetches the secret via SecretsManagerService.
+        // Without this seed step, context refresh would throw
+        // IllegalStateException("JWT signing key not found in Secrets
+        // Manager").
+        CreateSecretResponse jwtResponse = newSecretsClient.createSecret(
+                CreateSecretRequest.builder()
+                        .name(JWT_SECRET_NAME)
+                        .description("Test-only JWT signing key for SecretsManagerRotationIT")
+                        .secretString(JWT_SECRET_JSON)
+                        .build());
+
+        // Step 3 — create the rotation notification SQS queue.
+        String newRotationQueueUrl = newSqsClient.createQueue(
+                CreateQueueRequest.builder()
+                        .queueName(ROTATION_QUEUE_NAME)
+                        .build()).queueUrl();
+
+        // Step 4 — publish to static fields in a single atomic-ish block.
+        // The bootstrapSecretsClient assignment last is intentional: it is
+        // the field that the idempotency guard above checks, so it must be
+        // the final mutation to ensure other callers see a fully-initialized
+        // fixture or no fixture at all.
+        rdsSecretArn = rdsResponse.arn();
+        jwtSecretArn = jwtResponse.arn();
+        rotationQueueUrl = newRotationQueueUrl;
+        bootstrapSqsClient = newSqsClient;
+        bootstrapSecretsClient = newSecretsClient;
+    }
+
+    // -------------------------------------------------------------------------
     // Lifecycle — @BeforeAll, @AfterAll, @BeforeEach, @AfterEach
     // -------------------------------------------------------------------------
 
     /**
-     * Post-context-refresh setup. Runs AFTER {@link #registerDynamicProperties}
-     * (which already created the initial secrets and SQS queue) and AFTER
-     * Spring has wired all beans. The body is intentionally empty — all
-     * fixture work is done in the dynamic property source so context
-     * refresh has the resources it needs to succeed.
+     * Bootstrap fixture verification + safety-net initialization. This method
+     * runs in JUnit 5 {@code @BeforeAll} after the {@code @Testcontainers}
+     * extension has started the LocalStack container.
+     *
+     * <p><b>QA Final Checkpoint 13 Crit-1 fix:</b> Previously this method
+     * relied solely on {@link #registerDynamicProperties(DynamicPropertyRegistry)}
+     * having already populated the static client/ARN fields, but the JUnit
+     * 5 + Spring TestContext interaction does not guarantee that
+     * {@code @DynamicPropertySource} runs before user {@code @BeforeAll}.
+     * The method now invokes the idempotent
+     * {@link #initializeBootstrapResources()} helper FIRST — which performs
+     * the LocalStack bootstrap on first invocation and is a no-op on
+     * subsequent invocations. This guarantees the static fields are
+     * populated regardless of which lifecycle hook ran first.</p>
      */
     @BeforeAll
     static void verifyFixtures() {
-        // Sanity check the static fixture is populated. If any of these
-        // are null we have a broken @DynamicPropertySource ordering issue
-        // and every test will fail downstream — fail fast here with a
-        // descriptive message.
+        // QA Final Checkpoint 13 Crit-1 fix: ensure bootstrap resources are
+        // initialized regardless of whether @DynamicPropertySource has
+        // already run. The helper is idempotent — calling it here is safe
+        // even if @DynamicPropertySource already invoked it.
+        initializeBootstrapResources();
+
+        // Sanity check the static fixture is now populated. If any of
+        // these assertions fail, the initializeBootstrapResources() helper
+        // failed silently (e.g., LocalStack returned an unexpected null
+        // ARN) — fail fast here with a descriptive message rather than
+        // letting downstream tests NullPointerException their way to a
+        // confusing diagnosis.
         Assertions.assertThat(bootstrapSecretsClient)
-                .as("bootstrapSecretsClient must be initialised by @DynamicPropertySource")
+                .as("bootstrapSecretsClient must be initialised by initializeBootstrapResources()")
                 .isNotNull();
         Assertions.assertThat(bootstrapSqsClient)
-                .as("bootstrapSqsClient must be initialised by @DynamicPropertySource")
+                .as("bootstrapSqsClient must be initialised by initializeBootstrapResources()")
                 .isNotNull();
         Assertions.assertThat(rotationQueueUrl)
-                .as("rotationQueueUrl must be populated by @DynamicPropertySource")
+                .as("rotationQueueUrl must be populated by initializeBootstrapResources()")
                 .isNotBlank();
         Assertions.assertThat(rdsSecretArn)
-                .as("rdsSecretArn must be populated by @DynamicPropertySource")
+                .as("rdsSecretArn must be populated by initializeBootstrapResources()")
                 .isNotBlank();
         Assertions.assertThat(jwtSecretArn)
-                .as("jwtSecretArn must be populated by @DynamicPropertySource")
+                .as("jwtSecretArn must be populated by initializeBootstrapResources()")
                 .isNotBlank();
     }
 
@@ -933,10 +1036,46 @@ class SecretsManagerRotationIT {
      * @return the autowired {@link DataSource} cast to {@link HikariDataSource}
      */
     private HikariDataSource hikari() {
-        // Note: this returns the PROXY, not the underlying target. To
-        // observe the target's identity, use {@link #currentTargetUsername}
-        // — the proxy delegates method invocations to the live target.
-        return (HikariDataSource) dataSource;
+        // Resolve the underlying HikariDataSource regardless of how
+        // Spring Cloud's @RefreshScope decided to proxy it:
+        //
+        //   - ScopedProxyMode.TARGET_CLASS (CGLIB)  → the bean itself
+        //     is a HikariDataSource subclass; the direct cast works.
+        //   - ScopedProxyMode.INTERFACES (JDK dynamic proxy) → the bean
+        //     implements DataSource (interface) only, and the underlying
+        //     HikariDataSource target must be unwrapped via the Spring
+        //     AopUtils helper.
+        //
+        // Spring Cloud Context's RefreshScope nominally defaults to
+        // TARGET_CLASS, but Spring Boot's AOP infrastructure can fall
+        // back to interface-based JDK proxies when the @Bean method
+        // returns the DataSource interface type. This helper hides that
+        // distinction so the test methods remain stable across both
+        // proxy modes.
+        if (dataSource instanceof HikariDataSource direct) {
+            return direct;
+        }
+        if (AopUtils.isJdkDynamicProxy(dataSource)
+                && dataSource instanceof Advised advised) {
+            try {
+                Object target = advised.getTargetSource().getTarget();
+                if (target instanceof HikariDataSource hds) {
+                    return hds;
+                }
+                throw new IllegalStateException(
+                        "Unwrapped DataSource target is not a HikariDataSource: "
+                                + (target == null ? "null" : target.getClass().getName()));
+            } catch (Exception e) {
+                if (e instanceof IllegalStateException ise) {
+                    throw ise;
+                }
+                throw new IllegalStateException(
+                        "Failed to unwrap @RefreshScope JDK proxy to HikariDataSource", e);
+            }
+        }
+        throw new IllegalStateException(
+                "DataSource is neither HikariDataSource nor an unwrappable AOP proxy: "
+                        + dataSource.getClass().getName());
     }
 
     /**
@@ -1095,12 +1234,15 @@ class SecretsManagerRotationIT {
                 .as("Autowired DataSource must be non-null after context refresh")
                 .isNotNull();
 
-        // The DataSource must be a HikariDataSource (or a CGLIB
-        // subclass thereof). The @RefreshScope proxy is a CGLIB
-        // subclass of HikariDataSource per
-        // ScopedProxyMode.TARGET_CLASS, so isInstance() returns true.
-        Assertions.assertThat(dataSource)
-                .as("DataSource must be (or extend) HikariDataSource")
+        // The DataSource must, once unwrapped, be a HikariDataSource. The
+        // @RefreshScope proxy can be either a CGLIB subclass of
+        // HikariDataSource (ScopedProxyMode.TARGET_CLASS) or a JDK
+        // dynamic proxy wrapping a HikariDataSource target
+        // (ScopedProxyMode.INTERFACES); the {@link #hikari()} helper
+        // handles both cases.
+        Assertions.assertThat(hikari())
+                .as("Unwrapped DataSource must be HikariDataSource")
+                .isNotNull()
                 .isInstanceOf(HikariDataSource.class);
 
         // The CURRENT refresh-scope target's username must be the initial
@@ -1155,18 +1297,32 @@ class SecretsManagerRotationIT {
             return;
         }
 
+        // When @RefreshScope is applied to a @Bean method, Spring Cloud
+        // Context registers TWO bean definitions:
+        //   - "<beanName>"               → the scoped proxy (singleton)
+        //   - "scopedTarget.<beanName>"  → the actual refresh-scoped
+        //                                  target whose definition
+        //                                  carries scope="refresh"
+        // The proxy bean reports the proxy's own scope (empty/singleton)
+        // because it does NOT inherit the target's scope; the scope-
+        // verification assertion must therefore look up the scopedTarget
+        // bean to confirm scope='refresh'.
+        final String dataSourceTargetName =
+                "scopedTarget.dataSource";
         BeanDefinition dataSourceBeanDef = configurable.getBeanFactory()
-                .getBeanDefinition("dataSource");
+                .getBeanDefinition(dataSourceTargetName);
         Assertions.assertThat(dataSourceBeanDef)
-                .as("'dataSource' bean definition must exist in the application context")
+                .as("'%s' refresh-scope target bean definition must exist",
+                        dataSourceTargetName)
                 .isNotNull();
 
-        // The scope field on the bean definition must be 'refresh'. The
-        // bean definition reports the EXPLICIT scope declared via
+        // The scope field on the target bean definition must be 'refresh'.
+        // The bean definition reports the EXPLICIT scope declared via
         // @RefreshScope (or @Scope("refresh")); a default singleton bean
         // would report an empty scope string here.
         Assertions.assertThat(dataSourceBeanDef.getScope())
-                .as("'dataSource' bean must have scope='refresh' per AAP §0.6.4")
+                .as("'%s' bean must have scope='refresh' per AAP §0.6.4",
+                        dataSourceTargetName)
                 .isEqualTo(expectedScope);
 
         // Same assertion for the @ConfigurationProperties("spring.datasource")
@@ -1174,11 +1330,15 @@ class SecretsManagerRotationIT {
         // Re-reading the rotated username/password during refresh requires
         // BOTH beans to be refresh-scoped — otherwise the DataSource bean
         // would be refreshed but would still read stale values from a
-        // non-refreshable DataSourceProperties.
+        // non-refreshable DataSourceProperties. Again, look up the
+        // scopedTarget bean rather than the proxy bean.
+        final String propertiesTargetName =
+                "scopedTarget.dataSourceProperties";
         BeanDefinition propertiesBeanDef = configurable.getBeanFactory()
-                .getBeanDefinition("dataSourceProperties");
+                .getBeanDefinition(propertiesTargetName);
         Assertions.assertThat(propertiesBeanDef.getScope())
-                .as("'dataSourceProperties' bean must also have scope='refresh'")
+                .as("'%s' bean must also have scope='refresh'",
+                        propertiesTargetName)
                 .isEqualTo(expectedScope);
     }
 
@@ -1672,10 +1832,27 @@ class SecretsManagerRotationIT {
                 .messageBody(rotationMessageBody)
                 .build());
 
-        // Verify the queue depth incremented before we wait for the
-        // listener — sanity check that the SendMessage actually
-        // succeeded.
-        Awaitility.await("SQS queue contains at least one message")
+        // Verify the message was successfully delivered to the queue.
+        // This is a sanity check that the SendMessage call actually
+        // reached LocalStack. Because the production SecretsManagerConfig
+        // SQS listener polls the queue at a high frequency (~1s in tests)
+        // and immediately consumes + deletes any message it sees, the
+        // queue can transition from 0 → 1 → 0 messages within a single
+        // Awaitility poll interval. We therefore accept ANY of the
+        // following observations as proof of successful delivery:
+        //
+        //   1. The queue contains at least one message (visible or
+        //      in-flight) — listener hasn't picked it up yet.
+        //   2. The refresh-event counter has incremented past the
+        //      baseline — listener already picked up and processed the
+        //      message in between our SendMessage call and our poll.
+        //
+        // Either observation proves the SendMessage call succeeded.
+        // Only if BOTH observations are false do we conclude that
+        // SendMessage silently failed (which would itself have thrown
+        // an exception — making this case essentially unreachable, but
+        // we still defend against it).
+        Awaitility.await("SQS queue contains at least one message OR listener already processed it")
                 .atMost(Duration.ofSeconds(10))
                 .pollInterval(AWAITILITY_POLL_INTERVAL)
                 .untilAsserted(() -> {
@@ -1689,12 +1866,16 @@ class SecretsManagerRotationIT {
                             QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES, "0"));
                     int inFlight = Integer.parseInt(attrs.getOrDefault(
                             QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_NOT_VISIBLE, "0"));
-                    // The message is either still in the queue (visible)
-                    // OR being processed (in-flight, claimed by the
-                    // listener). Either state proves SendMessage worked.
-                    Assertions.assertThat(visible + inFlight)
-                            .as("SQS queue must contain at least one message after sendMessage")
-                            .isGreaterThanOrEqualTo(1);
+                    long currentRefreshEvents = refreshEventCounter.getCount();
+                    boolean messageInQueue = (visible + inFlight) >= 1;
+                    boolean listenerAlreadyFired =
+                            currentRefreshEvents > baselineEventCount;
+                    Assertions.assertThat(messageInQueue || listenerAlreadyFired)
+                            .as("SendMessage must succeed: either queue contains the message"
+                                    + " (visible=%d, inFlight=%d) or the listener has already"
+                                    + " processed it (baseline=%d, current=%d)",
+                                    visible, inFlight, baselineEventCount, currentRefreshEvents)
+                            .isTrue();
                 });
 
         // Now wait for the SecretsManagerConfig listener to pick up the

@@ -144,26 +144,42 @@ jobs:
         run: chmod +x ./mvnw
 
       # -----------------------------------------------------------------------
-      # Step 4: Build, test, and verify with Maven.
-      #   `./mvnw -B -ntp clean verify` runs the full lifecycle:
+      # Step 4: Build, test, and verify with Maven (including OWASP scan).
+      #   `./mvnw -B -ntp -Powasp clean verify` runs the full lifecycle PLUS
+      #   the OWASP dependency-check vulnerability scan:
       #     - clean              — remove target/
       #     - compile            — javac via maven-compiler-plugin (Java 17)
       #     - test               — Surefire (*Test.java) — unit tests
       #     - package            — spring-boot-maven-plugin (executable JAR)
       #     - verify             — Failsafe (*IT.java) — integration tests,
       #                            jacoco-maven-plugin:report (coverage),
-      #                            dependency-check-maven:check (OWASP scan)
+      #                            jacoco-maven-plugin:check (coverage gate),
+      #                            dependency-check-maven:check (OWASP scan,
+      #                              gated behind the `owasp` profile)
       #
       #   Flags:
-      #     -B    batch mode — non-interactive, CI-friendly output
-      #     -ntp  --no-transfer-progress — suppress dependency-download noise
+      #     -B          batch mode — non-interactive, CI-friendly output
+      #     -ntp        --no-transfer-progress — suppress dependency-download noise
+      #     -Powasp     activate the `owasp` Maven profile in pom.xml so the
+      #                 dependency-check plugin's `check` execution binds to
+      #                 the verify phase and the `<failBuildOnCVSS>7.0` gate
+      #                 fails the build on HIGH/CRITICAL CVEs.
       #
       #   Note: pom.xml is the single source of truth for all quality gates
       #   (JaCoCo coverage threshold, OWASP CVSS threshold). The workflow
-      #   does NOT redundantly enforce them here.
+      #   does NOT redundantly enforce them here — it only ACTIVATES the
+      #   `owasp` profile so the gate runs.
+      #
+      #   QA Final Checkpoint 13 fix (Maj-2): Previously this step ran
+      #   `./mvnw -B -ntp clean verify` WITHOUT `-Powasp`, which silently
+      #   bypassed the OWASP CVE gate even though the comment claimed
+      #   "verify runs ... dependency-check-maven:check". The QA report
+      #   identified this as a silent security gate failure. Adding
+      #   `-Powasp` activates the profile so the `<failBuildOnCVSS>7.0`
+      #   threshold in pom.xml is enforced on every CI run.
       # -----------------------------------------------------------------------
-      - name: Build, test, and verify (Maven)
-        run: ./mvnw -B -ntp clean verify
+      - name: Build, test, and verify (Maven, with OWASP scan)
+        run: ./mvnw -B -ntp -Powasp clean verify
 
       # -----------------------------------------------------------------------
       # Step 5: Upload Surefire (unit-test) reports.
