@@ -120,6 +120,45 @@ class JwtTokenProviderTest {
         return p;
     }
 
+    /**
+     * Deterministically tampers a JWT's signature so the resulting token will
+     * always fail HMAC validation.
+     *
+     * <p><b>Why not just flip the last character?</b> A 256-bit HS256 signature
+     * is encoded as 43 base64url characters. The 43rd (last) character holds
+     * only 4 useful bits of the signature; its low 2 bits are
+     * "padding" / "unused" bits that some JJWT base64url decoder versions
+     * mask off when reconstructing the signature bytes. As a consequence,
+     * pairs of trailing characters such as {@code A↔B} or {@code C↔D} can
+     * decode to identical signature byte arrays, leaving the "tampered" token
+     * actually valid and turning the test into a probabilistic failure
+     * (~6 % per run, ~12 % across two consecutive verify runs).</p>
+     *
+     * <p>This helper instead flips a character five positions <i>into</i>
+     * the signature segment, where every one of the 6 base64url bits maps
+     * to a real signature bit. Any single bit flipped in that region is
+     * guaranteed to change the decoded signature, so HMAC verification
+     * will always reject the token deterministically.</p>
+     *
+     * <p>The choice of {@code 'A' ↔ 'B'} as the replacement pair preserves
+     * the "single-bit flip" semantic of the original test (one base64url
+     * value swapped for an adjacent one) while moving the change away
+     * from the padding-bit boundary.</p>
+     */
+    private static String tamperSignature(String token) {
+        int sigStart = token.lastIndexOf('.') + 1;
+        // 5 chars into the signature is well within the "all bits useful" zone:
+        // every base64url char from position [0,41] in a 43-char HS256 signature
+        // contributes 6 useful bits to the decoded byte stream — there are no
+        // padding bits until char 42 (the 43rd / last character).
+        int tamperPos = sigStart + 5;
+        char originalChar = token.charAt(tamperPos);
+        char replacementChar = (originalChar == 'A') ? 'B' : 'A';
+        return token.substring(0, tamperPos)
+                + replacementChar
+                + token.substring(tamperPos + 1);
+    }
+
     // -------------------------------------------------------------------------
     // @PostConstruct initSigningKey
     // -------------------------------------------------------------------------
@@ -323,9 +362,9 @@ class JwtTokenProviderTest {
         void tamperedTokenThrowsSignatureException() {
             String token = provider.issueToken("USER0001", "U", "X", "Y");
 
-            // Tamper with the signature: flip the last character.
-            String tampered = token.substring(0, token.length() - 1)
-                    + (token.endsWith("A") ? "B" : "A");
+            // Tamper with the signature deterministically — see
+            // tamperSignature() Javadoc for why we cannot flip the last char.
+            String tampered = tamperSignature(token);
 
             assertThatThrownBy(() -> provider.validateToken(tampered))
                     .isInstanceOf(JwtException.class);
@@ -446,8 +485,10 @@ class JwtTokenProviderTest {
         @DisplayName("returns false for tampered token (no throw)")
         void tamperedReturnsFalse() {
             String token = provider.issueToken("USER0001", "U", "X", "Y");
-            String tampered = token.substring(0, token.length() - 1)
-                    + (token.endsWith("A") ? "B" : "A");
+            // Use the shared tamperSignature() helper so this test is
+            // deterministic — see helper's Javadoc for the base64url
+            // padding-bit pitfall the previous inline implementation hit.
+            String tampered = tamperSignature(token);
             assertThat(provider.isValid(tampered)).isFalse();
         }
 
