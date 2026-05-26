@@ -407,8 +407,9 @@ public class XrefFileReaderService {
     /**
      * Canonical constructor &mdash; the sole means of dependency
      * injection for this service per AAP &sect;0.7.1
-     * ("Constructor injection for all @Service, @Repository,
-     * @Component, adapter, and config beans"). Both dependencies are
+     * ("Constructor injection for all {@code @Service},
+     * {@code @Repository}, {@code @Component}, adapter, and config
+     * beans"). Both dependencies are
      * {@link Objects#requireNonNull validated non-null} at
      * construction so a misconfigured Spring context fails fast
      * during application startup rather than at the first method

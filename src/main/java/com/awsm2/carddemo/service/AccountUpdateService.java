@@ -104,7 +104,7 @@ import java.util.Objects;
  * "snapshot mismatch" error to the operator.</p>
  *
  * <p>The Java target replaces this manual mechanism with the canonical
- * JPA {@code @Version} pattern on the {@link Account} entity:
+ * JPA {@code @Version} pattern on the {@link Account} entity:</p>
  * <ol>
  *   <li><b>Explicit pre-mutation check.</b> Immediately after
  *       {@code accountRepository.findById(acctId)}, the service compares
@@ -122,7 +122,7 @@ import java.util.Objects;
  *       The service catches this exception and rethrows it as
  *       {@link com.awsm2.carddemo.exception.ConcurrentModificationException}
  *       so callers see a single, consistent 409 response shape.</li>
- * </ol></p>
+ * </ol>
  *
  * <p><b>Domain-exception FQCN discipline.</b> Every reference to the
  * {@code ConcurrentModificationException} in this file uses the fully

@@ -257,7 +257,7 @@ public class AccountViewService {
      * target for the COBOL COACTVWC paragraph {@code 9000-READ-ACCT}
      * (lines 687-718).
      *
-     * <h3>Flow (preserves COACTVWC read ordering)</h3>
+     * <h4>Flow (preserves COACTVWC read ordering)</h4>
      * <ol>
      *   <li>Validate {@code acctId} &mdash; non-null and strictly
      *       positive.</li>

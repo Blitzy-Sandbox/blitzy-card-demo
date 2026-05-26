@@ -262,8 +262,9 @@ public class SecretsManagerConfig {
      * {@code spring-cloud-starter-bootstrap}). Constructor injection is
      * preferred over field injection per AAP &sect;0.3.3 Design Pattern
      * Applications (<em>"Dependency injection for loose coupling
-     * &mdash; constructor injection for all @Service, @Repository,
-     * @Component, adapter, and config beans"</em>).
+     * &mdash; constructor injection for all {@code @Service},
+     * {@code @Repository}, {@code @Component}, adapter, and config
+     * beans"</em>).
      *
      * <p><b>Replaces:</b> the COBOL pattern of opening a CICS file or
      * VSAM cluster at program start &mdash; here the AWS SDK client is
@@ -333,7 +334,7 @@ public class SecretsManagerConfig {
      * effective worst-case rotation latency is
      * {@code wait-time-seconds + poll-interval-ms}.</p>
      *
-     * <h3>Flow</h3>
+     * <h4>Flow</h4>
      * <ol>
      *   <li>If the queue URL is blank (listener enabled but unwired),
      *       log a warning and return.</li>
@@ -352,7 +353,7 @@ public class SecretsManagerConfig {
      *       another (idempotent) refresh on a subsequent poll cycle.</li>
      * </ol>
      *
-     * <h3>Error handling</h3>
+     * <h4>Error handling</h4>
      * <p>Any {@link RuntimeException} (including
      * {@code software.amazon.awssdk.core.exception.SdkException} family
      * for transient AWS failures) thrown during polling, refresh, or
@@ -365,7 +366,7 @@ public class SecretsManagerConfig {
      * exceptions explicitly here we ensure the next scheduled
      * invocation will always run.</p>
      *
-     * <h3>Refresh failure semantics</h3>
+     * <h4>Refresh failure semantics</h4>
      * <p>If {@link ContextRefresher#refresh()} throws, the rotation
      * messages are deliberately NOT deleted from the queue &mdash; the
      * SQS visibility timeout (default 60 s) ensures the messages re-

@@ -126,8 +126,8 @@ import io.swagger.v3.oas.annotations.media.Schema;
  *
  * <p><b>Wire-format stability:</b> The {@link JsonProperty} bindings on
  * each component freeze the on-wire JSON contract independently of any
- * future record component renames. {@link JsonInclude#NON_NULL} at the
- * record level suppresses fields whose runtime value is {@code null}
+ * future record component renames. {@link JsonInclude.Include#NON_NULL}
+ * at the record level suppresses fields whose runtime value is {@code null}
  * &mdash; the work-area payload is sparse by design (most flows
  * populate only a handful of the nine fields), so omitting nulls keeps
  * JSON payloads compact and stable for OpenAPI consumers.</p>
@@ -400,8 +400,8 @@ public record CardWorkAreasDto(
          * downstream consumers parsing as needed. The original
          * {@code VALUE SPACES} initial value (line 35 of the copybook)
          * collapses to {@code null} on the Java side, consistent with
-         * the {@link JsonInclude#NON_NULL} suppression at the record
-         * level.
+         * the {@link JsonInclude.Include#NON_NULL} suppression at the
+         * record level.
          */
         @Schema(description = "11-digit account identifier. Mirrors COBOL "
                 + "CC-ACCT-ID PIC X(11) (with REDEFINES CC-ACCT-ID-N PIC "

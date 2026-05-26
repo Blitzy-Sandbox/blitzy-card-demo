@@ -622,6 +622,51 @@ public record TransactionAddDto(
      * <p>QA Final-CP6 Finding M2 introduced this annotation; QA
      * Final-CP7 Finding F-CRITICAL-01 hardened the property-name
      * exposure on every parameter.</p>
+     *
+     * @param accountId            optional 11-digit account ID (BMS
+     *                             {@code ACTIDIN}); paired with
+     *                             {@code cardNumber} so callers may
+     *                             supply either identifier
+     * @param cardNumber           optional 16-digit card number /
+     *                             PAN (BMS {@code CARDNIN}); masked in
+     *                             {@link #toString()} per PCI-DSS 3.4
+     * @param transactionType      2-digit transaction type code (BMS
+     *                             {@code TTYPCD}); foreign key into
+     *                             {@code transaction_type}
+     * @param transactionCategory  4-digit transaction category code (BMS
+     *                             {@code TCATCD}); foreign key into
+     *                             {@code transaction_category}
+     * @param source               2-character transaction source code
+     *                             (BMS {@code TRNSRC}); free text
+     *                             describing the origin channel
+     * @param description          26-character free-text description
+     *                             (BMS {@code TDESC}); preserved
+     *                             verbatim on the transaction record
+     * @param amount               transaction amount as a
+     *                             {@link BigDecimal} (BMS
+     *                             {@code TRNAMT}, COBOL
+     *                             {@code PIC S9(09)V99}); positive for
+     *                             debits, negative for credits per
+     *                             COBOL convention
+     * @param originationTimestamp the original transaction origination
+     *                             timestamp (BMS {@code TORIGDT}); ISO-8601
+     * @param processingTimestamp  the host processing timestamp (BMS
+     *                             {@code TPROCDT}); ISO-8601
+     * @param merchantId           merchant identifier (BMS
+     *                             {@code MID}); 9-digit numeric
+     * @param merchantName         merchant name (BMS
+     *                             {@code MNAME}); preserved verbatim
+     * @param merchantCity         merchant city (BMS
+     *                             {@code MCITY})
+     * @param merchantZip          merchant ZIP code (BMS
+     *                             {@code MZIP})
+     * @param confirm              {@code "Y"}/{@code "N"} confirmation
+     *                             flag from the COTRN02 confirm prompt
+     * @param transactionId        server-generated 16-digit transaction
+     *                             identifier (response-only); ignored
+     *                             on inbound JSON, computed by
+     *                             {@code TransactionAddService} as
+     *                             {@code MAX(TRAN-ID)+1}
      */
     @JsonCreator
     public TransactionAddDto {
@@ -642,6 +687,23 @@ public record TransactionAddDto(
      * {@code transactionId} response-only field does not break the
      * ~46 existing call-sites that construct this DTO with 14
      * positional arguments (request shape).</p>
+     *
+     * @param accountId            optional 11-digit account ID; see the
+     *                             canonical constructor for full semantics
+     * @param cardNumber           optional 16-digit card number / PAN
+     * @param transactionType      2-digit transaction type code
+     * @param transactionCategory  4-digit transaction category code
+     * @param source               2-character transaction source code
+     * @param description          26-character description
+     * @param amount               transaction amount (BigDecimal)
+     * @param originationTimestamp original transaction origination timestamp
+     * @param processingTimestamp  host processing timestamp
+     * @param merchantId           merchant identifier
+     * @param merchantName         merchant name
+     * @param merchantCity         merchant city
+     * @param merchantZip          merchant ZIP code
+     * @param confirm              confirmation flag ({@code "Y"} /
+     *                             {@code "N"})
      */
     public TransactionAddDto(
             String accountId,

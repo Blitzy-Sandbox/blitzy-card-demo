@@ -177,9 +177,9 @@ import java.util.concurrent.atomic.AtomicLong;
  *       ({@link CardRepository}, {@link AuditLogService}) are
  *       declared {@code final} and assigned via the canonical
  *       constructor. No {@code @Autowired} field injection per AAP
- *       &sect;0.7.1 ("Constructor injection for all @Service,
- *       @Repository, @Component, adapter, and config beans &mdash;
- *       loose coupling required").</li>
+ *       &sect;0.7.1 ("Constructor injection for all {@code @Service},
+ *       {@code @Repository}, {@code @Component}, adapter, and config
+ *       beans &mdash; loose coupling required").</li>
  *   <li><b>Read-only transaction:</b> {@link #readAndDisplayAll()}
  *       is annotated {@code @Transactional(readOnly = true)} so
  *       PostgreSQL applies read-only-tuning optimisations (no WAL
@@ -394,8 +394,9 @@ public class CardFileReaderService {
     /**
      * Canonical constructor &mdash; the sole means of dependency
      * injection for this service per AAP &sect;0.7.1
-     * ("Constructor injection for all @Service, @Repository,
-     * @Component, adapter, and config beans"). Both dependencies are
+     * ("Constructor injection for all {@code @Service},
+     * {@code @Repository}, {@code @Component}, adapter, and config
+     * beans"). Both dependencies are
      * {@link Objects#requireNonNull validated non-null} at
      * construction so a misconfigured Spring context fails fast
      * during application startup rather than at the first method

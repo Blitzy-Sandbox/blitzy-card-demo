@@ -74,7 +74,9 @@ import java.time.LocalDate;
  * {@code CARD-EXPIRAION-DATE PIC X(10)} field on the underlying record.
  * In the Java target, the client supplies the already-assembled
  * {@code LocalDate} value via JSON; field-level Bean Validation enforces
- * the ISO-8601 wire format and {@link DateValidationService} (port of
+ * the ISO-8601 wire format and
+ * {@link com.awsm2.carddemo.validation.DateValidationService
+ *  DateValidationService} (port of
  * {@code app/cpy/CSUTLDPY.cpy} and {@code app/cbl/CSUTLDTC.cbl}) applies
  * the leap-year / month / day semantic checks per AAP &sect;0.5.2 (LE
  * {@code CEEDAYS} replacement).

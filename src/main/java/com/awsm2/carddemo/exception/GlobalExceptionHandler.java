@@ -1372,6 +1372,30 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(body);
     }
 
+    /**
+     * Handles any {@link DataAccessException} not already caught by the
+     * more-specific {@link #handleDataIntegrityViolationException
+     * handleDataIntegrityViolationException} hop above.
+     *
+     * <p><b>COBOL provenance.</b> Replaces the {@code 9910-DISPLAY-IO-STATUS}
+     * and {@code 9999-ABEND-PROGRAM} paragraphs that COBOL programs invoke
+     * on any unhandled VSAM I/O failure (see {@code app/cbl/CBTRN02C.cbl}
+     * and the analogous abend paragraphs across all
+     * {@code app/cbl/*.cbl} programs). In the Java target, Spring Data
+     * JPA raises {@code DataAccessException}; this handler maps it to a
+     * deterministic HTTP 500 with a PCI-DSS-safe envelope.</p>
+     *
+     * <p><b>PCI-DSS-safe envelope.</b> The response body never echoes the
+     * underlying exception message, SQL fragment, or stack trace; the full
+     * exception (including SQL state and root cause) is captured at WARN
+     * level so operators can correlate via the {@code correlationId}.</p>
+     *
+     * @param ex      the data-access exception raised by Spring Data JPA
+     * @param request the HTTP request (for path logging)
+     * @return {@link ResponseEntity} with HTTP 500 Internal Server Error
+     *         and the standardized {@link ApiResponse} envelope carrying
+     *         reason code {@code DATA_ACCESS_ERROR}
+     */
     @ExceptionHandler(DataAccessException.class)
     public ResponseEntity<ApiResponse<Object>> handleDataAccessException(
             DataAccessException ex, HttpServletRequest request) {

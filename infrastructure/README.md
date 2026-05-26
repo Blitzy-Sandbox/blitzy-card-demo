@@ -56,7 +56,7 @@ graph TD
     CWL[CloudWatch Logs<br/>Container Insights]
     OS[(OpenSearch domain)]
     Batch[AWS Batch on Fargate]
-    SFN[Step Functions<br/>eod-batch-pipeline<br/>file-provisioning]
+    SFN[Step Functions<br/>eod-batch-pipeline<br/>file-provisioning<br/>report-pipeline]
     Glue[AWS Glue Spark jobs]
     CT[AWS CloudTrail]
     Macie[Amazon Macie]
@@ -672,21 +672,28 @@ and to the Spring Boot application.
 ### `stepfunctions.tf`
 
 - **Purpose**: AWS Step Functions state machines replacing the JCL job stream
-  orchestration (AAP §0.6.3).
-- **Resources provisioned**: `aws_sfn_state_machine` for `eod-batch-pipeline`
-  (linear `POSTTRAN → INTCALC → COMBTRAN → Parallel { CREASTMT, TRANREPT }` chain)
-  and `file-provisioning` (Map state iterating over Flyway migrations and Glue
-  ETL jobs). Both state machines load their ASL JSON definition via Terraform's
-  `file()` function from `../src/main/resources/stepfunctions/eod-batch-pipeline.asl.json`
-  and `../src/main/resources/stepfunctions/file-provisioning.asl.json` and run as
-  the IAM execution role from `iam.tf`.
+  orchestration (AAP §0.6.3) and the online-to-batch report bridge.
+- **Resources provisioned**: three `aws_sfn_state_machine` resources:
+  1. `eod-batch-pipeline` — linear `POSTTRAN → INTCALC → COMBTRAN → Parallel { CREASTMT, TRANREPT }` chain mirroring the end-of-day JCL job stream.
+  2. `file-provisioning` — Map state iterating over Flyway migrations and Glue ETL jobs that seed `Account`, `Card`, `Customer`, and `CardCrossReference` from ASCII fixtures staged in S3.
+  3. `report-pipeline` — online-to-batch transaction-report bridge (AAP §0.6.3). Triggered by the MSK `report.requested` Kafka event published by `ReportSubmissionService`; consumed by `KafkaEventConsumer.onReportRequested`; started via `StepFunctionsOrchestrator.startReportPipeline()`. Replaces the COBOL `CORPT00C → CICS TDQ JOBS → JES submission` flow with an idempotent event-driven handoff. Branches on `reportType`: MONTHLY/CUSTOM run only `TRANREPT`; YEARLY fans out to both `TRANREPT` and `CREASTMT` in parallel to mirror the legacy year-end chain.
+
+  All three state machines load their ASL JSON definition via Terraform's
+  `file()` function from `../src/main/resources/stepfunctions/eod-batch-pipeline.asl.json`,
+  `../src/main/resources/stepfunctions/file-provisioning.asl.json`, and
+  `../src/main/resources/stepfunctions/report-pipeline.asl.json` and run as the
+  IAM execution role from `iam.tf`.
 - **Key AAP rules implemented**: AAP §0.6.3 (JCL `COND=` semantics map to ASL
-  `Choice` / `Catch` / `Retry`; JCL `PARALLEL` step maps to ASL `Parallel` state).
-- **Outputs**: `eod_state_machine_arn`, `file_provisioning_state_machine_arn`.
+  `Choice` / `Catch` / `Retry`; JCL `PARALLEL` step maps to ASL `Parallel` state;
+  CICS TDQ JOBS submission maps to MSK + Step Functions).
+- **Outputs**: `eod_state_machine_arn`, `file_provisioning_state_machine_arn`,
+  `report_pipeline_state_machine_arn` (consumed by `KafkaEventConsumer` via the
+  `carddemo.aws.stepfunctions.report-pipeline-arn` property).
 - **Cross-references**: ASL JSON sources live under `../src/main/resources/stepfunctions/`;
   Task states invoke AWS Batch jobs from `batch.tf` and Glue jobs from `glue.tf`;
-  EventBridge rules (defined inline or in `cloudwatch.tf`) trigger executions on
-  schedule.
+  EventBridge rules (defined inline or in `cloudwatch.tf`) trigger EOD executions
+  on schedule, while the report-pipeline is triggered exclusively on demand by
+  the MSK consumer in the Spring Boot service.
 
 ### `glue.tf`
 
@@ -1127,6 +1134,12 @@ The Amazon States Language definitions are stored as JSON in
   COMBTRAN → Parallel { CREASTMT, TRANREPT }) per AAP §0.6.3.
 - `file-provisioning.asl.json` — provisioning workflow loading seed data and
   running the bulk-load Glue jobs.
+- `report-pipeline.asl.json` — online-to-batch transaction-report bridge per
+  AAP §0.6.3. Triggered by the MSK `report.requested` event consumed by
+  `KafkaEventConsumer.onReportRequested`; starts via
+  `StepFunctionsOrchestrator.startReportPipeline()`; branches on `reportType`
+  (MONTHLY/CUSTOM → TRANREPT only; YEARLY → Parallel { TRANREPT, CREASTMT }).
+  Replaces the COBOL `CORPT00C → CICS TDQ JOBS → JES submission` flow.
 
 `stepfunctions.tf` references these files via Terraform's `file(...)` function:
 

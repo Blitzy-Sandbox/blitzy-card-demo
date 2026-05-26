@@ -167,7 +167,7 @@ public class BatchJobConfig {
      * {@code app/cbl/CBACT04C.cbl} where {@code WS-PARM-DATE} was checked
      * against a length-10 mask).</p>
      *
-     * <h3>Validation Rules</h3>
+     * <h4>Validation Rules</h4>
      * <ul>
      *   <li>{@code JobParameters} must be non-null (defensive guard;
      *       Spring normally supplies an empty {@code JobParameters} but
@@ -236,7 +236,7 @@ public class BatchJobConfig {
      * {@code JobOperator.startNextInstance(jobName)} to create a fresh
      * instance.</p>
      *
-     * <h3>When This Matters</h3>
+     * <h4>When This Matters</h4>
      * <ul>
      *   <li><b>Local development:</b> repeated {@code mvn spring-boot:run}
      *       (or {@code java -jar carddemo.jar}) launches with otherwise-
@@ -300,7 +300,7 @@ public class BatchJobConfig {
      * operator inspection &mdash; both consolidated here into a single
      * structured audit emission per lifecycle transition.</p>
      *
-     * <h3>beforeJob Contract</h3>
+     * <h4>beforeJob Contract</h4>
      * <p>Emits {@code status="STARTED"} with {@code durationMillis=0L},
      * a {@code null} payload, and the extracted {@code correlationId}.
      * The {@code JobParameters} are stringified to the structured log
@@ -308,7 +308,7 @@ public class BatchJobConfig {
      * indexed separately on the {@code execution_id} composite document
      * ID).</p>
      *
-     * <h3>afterJob Contract</h3>
+     * <h4>afterJob Contract</h4>
      * <p>Emits {@code status=jobExecution.getStatus().name()} (one of
      * {@code COMPLETED}, {@code FAILED}, {@code STOPPED}, {@code ABANDONED},
      * {@code UNKNOWN} per the {@code BatchStatus} enum) with

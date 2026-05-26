@@ -240,7 +240,7 @@ public class SecurityConfig {
      * protects every endpoint in the application, mapped from the AAP
      * &sect;0.3.4 REST endpoint inventory.
      *
-     * <h3>Public endpoints (no authentication required)</h3>
+     * <h4>Public endpoints (no authentication required)</h4>
      * <ul>
      *   <li>{@code POST /api/auth/signin} &mdash; issues a JWT;
      *       replaces {@code COSGN00C} signon transaction (Tran-ID
@@ -251,15 +251,16 @@ public class SecurityConfig {
      *       health checks per AAP &sect;0.7.2 operational
      *       requirements.</li>
      *   <li>{@code GET /v3/api-docs}, {@code /v3/api-docs/**},
-     *       {@code /swagger-ui}, {@code /swagger-ui/**},
-     *       {@code /swagger-ui.html} &mdash; OpenAPI docs. Production
-     *       deployments gate these by setting
+     *       {@code /v3/api-docs.yaml}, {@code /swagger-ui},
+     *       {@code /swagger-ui/**}, {@code /swagger-ui.html} &mdash;
+     *       OpenAPI docs (JSON + YAML variants + Swagger UI).
+     *       Production deployments gate these by setting
      *       {@code springdoc.api-docs.enabled=false} and
      *       {@code springdoc.swagger-ui.enabled=false} so the endpoints
      *       are not even registered.</li>
      * </ul>
      *
-     * <h3>Admin-only endpoints (require {@code ROLE_ADMIN})</h3>
+     * <h4>Admin-only endpoints (require {@code ROLE_ADMIN})</h4>
      * <ul>
      *   <li>{@code /api/admin/**} &mdash; user administration
      *       endpoints from {@code COUSR00C} through {@code COUSR03C}.</li>
@@ -267,23 +268,36 @@ public class SecurityConfig {
      *       {@code COADM01C}.</li>
      * </ul>
      *
-     * <h3>Authenticated endpoints</h3>
+     * <h4>Authenticated endpoints</h4>
      * <p>All other {@code /api/**} endpoints require an authenticated
      * principal with either {@code ROLE_USER} or {@code ROLE_ADMIN}.</p>
      *
-     * <h3>Default deny</h3>
+     * <p>The non-probe Actuator endpoints (e.g.
+     * {@code /actuator/metrics}, {@code /actuator/metrics/**},
+     * {@code /actuator/prometheus}, {@code /actuator/env}) also require an
+     * authenticated principal with either {@code ROLE_USER} or
+     * {@code ROLE_ADMIN}. This honours AAP &sect;0.7.2 (PCI-DSS &sect;10.1
+     * &mdash; limit access to system component metrics to authenticated
+     * users) and matches the documented behaviour in
+     * {@code docs/project-guide.md} &sect;9.6 (Observability Access).
+     * QA Final Checkpoint 12 Issue 5: previously
+     * {@code /actuator/metrics} fell through to {@code denyAll()},
+     * producing {@code 403 Forbidden} even for authenticated callers and
+     * contradicting the documentation.</p>
+     *
+     * <h4>Default deny</h4>
      * <p>{@code anyRequest().denyAll()} ensures any URL not explicitly
      * permitted is denied. This is the secure-by-default posture
      * mandated by AAP &sect;0.7.2 (PCI-DSS). A new endpoint will be
      * inaccessible until it is explicitly authorised here, preventing
      * accidental exposure.</p>
      *
-     * <h3>Filter ordering</h3>
+     * <h4>Filter ordering</h4>
      * <p>{@link JwtAuthenticationFilter} is registered BEFORE
      * {@link UsernamePasswordAuthenticationFilter} so that JWT-based
      * authentication takes precedence over any form-based flow.</p>
      *
-     * <h3>Method-level authorization</h3>
+     * <h4>Method-level authorization</h4>
      * <p>{@link EnableMethodSecurity} with {@code prePostEnabled = true}
      * is declared on the class so individual controller methods may
      * additionally use {@code @PreAuthorize}.</p>
@@ -346,12 +360,61 @@ public class SecurityConfig {
                                 "/actuator/info"
                         ).permitAll()
                         .requestMatchers(HttpMethod.GET,
+                                // JSON variant (canonical springdoc path)
                                 "/v3/api-docs",
                                 "/v3/api-docs/**",
+                                // YAML variant — springdoc serves the
+                                // same spec as YAML at .yaml suffix; the
+                                // /** matcher above does NOT match a path
+                                // segment that contains a dot, so the
+                                // .yaml endpoint must be permitted
+                                // explicitly. QA Final Checkpoint 12,
+                                // Issue 13: previously /v3/api-docs.yaml
+                                // returned 401 because only the JSON
+                                // path matchers were registered.
+                                "/v3/api-docs.yaml",
                                 "/swagger-ui",
                                 "/swagger-ui/**",
                                 "/swagger-ui.html"
                         ).permitAll()
+
+                        // Authenticated Actuator endpoints — non-probe
+                        // operational endpoints (metrics, prometheus
+                        // scrape target, environment) require an
+                        // authenticated USER/ADMIN. Replaces: implicit
+                        // SDSF/CEMT operator-only access on the
+                        // mainframe (only RACF-authenticated operators
+                        // could SDSF.D or CEMT INQ resources). QA Final
+                        // Checkpoint 12, Issue 5: the docs at
+                        // docs/project-guide.md §9.6 explicitly promise
+                        // that `curl -H "Authorization: Bearer $TOKEN"
+                        // .../actuator/metrics` works for authenticated
+                        // USER/ADMIN; without this matcher the request
+                        // fell through to .anyRequest().denyAll() and
+                        // returned 403 Forbidden, contradicting both
+                        // the documentation and the AAP §0.7.2
+                        // observability requirement that metrics be
+                        // operationally accessible.
+                        .requestMatchers(HttpMethod.GET,
+                                "/actuator/metrics",
+                                "/actuator/metrics/**",
+                                "/actuator/prometheus",
+                                "/actuator/env",
+                                "/actuator/env/**",
+                                "/actuator/loggers",
+                                "/actuator/loggers/**",
+                                "/actuator/configprops",
+                                "/actuator/configprops/**",
+                                "/actuator/beans",
+                                "/actuator/mappings",
+                                "/actuator/conditions",
+                                "/actuator/scheduledtasks",
+                                "/actuator/threaddump",
+                                "/actuator/heapdump",
+                                "/actuator/httpexchanges",
+                                "/actuator/caches",
+                                "/actuator/caches/**"
+                        ).hasAnyRole("USER", "ADMIN")
 
                         // Admin-only endpoints — replaces RACF
                         // SECLABEL=ADMIN profile + CSUSR01Y.cpy

@@ -1442,15 +1442,45 @@ class EndToEndTransactionWorkflowIT {
         /**
          * Verifies that calling an authenticated endpoint with a TAMPERED
          * JWT (signature broken) returns HTTP 401.
+         *
+         * <p>QA Final Checkpoint 12 follow-up: the original implementation
+         * tampered the signature by flipping the last character only.
+         * That approach was flaky because the JWT signature is Base64URL
+         * encoded and the LAST character of the 43-char HS256 signature
+         * carries only 4 data bits + 2 padding bits. Lenient Base64URL
+         * decoders (including the one bundled with JJWT) ignore the
+         * padding bits, so 4 of the 64 possible target characters
+         * decode to the same binary signature as 4 other source
+         * characters (any pair sharing the same data-bit prefix).
+         * Approximately 9% of randomly generated JWTs ended in a
+         * character whose flipped value decoded to the same bytes,
+         * producing a sporadic false-pass that asserted 201 instead
+         * of 401/403.</p>
+         *
+         * <p>To eliminate the flake we now tamper a MIDDLE character of
+         * the signature segment, which encodes 6 full data bits with no
+         * padding ambiguity. The signature segment is the third
+         * dot-separated component of the JWT.</p>
          */
         @Test
         @DisplayName("Tampered JWT → 401 on authenticated endpoint")
         void addTransaction_tamperedJwt_returns401() {
             String validJwt = signIn(TEST_USER_ID, TEST_USER_PWD);
-            // Tamper with the JWT signature: flip the LAST character.
-            String tampered = validJwt.substring(0, validJwt.length() - 1)
-                    + ((validJwt.charAt(validJwt.length() - 1) == 'X')
-                            ? "Y" : "X");
+
+            // The JWT format is `header.payload.signature`. Tampering with
+            // a middle character of the signature segment guarantees a
+            // changed binary signature because middle Base64URL chars
+            // encode 6 data bits with no padding bits.
+            int lastDot = validJwt.lastIndexOf('.');
+            int tamperPos = lastDot + 4;  // 4 chars into the signature
+            char originalChar = validJwt.charAt(tamperPos);
+            // Flip to a Base64URL char with deliberately different
+            // data bits: if original is 'A' (000000) use 'Z' (011001);
+            // otherwise use 'A' to guarantee a different decoded byte.
+            char replacementChar = (originalChar == 'A') ? 'Z' : 'A';
+            String tampered = validJwt.substring(0, tamperPos)
+                    + replacementChar
+                    + validJwt.substring(tamperPos + 1);
 
             TransactionAddDto request = new TransactionAddDto(
                     null, TEST_CARD_NUM, "01", 1, "POS TERM", "test",

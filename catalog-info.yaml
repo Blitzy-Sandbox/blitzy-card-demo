@@ -4,6 +4,7 @@ metadata:
   name: blitzy-card-demo
   description: "AWS CardDemo COBOL/CICS/VSAM mainframe application migrated to Java 17+ / Spring Boot 3.x on AWS-native services (ECS Fargate, RDS Multi-AZ PostgreSQL, MSK, ElastiCache, S3, Step Functions, AWS Batch). PCI-DSS aligned. Demo-ready by May 20, 2026."
   tags:
+    # Generic platform tags
     - java
     - spring-boot
     - aws
@@ -13,6 +14,13 @@ metadata:
     - kafka
     - terraform
     - docker
+    # Specific version / platform tags (QA CP12 Issue 10):
+    # surfaced separately so Backstage facet search can filter the
+    # catalog by Java major version, Spring Boot major version, and the
+    # AWS-native deployment paradigm.
+    - java-17
+    - spring-boot-3
+    - aws-native
   labels:
     blitzy.com/language: java
   annotations:
@@ -25,8 +33,15 @@ metadata:
     - url: https://github.com/Blitzy-Sandbox/blitzy-card-demo/pull/1
       title: "PR #1: COBOL to Java 17+ / Spring Boot 3.x Migration"
       icon: github
-    - url: https://github.com/Blitzy-Sandbox/blitzy-card-demo/tree/main/blitzy/documentation
-      title: Blitzy Documentation
+    # QA CP12 Issue 9: previous link pointed to a non-existent
+    # blitzy/documentation/ tree path (returned 404). The actual
+    # documentation root is docs/ (mkdocs-served via docs/index.md,
+    # docs/project-guide.md, docs/technical-specifications.md).
+    - url: https://github.com/Blitzy-Sandbox/blitzy-card-demo/tree/main/docs
+      title: Project Documentation (docs/)
+      icon: docs
+    - url: https://github.com/Blitzy-Sandbox/blitzy-card-demo/blob/main/infrastructure/README.md
+      title: Infrastructure-as-Code Reference (Terraform)
       icon: docs
 spec:
   type: service

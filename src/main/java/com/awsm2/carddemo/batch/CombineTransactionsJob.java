@@ -365,7 +365,7 @@ public class CombineTransactionsJob {
      *       (replaces JES SYSPRINT step lifecycle).</li>
      * </ol>
      *
-     * <h3>Skip / Retry Policy (AAP &sect;0.7.1)</h3>
+     * <h4>Skip / Retry Policy (AAP &sect;0.7.1)</h4>
      *
      * <p>The step skips up to {@link #skipLimit} items on
      * {@link DataAccessException} or
@@ -375,7 +375,7 @@ public class CombineTransactionsJob {
      * times on {@link DataAccessException} to absorb transient
      * connection / deadlock failures.</p>
      *
-     * <h3>Transactional Context</h3>
+     * <h4>Transactional Context</h4>
      *
      * <p>The {@link PlatformTransactionManager} supplied to
      * {@link StepBuilder#chunk(int, PlatformTransactionManager)} is the

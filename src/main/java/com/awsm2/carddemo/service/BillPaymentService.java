@@ -519,7 +519,7 @@ public class BillPaymentService {
      * or {@link OnSizeErrorException} &mdash; rolls back BOTH writes
      * (AAP &sect;0.6.2 / &sect;0.7.1).</p>
      *
-     * <h3>Confirm flag semantics</h3>
+     * <h4>Confirm flag semantics</h4>
      * <ul>
      *   <li>{@code "Y"} / {@code "y"} &rarr; full payment posted; the
      *       returned DTO carries {@code transactionId}, {@code postedAt},
@@ -536,7 +536,7 @@ public class BillPaymentService {
      *       message {@code "Invalid value. Valid values are (Y/N)..."}.</li>
      * </ul>
      *
-     * <h3>Balance-zero short-circuit</h3>
+     * <h4>Balance-zero short-circuit</h4>
      *
      * <p>After reading the account on the {@code "Y"} path, if
      * {@code ACCT-CURR-BAL <= 0} the service returns an informational

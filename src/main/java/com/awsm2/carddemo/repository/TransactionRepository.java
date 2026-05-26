@@ -214,7 +214,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * MAX-ID-generation lookup so they cannot poison the online
      * ID-generation sequence.</p>
      *
-     * <h3>Performance</h3>
+     * <h4>Performance</h4>
      *
      * <p>PostgreSQL evaluates the regex against every row, but the
      * {@code LIMIT 1} on the {@code ORDER BY tran_id DESC} primary-key
@@ -244,7 +244,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * ({@code KEYS(26 304)}, {@code NONUNIQUEKEY}) combined with the
      * date-range predicate in {@code app/cbl/CBTRN03C.cbl}
      * L173-L178:</p>
-     * <pre>
+     * <pre>{@code
      * PERFORM 1000-TRANFILE-GET-NEXT
      * IF TRAN-PROC-TS (1:10) >= WS-START-DATE
      *    AND TRAN-PROC-TS (1:10) <= WS-END-DATE
@@ -252,7 +252,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * ELSE
      *    NEXT SENTENCE
      * END-IF
-     * </pre>
+     * }</pre>
      *
      * <p>where {@code WS-START-DATE}/{@code WS-END-DATE} are
      * 10-character date strings (PIC X(10), {@code YYYY-MM-DD} format)

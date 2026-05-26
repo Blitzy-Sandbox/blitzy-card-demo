@@ -563,6 +563,14 @@ public class DateValidationService {
          *       string {@code ""} (matching COBOL fixed-width spaces
          *       semantics after trimming).</li>
          * </ul>
+         *
+         * @param valid       {@code true} if the date is valid; {@code false}
+         *                    otherwise
+         * @param resultCode  4-character severity/message code;
+         *                    normalized to {@value #RESULT_CODE_VALID} or
+         *                    {@value #RESULT_CODE_INVALID} when {@code null}
+         * @param message     human-readable result text; normalized to the
+         *                    empty string when {@code null}
          */
         public DateValidationResult {
             if (resultCode == null) {

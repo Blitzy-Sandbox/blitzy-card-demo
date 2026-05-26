@@ -194,6 +194,13 @@ public class TransactionController {
      *                 the COBOL {@code TRNIDIN} BMS field. May be
      *                 {@code null} for full unfiltered listing
      * @param page     0-based page index; defaults to 0
+     * @param size     requested page size; defaults to 10 to match the
+     *                 COBOL {@code COTRN00.bms} {@code OCCURS 10} row
+     *                 contract. Bounded to {@code [1, 100]} at the
+     *                 controller boundary as a DoS guard (per CP4-#15).
+     *                 The service enforces the canonical page size of 10
+     *                 internally; values supplied here that exceed 10
+     *                 are silently capped to preserve the COBOL contract.
      * @return {@link ResponseEntity} with HTTP 200 and the
      *         {@link TransactionListDto} wrapped in {@link ApiResponse}
      */

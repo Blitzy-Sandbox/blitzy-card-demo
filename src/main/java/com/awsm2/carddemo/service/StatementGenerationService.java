@@ -62,8 +62,10 @@ import java.util.Optional;
  *       {@code app/jcl/CREASTMT.JCL}.</li>
  *   <li><b>{@code app/cbl/CBSTM03B.CBL}</b> — file-service subroutine
  *       for I/O dispatch invoked by {@code CBSTM03A}; superseded in
- *       the Java target by the {@link JpaRepository}-based persistence
- *       layer, so it has no standalone Java counterpart.</li>
+ *       the Java target by the
+ *       {@link org.springframework.data.jpa.repository.JpaRepository
+ *       JpaRepository}-based persistence layer, so it has no
+ *       standalone Java counterpart.</li>
  * </ul>
  *
  * <h2>Template Method pattern (AAP &sect;0.3.3)</h2>

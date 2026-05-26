@@ -138,80 +138,170 @@ public final class AidKeyHelper {
      * trimming logic.</p>
      */
     public enum AidKey {
-        // COBOL: CSSTRPFY.cpy:L22-L23 (DFHENTER → CCARD-AID-ENTER),
-        //        CVCRD01Y.cpy:L4 (VALUE 'ENTER')
+        /**
+         * The 3270 ENTER key &mdash; the canonical action key for submitting
+         * an input map.
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L22-L23} ({@code DFHENTER} &rarr;
+         * {@code CCARD-AID-ENTER}); {@code CVCRD01Y.cpy:L4}
+         * ({@code VALUE 'ENTER'}).</p>
+         */
         ENTER("ENTER"),
 
-        // COBOL: CSSTRPFY.cpy:L30-L31 (DFHPF1 → CCARD-AID-PFK01),
-        //        CSSTRPFY.cpy:L54-L55 (DFHPF13 folded),
-        //        CVCRD01Y.cpy:L8 (VALUE 'PFK01')
+        /**
+         * PF1 / PF13 (folded) program function key.
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L30-L31} ({@code DFHPF1} &rarr;
+         * {@code CCARD-AID-PFK01}); {@code CSSTRPFY.cpy:L54-L55}
+         * ({@code DFHPF13} folded onto {@code PFK01});
+         * {@code CVCRD01Y.cpy:L8} ({@code VALUE 'PFK01'}).</p>
+         */
         PF1("PFK01"),
 
-        // COBOL: CSSTRPFY.cpy:L32-L33 (DFHPF2 → CCARD-AID-PFK02),
-        //        CSSTRPFY.cpy:L56-L57 (DFHPF14 folded),
-        //        CVCRD01Y.cpy:L9 (VALUE 'PFK02')
+        /**
+         * PF2 / PF14 (folded) program function key.
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L32-L33} ({@code DFHPF2} &rarr;
+         * {@code CCARD-AID-PFK02}); {@code CSSTRPFY.cpy:L56-L57}
+         * ({@code DFHPF14} folded onto {@code PFK02});
+         * {@code CVCRD01Y.cpy:L9} ({@code VALUE 'PFK02'}).</p>
+         */
         PF2("PFK02"),
 
-        // COBOL: CSSTRPFY.cpy:L34-L35 (DFHPF3 → CCARD-AID-PFK03),
-        //        CSSTRPFY.cpy:L58-L59 (DFHPF15 folded),
-        //        CVCRD01Y.cpy:L10 (VALUE 'PFK03')
+        /**
+         * PF3 / PF15 (folded) program function key &mdash; the conventional
+         * CardDemo "return to previous screen" key.
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L34-L35} ({@code DFHPF3} &rarr;
+         * {@code CCARD-AID-PFK03}); {@code CSSTRPFY.cpy:L58-L59}
+         * ({@code DFHPF15} folded onto {@code PFK03});
+         * {@code CVCRD01Y.cpy:L10} ({@code VALUE 'PFK03'}).</p>
+         */
         PF3("PFK03"),
 
-        // COBOL: CSSTRPFY.cpy:L36-L37 (DFHPF4 → CCARD-AID-PFK04),
-        //        CSSTRPFY.cpy:L60-L61 (DFHPF16 folded),
-        //        CVCRD01Y.cpy:L11 (VALUE 'PFK04')
+        /**
+         * PF4 / PF16 (folded) program function key.
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L36-L37} ({@code DFHPF4} &rarr;
+         * {@code CCARD-AID-PFK04}); {@code CSSTRPFY.cpy:L60-L61}
+         * ({@code DFHPF16} folded onto {@code PFK04});
+         * {@code CVCRD01Y.cpy:L11} ({@code VALUE 'PFK04'}).</p>
+         */
         PF4("PFK04"),
 
-        // COBOL: CSSTRPFY.cpy:L38-L39 (DFHPF5 → CCARD-AID-PFK05),
-        //        CSSTRPFY.cpy:L62-L63 (DFHPF17 folded),
-        //        CVCRD01Y.cpy:L12 (VALUE 'PFK05')
+        /**
+         * PF5 / PF17 (folded) program function key.
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L38-L39} ({@code DFHPF5} &rarr;
+         * {@code CCARD-AID-PFK05}); {@code CSSTRPFY.cpy:L62-L63}
+         * ({@code DFHPF17} folded onto {@code PFK05});
+         * {@code CVCRD01Y.cpy:L12} ({@code VALUE 'PFK05'}).</p>
+         */
         PF5("PFK05"),
 
-        // COBOL: CSSTRPFY.cpy:L40-L41 (DFHPF6 → CCARD-AID-PFK06),
-        //        CSSTRPFY.cpy:L64-L65 (DFHPF18 folded),
-        //        CVCRD01Y.cpy:L13 (VALUE 'PFK06')
+        /**
+         * PF6 / PF18 (folded) program function key.
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L40-L41} ({@code DFHPF6} &rarr;
+         * {@code CCARD-AID-PFK06}); {@code CSSTRPFY.cpy:L64-L65}
+         * ({@code DFHPF18} folded onto {@code PFK06});
+         * {@code CVCRD01Y.cpy:L13} ({@code VALUE 'PFK06'}).</p>
+         */
         PF6("PFK06"),
 
-        // COBOL: CSSTRPFY.cpy:L42-L43 (DFHPF7 → CCARD-AID-PFK07),
-        //        CSSTRPFY.cpy:L66-L67 (DFHPF19 folded),
-        //        CVCRD01Y.cpy:L14 (VALUE 'PFK07')
+        /**
+         * PF7 / PF19 (folded) program function key &mdash; the conventional
+         * CardDemo "previous page" key on paginated list screens.
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L42-L43} ({@code DFHPF7} &rarr;
+         * {@code CCARD-AID-PFK07}); {@code CSSTRPFY.cpy:L66-L67}
+         * ({@code DFHPF19} folded onto {@code PFK07});
+         * {@code CVCRD01Y.cpy:L14} ({@code VALUE 'PFK07'}).</p>
+         */
         PF7("PFK07"),
 
-        // COBOL: CSSTRPFY.cpy:L44-L45 (DFHPF8 → CCARD-AID-PFK08),
-        //        CSSTRPFY.cpy:L68-L69 (DFHPF20 folded),
-        //        CVCRD01Y.cpy:L15 (VALUE 'PFK08')
+        /**
+         * PF8 / PF20 (folded) program function key &mdash; the conventional
+         * CardDemo "next page" key on paginated list screens.
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L44-L45} ({@code DFHPF8} &rarr;
+         * {@code CCARD-AID-PFK08}); {@code CSSTRPFY.cpy:L68-L69}
+         * ({@code DFHPF20} folded onto {@code PFK08});
+         * {@code CVCRD01Y.cpy:L15} ({@code VALUE 'PFK08'}).</p>
+         */
         PF8("PFK08"),
 
-        // COBOL: CSSTRPFY.cpy:L46-L47 (DFHPF9 → CCARD-AID-PFK09),
-        //        CSSTRPFY.cpy:L70-L71 (DFHPF21 folded),
-        //        CVCRD01Y.cpy:L16 (VALUE 'PFK09')
+        /**
+         * PF9 / PF21 (folded) program function key.
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L46-L47} ({@code DFHPF9} &rarr;
+         * {@code CCARD-AID-PFK09}); {@code CSSTRPFY.cpy:L70-L71}
+         * ({@code DFHPF21} folded onto {@code PFK09});
+         * {@code CVCRD01Y.cpy:L16} ({@code VALUE 'PFK09'}).</p>
+         */
         PF9("PFK09"),
 
-        // COBOL: CSSTRPFY.cpy:L48-L49 (DFHPF10 → CCARD-AID-PFK10),
-        //        CSSTRPFY.cpy:L72-L73 (DFHPF22 folded),
-        //        CVCRD01Y.cpy:L17 (VALUE 'PFK10')
+        /**
+         * PF10 / PF22 (folded) program function key.
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L48-L49} ({@code DFHPF10} &rarr;
+         * {@code CCARD-AID-PFK10}); {@code CSSTRPFY.cpy:L72-L73}
+         * ({@code DFHPF22} folded onto {@code PFK10});
+         * {@code CVCRD01Y.cpy:L17} ({@code VALUE 'PFK10'}).</p>
+         */
         PF10("PFK10"),
 
-        // COBOL: CSSTRPFY.cpy:L50-L51 (DFHPF11 → CCARD-AID-PFK11),
-        //        CSSTRPFY.cpy:L74-L75 (DFHPF23 folded),
-        //        CVCRD01Y.cpy:L18 (VALUE 'PFK11')
+        /**
+         * PF11 / PF23 (folded) program function key.
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L50-L51} ({@code DFHPF11} &rarr;
+         * {@code CCARD-AID-PFK11}); {@code CSSTRPFY.cpy:L74-L75}
+         * ({@code DFHPF23} folded onto {@code PFK11});
+         * {@code CVCRD01Y.cpy:L18} ({@code VALUE 'PFK11'}).</p>
+         */
         PF11("PFK11"),
 
-        // COBOL: CSSTRPFY.cpy:L52-L53 (DFHPF12 → CCARD-AID-PFK12),
-        //        CSSTRPFY.cpy:L76-L77 (DFHPF24 folded),
-        //        CVCRD01Y.cpy:L19 (VALUE 'PFK12')
+        /**
+         * PF12 / PF24 (folded) program function key &mdash; the conventional
+         * CardDemo "exit / sign-off" key on most screens.
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L52-L53} ({@code DFHPF12} &rarr;
+         * {@code CCARD-AID-PFK12}); {@code CSSTRPFY.cpy:L76-L77}
+         * ({@code DFHPF24} folded onto {@code PFK12});
+         * {@code CVCRD01Y.cpy:L19} ({@code VALUE 'PFK12'}).</p>
+         */
         PF12("PFK12"),
 
-        // COBOL: CSSTRPFY.cpy:L24-L25 (DFHCLEAR → CCARD-AID-CLEAR),
-        //        CVCRD01Y.cpy:L5 (VALUE 'CLEAR')
+        /**
+         * The 3270 CLEAR key &mdash; the action key that erases the input
+         * buffer on the terminal.
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L24-L25} ({@code DFHCLEAR} &rarr;
+         * {@code CCARD-AID-CLEAR}); {@code CVCRD01Y.cpy:L5}
+         * ({@code VALUE 'CLEAR'}).</p>
+         */
         CLEAR("CLEAR"),
 
-        // COBOL: CSSTRPFY.cpy:L26-L27 (DFHPA1 → CCARD-AID-PA1),
-        //        CVCRD01Y.cpy:L6 (VALUE 'PA1  ' — 2 trailing spaces, 5 bytes)
+        /**
+         * The 3270 PA1 program-attention key. The canonical value preserves
+         * two trailing spaces ({@code "PA1  "}, 5 bytes) per COBOL byte-fidelity
+         * (AAP &sect;0.6.2).
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L26-L27} ({@code DFHPA1} &rarr;
+         * {@code CCARD-AID-PA1}); {@code CVCRD01Y.cpy:L6}
+         * ({@code VALUE 'PA1  '} &mdash; 2 trailing spaces, 5 bytes).</p>
+         */
         PA1("PA1  "),
 
-        // COBOL: CSSTRPFY.cpy:L28-L29 (DFHPA2 → CCARD-AID-PA2),
-        //        CVCRD01Y.cpy:L7 (VALUE 'PA2  ' — 2 trailing spaces, 5 bytes)
+        /**
+         * The 3270 PA2 program-attention key. The canonical value preserves
+         * two trailing spaces ({@code "PA2  "}, 5 bytes) per COBOL byte-fidelity
+         * (AAP &sect;0.6.2).
+         *
+         * <p>COBOL: {@code CSSTRPFY.cpy:L28-L29} ({@code DFHPA2} &rarr;
+         * {@code CCARD-AID-PA2}); {@code CVCRD01Y.cpy:L7}
+         * ({@code VALUE 'PA2  '} &mdash; 2 trailing spaces, 5 bytes).</p>
+         */
         PA2("PA2  ");
 
         /**

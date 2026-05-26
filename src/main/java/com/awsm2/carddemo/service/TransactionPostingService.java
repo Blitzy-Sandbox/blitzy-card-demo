@@ -121,7 +121,7 @@ import java.util.Optional;
  *       </td></tr>
  *   <tr><td>{@code 2500-WRITE-REJECT-REC} (L446-L465)</td>
  *       <td>{@link #writeRejectRecord(DailyTransaction, ValidationResult,
- *       LocalDate)} &mdash; calls
+ *       LocalDate, java.util.List)} &mdash; calls
  *       {@link S3OutputService#writeRejection(String, String)}</td></tr>
  *   <tr><td>{@code 2700-UPDATE-TCATBAL} +
  *       {@code 2700-A-CREATE-TCATBAL-REC} +
@@ -618,8 +618,8 @@ public class TransactionPostingService {
      *       (COBOL: PERFORM 2000-POST-TRANSACTION).</li>
      *   <li>Otherwise: increment {@code WS-REJECT-COUNT} and call
      *       {@link #writeRejectRecord(DailyTransaction,
-     *       ValidationResult, LocalDate)} (COBOL: PERFORM
-     *       2500-WRITE-REJECT-REC).</li>
+     *       ValidationResult, LocalDate, java.util.List)} (COBOL:
+     *       PERFORM 2500-WRITE-REJECT-REC).</li>
      * </ol>
      *
      * <p>On completion logs {@code WS-TRANSACTION-COUNT} and

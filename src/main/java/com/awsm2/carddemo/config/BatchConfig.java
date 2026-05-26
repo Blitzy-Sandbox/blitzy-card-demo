@@ -87,9 +87,11 @@ import org.springframework.transaction.PlatformTransactionManager;
  *
  * <h2>Spring Batch 5 / Spring Boot 3.x Runtime Model</h2>
  * <p>Spring Boot 3.x with Spring Batch 5 auto-configures the following
- * beans from the {@link Primary @Primary} {@code DataSource} declared in
- * {@link JpaConfig} (the only listed dependency of this file per the
- * agent file schema):</p>
+ * beans from the
+ * {@link org.springframework.context.annotation.Primary @Primary}
+ * {@code DataSource} declared in
+ * {@link com.awsm2.carddemo.config.JpaConfig JpaConfig} (the only
+ * listed dependency of this file per the agent file schema):</p>
  * <ul>
  *   <li>{@link JobRepository} &mdash; backed by the Spring Batch
  *       metadata tables ({@code BATCH_JOB_INSTANCE},
@@ -491,7 +493,8 @@ public class BatchConfig {
     /**
      * Builds the {@link JobOperator} bean that provides Spring Batch
      * <i>operations</i> (start, restart, stop, abandon, list executions,
-     * inspect summaries) over the {@link Job} catalogue.
+     * inspect summaries) over the
+     * {@link org.springframework.batch.core.Job Job} catalogue.
      *
      * <p><b>// Replaces: z/OS operator console + SDSF command interface
      * + JCL re-submission for re-runs / restarts</b> &mdash; the Java
@@ -501,7 +504,7 @@ public class BatchConfig {
      * from operational tooling, and from AWS Lambda triggers reacting
      * to CloudWatch alarms per AAP &sect;0.6.6.</p>
      *
-     * <h3>CP6 Code Review Compliance (F-CP6-BatchConfig-01 / F-CP6-BatchConfig-02)</h3>
+     * <h4>CP6 Code Review Compliance (F-CP6-BatchConfig-01 / F-CP6-BatchConfig-02)</h4>
      *
      * <p>The CP6 code-review feedback flagged that the
      * {@code BatchJobConfig} class (which declares Job-specific helper
@@ -534,7 +537,7 @@ public class BatchConfig {
      *       caller is expected to wire it explicitly when needed).</li>
      * </ul>
      *
-     * <h3>Constructor Dependencies</h3>
+     * <h4>Constructor Dependencies</h4>
      *
      * <p>The {@link JobOperatorFactoryBean} requires five collaborators,
      * all of which are auto-configured by Spring Boot from the
@@ -545,12 +548,12 @@ public class BatchConfig {
      *   <li>{@link JobExplorer} &mdash; read-only view of the metadata
      *       schema, used by {@code SimpleJobOperator} to list and
      *       inspect prior executions.</li>
-     *   <li>{@link JobRegistry} &mdash; the registry of {@link Job}
-     *       beans known to the {@code ApplicationContext}; auto-
-     *       populated by {@code JobRegistryBeanPostProcessor} (
-     *       declared by Spring Boot via
-     *       {@code BatchAutoConfiguration}) when {@code @Job} beans
-     *       are added to the context.</li>
+     *   <li>{@link JobRegistry} &mdash; the registry of
+     *       {@link org.springframework.batch.core.Job Job} beans known
+     *       to the {@code ApplicationContext}; auto-populated by
+     *       {@code JobRegistryBeanPostProcessor} (declared by Spring
+     *       Boot via {@code BatchAutoConfiguration}) when {@code @Job}
+     *       beans are added to the context.</li>
      *   <li>{@link JobLauncher} (the synchronous default
      *       {@code jobLauncher}, NOT the {@code asyncJobLauncher} above)
      *       &mdash; the launcher used by
@@ -568,7 +571,7 @@ public class BatchConfig {
      *       transactional context so the metadata writes are atomic.</li>
      * </ul>
      *
-     * <h3>What This Bean Does NOT Do</h3>
+     * <h4>What This Bean Does NOT Do</h4>
      *
      * <p>It does NOT auto-run jobs on startup &mdash; the
      * {@code spring.batch.job.enabled=false} discipline (documented

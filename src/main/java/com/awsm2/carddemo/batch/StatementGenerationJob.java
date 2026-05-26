@@ -91,13 +91,13 @@ import java.util.UUID;
  * <p>HTML output uses verbatim COBOL color literals to preserve
  * regulatory output format byte-identity (per AAP &sect;0.7.2
  * "Regulatory reporting output formats must remain identical
- * byte-for-byte"):
+ * byte-for-byte"):</p>
  * <ul>
  *   <li>{@code #1d1d96b3} &mdash; header background</li>
  *   <li>{@code #FFAF33} &mdash; alert/warning highlight</li>
  *   <li>{@code #33FF5E} &mdash; success highlight</li>
  *   <li>{@code #f2f2f2} &mdash; alternating row background</li>
- * </ul></p>
+ * </ul>
  *
  * <p><b>Why a tasklet (not chunk-oriented)?</b>
  * {@link StatementGenerationService} is a {@code @Transactional(readOnly = true)}
@@ -188,7 +188,7 @@ public class StatementGenerationJob {
      *       Step Functions trigger Lambda.</li>
      *   <li>The {@link AuditLogService#logBatchJobLifecycle} {@code jobName}
      *       parameter so OpenSearch documents are uniformly tagged.</li>
-     *   <li>The {@link StatementGenerationJobTest} {@code @Qualifier} based
+     *   <li>The {@code StatementGenerationJobTest} {@code @Qualifier} based
      *       autowiring of the Job under test.</li>
      * </ul>
      */
@@ -374,7 +374,7 @@ public class StatementGenerationJob {
      * exactly as required by the file schema's
      * {@code members_exposed}.</p>
      *
-     * <p>The inline listener emits:
+     * <p>The inline listener emits:</p>
      * <ul>
      *   <li><b>{@code beforeJob}:</b>
      *       {@link AuditLogService#logBatchJobLifecycle} with
@@ -385,7 +385,7 @@ public class StatementGenerationJob {
      *       {@code "COMPLETED"}, {@code "FAILED"}, {@code "ABANDONED"})
      *       and the computed {@code durationMillis} between the start
      *       and end times.</li>
-     * </ul></p>
+     * </ul>
      *
      * <p>Per the schema's {@code members_exposed} the public Job-factory
      * method signature is {@code statementGenerationJob()} (no
@@ -465,14 +465,14 @@ public class StatementGenerationJob {
      * {@link StatementStepExitStatusListener} that maps the
      * {@code errorCount} accumulated by the
      * {@link StatementGenerationService} to the appropriate Spring
-     * Batch {@link ExitStatus}:
+     * Batch {@link ExitStatus}:</p>
      * <ul>
      *   <li>{@code errorCount == 0} &rarr; {@link ExitStatus#COMPLETED}
      *       (COBOL {@code RETURN-CODE = 0}).</li>
      *   <li>{@code errorCount > 0} &rarr;
      *       {@link CardDemoExitStatus#COMPLETED_WITH_REJECTS} (COBOL
      *       {@code RETURN-CODE = 4}).</li>
-     * </ul></p>
+     * </ul>
      *
      * @return the configured {@link Step} bean
      */

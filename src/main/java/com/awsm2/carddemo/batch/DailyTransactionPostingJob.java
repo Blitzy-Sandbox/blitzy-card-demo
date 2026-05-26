@@ -184,21 +184,22 @@ public class DailyTransactionPostingJob {
     public static final String PARAM_BUSINESS_DATE = "businessDate";
 
     /**
-     * {@link StepExecution.ExecutionContext} key under which the step
-     * publishes the {@link PostingResult#transactionCount()} for
-     * inspection by downstream Step Functions states.
+     * {@link org.springframework.batch.item.ExecutionContext} key under
+     * which the step publishes the
+     * {@link PostingResult#transactionCount()} for inspection by
+     * downstream Step Functions states.
      */
     public static final String CTX_TRANSACTION_COUNT = "transactionCount";
 
     /**
-     * {@link StepExecution.ExecutionContext} key under which the step
-     * publishes the {@link PostingResult#rejectCount()}.
+     * {@link org.springframework.batch.item.ExecutionContext} key under
+     * which the step publishes the {@link PostingResult#rejectCount()}.
      */
     public static final String CTX_REJECT_COUNT = "rejectCount";
 
     /**
-     * {@link StepExecution.ExecutionContext} key under which the step
-     * publishes the {@link PostingResult#returnCode()}.
+     * {@link org.springframework.batch.item.ExecutionContext} key under
+     * which the step publishes the {@link PostingResult#returnCode()}.
      */
     public static final String CTX_RETURN_CODE = "returnCode";
 

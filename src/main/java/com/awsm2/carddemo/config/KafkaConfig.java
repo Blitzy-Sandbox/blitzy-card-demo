@@ -553,7 +553,7 @@ public class KafkaConfig {
      * Spring Kafka uses to instantiate listener containers for every
      * {@code @KafkaListener}-annotated method in the application.
      *
-     * <h2>Configuration</h2>
+     * <h4>Configuration</h4>
      * <ul>
      *   <li><b>Concurrency:</b> sourced from
      *       {@code spring.kafka.listener.concurrency} (default 3 for local
@@ -584,7 +584,7 @@ public class KafkaConfig {
      *       consumer factory).</li>
      * </ul>
      *
-     * <h2>Dead-letter topic naming convention</h2>
+     * <h4>Dead-letter topic naming convention</h4>
      * <p>Each source topic has a corresponding DLT named
      * {@code &lt;source-topic&gt;.DLT}. For example, a poison record on
      * {@code transaction.posted} (after exhausting retries) is republished

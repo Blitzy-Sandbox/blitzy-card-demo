@@ -121,7 +121,8 @@ import java.time.Duration;
  * test slice.</p>
  *
  * <h2>Property bindings</h2>
- * <table border="1" cellpadding="3" summary="Property bindings consumed by this class">
+ * <table border="1">
+ *   <caption>Property bindings consumed by this class</caption>
  *   <tr><th>Property</th><th>Default</th><th>Source</th></tr>
  *   <tr><td>{@code spring.data.redis.host}</td><td>{@code localhost}</td><td>profile overlay</td></tr>
  *   <tr><td>{@code spring.data.redis.port}</td><td>{@code 6379}</td><td>{@code application.yml}</td></tr>
@@ -309,7 +310,7 @@ public class RedisConfig {
      * logic"), and {@code CacheService} is the adapter that fronts manual
      * Redis access.</p>
      *
-     * <h3>Serializer choices</h3>
+     * <h4>Serializer choices</h4>
      * <ul>
      *   <li><b>Key serializer:</b> {@link StringRedisSerializer} &mdash;
      *       plain UTF-8 strings. Redis keys are human-readable and the
@@ -375,7 +376,7 @@ public class RedisConfig {
      * "reduces RDS read load by caching high-frequency account balance
      * lookups".</p>
      *
-     * <h3>Default cache configuration</h3>
+     * <h4>Default cache configuration</h4>
      * <ul>
      *   <li><b>TTL:</b> {@link #defaultTtlMillis} (default 300000 ms = 5 min)
      *       &mdash; aligned with transaction frequency per AAP &sect;0.7.1.</li>
@@ -392,7 +393,7 @@ public class RedisConfig {
      *       {@link #redisTemplate(RedisConnectionFactory)}.</li>
      * </ul>
      *
-     * <h3>{@code @Primary} rationale</h3>
+     * <h4>{@code @Primary} rationale</h4>
      * <p>Marked {@code @Primary} so Spring resolves this bean by default
      * when a {@code CacheManager} dependency is autowired without an
      * explicit qualifier &mdash; e.g., when {@code @Cacheable} on a service
@@ -401,7 +402,7 @@ public class RedisConfig {
      * {@code Caffeine} L1 cache fronting Redis), this annotation must be
      * reconsidered.</p>
      *
-     * <h3>Per-cache overrides</h3>
+     * <h4>Per-cache overrides</h4>
      * <p>For the initial migration scope all caches share the default TTL.
      * Per-cache overrides may later be added via
      * {@code RedisCacheManager.builder(...).withCacheConfiguration(name, cfg)}.

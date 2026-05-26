@@ -308,7 +308,7 @@ public class TransactionListService {
      * are coerced to 0 (the COBOL source never produces a negative
      * page number; this is a defensive REST contract guard).</p>
      *
-     * <h3>Empty-result handling</h3>
+     * <h4>Empty-result handling</h4>
      * <p>When the underlying browse returns no rows (or the
      * filtered slice for the requested page is empty), the
      * verbatim message {@link #NO_RECORDS_FOUND_MSG} is logged at

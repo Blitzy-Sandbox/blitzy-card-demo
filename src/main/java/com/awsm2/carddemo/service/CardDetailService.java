@@ -301,7 +301,7 @@ public class CardDetailService {
      * {@code CARD-NUM}, returning the record for display or signalling
      * the {@code DFHRESP(NOTFND)} branch.
      *
-     * <h3>Flow</h3>
+     * <h4>Flow</h4>
      * <ol>
      *   <li><b>Validate</b> &mdash; null/blank check, length-16 check,
      *       numeric-only check. Throws {@link ValidationException} on

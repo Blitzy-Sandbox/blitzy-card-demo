@@ -250,6 +250,13 @@ graph LR
 
 A second state machine, `src/main/resources/stepfunctions/file-provisioning.asl.json`, handles initial provisioning: Flyway migrations + S3→RDS bulk-load Glue jobs that seed `Account`, `Card`, `Customer`, and `CardCrossReference` from the ASCII fixtures staged in S3.
 
+A third state machine, `src/main/resources/stepfunctions/report-pipeline.asl.json`, implements the **online-to-batch transaction-report bridge** (AAP §0.6.3). It is started by `StepFunctionsOrchestrator.startReportPipeline()` after `KafkaEventConsumer.onReportRequested` consumes a `report.requested` event published by `ReportSubmissionService` (operator submits `POST /api/reports/submit`). The state machine routes on `$.context.reportType`:
+
+- **MONTHLY / CUSTOM** → single `Task` state submitting the `TRANREPT` AWS Batch job (`CBTRN03C` semantics).
+- **YEARLY** → `Parallel` state running both `TRANREPT` and `CREASTMT` (statement generation) concurrently to mirror the legacy year-end JCL chain.
+
+Audit events are emitted by `AuditLogService` to CloudWatch + OpenSearch; per-user ordering is guaranteed at the Kafka partition layer (partition key = `USER-ID`).
+
 ### 4.4 Observability Verification
 
 - ✅ **Structured JSON Logging**: Logback + `logstash-logback-encoder` emit JSON with `traceId`, `spanId`, `correlationId`, and MDC fields; logs ship to CloudWatch Logs
@@ -293,7 +300,7 @@ A second state machine, `src/main/resources/stepfunctions/file-provisioning.asl.
 | AIX/PATH → JPA secondary indexes + derived queries | ✅ Pass | `CardCrossReferenceRepository.findByXrefAcctId(...)` replaces `CXACAIX` |
 | Sequential PS / GDG → S3 versioned objects | ✅ Pass | `S3OutputService` adapter (AAP §0.6.2) |
 | CICS TDQ → MSK Kafka topics | ✅ Pass | `KafkaEventPublisher` / `KafkaEventConsumer` for 4 topics (AAP §0.6.5) |
-| JCL job streams → AWS Step Functions | ✅ Pass | `eod-batch-pipeline.asl.json`, `file-provisioning.asl.json` |
+| JCL job streams → AWS Step Functions | ✅ Pass | `eod-batch-pipeline.asl.json`, `file-provisioning.asl.json`, `report-pipeline.asl.json` |
 | LE `CEEDAYS` → `java.time.LocalDate.parse` | ✅ Pass | `DateValidationService` |
 | Structured JSON logging with correlation IDs | ✅ Pass | Logback + `logstash-logback-encoder` → CloudWatch Logs |
 | Distributed tracing (Micrometer / OpenTelemetry) | ✅ Pass | Micrometer Tracing bridge |
@@ -482,12 +489,16 @@ The application is **development-complete and deployment-ready**. The critical p
    docker-compose up
    ```
 
-5. **Run `mvn spring-boot:run`** or **`java -jar target/first-demo-520.jar`**:
+5. **Run `mvn spring-boot:run`** or **`java -jar target/carddemo.jar`**:
    ```bash
    mvn spring-boot:run
    # or
-   java -jar target/first-demo-520.jar
+   java -jar target/carddemo.jar
    ```
+
+   > **Note**: The packaged JAR is produced under `target/carddemo.jar` per
+   > `pom.xml` &mdash; `<build><finalName>carddemo</finalName></build>` overrides
+   > the default `${artifactId}-${version}.jar` name.
 
 ### 9.3 LocalStack Setup (AAP §0.7.2, verbatim)
 
@@ -535,11 +546,24 @@ curl -s http://localhost:8080/actuator/health/readiness
 
 **Authentication:**
 ```bash
+# Regular USER0001 (8-character password — SEC-USR-PWD PIC X(08) contract):
 curl -s -X POST http://localhost:8080/api/auth/signin \
   -H "Content-Type: application/json" \
-  -d '{"userId": "USER0001", "password": "PASSWORD"}' | python3 -m json.tool
+  -d '{"userId": "USER0001", "password": "PASSWDU1"}' | python3 -m json.tool
 # Expected: 200 OK with JWT token
+
+# Administrative ADMIN001:
+curl -s -X POST http://localhost:8080/api/auth/signin \
+  -H "Content-Type: application/json" \
+  -d '{"userId": "ADMIN001", "password": "PASSWDA1"}' | python3 -m json.tool
+# Expected: 200 OK with JWT token (ADMIN role)
 ```
+
+> The default 8-character passwords (`PASSWDA1` admin, `PASSWDU1` regular)
+> are seeded by `src/main/resources/db/migration/V015__seed_default_users.sql`
+> as BCrypt hashes. The 8-character ceiling preserves the original COBOL
+> `SEC-USR-PWD PIC X(08)` field contract and is enforced by Jakarta Bean
+> Validation `@Size(max = 8)` on `SignonRequestDto`.
 
 **Account View (authenticated):**
 ```bash
@@ -549,8 +573,15 @@ curl -s http://localhost:8080/api/accounts/00000000001 \
 ```
 
 **OpenAPI / Swagger UI:**
-- OpenAPI 3 JSON: <http://localhost:8080/api-docs>
+- OpenAPI 3 JSON: <http://localhost:8080/v3/api-docs>
+- OpenAPI 3 YAML: <http://localhost:8080/v3/api-docs.yaml>
 - Swagger UI: <http://localhost:8080/swagger-ui.html>
+
+> Both the JSON and YAML variants are whitelisted in `SecurityConfig` and
+> require no authentication. The `springdoc.api-docs.path` property in
+> `application.yml` controls the JSON endpoint path
+> (`path: /v3/api-docs`). The YAML variant is served from
+> `/v3/api-docs.yaml` by springdoc-openapi by default.
 
 ### 9.5 AWS Deployment (AAP §0.7.2, verbatim)
 
@@ -581,17 +612,25 @@ The `.github/workflows/deploy.yml` GitHub Actions workflow automates the above o
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
-| Application Health | <http://localhost:8080/actuator/health> | N/A |
-| Application Liveness Probe | <http://localhost:8080/actuator/health/liveness> | N/A |
-| Application Readiness Probe | <http://localhost:8080/actuator/health/readiness> | N/A |
-| Application Metrics | <http://localhost:8080/actuator/metrics> | N/A |
-| Build Info | <http://localhost:8080/actuator/info> | N/A |
-| OpenAPI Spec | <http://localhost:8080/api-docs> | N/A |
+| Application Health | <http://localhost:8080/actuator/health> | N/A (public per `SecurityConfig`) |
+| Application Liveness Probe | <http://localhost:8080/actuator/health/liveness> | N/A (public per `SecurityConfig`) |
+| Application Readiness Probe | <http://localhost:8080/actuator/health/readiness> | N/A (public per `SecurityConfig`) |
+| Build Info | <http://localhost:8080/actuator/info> | N/A (public per `SecurityConfig`) |
+| Application Metrics | <http://localhost:8080/actuator/metrics> | JWT bearer token required &mdash; authenticated `ROLE_USER` or `ROLE_ADMIN` (`SecurityConfig` whitelists `/actuator/health`, `/actuator/health/**`, `/actuator/info` as public probes; the remaining operational endpoints &mdash; `metrics`, `metrics/**`, `prometheus`, `env`, `env/**`, `loggers`, `loggers/**`, `configprops`, `configprops/**`, `beans`, `mappings`, `conditions`, `scheduledtasks`, `threaddump`, `heapdump`, `httpexchanges`, `caches`, `caches/**` &mdash; require an authenticated USER or ADMIN principal) |
+| OpenAPI Spec (JSON) | <http://localhost:8080/v3/api-docs> | N/A |
+| OpenAPI Spec (YAML) | <http://localhost:8080/v3/api-docs.yaml> | N/A |
 | Swagger UI | <http://localhost:8080/swagger-ui.html> | N/A |
 | LocalStack | <http://localhost:4566/_localstack/health> | N/A |
 | AWS CloudWatch / Container Insights | AWS Console | AWS IAM |
 | AWS CloudTrail | AWS Console | AWS IAM |
 | Amazon OpenSearch Dashboards | OpenSearch domain endpoint | OpenSearch master user |
+
+> **Authenticated metrics example:** `curl -H "Authorization: Bearer $TOKEN"
+> http://localhost:8080/actuator/metrics` &mdash; obtain `$TOKEN` from
+> `POST /api/auth/signin`. The narrower public whitelist for `/actuator/`
+> meets PCI-DSS &sect;10.1 (limit access to system component metrics to
+> authenticated users); only liveness/readiness probes (consumed by ECS task
+> health checks and ALB target group health checks) remain public.
 
 ### 9.7 Cross-Links to Root Artifacts
 
@@ -608,7 +647,7 @@ The `.github/workflows/deploy.yml` GitHub Actions workflow automates the above o
 | Application configuration | `src/main/resources/application.yml`, `application-local.yml`, `application-dev.yml`, `application-prod.yml` | Profile-keyed Spring configuration |
 | Logback configuration | `src/main/resources/logback-spring.xml` | Structured JSON logging via `logstash-logback-encoder` |
 | Flyway migrations | `src/main/resources/db/migration/V*.sql` | RDS schema + seed data |
-| Step Functions state machines | `src/main/resources/stepfunctions/eod-batch-pipeline.asl.json`, `file-provisioning.asl.json` | Step Functions ASL definitions |
+| Step Functions state machines | `src/main/resources/stepfunctions/eod-batch-pipeline.asl.json`, `file-provisioning.asl.json`, `report-pipeline.asl.json` | Step Functions ASL definitions (EOD batch, file provisioning, online-to-batch report bridge) |
 | Test root | `src/test/java/com/awsm2/carddemo/` | JUnit 5 + Mockito + Testcontainers |
 | Golden output fixtures | `src/test/resources/golden/*.txt` | Verbatim copies of `app/data/ASCII/*.txt` for parallel-run diff |
 
@@ -652,7 +691,7 @@ The `.github/workflows/deploy.yml` GitHub Actions workflow automates the above o
 | `./mvnw test -B` | Run unit tests |
 | `./mvnw verify -B` | Run unit + integration tests; generate JaCoCo coverage report |
 | `mvn spring-boot:run` | Start the application via the Spring Boot Maven plugin (AAP §0.7.2) |
-| `java -jar target/first-demo-520.jar` | Start the application from the packaged JAR (AAP §0.7.2) |
+| `java -jar target/carddemo.jar` | Start the application from the packaged JAR (AAP §0.7.2; `pom.xml` sets `<finalName>carddemo</finalName>`) |
 | `docker-compose up` | Start local stack (PostgreSQL, LocalStack, Redis, Kafka) (AAP §0.7.2) |
 | `docker compose down -v` | Stop services and remove volumes |
 | `docker build -t carddemo:latest .` | Build the container image (AAP §0.7.2) |
@@ -704,8 +743,9 @@ The `.github/workflows/deploy.yml` GitHub Actions workflow automates the above o
 | `src/main/resources/application-prod.yml` | AWS production profile |
 | `src/main/resources/logback-spring.xml` | Structured JSON logging |
 | `src/main/resources/db/migration/V*.sql` | Flyway migrations |
-| `src/main/resources/stepfunctions/eod-batch-pipeline.asl.json` | End-of-day Step Functions ASL definition |
-| `src/main/resources/stepfunctions/file-provisioning.asl.json` | Provisioning Step Functions ASL definition |
+| `src/main/resources/stepfunctions/eod-batch-pipeline.asl.json` | End-of-day Step Functions ASL definition (POSTTRAN → INTCALC → COMBTRAN → CREASTMT/TRANREPT) |
+| `src/main/resources/stepfunctions/file-provisioning.asl.json` | Provisioning Step Functions ASL definition (Flyway + S3→RDS bulk-load via Glue) |
+| `src/main/resources/stepfunctions/report-pipeline.asl.json` | Online-to-batch transaction-report Step Functions ASL definition (CORPT00C → MSK `report.requested` → SFN; YEARLY fans out to CREASTMT + TRANREPT) |
 | `src/test/java/com/awsm2/carddemo/` | JUnit 5 + Mockito + Testcontainers tests |
 | `src/test/resources/golden/*.txt` | Verbatim copies of `app/data/ASCII/*.txt` for parallel-run diff |
 | `app/` | Preserved frozen COBOL source (`cbl/`, `cpy/`, `bms/`, `cpy-bms/`, `jcl/`, `catlg/`, `data/`) |
@@ -801,7 +841,11 @@ docker build --network=host -t carddemo:latest .
 
 **Generating the OpenAPI 3 spec from a running app:**
 ```bash
-curl -s http://localhost:8080/api-docs -o openapi.json
+# JSON variant (canonical springdoc path per application.yml: springdoc.api-docs.path):
+curl -s http://localhost:8080/v3/api-docs -o openapi.json
+
+# YAML variant:
+curl -s http://localhost:8080/v3/api-docs.yaml -o openapi.yaml
 ```
 
 **Documentation tooling:**

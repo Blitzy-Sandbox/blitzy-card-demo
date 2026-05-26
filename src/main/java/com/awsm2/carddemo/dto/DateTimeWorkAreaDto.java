@@ -136,8 +136,8 @@ import java.time.LocalTime;
  *
  * <p><b>Null-handling:</b> the three components are conceptually
  * all-or-none &mdash; they represent a single server-clock snapshot taken
- * at request time. The {@link JsonInclude#NON_NULL} setting at the record
- * level nevertheless allows partial population (e.g., a date-only response
+ * at request time. The {@link JsonInclude.Include#NON_NULL} setting at the
+ * record level nevertheless allows partial population (e.g., a date-only response
  * that omits the time component) without leaking explicit {@code null}
  * values to the wire, keeping the JSON contract compact and stable for
  * OpenAPI consumers.</p>

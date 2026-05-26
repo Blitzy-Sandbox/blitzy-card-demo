@@ -74,7 +74,7 @@ import java.util.List;
  *       "No access - Admin Only option..."), checked for "coming soon"
  *       options (program-name starts with {@code DUMMY}), and finally
  *       transferred control via {@code EXEC CICS XCTL PROGRAM(...)}. The
- *       Java equivalent is {@link #resolveMenuTarget(int, String, boolean)}
+ *       Java equivalent is {@link #resolveMenuTarget(String, String, boolean)}
  *       — it validates the option number, applies the admin-only gate,
  *       checks for the {@code DUMMY} prefix, and returns the target program
  *       identifier to the caller (typically {@code MenuController}, which
@@ -108,7 +108,7 @@ import java.util.List;
  * injection for loose coupling") at the trivial-zero-dependency limit.</p>
  *
  * <p><b>Error envelope (AAP §0.3.4).</b> All three failure paths in
- * {@link #resolveMenuTarget(int, String, boolean)} throw a
+ * {@link #resolveMenuTarget(String, String, boolean)} throw a
  * {@link ValidationException} carrying a verbatim message preserved from
  * the source COBOL programs. {@link ValidationException} is mapped by
  * {@code GlobalExceptionHandler} to HTTP 400 Bad Request and projected
@@ -295,7 +295,7 @@ public class MenuService {
      * never has to filter by user-type). The Java {@link MenuOptionDto}
      * carries {@code userType="A"} on every admin entry for clarity and
      * to keep the dispatch-time gate in
-     * {@link #resolveMenuTarget(int, String, boolean)} uniform.</p>
+     * {@link #resolveMenuTarget(String, String, boolean)} uniform.</p>
      */
     // COBOL: COADM02Y.cpy:CARDDEMO-ADMIN-MENU-OPTIONS literal-storage table
     private static final List<MenuOptionDto> ADMIN_MENU_OPTIONS = List.of(
@@ -347,7 +347,7 @@ public class MenuService {
      * source {@code BUILD-MENU-OPTIONS} paragraph in {@code COMEN01C.cbl}
      * also emits all entries unconditionally. The {@code 'A'}-only
      * admin-only gate is enforced at dispatch time inside
-     * {@link #resolveMenuTarget(int, String, boolean)} via the same
+     * {@link #resolveMenuTarget(String, String, boolean)} via the same
      * COBOL {@code IF CDEMO-USRTYP-USER AND CDEMO-MENU-OPT-USRTYPE = 'A'}
      * predicate. Today the source data ({@code COMEN02Y.cpy}) has every
      * main-menu entry tagged {@code USR-TYPE = 'U'}, so the gate never

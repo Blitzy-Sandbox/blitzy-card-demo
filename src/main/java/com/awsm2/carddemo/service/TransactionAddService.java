@@ -163,6 +163,44 @@ public class TransactionAddService {
     private final AuditLogService auditLogService;
     private final DateValidationService dateValidationService;
 
+    /**
+     * Constructor injection (AAP &sect;0.7.1 &mdash; constructor injection
+     * for loose coupling) of every collaborator. Every reference is
+     * {@link Objects#requireNonNull non-null-checked} so the Spring
+     * {@code ApplicationContext} fails fast at startup if any required
+     * bean is missing.
+     *
+     * @param transactionRepository       repository for {@code Transaction}
+     *                                    rows (replaces VSAM cluster
+     *                                    {@code TRANSACT}); used to look up
+     *                                    the next transaction ID and to
+     *                                    persist the new record; must not
+     *                                    be {@code null}
+     * @param cardCrossReferenceRepository repository for the card-to-account
+     *                                    cross-reference (replaces VSAM
+     *                                    {@code CARDXREF} AIX); used to
+     *                                    resolve the {@code accountId} from
+     *                                    {@code cardNumber} (or vice versa)
+     *                                    on requests that supply only one
+     *                                    identifier; must not be {@code null}
+     * @param kafkaEventPublisher         MSK producer that emits the
+     *                                    {@code transaction.posted} and
+     *                                    {@code account.updated} events
+     *                                    after a successful add; partitioned
+     *                                    by account ID per AAP &sect;0.6.5;
+     *                                    must not be {@code null}
+     * @param auditLogService             OpenSearch + CloudWatch audit
+     *                                    emitter for the post-commit
+     *                                    {@code TRANSACTION_ADDED}
+     *                                    structured event; must not be
+     *                                    {@code null}
+     * @param dateValidationService       leap-year / month / day validation
+     *                                    service (port of
+     *                                    {@code app/cbl/CSUTLDTC.cbl}) used
+     *                                    to validate the origination /
+     *                                    processing timestamps; must not be
+     *                                    {@code null}
+     */
     public TransactionAddService(TransactionRepository transactionRepository,
                                  CardCrossReferenceRepository cardCrossReferenceRepository,
                                  KafkaEventPublisher kafkaEventPublisher,

@@ -351,7 +351,7 @@ public class CardListService {
      * either {@code CARDDAT} or {@code CARDAIX} and then iterates a
      * 7-row page via {@code EXEC CICS READNEXT}.</p>
      *
-     * <h3>Routing matrix (COBOL CDEMO-USRTYPE branch in COCRDLIC.cbl)</h3>
+     * <h4>Routing matrix (COBOL CDEMO-USRTYPE branch in COCRDLIC.cbl)</h4>
      * <table>
      *   <caption>Caller context &harr; repository call</caption>
      *   <tr><th>{@code isAdmin}</th><th>{@code accountFilter}</th>
@@ -378,7 +378,7 @@ public class CardListService {
      *           cannot see any cards.</td></tr>
      * </table>
      *
-     * <h3>Page-index normalization</h3>
+     * <h4>Page-index normalization</h4>
      * <p>A negative {@code page} value is coerced to {@code 0} (first
      * page) for defense in depth &mdash; the COBOL source initializes
      * {@code WS-CA-SCREEN-NUM} to {@code 1} on first entry and never
@@ -387,7 +387,7 @@ public class CardListService {
      * field). This normalization mirrors that contract for the REST
      * API.</p>
      *
-     * <h3>PAN masking</h3>
+     * <h4>PAN masking</h4>
      * <p>Every {@link CardListDto.CardRow} returned by this method has
      * its {@code cardNumber} <b>masked</b> via {@link #maskPan(String)}
      * before being placed on the wire (12 leading asterisks +

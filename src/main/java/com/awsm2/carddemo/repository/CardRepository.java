@@ -33,7 +33,7 @@ import java.util.List;
  * {@code AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS} (defined in
  * {@code app/jcl/CARDFILE.jcl} with {@code KEYS(16 0)} &mdash; 16-byte
  * primary key {@code CARD-NUM} at offset 0; {@code RECORDSIZE(150 150)};
- * {@code INDEXED}). The COBOL access patterns are:
+ * {@code INDEXED}). The COBOL access patterns are:</p>
  * <ul>
  *   <li>random read by {@code CARD-NUM} ({@code app/cbl/COCRDSLC.cbl}
  *       &mdash; card detail screen);</li>
@@ -45,7 +45,7 @@ import java.util.List;
  *       {@code COCRDLI.bms} 7-row-per-page list screen
  *       ({@code app/cbl/COCRDLIC.cbl}).</li>
  * </ul>
- * The PostgreSQL B-tree on the primary key satisfies the first three
+ * <p>The PostgreSQL B-tree on the primary key satisfies the first three
  * patterns; the paged browse is provided by the inherited
  * {@link JpaRepository#findAll(Pageable)} as well as the
  * derived query {@link #findByCardAcctIdOrderByCardNumAsc(Long, Pageable)}

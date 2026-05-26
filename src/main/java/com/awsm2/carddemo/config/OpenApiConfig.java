@@ -16,19 +16,44 @@
  */
 package com.awsm2.carddemo.config;
 
+import com.awsm2.carddemo.dto.AccountUpdateDto;
+import com.awsm2.carddemo.dto.AccountViewDto;
+import com.awsm2.carddemo.dto.AdminMenuDto;
+import com.awsm2.carddemo.dto.ApiResponse;
+import com.awsm2.carddemo.dto.BillPaymentDto;
+import com.awsm2.carddemo.dto.CardDetailDto;
+import com.awsm2.carddemo.dto.CardListDto;
+import com.awsm2.carddemo.dto.CardUpdateDto;
+import com.awsm2.carddemo.dto.MainMenuDto;
+import com.awsm2.carddemo.dto.ReportRequestDto;
+import com.awsm2.carddemo.dto.SignonRequestDto;
+import com.awsm2.carddemo.dto.SignonResponseDto;
+import com.awsm2.carddemo.dto.TransactionAddDto;
+import com.awsm2.carddemo.dto.TransactionDetailDto;
+import com.awsm2.carddemo.dto.TransactionListDto;
+import com.awsm2.carddemo.dto.UserAddDto;
+import com.awsm2.carddemo.dto.UserDeleteDto;
+import com.awsm2.carddemo.dto.UserListDto;
+import com.awsm2.carddemo.dto.UserUpdateDto;
+import io.swagger.v3.core.converter.ModelConverters;
+import io.swagger.v3.core.converter.ResolvedSchema;
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Contact;
 import io.swagger.v3.oas.models.info.Info;
 import io.swagger.v3.oas.models.info.License;
+import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.security.SecurityRequirement;
 import io.swagger.v3.oas.models.security.SecurityScheme;
 import io.swagger.v3.oas.models.servers.Server;
+import org.springdoc.core.customizers.OpenApiCustomizer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Spring {@code @Configuration} that declares the {@link OpenAPI} bean used by
@@ -112,10 +137,23 @@ public class OpenApiConfig {
      * Service version surfaced in the OpenAPI {@link Info} block. Sourced
      * from the {@code SERVICE_VERSION} environment variable when the service
      * is deployed to ECS Fargate (the CI/CD pipeline writes the artifact
-     * version into the task definition); falls back to
-     * {@code 0.1.0-SNAPSHOT} during local development.
+     * version into the task definition); falls back to {@code 0.1.0}
+     * &mdash; the canonical Maven artifact version declared in
+     * {@code pom.xml} ({@code <version>0.1.0</version>}) &mdash; during
+     * local development.
+     *
+     * <p><b>QA Final Checkpoint 12, Issue 11 fix:</b> the default was
+     * changed from {@code 0.1.0-SNAPSHOT} to {@code 0.1.0} so the
+     * OpenAPI {@code info.version} field matches the Maven artifact
+     * version when {@code SERVICE_VERSION} is not injected. This
+     * eliminates the &quot;SNAPSHOT&quot; suffix mismatch flagged by API
+     * discovery clients and aligns with AAP &sect;0.5 (&quot;All
+     * versions are explicitly pinned &mdash; no {@code latest}, no
+     * placeholders, no SNAPSHOT&quot;). Production deployments override
+     * this default via the {@code SERVICE_VERSION} environment variable
+     * resolved from the ECS task definition.</p>
      */
-    @Value("${SERVICE_VERSION:0.1.0-SNAPSHOT}")
+    @Value("${SERVICE_VERSION:0.1.0}")
     private String serviceVersion;
 
     /**
@@ -233,5 +271,144 @@ public class OpenApiConfig {
                         + "(replaces CICS COSGN00C signon transaction). Pass as "
                         + "'Authorization: Bearer <token>' header on every "
                         + "authenticated request.")));
+    }
+
+    /**
+     * Request/response DTO classes that must be present in
+     * {@code components.schemas} of the OpenAPI document so external API
+     * consumers can generate type-safe clients and reference the
+     * concrete payload shapes by name.
+     *
+     * <p><b>QA Final Checkpoint 12, Issue 12 fix:</b> springdoc-openapi
+     * 2.x does not always expand the generic {@code T} parameter of the
+     * {@code ResponseEntity<ApiResponse<T>>} return type into
+     * {@code components.schemas}; consequently, response DTOs such as
+     * {@link AccountViewDto}, {@link CardDetailDto}, etc. were missing
+     * from the generated spec, leaving the {@code data} payload as
+     * {@code type: object, nullable: true} without a discoverable
+     * concrete schema. This list forces every public-API request and
+     * response DTO into {@code components.schemas} via the
+     * {@link #responseDtoSchemaCustomizer()} {@link OpenApiCustomizer}
+     * below.</p>
+     *
+     * <p>The list is closed-set and deliberately enumerated rather than
+     * scanned reflectively: any DTO that should appear in the public
+     * OpenAPI contract MUST be added here explicitly. Internal-only DTOs
+     * (e.g., {@code CommonContextDto}, {@code MenuOptionDto},
+     * {@code CardWorkAreasDto}, {@code DateTimeWorkAreaDto},
+     * {@code AbendDataDto}, {@code ReportLineDto},
+     * {@code StatementTransactionDto}) are intentionally omitted.</p>
+     */
+    private static final List<Class<?>> PUBLIC_API_DTOS = List.of(
+            // The standardized envelope itself (already referenced by every
+            // operation's @ApiResponse, but listing here ensures the
+            // generic envelope is always present even when an operation
+            // omits its explicit declaration).
+            ApiResponse.class,
+            // Request DTOs (← BMS mapsets per AAP §0.3.4)
+            SignonRequestDto.class,
+            AccountUpdateDto.class,
+            CardUpdateDto.class,
+            TransactionAddDto.class,
+            BillPaymentDto.class,
+            ReportRequestDto.class,
+            UserAddDto.class,
+            UserUpdateDto.class,
+            UserDeleteDto.class,
+            // Response DTOs (← BMS mapsets per AAP §0.3.4)
+            SignonResponseDto.class,
+            AccountViewDto.class,
+            CardDetailDto.class,
+            CardListDto.class,
+            TransactionDetailDto.class,
+            TransactionListDto.class,
+            MainMenuDto.class,
+            AdminMenuDto.class,
+            UserListDto.class
+    );
+
+    /**
+     * {@link OpenApiCustomizer} bean that registers every public-API
+     * request and response DTO listed in {@link #PUBLIC_API_DTOS} into
+     * the OpenAPI document's {@code components.schemas} section using
+     * Swagger Core's {@link ModelConverters} resolver.
+     *
+     * <p><b>Why this is needed:</b> springdoc-openapi 2.x scans
+     * {@code @RestController} return types to populate
+     * {@code components.schemas}, but when controllers return a generic
+     * envelope {@code ResponseEntity<ApiResponse<T>>}, the concrete
+     * payload type {@code T} (e.g., {@link AccountViewDto}) is not
+     * always resolved into a top-level component &mdash; it stays
+     * inlined as an anonymous schema or is reported as
+     * {@code type: object, nullable: true}. Downstream tooling
+     * (OpenAPI Generator, Postman) cannot then produce a typed client
+     * stub for the payload.</p>
+     *
+     * <p><b>How this fixes it:</b> for each class in
+     * {@link #PUBLIC_API_DTOS}, the customizer calls
+     * {@link ModelConverters#readAllAsResolvedSchema(Class)} which
+     * walks the class plus all transitively referenced types, builds
+     * fully-resolved {@link Schema} objects, and the customizer adds
+     * each result to {@code components.schemas} keyed by simple class
+     * name. The result is that every request/response DTO appears as a
+     * named schema in the OpenAPI document, ready for
+     * {@code $ref} lookups from operations and ready for code
+     * generators to emit typed client classes.</p>
+     *
+     * <p>If springdoc has already added a given schema (most commonly
+     * via the {@code @Schema} annotations on the DTO fields), the
+     * existing entry is preserved &mdash; this customizer only adds
+     * missing entries; it never overwrites.</p>
+     *
+     * <p><b>AAP alignment:</b> AAP &sect;0.7.1 (&quot;Maintain all
+     * public API contracts &mdash; REST endpoints &hellip; request /
+     * response shape &hellip; must remain stable&quot;) requires the
+     * full payload shape to be discoverable. The OpenAPI document is
+     * the contract; this customizer ensures the contract is complete.</p>
+     *
+     * @return an {@link OpenApiCustomizer} that registers public-API
+     *         DTOs into {@code components.schemas} on every OpenAPI
+     *         generation
+     */
+    @Bean
+    public OpenApiCustomizer responseDtoSchemaCustomizer() {
+        return openApi -> {
+            Components components = openApi.getComponents();
+            if (components == null) {
+                components = new Components();
+                openApi.setComponents(components);
+            }
+            // Preserve any existing schemas (e.g., those discovered by
+            // springdoc via @RestController method scanning); only add
+            // missing ones. We use a LinkedHashMap to preserve insertion
+            // order for deterministic spec output, important for
+            // diff-able CI artefacts and reproducible code generation.
+            Map<String, Schema> existing = components.getSchemas();
+            if (existing == null) {
+                existing = new LinkedHashMap<>();
+                components.setSchemas(existing);
+            }
+
+            ModelConverters converters = ModelConverters.getInstance();
+            for (Class<?> dtoClass : PUBLIC_API_DTOS) {
+                ResolvedSchema resolved = converters.readAllAsResolvedSchema(dtoClass);
+                if (resolved == null || resolved.schema == null) {
+                    continue;
+                }
+                // Add the top-level DTO schema (e.g., AccountViewDto)
+                String name = dtoClass.getSimpleName();
+                if (!existing.containsKey(name)) {
+                    existing.put(name, resolved.schema);
+                }
+                // Add transitively referenced schemas (e.g.,
+                // AccountViewDto.CardSummary, AccountViewDto.CustomerInfo)
+                // so nested $ref lookups resolve to top-level components.
+                if (resolved.referencedSchemas != null) {
+                    for (Map.Entry<String, Schema> referenced : resolved.referencedSchemas.entrySet()) {
+                        existing.putIfAbsent(referenced.getKey(), referenced.getValue());
+                    }
+                }
+            }
+        };
     }
 }

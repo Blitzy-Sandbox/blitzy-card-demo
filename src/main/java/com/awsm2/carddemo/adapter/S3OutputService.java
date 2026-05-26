@@ -370,7 +370,7 @@ public class S3OutputService {
      * every reject for that run in the order they were appended,
      * directly comparable to the original DALYREJS GDG dataset.</p>
      *
-     * <h3>Idempotency &amp; Re-runs</h3>
+     * <h4>Idempotency &amp; Re-runs</h4>
      *
      * <p>Because the bucket has versioning enabled (Terraform), a
      * re-run with the same {@code batchRunId} creates a new version of
@@ -380,7 +380,7 @@ public class S3OutputService {
      * regulatory guarantee inherited from the original GDG generations
      * pattern.</p>
      *
-     * <h3>Empty Lists</h3>
+     * <h4>Empty Lists</h4>
      *
      * <p>If the supplied {@code records} list is empty, no S3 PUT is
      * performed and the method returns silently. The COBOL job emits
@@ -389,7 +389,7 @@ public class S3OutputService {
      * Callers may therefore unconditionally invoke this method at the
      * end of every batch run without first checking the list size.</p>
      *
-     * <h3>SSE-KMS, Metadata, and Provenance</h3>
+     * <h4>SSE-KMS, Metadata, and Provenance</h4>
      *
      * <p>The PUT uses the same SSE-KMS encryption (customer-managed
      * CMK ARN from {@code carddemo.aws.kms.key-arn}) and provenance

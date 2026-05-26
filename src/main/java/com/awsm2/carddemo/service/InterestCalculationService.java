@@ -276,6 +276,35 @@ public class InterestCalculationService {
      * for loose coupling) of every collaborator. All references are
      * {@link Objects#requireNonNull non-null-checked} to fail fast at
      * Spring context startup if any required bean is missing.
+     *
+     * @param transactionCategoryBalanceRepository repository for
+     *        {@code TransactionCategoryBalance} rows iterated as the
+     *        primary driver of the interest-calculation loop
+     *        (replaces VSAM cluster {@code TCATBALF}); must not be {@code null}
+     * @param disclosureGroupRepository repository for {@code DisclosureGroup}
+     *        rows (replaces VSAM cluster {@code DISCGRP}) used to look up
+     *        the applicable APR for each {@code (group, type, category)}
+     *        tuple with the {@code DEFAULT} fallback semantics; must not
+     *        be {@code null}
+     * @param accountRepository repository for {@code Account} rows
+     *        (replaces VSAM cluster {@code ACCTDATA}); used both to look up
+     *        per-account group codes and to apply the accrued interest to
+     *        the account's current balance; must not be {@code null}
+     * @param cardCrossReferenceRepository repository for the card-to-account
+     *        cross-reference (replaces VSAM cluster {@code CARDXREF} with
+     *        its {@code AIX} on {@code XREF-ACCT-ID}); used to find a
+     *        representative card number for the interest transaction
+     *        record; must not be {@code null}
+     * @param transactionRepository repository into which the synthesized
+     *        interest {@code Transaction} rows are persisted (replaces
+     *        VSAM cluster {@code TRANSACT}); must not be {@code null}
+     * @param kafkaEventPublisher MSK producer that emits the
+     *        {@code transaction.posted} and {@code account.updated} events
+     *        for each interest accrual; preserves the COBOL audit emission
+     *        semantics with per-account ordering; must not be {@code null}
+     * @param auditLogService OpenSearch + CloudWatch audit emitter for
+     *        end-of-job summary metrics (interest rows posted, accounts
+     *        touched, total accrued amount); must not be {@code null}
      */
     public InterestCalculationService(
             TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,

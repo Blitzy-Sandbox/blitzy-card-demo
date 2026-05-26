@@ -272,7 +272,7 @@ public class TransactionDetailService {
      *                               *>     TO WS-MESSAGE
      * }</pre>
      *
-     * <h3>Flow</h3>
+     * <h4>Flow</h4>
      * <ol>
      *   <li><b>Validate</b> &mdash; null/blank check on {@code tranId}.
      *       Throws {@link ValidationException} on failure (mirrors COBOL

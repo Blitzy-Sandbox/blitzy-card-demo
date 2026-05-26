@@ -357,6 +357,13 @@ public class UserAdminController {
      *               or empty to list all users.
      * @param page   0-based page index; defaults to {@code 0} when
      *               omitted; must be non-negative
+     * @param size   requested page size; defaults to 10 to match the
+     *               COBOL {@code USER-REC OCCURS 10 TIMES} working-storage
+     *               array. Bounded to {@code [1, 100]} at the controller
+     *               boundary as a DoS guard (per CP4-#15). The service
+     *               enforces the canonical page size of 10 internally;
+     *               values supplied here that exceed 10 are silently
+     *               capped to preserve the COBOL contract.
      * @return {@link ResponseEntity} with HTTP {@code 200 OK} carrying
      *         the {@link UserListDto} wrapped in {@link ApiResponse}.
      *         HTTP {@code 400 Bad Request} on validation failure
@@ -708,12 +715,22 @@ public class UserAdminController {
      * envelope's {@code code}/{@code message}/{@code timestamp} fields
      * for downstream telemetry and operator messaging.</p>
      *
-     * @param id      the 8-character user ID from the URL path; must
-     *                be 1-8 uppercase alphanumeric characters per the
-     *                COBOL {@code SEC-USR-ID PIC X(08)} contract
-     * @param request the validated {@link UserDeleteDto} carrying the
-     *                confirmation flag and (optionally) echoed display
-     *                fields
+     * @param id                the 8-character user ID from the URL
+     *                          path; must be 1-8 uppercase alphanumeric
+     *                          characters per the COBOL
+     *                          {@code SEC-USR-ID PIC X(08)} contract
+     * @param request           the optional validated {@link UserDeleteDto}
+     *                          request body carrying the confirmation
+     *                          flag and (optionally) echoed display
+     *                          fields; if {@code null}, the
+     *                          {@code confirmQueryParam} is consulted
+     *                          (per QA Final-CP6 Finding M8)
+     * @param confirmQueryParam optional confirmation flag supplied via
+     *                          the {@code ?confirm=Y|N} query parameter
+     *                          as a backward-compatible alternative to
+     *                          the request body; only consulted when
+     *                          {@code request} is {@code null} or its
+     *                          {@code confirm()} accessor is absent
      * @return {@link ResponseEntity} with HTTP {@code 200 OK} and the
      *         {@link UserDeleteDto} (echoing the deleted user's
      *         identity) wrapped in {@link ApiResponse}. HTTP

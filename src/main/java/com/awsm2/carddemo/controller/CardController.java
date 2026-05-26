@@ -234,6 +234,14 @@ public class CardController {
      * @param page      0-based page index; defaults to 0. Rejected via
      *                  {@link Min @Min(0)} when negative
      *                  (HTTP 400 via {@code GlobalExceptionHandler}).
+     * @param size      requested page size; defaults to 7 to match the
+     *                  COBOL {@code COCRDLI.bms} {@code OCCURS 7} row
+     *                  contract. Bounded to {@code [1, 100]} at the
+     *                  controller boundary as a DoS guard (per CP4-#15).
+     *                  The service enforces the canonical page size of 7
+     *                  internally via {@link CardListService#PAGE_SIZE};
+     *                  values supplied here that exceed 7 are silently
+     *                  capped to preserve the COBOL contract.
      * @return {@link ResponseEntity} with HTTP 200 and the
      *         {@link CardListDto} wrapped in {@link ApiResponse}
      */

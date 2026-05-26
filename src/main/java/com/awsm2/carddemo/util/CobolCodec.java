@@ -55,8 +55,9 @@ import java.time.format.DateTimeParseException;
  * sign in the rightmost byte. The sign is folded onto the last digit using the
  * IBM convention:</p>
  * <table>
+ *   <caption>IBM zoned-decimal overpunch table (last-digit codes for sign)</caption>
  *   <tr><th>Last digit</th><th>Positive overpunch</th><th>Negative overpunch</th></tr>
- *   <tr><td>0</td><td>{@code {}</td><td>{@code }}</td></tr>
+ *   <tr><td>0</td><td>&#123;</td><td>&#125;</td></tr>
  *   <tr><td>1</td><td>{@code A}</td><td>{@code J}</td></tr>
  *   <tr><td>2</td><td>{@code B}</td><td>{@code K}</td></tr>
  *   <tr><td>3</td><td>{@code C}</td><td>{@code L}</td></tr>
@@ -68,8 +69,8 @@ import java.time.format.DateTimeParseException;
  *   <tr><td>9</td><td>{@code I}</td><td>{@code R}</td></tr>
  * </table>
  *
- * <p>Example: {@code PIC S9(10)V99} value 194.00 → 12 digits "000000019400"
- * → overpunched as {@code "00000001940{"} (positive 0 in the units digit).</p>
+ * <p>Example: {@code PIC S9(10)V99} value 194.00 &rarr; 12 digits "000000019400"
+ * &rarr; overpunched as "00000001940&#123;" (positive 0 in the units digit).</p>
  *
  * <h2>Character set</h2>
  * <p>All ASCII fixtures in {@code app/data/ASCII/} and

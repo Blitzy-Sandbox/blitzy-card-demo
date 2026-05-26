@@ -272,7 +272,7 @@ public class UserListService {
      * concern (the controller increments or decrements the
      * {@code page} argument).</p>
      *
-     * <h2>Algorithm (preserves COBOL browse semantics)</h2>
+     * <h4>Algorithm (preserves COBOL browse semantics)</h4>
      * <ol>
      *   <li><b>Normalise the page index</b> with {@code Math.max(0, page)}.
      *       Spring Data {@link PageRequest} requires a non-negative
@@ -320,7 +320,7 @@ public class UserListService {
      *       fixed 10-row contract back to the client.</li>
      * </ol>
      *
-     * <h2>Empty-result handling</h2>
+     * <h4>Empty-result handling</h4>
      *
      * <p>The COBOL source surfaces the &ldquo;no records found&rdquo;
      * condition by setting {@code WS-USER-SEC-EOF = 'Y'} on the first
@@ -337,7 +337,7 @@ public class UserListService {
      * render its own &ldquo;no records&rdquo; banner from these
      * fields.</p>
      *
-     * <h2>Thread safety</h2>
+     * <h4>Thread safety</h4>
      *
      * <p>This method is fully thread-safe: it holds no instance state
      * besides the immutable, constructor-injected

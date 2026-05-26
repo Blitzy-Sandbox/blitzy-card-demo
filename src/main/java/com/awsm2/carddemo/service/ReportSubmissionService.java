@@ -805,6 +805,14 @@ public class ReportSubmissionService {
          * {@code message} likewise &mdash; matching the JDK record
          * idiom for the {@code DateValidationService.DateValidationResult}
          * sibling type used elsewhere in the validation layer.
+         *
+         * @param requestId opaque correlation identifier returned to the
+         *                  caller (e.g., MSK message key or Step
+         *                  Functions execution ARN); normalized to
+         *                  {@code ""} when {@code null}
+         * @param message   human-readable acknowledgement (e.g.,
+         *                  {@code "Report submitted"}); normalized to
+         *                  {@code ""} when {@code null}
          */
         public ReportSubmissionResult {
             if (requestId == null) {
