@@ -331,7 +331,7 @@ blocks the PR — there are no exceptions, no overrides, no opt-outs.
 | **Byte-for-byte file parity** | `carddemo-tests` golden-record harness vs. captured COBOL outputs in `src/test/resources/golden/<program>/expected/` | **100 %**. A single byte of difference fails the build. |
 | **Monetary code line coverage** | JaCoCo on `Decimals.java` and all callers in monetary paths | **100 %** line coverage. User mandate. |
 | **Overall line coverage** | JaCoCo across all modules | **≥ 90 %** line coverage. |
-| **Performance regression** | JFR-based regression baseline in `carddemo-tests` `JfrBaseline.java` | Within a **10 % band** of the documented baseline. Wall-clock and allocation rate. |
+| **Performance regression** | JFR-based regression baseline in `carddemo-tests` `JfrBaselineTest.java` | Within a **10 % band** of the documented baseline. Wall-clock and allocation rate. |
 | **Decimals property tests** | jqwik 1.9.3 generators in `DecimalsProperties.java` | All properties pass; no shrunk counterexample tolerated. |
 | **Compilation** | `mvn -B clean verify` | Zero errors, zero warnings (`-Werror` configured on `maven-compiler-plugin`). |
 
@@ -448,7 +448,7 @@ java/
         ├── java/com/blitzy/carddemo/tests/
         │   ├── golden/              ← byte-for-byte parity test base + per-program tests
         │   ├── property/            ← jqwik property tests for Decimals
-        │   └── perf/                ← JfrBaseline.java performance regression assertions
+        │   └── perf/                ← JfrBaselineTest.java performance regression assertions
         └── resources/golden/        ← <program>/input/ + <program>/expected/ fixtures
 ```
 
@@ -508,7 +508,7 @@ class, and per-program test classes exist unconditionally.
 
 ### 11.4 JFR Performance Baselines
 
-`JfrBaseline.java` in `carddemo-tests/.../perf/` captures Java Flight
+`JfrBaselineTest.java` in `carddemo-tests/.../perf/` captures Java Flight
 Recorder recordings of representative batch runs and asserts no
 performance regression beyond a **10 % band** versus the documented
 baseline (AAP §0.6.11, §0.7.2). JFR is enabled via JVM flag during test

@@ -23,7 +23,7 @@
             multiply/divide/round operations with MathContext.DECIMAL128 and
             the COBOL-mandated RoundingMode (HALF_EVEN for ROUNDED, DOWN for
             default truncation).
-          * JFR-based performance regression tests — JfrBaseline.java in
+          * JFR-based performance regression tests — JfrBaselineTest.java in
             src/test/java/com/blitzy/carddemo/tests/perf/ captures Java Flight
             Recorder recordings of representative batch runs and asserts no
             performance regression beyond a 10% band per AAP §0.6.11 and
@@ -139,7 +139,7 @@
 
         <!--
             JFR recording output directory used by
-            src/test/java/com/blitzy/carddemo/tests/perf/JfrBaseline.java to
+            src/test/java/com/blitzy/carddemo/tests/perf/JfrBaselineTest.java to
             persist Java Flight Recorder recordings during the test phase.
             Resolved at maven-surefire-plugin invocation time and passed to
             the forked test JVM as a system property (see &lt;systemPropertyVariables&gt;
@@ -359,7 +359,7 @@
             (JEP 506 Final).
 
             The JFR-based performance regression tests in
-            src/test/java/com/blitzy/carddemo/tests/perf/JfrBaseline.java
+            src/test/java/com/blitzy/carddemo/tests/perf/JfrBaselineTest.java
             execute these batch drivers to capture flight recordings and
             assert no regression beyond the 10% band mandated by AAP §0.6.11
             and §0.7.2.
@@ -563,7 +563,7 @@
                   assertThat(result).isEqualByComparingTo(expected);
                 per AAP §0.6.1.
               * JFR recording duration and throughput band assertions in
-                JfrBaseline:
+                JfrBaselineTest:
                   assertThat(actualDuration).isBetween(
                     baseline.multiply(0.9), baseline.multiply(1.1));
                 per AAP §0.6.11.
@@ -668,13 +668,13 @@
                   (2) &lt;forkCount&gt;1&lt;/forkCount&gt; +
                       &lt;reuseForks&gt;true&lt;/reuseForks&gt; — JFR-friendly
                       forked-VM lifecycle so the perf baseline tests in
-                      JfrBaseline.java can write JFR recordings that
+                      JfrBaselineTest.java can write JFR recordings that
                       capture the full forked VM lifecycle per AAP §0.6.11.
                   (3) &lt;encoding&gt;UTF-8&lt;/encoding&gt; — UTF-8 test
                       output reporting.
                   (4) &lt;systemPropertyVariables&gt; jfr.recording.dir —
                       pointing to ${project.build.directory}/jfr so
-                      JfrBaseline.java can write JFR recordings under
+                      JfrBaselineTest.java can write JFR recordings under
                       target/jfr/ per AAP §0.6.11.
                   (5) NO "enable-preview" argument (the double-dash CLI
                       flag) anywhere in the surefire configuration per AAP
@@ -717,7 +717,7 @@
                         lifecycle (startup, JIT compilation, GC events,
                         thread births including virtual threads) which
                         the 10% regression band assertions in
-                        JfrBaseline.java rely on per AAP §0.6.11.
+                        JfrBaselineTest.java rely on per AAP §0.6.11.
                     -->
                     <forkCount>1</forkCount>
                     <reuseForks>true</reuseForks>
@@ -735,7 +735,7 @@
                         System properties available to tests.
                         jfr.recording.dir is consumed by
                         src/test/java/com/blitzy/carddemo/tests/perf/
-                        JfrBaseline.java to choose where JFR recordings
+                        JfrBaselineTest.java to choose where JFR recordings
                         are written per AAP §0.6.11. The directory is
                         cleaned by `mvn clean` along with the rest of
                         target/.
@@ -748,37 +748,91 @@
 
             <!--
                 ================================================================
-                JaCoCo Maven plugin — 100% line-coverage gate for the
-                Decimals utility (AAP §0.6.1).
+                JaCoCo Maven plugin — coverage measurement and gates for
+                AAP §0.6.1 (100% line coverage on monetary code) AND
+                AAP §0.7.2 (≥90% line coverage overall, measured via
+                multi-module aggregate report).
 
                 AAP §0.6.1 ("Coverage requirement: 100% line coverage on
-                monetary code") makes this a mandatory PR gate. The
-                DecimalsProperties.java jqwik property test exercises
-                every Decimals helper; the JaCoCo agent measures line
-                coverage and the `check` execution fails the build if
-                line coverage on Decimals.java drops below 100%.
+                monetary code") makes the 100% Decimals.java gate a
+                mandatory PR gate. The DecimalsProperties.java jqwik
+                property test exercises every Decimals helper; the
+                JaCoCo agent measures line coverage and the
+                `check` execution fails the build if line coverage on
+                Decimals.java drops below 100%.
+
+                AAP §0.7.2 mandates ≥90% line coverage overall across
+                the entire codebase. To MEASURE this, an aggregate
+                report is produced via the `report-aggregate` goal
+                (added per QA finding M-2 of FC-6) which walks the
+                in-reactor dependencies of carddemo-tests and emits a
+                unified HTML/XML report at
+                target/site/jacoco-aggregate/. The aggregate report is
+                INFORMATIONAL at this checkpoint per AAP §0.6.11
+                ("Initial test scaffolding may use placeholder expected
+                files marked @Disabled until COBOL captures are
+                available") — most application/batch/adapter classes
+                are exercised only indirectly via DecimalsProperties at
+                this stage; once golden-record tests are activated, the
+                aggregate report will reflect the true coverage picture
+                and a 90% enforcement gate can be added via a
+                `check` execution that targets the aggregate exec data.
 
                 Execution order:
-                    1. prepare-agent  (initialize phase) — instruments
-                       JVM via -javaagent:jacocoagent.jar
-                    2. surefire test  (test phase) — runs the property
-                       tests, JaCoCo records line execution
-                    3. report  (verify phase) — produces HTML / CSV /
-                       XML reports under target/site/jacoco/
-                    4. check  (verify phase) — enforces the 100% line
-                       coverage threshold on Decimals.java
+                    1. prepare-agent       (initialize phase) —
+                       instruments JVM via -javaagent:jacocoagent.jar
+                    2. surefire test       (test phase) — runs the
+                       property and golden-record tests; JaCoCo
+                       records line execution for every class loaded
+                       by the test JVM (carddemo-domain,
+                       carddemo-application, carddemo-adapter-file,
+                       carddemo-batch, carddemo-app, …)
+                    3. stage Decimals.class (prepare-package phase) —
+                       maven-resources-plugin copies the canonical
+                       monetary surface into target/classes/ so the
+                       per-class `check` rule below has a non-empty
+                       class set to scan (otherwise the rule would
+                       silently pass on an empty class set —
+                       "vacuous truth").
+                    4. report              (verify phase) — produces
+                       HTML / CSV / XML reports under
+                       target/site/jacoco/ for the staged Decimals.class
+                       (single-class focus — drives the 100% gate
+                       below).
+                    5. report-aggregate    (verify phase) — produces a
+                       multi-module HTML / CSV / XML report under
+                       target/site/jacoco-aggregate/ covering every
+                       in-reactor dependency of this module (the 6
+                       sibling internal modules — carddemo-domain,
+                       carddemo-application, carddemo-adapter-file,
+                       carddemo-adapter-db, carddemo-batch,
+                       carddemo-app). This is the AAP §0.7.2 ≥90%
+                       overall coverage MEASUREMENT surface; the gate
+                       is informational at this checkpoint per AAP
+                       §0.6.11 and becomes enforceable once golden
+                       tests are activated.
+                    6. check (Decimals)    (verify phase) — enforces
+                       the 100% line coverage threshold on
+                       Decimals.java (the canonical monetary surface
+                       per AAP §0.3.3).
 
                 The `mvn verify` lifecycle therefore acts as the
                 AAP-mandated coverage gate; the build fails if the
                 Decimals utility regresses below 100% line coverage,
-                exactly as required by AAP §0.6.1.
+                exactly as required by AAP §0.6.1. The aggregate
+                report at target/site/jacoco-aggregate/ provides the
+                ≥90% overall coverage MEASUREMENT mandated by AAP
+                §0.7.2 (informational until golden tests activate per
+                AAP §0.6.11).
 
                 Scope: only the Decimals utility (carddemo-domain) is
-                gated at 100%. Other classes in carddemo-domain are
-                covered by the same JaCoCo report (so the broader
-                coverage picture is visible) but are NOT gated at 100%
-                because the AAP only mandates 100% for the
-                "monetary code" surface.
+                GATED at 100%. The multi-module aggregate report
+                produced by `report-aggregate` covers every class in
+                every in-reactor dependency (i.e., the full carddemo-
+                domain / carddemo-application / carddemo-adapter-file /
+                carddemo-adapter-db / carddemo-batch / carddemo-app
+                module set) so the broader coverage picture is visible
+                but NOT gated at this checkpoint.
                 ================================================================
             -->
             <plugin>
@@ -789,7 +843,17 @@
                         Step 1 — instrument the test JVM.
                         Binds JaCoCo's java agent into the surefire
                         `argLine` so the agent runs alongside the
-                        property tests.
+                        property and golden-record tests. The agent
+                        records line/branch/instruction coverage for
+                        EVERY class loaded by the test JVM, including
+                        classes in sibling modules (carddemo-domain,
+                        carddemo-application, etc.) that the tests
+                        exercise transitively. The resulting
+                        jacoco.exec file is consumed by both the
+                        per-module `report` execution (Decimals-only
+                        view) AND the multi-module `report-aggregate`
+                        execution (full ≥90% overall coverage view
+                        per AAP §0.7.2).
                     -->
                     <execution>
                         <id>jacoco-prepare-agent</id>
@@ -809,12 +873,18 @@
                         produce an empty report. The `prepare-package`
                         execution below (jacoco-stage-domain-classes)
                         stages a copy of carddemo-domain's compiled
-                        classes (specifically Decimals.class and any
-                        utility-package siblings) into this module's
-                        target/classes/ before the verify phase runs;
-                        this makes the report goal find Decimals.class
-                        and the check goal find its bytecode for rule
-                        evaluation.
+                        classes (specifically Decimals.class) into
+                        this module's target/classes/ before the
+                        verify phase runs; this makes the report goal
+                        find Decimals.class and the check goal find
+                        its bytecode for rule evaluation. This is the
+                        narrow report that drives the 100% Decimals
+                        gate below.
+
+                        For the BROADER multi-module coverage view
+                        (per AAP §0.7.2 ≥90% line coverage overall),
+                        see the `jacoco-report-aggregate` execution
+                        immediately below.
                     -->
                     <execution>
                         <id>jacoco-report</id>
@@ -825,7 +895,101 @@
                     </execution>
 
                     <!--
-                        Step 3 — enforce the 100% line coverage gate on
+                        Step 3 — Multi-module aggregate coverage
+                        report (AAP §0.7.2 ≥90% overall coverage
+                        MEASUREMENT surface; QA finding M-2 of FC-6
+                        remediation).
+
+                        The `report-aggregate` goal walks the
+                        in-reactor dependencies of this module (the 6
+                        sibling internal modules — carddemo-domain,
+                        carddemo-application, carddemo-adapter-file,
+                        carddemo-adapter-db, carddemo-batch,
+                        carddemo-app) and emits a unified HTML / CSV
+                        / XML report under
+                        target/site/jacoco-aggregate/ that includes
+                        every class compiled by those modules. The
+                        report combines jacoco.exec from this module
+                        (where prepare-agent runs because this is the
+                        only module with tests) with the bytecode
+                        from each sibling's target/classes/.
+
+                        Coverage SCOPE: every class in every in-reactor
+                        dependency. Classes that are exercised
+                        transitively by DecimalsProperties.java and the
+                        golden-record harness (currently @Disabled per
+                        AAP §0.6.11 scaffolding state) appear in the
+                        aggregate report with their actual coverage;
+                        classes that are not yet exercised appear at
+                        0% coverage. This makes the AAP §0.7.2 ≥90%
+                        mandate MEASURABLE at this checkpoint even
+                        though it is not yet enforceable (per AAP
+                        §0.6.11 permitted scaffolding state).
+
+                        Gate STATUS at this checkpoint:
+                        INFORMATIONAL ONLY. No `check` rule is
+                        attached to the aggregate report — the build
+                        does not fail when overall coverage is below
+                        90%. The gate becomes enforceable once the
+                        @Disabled annotations on the golden-record
+                        tests are removed (which happens when COBOL
+                        baselines are captured per AAP §0.6.11). At
+                        that point a follow-up PR can add a `check`
+                        execution that targets the aggregate
+                        execution data and enforces the 90%
+                        threshold.
+
+                        Why this lives in carddemo-tests, not the
+                        parent POM: report-aggregate only sees
+                        classes whose modules are declared as direct
+                        dependencies of the aggregating module.
+                        carddemo-tests declares all 6 sibling
+                        internal modules as dependencies (the test
+                        harness depends on each ring of the hexagonal
+                        architecture), so it is the natural
+                        aggregation point. Hosting the aggregate
+                        execution in carddemo-tests also keeps the
+                        coverage report adjacent to the tests that
+                        produced it.
+                    -->
+                    <execution>
+                        <id>jacoco-report-aggregate</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report-aggregate</goal>
+                        </goals>
+                        <configuration>
+                            <!--
+                                Output to a separate directory from
+                                the per-module report
+                                (target/site/jacoco/) so that the
+                                Decimals-focused report and the
+                                broader multi-module report are not
+                                conflated.
+                            -->
+                            <outputDirectory>${project.reporting.outputDirectory}/jacoco-aggregate</outputDirectory>
+                            <!--
+                                Include the standard report formats
+                                (HTML for human consumption, XML for
+                                tools like SonarQube / Codecov, CSV
+                                for ad-hoc analysis).
+                            -->
+                            <formats>
+                                <format>HTML</format>
+                                <format>XML</format>
+                                <format>CSV</format>
+                            </formats>
+                            <!--
+                                Title of the aggregate report so the
+                                generated HTML clearly identifies
+                                itself as the multi-module view.
+                            -->
+                            <title>CardDemo Java 25 LTS — Multi-Module Coverage (AAP §0.7.2)</title>
+                        </configuration>
+                    </execution>
+
+                    <!--
+                        Step 4 — enforce the 100% line coverage gate on
                         Decimals.java only. The build fails if any
                         line of Decimals.java is uncovered. Other
                         classes are not checked here; they remain

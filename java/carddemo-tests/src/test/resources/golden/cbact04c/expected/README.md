@@ -592,7 +592,7 @@ mvn -B clean verify
 
 This runs every module's tests including the golden-record harness. The carddemo-tests module's Surefire configuration includes `CbAct04CGoldenTest` in the standard discovery pattern. While the test is `@Disabled` the verify phase still passes (Surefire reports it as skipped); once the captures are committed and the `@Disabled` annotation is removed, the verify phase becomes a binding parity gate.
 
-For CI integration, the JFR-baseline performance fixtures in `java/carddemo-tests/src/test/java/com/blitzy/carddemo/tests/perf/JfrBaseline.java` are intended to be invoked alongside the golden-record harness so any regression in throughput (per AAP's 10% performance band guideline) is detected at the same time as functional regressions. The combined test report identifies both categories of regression in a single CI run.
+For CI integration, the JFR-baseline performance fixtures in `java/carddemo-tests/src/test/java/com/blitzy/carddemo/tests/perf/JfrBaselineTest.java` are intended to be invoked alongside the golden-record harness so any regression in throughput (per AAP's 10% performance band guideline) is detected at the same time as functional regressions. The combined test report identifies both categories of regression in a single CI run.
 
 JVM flag recommendations when running `CbAct04CGoldenTest` (mirroring the production shaded-jar invocation per AAP §0.3.4):
 

@@ -17,6 +17,7 @@ import java.util.Collections;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -131,6 +132,53 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @since 25
  */
 public abstract class GoldenRecordTest {
+
+    /**
+     * Per-test JUnit-managed temporary directory used by
+     * {@link #runProgram(Class, Path, List)} as the parent for the
+     * {@code blitzy_golden_stdout_*.txt} stdout-capture file. Annotated
+     * with {@link TempDir &#64;TempDir} so JUnit creates a fresh
+     * directory before each test method runs and recursively deletes it
+     * (and any files inside, including the stdout capture) after the
+     * test method completes &mdash; regardless of whether the test
+     * passed, failed, or threw.
+     *
+     * <p><strong>QA finding Mi-1 remediation</strong>: prior to this
+     * field, {@link #runProgram(Class, Path, List)} called
+     * {@code Files.createTempFile("blitzy_golden_stdout_", ".txt")}
+     * which created the file under the JVM default temp directory
+     * (e.g. {@code /tmp/}) with no cleanup hook; the file path was
+     * returned to the caller via {@code Map.of("expected", path)} and
+     * no callsite deleted it after the byte-equality assertion. When
+     * the {@code @Disabled} markers on the 28 per-program subclasses
+     * are removed (per AAP &sect;0.6.11 once COBOL captures are
+     * committed), temp files would accumulate in {@code /tmp/} across
+     * thousands of CI runs. Routing the temp file under this
+     * JUnit-managed directory eliminates the accumulation: JUnit's
+     * built-in cleanup machinery deletes the directory after each
+     * test method completes.</p>
+     *
+     * <p><strong>Per-method semantics</strong>: declared as a
+     * non-static instance field so that, under JUnit's default
+     * {@code PER_METHOD} test class lifecycle, a fresh directory is
+     * provisioned for each test method invocation. Subclasses must
+     * NOT redeclare or override this field; if a subclass needs an
+     * additional temp directory for its own auxiliary outputs, it can
+     * declare its own {@code @TempDir Path}-annotated field.</p>
+     *
+     * <p><strong>Path resolution stability</strong>: the directory
+     * lives under the OS-specific temp area chosen by JUnit
+     * (typically {@code java.io.tmpdir}); the exact location is opaque
+     * and stable for the duration of a single test method. Tests do
+     * not need to know or depend on the exact path &mdash; the
+     * {@code Files.createTempFile(Path, String, String)} call inside
+     * {@code runProgram} simply uses this directory as the parent.</p>
+     *
+     * @see TempDir
+     * @see #runProgram(Class, Path, List)
+     */
+    @TempDir
+    Path tempDirectory;
 
     /**
      * Declaration of one expected-output file in a multi-output scenario.
@@ -788,7 +836,16 @@ public abstract class GoldenRecordTest {
 
         // Capture stdout to a temp file so the byte-equality assertion
         // has something to compare against the COBOL DISPLAY capture.
-        Path stdoutCapture = Files.createTempFile("blitzy_golden_stdout_", ".txt");
+        // QA finding Mi-1 remediation: the temp file is created UNDER
+        // the JUnit-managed {@link #tempDirectory} so JUnit
+        // auto-deletes it (and the parent directory) after the test
+        // method completes. Prior to this fix, the file was created in
+        // the JVM default temp directory ({@code java.io.tmpdir}) with
+        // no cleanup hook, which would accumulate /tmp/blitzy_golden_*
+        // files across CI runs once the @Disabled annotations on the
+        // per-program golden tests are removed per AAP §0.6.11.
+        Path stdoutCapture = Files.createTempFile(
+            tempDirectory, "blitzy_golden_stdout_", ".txt");
         java.io.PrintStream originalOut = System.out;
         try (var captureStream = new java.io.PrintStream(
                 Files.newOutputStream(stdoutCapture),

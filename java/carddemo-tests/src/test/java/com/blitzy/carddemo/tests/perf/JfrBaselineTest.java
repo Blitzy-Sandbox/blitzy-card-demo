@@ -159,10 +159,10 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
  * @since 25
  */
 @DisplayName("JFR Performance Regression Baseline (Decimals canonical workload)")
-public class JfrBaseline {
+public class JfrBaselineTest {
 
     /** SLF4J logger. */
-    private static final Logger LOG = LoggerFactory.getLogger(JfrBaseline.class);
+    private static final Logger LOG = LoggerFactory.getLogger(JfrBaselineTest.class);
 
     /**
      * Number of {@link Decimals#add(BigDecimal, BigDecimal, int, RoundingMode)}
@@ -485,7 +485,7 @@ public class JfrBaseline {
      */
     static Properties loadBaseline() throws IOException {
         Properties props = new Properties();
-        try (var in = JfrBaseline.class.getResourceAsStream(BASELINE_RESOURCE)) {
+        try (var in = JfrBaselineTest.class.getResourceAsStream(BASELINE_RESOURCE)) {
             if (in == null) {
                 LOG.warn("Baseline resource not found on classpath: {}; "
                         + "regression assertion will run in collection mode",

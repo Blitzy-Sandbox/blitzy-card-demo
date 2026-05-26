@@ -39,7 +39,7 @@ captures (OPEN).
 | 1 | Persistence: VSAM vs DB2 | COBOL source uses VSAM KSDS with fixed-width records. Default path is `java.nio.file` with fixed-width readers in the `carddemo-adapter-file` module; the `carddemo-adapter-db` module exists but is empty (no JDBC repositories) unless source-side embedded SQL is later discovered. | RESOLVED | AAP §0.5, §0.6.5 |
 | 2 | External integrations (MQ, CICS, FTP, file feeds) | Default file-based batch only applies. The **only** mainframe-specific integration in scope is the CICS Transient Data Queue write in `CORPT00C` (paragraph `WIRTE-JOBSUB-TDQ`, `[app/cbl/CORPT00C.cbl:L515]`, queue name `'JOBS'`); this is translated to a direct method invocation since CICS TDQ replacement orchestration is out of scope. MQ, FTP, and external file feeds are not used by the COBOL source and are not introduced. | RESOLVED | AAP §0.2.2, §0.6.12 |
 | 3 | Root path for COBOL sources | `app/cbl/` confirmed by filesystem inspection — 28 `.cbl`/`.CBL` programs enumerated in AAP §0.6.8. | RESOLVED | AAP §0.6.8 |
-| 4 | Throughput target TPS | No specific TPS target was provided in the user prompt. The JFR baseline test (`carddemo-tests/src/test/java/com/blitzy/carddemo/tests/perf/JfrBaseline.java`) enforces no regression beyond a **10 % band** against a captured baseline. The actual measured COBOL baseline TPS must be added to this section once a representative run is captured. | OPEN — pending COBOL benchmark capture | AAP §0.7.2 |
+| 4 | Throughput target TPS | No specific TPS target was provided in the user prompt. The JFR baseline test (`carddemo-tests/src/test/java/com/blitzy/carddemo/tests/perf/JfrBaselineTest.java`) enforces no regression beyond a **10 % band** against a captured baseline. The actual measured COBOL baseline TPS must be added to this section once a representative run is captured. | OPEN — pending COBOL benchmark capture | AAP §0.7.2 |
 | 5 | Maven coordinates list | Every Maven coordinate is enumerated in `java/pom.xml` under `<dependencyManagement>`. All artifacts come from Maven Central; no private registries. See AAP §0.5.1 for the canonical list. | RESOLVED | `java/pom.xml`, AAP §0.5.1 |
 | 6 | Runtime configuration / environment variable list | Every supported environment variable and `application.properties` key is documented with example values in `java/application.properties.example`. | RESOLVED | `java/application.properties.example` |
 | 7 | Golden-record fixture regeneration | See **Section 1.6 — Golden-Record Fixture Capture Instructions** below. | RESOLVED — instructions documented | Section 1.6 |
@@ -1863,7 +1863,7 @@ Each must be closed before the migration can be declared complete.
 
 - **OPEN — TPS baseline**: actual measured COBOL TPS for the benchmark
   workload is not yet captured. JFR-based regression testing
-  (`JfrBaseline.java` and its `src/test/resources/perf/baseline-*.properties`
+  (`JfrBaselineTest.java` and its `src/test/resources/perf/baseline-*.properties`
   fixture files) is deferred to a future checkpoint per the Checkpoint 2
   review scope-control finding; the test scaffold was reverted in this
   checkpoint because it had been merged outside its intended milestone.
