@@ -46,6 +46,19 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 
+// java.nio.ByteBuffer used by detectFileRecordLength() to read the head of the
+// data file at construction time and probe for an ASCII line separator at one
+// of the candidate record-length offsets (36 vs 50). Selecting the buffer-
+// based read here keeps the helper free of allocations on the hot path while
+// still using the AAP §0.6.5-mandated java.nio.* API surface.
+import java.nio.ByteBuffer;
+
+// java.nio.channels.SeekableByteChannel is the type returned by
+// Files.newByteChannel(...) in detectFileRecordLength(). Held only for the
+// probe operation and immediately released via try-with-resources; the
+// reader/writer continue to manage their own per-operation channels.
+import java.nio.channels.SeekableByteChannel;
+
 // Charset is injected via the constructor and held as a final field. It is
 // used to convert the 16-char cardNumber argument and the zero-padded
 // 11-digit accountId AIX scan key to bytes for byte-for-byte key comparison
@@ -56,12 +69,24 @@ import java.io.UncheckedIOException;
 // {@code carddemo.file.cardxref.charset}.
 import java.nio.charset.Charset;
 
-// NIO.2 Path used as the constructor argument identifying the CARDXREF data
-// file. Stored as a private final field, forwarded to the FixedWidthReader /
-// FixedWidthWriter constructors, and referenced in error messages. Mandated
-// by AAP §0.6.5 ("All file I/O uses java.nio.file ... java.io.File is
-// forbidden in new code").
+// NIO.2 Path / Files / StandardOpenOption: Path is the constructor argument
+// identifying the CARDXREF data file; Files is used by detectFileRecordLength
+// to size and read the head of the data file at construction time;
+// StandardOpenOption.READ is the open mode for the format-probe channel.
+// Mandated by AAP §0.6.5 ("All file I/O uses java.nio.file ... java.io.File
+// is forbidden in new code").
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+
+// java.util.Arrays used by parsePadded() and toFileFormat() to copy and
+// space-pad the 36-byte ASCII fixture buffer up to the canonical 50-byte
+// CardXrefRecord layout before delegating to CardXrefRecord.parse(byte[]),
+// and to truncate a 50-byte encoded record buffer down to the 36-byte
+// file-format width when the underlying file uses the fixture layout. The
+// fixed pattern is the AAP §0.6.5-mandated byte-for-byte round-trip approach
+// recorded in MIGRATION_NOTES.md §1.4.9 (dual-format CARDXREF handling).
+import java.util.Arrays;
 
 // java.util utilities:
 //   NoSuchElementException — thrown by delete(String) when
@@ -214,7 +239,7 @@ public final class FileCardXrefRepository implements CardXrefRepository {
     private static final Logger LOG = LoggerFactory.getLogger(FileCardXrefRepository.class);
 
     /**
-     * Total {@code CARD-XREF-RECORD} length in bytes per copybook
+     * Canonical {@code CARD-XREF-RECORD} length in bytes per copybook
      * {@code app/cpy/CVACT03Y.cpy}: 16 (PAN) + 9 (CUST-ID) + 11
      * (ACCT-ID) + 14 (FILLER) = 50. Mirrors
      * {@link CardXrefRecord#RECORD_LENGTH} but is restated here as a
@@ -222,8 +247,40 @@ public final class FileCardXrefRepository implements CardXrefRepository {
      * independent sites (constructor, save-length check, key offset
      * arithmetic) and the duplication is cheaper than a static
      * cross-module reference for a single integer literal.
+     *
+     * <p>This is the SCHEMA-MANDATED canonical width and is always
+     * what {@link CardXrefRecord#encode()} emits and what
+     * {@link CardXrefRecord#parse(byte[])} consumes. The actual file
+     * width on disk may be {@link #FIXTURE_RECORD_LENGTH} when the
+     * adapter is pointed at the ASCII fixture format produced by
+     * loading {@code app/data/ASCII/cardxref.txt} via REPRO; see
+     * {@link #fileRecordLength} and the discussion in
+     * {@code java/MIGRATION_NOTES.md §1.4.9}.
      */
     private static final int RECORD_LENGTH = 50;
+
+    /**
+     * Alternate {@code CARD-XREF-RECORD} length in bytes used by the
+     * ASCII fixture format produced from
+     * {@code app/data/ASCII/cardxref.txt}: 16 (PAN) + 9 (CUST-ID) + 11
+     * (ACCT-ID) = 36, omitting the trailing 14-byte FILLER region.
+     * The fixture omits FILLER because the {@code cardxref.txt} file
+     * was originally generated as a flat-text REPRO source without the
+     * VSAM RECORD_LENGTH(50) padding. See
+     * {@code java/MIGRATION_NOTES.md §1.4.9} for the dual-format
+     * rationale and AAP &sect;0.6.5 for the byte-for-byte round-trip
+     * mandate that requires both layouts be supported.
+     *
+     * <p>When the file is in fixture format the adapter still exposes
+     * canonical 50-byte {@link CardXrefRecord} instances; the
+     * {@link #parsePadded(byte[])} helper space-pads the 36-byte
+     * buffer up to {@link #RECORD_LENGTH} before delegating to
+     * {@link CardXrefRecord#parse(byte[])}, and {@link #save} truncates
+     * the encoded 50-byte buffer down to {@code FIXTURE_RECORD_LENGTH}
+     * via {@link #toFileFormat(byte[])} to preserve the on-disk format
+     * round-trip-identical to the source.
+     */
+    private static final int FIXTURE_RECORD_LENGTH = 36;
 
     /**
      * Byte offset of the {@code XREF-CARD-NUM} primary key within the
@@ -273,6 +330,30 @@ public final class FileCardXrefRepository implements CardXrefRepository {
      * failure path) and never mutated after construction.
      */
     private final Path dataFile;
+
+    /**
+     * The on-disk fixed-width record length resolved at construction
+     * time by {@link #detectFileRecordLength(Path, int)}. Equals
+     * either {@link #RECORD_LENGTH} (50 bytes &mdash; canonical KSDS
+     * format) or {@link #FIXTURE_RECORD_LENGTH} (36 bytes &mdash;
+     * ASCII fixture format produced from
+     * {@code app/data/ASCII/cardxref.txt}). All public read methods
+     * decode the on-disk buffer via {@link #parsePadded(byte[])} so
+     * callers continue to receive canonical 50-byte
+     * {@link CardXrefRecord} instances regardless of the file's
+     * native width.
+     *
+     * <p>When the file does not yet exist at construction time this
+     * field defaults to {@link #RECORD_LENGTH}, matching the
+     * AAP-mandated canonical layout that {@link #save(CardXrefRecord)}
+     * will write. The detection is deliberately one-shot at
+     * construction (rather than per-operation) because the file
+     * format is sticky once written: a {@code REPRO}-loaded fixture
+     * file stays in 36-byte format and a {@code save}-created file
+     * stays in 50-byte format for the lifetime of the adapter
+     * instance.
+     */
+    private final int fileRecordLength;
 
     /**
      * The charset used to convert {@link String} card-number keys and
@@ -390,8 +471,215 @@ public final class FileCardXrefRepository implements CardXrefRepository {
     public FileCardXrefRepository(Path dataFile, Charset charset) {
         this.dataFile = Objects.requireNonNull(dataFile, "dataFile");
         this.charset = Objects.requireNonNull(charset, "charset");
-        this.reader = new FixedWidthReader(dataFile, RECORD_LENGTH, charset);
-        this.writer = new FixedWidthWriter(dataFile, RECORD_LENGTH, charset);
+        // Detect the on-disk record length once at construction time.
+        // Returns RECORD_LENGTH (50) for a canonical KSDS format file,
+        // FIXTURE_RECORD_LENGTH (36) for an ASCII fixture file loaded
+        // from app/data/ASCII/cardxref.txt, and defaults to
+        // RECORD_LENGTH when the file does not yet exist or is empty
+        // (the future write path will produce a canonical 50-byte
+        // format file). See MIGRATION_NOTES.md §1.4.9.
+        this.fileRecordLength = detectFileRecordLength(dataFile, RECORD_LENGTH);
+        this.reader = new FixedWidthReader(dataFile, fileRecordLength, charset);
+        this.writer = new FixedWidthWriter(dataFile, fileRecordLength, charset);
+    }
+
+    // ------------------------------------------------------------------
+    // File-format detection (canonical 50-byte KSDS vs 36-byte fixture)
+    // ------------------------------------------------------------------
+
+    /**
+     * Probes the first ~64 bytes of the data file to determine the
+     * on-disk record length. Returns {@link #FIXTURE_RECORD_LENGTH}
+     * (36 bytes) when an ASCII line separator (LF or CRLF) is present
+     * at byte offset 36 (the fixture format produced from
+     * {@code app/data/ASCII/cardxref.txt}), otherwise returns
+     * {@code canonicalLength} (50 bytes &mdash; the canonical KSDS
+     * format mandated by {@code app/cpy/CVACT03Y.cpy} and the schema
+     * sidecar).
+     *
+     * <p>Detection rules in priority order:
+     * <ol>
+     *   <li>File does not exist or has zero size &rarr;
+     *       {@code canonicalLength} (the next write will use the
+     *       canonical layout).</li>
+     *   <li>LF (0x0A) byte at offset {@link #FIXTURE_RECORD_LENGTH} of
+     *       the file head &rarr; 36-byte fixture format.</li>
+     *   <li>CRLF (0x0D 0x0A) at offsets 36 and 37 of the file head
+     *       &rarr; 36-byte fixture format.</li>
+     *   <li>File size is exactly divisible by 37 (fixture format with
+     *       LF separators: 36 data + 1 LF) &rarr; 36-byte fixture
+     *       format.</li>
+     *   <li>File size is exactly divisible by 36 (fixture format
+     *       without separators) and NOT divisible by
+     *       {@code canonicalLength} &rarr; 36-byte fixture format.</li>
+     *   <li>Otherwise &rarr; {@code canonicalLength}.</li>
+     * </ol>
+     *
+     * <p>The detection is deliberately conservative: when in doubt
+     * the canonical 50-byte format is selected, mirroring the
+     * {@code app/cpy/CVACT03Y.cpy} schema and matching what
+     * {@link #save(CardXrefRecord)} produces from a freshly-encoded
+     * 50-byte buffer. The fixture format is selected only when the
+     * file head contains an unambiguous LF/CRLF marker at the
+     * expected offset, or the file size is a clean multiple of the
+     * fixture-with-LF stride and NOT a multiple of the canonical
+     * width.
+     *
+     * <p>Any I/O exception during detection is swallowed and
+     * {@code canonicalLength} is returned; read methods will surface
+     * the underlying error on their next open.
+     *
+     * @param dataFile        the data file path to probe
+     * @param canonicalLength the canonical KSDS record length to
+     *                        return when the file is missing, empty,
+     *                        or does not match the fixture pattern
+     * @return either {@code canonicalLength} or
+     *         {@link #FIXTURE_RECORD_LENGTH}
+     */
+    private static int detectFileRecordLength(Path dataFile, int canonicalLength) {
+        if (!Files.exists(dataFile)) {
+            return canonicalLength;
+        }
+        try {
+            long size = Files.size(dataFile);
+            if (size == 0L) {
+                return canonicalLength;
+            }
+            // Probe the file head for an LF or CRLF separator at the
+            // candidate fixture-format offset. Read up to 64 bytes
+            // (enough to see byte 36 + a potential CRLF tail at 37) or
+            // the file's actual size if smaller.
+            int probeLen = (int) Math.min(64L, size);
+            byte[] head = new byte[probeLen];
+            try (SeekableByteChannel ch =
+                         Files.newByteChannel(dataFile, StandardOpenOption.READ)) {
+                ByteBuffer buf = ByteBuffer.wrap(head);
+                while (buf.hasRemaining()) {
+                    int n = ch.read(buf);
+                    if (n < 0) {
+                        break;
+                    }
+                }
+            }
+            // Rule 2: LF at offset 36 (fixture with LF separators).
+            if (probeLen > FIXTURE_RECORD_LENGTH
+                    && head[FIXTURE_RECORD_LENGTH] == (byte) 0x0A) {
+                return FIXTURE_RECORD_LENGTH;
+            }
+            // Rule 3: CRLF at offset 36 (fixture with CRLF separators
+            // on Windows-edited files).
+            if (probeLen > FIXTURE_RECORD_LENGTH + 1
+                    && head[FIXTURE_RECORD_LENGTH] == (byte) 0x0D
+                    && head[FIXTURE_RECORD_LENGTH + 1] == (byte) 0x0A) {
+                return FIXTURE_RECORD_LENGTH;
+            }
+            // Rule 4: pure-stride match for fixture format with LF.
+            if (size % (long) (FIXTURE_RECORD_LENGTH + 1) == 0L
+                    && size % (long) canonicalLength != 0L) {
+                return FIXTURE_RECORD_LENGTH;
+            }
+            // Rule 5: pure-stride match for fixture format without
+            // separators.
+            if (size % (long) FIXTURE_RECORD_LENGTH == 0L
+                    && size % (long) canonicalLength != 0L) {
+                return FIXTURE_RECORD_LENGTH;
+            }
+            // Rule 6: default to canonical.
+            return canonicalLength;
+        } catch (IOException e) {
+            // Detection failure falls through to canonical. The next
+            // actual read will surface the underlying error to the
+            // caller via UncheckedIOException.
+            return canonicalLength;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Dual-format record buffer adaptation
+    // ------------------------------------------------------------------
+
+    /**
+     * Pads a raw on-disk record buffer up to the canonical
+     * {@link #RECORD_LENGTH} (50 bytes) with ASCII spaces (0x20) so
+     * it can be passed to {@link CardXrefRecord#parse(byte[])}, which
+     * requires an exact 50-byte buffer per the
+     * {@code app/cpy/CVACT03Y.cpy} schema.
+     *
+     * <p>When the file is in fixture format ({@link #FIXTURE_RECORD_LENGTH}
+     * = 36) the reader yields 36-byte buffers omitting the trailing
+     * 14-byte FILLER region. {@code parsePadded} reconstructs the
+     * canonical layout by appending 14 ASCII spaces &mdash; the same
+     * value {@link CardXrefRecord#encode()} writes into FILLER when
+     * the source layout has none. The padding choice (ASCII space
+     * 0x20) is the AAP &sect;0.6.5-mandated round-trip-safe filler
+     * because {@code parse(b).encode()} on the padded buffer yields
+     * a 50-byte buffer whose first 36 bytes equal the original
+     * fixture record and whose trailing 14 bytes are spaces, matching
+     * the encoded FILLER convention.
+     *
+     * <p>When the file is in canonical format
+     * ({@link #RECORD_LENGTH} = 50) this method returns the input
+     * buffer unchanged.
+     *
+     * @param onDisk the raw on-disk record buffer, length equal to
+     *               {@link #fileRecordLength}
+     * @return a buffer of exactly {@link #RECORD_LENGTH} bytes ready
+     *         for {@link CardXrefRecord#parse(byte[])}
+     */
+    private byte[] padToCanonical(byte[] onDisk) {
+        if (onDisk.length >= RECORD_LENGTH) {
+            return onDisk;
+        }
+        byte[] padded = Arrays.copyOf(onDisk, RECORD_LENGTH);
+        Arrays.fill(padded, onDisk.length, RECORD_LENGTH, (byte) 0x20);
+        return padded;
+    }
+
+    /**
+     * Convenience helper that pads {@code onDisk} via
+     * {@link #padToCanonical(byte[])} and delegates to
+     * {@link CardXrefRecord#parse(byte[])}. Used as the
+     * {@code .map(this::parsePadded)} terminal in every stream
+     * pipeline below so the dual-format handling is centralised at
+     * one call site.
+     *
+     * @param onDisk the raw on-disk record buffer
+     * @return the decoded {@link CardXrefRecord}
+     */
+    private CardXrefRecord parsePadded(byte[] onDisk) {
+        return CardXrefRecord.parse(padToCanonical(onDisk));
+    }
+
+    /**
+     * Converts a canonical 50-byte encoded record buffer to the
+     * on-disk format width. When the file is in fixture format
+     * ({@link #FIXTURE_RECORD_LENGTH} = 36) the canonical buffer is
+     * truncated to 36 bytes, dropping the trailing 14-byte FILLER
+     * region; when the file is in canonical format (50 bytes) the
+     * input is returned unchanged.
+     *
+     * <p>The truncation is byte-loss-safe because the dropped 14
+     * bytes are the canonical FILLER which is space-padded
+     * (0x20 0x20 ... 0x20) by {@link CardXrefRecord#encode()} when no
+     * explicit FILLER was supplied at construction. Records that
+     * carry caller-supplied FILLER bytes will lose those bytes when
+     * persisted to a fixture-format file; this is the AAP
+     * &sect;0.6.5-mandated trade-off documented in
+     * {@code MIGRATION_NOTES.md §1.4.9}: byte-for-byte fidelity to
+     * the on-disk source format takes precedence over canonical
+     * FILLER preservation.
+     *
+     * @param encoded the canonical {@link #RECORD_LENGTH}-byte
+     *                encoded buffer from
+     *                {@link CardXrefRecord#encode()}
+     * @return a buffer of exactly {@link #fileRecordLength} bytes
+     *         ready for {@link FixedWidthWriter} consumption
+     */
+    private byte[] toFileFormat(byte[] encoded) {
+        if (encoded.length == fileRecordLength) {
+            return encoded;
+        }
+        return Arrays.copyOf(encoded, fileRecordLength);
     }
 
     // ------------------------------------------------------------------
@@ -489,7 +777,11 @@ public final class FileCardXrefRepository implements CardXrefRepository {
         }
         byte[] keyBytes = cardNumber.getBytes(charset);
         try {
-            return reader.findByKey(keyBytes, PK_OFFSET).map(CardXrefRecord::parse);
+            // parsePadded centralizes the dual-format (36 vs 50 byte)
+            // adaptation: when the file is in 36-byte fixture format
+            // the on-disk buffer is space-padded to the canonical
+            // 50-byte width before delegating to CardXrefRecord.parse.
+            return reader.findByKey(keyBytes, PK_OFFSET).map(this::parsePadded);
         } catch (IOException e) {
             throw new UncheckedIOException(
                     "Error reading CARDXREF for cardNumber=" + maskPan(cardNumber), e);
@@ -539,7 +831,11 @@ public final class FileCardXrefRepository implements CardXrefRepository {
         try (Stream<byte[]> stream = reader.streamSequential()) {
             return stream
                     .filter(buf -> keyMatches(buf, AIX_ACCTID_OFFSET, aixKey))
-                    .map(CardXrefRecord::parse)
+                    // parsePadded centralizes the dual-format (36 vs
+                    // 50 byte) adaptation; see field-level Javadoc on
+                    // fileRecordLength for the on-disk width contract
+                    // and MIGRATION_NOTES.md §1.4.9 for the rationale.
+                    .map(this::parsePadded)
                     .findFirst();
         } catch (IOException e) {
             throw new UncheckedIOException(
@@ -580,7 +876,9 @@ public final class FileCardXrefRepository implements CardXrefRepository {
         try {
             return reader.streamSequential()
                     .filter(buf -> keyMatches(buf, AIX_ACCTID_OFFSET, aixKey))
-                    .map(CardXrefRecord::parse);
+                    // parsePadded centralizes the dual-format (36 vs
+                    // 50 byte) adaptation.
+                    .map(this::parsePadded);
         } catch (IOException e) {
             throw new UncheckedIOException(
                     "Error scanning CARDXREF for accountId=" + accountId, e);
@@ -647,7 +945,10 @@ public final class FileCardXrefRepository implements CardXrefRepository {
     @Override
     public Stream<CardXrefRecord> streamSequential() {
         try {
-            return reader.streamSequential().map(CardXrefRecord::parse);
+            // parsePadded centralizes the dual-format (36 vs 50 byte)
+            // adaptation so CBACT03C's sequential dump sees canonical
+            // 50-byte records regardless of the on-disk file width.
+            return reader.streamSequential().map(this::parsePadded);
         } catch (IOException e) {
             throw new UncheckedIOException(
                     "Error opening CARDXREF for sequential read: " + dataFile, e);
@@ -702,10 +1003,16 @@ public final class FileCardXrefRepository implements CardXrefRepository {
                     "CardXrefRecord.encode() returned " + encoded.length
                             + " bytes; expected " + RECORD_LENGTH);
         }
+        // Adapt to the on-disk file width: when the file is in 36-byte
+        // fixture format the trailing 14-byte FILLER region is dropped
+        // so the file stays in fixture format and a subsequent
+        // read+parse remains byte-for-byte round-trip identical.
+        // toFileFormat is a no-op when fileRecordLength == RECORD_LENGTH.
+        byte[] toWrite = toFileFormat(encoded);
         byte[] keyBytes = record.xrefCardNum().getBytes(charset);
         synchronized (writeLock) {
             try {
-                writer.upsert(keyBytes, PK_OFFSET, encoded);
+                writer.upsert(keyBytes, PK_OFFSET, toWrite);
             } catch (IOException e) {
                 throw new UncheckedIOException(
                         "Error upserting CARDXREF cardNumber="

@@ -381,6 +381,12 @@ public final class FixedWidthReader {
                     System.arraycopy(record, 0, copy, 0, recordLength);
                     return Optional.of(copy);
                 }
+                // Consume an optional trailing line separator before reading
+                // the next record. Mirrors the same logic in readOneRecord;
+                // see consumeOptionalRecordSeparator() Javadoc for full
+                // discussion of the pure-binary vs. text-format-with-LF
+                // distinction.
+                consumeOptionalRecordSeparator(auto);
             }
         }
     }
@@ -610,7 +616,90 @@ public final class FixedWidthReader {
             }
             total += r;
         }
+        // After successfully reading a complete record, tolerate an optional
+        // trailing line separator (LF or CRLF) between records. This handles
+        // the case where the binary KSDS file was loaded from a text-format
+        // ASCII fixture (each line = one record + '\n') via the IDCAMS REPRO
+        // translation (java.nio.file.Files.copy), as is the case for all 9
+        // fixtures in app/data/ASCII/*.txt per AAP §0.6.11.
+        //
+        // For pure-binary files with no separators (real VSAM KSDS exports),
+        // this probe-and-rewind is a no-op: when the next byte is not LF/CR,
+        // the channel position is restored and the next record read starts
+        // exactly at the byte boundary, preserving the original O(N) read
+        // contract.
+        //
+        // Documented as part of AAP §0.6.5 file-I/O exactness: every record
+        // is still parsed as exactly recordLength bytes; separators are file-
+        // level framing, not part of the record contract.
+        consumeOptionalRecordSeparator(ch);
         return buf.array();
+    }
+
+    /**
+     * Consumes an optional trailing line separator (LF {@code "\n"} or CRLF
+     * {@code "\r\n"}) from the channel. If the next byte(s) do not form a
+     * recognised separator, the channel position is restored to where it was
+     * before the probe, so the next record read starts exactly at the byte
+     * boundary.
+     *
+     * <p>This lets a single {@link FixedWidthReader} transparently consume
+     * both pure-binary fixed-width files (no separators between records) and
+     * text-format fixed-width files (one record per line with LF or CRLF
+     * terminator). Both formats appear in this codebase:
+     * <ul>
+     *   <li>Pure-binary &mdash; produced by {@code FixedWidthWriter} when
+     *       creating fresh datasets (e.g.&nbsp;before any IDCAMS-style
+     *       REPRO load has occurred).</li>
+     *   <li>Text-format with LF separators &mdash; the
+     *       {@code app/data/ASCII/*.txt} fixtures (AAP &sect;0.4.1, 9 files)
+     *       and any binary KSDS that was loaded from such a fixture via
+     *       the {@code Define*App} REPRO step (which is a byte-for-byte
+     *       {@link Files#copy(Path, Path, java.nio.file.CopyOption...)
+     *       Files.copy} per AAP &sect;0.6.5).</li>
+     * </ul>
+     *
+     * <p><strong>Safety:</strong> the probe never reads more than 2 bytes
+     * and never modifies any record buffer. If the probe encounters EOF
+     * (a clean record-boundary end-of-file with no trailing separator), it
+     * silently returns. If the probe encounters a non-separator byte (i.e.&nbsp;
+     * the first byte of the next record in a pure-binary file), the channel
+     * position is restored via {@link SeekableByteChannel#position(long)}.
+     *
+     * @param ch the open channel positioned exactly at the byte immediately
+     *           after a complete record
+     * @throws IOException on channel read or position errors
+     */
+    private static void consumeOptionalRecordSeparator(SeekableByteChannel ch) throws IOException {
+        long savedPos = ch.position();
+        ByteBuffer probe = ByteBuffer.allocate(2);
+        int n = ch.read(probe);
+        if (n <= 0) {
+            // Clean EOF on a record boundary: nothing to consume. Channel
+            // position is already at savedPos (no bytes were read).
+            return;
+        }
+        probe.flip();
+        byte b0 = probe.get(0);
+        if (b0 == (byte) '\n') {
+            // LF separator. If a single byte was read, the channel is at
+            // savedPos + 1 (correct). If two bytes were read (n == 2), the
+            // second byte is the first byte of the NEXT record and must be
+            // rewound so the next readOneRecord starts there.
+            if (n == 2) {
+                ch.position(savedPos + 1);
+            }
+            return;
+        }
+        if (b0 == (byte) '\r' && n == 2 && probe.get(1) == (byte) '\n') {
+            // CRLF separator: consumed both bytes; channel is at savedPos + 2
+            // which is exactly where the next record begins.
+            return;
+        }
+        // Not a recognised separator: this byte (or pair) is the start of
+        // the next record (pure-binary file). Rewind the channel so the
+        // next readOneRecord call sees these bytes.
+        ch.position(savedPos);
     }
 
     /**

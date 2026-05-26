@@ -231,6 +231,19 @@ public final class CbStm03B {
     public static final int TRNX_RECORD_LENGTH = 350;
     /** Fixed record length of XREFFILE (50 bytes per CVACT03Y layout). */
     public static final int XREF_RECORD_LENGTH = 50;
+
+    /**
+     * Alternative XREFFILE record length used by the ASCII fixture
+     * {@code app/data/ASCII/cardxref.txt} which omits the trailing
+     * 14-byte {@code FILLER PIC X(14)} group from
+     * {@code app/cpy/CVACT03Y.cpy}. The fixture records are
+     * {@code XREF-CARD-NUM PIC X(16)} + {@code XREF-CUST-ID PIC 9(09)}
+     * + {@code XREF-ACCT-ID PIC 9(11)} = 36 bytes. Detected at
+     * {@link #openXrefFile()} time; records are space-padded to
+     * {@link #XREF_RECORD_LENGTH} (50) before being handed to
+     * {@link CardXrefRecord#parse(byte[])}.
+     */
+    private static final int XREF_FIXTURE_RECORD_LENGTH = 36;
     /** Fixed record length of CUSTFILE (500 bytes per CUSTREC layout). */
     public static final int CUST_RECORD_LENGTH = 500;
     /** Fixed record length of ACCTFILE (300 bytes per CVACT01Y layout). */
@@ -501,6 +514,19 @@ public final class CbStm03B {
      * {@link #closeXrefFile()}.
      */
     private SeekableByteChannel xrefChannel;
+
+    /**
+     * Effective per-record byte length for the currently-open XREFFILE.
+     * Resolved at {@link #openXrefFile()} time to either
+     * {@link #XREF_RECORD_LENGTH} (50, the canonical CVACT03Y layout)
+     * or {@link #XREF_FIXTURE_RECORD_LENGTH} (36, the ASCII fixture
+     * layout without trailing FILLER). Used by {@link #readNextXref()}
+     * to read the correct number of bytes; records shorter than
+     * {@link #XREF_RECORD_LENGTH} are space-padded to 50 before being
+     * handed to {@link CardXrefRecord#parse(byte[])}. Zero when no
+     * XREFFILE is currently open.
+     */
+    private int xrefFileRecordLength;
     /**
      * In-memory index for CUSTFILE keyed by {@code FD-CUST-ID}. Built
      * during {@link #openCustFile()} by reading every record into a
@@ -796,8 +822,75 @@ public final class CbStm03B {
             xrefChannel.close();
         }
         xrefChannel = Files.newByteChannel(xrefFilePath, StandardOpenOption.READ);
-        log.debug("Opened XREFFILE at {}", xrefFilePath);
+        // Detect whether the XREFFILE is the canonical 50-byte CVACT03Y
+        // layout or the 36-byte ASCII fixture layout (FILLER omitted).
+        // See FileCardXrefRepository.detectFileRecordLength(...) for
+        // the rationale; we use the same probe rules here so that
+        // CbStm03B and FileCardXrefRepository behave identically when
+        // given the same input file.
+        xrefFileRecordLength = detectXrefRecordLength(xrefFilePath);
+        log.debug("Opened XREFFILE at {} (recordLength={})",
+                xrefFilePath, xrefFileRecordLength);
         return RC_OK;
+    }
+
+    /**
+     * Probes {@code path} to decide whether its records are
+     * {@link #XREF_RECORD_LENGTH} (50) or
+     * {@link #XREF_FIXTURE_RECORD_LENGTH} (36) bytes wide. The decision
+     * is permanent for the duration of the open file handle and is
+     * stored in {@link #xrefFileRecordLength}.
+     *
+     * <p>Detection rules (in priority order):
+     * <ol>
+     *   <li>File is missing or empty &rarr; return 50 (assume canonical
+     *       layout; subsequent reads will simply return EOF).</li>
+     *   <li>Byte at offset 36 is LF (0x0A) &rarr; return 36 (LF-terminated
+     *       36-byte fixture).</li>
+     *   <li>Bytes at offsets 36 and 37 are CRLF (0x0D 0x0A) &rarr; return
+     *       36 (CRLF-terminated 36-byte fixture).</li>
+     *   <li>{@code size % 37 == 0 && size % 50 != 0} &rarr; return 36
+     *       (pure 37-byte-stride fixture).</li>
+     *   <li>{@code size % 36 == 0 && size % 50 != 0} &rarr; return 36
+     *       (binary 36-byte stride, no separators).</li>
+     *   <li>Otherwise &rarr; return 50 (canonical layout).</li>
+     * </ol>
+     *
+     * @param path the XREFFILE to probe
+     * @return {@link #XREF_RECORD_LENGTH} (50) or
+     *         {@link #XREF_FIXTURE_RECORD_LENGTH} (36)
+     * @throws IOException if reading {@code path} fails
+     */
+    private static int detectXrefRecordLength(Path path) throws IOException {
+        if (!Files.exists(path) || Files.size(path) == 0L) {
+            return XREF_RECORD_LENGTH;
+        }
+        long size = Files.size(path);
+        try (SeekableByteChannel probe = Files.newByteChannel(path,
+                StandardOpenOption.READ)) {
+            if (size >= XREF_FIXTURE_RECORD_LENGTH + 1) {
+                probe.position(XREF_FIXTURE_RECORD_LENGTH);
+                ByteBuffer one = ByteBuffer.allocate(2);
+                int n = probe.read(one);
+                one.flip();
+                if (n >= 1 && one.get(0) == (byte) 0x0A) {
+                    return XREF_FIXTURE_RECORD_LENGTH;
+                }
+                if (n >= 2 && one.get(0) == (byte) 0x0D
+                        && one.get(1) == (byte) 0x0A) {
+                    return XREF_FIXTURE_RECORD_LENGTH;
+                }
+            }
+        }
+        if (size % (XREF_FIXTURE_RECORD_LENGTH + 1) == 0
+                && size % XREF_RECORD_LENGTH != 0) {
+            return XREF_FIXTURE_RECORD_LENGTH;
+        }
+        if (size % XREF_FIXTURE_RECORD_LENGTH == 0
+                && size % XREF_RECORD_LENGTH != 0) {
+            return XREF_FIXTURE_RECORD_LENGTH;
+        }
+        return XREF_RECORD_LENGTH;
     }
 
     /**
@@ -818,9 +911,26 @@ public final class CbStm03B {
                     "XREFFILE not open; call openFile(XREFFILE) first");
         }
         try {
-            byte[] buffer = readFixedWidthRecord(xrefChannel, XREF_RECORD_LENGTH);
+            // Read using the detected per-file record length
+            // (xrefFileRecordLength is set by openXrefFile()) so that
+            // both 50-byte CVACT03Y exports and 36-byte ASCII fixtures
+            // are handled correctly.
+            byte[] buffer = readFixedWidthRecord(xrefChannel,
+                    xrefFileRecordLength);
             if (buffer == null) {
                 return Optional.empty();
+            }
+            // If the file uses the 36-byte fixture format, pad the
+            // record with ASCII spaces (0x20) to the canonical 50-byte
+            // length expected by CardXrefRecord.parse(byte[]). The
+            // padded suffix represents the trailing FILLER PIC X(14)
+            // group from CVACT03Y, which a COBOL READ would supply as
+            // X'40' (EBCDIC space, 0x20 in ASCII).
+            if (buffer.length != XREF_RECORD_LENGTH) {
+                byte[] padded = new byte[XREF_RECORD_LENGTH];
+                Arrays.fill(padded, (byte) 0x20);
+                System.arraycopy(buffer, 0, padded, 0, buffer.length);
+                buffer = padded;
             }
             return Optional.of(CardXrefRecord.parse(buffer));
         } catch (IOException e) {
@@ -840,6 +950,7 @@ public final class CbStm03B {
         if (xrefChannel != null) {
             xrefChannel.close();
             xrefChannel = null;
+            xrefFileRecordLength = 0;
             log.debug("Closed XREFFILE");
         }
         return RC_OK;
@@ -1084,7 +1195,69 @@ public final class CbStm03B {
             }
             totalRead += n;
         }
+        // LF/CRLF-tolerant separator consumption: the input file may have
+        // been REPRO'd from an ASCII fixture (e.g.
+        // app/data/ASCII/custdata.txt) which uses LF terminators
+        // (recordLength-byte record + 1-byte LF = stride of
+        // recordLength+1), or may be a pure-binary KSDS export
+        // (stride of recordLength). After reading exactly recordLength
+        // bytes, probe for an optional LF or CRLF separator and consume
+        // it if present; otherwise rewind the channel to just past the
+        // record &mdash; matching the
+        // {@code FixedWidthReader.consumeOptionalRecordSeparator}
+        // contract documented in
+        // {@code carddemo-adapter-file/src/main/java/com/blitzy/carddemo/adapter/file/FixedWidthReader.java}.
+        consumeOptionalRecordSeparator(channel);
         return buf.array();
+    }
+
+    /**
+     * Consumes an optional one-byte LF (0x0A) or two-byte CRLF
+     * (0x0D 0x0A) record separator from {@code channel} at its current
+     * position. If the next bytes are not a recognized separator (or
+     * EOF is reached), the channel position is left unchanged or at
+     * EOF, respectively.
+     *
+     * <p>This helper mirrors
+     * {@code FixedWidthReader.consumeOptionalRecordSeparator(...)}
+     * (in carddemo-adapter-file) and is duplicated here because
+     * CbStm03B opens its own {@link SeekableByteChannel}s directly
+     * (the COBOL program uses verbatim {@code OPEN}/{@code READ}/
+     * {@code CLOSE} on its own DD-named files) rather than going
+     * through the adapter-file repositories. Keeping the two
+     * implementations behaviourally identical is essential for
+     * byte-for-byte parity with the COBOL baseline regardless of
+     * which code path the file was loaded through.
+     *
+     * @param channel the open channel; must be positioned just after
+     *                a complete record. Modified by side-effect to
+     *                skip over any LF/CRLF separator found.
+     * @throws IOException if reading or repositioning {@code channel}
+     *                     fails
+     */
+    private static void consumeOptionalRecordSeparator(SeekableByteChannel channel)
+            throws IOException {
+        long beforeSep = channel.position();
+        ByteBuffer sep = ByteBuffer.allocate(2);
+        int sepRead = channel.read(sep);
+        if (sepRead <= 0) {
+            // EOF or empty read — nothing to do; channel is at EOF.
+            return;
+        }
+        sep.flip();
+        byte b0 = sep.get(0);
+        if (b0 == (byte) 0x0A) {
+            // LF: consumed 1 byte. Rewind any extra byte (if read).
+            channel.position(beforeSep + 1);
+        } else if (sepRead >= 2
+                && b0 == (byte) 0x0D
+                && sep.get(1) == (byte) 0x0A) {
+            // CRLF: consumed 2 bytes.
+            channel.position(beforeSep + 2);
+        } else {
+            // No separator: rewind to before the probe.
+            channel.position(beforeSep);
+        }
     }
 
     // =====================================================================

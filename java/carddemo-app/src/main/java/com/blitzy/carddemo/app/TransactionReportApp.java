@@ -593,18 +593,16 @@ public final class TransactionReportApp {
             LOG.error("STEP05R (SORT) read failed: {}", ioe.getMessage(), ioe);
             return RC_ERROR;
         }
-        if (bkupBytesArr.length % RECORD_LENGTH != 0) {
-            LOG.warn("STEP05R (SORT): BKUP file size {} is not a multiple of "
-                            + "RECORD_LENGTH {} — truncating to nearest record",
-                    bkupBytesArr.length, RECORD_LENGTH);
-        }
-        int recCount = bkupBytesArr.length / RECORD_LENGTH;
-        List<byte[]> records = new ArrayList<>(recCount);
-        for (int i = 0; i < recCount; i++) {
-            byte[] rec = new byte[RECORD_LENGTH];
-            System.arraycopy(bkupBytesArr, i * RECORD_LENGTH, rec, 0, RECORD_LENGTH);
-            records.add(rec);
-        }
+        // LF/CRLF-tolerant slicing: the BKUP file may have been REPRO'd
+        // from app/data/ASCII/dailytran.txt which uses LF terminators
+        // (350-byte record + 1-byte LF = 351-byte stride), or may be a
+        // pure-binary KSDS export (350-byte stride). The slicing logic
+        // consumes one record at a time then probes for an optional LF
+        // or CRLF separator before the next record — exactly mirroring
+        // the FixedWidthReader.consumeOptionalRecordSeparator contract
+        // documented in
+        // {@code carddemo-adapter-file/src/main/java/com/blitzy/carddemo/adapter/file/FixedWidthReader.java}.
+        List<byte[]> records = sliceFixedWidthRecords(bkupBytesArr, RECORD_LENGTH);
         LOG.info("STEP05R (SORT): read {} records from {}", records.size(), bkupNew);
 
         // INCLUDE filter — captured into final locals for the lambda.
@@ -918,6 +916,64 @@ public final class TransactionReportApp {
             }
         }
         return 0;
+    }
+
+    /**
+     * Slices a contiguous byte stream into fixed-width records, tolerating
+     * an optional line separator (LF {@code "\n"} or CRLF {@code "\r\n"})
+     * between consecutive records. Mirrors the contract documented on
+     * {@code FixedWidthReader.consumeOptionalRecordSeparator}: this lets
+     * the same logic handle both pure-binary fixed-width files (no
+     * separators) and text-format fixed-width files (one record per line
+     * with LF or CRLF terminator).
+     *
+     * <p>Both formats appear in this codebase: the
+     * {@code app/data/ASCII/*.txt} fixtures and any binary KSDS that was
+     * loaded from such a fixture via the {@code Define*App} REPRO step
+     * (which is a byte-for-byte {@link Files#copy(Path, Path, java.nio.file.CopyOption...)
+     * Files.copy} per AAP &sect;0.6.5) use LF separators; pure
+     * {@code FixedWidthWriter}-created datasets do not.
+     *
+     * <p>Trailing bytes that are shorter than a full record are logged
+     * as a warning and dropped; this preserves the
+     * {@code "BKUP file size is not a multiple of RECORD_LENGTH —
+     * truncating to nearest record"} diagnostic that the previous
+     * straight-slice code emitted.
+     *
+     * <p>Visible for testing.
+     *
+     * @param data         the contiguous byte stream
+     * @param recordLength the fixed record width in bytes; must be
+     *                     {@code > 0}
+     * @return a mutable {@link ArrayList} of {@code recordLength}-byte
+     *         record buffers; never {@code null}
+     */
+    static List<byte[]> sliceFixedWidthRecords(byte[] data, int recordLength) {
+        List<byte[]> result = new ArrayList<>();
+        int pos = 0;
+        while (pos + recordLength <= data.length) {
+            byte[] rec = new byte[recordLength];
+            System.arraycopy(data, pos, rec, 0, recordLength);
+            result.add(rec);
+            pos += recordLength;
+            // Consume an optional trailing line separator before the
+            // next record. If the next byte is LF (0x0A), advance one;
+            // if the next two bytes are CRLF (0x0D 0x0A), advance two;
+            // otherwise leave pos at the start of the next record.
+            if (pos < data.length && data[pos] == (byte) 0x0A) {
+                pos += 1;
+            } else if (pos + 1 < data.length
+                    && data[pos] == (byte) 0x0D
+                    && data[pos + 1] == (byte) 0x0A) {
+                pos += 2;
+            }
+        }
+        if (pos < data.length) {
+            LOG.warn("sliceFixedWidthRecords: {} trailing bytes after last "
+                    + "complete record (totalBytes={}, recordLength={})",
+                    data.length - pos, data.length, recordLength);
+        }
+        return result;
     }
 
     /**

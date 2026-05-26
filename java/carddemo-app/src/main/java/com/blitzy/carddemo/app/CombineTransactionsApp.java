@@ -490,16 +490,39 @@ public final class CombineTransactionsApp {
     private static void readFixedWidthRecords(Path file, int recordLength, List<byte[]> sink)
             throws IOException {
         byte[] all = Files.readAllBytes(file);
-        if (all.length % recordLength != 0) {
-            LOG.warn("File {} length {} is not a multiple of record length {}; "
-                            + "trailing {} bytes ignored",
-                    file, all.length, recordLength, all.length % recordLength);
-        }
-        int count = all.length / recordLength;
-        for (int i = 0; i < count; i++) {
+        // LF/CRLF-tolerant slicing: GDG generation files may have been
+        // produced by IDCAMS REPRO from ASCII fixtures (e.g.
+        // app/data/ASCII/dailytran.txt) which use LF terminators
+        // (recordLength-byte record + 1-byte LF = stride of
+        // recordLength+1), or may be pure-binary KSDS exports
+        // (stride of recordLength). The slicing logic consumes one
+        // record at a time then probes for an optional LF or CRLF
+        // separator before the next record &mdash; exactly mirroring
+        // the {@code FixedWidthReader.consumeOptionalRecordSeparator}
+        // contract documented in
+        // {@code carddemo-adapter-file/src/main/java/com/blitzy/carddemo/adapter/file/FixedWidthReader.java}.
+        int pos = 0;
+        int added = 0;
+        while (pos + recordLength <= all.length) {
             byte[] rec = new byte[recordLength];
-            System.arraycopy(all, i * recordLength, rec, 0, recordLength);
+            System.arraycopy(all, pos, rec, 0, recordLength);
             sink.add(rec);
+            added++;
+            pos += recordLength;
+            // Consume optional LF or CRLF separator.
+            if (pos < all.length && all[pos] == (byte) 0x0A) {
+                pos += 1;
+            } else if (pos + 1 < all.length
+                    && all[pos] == (byte) 0x0D
+                    && all[pos + 1] == (byte) 0x0A) {
+                pos += 2;
+            }
+        }
+        if (pos < all.length) {
+            LOG.warn("File {} has {} trailing bytes after last complete "
+                            + "record (totalBytes={}, recordLength={}, "
+                            + "recordsRead={})",
+                    file, all.length - pos, all.length, recordLength, added);
         }
     }
 

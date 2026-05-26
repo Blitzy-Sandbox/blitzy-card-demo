@@ -761,7 +761,147 @@ public final class FixedWidthWriter {
                 byte[] copy = new byte[recordLength];
                 System.arraycopy(buf.array(), 0, copy, 0, recordLength);
                 records.add(copy);
+                // After each record, consume an optional trailing LF or CRLF
+                // separator. This handles the case where the existing file
+                // was loaded from a text-format ASCII fixture (see AAP
+                // §0.6.11; the 9 app/data/ASCII/*.txt fixtures use LF
+                // separators), via the IDCAMS REPRO byte-for-byte copy in
+                // each Define*App. For pure-binary files (no separator), the
+                // probe is a no-op that restores the channel position so the
+                // next record read starts at the correct byte boundary.
+                // Symmetric with FixedWidthReader.readOneRecord which uses
+                // the same helper to maintain a single consistent read
+                // contract across both classes.
+                consumeOptionalRecordSeparator(auto);
             }
+        }
+    }
+
+    /**
+     * Consumes an optional trailing line separator (LF {@code "\n"} or CRLF
+     * {@code "\r\n"}) from the channel. If the next byte(s) do not form a
+     * recognised separator, the channel position is restored so the next
+     * record read starts exactly at the byte boundary.
+     *
+     * <p>This is the symmetric helper used by both {@link #readAllRecords()}
+     * (here) and {@code FixedWidthReader.readOneRecord(...)} (in the sibling
+     * reader class) to transparently consume both pure-binary fixed-width
+     * files (no separators) and text-format fixed-width files (one record
+     * per line with LF or CRLF terminator). The text-format case occurs in
+     * production when a binary KSDS file was loaded from one of the 9
+     * ASCII fixtures in {@code app/data/ASCII/*.txt} via the
+     * {@link Files#copy(Path, Path, java.nio.file.CopyOption...) Files.copy}
+     * REPRO translation in each {@code Define*App} (AAP &sect;0.4.1 +
+     * &sect;0.6.5 + &sect;0.6.11).
+     *
+     * <p><strong>Safety:</strong> the probe never reads more than 2 bytes
+     * and never modifies any record buffer. On EOF after a clean record
+     * boundary, returns silently. On a non-separator byte (i.e.&nbsp;the
+     * first byte of the next record in a pure-binary file), the channel
+     * position is restored via {@link SeekableByteChannel#position(long)}.
+     *
+     * @param ch the open channel positioned exactly at the byte immediately
+     *           after a complete record
+     * @throws IOException on channel read or position errors
+     */
+    private static void consumeOptionalRecordSeparator(SeekableByteChannel ch) throws IOException {
+        long savedPos = ch.position();
+        ByteBuffer probe = ByteBuffer.allocate(2);
+        int n = ch.read(probe);
+        if (n <= 0) {
+            // Clean EOF on a record boundary: nothing to consume. Channel
+            // position is already at savedPos (no bytes were read).
+            return;
+        }
+        probe.flip();
+        byte b0 = probe.get(0);
+        if (b0 == (byte) '\n') {
+            // LF separator. If a single byte was read, channel is at
+            // savedPos + 1 (correct). If two bytes were read, the second
+            // byte is the first byte of the next record; rewind by 1.
+            if (n == 2) {
+                ch.position(savedPos + 1);
+            }
+            return;
+        }
+        if (b0 == (byte) '\r' && n == 2 && probe.get(1) == (byte) '\n') {
+            // CRLF separator: consumed both bytes; channel is at savedPos+2
+            // which is exactly where the next record begins.
+            return;
+        }
+        // Not a recognised separator: this byte (or pair) is the start of
+        // the next record (pure-binary file). Rewind the channel so the
+        // next readAllRecords iteration sees these bytes.
+        ch.position(savedPos);
+    }
+
+    /**
+     * Inspects the existing file (if present) to detect whether records are
+     * separated by an LF or CRLF byte sequence, mirroring the format of the
+     * 9 ASCII fixtures under {@code app/data/ASCII/*.txt}. The detection is
+     * conservative: only files whose first record is followed by a
+     * recognised separator are flagged. New files (which do not yet exist)
+     * always report "no separator" so first-write produces a pure-binary
+     * dataset (the original {@code FixedWidthWriter} contract).
+     *
+     * <p>The probe reads at most {@code recordLength + 2} bytes. For very
+     * small datasets (less than one full record on disk) the probe returns
+     * "no separator" because there are not enough bytes to make a confident
+     * determination; this matches the safe default for first-write.
+     *
+     * <p><strong>Race safety:</strong> this method is called from inside
+     * {@link #writeAllAtomically(List)} which is invoked under
+     * {@link #writeLock}, eliminating concurrent in-process writers. A
+     * cross-process modification of the file between this probe and the
+     * subsequent atomic move would be tolerated because the atomic move
+     * either fully succeeds or leaves the original file unchanged.
+     *
+     * @return the separator bytes ({@code "\n"} for LF or {@code "\r\n"}
+     *         for CRLF), or an empty {@code byte[0]} for pure-binary
+     *         (no-separator) files and for files that do not yet exist
+     * @throws IOException on channel open or read errors other than the
+     *                     race-safe NoSuchFileException which is silently
+     *                     handled to return {@code new byte[0]}
+     */
+    private byte[] detectExistingSeparator() throws IOException {
+        final SeekableByteChannel ch;
+        try {
+            ch = Files.newByteChannel(file, StandardOpenOption.READ);
+        } catch (NoSuchFileException missing) {
+            // File doesn't exist (or was removed between an earlier check
+            // and now): new dataset, no separator pattern to preserve.
+            return new byte[0];
+        }
+        try (SeekableByteChannel auto = ch) {
+            // Need exactly recordLength + 2 bytes: recordLength to skip the
+            // first record, then up to 2 more to recognise LF or CRLF.
+            ByteBuffer buf = ByteBuffer.allocate(recordLength + 2);
+            int total = 0;
+            while (total < recordLength + 2) {
+                int r = auto.read(buf);
+                if (r < 0) {
+                    break;
+                }
+                total += r;
+            }
+            if (total <= recordLength) {
+                // File is shorter than one full record + 1 separator byte:
+                // not enough to detect a separator. Safest default is no
+                // separator (preserve original FixedWidthWriter behaviour
+                // for fresh / very small datasets).
+                return new byte[0];
+            }
+            byte[] arr = buf.array();
+            byte b0 = arr[recordLength];
+            if (b0 == (byte) '\n') {
+                return new byte[]{(byte) '\n'};
+            }
+            if (b0 == (byte) '\r'
+                && total >= recordLength + 2
+                && arr[recordLength + 1] == (byte) '\n') {
+                return new byte[]{(byte) '\r', (byte) '\n'};
+            }
+            return new byte[0];
         }
     }
 
@@ -804,6 +944,22 @@ public final class FixedWidthWriter {
      *                               {@link #recordLength}
      */
     private void writeAllAtomically(List<byte[]> records) throws IOException {
+        // Preserve the existing file's record-separator pattern. Detection
+        // happens BEFORE the temp file is written so the new file replicates
+        // the byte-level framing (no separator, LF, or CRLF) of the original.
+        // This is necessary because the binary KSDS files in this project
+        // are typically loaded from LF-terminated ASCII fixtures via the
+        // Define*App REPRO step (Files.copy preserves bytes verbatim per
+        // AAP §0.6.5), so an upsert/deleteByKey followed by writeAllAtomically
+        // must regenerate the same separator pattern or the file will
+        // alternate between text-format and pure-binary records in subsequent
+        // reads, breaking byte-for-byte fidelity (AAP §0.7.1 minimal-change
+        // clause: "preserve existing functionality and behavior exactly as-is,
+        // including ... padding"). For new files (no existing data), the
+        // detector returns an empty byte[] so first-write produces a pure-
+        // binary dataset, preserving the original FixedWidthWriter contract.
+        byte[] separator = detectExistingSeparator();
+
         // Ensure parent directory exists for first-write via the race-safe
         // helper. Files.createDirectories is the idempotent primitive that
         // replaces the previous exists-check + createDirectory pair.
@@ -842,6 +998,15 @@ public final class FixedWidthWriter {
                     // local filesystems but documented possibility on the
                     // SeekableByteChannel contract).
                     ch.write(out);
+                }
+                if (separator.length > 0) {
+                    // Append the detected record separator. The loop on
+                    // hasRemaining() handles the rare short-write case
+                    // consistent with the record-body write loop above.
+                    ByteBuffer sep = ByteBuffer.wrap(separator);
+                    while (sep.hasRemaining()) {
+                        ch.write(sep);
+                    }
                 }
             }
         } catch (IOException e) {

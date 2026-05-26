@@ -784,21 +784,40 @@ public final class CreateStatementsApp {
      */
     private static void sortTransact(Path transactPath, Path trxflSeq) throws IOException {
         byte[] inputBytes = Files.readAllBytes(transactPath);
-        if (inputBytes.length % INPUT_RECORD_LENGTH != 0) {
-            LOG.warn("STEP010: TRANSACT length {} is not a multiple of LRECL={}; "
-                            + "trailing {} bytes ignored",
-                    inputBytes.length, INPUT_RECORD_LENGTH,
-                    inputBytes.length % INPUT_RECORD_LENGTH);
-        }
-        int recCount = inputBytes.length / INPUT_RECORD_LENGTH;
-        List<byte[]> records = new ArrayList<>(recCount);
-        for (int i = 0; i < recCount; i++) {
+        // LF/CRLF-tolerant slicing: TRANSACT may have been REPRO'd from
+        // app/data/ASCII/dailytran.txt which uses LF terminators
+        // (350-byte record + 1-byte LF = 351-byte stride), or may be a
+        // pure-binary KSDS export (350-byte stride). The slicing logic
+        // consumes one record at a time then probes for an optional LF
+        // or CRLF separator before the next record &mdash; exactly mirroring
+        // the {@code FixedWidthReader.consumeOptionalRecordSeparator}
+        // contract documented in
+        // {@code carddemo-adapter-file/src/main/java/com/blitzy/carddemo/adapter/file/FixedWidthReader.java}.
+        List<byte[]> records = new ArrayList<>();
+        int pos = 0;
+        while (pos + INPUT_RECORD_LENGTH <= inputBytes.length) {
             byte[] rec = new byte[INPUT_RECORD_LENGTH];
-            System.arraycopy(inputBytes, i * INPUT_RECORD_LENGTH, rec, 0, INPUT_RECORD_LENGTH);
+            System.arraycopy(inputBytes, pos, rec, 0, INPUT_RECORD_LENGTH);
             records.add(rec);
+            pos += INPUT_RECORD_LENGTH;
+            // Consume optional LF or CRLF separator.
+            if (pos < inputBytes.length && inputBytes[pos] == (byte) 0x0A) {
+                pos += 1;
+            } else if (pos + 1 < inputBytes.length
+                    && inputBytes[pos] == (byte) 0x0D
+                    && inputBytes[pos + 1] == (byte) 0x0A) {
+                pos += 2;
+            }
+        }
+        if (pos < inputBytes.length) {
+            LOG.warn("STEP010: TRANSACT has {} trailing bytes after last "
+                            + "complete record (totalBytes={}, recordLength={}, "
+                            + "recordsRead={})",
+                    inputBytes.length - pos, inputBytes.length,
+                    INPUT_RECORD_LENGTH, records.size());
         }
         LOG.info("STEP010: read {} records ({} bytes) from TRANSACT={}",
-                recCount, inputBytes.length, transactPath);
+                records.size(), inputBytes.length, transactPath);
 
         // SORT FIELDS=(263,16,CH,A,1,16,CH,A): primary card-num (16 bytes
         // at offset 262); secondary tran-id (16 bytes at offset 0). CH =
@@ -818,9 +837,30 @@ public final class CreateStatementsApp {
         // the 16-byte card-num at the front, the first 262 bytes of the
         // original record next, and the trailing 50 bytes unchanged. Total
         // output width = 16 + 262 + 50 = 328 bytes.
+        // The SORTOUT DCB at CREASTMT.JCL line 51 specifies
+        // {@code DCB=(LRECL=350,BLKSIZE=3500,RECFM=FB)}, which means each
+        // output record is fixed-length 350 bytes (FB = fixed-block).
+        // The OUTREC FIELDS=(1:263,16, 17:1,262, 279:279,50) clause only
+        // maps the first 328 bytes (16 + 262 + 50). On z/OS DFSORT, the
+        // remaining bytes (positions 329-350, 22 bytes) are filled with
+        // X'40' (EBCDIC space, 0x20 in ASCII) per the FB record-format
+        // contract. We allocate a {@link #TRXFL_RECORD_LENGTH}-sized
+        // (350-byte) buffer pre-filled with spaces, then overlay the
+        // three OUTREC segments &mdash; producing a faithful translation
+        // of the JCL behaviour. This also matches the LRECL declared
+        // by the downstream TRXFL.VSAM.KSDS cluster
+        // ({@code RECORDSIZE(350 350)}) and the
+        // {@link com.blitzy.carddemo.application.statement.CbStm03B}
+        // reader, which uses {@code TRNX_RECORD_LENGTH = 350}.
         try (OutputStream out = Files.newOutputStream(trxflSeq, StandardOpenOption.CREATE_NEW)) {
-            byte[] outRec = new byte[OUTREC_RECORD_LENGTH];
+            byte[] outRec = new byte[TRXFL_RECORD_LENGTH];
             for (byte[] in : records) {
+                // Pre-fill with ASCII spaces (0x20) to emulate DFSORT FB
+                // record-format padding. java.util.Arrays.fill is used
+                // (instead of a fresh allocation per record) to reduce
+                // GC pressure when processing tens of thousands of
+                // records.
+                Arrays.fill(outRec, (byte) 0x20);
                 // 1:263,16  -> outRec[0..15]    <- in[262..277]
                 System.arraycopy(in, OUTREC_SEG1_INPUT_OFFSET,
                         outRec, OUTREC_SEG1_OUTPUT_OFFSET, OUTREC_SEG1_LENGTH);
