@@ -1,0 +1,12 @@
+# COTRN02C TRANSACT VSAM KSDS fixture -- PENDING COBOL baseline capture
+# See java/MIGRATION_NOTES.md section 1.6 for capture procedure.
+# Until captured, the consuming test class CoTrn02CGoldenTest is @Disabled
+# per AAP section 0.6.11.
+#
+# This fixture is read by CoTrn02CGoldenTest.auxiliaryInputs() as the initial
+# TRANSACT state. After scenario 26 (successful WRITE), the file byte length
+# is expected to grow by exactly 350 bytes (per CVTRA05Y record layout).
+#
+# Record format: 350-byte fixed-width per app/cpy/CVTRA05Y.cpy.
+# Sort order: TRAN-ID ascending (bytes 1-16 of each record).
+# Encoding: ASCII (NOT EBCDIC) per app/data/ASCII/ convention.

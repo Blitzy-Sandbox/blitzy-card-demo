@@ -1,0 +1,8 @@
+# COCRDSLC stdout.txt -- PENDING COBOL baseline capture
+# See java/MIGRATION_NOTES.md section 1.6 for capture procedure.
+# Until captured, the consuming test class CoCrdSlCGoldenTest is @Disabled
+# per AAP section 0.6.11.
+#
+# Expected to be EMPTY after capture: COCRDSLC source contains no DISPLAY verbs.
+# (Verified against app/cbl/COCRDSLC.cbl lines 1-887.)
+# Encoding: ASCII (NOT EBCDIC) per app/data/ASCII/ convention.

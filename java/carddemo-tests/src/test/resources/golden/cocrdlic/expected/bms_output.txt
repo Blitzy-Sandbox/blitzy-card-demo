@@ -1,0 +1,13 @@
+# COCRDLIC golden-record bms_output.txt -- PLACEHOLDER
+# Source: app/bms/COCRDLI.bms (344 lines, mapset COCRDLI, map CCRDLIA).
+# This file will hold concatenated BMS SEND MAP frame dumps captured from
+# the COBOL run. Approximately 14 BMS SEND MAP frames are expected, one per
+# input_scenario.txt scenario.
+#
+# Each captured frame is a 1920-byte (24x80) dump of the CCRDLIAO symbolic
+# map, with PAN values in CRDNUM<N>O fields MASKED to last-4 form via the
+# leading-asterisk convention: '************0001' per AAP Sec 0.7.2.
+#
+# Fixed Clock injection: CURDATEO and CURTIMEO are deterministic per Sec 0.6.6.
+# After COBOL baseline capture (java/MIGRATION_NOTES.md Sec 1.6), replace
+# this file with the captured BMS frame bytes per AAP Sec 0.6.11.

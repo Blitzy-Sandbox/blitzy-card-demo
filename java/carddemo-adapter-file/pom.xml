@@ -1,0 +1,227 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        carddemo-adapter-file — DEFAULT outer-ring repository adapter of the
+        hexagonal architecture (AAP §0.3.6).
+
+        Contents (AAP §0.2.1, §0.3.1):
+          * FixedWidthReader / FixedWidthWriter — byte-for-byte fixed-width
+            record I/O via java.nio.file (Files.newByteChannel,
+            SeekableByteChannel, Files.write, Files.readAllBytes); java.io.File
+            is forbidden per AAP §0.6.5.
+          * EbcdicTranscoder — Charset.forName("IBM-1047") default with
+            per-file codepage overrides via application.properties
+            (carddemo.file.&lt;dataset&gt;.charset=...) per AAP §0.6.5.
+          * One File*Repository implementation per port interface declared in
+            carddemo-domain.port (AccountRepository, CardRepository,
+            CardXrefRepository, CustomerRepository, TransactionRepository,
+            DailyTransactionRepository, DiscountGroupRepository,
+            TransactionCategoryBalanceRepository, TransactionTypeRepository,
+            TransactionCategoryRepository, UserSecurityRepository — AAP §0.3.1).
+
+        Why this is the production-default adapter (AAP §0.1.1, §0.7.5):
+          The COBOL source uses VSAM KSDS and sequential files with fixed-width
+          records — the default migration target is java.nio.file with
+          fixed-width readers, NOT a relational database. The alternate
+          adapter (carddemo-adapter-db) is empty by default; this module is
+          wired by the composition root (carddemo-app) at startup.
+
+        Architectural rule (AAP §0.3.6, §0.6.12):
+          * This module depends ONLY on carddemo-domain (innermost ring).
+          * This module is depended on by carddemo-app (composition root) and
+            indirectly by carddemo-tests — never the reverse.
+          * Outer rings of the hexagon must not be coupled to each other, so
+            this module must NOT depend on carddemo-application,
+            carddemo-batch, carddemo-adapter-db, carddemo-app, or
+            carddemo-tests.
+
+        Forbidden here (AAP §0.1.1 architectural override, §0.5.1, §0.6.5,
+        §0.6.7, §0.6.12, §0.7.4):
+          * Spring / Spring Boot / Spring Data / Spring Batch / Spring
+            Security / Spring MVC / Spring Cloud AWS — plain Java with
+            java.nio.file only. No org.springframework.* dependencies (notably
+            no spring-core: do not use Spring's Resource abstraction; use
+            java.nio.file.Path exclusively).
+          * Hibernate / JPA / jakarta.persistence / javax.persistence
+          * Lombok — Java 25 records replace it (AAP §0.7.3).
+          * Apache Commons IO — java.nio.file covers all needs per AAP §0.5.1.
+          * Guava — java.nio.file and java.util collections cover all needs.
+          * JDBC drivers (PostgreSQL, MySQL, DB2, H2) — those belong to the
+            optional carddemo-adapter-db module, NOT here.
+          * Flyway, Liquibase, Testcontainers, LocalStack
+          * Micrometer, Prometheus, OpenTelemetry, Jaeger
+          * jqwik (property tests live in carddemo-tests per AAP §0.3.1).
+          * The "enable-preview" JVM flag (AAP §0.7.4 — finalized JEPs only:
+            JEP 506 ScopedValue, JEP 510 KDF, JEP 511 Module Import, JEP 513
+            Flexible Constructor Bodies, JEP 519 Compact Headers, JEP 521
+            Generational Shenandoah).
+          * &lt;source&gt;/&lt;target&gt; tags — the parent POM's
+            &lt;release&gt;25&lt;/release&gt; is the single source of truth for
+            the Java language level.
+    -->
+
+    <parent>
+        <groupId>com.blitzy.carddemo</groupId>
+        <artifactId>carddemo-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>carddemo-adapter-file</artifactId>
+    <packaging>jar</packaging>
+
+    <name>CardDemo Adapter (File)</name>
+    <description>
+        File-backed repository adapter implementing every port interface from
+        carddemo-domain.port via java.nio.file. Fixed-width record readers and
+        writers preserve byte-for-byte fidelity to COBOL VSAM/sequential file
+        output (AAP §0.6.5). EBCDIC IBM-1047 default codepage with per-file
+        overrides via application.properties. DEFAULT outer-ring adapter
+        (carddemo-adapter-db is empty by default per AAP §0.7.5). NO Spring,
+        NO frameworks, NO java.io.File. Depends only on carddemo-domain.
+    </description>
+
+    <dependencies>
+        <!--
+            Internal dependency: carddemo-domain.
+            Provides:
+              * Repository port interfaces (AccountRepository, CardRepository,
+                CardXrefRepository, CustomerRepository, TransactionRepository,
+                DailyTransactionRepository, DiscountGroupRepository,
+                TransactionCategoryBalanceRepository, TransactionTypeRepository,
+                TransactionCategoryRepository, UserSecurityRepository — AAP §0.3.1)
+                that every File*Repository in this module implements.
+              * Java records translated from COBOL copybook 01-level groups
+                (AccountRecord, CardRecord, CardXrefRecord, CustomerRecord,
+                TranRecord, DalyTranRecord, TranCatBalRecord, DisGroupRecord,
+                TranTypeRecord, TranCatRecord, SecUserData, TrnxRecord,
+                CardDemoCommarea, CustomerLegacyRecord, ReportHeaders,
+                UnusedRecord — AAP §0.4.1, §0.6.9) that the FixedWidthReader
+                and FixedWidthWriter parse/encode.
+              * Decimals utility — BigDecimal facade with MathContext.DECIMAL128
+                and explicit RoundingMode selection (HALF_EVEN for ROUNDED,
+                DOWN otherwise) used during signed-packed-decimal encode/decode
+                in the FixedWidth reader/writer (AAP §0.3.3, §0.6.1).
+              * Sealed FileStatus hierarchy (Ok, EndOfFile, NotFound,
+                DuplicateKey, IoError) — translation target for COBOL FILE
+                STATUS codes; each File*Repository raises typed instances of
+                this hierarchy with identical observable outcomes per AAP §0.6.10.
+              * @CobolProgram traceability annotation cited in Javadoc on every
+                File*Repository to record the original PROGRAM-ID and source
+                file path (AAP §0.2.1, §0.7.1).
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT).
+        -->
+        <dependency>
+            <groupId>com.blitzy.carddemo</groupId>
+            <artifactId>carddemo-domain</artifactId>
+        </dependency>
+
+        <!--
+            Production dependency: SLF4J API only (compile scope).
+            Used by:
+              * FileAccountRepository, FileCardRepository, FileCustomerRepository,
+                FileTransactionRepository, FileDailyTransactionRepository, and
+                every other File*Repository in this module — to log file open
+                and close events, fixed-width record read/write counts, and
+                FILE STATUS code translations to the FileStatus sealed
+                hierarchy.
+              * FixedWidthReader / FixedWidthWriter — to log buffer underrun,
+                truncation, and sign-nybble anomalies during signed packed
+                decimal parse/encode.
+              * EbcdicTranscoder — to log IBM-1047 transcoding warnings (e.g.,
+                non-roundtrip codepoints) and per-file codepage override
+                application per AAP §0.6.5.
+            The runtime implementation (logback-classic) is supplied by the
+            composition root (carddemo-app); this adapter depends only on the
+            API, keeping it free of binding to a specific logging backend per
+            AAP §0.6.12.
+            Version is inherited from the parent POM's dependencyManagement
+            (slf4j-api 2.0.16 per AAP §0.5.1).
+        -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!--
+            Test dependencies (test scope only).
+            Versions are inherited from the parent POM's dependencyManagement:
+              * junit-jupiter            via junit-bom 5.13.1 (AAP §0.5.1) —
+                                                  unit tests for byte-for-byte
+                                                  parse/encode round-trips on
+                                                  FixedWidthReader and
+                                                  FixedWidthWriter, EBCDIC
+                                                  IBM-1047 transcoding
+                                                  correctness, and File*Repository
+                                                  contract conformance against
+                                                  in-memory and tempfile-backed
+                                                  fixtures.
+              * junit-platform-launcher  1.13.1 — required minimum for JUnit
+                                                  Platform native discovery by
+                                                  maven-surefire-plugin 3.5.2
+                                                  and aligns with jqwik 1.9.3's
+                                                  minimum platform requirement
+                                                  used by carddemo-tests
+                                                  (AAP §0.5.1).
+              * assertj-core 3.27.7 — fluent assertions used to
+                                                  express expectations such as
+                                                  assertThat(actualBytes)
+                                                  .isEqualTo(expectedBytes)
+                                                  for byte-level fidelity and
+                                                  FileStatus pattern-match
+                                                  assertions (AAP §0.5.1).
+            Note: jqwik is NOT declared here — property-based tests for the
+            Decimals utility and any cross-module property tests live in
+            carddemo-tests per AAP §0.3.1.
+        -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+                maven-compiler-plugin — activated for this module so the
+                parent's pluginManagement (version 3.13.0,
+                &lt;release&gt;25&lt;/release&gt;, no preview flag per AAP
+                §0.7.4, -parameters for record component names) applies during
+                the compile phase. The Java language level is set ONCE in the
+                parent POM; this child must not redeclare it.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+
+            <!--
+                maven-surefire-plugin — activated for this module so the
+                parent's pluginManagement (version 3.5.2, JUnit Platform
+                native discovery, no "enable-preview" argLine per AAP §0.7.4)
+                applies during the test phase. Test classes are discovered by
+                the standard **/*Test.java and **/*Tests.java patterns.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

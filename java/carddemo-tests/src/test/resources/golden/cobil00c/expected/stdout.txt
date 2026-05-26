@@ -1,0 +1,8 @@
+# golden/cobil00c/expected/stdout.txt
+# Status: PLACEHOLDER -- replace with byte-perfect captured DISPLAY output from COBIL00C execution
+# Format: byte-perfect concatenation of all 6 'DISPLAY' verb outputs reached during a scenario run
+# COBIL00C contains exactly 6 DISPLAY statements: L366 (READ-ACCTDAT), L397 (UPDATE-ACCTDAT),
+#   L430 (READ-CXACAIX), L461 (STARTBR-TRANSACT), L490 (READPREV-TRANSACT), L541 (WRITE-TRANSACT)
+# All are 'WHEN OTHER' error paths; happy-path scenarios reach ZERO DISPLAY verbs (expected EMPTY)
+# PAN-masking: any TRAN-CARD-NUM appearing in DISPLAY MUST be masked as '************<last4>' per AAP Sec 0.7.2
+# Capture procedure: java/MIGRATION_NOTES.md Sec 1.6; tests @Disabled per AAP Sec 0.6.11 until captured

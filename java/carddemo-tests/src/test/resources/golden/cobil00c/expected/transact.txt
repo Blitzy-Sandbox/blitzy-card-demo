@@ -1,0 +1,12 @@
+# golden/cobil00c/expected/transact.txt
+# Status: PLACEHOLDER -- replace with byte-perfect captured post-WRITE TRANSACT from COBIL00C execution
+# Format: 350-byte fixed-width TRAN-RECORD per app/cpy/CVTRA05Y.cpy; one record per line + LF
+# Sort order: TRAN-ID ascending (16-digit numeric string padded with leading zeros)
+# WRITE semantics (COBIL00C.cbl L512-L520): EXEC CICS WRITE appends a new 350-byte record;
+#   file byte length grows by exactly +350 bytes per successful WRITE operation
+# Fixed TRAN-RECORD values per COBIL00C: TRAN-TYPE-CD='02' (L220), TRAN-CAT-CD=2 (L221),
+#   TRAN-SOURCE='POS TERM' (L222), TRAN-DESC='BILL PAYMENT - ONLINE' (L223),
+#   TRAN-AMT=ACCT-CURR-BAL (L224, BigDecimal scale=2), TRAN-MERCHANT-ID=999999999 (L226),
+#   TRAN-MERCHANT-NAME='BILL PAYMENT' (L227); TRAN-ORIG-TS=TRAN-PROC-TS from fixed Clock per AAP Sec 0.6.6
+# Empty-file fallback (L487-L488): if TRANSACT is initially empty, first new TRAN-ID = 0000000000000001
+# Capture procedure: java/MIGRATION_NOTES.md Sec 1.6; tests @Disabled per AAP Sec 0.6.11 until captured

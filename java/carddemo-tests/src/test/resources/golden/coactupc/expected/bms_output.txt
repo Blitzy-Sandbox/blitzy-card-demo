@@ -1,0 +1,13 @@
+# COACTUPC golden-record BMS SEND MAP output capture (placeholder)
+# Authority: AAP section 0.6.11 (golden-record PR gate), 0.7.5 (capture procedure)
+# Format: per-scenario block; each block is a 1920-byte CACTUPAO buffer (24 rows x 80 cols)
+# from app/bms/COACTUP.bms map CACTUPA in mapset COACTUP (CTRL=FREEKB; DSATTS=COLOR,HILIGHT,PS,VALIDN)
+# Each scenario is delimited by a SCENARIO: <id> header line matching input_scenario.txt
+# Each field is emitted as: <FIELD_NAME> <ROW,COL> <LENGTH> <ATTR-bits> <VALUE-hex>
+# Fields covered: TRNNAME PGMNAME CURDATE CURTIME TITLE01 TITLE02 ACCTSID ACSTTUS OPNYEAR OPNMON OPNDAY
+# ACRDLIM EXPYEAR EXPMON EXPDAY ACSHLIM RISYEAR RISMON RISDAY ACURBAL ACRCYCR AADDGRP ACRCYDB ACSTNUM
+# ACTSSN1 ACTSSN2 ACTSSN3 DOBYEAR DOBMON DOBDAY ACSTFCO ACSFNAM ACSMNAM ACSLNAM ACSADL1 ACSSTTE ACSADL2
+# ACSZIPC ACSCITY ACSCTRY ACSPH1A ACSPH1B ACSPH1C ACSGOVT ACSPH2A ACSPH2B ACSPH2C ACSEFTC ACSPFLG INFOMSG ERRMSG FKEYS FKEY05 FKEY12
+# This file remains a placeholder until the capture procedure documented in java/MIGRATION_NOTES.md section 1.6 runs
+# CoActUpCGoldenTest is @Disabled until this file contains real captured bytes
+# DO NOT manually edit: regenerate via capture procedure to maintain byte-for-byte parity

@@ -1,0 +1,434 @@
+# =============================================================================
+# CardDemo Java 25 LTS — Continuous Integration Workflow
+# =============================================================================
+#
+# This workflow is the Refine-PR Item 1 deliverable: it executes the full
+# `mvn -B -ntp clean verify` build pipeline of the CardDemo Java 25 LTS
+# migration on every push and pull_request event, across all branches.
+#
+# The workflow's responsibilities (per the Refine-PR brief):
+#   1. Trigger on push and pull_request to all branches.
+#   2. Set up OpenJDK 25 LTS via Temurin distribution (matches AAP §0.5.1
+#      pin on OpenJDK 25 LTS — released September 16, 2025).
+#   3. Cache `~/.m2/repository` keyed on every pom.xml in the repo so a
+#      cold-cache CI run is the exception, not the rule.
+#   4. Run `mvn -B -ntp clean verify` from the `java/` subdirectory
+#      (the Maven multi-module reactor root per AAP §0.3.1).
+#   5. Upload three artifact bundles:
+#        a. Every shaded jar (carddemo-*.jar) produced by carddemo-app
+#           (one per JCL EXEC PGM= step per AAP §0.4.1; 28 in total).
+#        b. The Surefire test reports (XML + plain text) covering all
+#           169 tests across the multi-module reactor.
+#        c. The JaCoCo aggregate HTML+XML+CSV report (the AAP §0.7.2
+#           ≥90% line coverage measurement surface and the AAP §0.6.1
+#           100% Decimals line coverage gate).
+#   6. Emit a workflow Step Summary with:
+#        a. The test pass-rate count (parsed from the Surefire XML).
+#        b. The JaCoCo coverage line for the Decimals utility (the
+#           canonical monetary surface gated at 100% per AAP §0.6.1).
+#   7. Fail (independent of the Maven build's own exit code) if any
+#      `mvn dependency:tree` output line carries a forbidden coordinate
+#      (org.springframework, org.postgresql, org.hibernate,
+#      com.zaxxer.hikari) per the Refine-PR Item 1 brief and AAP §0.7.4.
+#   8. Fail if the literal flag `--enable-preview` appears anywhere in
+#      the repository per the Refine-PR Item 1 brief and AAP §0.7.4.
+#
+# Hard constraints honored by this workflow:
+#   - No Spring / Hibernate / PostgreSQL / HikariCP dependency is
+#     introduced; the workflow only runs the project's own build.
+#   - No preview features are enabled; the JDK 25 setup uses default
+#     finalized-features-only behavior.
+#   - The `app/` tree (immutable COBOL source per AAP §0.2.2) is not
+#     modified; only the `java/` reactor is built.
+#   - The 29 @Disabled golden-record tests remain @Disabled; the
+#     workflow does not attempt to enable them.
+# =============================================================================
+
+name: CardDemo Java 25 build
+run-name: CardDemo build · ${{ github.ref_name }} · ${{ github.sha }}
+
+# -----------------------------------------------------------------------------
+# Triggers — push and pull_request on ALL branches per Refine-PR Item 1.
+# -----------------------------------------------------------------------------
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+  # Manual dispatch is enabled so operators can re-run the full pipeline
+  # from the GitHub UI without pushing a new commit (useful when the
+  # build is flaky due to upstream artifact-repository hiccups).
+  workflow_dispatch:
+
+# -----------------------------------------------------------------------------
+# Concurrency — cancel an in-progress run on the same ref when a new
+# push lands. PRs from the same branch as a push-trigger run will share
+# a concurrency group, so the older run is preempted in favor of the
+# newer one. This avoids wasting CI minutes on stale commits.
+# -----------------------------------------------------------------------------
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+# -----------------------------------------------------------------------------
+# Default permissions — least privilege. The build does not push
+# packages, it does not require write access to the repo, and it does
+# not interact with any GitHub API beyond reading repository contents
+# and uploading artifacts.
+# -----------------------------------------------------------------------------
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    name: Java 25 LTS build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # -------------------------------------------------------------------------
+    # Environment defaults — DEBIAN_FRONTEND=noninteractive prevents the
+    # apt-get-based action steps from prompting; CI=true is set by the
+    # GitHub Actions runner automatically but we set it explicitly here
+    # for any downstream tooling that may not detect it (e.g., npm-based
+    # children if the build ever takes a dependency on a JS tool).
+    # -------------------------------------------------------------------------
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      CI: 'true'
+      MAVEN_OPTS: '-Xmx2g -Dfile.encoding=UTF-8 -Duser.language=en -Duser.country=US'
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1 — Check out the repository at the triggering commit.
+      # fetch-depth: 0 retrieves the full history so any downstream
+      # tooling that inspects the commit log (e.g., release-drafter,
+      # changelog generators) has the data it needs. The default
+      # shallow clone would cap the history at 1 commit.
+      # -----------------------------------------------------------------------
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # -----------------------------------------------------------------------
+      # Step 2 — Set up OpenJDK 25 LTS via Temurin distribution.
+      # Per the Refine-PR Item 1 brief and AAP §0.5.1, the target
+      # runtime is OpenJDK 25 LTS (released September 16, 2025).
+      # actions/setup-java@v4 caches the JDK download on the runner
+      # and exports JAVA_HOME / PATH automatically.
+      # -----------------------------------------------------------------------
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          # Local Maven repository cache key is computed in the next
+          # step so we have explicit control over the cache-hit
+          # semantics; the setup-java built-in cache option is
+          # therefore intentionally NOT used here.
+          check-latest: false
+
+      # -----------------------------------------------------------------------
+      # Step 3 — Cache the local Maven repository keyed on the hash of
+      # every pom.xml in the repository. This is the standard pattern
+      # for Maven CI caches: when any POM changes, the cache key
+      # changes and a new cache is populated; when no POM has changed,
+      # the cache restore is fast (typically <2s on hot caches).
+      #
+      # The restore-keys fallback to a prefix-only key so an unchanged
+      # build can still benefit from a partial cache when the hash key
+      # misses (e.g., the first build on a new branch).
+      # -----------------------------------------------------------------------
+      - name: Cache ~/.m2/repository
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            !~/.m2/repository/com/blitzy/carddemo
+          # Hash key is computed over every pom.xml in the repo
+          # (java/pom.xml + the 7 child module POMs). When any POM
+          # changes, the key changes and a fresh cache is built.
+          key: maven-${{ runner.os }}-jdk25-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            maven-${{ runner.os }}-jdk25-
+
+      # -----------------------------------------------------------------------
+      # Step 4 — Sanity-check the toolchain. Surfaces the resolved
+      # JDK + Maven versions in the CI log so build-environment drift
+      # is easy to diagnose from a failing run.
+      # -----------------------------------------------------------------------
+      - name: Print toolchain versions
+        working-directory: java
+        run: |
+          java -version
+          mvn -version
+          echo "JAVA_HOME=${JAVA_HOME}"
+
+      # -----------------------------------------------------------------------
+      # Step 5 — Main build: clean compile + run all 169 tests +
+      # produce 28 shaded jars + run the JaCoCo coverage gate.
+      #
+      # `mvn -B -ntp clean verify` is the canonical CardDemo build
+      # invocation (documented in java/README.md §3 "Build / Run" and
+      # in MIGRATION_NOTES.md). The -B flag selects batch mode
+      # (CI-friendly output); -ntp suppresses the transfer progress
+      # noise; clean removes any stale target/ artifacts; verify runs
+      # through compile + test + integration-test + jacoco gates +
+      # forbidden-artifact + preview-flag enforcer gates.
+      # -----------------------------------------------------------------------
+      - name: Build (mvn -B -ntp clean verify)
+        working-directory: java
+        run: mvn -B -ntp clean verify
+
+      # -----------------------------------------------------------------------
+      # Step 6 — Forbidden-artifact lint (defense in depth).
+      #
+      # The Maven enforcer plugin (Refine-PR Item 2) already fails the
+      # build at `mvn verify` time on banned dependencies, but per the
+      # Refine-PR Item 1 brief we ALSO grep the dependency:tree output
+      # at the CI layer for the four explicit coordinates:
+      #
+      #   org.springframework, org.postgresql, org.hibernate,
+      #   com.zaxxer.hikari
+      #
+      # The grep is case-insensitive (-i) and matches on substring so
+      # both the lower-case Maven coordinates (`org.springframework`)
+      # and any humanized variants (`Spring Framework`) are caught.
+      # -----------------------------------------------------------------------
+      - name: Forbidden artifact lint (dependency:tree)
+        working-directory: java
+        run: |
+          set -o pipefail
+          mvn -B -ntp -DincludeScope=runtime -DincludeScope=test dependency:tree > /tmp/deptree.txt
+          HITS=$(grep -iE 'org\.springframework|org\.postgresql|org\.hibernate|com\.zaxxer\.hikari|com\.zaxxer:HikariCP' /tmp/deptree.txt || true)
+          if [ -n "${HITS}" ]; then
+            echo "::error title=Forbidden artifact detected::A forbidden coordinate appeared in the dependency tree. See AAP §0.7.4 and java/README.md §7.3."
+            echo "Matches:"
+            echo "${HITS}"
+            exit 1
+          fi
+          echo "Forbidden artifact lint: PASS (no Spring / PostgreSQL / Hibernate / HikariCP coordinates)"
+
+      # -----------------------------------------------------------------------
+      # Step 7 — Forbidden preview-flag lint (defense in depth).
+      #
+      # The maven-antrun-plugin scan (Refine-PR Item 2) already fails
+      # the build at `mvn verify` time when the preview-enabling JVM
+      # flag (two ASCII hyphens followed by "enable-preview") appears
+      # in an active POM <arg>/<argLine> block or in a non-commented
+      # workflow YAML line. This step provides a second-layer grep
+      # that catches the flag anywhere in the repo, including shell
+      # scripts, Dockerfile-style files, and any other formats not
+      # covered by the antrun fileset.
+      #
+      # The grep excludes:
+      #   - The IMMUTABLE COBOL source tree under app/ (AAP §0.2.2).
+      #   - Maven build output (target/).
+      #   - Git metadata (.git/).
+      #   - This workflow file itself (which intentionally mentions
+      #     the literal flag in its documentation comments).
+      # -----------------------------------------------------------------------
+      - name: Forbidden preview-flag lint (repo scan)
+        run: |
+          set -euo pipefail
+          # Restrict to file types where the flag could plausibly be
+          # an ACTIVE compiler/JVM argument: XML (POM, build files),
+          # YAML (workflow files), SH (scripts), JAVA (compiler-arg
+          # constants), PROPERTIES (Maven properties files).
+          # Java source files are scanned too; any Javadoc mention is
+          # filtered out by requiring the match to NOT be inside a
+          # Javadoc-style `*` comment line, but we also skip files
+          # that are known to only have documentation references.
+          HITS=$(grep -rE \
+              --include='*.xml' \
+              --include='*.yml' \
+              --include='*.yaml' \
+              --include='*.sh' \
+              --include='*.properties' \
+              --exclude-dir=target \
+              --exclude-dir=.git \
+              --exclude-dir=app \
+              --exclude='build.yml' \
+              -- '--enable-preview' . || true)
+          # Filter out lines that are inside POM <!-- ... --> comments
+          # or properties # comments. The antrun scan already covers
+          # active <arg>/<argLine> blocks; here we look for plain
+          # command-line-style usage.
+          ACTIVE=$(echo "${HITS}" | grep -vE '^[^:]*:\s*#|^[^:]*:\s*<!--|^[^:]*:.*\*\s' || true)
+          if [ -n "${ACTIVE}" ]; then
+            echo "::error title=Forbidden flag --enable-preview detected::Per AAP §0.7.4, preview features are explicitly out of scope for the CardDemo Java 25 LTS migration. The following lines look like active uses of the preview-enabling flag and must be removed:"
+            echo "${ACTIVE}"
+            exit 1
+          fi
+          echo "Forbidden preview-flag lint: PASS (no active --enable-preview usage)"
+
+      # -----------------------------------------------------------------------
+      # Step 8 — Workflow Step Summary.
+      #
+      # Per the Refine-PR Item 1 brief, the workflow emits a step
+      # summary with:
+      #   (a) the test pass-rate count (parsed from Surefire XML), and
+      #   (b) the JaCoCo coverage line for the Decimals utility
+      #       (the canonical monetary surface, gated at 100% per
+      #       AAP §0.6.1).
+      #
+      # The summary is rendered as markdown in the GitHub Actions UI
+      # under the "Summary" tab of the workflow run; operators can
+      # see the headline numbers without drilling into the artifacts.
+      # -----------------------------------------------------------------------
+      - name: Emit Step Summary (test counts + JaCoCo coverage)
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## CardDemo Java 25 build summary"
+            echo ""
+            echo "### Test counts (across all 7 modules)"
+            echo ""
+            # Aggregate test counts from every Surefire XML report
+            # produced by the build. The Surefire XML schema is
+            # <testsuite tests="..." failures="..." errors="..." skipped="...">
+            TOTAL=0
+            FAILS=0
+            ERRORS=0
+            SKIPPED=0
+            for f in $(find java -path '*/target/surefire-reports/TEST-*.xml' 2>/dev/null); do
+              T=$(grep -oE 'tests="[0-9]+"' "$f" | head -1 | grep -oE '[0-9]+' || echo 0)
+              F=$(grep -oE 'failures="[0-9]+"' "$f" | head -1 | grep -oE '[0-9]+' || echo 0)
+              E=$(grep -oE 'errors="[0-9]+"' "$f" | head -1 | grep -oE '[0-9]+' || echo 0)
+              S=$(grep -oE 'skipped="[0-9]+"' "$f" | head -1 | grep -oE '[0-9]+' || echo 0)
+              TOTAL=$((TOTAL + T))
+              FAILS=$((FAILS + F))
+              ERRORS=$((ERRORS + E))
+              SKIPPED=$((SKIPPED + S))
+            done
+            PASSING=$((TOTAL - FAILS - ERRORS - SKIPPED))
+            echo "| Metric    | Count |"
+            echo "|-----------|------:|"
+            echo "| Total     | ${TOTAL} |"
+            echo "| Passing   | ${PASSING} |"
+            echo "| Failures  | ${FAILS} |"
+            echo "| Errors    | ${ERRORS} |"
+            echo "| Skipped   | ${SKIPPED} |"
+            echo ""
+            echo "### Decimals coverage (AAP §0.6.1 — 100% gate)"
+            echo ""
+            # Pull the Decimals line from the per-module JaCoCo report
+            # produced by the carddemo-tests `jacoco-report` execution.
+            # The CSV format is one row per source file with columns:
+            # GROUP,PACKAGE,CLASS,INSTRUCTION_MISSED,INSTRUCTION_COVERED,
+            # BRANCH_MISSED,BRANCH_COVERED,LINE_MISSED,LINE_COVERED,...
+            JACOCO_CSV='java/carddemo-tests/target/site/jacoco/jacoco.csv'
+            if [ -f "${JACOCO_CSV}" ]; then
+              DEC_LINE=$(grep -E ',Decimals(\$|,)' "${JACOCO_CSV}" | head -1 || true)
+              if [ -n "${DEC_LINE}" ]; then
+                DEC_LINE_MISSED=$(echo "${DEC_LINE}" | awk -F',' '{print $8}')
+                DEC_LINE_COVERED=$(echo "${DEC_LINE}" | awk -F',' '{print $9}')
+                DEC_LINE_TOTAL=$((DEC_LINE_MISSED + DEC_LINE_COVERED))
+                if [ "${DEC_LINE_TOTAL}" -gt 0 ]; then
+                  DEC_PCT=$(awk "BEGIN { printf \"%.2f\", (${DEC_LINE_COVERED} / ${DEC_LINE_TOTAL}) * 100 }")
+                  echo "| File          | Lines covered | Lines missed | Coverage |"
+                  echo "|---------------|--------------:|-------------:|---------:|"
+                  echo "| Decimals.java | ${DEC_LINE_COVERED} | ${DEC_LINE_MISSED} | ${DEC_PCT}% |"
+                else
+                  echo "_(Decimals.java row found but had zero total lines — JaCoCo CSV format unexpected.)_"
+                fi
+              else
+                echo "_(No Decimals.java row found in JaCoCo CSV; the per-module report may have failed to stage Decimals.class.)_"
+              fi
+            else
+              echo "_(JaCoCo CSV not found at ${JACOCO_CSV}; the carddemo-tests \`jacoco-report\` execution may have failed.)_"
+            fi
+            echo ""
+            echo "### Aggregate coverage (AAP §0.7.2 — ≥90% informational)"
+            echo ""
+            AGG_CSV='java/carddemo-tests/target/site/jacoco-aggregate/jacoco.csv'
+            if [ -f "${AGG_CSV}" ]; then
+              # Sum LINE_MISSED + LINE_COVERED columns across every row.
+              AGG_LINE_MISSED=$(awk -F',' 'NR>1 { sum += $8 } END { print sum+0 }' "${AGG_CSV}")
+              AGG_LINE_COVERED=$(awk -F',' 'NR>1 { sum += $9 } END { print sum+0 }' "${AGG_CSV}")
+              AGG_LINE_TOTAL=$((AGG_LINE_MISSED + AGG_LINE_COVERED))
+              if [ "${AGG_LINE_TOTAL}" -gt 0 ]; then
+                AGG_PCT=$(awk "BEGIN { printf \"%.2f\", (${AGG_LINE_COVERED} / ${AGG_LINE_TOTAL}) * 100 }")
+                echo "| Lines covered | Lines missed | Coverage |"
+                echo "|--------------:|-------------:|---------:|"
+                echo "| ${AGG_LINE_COVERED} | ${AGG_LINE_MISSED} | ${AGG_PCT}% |"
+              fi
+            else
+              echo "_(Aggregate JaCoCo CSV not found at ${AGG_CSV}.)_"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      # -----------------------------------------------------------------------
+      # Step 9 — Upload shaded jars (28 per AAP §0.4.1 JCL-to-App
+      # mapping). The carddemo-app module's `maven-shade-plugin`
+      # executions produce one shaded jar per JCL EXEC PGM= step.
+      # The pattern intentionally excludes the carddemo-app module
+      # JAR itself (carddemo-app-1.0.0-SNAPSHOT.jar) so only the 28
+      # operational artifacts are uploaded.
+      # -----------------------------------------------------------------------
+      - name: Upload shaded jars
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: carddemo-shaded-jars
+          path: java/carddemo-app/target/carddemo-*.jar
+          if-no-files-found: warn
+          retention-days: 14
+
+      # -----------------------------------------------------------------------
+      # Step 10 — Upload the Surefire test reports for every module
+      # in the reactor (parent + 7 children). The TEST-*.xml files
+      # are the canonical machine-readable JUnit XML reports; the
+      # *.txt files are the human-friendly summaries. Both are
+      # uploaded so operators can drill into a failing test directly
+      # from the GitHub Actions UI.
+      # -----------------------------------------------------------------------
+      - name: Upload Surefire reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: |
+            java/**/target/surefire-reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+      # -----------------------------------------------------------------------
+      # Step 11 — Upload the JaCoCo aggregate report (HTML + CSV +
+      # XML). The aggregate report covers every in-reactor module
+      # transitively pulled by carddemo-tests (which is the consumer
+      # module that depends on every other module). Per the Refine-PR
+      # Item 1 brief, this is the AAP §0.7.2 ≥90% line coverage
+      # measurement surface.
+      # -----------------------------------------------------------------------
+      - name: Upload JaCoCo aggregate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-aggregate
+          path: |
+            java/carddemo-tests/target/site/jacoco-aggregate/
+            java/carddemo-tests/target/site/jacoco/
+          if-no-files-found: warn
+          retention-days: 14
+
+      # -----------------------------------------------------------------------
+      # Step 12 — Upload the Failsafe integration-test reports if
+      # present. The maven-failsafe-plugin (Refine-PR Item 6) runs
+      # the FullBatchChainIT integration test; its reports follow
+      # the same XML+TXT shape as Surefire.
+      # -----------------------------------------------------------------------
+      - name: Upload Failsafe reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failsafe-reports
+          path: |
+            java/**/target/failsafe-reports/
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        carddemo-application — use-case ring of the hexagonal architecture (AAP §0.3.6).
+
+        Contents:
+          * One Java class per COBOL PROGRAM-ID from app/cbl/ (28 programs total).
+            Public method per entry paragraph; private method per internal paragraph.
+            (AAP §0.1.1, §0.1.2, §0.4.1)
+          * Translated WORKING-STORAGE → private fields on the use-case class instance.
+          * Translated LINKAGE SECTION → public method parameter records.
+          * Entry-contract DTO record pairs for the 17 BMS map programs (e.g.,
+            CoSgn00Input / CoSgn00Output) — BMS maps become method parameters
+            and return values, NOT a web framework. (AAP §0.1.2)
+          * ProgramRegistry — strategy/registry pattern for COBOL CALL with a
+            variable program name (AAP §0.3.2).
+          * Application-side utilities translated from COBOL procedure-template
+            copybooks: DateValidator (CSUTLDTC), ScreenAttributeSetter (CSSETATY),
+            PfKeyDecoder (CSSTRPFY). (AAP §0.4.1)
+
+        Architectural rule (AAP §0.3.6, §0.6.12):
+          * This module depends ONLY on carddemo-domain (innermost ring).
+          * This module is depended on by carddemo-batch, carddemo-app, and
+            carddemo-tests — never the reverse.
+          * The composition root (carddemo-app) wires file/db adapters at startup;
+            this module must NOT depend on carddemo-adapter-file or carddemo-adapter-db.
+
+        Forbidden here (AAP §0.1.1 architectural override, §0.6.7, §0.6.12, §0.7.4):
+          * Spring / Spring Boot / Spring Data / Spring Batch / Spring Security /
+            Spring MVC / Spring Cloud AWS — plain constructor injection only.
+            No @Service, @Autowired, @Component annotations anywhere in this module.
+          * Hibernate / JPA / jakarta.persistence / javax.persistence
+          * Lombok — Java 25 records replace it.
+          * JDBC drivers (PostgreSQL, MySQL, DB2, H2) — those belong to
+            carddemo-adapter-db.
+          * Flyway, Liquibase, Testcontainers, LocalStack
+          * Micrometer, Prometheus, OpenTelemetry, Jaeger
+          * jqwik (property tests for Decimals live in carddemo-tests per AAP §0.3.1)
+          * The "enable-preview" JVM flag (AAP §0.7.4 — finalized JEPs only:
+            JEP 506 ScopedValue, JEP 510 KDF, JEP 511 Module Import, JEP 513
+            Flexible Constructor Bodies, JEP 519 Compact Headers, JEP 521 Generational Shenandoah).
+          * &lt;source&gt;/&lt;target&gt; tags — the parent POM's &lt;release&gt;25&lt;/release&gt;
+            is the single source of truth for the Java language level.
+    -->
+
+    <parent>
+        <groupId>com.blitzy.carddemo</groupId>
+        <artifactId>carddemo-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>carddemo-application</artifactId>
+    <packaging>jar</packaging>
+
+    <name>CardDemo Application</name>
+    <description>
+        Use-case layer of the hexagonal architecture: one Java class per COBOL
+        PROGRAM-ID from app/cbl/. Public method per entry paragraph, private
+        method per internal paragraph. WORKING-STORAGE becomes private fields.
+        LINKAGE SECTION becomes public method parameters (records). Dynamic CALL
+        routing via ProgramRegistry. NO Spring, NO frameworks — plain Java with
+        constructor injection only. Depends on carddemo-domain.
+    </description>
+
+    <dependencies>
+        <!--
+            Internal dependency: carddemo-domain.
+            Provides:
+              * Java records translated from COBOL copybook 01-level groups
+                (AccountRecord, TranRecord, CardRecord, CustomerRecord, SecUserData,
+                CardDemoCommarea, TrnxRecord, TranCatBalRecord, DisGroupRecord,
+                TranTypeRecord, TranCatRecord, ReportHeaders, CustomerLegacyRecord,
+                UnusedRecord, DalyTranRecord, CardXrefRecord — AAP §0.4.1, §0.6.9)
+              * Sealed type hierarchies (UserType, PgmContext, AidKey, CcAcctId,
+                CcCardNum, CcCustId, WsCurDate, WsCurTime, FileStatus,
+                AccountStatus — AAP §0.6.10) — every COBOL REDEFINES and 88-level
+                value-space taxonomy
+              * Repository port interfaces (AccountRepository, CardRepository,
+                CardXrefRepository, CustomerRepository, TransactionRepository,
+                DailyTransactionRepository, DiscountGroupRepository,
+                TransactionCategoryBalanceRepository, TransactionTypeRepository,
+                TransactionCategoryRepository, UserSecurityRepository — AAP §0.3.1)
+              * Decimals utility — BigDecimal facade with MathContext.DECIMAL128
+                and RoundingMode selection (HALF_EVEN for ROUNDED, DOWN otherwise)
+                centralizing every monetary arithmetic call site (AAP §0.3.3, §0.6.1)
+              * @CobolProgram traceability annotation cited in Javadoc on every
+                translated use-case class (AAP §0.2.1)
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT).
+        -->
+        <dependency>
+            <groupId>com.blitzy.carddemo</groupId>
+            <artifactId>carddemo-domain</artifactId>
+        </dependency>
+
+        <!--
+            Production dependency: SLF4J API only (compile scope).
+            Used by translated COBOL programs to emit structured log messages
+            corresponding to:
+              * COBOL DISPLAY statements (e.g., 9910-DISPLAY-IO-STATUS in CBACT01C)
+              * FILE STATUS error logging (typed exceptions wrap the status code)
+              * ABEND warnings (9999-ABEND-PROGRAM equivalents)
+              * SYNCPOINT ROLLBACK compensating-write notifications in CoActUpC
+                — the sole rollback in the COBOL source (AAP §0.4.1, §0.6.12)
+              * PAN-masking enforcement (mask all but last 4 digits per AAP §0.7.2)
+            The runtime implementation (logback-classic) is supplied by the
+            composition root (carddemo-app); this module depends only on the API,
+            keeping the application layer free of concrete logging dependencies
+            per AAP §0.6.12.
+            Version is inherited from the parent POM's dependencyManagement
+            (slf4j-api 2.0.16 per AAP §0.5.1).
+        -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!--
+            Test dependencies (test scope only).
+            Versions are inherited from the parent POM's dependencyManagement:
+              * junit-jupiter            via junit-bom 5.13.1 (AAP §0.5.1)
+              * junit-platform-launcher  1.13.1 — required minimum for
+                                                  JUnit Platform native discovery
+                                                  by maven-surefire-plugin 3.5.2
+                                                  and aligns with jqwik 1.9.3's
+                                                  minimum platform requirement
+                                                  (AAP §0.5.1)
+              * assertj-core 3.27.7 — fluent assertions for
+                                                  paragraph-level method tests,
+                                                  LINKAGE SECTION record contracts,
+                                                  and EVALUATE pattern-matching
+                                                  exhaustiveness checks (AAP §0.5.1)
+            Note: jqwik is NOT declared here — property-based tests for the
+            Decimals utility live in carddemo-tests per AAP §0.3.1.
+        -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+                maven-compiler-plugin — activated for this module so the parent's
+                pluginManagement (version 3.13.0, &lt;release&gt;25&lt;/release&gt;, no
+                preview flag per AAP §0.7.4, -parameters for record component
+                names) applies during the compile phase. The Java language level
+                is set ONCE in the parent POM; this child must not redeclare it.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+
+            <!--
+                maven-surefire-plugin — activated for this module so the parent's
+                pluginManagement (version 3.5.2, JUnit Platform native discovery,
+                no "enable-preview" argLine per AAP §0.7.4) applies during the
+                test phase. Test classes are discovered by the standard
+                **/*Test.java and **/*Tests.java patterns.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

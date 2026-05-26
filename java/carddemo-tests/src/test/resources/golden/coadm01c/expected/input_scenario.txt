@@ -1,0 +1,119 @@
+# COADM01C (Admin Menu, CICS transaction CA00) -- Golden-Record Scenario Script
+# 12 scenarios exercising EIBCALEN-gated dispatch, ENTER/PF3/OTHER AID handling, and admin menu-option validation
+# Authority: AAP section 0.6.11 (PR gate); see expected/README.md for full contract
+#
+# Fixture inputs:
+#   - app/cpy/COADM02Y.cpy: static admin menu table (4 options; CDEMO-ADMIN-OPT-COUNT=4)
+#   - This file: 12 sequential simulated 3270 interactions
+#
+# COADM01C does NOT read USRSEC; there is no usrsec.txt fixture in this directory.
+# All directives are processed in strict order. Each EXPECT_* assertion is
+# evaluated by CoAdm01CGoldenTest after the corresponding CICS event has occurred.
+# COADM01C is reached only when the user is admin (CDEMO-USRTYP-ADMIN, value 'A')
+# per COSGN00C:L230-L234. Commarea CDEMO-USER-TYPE=A is set throughout scenarios 2-12.
+
+# Scenario 1: EIBCALEN=0 first connection -> auto-redirect to signon
+EIBCALEN 0
+AID DFHENTER
+EXPECT_XCTL COSGN00C
+END_SCENARIO
+
+# Scenario 2: First non-zero entry (CDEMO-PGM-ENTER=0) -> initial admin menu display
+EIBCALEN 196
+COMMAREA CDEMO-USER-TYPE=A
+COMMAREA CDEMO-PGM-CONTEXT=0
+AID DFHENTER
+EXPECT_SEND_MAP
+EXPECT_RETURN
+END_SCENARIO
+
+# Scenario 3: ENTER with option 01 (User List Security) -> XCTL COUSR00C
+COMMAREA CDEMO-USER-TYPE=A
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=01
+AID DFHENTER
+EXPECT_XCTL COUSR00C
+EXPECT_COMMAREA_FIELD CDEMO-FROM-TRANID=CA00
+EXPECT_COMMAREA_FIELD CDEMO-FROM-PROGRAM=COADM01C
+EXPECT_COMMAREA_FIELD CDEMO-PGM-CONTEXT=0
+END_SCENARIO
+
+# Scenario 4: ENTER with option 02 (User Add Security) -> XCTL COUSR01C
+COMMAREA CDEMO-USER-TYPE=A
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=02
+AID DFHENTER
+EXPECT_XCTL COUSR01C
+END_SCENARIO
+
+# Scenario 5: ENTER with option 03 (User Update Security) -> XCTL COUSR02C
+COMMAREA CDEMO-USER-TYPE=A
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=03
+AID DFHENTER
+EXPECT_XCTL COUSR02C
+END_SCENARIO
+
+# Scenario 6: ENTER with option 04 (User Delete Security) -> XCTL COUSR03C
+COMMAREA CDEMO-USER-TYPE=A
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=04
+AID DFHENTER
+EXPECT_XCTL COUSR03C
+END_SCENARIO
+
+# Scenario 7: ENTER with option 05 (out of range; > CDEMO-ADMIN-OPT-COUNT=4)
+COMMAREA CDEMO-USER-TYPE=A
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=05
+AID DFHENTER
+EXPECT_SEND_MAP
+EXPECT_MSG 'Please enter a valid option number...'
+EXPECT_RETURN
+END_SCENARIO
+
+# Scenario 8: ENTER with option 00 (zero) -> validation rejects
+COMMAREA CDEMO-USER-TYPE=A
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=00
+AID DFHENTER
+EXPECT_SEND_MAP
+EXPECT_MSG 'Please enter a valid option number...'
+EXPECT_RETURN
+END_SCENARIO
+
+# Scenario 9: ENTER with non-numeric option (AB) -> validation rejects
+COMMAREA CDEMO-USER-TYPE=A
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=AB
+AID DFHENTER
+EXPECT_SEND_MAP
+EXPECT_MSG 'Please enter a valid option number...'
+EXPECT_RETURN
+END_SCENARIO
+
+# Scenario 10: ENTER with empty/blank option -> INSPECT REPLACING converts to 00 -> zero rejected
+COMMAREA CDEMO-USER-TYPE=A
+COMMAREA CDEMO-PGM-CONTEXT=1
+FIELD OPTIONI=
+AID DFHENTER
+EXPECT_SEND_MAP
+EXPECT_MSG 'Please enter a valid option number...'
+EXPECT_RETURN
+END_SCENARIO
+
+# Scenario 11: PF3 pressed -> XCTL COSGN00C
+COMMAREA CDEMO-USER-TYPE=A
+COMMAREA CDEMO-PGM-CONTEXT=1
+AID DFHPF3
+EXPECT_XCTL COSGN00C
+END_SCENARIO
+
+# Scenario 12: Invalid AID key (PF1) -> WHEN OTHER -> CCDA-MSG-INVALID-KEY
+COMMAREA CDEMO-USER-TYPE=A
+COMMAREA CDEMO-PGM-CONTEXT=1
+AID DFHPF1
+EXPECT_SEND_MAP
+EXPECT_MSG 'Invalid key pressed. Please see below...         '
+EXPECT_RETURN
+END_SCENARIO

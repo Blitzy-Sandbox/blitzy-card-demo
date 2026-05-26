@@ -1,0 +1,6 @@
+# placeholder until COBOL capture; see java/MIGRATION_NOTES.md section 1.6
+# expected captured content: approximately 6 BMS SEND MAP frames concatenated across the 12 scenarios in input_scenario.txt (XCTL-out scenarios produce no SEND MAP)
+# frame format: per the COMEN1A map layout (24 rows x 80 cols) defined in app/bms/COMEN01.bms; see expected/README.md Phase 11 for the field-by-field layout table
+# CRITICAL: per AAP section 0.7.2, capture script must verify that no sensitive value appears in this file (the COMEN1A map has no PASSWD field, so this is verified by absence)
+# until this file is replaced with the captured artifact, CoMen01CGoldenTest remains @Disabled per AAP section 0.6.11
+# capture procedure: documented in java/MIGRATION_NOTES.md section 1.6 per AAP section 0.7.5

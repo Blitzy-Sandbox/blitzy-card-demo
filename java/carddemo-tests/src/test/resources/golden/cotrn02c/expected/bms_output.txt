@@ -1,0 +1,10 @@
+# COTRN02C captured BMS SEND MAP output - PENDING COBOL baseline capture
+# See java/MIGRATION_NOTES.md section 1.6 for capture procedure.
+# Until captured, the consuming test class CoTrn02CGoldenTest is @Disabled
+# per AAP section 0.6.11.
+#
+# Each of the 26 scenarios in input_scenario.txt produces one BMS SEND MAP
+# frame. Frames are concatenated with === SCENARIO n === separator markers.
+# CURDATE and CURTIME are emitted from a fixed java.time.Clock injected via
+# ScopedValue<Clock> per AAP section 0.6.6 so the captured baseline and
+# Java translation output are byte-for-byte identical.

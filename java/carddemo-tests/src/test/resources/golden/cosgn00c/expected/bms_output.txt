@@ -1,0 +1,6 @@
+# placeholder until COBOL capture; see java/MIGRATION_NOTES.md section 1.6
+# expected captured content: approximately 7 BMS SEND MAP frames plus 1 SEND TEXT frame concatenated across the 12 scenarios in input_scenario.txt (scenarios that XCTL away on success - 6, 7, 10, 11 - produce no SEND frame; PF3 exit scenario 8 uses SEND-PLAIN-TEXT rather than SEND MAP)
+# frame format: per the COSGN0A map layout (24 rows x 80 cols) defined in app/bms/COSGN00.bms; see expected/README.md Phase 11 for the field-by-field layout table
+# CRITICAL SECURITY: per AAP section 0.7.2, capture script MUST verify NO password value (SEC-USR-PWD bytes from usrsec.txt) appears in this file. Although COSGN0A's PASSWD field uses the DRK attribute (non-display), the input buffer may contain typed password bytes from FIELD PASSWDI= directives. Capture script per java/MIGRATION_NOTES.md section 1.6 MUST mask/strip those bytes from the captured artifact before commit.
+# until this file is replaced with the captured artifact, CoSgn00CGoldenTest remains @Disabled per AAP section 0.6.11
+# capture procedure: documented in java/MIGRATION_NOTES.md section 1.6 per AAP section 0.7.5

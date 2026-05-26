@@ -1,0 +1,421 @@
+# input_scenario.txt -- CICS pseudo-conversation driver script for CORPT00C golden-record harness
+#
+# Consumer: com.blitzy.carddemo.tests.golden.CoRpt00CGoldenTest extends GoldenRecordTest
+# Test class is @Disabled("Awaiting COBOL capture per java/MIGRATION_NOTES.md 1.6")
+# until COBOL captures committed (per AAP 0.6.11).
+#
+# Authority:
+#   AAP 0.1.1   byte-for-byte COBOL -> Java 25 parity
+#   AAP 0.4.1   IMPLEMENTATION DECISION: CICS TDQ "JOBS" -> direct JclSkeletonSink port invocation
+#   AAP 0.6.4   java.time + ScopedValue<Clock> for deterministic CURRENT-DATE
+#   AAP 0.6.6   ScopedValue replaces ThreadLocal entirely
+#   AAP 0.6.11  golden-record harness is non-negotiable PR gate
+#   AAP 0.7.1   Minimal Change Clause: preserve verbatim COBOL messages exactly
+#   AAP 0.7.4   no preview features; no default branches in pattern-matching switches
+#
+# Source-grounded facts:
+#   COBOL source     : app/cbl/CORPT00C.cbl       (649 lines, PROGRAM-ID CORPT00C, transaction CR00)
+#   BMS map          : app/bms/CORPT00.bms        (mapset CORPT00, map CORPT0A, 24x80)
+#   Symbolic copy    : app/cpy-bms/CORPT00.CPY    (CORPT0AI / CORPT0AO)
+#   Commarea         : app/cpy/COCOM01Y.cpy       (CARDDEMO-COMMAREA, 160 bytes exact)
+#   Invalid-key msg  : app/cpy/CSMSG01Y.cpy:L20-L21 (PIC X(50) literal+padding => 40 visible + 10 trailing spaces)
+#   Date constants   : app/cpy/CSDAT01Y.cpy        (WS-CURDATE-DATA, MM/DD/YY format)
+#   Title constants  : app/cpy/COTTL01Y.cpy        (CCDA-TITLE01, CCDA-TITLE02 -- 40-byte literals)
+#   CSUTLDTC         : app/cbl/CSUTLDTC.cbl        (date validator subprogram; MSG-NUM '2513' soft-error special-case)
+#   Java translation : com.blitzy.carddemo.application.report.CoRpt00C
+#
+# IMPLEMENTATION DECISION (AAP 0.4.1):
+#   Original COBOL writes 17 JCL lines to CICS TDQ "JOBS" via EXEC CICS WRITEQ TD (paragraph WIRTE-JOBSUB-TDQ;
+#   typo "WIRTE" preserved verbatim from app/cbl/CORPT00C.cbl:L515). CICS TDQ replacement orchestration is
+#   OUT OF SCOPE per AAP 0.2.2; Java translation routes the 17 substituted JCL lines through a JclSkeletonSink
+#   port (or equivalent composition root adapter) instead of writing to CICS TDQ. The observable confirmation
+#   message and the byte-exact 17 JCL lines must remain identical to the COBOL baseline. Each EXPECT_TDQ_LINE
+#   directive asserts one method invocation on the JclSkeletonSink port.
+#
+# Deterministic Clock requirement:
+#   FUNCTION CURRENT-DATE is invoked at L215 (Monthly), L241 (Yearly), and L611 (POPULATE-HEADER-INFO).
+#   All scenarios that exercise these paths MUST set CLOCK_FIXED to bind the test ScopedValue<Clock>
+#   per AAP 0.6.4 / 0.6.6. The CLOCK_FIXED timestamp drives:
+#     - Monthly: WS-START-DATE=<yyyy>-<mm>-01, WS-END-DATE=<yyyy>-<mm>-<last-day>
+#     - Yearly:  WS-START-DATE=<yyyy>-01-01,   WS-END-DATE=<yyyy>-12-31
+#     - Header:  CURDATEO=<mm>/<dd>/<yy>,      CURTIMEO=<hh>:<mm>:<ss>
+#
+# IMPORTANT divergence from agent_prompt example for CCDA-MSG-INVALID-KEY:
+#   The agent_prompt cites "9 trailing spaces" but the COBOL PIC X(50) literal (49 chars) is padded
+#   to 50 bytes by COBOL, yielding "Invalid key pressed. Please see below..." (40 visible) + 10
+#   trailing spaces. The 50-byte stored value (the byte sequence transmitted to ERRMSGO) is the
+#   binding contract per AAP 0.1.1. Decision: use 40 + 10 = 50 bytes (verified empirically against
+#   app/cpy/CSMSG01Y.cpy).
+#
+# Note on CARDDEMO-COMMAREA size:
+#   The actual CARDDEMO-COMMAREA layout in app/cpy/COCOM01Y.cpy is exactly 160 bytes
+#   (4+8+4+8+8+1+1+9+25+25+25+11+1+16+7+7=160). EIBCALEN=160 in scenarios 2-15 (caller passes a
+#   160-byte commarea). EIBCALEN=0 in scenario 1 only (first-time invocation per L172).
+#
+# DIRECTIVE GRAMMAR
+# =================
+#
+# SCENARIO <name>                              # Begin scenario block; <name> matches /[a-z][a-z0-9_]*/
+# END_SCENARIO                                 # Close current scenario; required terminator
+#
+# Input directives (set state for next dispatch):
+#   EIBCALEN <integer>                         # 0 = first-time entry; >0 = re-entry; required
+#   COMMAREA <hex-bytes-or-EMPTY>              # Required when EIBCALEN > 0; hex pairs without spaces
+#   AID <DFHENTER|DFHPF3|DFHPF12|DFHCLEAR|...> # 3270 attention identifier; required for non-first-entry
+#   FIELD <bms-symbolic-name> <value>          # Set BMS input field; value=SPACES|LOW-VALUES|<literal>
+#   CLOCK_FIXED <yyyy-MM-dd HH:mm:ss>          # ScopedValue<Clock> binding for deterministic CURRENT-DATE
+#   SIMULATE_TDQ_FAULT <RESP-CODE-NAME>        # Force WIRTE-JOBSUB-TDQ non-NORMAL branch (e.g., QIDERR)
+#
+# Output assertions (verified by harness against captured COBOL output):
+#   EXPECT_XCTL <PROGRAM-NAME>                 # Exact 8-byte program name (e.g., COMEN01C, COSGN00C)
+#   EXPECT_RETURN                              # EXEC CICS RETURN with TRANSID/COMMAREA (no XCTL)
+#   EXPECT_MSG '<verbatim-text>'               # WS-MESSAGE content emitted via ERRMSGO; single-quoted
+#   EXPECT_MSG_COLOR <DFHRED|DFHGREEN|DFHTURQ> # ERRMSGC color attribute set before SEND
+#   EXPECT_FIELD <bms-symbolic-name> <value>   # Asserted BMS output field value after SEND
+#   EXPECT_CURSOR <bms-field-name>             # MOVE -1 TO <name>L was performed (cursor on this field)
+#   EXPECT_COMMAREA_FIELD <name> <value>       # Assert a specific commarea field value (e.g., CDEMO-FROM-TRANID=CR00)
+#   EXPECT_DISPLAY '<verbatim-text>'           # COBOL DISPLAY capture (verbatim single-quoted; substring match permitted)
+#   EXPECT_TDQ_WRITES <integer>                # Count of WRITEQ TD invocations to JOBS queue
+#   EXPECT_TDQ_LINE <idx> '<verbatim-80-bytes>' # Per-line assertion of TDQ write content; <idx> 1-based; 80 bytes between quotes
+#
+# Single-quote escape: a single ' inside a single-quoted value is written as '' (doubled).
+# This rule is applied to EXPECT_TDQ_LINE values where the COBOL JCL literal contains apostrophes
+# (e.g., 'TRAN REPORT' and 'AWS.M2.CARDDEMO.PROC' in lines 1 and 4, and the C'<date>' in lines 11 and 12).
+#
+# VERBATIM COBOL MESSAGE CATALOG (preserved exactly, ASCII three-period ellipsis '...')
+# ====================================================================================
+#   # | Verbatim bytes                                                  | Source
+#  ---|-----------------------------------------------------------------|-----------------------------------
+#   1 | 'Invalid key pressed. Please see below...          ' (50 bytes) | app/cpy/CSMSG01Y.cpy:L20-L21
+#   2 | 'Start Date - Month can NOT be empty...'                        | app/cbl/CORPT00C.cbl:L261-L262
+#   3 | 'Start Date - Day can NOT be empty...'                          | app/cbl/CORPT00C.cbl:L268-L269
+#   4 | 'Start Date - Year can NOT be empty...'                         | app/cbl/CORPT00C.cbl:L275-L276
+#   5 | 'End Date - Month can NOT be empty...'                          | app/cbl/CORPT00C.cbl:L282-L283
+#   6 | 'End Date - Day can NOT be empty...'                            | app/cbl/CORPT00C.cbl:L289-L290
+#   7 | 'End Date - Year can NOT be empty...'                           | app/cbl/CORPT00C.cbl:L296-L297
+#   8 | 'Start Date - Not a valid Month...'                             | app/cbl/CORPT00C.cbl:L331-L332
+#   9 | 'Start Date - Not a valid Day...'                               | app/cbl/CORPT00C.cbl:L340-L341
+#  10 | 'Start Date - Not a valid Year...'                              | app/cbl/CORPT00C.cbl:L348-L349
+#  11 | 'End Date - Not a valid Month...'                               | app/cbl/CORPT00C.cbl:L357-L358
+#  12 | 'End Date - Not a valid Day...'                                 | app/cbl/CORPT00C.cbl:L366-L367
+#  13 | 'End Date - Not a valid Year...'                                | app/cbl/CORPT00C.cbl:L374-L375
+#  14 | 'Start Date - Not a valid date...'                              | app/cbl/CORPT00C.cbl:L400-L401
+#  15 | 'End Date - Not a valid date...'                                | app/cbl/CORPT00C.cbl:L420-L421
+#  16 | 'Select a report type to print report...'                       | app/cbl/CORPT00C.cbl:L438-L439
+#  17 | 'Please confirm to print the <Mode> report...'                  | app/cbl/CORPT00C.cbl:L466-L470 (STRING)
+#  18 | '<Mode> report submitted for printing ...'                      | app/cbl/CORPT00C.cbl:L449-L450 (STRING; SPACE before '...')
+#  19 | '"<C>" is not a valid value to confirm...'                      | app/cbl/CORPT00C.cbl:L485-L490 (STRING)
+#  20 | 'Unable to Write TDQ (JOBS)...'                                 | app/cbl/CORPT00C.cbl:L531-L532
+#
+# Two DISPLAY sites (System.out / COBOL DISPLAY analogs):
+#   L210: DISPLAY 'PROCESS ENTER KEY'                            -- fires unconditionally on EVERY ENTER dispatch
+#   L529: DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD          -- fires only on TDQ write failure
+#
+# SCENARIOS (15 total)
+# ====================
+#  1. first_time_entry                -- EIBCALEN=0 -> XCTL COSGN00C
+#  2. initial_display                 -- CDEMO-PGM-ENTER initial SEND; cursor MONTHLYL
+#  3. pf3_to_main_menu                -- DFHPF3 -> XCTL COMEN01C
+#  4. invalid_aid_pf12                -- DFHPF12 -> CCDA-MSG-INVALID-KEY (50-byte)
+#  5. no_report_selected              -- all radios SPACES -> 'Select a report type to print report...'
+#  6. monthly_no_confirm              -- MONTHLY=Y, CONFIRM=SPACES -> 'Please confirm to print the Monthly report...'
+#  7. monthly_confirm_y               -- full success with 17 TDQ writes; CLOCK=2024-03-15
+#  8. yearly_confirm_y                -- full success with 17 TDQ writes; CLOCK=2024-06-10
+#  9. custom_valid_dates_confirm_y    -- full success with 17 TDQ writes; user-supplied 2024-01-15..2024-02-15
+# 10. custom_empty_sdtmm              -- SDTMM SPACES -> 'Start Date - Month can NOT be empty...'
+# 11. custom_invalid_sdtmm_13         -- SDTMM=13 -> 'Start Date - Not a valid Month...'
+# 12. custom_invalid_date_feb_30      -- Feb 30 -> CSUTLDTC fail -> 'Start Date - Not a valid date...'
+# 13. confirm_invalid_x               -- CONFIRM=X -> '"X" is not a valid value to confirm...'
+# 14. confirm_n_aborts                -- CONFIRM=N -> INITIALIZE-ALL-FIELDS, no TDQ writes
+# 15. tdq_write_fault                 -- SIMULATE_TDQ_FAULT QIDERR -> 'Unable to Write TDQ (JOBS)...'
+#
+# DO NOT MODIFY this file without re-running golden capture (per AAP 0.7.5).
+# ============================================================================
+
+SCENARIO first_time_entry
+  # COBOL CORPT00C.cbl:L172-L174 -- EIBCALEN=0 forces RETURN-TO-PREV-SCREEN with CDEMO-TO-PROGRAM='COSGN00C'
+  EIBCALEN 0
+  EXPECT_XCTL COSGN00C
+  EXPECT_COMMAREA_FIELD CDEMO-FROM-TRANID CR00
+  EXPECT_COMMAREA_FIELD CDEMO-FROM-PROGRAM CORPT00C
+  EXPECT_COMMAREA_FIELD CDEMO-PGM-CONTEXT 0
+END_SCENARIO
+
+SCENARIO initial_display
+  # COBOL CORPT00C.cbl:L177-L181 -- EIBCALEN>0 and NOT CDEMO-PGM-REENTER (pgm_context=0) => initial SEND with LOW-VALUES
+  # POPULATE-HEADER-INFO at L611 reads FUNCTION CURRENT-DATE => CLOCK_FIXED required (AAP 0.6.4 / 0.6.6)
+  EIBCALEN 160
+  COMMAREA 434D3030434F4D454E30314320202020202020202020202020202020202020202030303030303030303030202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020303030303030303030303020303030303030303030303030303030302020202020202020202020202020
+  AID DFHENTER
+  CLOCK_FIXED 2024-03-15 14:23:45
+  EXPECT_FIELD TRNNAMEO CR00
+  EXPECT_FIELD TITLE01O '      AWS Mainframe Modernization       '
+  EXPECT_FIELD TITLE02O '              CardDemo                  '
+  EXPECT_FIELD PGMNAMEO CORPT00C
+  EXPECT_FIELD CURDATEO 03/15/24
+  EXPECT_FIELD CURTIMEO 14:23:45
+  EXPECT_CURSOR MONTHLYL
+  EXPECT_TDQ_WRITES 0
+END_SCENARIO
+
+SCENARIO pf3_to_main_menu
+  # COBOL CORPT00C.cbl:L187-L189 -- EIBAID=DFHPF3 routes via RETURN-TO-PREV-SCREEN with CDEMO-TO-PROGRAM='COMEN01C'
+  EIBCALEN 160
+  COMMAREA 20202020202020202020202020202020202020202020202020202020202020202031303030303030303030202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020303030303030303030303020303030303030303030303030303030302020202020202020202020202020
+  AID DFHPF3
+  EXPECT_XCTL COMEN01C
+  EXPECT_COMMAREA_FIELD CDEMO-FROM-TRANID CR00
+  EXPECT_COMMAREA_FIELD CDEMO-FROM-PROGRAM CORPT00C
+  EXPECT_COMMAREA_FIELD CDEMO-PGM-CONTEXT 0
+  EXPECT_TDQ_WRITES 0
+END_SCENARIO
+
+SCENARIO invalid_aid_pf12
+  # COBOL CORPT00C.cbl:L190-L195 -- WHEN OTHER (any AID other than DFHENTER/DFHPF3) => CCDA-MSG-INVALID-KEY
+  # Message is 50-byte PIC X(50) value from app/cpy/CSMSG01Y.cpy:L20-L21 (40 visible + 10 trailing spaces)
+  EIBCALEN 160
+  COMMAREA 20202020202020202020202020202020202020202020202020202020202020202031303030303030303030202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020303030303030303030303020303030303030303030303030303030302020202020202020202020202020
+  AID DFHPF12
+  CLOCK_FIXED 2024-03-15 14:23:45
+  EXPECT_MSG 'Invalid key pressed. Please see below...          '
+  EXPECT_CURSOR MONTHLYL
+  EXPECT_TDQ_WRITES 0
+END_SCENARIO
+
+SCENARIO no_report_selected
+  # COBOL CORPT00C.cbl:L437-L442 -- WHEN OTHER on PROCESS-ENTER-KEY EVALUATE (no radio selected)
+  EIBCALEN 160
+  COMMAREA 20202020202020202020202020202020202020202020202020202020202020202031303030303030303030202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020303030303030303030303020303030303030303030303030303030302020202020202020202020202020
+  AID DFHENTER
+  CLOCK_FIXED 2024-03-15 14:23:45
+  FIELD MONTHLYI SPACES
+  FIELD YEARLYI  SPACES
+  FIELD CUSTOMI  SPACES
+  EXPECT_DISPLAY 'PROCESS ENTER KEY'
+  EXPECT_MSG 'Select a report type to print report...'
+  EXPECT_CURSOR MONTHLYL
+  EXPECT_TDQ_WRITES 0
+END_SCENARIO
+
+SCENARIO monthly_no_confirm
+  # COBOL CORPT00C.cbl:L213-L238 + L464-L474 -- Monthly path enters SUBMIT-JOB-TO-INTRDR; CONFIRM=SPACES => prompt
+  # STRING composes 'Please confirm to print the Monthly report...' at L466-L470
+  EIBCALEN 160
+  COMMAREA 20202020202020202020202020202020202020202020202020202020202020202031303030303030303030202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020303030303030303030303020303030303030303030303030303030302020202020202020202020202020
+  AID DFHENTER
+  CLOCK_FIXED 2024-03-15 14:23:45
+  FIELD MONTHLYI Y
+  FIELD CONFIRMI SPACES
+  EXPECT_DISPLAY 'PROCESS ENTER KEY'
+  EXPECT_MSG 'Please confirm to print the Monthly report...'
+  EXPECT_CURSOR CONFIRML
+  EXPECT_TDQ_WRITES 0
+END_SCENARIO
+
+SCENARIO monthly_confirm_y
+  # COBOL CORPT00C.cbl:L213-L238 (Monthly) + L476-L508 (Y normalization + VARYING loop) + L445-L454 (success msg)
+  # CLOCK_FIXED 2024-03-15 14:23:45 => WS-START-DATE=2024-03-01, WS-END-DATE=2024-03-31
+  EIBCALEN 160
+  COMMAREA 20202020202020202020202020202020202020202020202020202020202020202031303030303030303030202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020303030303030303030303020303030303030303030303030303030302020202020202020202020202020
+  AID DFHENTER
+  CLOCK_FIXED 2024-03-15 14:23:45
+  FIELD MONTHLYI Y
+  FIELD CONFIRMI Y
+  EXPECT_DISPLAY 'PROCESS ENTER KEY'
+  EXPECT_MSG 'Monthly report submitted for printing ...'
+  EXPECT_MSG_COLOR DFHGREEN
+  EXPECT_CURSOR MONTHLYL
+  EXPECT_TDQ_WRITES 17
+  EXPECT_TDQ_LINE  1 '//TRNRPT00 JOB ''TRAN REPORT'',CLASS=A,MSGCLASS=0,                                '
+  EXPECT_TDQ_LINE  2 '// NOTIFY=&SYSUID                                                               '
+  EXPECT_TDQ_LINE  3 '//*                                                                             '
+  EXPECT_TDQ_LINE  4 '//JOBLIB JCLLIB ORDER=(''AWS.M2.CARDDEMO.PROC'')                                  '
+  EXPECT_TDQ_LINE  5 '//*                                                                             '
+  EXPECT_TDQ_LINE  6 '//STEP10 EXEC PROC=TRANREPT                                                     '
+  EXPECT_TDQ_LINE  7 '//*                                                                             '
+  EXPECT_TDQ_LINE  8 '//STEP05R.SYMNAMES DD *                                                         '
+  EXPECT_TDQ_LINE  9 'TRAN-CARD-NUM,263,16,ZD                                                         '
+  EXPECT_TDQ_LINE 10 'TRAN-PROC-DT,305,10,CH                                                          '
+  EXPECT_TDQ_LINE 11 'PARM-START-DATE,C''2024-03-01''                                                   '
+  EXPECT_TDQ_LINE 12 'PARM-END-DATE,C''2024-03-31''                                                     '
+  EXPECT_TDQ_LINE 13 '/*                                                                              '
+  EXPECT_TDQ_LINE 14 '//STEP10R.DATEPARM DD *                                                         '
+  EXPECT_TDQ_LINE 15 '2024-03-01 2024-03-31                                                           '
+  EXPECT_TDQ_LINE 16 '/*                                                                              '
+  EXPECT_TDQ_LINE 17 '/*EOF                                                                           '
+END_SCENARIO
+
+SCENARIO yearly_confirm_y
+  # COBOL CORPT00C.cbl:L239-L255 (Yearly) + L476-L508 (Y normalization + VARYING loop) + L445-L454 (success msg)
+  # CLOCK_FIXED 2024-06-10 09:15:30 => WS-START-DATE=2024-01-01, WS-END-DATE=2024-12-31 (yearly is calendar year)
+  EIBCALEN 160
+  COMMAREA 20202020202020202020202020202020202020202020202020202020202020202031303030303030303030202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020303030303030303030303020303030303030303030303030303030302020202020202020202020202020
+  AID DFHENTER
+  CLOCK_FIXED 2024-06-10 09:15:30
+  FIELD YEARLYI Y
+  FIELD CONFIRMI Y
+  EXPECT_DISPLAY 'PROCESS ENTER KEY'
+  EXPECT_MSG 'Yearly report submitted for printing ...'
+  EXPECT_MSG_COLOR DFHGREEN
+  EXPECT_CURSOR MONTHLYL
+  EXPECT_TDQ_WRITES 17
+  EXPECT_TDQ_LINE  1 '//TRNRPT00 JOB ''TRAN REPORT'',CLASS=A,MSGCLASS=0,                                '
+  EXPECT_TDQ_LINE  2 '// NOTIFY=&SYSUID                                                               '
+  EXPECT_TDQ_LINE  3 '//*                                                                             '
+  EXPECT_TDQ_LINE  4 '//JOBLIB JCLLIB ORDER=(''AWS.M2.CARDDEMO.PROC'')                                  '
+  EXPECT_TDQ_LINE  5 '//*                                                                             '
+  EXPECT_TDQ_LINE  6 '//STEP10 EXEC PROC=TRANREPT                                                     '
+  EXPECT_TDQ_LINE  7 '//*                                                                             '
+  EXPECT_TDQ_LINE  8 '//STEP05R.SYMNAMES DD *                                                         '
+  EXPECT_TDQ_LINE  9 'TRAN-CARD-NUM,263,16,ZD                                                         '
+  EXPECT_TDQ_LINE 10 'TRAN-PROC-DT,305,10,CH                                                          '
+  EXPECT_TDQ_LINE 11 'PARM-START-DATE,C''2024-01-01''                                                   '
+  EXPECT_TDQ_LINE 12 'PARM-END-DATE,C''2024-12-31''                                                     '
+  EXPECT_TDQ_LINE 13 '/*                                                                              '
+  EXPECT_TDQ_LINE 14 '//STEP10R.DATEPARM DD *                                                         '
+  EXPECT_TDQ_LINE 15 '2024-01-01 2024-12-31                                                           '
+  EXPECT_TDQ_LINE 16 '/*                                                                              '
+  EXPECT_TDQ_LINE 17 '/*EOF                                                                           '
+END_SCENARIO
+
+SCENARIO custom_valid_dates_confirm_y
+  # COBOL CORPT00C.cbl:L256-L436 (Custom; CSUTLDTC validates start and end) + L476-L508 + L445-L454
+  # User-supplied dates: 2024-01-15 (Jan 15) .. 2024-02-15 (Feb 15); both pass CSUTLDTC strict validation
+  EIBCALEN 160
+  COMMAREA 20202020202020202020202020202020202020202020202020202020202020202031303030303030303030202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020303030303030303030303020303030303030303030303030303030302020202020202020202020202020
+  AID DFHENTER
+  CLOCK_FIXED 2024-03-15 14:23:45
+  FIELD CUSTOMI  Y
+  FIELD SDTMMI   01
+  FIELD SDTDDI   15
+  FIELD SDTYYYYI 2024
+  FIELD EDTMMI   02
+  FIELD EDTDDI   15
+  FIELD EDTYYYYI 2024
+  FIELD CONFIRMI Y
+  EXPECT_DISPLAY 'PROCESS ENTER KEY'
+  EXPECT_MSG 'Custom report submitted for printing ...'
+  EXPECT_MSG_COLOR DFHGREEN
+  EXPECT_CURSOR MONTHLYL
+  EXPECT_TDQ_WRITES 17
+  EXPECT_TDQ_LINE  1 '//TRNRPT00 JOB ''TRAN REPORT'',CLASS=A,MSGCLASS=0,                                '
+  EXPECT_TDQ_LINE  2 '// NOTIFY=&SYSUID                                                               '
+  EXPECT_TDQ_LINE  3 '//*                                                                             '
+  EXPECT_TDQ_LINE  4 '//JOBLIB JCLLIB ORDER=(''AWS.M2.CARDDEMO.PROC'')                                  '
+  EXPECT_TDQ_LINE  5 '//*                                                                             '
+  EXPECT_TDQ_LINE  6 '//STEP10 EXEC PROC=TRANREPT                                                     '
+  EXPECT_TDQ_LINE  7 '//*                                                                             '
+  EXPECT_TDQ_LINE  8 '//STEP05R.SYMNAMES DD *                                                         '
+  EXPECT_TDQ_LINE  9 'TRAN-CARD-NUM,263,16,ZD                                                         '
+  EXPECT_TDQ_LINE 10 'TRAN-PROC-DT,305,10,CH                                                          '
+  EXPECT_TDQ_LINE 11 'PARM-START-DATE,C''2024-01-15''                                                   '
+  EXPECT_TDQ_LINE 12 'PARM-END-DATE,C''2024-02-15''                                                     '
+  EXPECT_TDQ_LINE 13 '/*                                                                              '
+  EXPECT_TDQ_LINE 14 '//STEP10R.DATEPARM DD *                                                         '
+  EXPECT_TDQ_LINE 15 '2024-01-15 2024-02-15                                                           '
+  EXPECT_TDQ_LINE 16 '/*                                                                              '
+  EXPECT_TDQ_LINE 17 '/*EOF                                                                           '
+END_SCENARIO
+
+SCENARIO custom_empty_sdtmm
+  # COBOL CORPT00C.cbl:L259-L265 -- WHEN SDTMMI=SPACES OR LOW-VALUES => empty-month message + cursor on SDTMML
+  EIBCALEN 160
+  COMMAREA 20202020202020202020202020202020202020202020202020202020202020202031303030303030303030202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020303030303030303030303020303030303030303030303030303030302020202020202020202020202020
+  AID DFHENTER
+  CLOCK_FIXED 2024-03-15 14:23:45
+  FIELD CUSTOMI Y
+  FIELD SDTMMI  SPACES
+  EXPECT_DISPLAY 'PROCESS ENTER KEY'
+  EXPECT_MSG 'Start Date - Month can NOT be empty...'
+  EXPECT_CURSOR SDTMML
+  EXPECT_TDQ_WRITES 0
+END_SCENARIO
+
+SCENARIO custom_invalid_sdtmm_13
+  # COBOL CORPT00C.cbl:L329-L336 -- IF SDTMMI IS NOT NUMERIC OR SDTMMI > '12' => 'Start Date - Not a valid Month...'
+  EIBCALEN 160
+  COMMAREA 20202020202020202020202020202020202020202020202020202020202020202031303030303030303030202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020303030303030303030303020303030303030303030303030303030302020202020202020202020202020
+  AID DFHENTER
+  CLOCK_FIXED 2024-03-15 14:23:45
+  FIELD CUSTOMI  Y
+  FIELD SDTMMI   13
+  FIELD SDTDDI   15
+  FIELD SDTYYYYI 2024
+  FIELD EDTMMI   02
+  FIELD EDTDDI   15
+  FIELD EDTYYYYI 2024
+  EXPECT_DISPLAY 'PROCESS ENTER KEY'
+  EXPECT_MSG 'Start Date - Not a valid Month...'
+  EXPECT_CURSOR SDTMML
+  EXPECT_TDQ_WRITES 0
+END_SCENARIO
+
+SCENARIO custom_invalid_date_feb_30
+  # COBOL CORPT00C.cbl:L388-L406 -- CSUTLDTC returns SEV-CD != '0000' for Feb 30 2024; MSG-NUM != '2513' => start-date invalid msg
+  # The PIC checks (NUMERIC, '12', '31') pass since 02/30/2024 are numeric and within naive ranges; CSUTLDTC enforces calendar validity
+  EIBCALEN 160
+  COMMAREA 20202020202020202020202020202020202020202020202020202020202020202031303030303030303030202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020303030303030303030303020303030303030303030303030303030302020202020202020202020202020
+  AID DFHENTER
+  CLOCK_FIXED 2024-03-15 14:23:45
+  FIELD CUSTOMI  Y
+  FIELD SDTMMI   02
+  FIELD SDTDDI   30
+  FIELD SDTYYYYI 2024
+  FIELD EDTMMI   03
+  FIELD EDTDDI   15
+  FIELD EDTYYYYI 2024
+  EXPECT_DISPLAY 'PROCESS ENTER KEY'
+  EXPECT_MSG 'Start Date - Not a valid date...'
+  EXPECT_CURSOR SDTMML
+  EXPECT_TDQ_WRITES 0
+END_SCENARIO
+
+SCENARIO confirm_invalid_x
+  # COBOL CORPT00C.cbl:L484-L493 -- WHEN OTHER on CONFIRMI EVALUATE => STRING composes '"X" is not a valid value to confirm...'
+  EIBCALEN 160
+  COMMAREA 20202020202020202020202020202020202020202020202020202020202020202031303030303030303030202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020303030303030303030303020303030303030303030303030303030302020202020202020202020202020
+  AID DFHENTER
+  CLOCK_FIXED 2024-03-15 14:23:45
+  FIELD MONTHLYI Y
+  FIELD CONFIRMI X
+  EXPECT_DISPLAY 'PROCESS ENTER KEY'
+  EXPECT_MSG '"X" is not a valid value to confirm...'
+  EXPECT_CURSOR CONFIRML
+  EXPECT_TDQ_WRITES 0
+END_SCENARIO
+
+SCENARIO confirm_n_aborts
+  # COBOL CORPT00C.cbl:L480-L483 -- WHEN CONFIRMI='N' => INITIALIZE-ALL-FIELDS + ERR-FLG set; VARYING loop never executes
+  # INITIALIZE-ALL-FIELDS at L633-L646 clears MONTHLYI, YEARLYI, CUSTOMI, SDTMMI, SDTDDI, SDTYYYYI, EDTMMI, EDTDDI, EDTYYYYI, CONFIRMI, WS-MESSAGE
+  EIBCALEN 160
+  COMMAREA 20202020202020202020202020202020202020202020202020202020202020202031303030303030303030202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020303030303030303030303020303030303030303030303030303030302020202020202020202020202020
+  AID DFHENTER
+  CLOCK_FIXED 2024-03-15 14:23:45
+  FIELD MONTHLYI Y
+  FIELD CONFIRMI N
+  EXPECT_DISPLAY 'PROCESS ENTER KEY'
+  EXPECT_FIELD MONTHLYI ''
+  EXPECT_FIELD YEARLYI  ''
+  EXPECT_FIELD CUSTOMI  ''
+  EXPECT_FIELD CONFIRMI ''
+  EXPECT_CURSOR MONTHLYL
+  EXPECT_TDQ_WRITES 0
+END_SCENARIO
+
+SCENARIO tdq_write_fault
+  # COBOL CORPT00C.cbl:L515-L535 -- WIRTE-JOBSUB-TDQ (typo preserved) gets non-NORMAL RESP-CD on first WRITEQ TD
+  # SIMULATE_TDQ_FAULT triggers fault on the first WRITEQ TD; ERR-FLG-ON terminates VARYING loop => exactly 1 TDQ write attempt
+  # COBOL L529 DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD => stdout capture has 'RESP:' substring
+  EIBCALEN 160
+  COMMAREA 20202020202020202020202020202020202020202020202020202020202020202031303030303030303030202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020303030303030303030303020303030303030303030303030303030302020202020202020202020202020
+  AID DFHENTER
+  CLOCK_FIXED 2024-03-15 14:23:45
+  FIELD MONTHLYI Y
+  FIELD CONFIRMI Y
+  SIMULATE_TDQ_FAULT QIDERR
+  EXPECT_DISPLAY 'PROCESS ENTER KEY'
+  EXPECT_DISPLAY 'RESP:'
+  EXPECT_MSG 'Unable to Write TDQ (JOBS)...'
+  EXPECT_CURSOR MONTHLYL
+  EXPECT_TDQ_WRITES 1
+END_SCENARIO

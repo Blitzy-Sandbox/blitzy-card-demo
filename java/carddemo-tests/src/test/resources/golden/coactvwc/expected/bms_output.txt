@@ -1,0 +1,13 @@
+# COACTVWC (Account View, CAVW) -- captured BMS SEND MAP serialization.
+# SOURCE: app/cbl/COACTVWC.cbl (1400-SEND-SCREEN at L577-L594) issuing EXEC CICS SEND MAP(LIT-THISMAP) MAPSET(LIT-THISMAPSET) FROM(CACTVWAO) ERASE CURSOR.
+# BMS MAP: app/bms/COACTVW.bms -- MAPSET COACTVW, MAP CACTVWA, SIZE=(24,80).
+# SYMBOLIC COPYBOOK: app/cpy-bms/COACTVW.CPY -- 01 CACTVWAO REDEFINES CACTVWAI.
+# FORMAT: one record per SEND MAP per scenario; 1920-byte symbolic-map serialization + line separator.
+# SINGLE EDITABLE INPUT FIELD: ACCTSIDI (PIC X(11)) at row 5 col 38 (only ACCTSID; NO CARDSID).
+# PAN MASKING per AAP section 0.7.2: any 16-digit XREF-CARD-NUM value MUST be masked (last 4 digits visible only).
+# FIXED CLOCK per AAP section 0.6.6: CURDATEO and CURTIMEO populated from ScopedValue-injected Clock for byte-reproducible captures.
+# SSN FORMATTING: CUST-SSN PIC 9(09) -> formatted as NNN-NN-NNNN in ACSTSSNO via STRING verb at L500-L515.
+# PHONE FORMATTING: CUST-PHONE-NUM-1 and CUST-PHONE-NUM-2 PIC X(15) preserved as-is from CUSTOMER-RECORD.
+# PLACEHOLDER PENDING COBOL CAPTURE per java/MIGRATION_NOTES.md section 1.6.
+# DO NOT modify without paired COBOL re-capture per AAP section 0.6.11.
+# END.

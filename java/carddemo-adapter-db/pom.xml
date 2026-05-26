@@ -1,0 +1,325 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        carddemo-adapter-db — OPTIONAL outer-ring repository adapter of the
+        hexagonal architecture (AAP §0.3.6).
+
+        ============================================================
+        EMPTY BY DEFAULT — this is INTENTIONAL, NOT A DEFECT.
+        ============================================================
+        Per AAP §0.1.1 (architectural override: "file-based batch processing
+        by default (no PostgreSQL)") and §0.7.5 TODO resolution ("COBOL source
+        uses VSAM KSDS with fixed-width records; default path is java.nio.file
+        with fixed-width readers. JDBC adapter is empty and conditional"), this
+        module is reserved for a future DB2/relational adapter if and only if
+        the existing COBOL source contains embedded SQL. The COBOL source
+        under ../app/cbl/ does NOT contain embedded SQL (verified by
+        `grep -l "EXEC SQL" ../app/cbl/*.cbl` returning empty); therefore the
+        default state of this module is empty.
+
+        The DEFAULT outer-ring adapter is carddemo-adapter-file. This module
+        (carddemo-adapter-db) exists ONLY to satisfy the hexagonal architecture
+        contract (AAP §0.3.6): the carddemo-domain.port interfaces can be
+        implemented by EITHER carddemo-adapter-file (default, populated) OR
+        carddemo-adapter-db (optional, empty by default). The composition root
+        in carddemo-app selects between adapters at startup via constructor
+        injection per AAP §0.3.6.
+
+        Why declare this module at all?
+          1. To document the hexagonal architecture contract — port interfaces
+             from carddemo-domain.port (AccountRepository, CardRepository,
+             CardXrefRepository, CustomerRepository, TransactionRepository,
+             DailyTransactionRepository, DiscountGroupRepository,
+             TransactionCategoryBalanceRepository, TransactionTypeRepository,
+             TransactionCategoryRepository, UserSecurityRepository — AAP §0.3.1)
+             CAN be implemented by JDBC if needed.
+          2. To provide a place for future JDBC implementations (e.g.,
+             JdbcAccountRepository, JdbcCardRepository, etc.) without
+             restructuring the project.
+          3. To preserve the parent POM's <modules> list integrity (the parent
+             already declares this module as its fourth child).
+
+        Architectural rule (AAP §0.3.6, §0.6.12):
+          * This module depends ONLY on carddemo-domain (innermost ring).
+          * This module is depended on by carddemo-app (composition root) only
+            when the JDBC adapter is selected at startup — never the reverse.
+          * Outer rings of the hexagon must not be coupled to each other, so
+            this module must NOT depend on carddemo-application,
+            carddemo-batch, carddemo-adapter-file, carddemo-app, or
+            carddemo-tests.
+
+        Future contributor guidance (when adding a JDBC implementation):
+          * Add the JDBC driver dependency with <scope>provided</scope> per
+            AAP §0.4.1 — the driver is supplied at runtime by the
+            carddemo-app composition root, not bundled into this adapter.
+          * Update ../application.properties.example to document the JDBC
+            connection properties (url, user, password, driver-class-name).
+          * Add a section to ../MIGRATION_NOTES.md documenting why JDBC was
+            needed and which COBOL programs triggered the decision.
+          * Implement the port interfaces from carddemo-domain.port — each
+            JdbcXxxRepository must produce byte-for-byte identical output to
+            the corresponding FileXxxRepository per AAP §0.1.3 byte-for-byte
+            file fidelity mandate.
+          * Use only finalized Java 25 features (no preview flags) per AAP
+            §0.6.7 and §0.7.4.
+
+        Forbidden in this module (AAP §0.1.1 architectural override, §0.5.1,
+        §0.6.7, §0.6.12, §0.7.4):
+          * Concrete JDBC drivers by default (com.ibm.db2:jcc,
+            org.postgresql:postgresql, com.oracle.database.jdbc:ojdbc11,
+            com.mysql:mysql-connector-j, com.h2database:h2,
+            org.mariadb.jdbc:mariadb-java-client, org.xerial:sqlite-jdbc).
+            If added later, MUST use <scope>provided</scope>.
+          * Connection pools (com.zaxxer:HikariCP, c3p0, commons-dbcp,
+            commons-dbcp2, tomcat-jdbc) — none by default.
+          * Hibernate / JPA / jakarta.persistence / javax.persistence — the
+            domain layer is plain records, not entities.
+          * Spring / Spring Boot / Spring Data JDBC / Spring Data JPA /
+            Spring JDBC / Spring Batch / Spring Security / Spring MVC /
+            Spring Cloud AWS — entire framework family forbidden by AAP §0.6.12.
+          * MyBatis (org.mybatis:mybatis), jOOQ (org.jooq:jooq) — plain JDBC
+            with PreparedStatement is the intended path if this module is
+            ever populated.
+          * Database migration tools — Flyway (org.flywaydb:flyway-core),
+            Liquibase (org.liquibase:liquibase-core). Schema migration is
+            out of scope per AAP §0.2.2.
+          * Testcontainers (org.testcontainers:*), LocalStack — integration
+            testing infrastructure is out of scope.
+          * Lombok (org.projectlombok:lombok) — Java 25 records replace it.
+          * Apache Commons IO, Guava — java.nio.file and java.util cover all
+            needs per AAP §0.5.1.
+          * Micrometer, Prometheus, OpenTelemetry, Jaeger — observability
+            is JFR-only per AAP §0.6.12.
+          * jqwik — property tests live in carddemo-tests per AAP §0.3.1.
+          * The "enable-preview" JVM flag (AAP §0.7.4 — finalized JEPs only:
+            JEP 506 ScopedValue, JEP 510 KDF, JEP 511 Module Import,
+            JEP 513 Flexible Constructor Bodies, JEP 519 Compact Headers,
+            JEP 521 Generational Shenandoah).
+          * <source>/<target> tags — the parent POM's <release>25</release>
+            is the single source of truth for the Java language level.
+    -->
+
+    <parent>
+        <groupId>com.blitzy.carddemo</groupId>
+        <artifactId>carddemo-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>carddemo-adapter-db</artifactId>
+    <packaging>jar</packaging>
+
+    <name>CardDemo Adapter (DB / JDBC) — Optional, Empty by Default</name>
+    <description>
+        OPTIONAL JDBC adapter reserved for a future DB2/relational adapter
+        implementation. EMPTY BY DEFAULT per AAP §0.7.5: the existing COBOL
+        source under ../app/cbl/ uses VSAM KSDS exclusively (no EXEC SQL), so
+        the default outer-ring repository adapter is carddemo-adapter-file
+        (java.nio.file). This module exists ONLY to satisfy the hexagonal
+        architecture contract — the carddemo-domain.port interfaces can be
+        implemented by EITHER carddemo-adapter-file (default) OR
+        carddemo-adapter-db (optional). The composition root in carddemo-app
+        selects between adapters at startup via constructor injection. NO
+        concrete JDBC driver is declared as a dependency by default; if added
+        in the future, it MUST use scope=provided per AAP §0.4.1. NO Hibernate,
+        NO JPA, NO Spring Data, NO Flyway, NO HikariCP — see AAP §0.6.12
+        architectural override. Depends only on carddemo-domain for the port
+        interfaces.
+    </description>
+
+    <dependencies>
+        <!--
+            Internal dependency: carddemo-domain.
+            Provides the repository port interfaces (AccountRepository,
+            CardRepository, CardXrefRepository, CustomerRepository,
+            TransactionRepository, DailyTransactionRepository,
+            DiscountGroupRepository, TransactionCategoryBalanceRepository,
+            TransactionTypeRepository, TransactionCategoryRepository,
+            UserSecurityRepository — AAP §0.3.1) and the domain records they
+            exchange (AccountRecord, CardRecord, TranRecord, etc. — AAP §0.6.9)
+            that any future JDBC implementation in this module will use.
+
+            Although this module is EMPTY BY DEFAULT per AAP §0.7.5, declaring
+            this dependency now ensures:
+              (a) any future JDBC implementations can compile against the
+                  port interfaces and the domain records they exchange,
+              (b) the hexagonal architecture contract is explicitly documented
+                  in the POM (per AAP §0.3.6 diagram), and
+              (c) the Maven reactor correctly orders carddemo-domain before
+                  this module at build time.
+
+            Version inherited from the parent POM's dependencyManagement
+            (${project.version} = 1.0.0-SNAPSHOT per AAP §0.5.1).
+        -->
+        <dependency>
+            <groupId>com.blitzy.carddemo</groupId>
+            <artifactId>carddemo-domain</artifactId>
+        </dependency>
+
+        <!--
+            Production dependency: SLF4J API only (compile scope).
+            Declared as a forward-looking dependency for any future JDBC
+            repository implementations in this optional adapter module.
+            Although this module is EMPTY BY DEFAULT per AAP §0.7.5 (the COBOL
+            source contains no EXEC SQL so file-based persistence via
+            carddemo-adapter-file is the default), the SLF4J facade is
+            declared now so that when a future JDBC implementation (e.g.,
+            JdbcAccountRepository) is added, it can immediately log
+            connection/query/transaction events, SQLState code translations
+            into the FileStatus sealed hierarchy, and JDBC driver registration
+            warnings without further POM changes.
+
+            The runtime implementation (logback-classic) is supplied at runtime
+            by the composition root (carddemo-app); this adapter depends only
+            on the API, keeping it free of binding to a specific logging
+            backend per AAP §0.6.12.
+
+            Version inherited from the parent POM's dependencyManagement
+            (slf4j-api 2.0.16 per AAP §0.5.1).
+        -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!--
+            Test dependencies (test scope only) — present to support future
+            unit tests for JDBC repository implementations. Although the
+            module is EMPTY BY DEFAULT per AAP §0.7.5, declaring the test
+            infrastructure now ensures that any future JDBC implementation
+            classes added to this module's src/test/java tree can be
+            unit-tested without requiring further POM changes.
+
+            Versions inherited from the parent POM's dependencyManagement:
+              * junit-jupiter            via junit-bom 5.13.1 (AAP §0.5.1) —
+                                                 unit tests for future JDBC
+                                                 repository implementations
+                                                 will use this aggregator.
+              * junit-platform-launcher  1.13.1 — required minimum for JUnit
+                                                 Platform native discovery by
+                                                 maven-surefire-plugin 3.5.2;
+                                                 aligns with jqwik 1.9.3's
+                                                 minimum platform requirement
+                                                 used across the reactor by
+                                                 carddemo-tests (AAP §0.5.1).
+              * assertj-core 3.27.7 — fluent assertions used to
+                                                 express expectations such as
+                                                 SQL result-set parsing
+                                                 fidelity, JDBC PreparedStatement
+                                                 parameter binding correctness,
+                                                 SQLState code translation into
+                                                 the FileStatus sealed hierarchy,
+                                                 and BigDecimal scale
+                                                 preservation across JDBC
+                                                 TYPE.NUMERIC mappings
+                                                 (AAP §0.5.1).
+            Note: jqwik is NOT declared here — property-based tests for the
+            Decimals utility and any cross-module property tests live in
+            carddemo-tests per AAP §0.3.1.
+        -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            ============================================================
+            JDBC DRIVER PLACEHOLDER — INTENTIONALLY ABSENT BY DEFAULT
+            ============================================================
+            Per AAP §0.4.1, §0.5.1, §0.6.12, and §0.7.5:
+              * The COBOL source contains NO embedded SQL (verified:
+                `grep -l "EXEC SQL" ../app/cbl/*.cbl` returns empty).
+              * The default persistence path is file-based
+                (carddemo-adapter-file via java.nio.file).
+              * This module is EMPTY BY DEFAULT.
+              * If a concrete JDBC driver is added in the future (DB2,
+                PostgreSQL, Oracle, etc.), it MUST be declared with
+                <scope>provided</scope> per AAP §0.4.1 so the host
+                application (carddemo-app shaded jar) provides the driver
+                at runtime — keeping the adapter free of binding to a
+                specific database vendor.
+
+            DO NOT add any of the following by default (forbidden until
+            embedded SQL is discovered in app/cbl/):
+              * com.ibm.db2:jcc                            — DB2 LUW / z/OS
+              * org.postgresql:postgresql                  — PostgreSQL
+              * com.oracle.database.jdbc:ojdbc11           — Oracle 21c+
+              * com.mysql:mysql-connector-j                — MySQL 8+
+              * mysql:mysql-connector-java                 — MySQL 5.x/8.x legacy
+              * com.h2database:h2                          — H2 (embedded)
+              * org.mariadb.jdbc:mariadb-java-client       — MariaDB
+              * org.xerial:sqlite-jdbc                     — SQLite
+
+            DO NOT add a connection pool by default:
+              * com.zaxxer:HikariCP
+              * c3p0:c3p0  /  com.mchange:c3p0
+              * commons-dbcp:commons-dbcp
+              * org.apache.commons:commons-dbcp2
+              * org.apache.tomcat:tomcat-jdbc
+
+            DO NOT add ORM, JPA, persistence frameworks, or migration tools:
+              * org.hibernate.*                            — Hibernate ORM
+              * jakarta.persistence:jakarta.persistence-api
+              * javax.persistence:javax.persistence-api
+              * org.springframework.data:spring-data-jdbc
+              * org.springframework.data:spring-data-jpa
+              * org.springframework:spring-jdbc
+              * org.mybatis:mybatis
+              * org.jooq:jooq
+              * org.flywaydb:flyway-core
+              * org.liquibase:liquibase-core
+            ============================================================
+        -->
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+                maven-compiler-plugin — activated for this module so the
+                parent's pluginManagement (version 3.13.0,
+                <release>25</release>, no preview flag per AAP §0.7.4,
+                -parameters for record component names) applies during the
+                compile phase. The Java language level is set ONCE in the
+                parent POM; this child must not redeclare it. Although the
+                module is EMPTY BY DEFAULT per AAP §0.7.5, declaring the
+                plugin keeps the compile lifecycle wired correctly for any
+                future production source files (e.g., JdbcAccountRepository,
+                JdbcCardRepository, etc.) added to src/main/java.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+
+            <!--
+                maven-surefire-plugin — activated for this module so the
+                parent's pluginManagement (version 3.5.2, JUnit Platform
+                native discovery, no "enable-preview" argLine per AAP §0.7.4)
+                applies during the test phase. Test classes are discovered by
+                the standard **/*Test.java and **/*Tests.java patterns.
+                Required so that any future JDBC unit tests added to this
+                module's src/test/java tree are discovered and executed
+                during `mvn test`.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

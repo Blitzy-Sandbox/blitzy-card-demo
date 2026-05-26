@@ -1,0 +1,17 @@
+# COUSR02C (User Update Online Transaction (CICS)) -- expected/bms_output.txt.
+# SOURCE: app/cbl/COUSR02C.cbl -- the COBOL reference program being translated.
+# OUTPUT KIND: Online program output captured from CICS pseudo-conversation execution.
+# EXPECTED CONTENT: Captured BMS SEND MAP serialization: one frame per SEND per scenario, 1920-byte symbolic-map serialization + line separator.
+#
+# PLACEHOLDER PENDING COBOL CAPTURE per java/MIGRATION_NOTES.md section 1.6.
+# DO NOT modify without paired COBOL re-capture per AAP section 0.6.11.
+# AUTHORITY: AAP section 0.6.11 (golden-record harness PR gate) +
+#            AAP section 0.7.1 (verbatim preservation) +
+#            AAP section 0.7.2 (no full PAN, no plaintext password in capture output;
+#                               capture script MUST apply masking before commit).
+#
+# Test harness behavior until capture lands:
+#   com.blitzy.carddemo.tests.golden.<ProgramClass>GoldenTest is annotated
+#   @Disabled("Awaiting COBOL capture per java/MIGRATION_NOTES.md section 1.6")
+#   so this placeholder content does NOT cause CI failures.
+# END.

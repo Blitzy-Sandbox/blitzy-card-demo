@@ -1,0 +1,12 @@
+# golden/cobil00c/expected/acctdata.txt
+# Status: PLACEHOLDER -- replace with byte-perfect captured post-REWRITE ACCTDATA from COBIL00C execution
+# Format: 300-byte fixed-width ACCOUNT-RECORD per app/cpy/CVACT01Y.cpy; one record per line + LF
+# Sort order: ACCT-ID ascending (preserved by VSAM KSDS REWRITE -- in-place, no resort)
+# REWRITE semantics (COBIL00C.cbl L379-L385): EXEC CICS REWRITE replaces the 300-byte record in-place;
+#   file byte length is UNCHANGED post-operation -- only ACCT-CURR-BAL bytes (offset 13-24) change
+# Invariant: ACCT-CURR-BAL_after = ACCT-CURR-BAL_before - TRAN-AMT (where TRAN-AMT = original ACCT-CURR-BAL)
+#   In COBIL00C this means ACCT-CURR-BAL_after = 0.00 (full balance paid; see L234: COMPUTE)
+# BigDecimal scale=2 preserved per AAP Sec 0.6.1 -- '1.20' never normalized to '1.2'; '0.00' never to '0'
+# Only records for accounts touched by happy-path scenarios are mutated; all others byte-identical to input
+# Capture procedure: java/MIGRATION_NOTES.md Sec 1.6 (COBOL run path produces the post-REWRITE fixture)
+# Until capture: associated assertions in CoBil00CGoldenTest MUST be @Disabled per AAP Sec 0.6.11

@@ -1,0 +1,10 @@
+# stdout.txt -- placeholder for captured COBOL DISPLAY output (System.out analog) for CORPT00C
+# Status: PLACEHOLDER (awaiting COBOL capture per java/MIGRATION_NOTES.md section 1.6)
+# Test class com.blitzy.carddemo.tests.golden.CoRpt00CGoldenTest is @Disabled per AAP section 0.6.11
+# CORPT00C has exactly TWO DISPLAY sites in app/cbl/CORPT00C.cbl:
+#   L210: DISPLAY 'PROCESS ENTER KEY' fires UNCONDITIONALLY in PROCESS-ENTER-KEY; every AID DFHENTER scenario emits one 17-byte literal
+#   L529: DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD fires only on non-NORMAL WRITEQ TD QUEUE('JOBS') resp (tdq_write_fault scenario)
+# Expected captured replacement: 12-15 'PROCESS ENTER KEY' lines (one per ENTER scenario) plus 1 'RESP:'/'REAS:' line from tdq_write_fault
+# Other paragraphs (RETURN-TO-PREV-SCREEN, SEND-TRNRPT-SCREEN, INITIALIZE-ALL-FIELDS, POPULATE-HEADER-INFO, etc.) emit no stdout
+# Capture procedure: see java/MIGRATION_NOTES.md section 1.6 (per AAP section 0.7.5)
+# DO NOT modify without re-running golden capture (per AAP section 0.7.5)

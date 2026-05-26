@@ -1,0 +1,8 @@
+# COACTVWC (Account View, CAVW) -- captured COBOL DISPLAY stream.
+# SOURCE: app/cbl/COACTVWC.cbl (PROGRAM-ID COACTVWC at L23-L24).
+# EXPECTED: EMPTY -- COACTVWC has ZERO active DISPLAY verbs across all 941 lines.
+# VERIFICATION: grep -ic 'DISPLAY' app/cbl/COACTVWC.cbl yields 4 matches, all in comments or 88-level VALUE literals.
+# PLACEHOLDER PENDING COBOL CAPTURE per java/MIGRATION_NOTES.md section 1.6.
+# DO NOT modify without paired COBOL re-capture per AAP section 0.6.11.
+# AUTHORITY: AAP section 0.7.1 (verbatim preservation) + AAP section 0.6.11 (PR gate).
+# END.

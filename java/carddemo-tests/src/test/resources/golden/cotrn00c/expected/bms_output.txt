@@ -1,0 +1,12 @@
+# COTRN00C captured BMS SEND MAP frames -- PENDING COBOL baseline capture.
+# See java/MIGRATION_NOTES.md section 1.6 for the capture procedure.
+# Until captured, the consuming test class CoTrn00CGoldenTest is @Disabled
+# per AAP section 0.6.11.
+#
+# Expected captured artifact: approximately 7 frames concatenated (10
+# scenarios in input_scenario.txt minus 3 XCTL-only scenarios that produce
+# no SEND MAP for COTRN00C: first_time_entry, enter_select_s_row5, and
+# pf3_to_main_menu). Each frame is 24 rows x 80 columns of EBCDIC IBM-1047
+# transcoded to ASCII. CURDATE/CURTIME use a fixed java.time.Clock injected
+# via ScopedValue (AAP 0.6.4) for determinism. Two ERASE paths exist:
+# SEND-ERASE-YES (default) and SEND-ERASE-NO (PF7/PF8 boundary overlays).

@@ -1,0 +1,171 @@
+# COTRN00C (Transaction List, CT00) -- Multi-Scenario Pseudo-Conversation Driver
+# Source: app/cbl/COTRN00C.cbl, app/bms/COTRN00.bms, app/cpy-bms/COTRN00.CPY
+# Authoritative contract: README.md in this folder.
+# Encoding: ASCII; line endings: LF only; trailing LF: exactly one.
+# Consumed by: com.blitzy.carddemo.tests.golden.CoTrn00CGoldenTest (extends
+# com.blitzy.carddemo.tests.golden.GoldenRecordTest).
+#
+# Directive grammar:
+#   SCENARIO <name>
+#   COMMAREA <hex-or-EMPTY>
+#   EIBCALEN <int>
+#   AID <DFHENTER|DFHPF3|DFHPF7|DFHPF8|...>
+#   FIELD <name> <value>
+#   EXPECT_XCTL <PROGRAM-NAME>
+#   EXPECT_MSG '<verbatim-message>'
+#   EXPECT_PAGE <int>
+#   EXPECT_FIELD <name> <value-or-SPACES-or-LOW-VALUES>
+#   EXPECT_CURSOR <field-name>
+#   EXPECT_TRANSACT_UNCHANGED
+#   END_SCENARIO
+#
+# COTRN00C is READ-ONLY (STARTBR / READNEXT / READPREV / ENDBR only; no WRITE,
+# no REWRITE, no DELETE, no UNLOCK). EVERY scenario asserts
+# EXPECT_TRANSACT_UNCHANGED.
+#
+# Verbatim error messages from app/cbl/COTRN00C.cbl (preserve EXACTLY):
+#   L199  'Invalid selection. Valid value is S'                 (NO trailing ellipsis)
+#   L214  'Tran ID must be Numeric ...'                          (space before ellipsis)
+#   L248  'You are already at the top of the page...'
+#   L270  'You are already at the bottom of the page...'
+#   L608  'You are at the top of the page...'                    (DISTINCT from L248)
+#   L615  'Unable to lookup transaction...'                      (also at L649, L683)
+#   L642  'You have reached the bottom of the page...'
+#   L676  'You have reached the top of the page...'              (DISTINCT from L248, L608)
+#   L132  CCDA-MSG-INVALID-KEY = 'Invalid key pressed. Please see below...         '
+#         (from app/cpy/CSMSG01Y.cpy:L20-L21; 50 chars incl. trailing 9 spaces)
+
+# ---------------------------------------------------------------------------
+# Scenario inventory (10 blocks; do NOT add or remove without folder-contract
+# revision). Each block is preceded by a 1-line citation comment identifying
+# the COBOL paragraph(s) and line range driving the expected outcome.
+# ---------------------------------------------------------------------------
+
+# Scenario 1 -- First-time entry with EIBCALEN=0 -- L107-L109 -- XCTL to COSGN00C
+# COBOL: IF EIBCALEN = 0 / MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM / PERFORM
+# RETURN-TO-PREV-SCREEN at L107-L109; RETURN-TO-PREV-SCREEN at L510-L521 issues
+# EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM). No TRANSACT access on this path.
+SCENARIO first_time_entry
+COMMAREA EMPTY
+EIBCALEN 0
+EXPECT_XCTL COSGN00C
+EXPECT_TRANSACT_UNCHANGED
+END_SCENARIO
+
+# Scenario 2 -- Initial display of page 1 -- L110-L116, L279-L328 -- 10 records displayed
+# COBOL: EIBCALEN > 0 but CDEMO-PGM-CONTEXT = ENTER (0) at L112; SET
+# CDEMO-PGM-REENTER TO TRUE at L113; MOVE LOW-VALUES TO COTRN0AO at L114;
+# PERFORM PROCESS-ENTER-KEY (L146) then PROCESS-PAGE-FORWARD (L279-L328);
+# STARTBR + 10x READNEXT; CDEMO-CT00-PAGE-NUM = 1; cursor on TRNIDIN (L105).
+SCENARIO initial_display_page1
+COMMAREA EMPTY
+EIBCALEN 256
+FIELD TRNIDIN ''
+EXPECT_PAGE 1
+EXPECT_CURSOR TRNIDIN
+EXPECT_TRANSACT_UNCHANGED
+END_SCENARIO
+
+# Scenario 3 -- PF8 forward to page 2 -- L127-L128, L257-L274, L279-L328
+# COBOL: EVALUATE EIBAID WHEN DFHPF8 (L127-L128) PERFORM PROCESS-PF8-KEY;
+# PROCESS-PF8-KEY at L257-L274 with NEXT-PAGE-YES (L267) PERFORM
+# PROCESS-PAGE-FORWARD (L268); PAGE-NUM increments at L306-L307 to 2.
+SCENARIO pf8_forward_to_page2
+EIBCALEN 256
+AID DFHPF8
+EXPECT_PAGE 2
+EXPECT_TRANSACT_UNCHANGED
+END_SCENARIO
+
+# Scenario 4 -- PF8 at last page boundary -- L267-L272 -- verbatim 'You are already at the bottom of the page...'
+# COBOL: PROCESS-PF8-KEY at L257-L274; NEXT-PAGE-YES is FALSE (set at L312 or
+# L315 after last page's lookahead READNEXT returned ENDFILE); ELSE branch at
+# L269 MOVES the message to WS-MESSAGE; SET SEND-ERASE-NO (L272); PERFORM
+# SEND-TRNLST-SCREEN. Screen retains prior content (no ERASE on SEND).
+SCENARIO pf8_at_last_page
+EIBCALEN 256
+AID DFHPF8
+EXPECT_MSG 'You are already at the bottom of the page...'
+EXPECT_TRANSACT_UNCHANGED
+END_SCENARIO
+
+# Scenario 5 -- PF7 backward to page 1 -- L125-L126, L234-L246, L333-L376
+# COBOL: EVALUATE EIBAID WHEN DFHPF7 (L125-L126) PERFORM PROCESS-PF7-KEY;
+# PROCESS-PF7-KEY at L234-L252; IF CDEMO-CT00-PAGE-NUM > 1 (L245) PERFORM
+# PROCESS-PAGE-BACKWARD (L333-L376); READPREV-driven backward browse repaints
+# page 1; SUBTRACT 1 FROM CDEMO-CT00-PAGE-NUM at L364 yields 1.
+SCENARIO pf7_backward_to_page1
+EIBCALEN 256
+AID DFHPF7
+EXPECT_PAGE 1
+EXPECT_TRANSACT_UNCHANGED
+END_SCENARIO
+
+# Scenario 6 -- PF7 at top page boundary -- L244-L251 -- verbatim 'You are already at the top of the page...'
+# COBOL: PROCESS-PF7-KEY at L234-L252; CDEMO-CT00-PAGE-NUM = 1 fails the
+# IF > 1 test at L245; ELSE branch at L247 MOVES the message to WS-MESSAGE
+# (L248-L249); SET SEND-ERASE-NO (L250); PERFORM SEND-TRNLST-SCREEN. This is
+# L248's wording -- DISTINCT from L608 ('You are at the top...') and L676
+# ('You have reached the top...').
+SCENARIO pf7_at_top_page
+EIBCALEN 256
+AID DFHPF7
+EXPECT_MSG 'You are already at the top of the page...'
+EXPECT_TRANSACT_UNCHANGED
+END_SCENARIO
+
+# Scenario 7 -- ENTER with 'S' selection on row 5 -- L120-L121, L148-L195 -- XCTL to COTRN01C
+# COBOL: EVALUATE EIBAID WHEN DFHENTER (L120-L121) PERFORM PROCESS-ENTER-KEY;
+# PROCESS-ENTER-KEY at L146; EVALUATE TRUE WHEN SEL0005I NOT = SPACES AND
+# LOW-VALUES (L161) MOVE SEL0005I TO CDEMO-CT00-TRN-SEL-FLG; MOVE TRNID05I TO
+# CDEMO-CT00-TRN-SELECTED (L162-L163); EVALUATE CDEMO-CT00-TRN-SEL-FLG WHEN
+# 'S' (L186) MOVE 'COTRN01C' TO CDEMO-TO-PROGRAM (L188); EXEC CICS XCTL.
+SCENARIO enter_select_s_row5
+EIBCALEN 256
+AID DFHENTER
+FIELD SEL0005 'S'
+EXPECT_XCTL COTRN01C
+EXPECT_TRANSACT_UNCHANGED
+END_SCENARIO
+
+# Scenario 8 -- ENTER with invalid selection char 'X' on row 3 -- L196-L202 -- verbatim 'Invalid selection. Valid value is S' (NO ellipsis)
+# COBOL: PROCESS-ENTER-KEY at L146; EVALUATE TRUE WHEN SEL0003I NOT = SPACES
+# AND LOW-VALUES (L155) MOVE SEL0003I TO CDEMO-CT00-TRN-SEL-FLG; MOVE TRNID03I
+# TO CDEMO-CT00-TRN-SELECTED (L156-L157); EVALUATE CDEMO-CT00-TRN-SEL-FLG WHEN
+# OTHER (L196) MOVE 'Invalid selection. Valid value is S' TO WS-MESSAGE
+# (L198-L200). This is the ONLY COTRN00C error message WITHOUT trailing '...'.
+SCENARIO enter_invalid_selection_x
+EIBCALEN 256
+AID DFHENTER
+FIELD SEL0003 'X'
+EXPECT_MSG 'Invalid selection. Valid value is S'
+EXPECT_TRANSACT_UNCHANGED
+END_SCENARIO
+
+# Scenario 9 -- ENTER with non-numeric TRNIDIN search -- L206-L219 -- verbatim 'Tran ID must be Numeric ...' (space before ellipsis)
+# COBOL: PROCESS-ENTER-KEY at L146; no SEL row populated, EVALUATE TRUE falls
+# to WHEN OTHER (L179) clearing CDEMO-CT00-TRN-SEL-FLG and -SELECTED; IF
+# TRNIDINI NOT = SPACES AND LOW-VALUES (L206-L208) ELSE IF TRNIDINI IS NUMERIC
+# (L209) FAILS for 'ABCD'; ELSE branch (L211) MOVES the message to WS-MESSAGE
+# (L213-L215). Preserve EXACTLY: one space between 'Numeric' and '...'.
+SCENARIO trnidin_non_numeric
+EIBCALEN 256
+AID DFHENTER
+FIELD TRNIDIN ABCD
+EXPECT_MSG 'Tran ID must be Numeric ...'
+EXPECT_CURSOR TRNIDIN
+EXPECT_TRANSACT_UNCHANGED
+END_SCENARIO
+
+# Scenario 10 -- PF3 BACK to Main Menu -- L122-L124, L510-L521 -- XCTL to COMEN01C
+# COBOL: EVALUATE EIBAID WHEN DFHPF3 (L122-L123) MOVE 'COMEN01C' TO
+# CDEMO-TO-PROGRAM (L123); PERFORM RETURN-TO-PREV-SCREEN (L124);
+# RETURN-TO-PREV-SCREEN at L510-L521 issues EXEC CICS XCTL PROGRAM(COMEN01C).
+# COTRN00C's PF3 is HARDCODED to COMEN01C; it does NOT consult
+# CDEMO-FROM-PROGRAM (unlike COTRN01C which can return to caller).
+SCENARIO pf3_to_main_menu
+EIBCALEN 256
+AID DFHPF3
+EXPECT_XCTL COMEN01C
+EXPECT_TRANSACT_UNCHANGED
+END_SCENARIO

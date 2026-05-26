@@ -1,0 +1,14 @@
+# COACTUPC golden-record CUSTDAT post-REWRITE capture (placeholder)
+# Authority: AAP section 0.1.1 (byte-for-byte parity), 0.4.1 (REWRITE), 0.6.11 (PR gate), 0.7.5 (capture)
+# Source layout: app/cpy/CVCUS01Y.cpy CUSTOMER-RECORD (500 bytes per record)
+# Field map (1-based offsets): CUST-ID 1-9 (9(09)) FIRST-NAME 10-34 (X25) MIDDLE-NAME 35-59 (X25) LAST-NAME 60-84 (X25)
+# ADDR-LINE-1 85-134 (X50) ADDR-LINE-2 135-184 (X50) ADDR-LINE-3 185-234 (X50) STATE-CD 235-236 (X02) COUNTRY-CD 237-239 (X03)
+# ADDR-ZIP 240-249 (X10) PHONE-NUM-1 250-264 (X15) PHONE-NUM-2 265-279 (X15) SSN 280-288 (9(09)) GOVT-ID 289-308 (X20)
+# DOB-YYYY-MM-DD 309-318 (X10) EFT-ACCOUNT-ID 319-328 (X10) PRI-CARD-HOLDER-IND 329 (X01) FICO-CREDIT-SCORE 330-332 (9(03)) FILLER 333-500 (X168)
+# Source fixture (initial state): app/data/ASCII/custdata.txt (50 records x 500 bytes = 25000 bytes + 50 LF terminators = 25050 bytes)
+# Expected post-state per scenario: see input_scenario.txt EXPECT_CUSTDAT_UNCHANGED / EXPECT_CUSTDAT_CHANGED directives
+# In-place REWRITE invariant: file length MUST equal source fixture length; only affected 500-byte slot(s) differ
+# SYNCPOINT ROLLBACK invariant: when scenario pf05_save_rollback_on_custdat_fail runs, this file MUST be byte-identical to app/data/ASCII/custdata.txt (CUSTDAT REWRITE never succeeded)
+# Successful REWRITE (scenario pf05_save_success_rewrite_both): file differs ONLY in the affected 500-byte slot for the edited customer record
+# This file remains a placeholder until the capture procedure in java/MIGRATION_NOTES.md section 1.6 runs
+# DO NOT manually edit: regenerate via capture procedure to maintain byte-for-byte parity

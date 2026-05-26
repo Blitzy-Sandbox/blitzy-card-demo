@@ -1,0 +1,706 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        Parent POM for the CardDemo Java 25 LTS migration.
+
+        Source language: COBOL (preserved unchanged under ../app/)
+        Target language: Java 25 LTS
+        Architecture:    Hexagonal, plain factories + constructor injection (no Spring)
+        Persistence:     File-based default (java.nio.file), optional JDBC adapter
+        Per AAP §0.5.1 / §0.7  ─ No Spring, no PostgreSQL, no Spring Batch.
+    -->
+
+    <groupId>com.blitzy.carddemo</groupId>
+    <artifactId>carddemo-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>CardDemo (Java 25 LTS) — Parent</name>
+    <description>
+        AWS CardDemo: source-to-source migration from COBOL/CICS/VSAM/JCL/BMS to Java 25 LTS.
+        Multi-module hexagonal layout; the COBOL source tree at ../app/ remains the immutable
+        reference implementation and the source of golden-record test fixtures.
+    </description>
+
+    <modules>
+        <module>carddemo-domain</module>
+        <module>carddemo-application</module>
+        <module>carddemo-adapter-file</module>
+        <module>carddemo-adapter-db</module>
+        <module>carddemo-batch</module>
+        <module>carddemo-app</module>
+        <module>carddemo-tests</module>
+    </modules>
+
+    <properties>
+        <!-- Java 25 LTS: per AAP §0.3.4 and §0.7.3 ("Java 25 finalized
+             features mandate"), this build uses the modern <release>
+             flag exclusively. The deprecated <source>/<target> property
+             pair is intentionally omitted: per the AAP build rule, the
+             maven-compiler-plugin must compile against the Java 25
+             platform API using <release>${maven.compiler.release}</release>
+             alone. Setting source/target alongside release is redundant
+             at best and a hazard at worst, because mismatched
+             source/target values silently override release. Keeping
+             only release=25 ensures every translated COBOL paragraph
+             compiles against the exact Java 25 platform API surface
+             specified in the AAP. -->
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- Maven plugin versions (per AAP §0.5.1) -->
+        <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
+        <maven-failsafe-plugin.version>3.5.2</maven-failsafe-plugin.version>
+        <maven-shade-plugin.version>3.6.0</maven-shade-plugin.version>
+        <maven-jar-plugin.version>3.4.2</maven-jar-plugin.version>
+        <maven-resources-plugin.version>3.3.1</maven-resources-plugin.version>
+        <maven-install-plugin.version>3.1.3</maven-install-plugin.version>
+        <maven-deploy-plugin.version>3.1.3</maven-deploy-plugin.version>
+        <maven-clean-plugin.version>3.4.0</maven-clean-plugin.version>
+        <maven-site-plugin.version>3.20.0</maven-site-plugin.version>
+        <!--
+            maven-enforcer-plugin — forbidden-artifact lint as a Maven gate
+            (Refine-PR deliverable Item 2). Bound to the `verify` phase in
+            every reactor module, the plugin's `bannedDependencies` rule
+            walks each module's resolved (transitive) dependency tree and
+            fails the build the moment a Spring / Hibernate / PostgreSQL /
+            HikariCP coordinate appears. This is a defense-in-depth
+            check that runs in addition to the GitHub Actions workflow
+            scan (.github/workflows/build.yml step "Forbidden artifact
+            lint") — both gates use the same forbidden-artifact list so
+            a coordinate banned in one is automatically banned in the
+            other, and a developer who runs `mvn verify` locally hits
+            the same failure they would hit in CI.
+
+            Version 3.5.0 is the latest stable release at the time of
+            this refactor and ships with the Maven 3.9.x + Java 25
+            compatibility fixes; it is required for the
+            `requireJavaVersion>=25` rule to evaluate the JVM's
+            major version correctly under Java 25 LTS.
+        -->
+        <maven-enforcer-plugin.version>3.5.0</maven-enforcer-plugin.version>
+        <!--
+            maven-antrun-plugin — second half of the Refine-PR forbidden-
+            artifact gate (Item 2). The plugin's Ant `<fileset>` +
+            `<containsregexp>` combination scans every pom.xml and
+            workflow YAML in the repository for ACTIVE use of the
+            preview-enabling JVM/compiler flag (two ASCII hyphens
+            followed by the word "enable-preview", referred to in the
+            scan logic below as the "preview flag"). Active use is
+            defined as a `<arg>` block carrying the preview flag, an
+            `<argLine>` block carrying it, or a non-commented workflow
+            step line referencing it. Javadoc / Javadoc-style comment
+            mentions that document the preview flag as a FORBIDDEN
+            flag (per AAP §0.7.4) are not active usages and are
+            correctly excluded by the regex patterns.
+
+            The scan is declared at the parent reactor level with
+            `<inherited>false</inherited>` so child modules do not
+            re-run it; one execution per `mvn verify` invocation is
+            sufficient because the regex walks the full repository
+            tree rooted at `${session.executionRootDirectory}/..`.
+        -->
+        <maven-antrun-plugin.version>3.1.0</maven-antrun-plugin.version>
+
+        <!--
+            Library versions (per AAP §0.5.1).
+
+            Security advisories drove two upgrades since the initial pin
+            published in the AAP. The Java agent retains AAP-compliance
+            by treating "no forbidden frameworks" + "all artifacts from
+            Maven Central" as the binding constraint; minor patch-level
+            upgrades to CVE-affected artifacts are explicitly permitted
+            under AAP §0.7.2 ("preserve all existing PCI-relevant
+            controls" and "the user explicitly excludes ... vulnerable
+            dependencies").
+
+              * logback 1.5.12 -> 1.5.19   — addresses CVE-2025-11226
+                                              (logback-core <=1.5.18,
+                                              fixed in 1.5.19); also
+                                              picks up the 1.5.13 SSRF
+                                              fix and intermediate
+                                              configuration ACE
+                                              advisories. Runtime
+                                              ServiceLoader contract
+                                              and SLF4J 2.x binding
+                                              compatibility unchanged
+                                              between 1.5.12 and
+                                              1.5.19.
+              * assertj 3.26.3 -> 3.27.7   — addresses
+                                              CVE-2026-24400 (XXE in
+                                              assertj-core XML
+                                              assertion utilities,
+                                              fixed in 3.27.7). Test
+                                              scope only; the fix is
+                                              backward-compatible.
+        -->
+        <junit-jupiter.version>5.13.1</junit-jupiter.version>
+        <junit-platform.version>1.13.1</junit-platform.version>
+        <assertj.version>3.27.7</assertj.version>
+        <jqwik.version>1.9.3</jqwik.version>
+        <slf4j.version>2.0.16</slf4j.version>
+        <logback.version>1.5.19</logback.version>
+
+        <!--
+            JaCoCo Maven plugin — enforces AAP §0.6.1 mandate
+            ("100% line coverage on monetary code"). Version 0.8.14 is
+            required because it is the first release with OFFICIAL
+            support for Java 25 class files (major version 69); earlier
+            versions (0.8.11–0.8.13) either lack Java 25 support
+            entirely or only ship experimental support. Configured in
+            the carddemo-tests module to fail `mvn verify` if
+            Decimals.java line coverage drops below 100%.
+        -->
+        <jacoco-maven-plugin.version>0.8.14</jacoco-maven-plugin.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Internal module dependencies -->
+            <dependency>
+                <groupId>com.blitzy.carddemo</groupId>
+                <artifactId>carddemo-domain</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.blitzy.carddemo</groupId>
+                <artifactId>carddemo-application</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.blitzy.carddemo</groupId>
+                <artifactId>carddemo-adapter-file</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.blitzy.carddemo</groupId>
+                <artifactId>carddemo-adapter-db</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.blitzy.carddemo</groupId>
+                <artifactId>carddemo-batch</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.blitzy.carddemo</groupId>
+                <artifactId>carddemo-app</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- Logging facade and backend -->
+            <dependency>
+                <groupId>org.slf4j</groupId>
+                <artifactId>slf4j-api</artifactId>
+                <version>${slf4j.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>ch.qos.logback</groupId>
+                <artifactId>logback-classic</artifactId>
+                <version>${logback.version}</version>
+            </dependency>
+
+            <!-- Test scope -->
+            <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>${junit-jupiter.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.junit.platform</groupId>
+                <artifactId>junit-platform-launcher</artifactId>
+                <version>${junit-platform.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.assertj</groupId>
+                <artifactId>assertj-core</artifactId>
+                <version>${assertj.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>net.jqwik</groupId>
+                <artifactId>jqwik</artifactId>
+                <version>${jqwik.version}</version>
+                <scope>test</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>${maven-compiler-plugin.version}</version>
+                    <configuration>
+                        <release>${maven.compiler.release}</release>
+                        <compilerArgs>
+                            <!-- Finalized JEPs only per AAP §0.3.4; no preview features enabled. -->
+                            <!-- Keep -Xlint warnings on for code-quality signals; tune at module level. -->
+                            <arg>-Xlint:all</arg>
+                            <arg>-Xlint:-preview</arg>
+                            <arg>-Xlint:-serial</arg>
+                            <arg>-parameters</arg>
+                        </compilerArgs>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${maven-surefire-plugin.version}</version>
+                    <configuration>
+                        <!--
+                            argLine composition contract:
+
+                            @{argLine} is the Maven late-binding placeholder
+                            that JaCoCo's prepare-agent execution writes into
+                            during the "initialize" phase. The literal flags
+                            that follow (-XX:+EnableDynamicAgentLoading,
+                            -Xshare:auto) are the project-wide JVM flags
+                            mandated by AAP §0.6.7 (jqwik / AssertJ-style
+                            bytecode helpers require dynamic agent loading
+                            under JDK 25). Modules that do NOT enable JaCoCo
+                            still inherit a benign empty @{argLine} expansion.
+
+                            DO NOT replace @{argLine} with ${argLine} — only
+                            the @{} placeholder is reevaluated at every
+                            Surefire invocation; ${} is captured once at
+                            model-resolution time and would freeze JaCoCo
+                            out of the test argLine.
+                        -->
+                        <argLine>@{argLine} -XX:+EnableDynamicAgentLoading -Xshare:auto</argLine>
+                        <includes>
+                            <include>**/*Test.java</include>
+                            <include>**/*Tests.java</include>
+                            <include>**/*Properties.java</include>
+                        </includes>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-shade-plugin</artifactId>
+                    <version>${maven-shade-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-jar-plugin</artifactId>
+                    <version>${maven-jar-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-resources-plugin</artifactId>
+                    <version>${maven-resources-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-install-plugin</artifactId>
+                    <version>${maven-install-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-deploy-plugin</artifactId>
+                    <version>${maven-deploy-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-clean-plugin</artifactId>
+                    <version>${maven-clean-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-site-plugin</artifactId>
+                    <version>${maven-site-plugin.version}</version>
+                </plugin>
+                <!--
+                    JaCoCo Maven plugin — code-coverage measurement and
+                    threshold enforcement. The plugin is declared in the
+                    parent pluginManagement so every module gets the
+                    same version pin (per AAP §0.5.1 pinning discipline).
+                    The actual coverage gate is configured in
+                    carddemo-tests/pom.xml because that is the module
+                    that exercises Decimals.java via DecimalsProperties;
+                    AAP §0.6.1 mandates 100% line coverage on monetary
+                    code (Decimals.java is the canonical monetary
+                    utility).
+                -->
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco-maven-plugin.version}</version>
+                </plugin>
+                <!--
+                    ============================================================
+                    maven-enforcer-plugin — Refine-PR forbidden-artifact gate
+                    (Item 2). Pinned in pluginManagement so every module
+                    inherits the same version and the same `enforce`
+                    execution wiring; the actual `<plugins>` activation
+                    appears at the bottom of this POM.
+
+                    Rules configured in the inherited execution:
+
+                      1. bannedDependencies — fails the build the moment
+                         a Spring / Spring Boot / Spring Batch /
+                         Spring Cloud / Spring Security / Spring Data /
+                         Hibernate / PostgreSQL / HikariCP coordinate
+                         appears anywhere in the resolved (transitive)
+                         dependency tree. The pattern set is intentionally
+                         exhaustive of the user-mandated forbidden list
+                         from the Refine-PR brief (org.springframework,
+                         org.postgresql, org.hibernate, com.zaxxer.hikari);
+                         related Spring-family coordinates
+                         (springframework.boot, springframework.batch,
+                         springframework.cloud, springframework.security,
+                         springframework.data, hibernate.orm,
+                         hibernate.validator) are added because the
+                         AAP §0.7.4 forbidden-frameworks-and-runtimes
+                         list groups them together as "no Spring
+                         ecosystem".
+
+                      2. requireMavenVersion — Maven 3.9.0 or later is
+                         required because the parent POM uses
+                         `<release>25</release>` which depends on
+                         maven-compiler-plugin 3.13.0 + Maven 3.9.x.
+
+                      3. requireJavaVersion — Java 25 or later is
+                         required because `<release>25</release>`
+                         compiles against the Java 25 platform API.
+                         The lower bound matches AAP §0.5.1 which
+                         pins OpenJDK 25 LTS as the target runtime.
+                    ============================================================
+                -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-enforcer-plugin</artifactId>
+                    <version>${maven-enforcer-plugin.version}</version>
+                    <executions>
+                        <execution>
+                            <id>enforce-forbidden-artifacts-and-toolchain</id>
+                            <goals>
+                                <goal>enforce</goal>
+                            </goals>
+                            <phase>verify</phase>
+                            <configuration>
+                                <rules>
+                                    <!--
+                                        bannedDependencies — exhaustive
+                                        forbidden-artifact list per AAP
+                                        §0.7.4 and the Refine-PR Item 2
+                                        brief. searchTransitive=true so
+                                        a banned coordinate brought in
+                                        transitively (e.g., Spring
+                                        Boot pulled by a misconfigured
+                                        third-party library) is still
+                                        caught.
+                                    -->
+                                    <bannedDependencies>
+                                        <excludes>
+                                            <!-- Spring ecosystem (AAP §0.7.4) -->
+                                            <exclude>org.springframework:*</exclude>
+                                            <exclude>org.springframework.boot:*</exclude>
+                                            <exclude>org.springframework.batch:*</exclude>
+                                            <exclude>org.springframework.cloud:*</exclude>
+                                            <exclude>org.springframework.security:*</exclude>
+                                            <exclude>org.springframework.data:*</exclude>
+                                            <exclude>org.springframework.amqp:*</exclude>
+                                            <exclude>org.springframework.kafka:*</exclude>
+                                            <exclude>org.springframework.session:*</exclude>
+                                            <exclude>org.springframework.shell:*</exclude>
+                                            <!-- PostgreSQL (AAP §0.7.4 — no relational default) -->
+                                            <exclude>org.postgresql:*</exclude>
+                                            <!-- Hibernate ORM and Validator (AAP §0.7.4 — no JPA) -->
+                                            <exclude>org.hibernate:*</exclude>
+                                            <exclude>org.hibernate.orm:*</exclude>
+                                            <exclude>org.hibernate.validator:*</exclude>
+                                            <!-- HikariCP (the user wrote "com.zaxxer.hikari";
+                                                 the actual Maven coordinate group is
+                                                 com.zaxxer with artifact HikariCP. We ban
+                                                 all com.zaxxer:* artifacts because the only
+                                                 published artifacts under that groupId are
+                                                 HikariCP variants). -->
+                                            <exclude>com.zaxxer:*</exclude>
+                                        </excludes>
+                                        <message>
+Forbidden artifact detected in dependency tree. AAP §0.7.4 explicitly
+forbids the following frameworks and runtimes from the CardDemo Java 25
+LTS migration:
+  • Spring / Spring Boot / Spring Batch / Spring Cloud / Spring Security
+    / Spring Data / Spring AMQP / Spring Kafka / Spring Session / Spring Shell
+  • PostgreSQL (no relational default; file-based java.nio.file is the
+    AAP default path per AAP §0.7.5)
+  • Hibernate ORM / Hibernate Validator (no JPA per AAP §0.7.4)
+  • HikariCP (no connection pool; the optional JDBC adapter in
+    carddemo-adapter-db is opt-in and uses java.sql directly)
+See java/README.md §7.3 ("Explicitly Forbidden Frameworks and Runtimes")
+and java/MIGRATION_NOTES.md for the rationale and approved alternatives.
+                                        </message>
+                                        <searchTransitive>true</searchTransitive>
+                                    </bannedDependencies>
+                                    <requireMavenVersion>
+                                        <version>[3.9.0,)</version>
+                                        <message>
+Maven 3.9.0 or later is required because the parent POM uses
+&lt;release&gt;25&lt;/release&gt; (Java 25 LTS) which is only supported by
+maven-compiler-plugin 3.13.0 running on Maven 3.9.x.
+                                        </message>
+                                    </requireMavenVersion>
+                                    <requireJavaVersion>
+                                        <version>[25,)</version>
+                                        <message>
+Java 25 LTS or later is required. The parent POM compiles every module
+against &lt;release&gt;25&lt;/release&gt; per AAP §0.3.4 (Java 25 Finalized
+Features Mandate).
+                                        </message>
+                                    </requireJavaVersion>
+                                </rules>
+                                <fail>true</fail>
+                            </configuration>
+                        </execution>
+                    </executions>
+                </plugin>
+                <!--
+                    ============================================================
+                    maven-antrun-plugin — Refine-PR forbidden-artifact gate
+                    (Item 2 continuation). Scans every pom.xml AND every
+                    GitHub Actions workflow YAML for ACTIVE use of the
+                    preview-enabling JVM/compiler flag (two ASCII
+                    hyphens followed by the word "enable-preview"; the
+                    XML comment specification forbids the literal
+                    "double-hyphen" sequence inside `<!- ... ->` so this
+                    comment refers to the flag descriptively). Active
+                    use is defined as:
+
+                      &#x2022; A `<arg>` block carrying the preview flag
+                        inside a Maven compilerArg block;
+                      &#x2022; An `<argLine>` block carrying the preview
+                        flag inside a Surefire/Failsafe argLine; or
+                      &#x2022; An uncommented workflow YAML line
+                        carrying the preview flag.
+
+                    Javadoc / properties / POM comments that mention
+                    the preview flag to document it as a FORBIDDEN flag
+                    (per AAP §0.7.4) are NOT active usages and are
+                    correctly excluded by the regex patterns.
+
+                    Declared in pluginManagement so the parent's
+                    `<plugins>` activation gets the version pin; the
+                    execution itself is declared at the parent level
+                    with `<inherited>false</inherited>` so child modules
+                    do not re-run the same repo-wide scan.
+                    ============================================================
+                -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-antrun-plugin</artifactId>
+                    <version>${maven-antrun-plugin.version}</version>
+                </plugin>
+                <!--
+                    ============================================================
+                    maven-failsafe-plugin — integration test runner
+                    (Refine-PR Item 6). Pinned in pluginManagement at the
+                    parent level so every module that opts into Failsafe
+                    inherits the same version pin and the same
+                    JaCoCo-friendly `argLine` that surefire uses (the
+                    `@{argLine}` late-binding placeholder ensures the
+                    JaCoCo agent threads through the forked Failsafe
+                    JVM exactly as it does the Surefire JVM).
+
+                    Failsafe is intentionally NOT activated at the
+                    parent level (the corresponding `<plugins>` entry
+                    appears only in carddemo-tests/pom.xml) because
+                    only the carddemo-tests module has the
+                    @Tag("integration") test sources and the
+                    Failsafe-friendly include patterns (*IT.java,
+                    *Integration*.java, etc.).
+                    ============================================================
+                -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <version>${maven-failsafe-plugin.version}</version>
+                    <configuration>
+                        <!--
+                            argLine composition contract — identical to the
+                            surefire argLine above so the JaCoCo agent
+                            instruments the failsafe-forked JVM the same
+                            way it instruments the surefire-forked JVM.
+                            See the surefire `<argLine>` comment for the
+                            full @{argLine} late-binding rationale.
+                        -->
+                        <argLine>@{argLine} -XX:+EnableDynamicAgentLoading -Xshare:auto</argLine>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+            <!--
+                ================================================================
+                Forbidden-artifact gate — bannedDependencies +
+                requireMavenVersion + requireJavaVersion. Inherited by
+                every reactor module so each module's `mvn verify`
+                re-validates its own resolved (transitive) dependency
+                tree against the forbidden-artifact list. The
+                execution configuration lives in pluginManagement above.
+                ================================================================
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+            </plugin>
+            <!--
+                ================================================================
+                Forbidden-flag scan — detection of the preview-enabling
+                JVM/compiler flag (two ASCII hyphens followed by the word
+                "enable-preview") across pom.xml and .github/workflows/
+                YAML files.
+
+                Declared `<inherited>false</inherited>` so the parent
+                runs the scan exactly once per `mvn verify` invocation;
+                child modules do not redundantly walk the same repo
+                tree. The scan rooted at
+                ${session.executionRootDirectory}/.. covers the entire
+                repository (which is the parent of the `java/` reactor
+                root when `mvn` is invoked from `java/`).
+
+                False-positive avoidance — the regex patterns match
+                ACTIVE usage only (POM `<arg>` and `<argLine>` blocks,
+                workflow YAML non-comment lines); Javadoc comments
+                and POM comments that mention the preview flag as a
+                FORBIDDEN flag (per AAP §0.7.4) are correctly NOT
+                matched.
+                ================================================================
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <inherited>false</inherited>
+                <executions>
+                    <execution>
+                        <id>scan-enable-preview-flag</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <!--
+                                    Resolve the repo-root directory. The parent
+                                    POM's `${project.basedir}` is the `java/`
+                                    Maven reactor root; we want to scan the
+                                    repository root, which is one level up. The
+                                    `location` attribute normalizes any `..`
+                                    segment to its canonical absolute form.
+                                -->
+                                <property name="repo.root" location="${project.basedir}/.."/>
+                                <echo>[preview-flag lint] scanning ${repo.root}</echo>
+
+                                <!--
+                                    Fileset 1 — POM files with an active
+                                    `<arg>` block carrying the preview flag.
+                                    Excludes Maven build output (target/),
+                                    git metadata (.git/), and the IMMUTABLE
+                                    COBOL source tree under app/ (AAP §0.2.2).
+                                -->
+                                <fileset id="preview-pom-arg" dir="${repo.root}"
+                                         includes="**/pom.xml"
+                                         excludes="**/target/**,**/.git/**,app/**">
+                                    <containsregexp expression="&lt;arg&gt;\s*--enable-preview"/>
+                                </fileset>
+                                <resourcecount property="preview-pom-arg.count" refid="preview-pom-arg"/>
+
+                                <!--
+                                    Fileset 2 — POM files with an active
+                                    `<argLine>` block carrying the preview
+                                    flag (e.g., Surefire / Failsafe argLine).
+                                -->
+                                <fileset id="preview-pom-argline" dir="${repo.root}"
+                                         includes="**/pom.xml"
+                                         excludes="**/target/**,**/.git/**,app/**">
+                                    <containsregexp expression="&lt;argLine&gt;[^&lt;]*--enable-preview"/>
+                                </fileset>
+                                <resourcecount property="preview-pom-argline.count" refid="preview-pom-argline"/>
+
+                                <!--
+                                    Fileset 3 — GitHub Actions workflow YAML files
+                                    with an uncommented reference to the
+                                    preview-enabling flag. Matches any line
+                                    where the flag is preceded only by
+                                    whitespace or other non-`#` characters
+                                    (i.e., not part of a `# ...` comment).
+                                    erroronmissingdir=false so the build does
+                                    not fail when .github/ has not yet been
+                                    created.
+
+                                    EXCLUSION — build.yml is the workflow
+                                    that IMPLEMENTS this lint and naturally
+                                    references the flag in `run:` script
+                                    bodies (error messages, grep patterns).
+                                    Excluding build.yml by name avoids a
+                                    self-referential false positive while
+                                    still catching any FUTURE workflow YAML
+                                    that tries to actively use the flag.
+                                -->
+                                <fileset id="preview-workflow" dir="${repo.root}"
+                                         includes=".github/workflows/*.yml,.github/workflows/*.yaml"
+                                         excludes=".github/workflows/build.yml"
+                                         erroronmissingdir="false">
+                                    <containsregexp expression="^[^#]*--enable-preview"/>
+                                </fileset>
+                                <resourcecount property="preview-workflow.count" refid="preview-workflow"/>
+
+                                <!--
+                                    Diagnostic echoes so an operator can see the
+                                    individual counts in the `mvn verify` output
+                                    even on a passing build.
+                                -->
+                                <echo>[preview-flag lint] POM arg hits: ${preview-pom-arg.count}</echo>
+                                <echo>[preview-flag lint] POM argLine hits: ${preview-pom-argline.count}</echo>
+                                <echo>[preview-flag lint] workflow YAML hits: ${preview-workflow.count}</echo>
+
+                                <!--
+                                    Fail-fast if any of the three filesets matched.
+                                    Operators can locate the matches via the
+                                    diagnostic echoes above.
+                                -->
+                                <fail>
+                                    <condition>
+                                        <or>
+                                            <resourcecount when="greater" count="0" refid="preview-pom-arg"/>
+                                            <resourcecount when="greater" count="0" refid="preview-pom-argline"/>
+                                            <resourcecount when="greater" count="0" refid="preview-workflow"/>
+                                        </or>
+                                    </condition>
+                                    Forbidden preview-enabling flag (--enable-preview)
+                                    detected in active POM or workflow YAML usage.
+                                    AAP §0.7.4 forbids preview features (JEP 502 Stable
+                                    Values, JEP 505 Structured Concurrency, JEP 507
+                                    Primitive Patterns). See java/README.md §7.1
+                                    ("Preview Features") for the full list and rationale.
+                                </fail>
+                                <echo>[preview-flag lint] PASS</echo>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

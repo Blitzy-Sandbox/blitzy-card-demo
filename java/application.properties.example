@@ -1,0 +1,581 @@
+###############################################################################
+# CardDemo (Java 25 LTS) — 12-Factor Configuration Template
+# -----------------------------------------------------------------------------
+# This file is the CANONICAL, COMMITTED template for runtime configuration of
+# the Java 25 LTS CardDemo implementation under java/. It is the single source
+# of truth for every environment variable name consumed by the application.
+#
+# Authority: AAP §0.2.1, §0.4.1, §0.5.4, §0.7.5 (resolution of the user's
+# [TODO — list each variable name] marker).
+#
+# Usage:
+#   1. Copy this file to ``application.properties`` (sibling location)
+#         cp application.properties.example application.properties
+#      The real file is .gitignored — see java/.gitignore — so secrets never
+#      leak into source control.
+#   2. Edit the copy to suit the local environment.
+#   3. Alternatively (or in addition), every property below may be overridden
+#      by an environment variable formed by uppercasing the key and replacing
+#      dots and hyphens with underscores. This is the standard 12-factor
+#      convention used throughout the application; no Spring framework is
+#      involved (per AAP §0.1.1 the project does NOT depend on Spring).
+#
+#      Example:
+#         property : carddemo.batch.processing-date
+#         envvar   : CARDDEMO_BATCH_PROCESSING_DATE
+#
+#   4. JVM tuning flags (-XX:...) are NEVER set here — they must be passed on
+#      the ``java`` command line. See section 11 below.
+#
+# Format rules (Java java.util.Properties):
+#   * key=value, one per line
+#   * # introduces a line comment
+#   * UTF-8 encoded, Unix (LF) line endings
+#   * blank lines and comments are ignored at load time
+#
+# Reference for the COBOL source artifacts this template mirrors:
+#   * Datasets: README.md §"Dataset name" table (11 canonical VSAM/PS files)
+#   * Record layouts: app/cpy/CVACT01Y.cpy, CVACT02Y.cpy, CVACT03Y.cpy,
+#                     CVCUS01Y.cpy, CVTRA01Y..CVTRA06Y.cpy, CSUSR01Y.cpy
+#   * Batch PARM convention: app/jcl/INTCALC.jcl (STEP15 PARM='2022071800')
+###############################################################################
+
+
+# =============================================================================
+# 1. Application identity
+# =============================================================================
+# Identifies this process to logs, JFR recordings, and any downstream
+# observability surface. These values appear verbatim in structured log lines
+# and JFR event metadata; keep them short and stable.
+
+# carddemo.app.name — application logical name; appears in logs and JFR.
+# Allowed: any non-empty string. Default: carddemo
+carddemo.app.name=carddemo
+
+# carddemo.app.version — application version; should match the Maven project
+# version (see java/pom.xml <version>). Allowed: any non-empty string.
+# Default: 1.0.0-SNAPSHOT
+carddemo.app.version=1.0.0-SNAPSHOT
+
+
+# =============================================================================
+# 2. File paths — VSAM/sequential datasets
+# =============================================================================
+# Per AAP §0.7.5 the default persistence path is java.nio.file with
+# fixed-width record readers (the COBOL system uses VSAM KSDS). Each property
+# below points at the local-filesystem location of one logical dataset; the
+# (KSDS, key N, record M, copybook XXXXXXXY) annotation in each comment
+# documents the original mainframe layout for traceability.
+#
+# Paths may be relative (resolved against the JVM working directory) or
+# absolute. The example values below assume an ``out-of-tree`` data directory
+# named ./data/ at the launch location.
+
+# -----------------------------------------------------------------------------
+# 2.1 Allowed roots for SafePathResolver path containment (CWE-22 mitigation)
+# -----------------------------------------------------------------------------
+# Per AAP §0.6.5 + §0.7.2 (security), every operator-supplied DD path that the
+# composition roots accept (PostTransactionsApp, InterestCalculationApp, etc.)
+# is resolved through SafePathResolver.resolve(key, default, allowedRoot)
+# which rejects values that resolve outside the configured allowed root. The
+# two roots below constrain (a) all INPUT dataset paths (carddemo.file.*) and
+# (b) all OUTPUT dataset paths (DALYREJS, SYSTRAN, GDG +1 generations).
+#
+# carddemo.data.root — root directory that contains all input/master
+#   datasets. Every property of the form ``carddemo.file.<dd>.path`` is
+#   validated to resolve underneath this root. JCL DD mapping: parent
+#   directory of the //DDname DD DSN= path on the COBOL side.
+#   Allowed: any directory path readable by the JVM process. Defaults to
+#   ./data which matches the sample carddemo.file.*.path values below.
+#   Override via env CARDDEMO_DATA_ROOT.
+carddemo.data.root=./data
+
+# carddemo.output.root — root directory under which the application writes
+#   generated artifacts: reject files (DALYREJS), system-transaction files
+#   (SYSTRAN), reports, GDG +1 generations, and any ad-hoc batch output. Every
+#   operator-supplied output path is validated to resolve underneath this
+#   root. JCL DD mapping: parent directory of any //DDname DD DSN= with
+#   DISP=NEW or DISP=MOD on the COBOL side.
+#   Allowed: any directory path writable by the JVM process. Default ./output.
+#   Override via env CARDDEMO_OUTPUT_ROOT.
+carddemo.output.root=./output
+
+# carddemo.file.charset — GLOBAL default codepage for fixed-width file I/O
+#   adapters when no per-file override (carddemo.file.<dd>.charset, see
+#   Section 4 below) is set. This key is read by the file-adapter factory
+#   when wiring a repository whose DD has no explicit charset override; it
+#   acts as the second-priority fallback before the hard-coded IBM-1047
+#   default declared by EbcdicTranscoder.DEFAULT_CHARSET_NAME.
+#   Allowed: any IANA charset name supported by the JVM
+#   (e.g., IBM-1047, US-ASCII, UTF-8). Default: IBM-1047 (matches AAP §0.6.5
+#   "EBCDIC IBM-1047 default"). Override via env CARDDEMO_FILE_CHARSET.
+#   Resolution order at runtime: per-file override (Section 4) >
+#   carddemo.file.charset (this key) > EbcdicTranscoder DEFAULT_CHARSET_NAME.
+carddemo.file.charset=IBM-1047
+
+# carddemo.file.systran.path — output path for the SYSTRAN system-transaction
+#   file written by InterestCalculationApp (CBACT04C). Defaults to a GDG +1
+#   generation underneath carddemo.gdg.root (see Section 8 below) when unset.
+#   If set, the override is validated to resolve underneath
+#   carddemo.output.root for CWE-22 containment per AAP §0.6.5 + §0.7.2.
+#   JCL DD mapping: //SYSTRAN DD DSN=AWS.M2.CARDDEMO.SYSTRAN.PS in
+#   app/jcl/INTCALC.jcl. Override via env CARDDEMO_FILE_SYSTRAN_PATH.
+#   Leave blank (or unset) to use the GDG-derived default.
+#carddemo.file.systran.path=
+
+
+# Account master file
+# (KSDS, key 11 [ACCT-ID PIC 9(11)], record 300, copybook CVACT01Y)
+carddemo.file.acctdata.path=./data/acctdata.dat
+
+# Card master file
+# (KSDS, key 16 [CARD-NUM PIC X(16)], record 150, copybook CVACT02Y)
+carddemo.file.carddata.path=./data/carddata.dat
+
+# Card cross-reference file (with AIX over XREF-ACCT-ID)
+# (KSDS + AIX, key 16 [XREF-CARD-NUM PIC X(16)], record 50, copybook CVACT03Y)
+carddemo.file.cardxref.path=./data/cardxref.dat
+
+# Customer master file
+# (KSDS, key 9 [CUST-ID PIC 9(09)], record 500, copybook CVCUS01Y)
+carddemo.file.custdata.path=./data/custdata.dat
+
+# Daily transaction input file (sequential)
+# (PS, record 350, copybook CVTRA06Y)
+carddemo.file.dailytran.path=./data/dailytran.dat
+
+# Daily reject output file (sequential, written by CBTRN02C posting engine)
+# (PS, record 350, layout mirrors CVTRA06Y plus reject reason)
+carddemo.file.dalyrejs.path=./data/dalyrejs.dat
+
+# Transaction master file (online + posted batch)
+# (KSDS + AIX, key 16 [TRAN-ID PIC X(16)], record 350, copybook CVTRA05Y)
+carddemo.file.transact.path=./data/transact.dat
+
+# Disclosure group file (interest-rate lookup by account group + type + cat)
+# (KSDS, key 16 [GROUP-ID(10) + TYPE-CD(2) + CAT-CD(4)], record 50, copybook CVTRA02Y)
+carddemo.file.discgrp.path=./data/discgrp.dat
+
+# Transaction category lookup file
+# (KSDS, key 6 [TRAN-TYPE-CD(2) + TRAN-CAT-CD(4)], record 60, copybook CVTRA04Y)
+carddemo.file.trancatg.path=./data/trancatg.dat
+
+# Transaction type lookup file
+# (KSDS, key 2 [TRAN-TYPE PIC X(02)], record 60, copybook CVTRA03Y)
+carddemo.file.trantype.path=./data/trantype.dat
+
+# Transaction category balance file (per-account running balances by category)
+# (KSDS, key 17 [ACCT-ID(11) + TYPE-CD(2) + CAT-CD(4)], record 50, copybook CVTRA01Y)
+carddemo.file.tcatbalf.path=./data/tcatbalf.dat
+
+# User security file (signon credentials and role)
+# (KSDS, key 8 [SEC-USR-ID PIC X(08)], record 80, copybook CSUSR01Y)
+carddemo.file.usrsec.path=./data/usrsec.dat
+
+
+# =============================================================================
+# 3. File paths — statement and report outputs
+# =============================================================================
+# Output paths for statement generation (CBSTM03A) and report writers
+# (CBTRN03C / CORPT00C / PRTCATBL).
+
+# Statement text output (CBSTM03A primary report)
+carddemo.file.stmt.text.path=./output/statements.txt
+
+# Statement HTML output (CBSTM03A secondary report)
+carddemo.file.stmt.html.path=./output/statements.html
+
+# Transaction detail report (CBTRN03C, driven by TRANREPT JCL)
+carddemo.file.tranrept.path=./output/tranrept.dat
+
+# TCATBALF print report (PRTCATBL JCL)
+carddemo.file.printcatbl.path=./output/tcatbalf.rept
+
+
+# =============================================================================
+# 4. Codepage configuration (EBCDIC ↔ ASCII transcoding)
+# =============================================================================
+# Per AAP §0.6.5 the production COBOL files are encoded in EBCDIC; the default
+# charset is IBM-1047 (US English EBCDIC). Per-file overrides are supported
+# so that the 9 ASCII test fixtures in app/data/ASCII/*.txt can be read
+# directly without transcoding.
+#
+# Allowed values: any java.nio.charset.Charset name resolvable on the running
+# JVM (e.g., IBM-1047, IBM-037, US-ASCII, UTF-8, ISO-8859-1).
+
+# carddemo.file.default.charset — fallback charset when no per-file override
+# is set. Default: IBM-1047. This is the key consumed by
+# com.blitzy.carddemo.adapter.file.EbcdicTranscoder.DEFAULT_KEY; any other
+# spelling (e.g., the legacy "carddemo.codepage.default") is silently
+# ignored because no code consumer reads it. Set this to "US-ASCII" when
+# pointing at the pre-transcoded ASCII fixtures under app/data/ASCII/.
+carddemo.file.default.charset=IBM-1047
+
+# Per-file codepage overrides. Set to US-ASCII when pointing at the
+# pre-transcoded ASCII fixtures under app/data/ASCII/.
+carddemo.file.acctdata.charset=IBM-1047
+carddemo.file.carddata.charset=IBM-1047
+carddemo.file.cardxref.charset=IBM-1047
+carddemo.file.custdata.charset=IBM-1047
+carddemo.file.dailytran.charset=IBM-1047
+carddemo.file.dalyrejs.charset=IBM-1047
+carddemo.file.discgrp.charset=IBM-1047
+carddemo.file.trancatg.charset=IBM-1047
+carddemo.file.trantype.charset=IBM-1047
+carddemo.file.tcatbalf.charset=IBM-1047
+carddemo.file.transact.charset=IBM-1047
+carddemo.file.usrsec.charset=IBM-1047
+
+
+# =============================================================================
+# 5. Batch run context (propagated via ScopedValue<BatchRunContext>)
+# =============================================================================
+# Per AAP §0.6.6 the batch-run context flows through a JEP 506 ScopedValue
+# binding established at the top of each application main(...). ThreadLocal
+# is forbidden in new code per AAP §0.6.6 / §0.7.4.
+#
+# These three properties are read once at process entry, bound into the
+# ScopedValue, and remain immutable for the lifetime of the run.
+#
+# Environment-variable equivalents (per AAP §0.7.5 / §0.4.4): each property
+# below has a canonical UPPER_SNAKE_CASE environment-variable form. The
+# precedence order is, from highest to lowest:
+#   1. JVM system property (-Dcarddemo.batch.run-id=...)
+#   2. Environment variable (CARDDEMO_RUN_ID=...)
+#   3. application.properties value (this file)
+#   4. Compiled-in default (documented per key)
+#
+# The shaded-jar main class (carddemo-app) is responsible for performing
+# this lookup once at process entry and binding the resulting BatchRunContext
+# into the ScopedValue. The mapping from property name to environment
+# variable is direct: dots and hyphens become underscores, and the whole
+# name is upper-cased. So `carddemo.batch.run-id` <-> `CARDDEMO_RUN_ID`.
+
+# Property:           carddemo.batch.run-id
+# Environment var:    CARDDEMO_RUN_ID
+# Purpose:            uniquely identifies this batch run; appears in log
+#                     correlation IDs, JFR event labels, and the
+#                     golden-record output file name when the harness
+#                     captures expected outputs.
+# Type:               string
+# Allowed values:     any non-empty string, recommended UUID-style or
+#                     ISO-timestamp-style for uniqueness
+# Default:            blank — when blank, an auto-generated UUID (via
+#                     java.util.UUID.randomUUID()) is substituted at
+#                     process entry so the BatchRunContext is never null.
+# Required:           no
+carddemo.batch.run-id=
+
+# Property:           carddemo.batch.processing-date
+# Environment var:    CARDDEMO_PROCESSING_DATE
+# Purpose:            overrides the system date for posting, interest
+#                     calculation, statement generation, and any other
+#                     date-sensitive batch logic. Mirrors the COBOL JCL
+#                     PARM convention used to inject "as-of" dates into
+#                     batch programs.
+# Type:               java.time.LocalDate (ISO_LOCAL_DATE format)
+# Allowed values:     ISO_LOCAL_DATE (yyyy-MM-dd)
+# Default:            blank — when blank, java.time.LocalDate.now() is
+#                     used (the JVM-default zone clock).
+# Required:           no
+# Notes:              the COBOL CBACT04C (interest calculation) program
+#                     accepts an equivalent date as a JCL PARM in the
+#                     format yyyyMMddhh (10 digits). See the dedicated
+#                     `carddemo.intcalc.parm` property below for the
+#                     exact COBOL PARM passthrough.
+carddemo.batch.processing-date=
+
+# Property:           carddemo.batch.tenant
+# Environment var:    CARDDEMO_TENANT
+# Purpose:            multi-tenant key for downstream extensions. Single
+#                     tenant deployments leave this at DEFAULT. Tenanted
+#                     deployments use the tenant key in directory paths
+#                     (e.g., var/data/${CARDDEMO_TENANT}/...), in
+#                     structured-log MDC fields, and in any future JDBC
+#                     adapter (as a schema name or a row filter).
+# Type:               string
+# Allowed values:     any non-empty string
+# Default:            DEFAULT
+# Required:           no
+carddemo.batch.tenant=DEFAULT
+
+
+# =============================================================================
+# 5.1 COBOL JCL PARM passthrough (program-specific runtime parameters)
+# =============================================================================
+# Per AAP §0.7.5 / §0.4.1 each Java main class translates a JCL EXEC PGM= step
+# and must accept the same PARM string that the COBOL step accepts. Where a
+# specific COBOL program reads a PARM in DATA DIVISION LINKAGE SECTION and
+# uses it as a runtime parameter, the Java equivalent reads the corresponding
+# property below (or its environment-variable form) and treats it as the same
+# 10-character string the COBOL program would have received.
+
+# Property:           carddemo.intcalc.parm
+# Environment var:    CARDDEMO_INTCALC_PARM
+# Purpose:            COBOL CBACT04C / Java InterestCalculationApp PARM
+#                     passthrough. The interest-calculation engine takes a
+#                     ten-character JCL PARM in the form yyyyMMddhh (date
+#                     plus a 2-digit hour, where the hour is currently
+#                     unused but kept for layout parity). The default
+#                     value 2022071800 matches the literal in
+#                     app/jcl/INTCALC.jcl STEP15 EXEC PGM=CBACT04C,
+#                     PARM='2022071800' — this is the "as-of" date used
+#                     by the original CBACT04C reference batch run.
+# Type:               string (10 digits, format yyyyMMddhh)
+# Allowed values:     ten ASCII digits parseable as a date + hour
+# Default:            2022071800
+# Required:           no (default is functionally equivalent to the
+#                     reference COBOL JCL)
+# Notes:              when both this property and
+#                     `carddemo.batch.processing-date` are supplied, the
+#                     more specific (`carddemo.intcalc.parm`) wins for
+#                     CBACT04C invocations; the broader processing-date
+#                     wins for every other program. This preserves the
+#                     COBOL precedence: JCL PARM beats system date.
+carddemo.intcalc.parm=2022071800
+
+
+# =============================================================================
+# 6. Virtual-thread fan-out (JEP 444 platform feature)
+# =============================================================================
+# Per AAP §0.6.6 virtual threads are used to parallelize per-record work
+# WHERE AND ONLY WHERE reordering would NOT change observable output. Sort
+# orders, sequencing, and record-by-record dependencies are preserved.
+#
+# Disable virtual threads (force single-threaded) when debugging a parity
+# failure to isolate concurrency from translation defects.
+
+# carddemo.batch.virtual-threads.enabled — enable virtual-thread fan-out
+# where the application has declared it safe. Allowed: true | false.
+# Default: true.
+carddemo.batch.virtual-threads.enabled=true
+
+# carddemo.batch.virtual-threads.parallelism — maximum simultaneous virtual
+# threads. 0 means unbounded (system limit). Allowed: any non-negative int.
+# Default: 0.
+carddemo.batch.virtual-threads.parallelism=0
+
+
+# =============================================================================
+# 7. Decimal arithmetic defaults (Decimals utility)
+# =============================================================================
+# Per AAP §0.3.3 and §0.6.1 the Decimals facade is the single point of control
+# for every BigDecimal MathContext/RoundingMode decision in the codebase.
+# These properties are exposed for traceability and runtime overrides; the
+# compiled defaults in Decimals.java are authoritative when this file is
+# absent.
+#
+# RULE: never replace BigDecimal with double or float (AAP §0.6.1 forbids it).
+
+# carddemo.decimals.math-context — JDK MathContext name used as the precision
+# basis for intermediate operations. Allowed: DECIMAL32 | DECIMAL64 |
+# DECIMAL128 | UNLIMITED. Default: DECIMAL128 (34-digit precision).
+carddemo.decimals.math-context=DECIMAL128
+
+# carddemo.decimals.rounding.rounded — RoundingMode for COBOL ROUNDED clause.
+# Allowed: UP | DOWN | CEILING | FLOOR | HALF_UP | HALF_DOWN | HALF_EVEN |
+# UNNECESSARY. Default: HALF_EVEN (banker's rounding).
+carddemo.decimals.rounding.rounded=HALF_EVEN
+
+# carddemo.decimals.rounding.default — RoundingMode for non-ROUNDED COBOL
+# arithmetic. Allowed: same as above. Default: DOWN (truncation toward zero,
+# matching COBOL non-ROUNDED behavior).
+carddemo.decimals.rounding.default=DOWN
+
+# carddemo.decimals.scale.monetary — default monetary scale for PIC S9(n)V99
+# fields. Allowed: 0..9. Default: 2.
+carddemo.decimals.scale.monetary=2
+
+
+# =============================================================================
+# 8. Optional JDBC adapter (carddemo-adapter-db — DISABLED BY DEFAULT)
+# =============================================================================
+# Per AAP §0.7.5 the COBOL source uses VSAM KSDS, so file-based batch is the
+# default. The carddemo-adapter-db module exists as a placeholder for a
+# future DB2/PostgreSQL/etc. adapter; enable ONLY when such an adapter has
+# been added and the corresponding JDBC driver is on the classpath.
+#
+# SECURITY: NEVER commit real credentials in this file. Use environment
+# variables (CARDDEMO_JDBC_USERNAME / CARDDEMO_JDBC_PASSWORD) for production.
+
+# carddemo.jdbc.enabled — master switch for the JDBC adapter.
+# Allowed: true | false. Default: false.
+carddemo.jdbc.enabled=false
+
+# carddemo.jdbc.url — JDBC connection URL. Allowed: any valid JDBC URL.
+# Default: blank. Example: jdbc:db2://host:50000/CARDDEMO
+carddemo.jdbc.url=
+
+# carddemo.jdbc.username — database username. Default: blank.
+carddemo.jdbc.username=
+
+# carddemo.jdbc.password — database password. Default: blank.
+# WARNING: prefer the env-var override CARDDEMO_JDBC_PASSWORD; do NOT commit
+# real passwords here.
+carddemo.jdbc.password=
+
+
+# =============================================================================
+# 9. Security and PCI-relevant logging controls
+# =============================================================================
+# Per AAP §0.7.2 ("No card PAN logged in full; mask all but last 4 digits in
+# logs and error messages") and §0.1.3 the PAN-masking surface MUST be enabled
+# in every production deployment.
+
+# carddemo.logging.pan-masking.enabled — mask card PAN in log statements and
+# error messages. SHOULD NOT be disabled in production; the false setting
+# exists only for local debug forensics with non-production card numbers.
+# Allowed: true | false. Default: true.
+carddemo.logging.pan-masking.enabled=true
+
+# carddemo.logging.pan-masking.show-last — number of trailing PAN digits left
+# unmasked. Per AAP §0.7.2 this MUST equal 4. Allowed: 0..6. Default: 4.
+carddemo.logging.pan-masking.show-last=4
+
+# NOTE — Plaintext password preservation (AAP §0.1.3, §0.7.2):
+# The SEC-USER-DATA record stores SEC-USR-PWD as PIC X(08) plaintext
+# (app/cpy/CSUSR01Y.cpy, line 21). The Java translation faithfully preserves
+# this behavior to maintain byte-for-byte parity with the COBOL baseline. A
+# subsequent move to BCrypt/Argon2 or another KDF is OUT OF SCOPE for this
+# refactor and is tracked as a follow-up item in java/MIGRATION_NOTES.md.
+
+
+# =============================================================================
+# 10. Golden-record test harness
+# =============================================================================
+# Per AAP §0.6.11 the golden-record harness is the non-negotiable PR gate.
+# It compares Java output byte-for-byte to captured COBOL output. The harness
+# itself is shipped under java/carddemo-tests/.
+
+# carddemo.test.golden.root — classpath root containing per-program expected
+# outputs. Default value resolves to
+# java/carddemo-tests/src/test/resources/golden/.
+# Allowed: classpath:/... or file:... URLs.
+carddemo.test.golden.root=classpath:/golden
+
+# carddemo.test.golden.fixture-source — filesystem path to the ASCII fixtures
+# preserved under app/data/ASCII/. The harness READS these in place; the
+# fixtures are NEVER copied into java/ per AAP §0.2.1 (REFERENCE).
+# Allowed: any readable directory path.
+carddemo.test.golden.fixture-source=../app/data/ASCII
+
+# carddemo.test.perf.jfr.regression-band — JFR-based performance regression
+# band, expressed as a percent. Per AAP §0.6.11 the harness asserts no
+# regression beyond a 10% band. Allowed: 1..100. Default: 10.
+carddemo.test.perf.jfr.regression-band=10
+
+
+# =============================================================================
+# 11. JVM tuning recommendations (documentation only — pass on command line)
+# =============================================================================
+# JVM flags CANNOT be set through application.properties; they must be passed
+# to the java executable directly. The values below are the project-mandated
+# defaults per AAP §0.3.4 and §0.7.2.
+#
+# RECOMMENDED (always pass these for production batch runs):
+#
+#   -XX:+UseCompactObjectHeaders
+#       JEP 519 (finalized in Java 25). Each object's header uses one machine
+#       word instead of two, yielding ~20–30% heap reduction on small-record
+#       workloads such as CardDemo's fixed-width record streams.
+#
+#   -XX:+UseShenandoahGC -XX:ShenandoahGCMode=generational
+#       JEP 521 (finalized in Java 25). Low-pause generational GC tuned for
+#       batch workloads with high allocation rates.
+#
+# Example launch:
+#   java -XX:+UseCompactObjectHeaders \
+#        -XX:+UseShenandoahGC -XX:ShenandoahGCMode=generational \
+#        -jar carddemo-app/target/carddemo-app-1.0.0-SNAPSHOT-shaded.jar \
+#        <program-arguments>
+#
+# FORBIDDEN flags (per AAP §0.6.7 and §0.7.4):
+#
+#   --enable-preview
+#       Preview JEPs (JEP 502 Stable Values, JEP 505 Structured Concurrency,
+#       JEP 507 Primitive Patterns) are explicitly out of scope for this
+#       refactor. Reassess only when those JEPs reach finalization in a
+#       future LTS release.
+#
+
+
+# =============================================================================
+# 12. App main composition-root inputs (JCL-driven control cards and seed data)
+# =============================================================================
+# Properties consumed by individual app mains (the JCL EXEC PGM= translations
+# under java/carddemo-app/.../app/). Each entry below documents the consuming
+# app main, the corresponding JCL DD or control card, and the runtime default.
+# These are accepted via SafePathResolver.resolveTrusted(key, default) so
+# operators may override via system property (-Dkey=...) or environment
+# variable (KEY_WITH_UNDERSCORES) per the 12-factor convention documented in
+# Section 2 of this file.
+
+# -----------------------------------------------------------------------------
+# 12.1 TransactionReportApp (JCL: TRANREPT)
+# -----------------------------------------------------------------------------
+# DATEPARM DD control card — the 21-byte WS-DATEPARM-RECORD layout
+# (YYYY-MM-DD + space + YYYY-MM-DD) read into WS-START-DATE / WS-END-DATE per
+# app/cbl/CBTRN03C.cbl:L122-L125. The TransactionReportApp main writes this
+# file (or accepts an existing one) before invoking CbTrn03C.
+carddemo.file.dateparm.path=./data/dateparm.dat
+
+# DATEPARM start/end date string overrides (used by TransactionReportApp to
+# synthesize the 21-byte WS-DATEPARM-RECORD when no DATEPARM file is supplied).
+# Format: YYYY-MM-DD. Inclusive on both endpoints per
+# app/cbl/CBTRN03C.cbl:L173-L174.
+carddemo.tranrept.start-date=2024-01-01
+carddemo.tranrept.end-date=2024-12-31
+
+# -----------------------------------------------------------------------------
+# 12.2 DefineCustomerFileApp (JCL: DEFCUST)
+# -----------------------------------------------------------------------------
+# IDCAMS DELETE and DEFINE control-card output paths. The DefineCustomerFileApp
+# main translates app/jcl/DEFCUST.jcl, which carries a delete-then-define
+# pattern across two distinct datasets (the "DEFCUST dataset-name mismatch"
+# flagged as a suspected JCL bug in MIGRATION_NOTES.md §1.3). Both paths are
+# documented separately so the suspected-bug behavior is preserved verbatim.
+carddemo.file.defcust.delete.path=./data/defcust-delete.ctl
+carddemo.file.defcust.define.path=./data/defcust-define.ctl
+
+# -----------------------------------------------------------------------------
+# 12.3 Define*FileApp seed-input sources (JCL: ACCTFILE, CARDFILE, CUSTFILE,
+#      DISCGRP, TCATBALF, TRANCATG, TRANTYPE, XREFFILE)
+# -----------------------------------------------------------------------------
+# IDCAMS REPRO / IEBGENER source-input paths used by the Define*FileApp mains
+# to populate the corresponding VSAM equivalents (the *.path entries in
+# Section 2 of this file). Defaults point at the ASCII fixture tree under
+# app/data/ASCII/ per AAP §0.4.1 so a fresh checkout's `mvn verify` smoke
+# tests have a deterministic seed source without requiring the operator to
+# generate one.
+carddemo.file.acctdata.source=app/data/ASCII/acctdata.txt
+carddemo.file.carddata.source=app/data/ASCII/carddata.txt
+carddemo.file.cardxref.source=app/data/ASCII/cardxref.txt
+carddemo.file.custdata.source=app/data/ASCII/custdata.txt
+carddemo.file.discgrp.source=app/data/ASCII/discgrp.txt
+carddemo.file.tcatbalf.source=app/data/ASCII/tcatbal.txt
+carddemo.file.trancatg.source=app/data/ASCII/trancatg.txt
+carddemo.file.trantype.source=app/data/ASCII/trantype.txt
+
+# -----------------------------------------------------------------------------
+# 12.4 DefineGdgApp (JCL: DEFGDGB)
+# -----------------------------------------------------------------------------
+# Filesystem root for Generation Data Group versioned files (the JCL z/OS
+# GDG model translated to filesystem versioned-file scaffolding per AAP
+# §0.1.2). The DefineGdgApp main creates this directory if missing and
+# populates the +0 / +1 / etc. generation files under it.
+carddemo.gdg.root=./data/gdg
+
+# -----------------------------------------------------------------------------
+# 12.5 CreateStatementsApp (JCL: CREASTMT)
+# -----------------------------------------------------------------------------
+# Working directory for intermediate statement-generation artefacts. The
+# CreateStatementsApp main uses this directory for temporary files produced
+# during CBSTM03A's multi-file open / read / write / close orchestration
+# (per app/cbl/CBSTM03A.CBL:L262 onwards).
+carddemo.work.path=./work
+
+
+###############################################################################
+# END OF FILE — keep the trailing newline below; .properties files are line-
+# oriented and certain tools mis-parse a missing terminal newline.
+###############################################################################

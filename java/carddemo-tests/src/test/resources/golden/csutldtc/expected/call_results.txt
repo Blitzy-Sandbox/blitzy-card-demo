@@ -1,0 +1,22 @@
+# CSUTLDTC GOLDEN-RECORD FIXTURE — call_results.txt (PLACEHOLDER)
+#
+# AAP §0.6.11 scaffolding placeholder. DateValidatorGoldenTest
+# remains @Disabled until this file is replaced with the committed
+# COBOL capture content. See ../README.md for the authoritative
+# file format contract.
+#
+# Format: concatenated 80-byte LS-RESULT envelopes (per
+# app/cbl/CSUTLDTC.cbl:L86-L120). Each LS-RESULT envelope is
+# emitted by the COBOL CEEDAYS wrapper for one CALL of CSUTLDTC
+# and contains the 4-character LS-SEVERITY-CD followed by the
+# WS-MESSAGE structure. The Java translation must produce the
+# identical concatenated byte sequence when driven by the same
+# input_calls.txt.
+#
+# Because this is a byte-exact fixture file rather than a
+# line-oriented text file, the placeholder content below is a
+# single 'PLACEHOLDER' line followed by a newline. The capture
+# step will overwrite this file with the real binary content per
+# the procedure documented in java/MIGRATION_NOTES.md §1.6.
+
+PLACEHOLDER

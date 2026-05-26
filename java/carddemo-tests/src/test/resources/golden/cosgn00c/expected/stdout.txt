@@ -1,0 +1,4 @@
+# placeholder until COBOL capture; see java/MIGRATION_NOTES.md section 1.6
+# expected captured content: empty under the 12 scenarios in input_scenario.txt (the COSGN00C source has no DISPLAY statements reached under the 12 scenarios; scenario 12 if exercised may produce a single DISPLAY-like trace line via a simulated WHEN OTHER fault path with no password content)
+# until this file is replaced with the captured artifact, CoSgn00CGoldenTest remains @Disabled per AAP section 0.6.11
+# CRITICAL: per AAP section 0.7.2, captured replacement of this file MUST NOT include any SEC-USR-PWD value; the capture script per java/MIGRATION_NOTES.md section 1.6 MUST mask/strip any password bytes before commit
