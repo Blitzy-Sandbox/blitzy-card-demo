@@ -1,0 +1,719 @@
+# =============================================================================
+# AWS CardDemo — Base Spring Boot Profile Configuration
+# =============================================================================
+#
+# Purpose
+# -------
+# Foundational, non-sensitive, environment-independent defaults applied to
+# every profile (`local`, `dev`, `prod`, `test`). Profile-specific overlays
+# (`application-local.yml`, `application-dev.yml`, `application-prod.yml`,
+# `src/test/resources/application-test.yml`) override these defaults via
+# `spring.config.activate.on-profile` directives.
+#
+# Activation
+# ----------
+# Always loaded. When `SPRING_PROFILES_ACTIVE` is unset, the `local` profile
+# is implicitly active via `spring.profiles.default: local`, giving local
+# developers a LocalStack-backed runtime out of the box (AAP §0.7.2).
+#
+# Security — PCI-DSS rule (AAP §0.7.1)
+# ------------------------------------
+# ZERO plaintext credentials anywhere in this file. Every sensitive value is
+# resolved via a `${...}` placeholder. In `dev` / `prod` the value is sourced
+# from AWS Secrets Manager / Parameter Store using Spring Cloud AWS 3.x
+# `spring.config.import` directives in the corresponding profile overlay.
+# The few non-sensitive defaults present here are explicitly labelled as
+# DEVELOPMENT-ONLY placeholders that never reach production (production
+# overlays supply real values from Secrets Manager).
+#
+# Coordination — files that read from this configuration
+# ------------------------------------------------------
+#   * `src/main/java/com/awsm2/carddemo/config/JpaConfig.java`
+#       reads `spring.jpa.*` and `spring.datasource.*`
+#   * `src/main/java/com/awsm2/carddemo/config/KafkaConfig.java`
+#       reads `spring.kafka.*` and `carddemo.kafka.*`
+#   * `src/main/java/com/awsm2/carddemo/config/RedisConfig.java`
+#       reads `spring.cache.*`, `spring.data.redis.*`, `carddemo.cache.*`
+#   * `src/main/java/com/awsm2/carddemo/config/SecurityConfig.java`
+#       reads `carddemo.security.*`
+#   * `src/main/java/com/awsm2/carddemo/config/OpenApiConfig.java`
+#       reads `springdoc.*`
+#   * `src/main/java/com/awsm2/carddemo/config/SecretsManagerConfig.java`
+#       reads `spring.cloud.aws.secretsmanager.*` (+ `@RefreshScope` per AAP §0.6.4)
+#   * `src/main/resources/logback-spring.xml`
+#       referenced via `logging.config: classpath:logback-spring.xml`
+#
+# AAP cross-references
+# --------------------
+#   §0.1   Refactoring intent (COBOL → Java/Spring Boot 3.x on AWS)
+#   §0.3.3 Design patterns (cache-aside, event-driven, layered, transactional)
+#   §0.4.1 Base profile non-sensitive properties
+#   §0.5.1 Dependency stack (Spring Boot 3.x, Spring Cloud AWS 3.x, AWS SDK v2)
+#   §0.6.1 BigDecimal precision (write-bigdecimal-as-plain)
+#   §0.6.4 Secrets Manager dynamic rotation without restart
+#   §0.6.5 MSK Kafka ordering guarantees (acks=all, idempotent producer,
+#          manual consumer offset commit, read_committed isolation)
+#   §0.7.1 Refactoring rules (no plaintext credentials, BCrypt, BigDecimal,
+#          @Transactional, KMS-encrypted, etc.)
+#   §0.7.2 Mandatory non-sensitive env vars
+#          (AWS_REGION, ECS_CLUSTER_NAME, RDS_SECRET_ARN, KMS_KEY_ARN,
+#           MSK_BOOTSTRAP_SERVERS, S3_OUTPUT_BUCKET, OPENSEARCH_ENDPOINT)
+# =============================================================================
+
+spring:
+  # ---------------------------------------------------------------------------
+  # Phase 2 — Application identity and default profile (AAP §0.7.2)
+  # ---------------------------------------------------------------------------
+  application:
+    name: carddemo
+  profiles:
+    # `default: local` — when SPRING_PROFILES_ACTIVE is unset, Spring activates
+    # the `local` profile (LocalStack + H2). Setting SPRING_PROFILES_ACTIVE=dev
+    # at the OS level overrides this (env-var source > YAML source).
+    default: local
+
+  # ---------------------------------------------------------------------------
+  # Phase 3 — Spring core: bean overriding, lazy init, circular refs
+  # ---------------------------------------------------------------------------
+  main:
+    # Banner printed at startup; profile overlays may set `off`.
+    banner-mode: console
+    # Spring Boot 3.x default — kept explicit to catch accidental duplicate
+    # @Bean registrations early.
+    allow-bean-definition-overriding: false
+    # Circular dependencies are a code smell — fail-fast at startup.
+    allow-circular-references: false
+    # Eager init — pay for bean creation up-front at startup, not on first request.
+    lazy-initialization: false
+
+  # ---------------------------------------------------------------------------
+  # Phase 3 — Jackson JSON (BigDecimal precision per AAP §0.6.1)
+  # ---------------------------------------------------------------------------
+  jackson:
+    serialization:
+      # Emit ISO-8601 strings, never numeric epochs.
+      write-dates-as-timestamps: false
+      # CRITICAL — disables scientific notation for monetary BigDecimal fields.
+      # Without this, `BigDecimal.valueOf(1234567890.99)` would serialise as
+      # `1.23456789099E9`, which is unacceptable for downstream financial
+      # consumers expecting plain decimal text. See AAP §0.6.1.
+      write-bigdecimal-as-plain: true
+      indent-output: false
+    deserialization:
+      # Forward-compat with API consumers sending extra fields.
+      fail-on-unknown-properties: false
+      # COBOL-faithful: a single value is never an array of one.
+      accept-single-value-as-array: false
+    # Omit null fields from JSON payloads to keep wire size tight.
+    default-property-inclusion: non_null
+    # All timestamps emitted/parsed in UTC (matches RDS, MSK, S3 conventions).
+    time-zone: UTC
+    date-format: yyyy-MM-dd'T'HH:mm:ss.SSSZ
+
+  # ---------------------------------------------------------------------------
+  # Phase 4 — DataSource defaults (overridden per profile)
+  # ---------------------------------------------------------------------------
+  # Profile overlays supply the JDBC URL, username, and password:
+  #   * local  → H2 in-memory (PostgreSQL compatibility mode)
+  #   * dev    → PostgreSQL (docker-compose)   + Secrets Manager
+  #   * prod   → RDS PostgreSQL Multi-AZ       + Secrets Manager (KMS-encrypted)
+  datasource:
+    # PostgreSQL is the production driver per AAP §0.4.1; local/test profiles
+    # override `driver-class-name` to `org.h2.Driver`.
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: CardDemoHikariCP
+      connection-test-query: SELECT 1
+      # BUG #1 fix (QA CP5 — refined): Hikari hands out connections with
+      # autoCommit=true (the JDBC default). Spring's @Transactional
+      # toggles autoCommit=false at transaction begin, executes SQL,
+      # commits/rolls back, then restores autoCommit=true via
+      # DataSourceUtils.resetConnectionAfterTransaction. The previous
+      # `auto-commit: false` setting left every leased connection in
+      # PostgreSQL's implicit-transaction state (not IDLE), causing
+      # Spring's prepareConnectionForTransaction → setTransactionIsolation
+      # call to fail with "Cannot change transaction isolation level in
+      # the middle of a transaction." That blocked direct JobLauncher
+      # invocations (QA/admin paths) AND every @Transactional method
+      # that declares an explicit isolation level (Spring Batch's
+      # SimpleJobRepository is annotated @Transactional(isolation =
+      # Isolation.SERIALIZABLE) — every JobRepository operation goes
+      # through that interceptor). With autoCommit=true Hikari leases
+      # connections in IDLE state, Spring's setTransactionIsolation
+      # succeeds, and @Transactional semantics remain identical.
+      auto-commit: true
+      # Defence in depth: even with autoCommit=true the flag is harmless
+      # (HikariCP only honours it when autoCommit=false), so we keep it
+      # to document intent and to remain safe if anyone later flips
+      # auto-commit back.
+      isolate-internal-queries: true
+      maximum-pool-size: 10
+      minimum-idle: 2
+      idle-timeout: 300000           # 5 minutes
+      max-lifetime: 600000           # 10 minutes
+      connection-timeout: 20000      # 20 seconds
+      # Used by SecretsManagerService refresh logic — connections younger
+      # than this can still serve in-flight queries while the pool drains.
+      keepalive-time: 60000          # 1 minute keepalive ping
+
+  # ---------------------------------------------------------------------------
+  # Phase 5 — JPA / Hibernate (PostgreSQL dialect; Flyway owns schema)
+  # ---------------------------------------------------------------------------
+  jpa:
+    hibernate:
+      # `validate` — Hibernate verifies the schema matches @Entity mappings
+      # but NEVER creates or alters tables. Flyway is the sole schema owner
+      # (AAP §0.4.1 / §0.6.2). NEVER set this to create / update / create-drop
+      # in dev or prod profiles.
+      ddl-auto: validate
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.CamelCaseToUnderscoresNamingStrategy
+    # Close the persistence context at the controller boundary. Prevents
+    # lazy-loading from triggering during JSON serialisation and forces
+    # @Transactional service methods to materialise all required data
+    # before returning to the controller — protects against N+1 queries
+    # leaking into response rendering.
+    open-in-view: false
+    show-sql: false                  # SQL logging is owned by logback-spring.xml
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: false
+        jdbc:
+          # All session-bound time conversions go through UTC.
+          time_zone: UTC
+          batch_size: 25
+          lob:
+            non_contextual_creation: true
+        # Reorder INSERT/UPDATE statements per-table to maximise JDBC batch hits.
+        order_inserts: true
+        order_updates: true
+        generate_statistics: false
+        query:
+          # Pad IN clauses to power-of-two cardinality for statement cache
+          # reuse; reduces Hibernate query plan thrashing.
+          in_clause_parameter_padding: true
+
+  # ---------------------------------------------------------------------------
+  # Phase 6 — Flyway (single source of truth for schema)
+  # ---------------------------------------------------------------------------
+  # Schema migrations live under `src/main/resources/db/migration/V*.sql`
+  # (AAP §0.4.1). Local/test profiles disable Flyway when using H2.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # `baseline-on-migrate: false` — RDS is provisioned by Terraform with an
+    # empty schema; the first Flyway run executes V001__create_account.sql.
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    schemas: public
+    table: flyway_schema_history
+
+  # ---------------------------------------------------------------------------
+  # Phase 7 — Spring Batch (AWS Batch / Step Functions invoke jobs, not startup)
+  # ---------------------------------------------------------------------------
+  batch:
+    jdbc:
+      # Spring Batch metadata tables (BATCH_JOB_INSTANCE, BATCH_STEP_EXECUTION,
+      # …) are provisioned by Flyway migrations, not by Spring Batch itself.
+      initialize-schema: never
+    job:
+      # CRITICAL — never auto-run batch jobs on application startup.
+      # Jobs are submitted explicitly by AWS Batch / Step Functions tasks
+      # (AAP §0.6.3). An accidental startup run could double-post an EOD batch.
+      enabled: false
+
+  # ---------------------------------------------------------------------------
+  # Phase 8 — Spring Security 6 filter wiring
+  # ---------------------------------------------------------------------------
+  # The actual SecurityFilterChain bean (JWT filter, BCrypt encoder, role
+  # rules) is defined in SecurityConfig.java; this block only controls how
+  # the chain is registered with the servlet container.
+  security:
+    filter:
+      # Engage the filter chain for standard request dispatches, error
+      # dispatches (so error responses go through GlobalExceptionHandler with
+      # authentication context), and async dispatches (so @Async endpoints
+      # see the authenticated principal).
+      dispatcher-types: REQUEST,ERROR,ASYNC
+
+  # ---------------------------------------------------------------------------
+  # Phase 9 — Kafka (MSK) — ordering + idempotence per AAP §0.6.5
+  # ---------------------------------------------------------------------------
+  # Topics (defined under `carddemo.kafka.topics` below):
+  #   * transaction.posted   — published by TransactionAddService, BillPaymentService
+  #   * account.updated      — published by AccountUpdateService, InterestCalculationService
+  #   * ledger.balanced      — published by end-of-day reconciliation
+  #   * report.requested     — online-to-batch bridge (ReportSubmissionService)
+  #
+  # Partition strategy (AAP §0.6.5): partition key = account ID, zero-padded
+  # to ensure consistent hashing. Per-account ordering is guaranteed.
+  kafka:
+    # Profile overlays select the bootstrap servers:
+    #   * local   → bitnami/kafka container in docker-compose (`kafka:9092`)
+    #   * dev/prod → MSK brokers via `MSK_BOOTSTRAP_SERVERS` (AAP §0.7.2 env var)
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:${MSK_BOOTSTRAP_SERVERS:localhost:9092}}
+    producer:
+      # `acks=all` — wait for full in-sync-replica acknowledgment before
+      # treating a send as successful. Strongest durability guarantee.
+      acks: all
+      # `enable-idempotence=true` — eliminates duplicates within a producer
+      # session via sequence numbers. Required for exactly-once semantics
+      # when combined with `acks=all` and `max.in.flight.requests=5`.
+      enable-idempotence: true
+      # Retries are effectively infinite — the broker, not the application,
+      # decides when to give up via `delivery.timeout.ms`.
+      retries: 2147483647
+      # `max-in-flight-requests-per-connection=5` — preserves per-partition
+      # ordering even with multiple concurrent in-flight produce requests,
+      # because idempotent producer enforces sequence-number ordering.
+      max-in-flight-requests-per-connection: 5
+      compression-type: lz4
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        # Total time the producer will spend attempting to deliver a record
+        # (across retries and broker acknowledgments).
+        delivery.timeout.ms: 120000   # 2 minutes
+        # Allow up to 50 ms of batching to improve throughput at the cost of
+        # added latency on low-traffic topics. Adjusted per profile.
+        linger.ms: 50
+        # Configured for Spring's JsonSerializer to drop the `__TypeId__`
+        # header — events are routed by topic, not by Java class.
+        spring.json.add.type.headers: false
+    consumer:
+      # Manual offset commits only (AAP §0.6.5). Commits happen in the
+      # @KafkaListener handler after successful processing.
+      enable-auto-commit: false
+      # `read_committed` — consumer only sees records from committed
+      # transactional producer batches; uncommitted records are skipped.
+      isolation-level: read_committed
+      # Cap each poll batch to keep processing time deterministic.
+      max-poll-records: 100
+      # `earliest` — on first run with a new consumer group, replay all
+      # available history. Dev/prod overlays may switch to `latest` once
+      # the consumer group has committed offsets.
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        # Whitelist of packages allowed for JSON-typed deserialisation —
+        # PREVENTS arbitrary-class deserialisation gadget attacks (CVE class).
+        spring.json.trusted.packages: com.awsm2.carddemo.dto,com.awsm2.carddemo.domain
+        # Max time between successive polls before the consumer is considered
+        # dead and rebalance is triggered. Tuned to accommodate the slowest
+        # handler (statement generation, transaction posting cascade).
+        max.poll.interval.ms: 300000   # 5 minutes
+        # Spring JSON deserialiser — use the listener-declared target type,
+        # ignore inbound `__TypeId__` headers (set false on producer side).
+        spring.json.use.type.headers: false
+    listener:
+      # `MANUAL` — application code calls `Acknowledgment.acknowledge()`
+      # after successful processing; commit is queued for the next poll
+      # cycle. AAP §0.6.5 mandates manual commit semantics.
+      ack-mode: MANUAL
+      # 3 listener threads per @KafkaListener method. Profile overlays
+      # may raise this in production to match topic partition count.
+      concurrency: 3
+      # Surface ListenerExecutionFailedException with full record context
+      # for downstream DLQ / retry handlers.
+      missing-topics-fatal: false
+
+  # ---------------------------------------------------------------------------
+  # Phase 10 — Redis (ElastiCache) — cache-aside per AAP §0.7.1
+  # ---------------------------------------------------------------------------
+  # Connection details supplied by profile overlays:
+  #   * local   → `localhost:6379` (docker-compose redis container)
+  #   * dev/prod → ElastiCache primary endpoint (TLS in transit per PCI-DSS)
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      timeout: 2s
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 4
+          min-idle: 1
+  cache:
+    type: redis
+    redis:
+      # Default TTL — aligned with account-balance staleness tolerance
+      # (AAP §0.7.1). Profile overlays may override.
+      time-to-live: 300000           # 5 minutes
+      # Do not cache null sentinel values — avoids cache pollution when an
+      # account lookup misses.
+      cache-null-values: false
+      use-key-prefix: true
+      key-prefix: "carddemo:"
+
+  # ---------------------------------------------------------------------------
+  # Phase 14 — Spring Cloud AWS 3.x
+  # ---------------------------------------------------------------------------
+  # Region resolution priority (Spring Cloud AWS 3.2.1):
+  #   1. `spring.cloud.aws.region.static`     ← this property
+  #   2. `AWS_REGION` env var (preferred)
+  #   3. `AWS_DEFAULT_REGION` env var
+  #   4. EC2 / ECS instance metadata
+  cloud:
+    aws:
+      region:
+        static: ${AWS_REGION:us-east-1}
+      # NOTE — `spring.cloud.aws.credentials.*` is intentionally OMITTED here
+      # per AAP §0.7.1 ("no plaintext credentials anywhere"). The AWS SDK v2
+      # DefaultCredentialsProvider chain resolves credentials automatically:
+      #   1. AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars
+      #      (set by docker-compose for local LocalStack — "test"/"test")
+      #   2. AWS_PROFILE / ~/.aws/credentials
+      #   3. ECS container credential endpoint (Fargate task role) ← prod
+      #   4. EC2 instance metadata IMDSv2
+      # Spring Cloud AWS 3.x uses the single-word property names below
+      # (`secretsmanager`, `parameterstore`) — NOT kebab-case.
+      secretsmanager:
+        # Profile overlays:
+        #   * local → enabled: false
+        #   * dev   → enabled: true  + spring.config.import: optional:aws-secretsmanager:carddemo/...
+        #   * prod  → enabled: true  + spring.config.import: aws-secretsmanager:carddemo/...
+        enabled: ${AWS_SECRETSMANAGER_ENABLED:false}
+      parameterstore:
+        enabled: ${AWS_PARAMETERSTORE_ENABLED:false}
+
+# =============================================================================
+# Phase 11 — Management / Actuator / Micrometer (separate management port)
+# =============================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        # Conservative default — only health + info are exposed via web.
+        # Profile overlays may add `metrics`, `prometheus`, `env`, etc.
+        include: health,info
+      base-path: /actuator
+  endpoint:
+    health:
+      # `when-authorized` hides component-level details from anonymous probes.
+      show-details: when-authorized
+      probes:
+        # Emit /actuator/health/liveness and /actuator/health/readiness — wired
+        # to ECS Fargate liveness/readiness probes and ALB target group
+        # health checks (AAP §0.3.3 design pattern).
+        enabled: true
+      # =====================================================================
+      # QA CP11 M-3 fix: explicit readiness-group composition.
+      #
+      # Spring Boot 3.x does NOT auto-configure a Kafka health indicator,
+      # so the default readiness group (`readinessState`) would NOT
+      # de-register an ECS task whose Kafka connection is broken. By
+      # explicitly enumerating the components below, the ALB target-group
+      # readiness probe at `/actuator/health/readiness` now reports DOWN
+      # when Kafka, the database, or Redis is unreachable, draining the
+      # task from the rotation per AAP §0.7.2 ("Health endpoints via
+      # Spring Actuator integrated with ECS health checks and ALB target
+      # group health checks").
+      #
+      # The `kafka` component is contributed by the custom
+      # `com.awsm2.carddemo.config.KafkaHealthIndicator` bean introduced
+      # alongside this configuration; the `db` and `redis` components are
+      # supplied by Spring Boot's auto-configured DataSourceHealthIndicator
+      # and RedisHealthIndicator respectively.
+      # =====================================================================
+      group:
+        readiness:
+          include: readinessState,db,redis,kafka
+    info:
+      enabled: true
+  server:
+    # Separate management port — Actuator is reachable on :8081 from the ECS
+    # task only, NEVER via the public ALB target group on :8080. PCI-DSS:
+    # never expose health detail / metrics / env to the public internet.
+    port: 8081
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  info:
+    env:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    # Micrometer → CloudWatch bridge (AAP §0.6.6). Enabled in prod, disabled
+    # in local/dev profiles.
+    export:
+      cloudwatch:
+        enabled: ${CLOUDWATCH_METRICS_ENABLED:false}
+        namespace: CardDemo
+        step: 1m
+        batch-size: 20
+
+info:
+  app:
+    name: ${spring.application.name}
+    version: ${SERVICE_VERSION:unknown}
+    description: AWS CardDemo COBOL to Java/Spring Boot 3.x migration
+
+# =============================================================================
+# Phase 12 — springdoc-openapi 2.x (OpenAPI 3 + Swagger UI)
+# =============================================================================
+springdoc:
+  api-docs:
+    # Canonical OpenAPI v3 path; clients can fetch the spec from
+    # http://host:8080/v3/api-docs.
+    path: /v3/api-docs
+    enabled: true
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true
+    operationsSorter: alpha
+    tagsSorter: alpha
+    # Persist user-entered auth tokens across page reloads — improves DX.
+    persist-authorization: true
+  # NEVER expose Actuator endpoints in the public API documentation —
+  # they live on a separate management port (8081) and are never part of
+  # the contract for external API consumers (PCI-DSS).
+  show-actuator: false
+  # Only scan @RestController-annotated classes in the controller package —
+  # excludes batch jobs, AWS adapters, and config beans from the OpenAPI
+  # specification.
+  packages-to-scan: com.awsm2.carddemo.controller
+
+# =============================================================================
+# Phase 13 — Server (embedded Tomcat)
+# =============================================================================
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  error:
+    # PCI-DSS — never leak internal exception messages, binding errors,
+    # stack traces, or exception class names in HTTP error responses.
+    # GlobalExceptionHandler returns sanitised JSON envelopes instead.
+    include-message: never
+    include-binding-errors: never
+    include-stacktrace: never
+    include-exception: false
+  # `native` — trust X-Forwarded-* headers set by the ALB. Required so that
+  # Spring sees the original client IP and HTTPS protocol behind the LB.
+  forward-headers-strategy: native
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/plain,text/css,text/javascript
+    min-response-size: 1024
+  tomcat:
+    threads:
+      max: 200
+      min-spare: 10
+    max-connections: 10000
+    accept-count: 100
+
+# =============================================================================
+# Phase 15 — CardDemo-specific application properties
+# =============================================================================
+# All AAP §0.7.2 mandatory env vars are referenced here with empty-string
+# fallbacks. Profile overlays (and Secrets Manager / Parameter Store imports
+# in dev/prod) supply the real values. An empty-string fallback at startup
+# means a config-class binding to a required field will fail loudly with
+# `IllegalStateException: <property> must not be empty` — preventing silent
+# misconfiguration in production.
+carddemo:
+  # ---------------------------------------------------------------------------
+  # AWS resource references (AAP §0.7.2 mandatory env vars)
+  # ---------------------------------------------------------------------------
+  aws:
+    region: ${AWS_REGION:us-east-1}
+    # Cluster identity (informational — surfaced in logs and metrics tags).
+    ecs:
+      cluster-name: ${ECS_CLUSTER_NAME:carddemo-local}
+    # Profile overlays may set `endpoint-override` to LocalStack's
+    # `http://localhost.localstack.cloud:4566` for local-only traffic.
+    endpoint-override: ${AWS_ENDPOINT_URL:}
+    s3:
+      output-bucket: ${S3_OUTPUT_BUCKET:carddemo-output}
+      statements-bucket: ${S3_STATEMENTS_BUCKET:carddemo-statements}
+      reports-bucket: ${S3_REPORTS_BUCKET:carddemo-reports}
+      rejects-bucket: ${S3_REJECTS_BUCKET:carddemo-rejects}
+      backup-bucket: ${S3_BACKUP_BUCKET:carddemo-backup}
+    kms:
+      # KMS CMK ARN used for SSE-KMS on S3 + envelope-encryption of audit
+      # records. Empty default → KMS adapter is disabled in local profile.
+      key-arn: ${KMS_KEY_ARN:}
+    secrets:
+      # Secret ARN for the RDS master credentials. Empty default → local
+      # profile reads username/password from the DataSource bean directly.
+      rds-secret-arn: ${RDS_SECRET_ARN:}
+      # ---------------------------------------------------------------
+      # AAP §0.6.4 — Secrets Manager dynamic rotation without restart
+      # ---------------------------------------------------------------
+      # When `enabled: true`, SecretsManagerConfig spins up a scheduled
+      # SQS poller that listens for SNS-delivered rotation notifications.
+      # On every successful poll cycle the ContextRefresher is invoked
+      # once so every @RefreshScope bean (HikariCP DataSource, JWT
+      # provider, MSK producer/consumer factories) re-reads its
+      # rotated credential from Secrets Manager on next use.
+      #
+      # Default: disabled (matchIfMissing=false in the @ConditionalOn-
+      # Property). Production overlays flip `enabled: true` once the
+      # rotation Lambda + SNS topic + SQS queue are deployed.
+      rotation-listener:
+        enabled: ${SECRETS_ROTATION_LISTENER_ENABLED:false}
+        # URL of the SQS queue that receives rotation notifications from
+        # the SNS topic attached to the Secrets Manager rotation Lambda.
+        queue-url: ${SECRETS_ROTATION_QUEUE_URL:}
+        # Poll interval (ms) between SQS ReceiveMessage cycles. 30 s is
+        # a safe default — rotations are infrequent.
+        poll-interval-ms: 30000
+        # Max messages per ReceiveMessage call (SQS hard limit is 10).
+        max-messages: 10
+        # SQS long-poll wait time (s). 20 s is the SQS maximum and
+        # minimises empty receives.
+        wait-time-seconds: 20
+        # Visibility timeout (s) applied per poll. Failed refresh leaves
+        # the message in-flight until this window elapses, after which
+        # SQS re-delivers it for retry.
+        visibility-timeout-seconds: 60
+    opensearch:
+      # OpenSearch domain endpoint for audit / transaction-log indexing.
+      endpoint: ${OPENSEARCH_ENDPOINT:}
+    stepfunctions:
+      # ARN of the EOD batch Step Functions state machine
+      # (AAP §0.6.3 — `eod-batch-pipeline.asl.json`).
+      eod-batch-pipeline-arn: ${STATE_MACHINE_EOD_ARN:}
+      file-provisioning-arn: ${STATE_MACHINE_PROVISIONING_ARN:}
+      # ARN of the Transaction-Report state machine consumed by
+      # KafkaEventConsumer#onReportRequested per AAP §0.1.1 (the sole
+      # online-to-batch bridge: CORPT00C TDQ 'JOBS' → MSK
+      # `report.requested` → Step Functions → AWS Batch report job).
+      # An empty value at runtime causes the consumer to log a WARN and
+      # acknowledge the message without starting an execution — this
+      # keeps local iteration unblocked. Production overlays MUST inject
+      # a real ARN; never fall back to the file-provisioning ARN.
+      report-pipeline-arn: ${STATE_MACHINE_REPORT_PIPELINE_ARN:}
+
+  # ---------------------------------------------------------------------------
+  # Security (AAP §0.7.1 — BCrypt password hashing, JWT tokens)
+  # ---------------------------------------------------------------------------
+  security:
+    bcrypt:
+      # BCrypt cost factor 12 — same in all environments to avoid migration
+      # surprises when staff move between profiles. 2^12 = 4096 rounds.
+      strength: 12
+    jwt:
+      # AAP §0.7.1 / §0.7.2 / CP4 Rules Compliance:
+      # NEVER hardcode JWT signing-key material in application.yml. The
+      # value below is left intentionally EMPTY when no environment
+      # variable is set; the active signing key is ALWAYS fetched at
+      # runtime by JwtTokenProvider via SecretsManagerService using the
+      # `signing-key-secret-arn` below. The `JWT_SIGNING_KEY` env var
+      # exists only so that integration tests (which run against a
+      # LocalStack-created secret) can bypass the Secrets Manager path
+      # when explicitly configured. Production startup MUST fail-fast if
+      # neither the secret ARN nor the env var resolves to a 256-bit key.
+      signing-key: ${JWT_SIGNING_KEY:}
+      issuer: carddemo
+      expiration-seconds: 3600
+      access-token-ttl-minutes: 60
+      refresh-token-ttl-minutes: 1440
+      # ----- JwtTokenProvider (AAP §0.6.4 — programmatic Secrets Manager fetch)
+      # The HS256 signing key is fetched at runtime by
+      # `com.awsm2.carddemo.security.JwtTokenProvider` via the
+      # `SecretsManagerService` adapter. The ARN is non-sensitive (it is a
+      # public AWS resource identifier); only the secret value behind it is
+      # sensitive. The `signing-key-secret-arn` is overridden per profile:
+      #   local  — LocalStack-created test secret (init-aws.sh)
+      #   dev    — real Secrets Manager ARN injected via env var
+      #   prod   — real Secrets Manager ARN injected via env var
+      #   test   — placeholder ARN; SecretsManagerService is mocked
+      # The `signing-key-secret-field` is the JSON field name within the
+      # secret payload (default `jwtSigningKey` per the rotation Lambda
+      # template). The `expiration` is ISO-8601 (default PT30M = 30 min
+      # per AAP guidance "expiry tuned for security").
+      signing-key-secret-arn: ${JWT_SIGNING_KEY_SECRET_ARN:}
+      signing-key-secret-field: ${JWT_SIGNING_KEY_SECRET_FIELD:jwtSigningKey}
+      expiration: ${JWT_EXPIRATION:PT30M}
+
+  # ---------------------------------------------------------------------------
+  # Cache (Redis cache-aside per AAP §0.7.1)
+  # ---------------------------------------------------------------------------
+  cache:
+    # Default cache entry lifetime — aligned with transaction frequency so
+    # that an account balance read after a recent transaction sees the
+    # database-of-record value, not a stale cache entry.
+    ttl-seconds: 300
+    account-balance-ttl-seconds: 300
+    card-detail-ttl-seconds: 600
+    reference-data-ttl-seconds: 3600
+
+  # ---------------------------------------------------------------------------
+  # Kafka (MSK) — consumer-group + topic names
+  # ---------------------------------------------------------------------------
+  # The `carddemo.kafka.consumer.group-id` property is read by KafkaConfig.java
+  # and supplied to the Kafka consumer factory. Centralising it under the
+  # `carddemo` namespace lets us configure additional CardDemo-internal
+  # consumer behaviour without overloading the `spring.kafka` namespace.
+  kafka:
+    consumer:
+      group-id: carddemo
+    topics:
+      # Per AAP §0.6.5 — published by TransactionAddService, BillPaymentService.
+      transaction-posted: transaction.posted
+      # Per AAP §0.6.5 — published by AccountUpdateService,
+      # InterestCalculationService, BillPaymentService.
+      account-updated: account.updated
+      # Per AAP §0.6.5 — published by end-of-day reconciliation jobs.
+      ledger-balanced: ledger.balanced
+      # Online-to-batch bridge (AAP §0.1.1) — published by
+      # ReportSubmissionService, consumed by Step Functions trigger Lambda.
+      report-requested: report.requested
+
+  # ---------------------------------------------------------------------------
+  # Pagination — page sizes preserve original BMS field counts (AAP §0.4.1)
+  # ---------------------------------------------------------------------------
+  pagination:
+    # COCRDLI.bms displays 7 card rows per screen.
+    card-list-page-size: 7
+    # COTRN00.bms displays 10 transaction rows per screen.
+    transaction-list-page-size: 10
+    # COUSR00.bms displays 10 user rows per screen.
+    user-list-page-size: 10
+
+  # ---------------------------------------------------------------------------
+  # Validation — ISO-8601 dates replace COBOL CCYYMMDD packed format
+  # ---------------------------------------------------------------------------
+  validation:
+    date-format: yyyy-MM-dd
+    timestamp-format: yyyy-MM-dd'T'HH:mm:ss.SSSZ
+
+  # ---------------------------------------------------------------------------
+  # Monetary arithmetic (AAP §0.6.1 — BigDecimal scale + rounding)
+  # ---------------------------------------------------------------------------
+  # Globally consistent BigDecimal settings used by every service performing
+  # arithmetic on PIC S9(n)V99 fields. Banker's rounding (HALF_EVEN) matches
+  # COBOL's PIC 9 truncation-with-rounding semantics for ROUNDED clauses.
+  monetary:
+    scale: 2
+    rounding-mode: HALF_EVEN
+
+# =============================================================================
+# Phase 16 — Logging (logback-spring.xml owns appender configuration)
+# =============================================================================
+logging:
+  # Delegate appender configuration to logback-spring.xml so we can use
+  # <springProfile> conditionals and the logstash-logback-encoder for
+  # CloudWatch-friendly JSON output (AAP §0.7.2 structured logging).
+  config: classpath:logback-spring.xml
+  level:
+    root: INFO
+    com.awsm2.carddemo: INFO
+    org.springframework: INFO
+    org.springframework.security: INFO
+    # Hibernate SQL/parameter logging is INTENTIONALLY suppressed to keep
+    # card numbers / PII from leaking into CloudWatch Logs (PCI-DSS).
+    # Local profile overlay may temporarily enable DEBUG for troubleshooting.
+    org.hibernate: WARN
+    org.hibernate.SQL: WARN
+    org.hibernate.orm.jdbc.bind: WARN
+    org.flywaydb: INFO
+    software.amazon.awssdk: WARN
+    io.awspring.cloud: INFO
+    org.apache.kafka: WARN
+    org.apache.kafka.clients.consumer.internals: WARN

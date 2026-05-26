@@ -1,0 +1,319 @@
+# =============================================================================
+# .dockerignore  —  AWS CardDemo (Java 17 / Spring Boot 3.x) Docker image
+# -----------------------------------------------------------------------------
+# Excludes files and directories that the multi-stage Dockerfile does NOT need
+# from the Docker build context.  Keeping the build context minimal:
+#
+#   * Reduces the size of data sent to the Docker daemon (faster builds)
+#   * Prevents secrets, credentials, and local state from leaking into image
+#     layers (PCI-DSS / AAP §0.7.1 — "No secrets in environment variables or
+#     config files")
+#   * Keeps cache invalidation focused on files that actually affect the build
+#     (unrelated repo changes do not bust the dependency-fetch layer)
+#
+# What the Dockerfile DOES require (these paths must NOT be excluded):
+#   * pom.xml          —  Maven build descriptor
+#   * .mvn/            —  Maven Wrapper resources
+#   * mvnw, mvnw.cmd   —  Maven Wrapper launch scripts
+#   * src/             —  Java source tree (main + test resources)
+#
+# Per AAP §0.4.1 (Configuration, Build, Deployment, and Documentation) —
+# this file is listed as CREATE and is a new artifact.
+#
+# Pattern syntax: standard .dockerignore globs (Go filepath.Match) with `**`
+# support for arbitrary directory depth.  Patterns are matched relative to the
+# build-context root (the repository root).  Patterns are NOT anchored — a
+# bare `*.class` matches root-level *.class only; `**/*.class` matches any
+# depth.  A leading `!` would re-include an excluded path.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Phase 1 — Standard Java / Maven / IDE excludes
+# -----------------------------------------------------------------------------
+# Maven build output: rebuilt inside the image; never copied from host.
+target/
+**/target/
+
+# Java compiled artifacts: precompiled binaries must not enter the build
+# context — the image always rebuilds from source.
+*.class
+**/*.class
+*.jar
+*.war
+*.ear
+
+# Maven helper directories sometimes left behind in submodules.
+.m2/repository/
+
+# IntelliJ IDEA
+.idea/
+**/.idea/
+*.iml
+**/*.iml
+*.ipr
+*.iws
+
+# Visual Studio Code
+.vscode/
+**/.vscode/
+
+# Eclipse / Spring Tool Suite
+.settings/
+**/.settings/
+.classpath
+**/.classpath
+.project
+**/.project
+.factorypath
+**/.factorypath
+.springBeans
+
+# NetBeans
+nbproject/private/
+nbbuild/
+nbdist/
+.nb-gradle/
+
+# JetBrains common
+*.bak
+*.orig
+
+
+# -----------------------------------------------------------------------------
+# Phase 2 — Git, OS, and editor noise
+# -----------------------------------------------------------------------------
+# Git metadata: pulling the entire history into the build context is wasteful
+# and may leak commit information into image layers.
+.git/
+.gitignore
+.gitattributes
+.gitmodules
+.gitkeep
+
+# macOS
+.DS_Store
+**/.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+**/Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux backup / fuse markers
+.fuse_hidden*
+.directory
+
+# Vim / Neovim
+*.swp
+**/*.swp
+*.swo
+**/*.swo
+.*.sw?
+**/.*.sw?
+
+# Emacs
+*~
+**/*~
+\#*\#
+.\#*
+
+# Generic editor temp / autosave
+*.tmp
+*.temp
+
+
+# -----------------------------------------------------------------------------
+# Phase 3 — Documentation / non-runtime content (not needed in a service image)
+# -----------------------------------------------------------------------------
+# MkDocs sources and TechDocs portal config — produced/consumed outside the
+# Spring Boot service.
+docs/
+mkdocs.yml
+site/
+
+# Markdown at the repository root (README, governance docs, etc.) — the image
+# is a Spring Boot service, not a docs container.
+*.md
+
+# License / governance metadata — preserved in the repo but not required
+# inside the runtime image.
+LICENSE
+NOTICE
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+CHANGELOG.md
+CHANGELOG
+
+# Backstage catalog descriptor — repository metadata only.
+catalog-info.yaml
+
+# Architecture and design assets
+diagrams/
+
+
+# -----------------------------------------------------------------------------
+# Phase 4 — Mainframe source artifacts (REFERENCE only — frozen, not in image)
+# -----------------------------------------------------------------------------
+# The COBOL source tree under app/ (cbl/, cpy/, bms/, cpy-bms/, jcl/, catlg/,
+# data/) is preserved in the repository for behavioral parity validation per
+# AAP §0.2.2 but is NEVER consumed by the Java runtime.  The 3 sample build
+# wrappers under samples/jcl/ are likewise REFERENCE only.
+app/
+samples/
+
+
+# -----------------------------------------------------------------------------
+# Phase 5 — IaC, CI/CD, and LocalStack artifacts (not packaged into the image)
+# -----------------------------------------------------------------------------
+# Terraform configuration is provisioned by CI/CD pipelines or operators, not
+# from inside the Spring Boot image.
+infrastructure/
+
+# GitHub Actions workflows
+.github/
+
+# LocalStack bootstrap scripts and seeded resources — used by docker-compose
+# for local dev, not by the production runtime image.
+localstack/
+
+# Terraform local state, plan files, and provider cache directories
+.terraform/
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+.terraform.lock.hcl
+
+
+# -----------------------------------------------------------------------------
+# Phase 6 — Docker-related files (not needed inside the image)
+# -----------------------------------------------------------------------------
+# These are used to build/orchestrate the image but should not be copied INTO
+# the image.
+Dockerfile
+Dockerfile.*
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+docker-compose.*.yaml
+.docker/
+
+
+# -----------------------------------------------------------------------------
+# Phase 7 — Secrets and local credential material (NEVER ship into the image)
+# -----------------------------------------------------------------------------
+# Per AAP §0.7.1: all credentials and secrets must be sourced at runtime from
+# AWS Secrets Manager — never bundled into the image, never in environment
+# variable files, never in plaintext.  These patterns provide defense in depth
+# in case a developer creates one of these files locally.
+*.env
+.env
+.env.*
+.envrc
+secrets.json
+secrets.yaml
+secrets.yml
+local-credentials.*
+
+# Cryptographic material
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+*.keystore
+*.jks
+*.truststore
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+
+# AWS local credential files
+.aws/
+aws-credentials*
+credentials
+
+
+# -----------------------------------------------------------------------------
+# Phase 8 — Logs, coverage, test reports, and tooling outputs
+# -----------------------------------------------------------------------------
+# Application / build logs
+*.log
+**/*.log
+logs/
+**/logs/
+
+# Code coverage (JaCoCo, Cobertura, etc.)
+coverage/
+.coverage/
+htmlcov/
+jacoco.exec
+**/jacoco.exec
+**/jacoco-it.exec
+*.exec
+
+# Test reports
+**/surefire-reports/
+**/failsafe-reports/
+test-output/
+test-results/
+
+# JVM crash & diagnostic dumps
+hs_err_pid*.log
+hs_err_pid*.mdmp
+replay_pid*.log
+*.hprof
+*.jfr
+
+
+# -----------------------------------------------------------------------------
+# Phase 9 — LocalStack / Docker runtime state and persisted volumes
+# -----------------------------------------------------------------------------
+# Local emulator runtime data (created when running `localstack start` or
+# `docker compose up`).  These are runtime artifacts of local development and
+# must never appear in a production image.
+.localstack/
+volume/
+**/volume/
+*.pid
+
+
+# -----------------------------------------------------------------------------
+# Phase 10 — Blitzy platform tooling and ad-hoc scratch
+# -----------------------------------------------------------------------------
+# Blitzy platform working directories (screenshots, screen recordings, agent
+# scratch).  Not part of the application.
+blitzy/
+
+# Ad-hoc test scratch files created during validation
+blitzy_adhoc_test_*
+**/blitzy_adhoc_test_*
+
+
+# -----------------------------------------------------------------------------
+# Phase 11 — Front-end tooling (defensive — not expected in a Spring service)
+# -----------------------------------------------------------------------------
+# Included defensively in case any front-end tooling is added (springdoc UI
+# overrides, etc.).  None of these directories should normally exist in this
+# repository.
+node_modules/
+**/node_modules/
+bower_components/
+.npm/
+.yarn/
+.pnpm-store/
+
+# Build distribution dirs (generic)
+dist/
+build/
+out/
+bin/
+**/bin/

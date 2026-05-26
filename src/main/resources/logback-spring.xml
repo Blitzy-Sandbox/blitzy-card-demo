@@ -1,0 +1,565 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    =============================================================================
+    AWS CardDemo  Logback Configuration (logback-spring.xml)
+    =============================================================================
+
+    Purpose
+    =======
+    Structured logging contract for the CardDemo Spring Boot 3.x service.
+    This file is the single source of truth for:
+
+      * The JSON log schema shipped to CloudWatch Logs and indexed in
+        Amazon OpenSearch for fraud / audit / regulatory queries.
+      * MDC (Mapped Diagnostic Context) field inclusion  traceId, spanId,
+        userId, transactionId, correlationId, accountId, cardNumberMasked
+         propagated through every log event.
+      * Spring Profile aware appender selection (colorized human readable
+        output for local development; single line JSON for production).
+
+    AAP cross references
+    ====================
+      Section 0.5.1   net.logstash.logback:logstash-logback-encoder dep
+                      (declared in pom.xml at version ${logstash-logback.version})
+      Section 0.6.6   Audit trail content + OpenSearch indexing
+                      transaction IDs, timestamps, operator codes preserved
+                      verbatim from the original COBOL audit trail writes
+                      (CBSTM03A, CBTRN02C, COACTUPC, COBIL00C, etc.).
+      Section 0.7.2   "Structured JSON logging (Logback + logstash logback
+                      encoder) shipped to CloudWatch Logs"  non negotiable
+                      user directive.
+      Section 0.7.2   "No plaintext card / account data in logs  enforced
+                      via CloudWatch log filters + Macie S3 scanning." This
+                      file implements the defense in depth masking layer
+                      that runs BEFORE logs reach CloudWatch.
+
+    Profile to appender mapping
+    ===========================
+      local / dev / test   ==>  CONSOLE_HUMAN   colorized, human readable
+      prod                 ==>  CONSOLE_JSON    single line JSON to stdout
+                                                (ECS awslogs driver ships
+                                                to CloudWatch Logs ==>
+                                                OpenSearch)
+
+    PCI DSS PII masking posture (defense in depth, AAP Section 0.7.2)
+    =================================================================
+      JSON encoder       ==> MaskingJsonGeneratorDecorator redacts
+                             PAN like (13 to 19 digit) and account style
+                             (11 digit) sequences in every JSON string
+                             value, plus known sensitive JSON object paths
+                             (password, secret, token, cardNumber, cvv,
+                             ssn, pin, authorization).
+      Human readable     ==> %replace pattern layout converters mask the
+                             same digit sequences in the log message while
+                             preserving the last 4 digits for traceability
+                             (e.g., "4111111111111111" ==> "****-****-****-1111").
+      Producer side      ==> Service code is expected to mask sensitive
+                             values at the source. This config is the
+                             second / third line of defense ahead of
+                             CloudWatch + Macie scans.
+
+    Filename rule
+    =============
+    This file MUST be named "logback-spring.xml" (not "logback.xml") because
+    the springProfile element is a Spring Boot extension that is only
+    activated when Logback loads the "*-spring.xml" variant. Renaming this
+    file to "logback.xml" silently breaks profile aware appender selection.
+
+    Hot reload
+    ==========
+    scan="true" scanPeriod="60 seconds"  Logback re reads this file every
+    60 seconds, so log level changes issued via Spring Actuator
+    /actuator/loggers take effect without restart. (AAP Section 0.7.2
+    operational requirement: Spring Actuator integration.)
+
+    Coordinating files
+    ==================
+      * application.yml              logging.config: classpath:logback-spring.xml
+      * application-local.yml        logging.level.com.awsm2.carddemo: DEBUG
+      * application-dev.yml          logging.level.com.awsm2.carddemo: DEBUG
+      * application-prod.yml         logging.level.root: WARN
+      * src/test/resources/application-test.yml
+                                     logging.level.com.awsm2.carddemo: DEBUG
+      * pom.xml                      net.logstash.logback:logstash-logback-encoder
+                                     version ${logstash-logback.version}
+      * infrastructure/terraform/cloudwatch.tf
+                                     /ecs/carddemo CloudWatch Log Group
+                                     receives the prod stdout stream via
+                                     the ECS awslogs log driver.
+    =============================================================================
+-->
+<configuration scan="true" scanPeriod="60 seconds">
+
+    <!--
+        Spring Boot's logback defaults provide the %clr / %wEx / %wex
+        conversion rules and the LOG_DATEFORMAT_PATTERN / CONSOLE_LOG_CHARSET
+        properties used by the pattern below. Including this file is the
+        recommended Spring Boot pattern.
+    -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- ====================================================================
+         Properties  application identity and active Spring profile.
+         Resolved at configuration parse time and made available to
+         appenders via ${PROPERTY_NAME} substitution.
+         ==================================================================== -->
+
+    <!--
+        Application name  resolved from spring.application.name. Defaults
+        to "carddemo" when the Spring property is missing (defensive: this
+        property is always set by application.yml).
+    -->
+    <springProperty scope="context" name="APP_NAME"
+                    source="spring.application.name"
+                    defaultValue="carddemo"/>
+
+    <!--
+        Active Spring profile (e.g., "local", "dev", "prod", "test"). Used
+        in the JSON encoder's "environment" custom field so OpenSearch /
+        CloudWatch Logs Insights dashboards can filter by environment.
+        When SPRING_PROFILES_ACTIVE is unset, application.yml sets
+        spring.profiles.default=local, so this value resolves to "local".
+    -->
+    <springProperty scope="context" name="ACTIVE_PROFILE"
+                    source="spring.profiles.active"
+                    defaultValue="unknown"/>
+
+    <!--
+        Service version  resolved from the SERVICE_VERSION environment
+        variable / system property. Production deployments inject this
+        from the released git tag or Docker image tag so every log line
+        is attributable to a specific build (regulatory traceability).
+        Falls back to "unknown" in local development.
+    -->
+    <property name="SERVICE_VERSION" value="${SERVICE_VERSION:-unknown}"/>
+
+    <!--
+        Constant: service name embedded in every JSON log event. Kept as
+        a property (not hard coded inline) so the value can be overridden
+        if the service is renamed without touching every appender.
+    -->
+    <property name="SERVICE_NAME" value="carddemo"/>
+
+    <!-- ====================================================================
+         Appender  CONSOLE_HUMAN (colorized, human readable)
+         Used by local / dev / test profiles. Writes to stdout.
+
+         Pattern segments (left to right):
+           %d{yyyy-MM-dd HH:mm:ss.SSS}      timestamp (local timezone)
+           %highlight(%-5level)             colorized log level
+           [%X{traceId:-},%X{spanId:-}]     Micrometer Tracing IDs
+           %cyan(%logger{36})               truncated logger name
+           %replace(...)                    PCI DSS PII masking layer (applied
+                                            to message AND throwable stack
+                                            trace, see below)
+           %n                               line separator
+
+         PCI DSS masking (AAP Section 0.7.2, defense in depth):
+           Hibernate batch error logs include the offending SQL UPDATE /
+           INSERT statement with bound parameter values inlined (e.g.,
+           "update cards set card_acct_id=('123'::int8), ...,
+            card_num=('4111111111111111') ..."). These appear both in
+           the message (%msg) and, when wrapped in a SQLException, in
+           the stack-trace (%wEx). The QA test report (Issues DB2, E1)
+           specifically called out that the original pattern masked
+           only %msg, leaving %wEx unmasked so the full PAN and account
+           ID surfaced via the exception chain.
+
+           The mitigation below moves all three layers of regex masking
+           into a single %replace chain that wraps an inline "%msg %wEx"
+           composite. Logback's %replace operator accepts any nested
+           conversion word as its argument, so the same outer/inner
+           regexes are now applied to the message body AND the
+           exception chain (Caused by, stack frames, suppressed,
+           bound-parameter dumps). The CVV-shaped layer is new and
+           specifically targets Hibernate's
+           "card_cvv_cd=('123'::int4)" output as well as the simpler
+           "cvv=123" / "cvc: 4567" lexical hints already covered by the
+           JSON appender.
+
+           Outermost %replace : 12 digit sequences ("oversize-acct" =
+                             invalid-but-still-leakable ID gap between
+                             the 11 digit ACCT and 13 to 19 digit PAN
+                             windows).  Regex: (?&lt;!\d)\d{8}(\d{4})(?!\d)
+                             ==> "********LAST4" (eight asterisks +
+                             last 4 digits).
+                             QA Checkpoint 3 Issue #5 rationale: when an
+                             invalid account ID like 100000000000
+                             (12 digits, one more than the 11 digit
+                             ACCT-ID PIC 9(11) contract) is rejected by
+                             the controller's @Min validation, the
+                             rejected value flows through DEBUG / WARN
+                             logs unmasked because neither the 11 digit
+                             ACCT regex nor the 13 to 19 digit PAN regex
+                             matches a length of exactly 12. This
+                             outermost layer closes that gap. It runs
+                             AFTER the PAN and ACCT layers below
+                             precisely so that already-masked output
+                             (which contains asterisks instead of
+                             contiguous digits) cannot match this
+                             regex - the digit look-arounds guarantee
+                             non-interference with prior layers.
+           Outer  %replace : 13 to 19 digit sequences (PAN-like) ==>
+                             "****-****-****-LAST4" (preserves last 4 for
+                             traceability via regex back reference $1).
+                             Regex: (?&lt;!\d)\d{9,15}(\d{4})(?!\d)
+                             Bounded by negative look behind / look ahead
+                             so 20+ digit strings are NOT matched
+                             (avoids accidentally masking IDs that
+                             aren't card numbers).
+           Mid    %replace : 11 digit sequences (ACCT-ID-like) ==>
+                             "*******LAST4" (preserves last 4).
+                             Regex: (?&lt;!\d)\d{7}(\d{4})(?!\d)
+                             Bounded by digit look-around so it does
+                             NOT re-match the inner of a PAN (which has
+                             already been masked by the outer replace).
+           Inner  %replace : CVV-shaped lexical patterns (defense in
+                             depth; CVV is no longer stored after the
+                             V017 migration but masking is retained for
+                             any value that ever appears in a log line
+                             through a constructed string or older
+                             snapshot). Matches:
+                              * "cvv=123" / "CVV: 4567" / "cvv2 = 999"
+                              * Hibernate "card_cvv_cd=('123'::int4)"
+                              * Hibernate "card_cvv_cd = ?" placeholders
+                             Output: "cvv=***" — fully masked.
+
+                             Regex implementation notes: Logback's
+                             %replace operator uses single-quote
+                             characters as its pattern/replacement
+                             delimiters and does NOT support embedded
+                             escaped single quotes inside those
+                             delimiters. To match Hibernate's quoted
+                             SQL value form ('123' wrapped in
+                             apostrophes) WITHOUT putting a literal
+                             apostrophe inside the regex string, we
+                             use a negated character class
+                             [^,\s)]{0,4} after the optional opening
+                             parenthesis. This class absorbs any 0 to
+                             4 non delimiter characters following the
+                             "=" sign — covering apostrophes, digits,
+                             and the leading quote of the cast suffix
+                             alike — and therefore reliably masks
+                             card_cvv_cd=('123'::int4) without needing
+                             to encode "'" inside the regex.
+
+                             Regex (alternation):
+                               (?i)(card_cvv_cd\s*=\s*\(?[^,\s)]{0,4}
+                                |\bc(?:vv|vc|vv2)\s*[:=]\s*\d{3,4}\b)
+         ==================================================================== -->
+    <appender name="CONSOLE_HUMAN" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [%X{traceId:-},%X{spanId:-}] %cyan(%logger{36}) - %replace(%replace(%replace(%replace(%msg%n%wEx){'(?i)(card_cvv_cd\s*=\s*\(?[^,\s)]{0,4}|\bc(?:vv|vc|vv2)\s*[:=]\s*\d{3,4}\b)', 'cvv=***'}){'(?&lt;!\d)\d{9,15}(\d{4})(?!\d)', '****-****-****-$1'}){'(?&lt;!\d)\d{7}(\d{4})(?!\d)', '*******$1'}){'(?&lt;!\d)\d{8}(\d{4})(?!\d)', '********$1'}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- ====================================================================
+         Appender  CONSOLE_JSON (single line JSON via LogstashEncoder)
+         Used by the prod profile. Writes to stdout. The ECS Fargate task
+         definition's awslogs log driver ships stdout to CloudWatch Logs
+         group "/ecs/carddemo"; a CloudWatch Logs Subscription Filter
+         then forwards events to Amazon OpenSearch for indexed audit /
+         fraud queries (AAP Section 0.6.6).
+
+         Output shape (every line is a complete JSON object):
+           {
+             "@timestamp":   "2026-05-22T01:23:45.678+0000",
+             "level":        "INFO",
+             "thread":       "http-nio-8080-exec-3",
+             "logger":       "com.awsm2.carddemo.service.TransactionAddService",
+             "message":      "Transaction posted ...",
+             "stack_trace":  "...optional...",
+             "traceId":      "...from MDC...",
+             "spanId":       "...from MDC...",
+             "transactionId":"...from MDC...",
+             "userId":       "...from MDC...",
+             "app":          "carddemo",
+             "version":      "v1.2.3",
+             "environment":  "prod",
+             "service":      "carddemo"
+           }
+         ==================================================================== -->
+    <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+
+            <!--
+                ISO 8601 timestamp with milliseconds and timezone offset.
+                Required by CloudWatch Logs Insights timestamp parsing and
+                OpenSearch "date" field type mapping.
+            -->
+            <timestampPattern>yyyy-MM-dd'T'HH:mm:ss.SSSZ</timestampPattern>
+
+            <!--
+                Static custom fields applied to every event. Resolved at
+                configuration time via ${...} substitution.
+                  app         constant: "carddemo"
+                  version     image tag / git sha from SERVICE_VERSION env
+                  environment active Spring profile (local, dev, prod, ...)
+                  service     duplicate of app (OpenSearch dashboard alias)
+            -->
+            <customFields>{"app":"${APP_NAME}","version":"${SERVICE_VERSION}","environment":"${ACTIVE_PROFILE}","service":"${SERVICE_NAME}"}</customFields>
+
+            <!--
+                Include MDC fields. Guarantees that traceId, spanId, userId,
+                transactionId, correlationId, accountId, cardNumberMasked,
+                etc. are emitted as first class JSON fields (AAP Section 0.6.6).
+            -->
+            <includeMdc>true</includeMdc>
+
+            <!--
+                Suppress logback "context" properties dump  they add no
+                signal and clutter the JSON output / OpenSearch indexes.
+            -->
+            <includeContext>false</includeContext>
+
+            <!--
+                Field name aliases that align with the OpenSearch /
+                CloudWatch Logs Insights conventions used by the rest of
+                the security tooling.
+                  @timestamp     ISO 8601 timestamp
+                  stack_trace    exception stack trace (snake_case)
+                  [ignore]       suppresses the levelValue numeric field
+                                 (we keep the human readable "level"
+                                 string only)
+            -->
+            <fieldNames>
+                <timestamp>@timestamp</timestamp>
+                <message>message</message>
+                <thread>thread</thread>
+                <logger>logger</logger>
+                <level>level</level>
+                <levelValue>[ignore]</levelValue>
+                <stackTrace>stack_trace</stackTrace>
+            </fieldNames>
+
+            <!--
+                ============================================================
+                PCI DSS PII masking (AAP Section 0.7.2, defense in depth)
+                ============================================================
+                MaskingJsonGeneratorDecorator scans every emitted JSON
+                string value (and a configured set of JSON object paths)
+                against the configured regex patterns. Matched substrings
+                / values are replaced with the configured mask BEFORE the
+                JSON event is written to stdout  i.e., before the line
+                ever reaches CloudWatch Logs.
+
+                Limitations vs. the human readable encoder:
+                  The decorator masks an entire matched substring with a
+                  static replacement (no regex back reference / last 4
+                  preservation). Production grade last 4 preservation
+                  requires the custom Java FieldMasker / ValueMasker
+                  implementation at
+                    src/main/java/com/awsm2/carddemo/observability/
+                    PciMaskingFilter.java
+                  When that class exists it can be registered here via
+                    <valueMasker class="com.awsm2.carddemo.observability
+                                       .PciMaskingFilter"/>
+                  For now, full redaction masking is applied  fully
+                  satisfies the PCI DSS "no plaintext PAN / account in
+                  logs" requirement (AAP Section 0.7.2).
+                ============================================================
+            -->
+            <jsonGeneratorDecorator class="net.logstash.logback.mask.MaskingJsonGeneratorDecorator">
+
+                <!-- Default mask used when a path or value is matched by
+                     a path only or value only declaration below. -->
+                <defaultMask>****REDACTED****</defaultMask>
+
+                <!--
+                    Mask all values stored under these JSON object keys,
+                    regardless of the actual value content. Catches naive
+                    "log.info(\"user={}\", user)" style leakage where the
+                    user object's toString() emits a sensitive field.
+                -->
+                <path>password</path>
+                <path>secret</path>
+                <path>token</path>
+                <path>jwt</path>
+                <path>cardNumber</path>
+                <path>cardNum</path>
+                <path>cardNo</path>
+                <path>pan</path>
+                <path>cvv</path>
+                <path>cvc</path>
+                <path>cvv2</path>
+                <path>ssn</path>
+                <path>pin</path>
+                <path>authorization</path>
+
+                <!--
+                    Mask any 13 to 19 digit sequence (PAN like) appearing
+                    in any JSON string value. Bounded by negative
+                    look behind / look ahead so 20+ digit strings are
+                    NOT matched.
+                -->
+                <valueMask>
+                    <value>(?&lt;!\d)\d{13,19}(?!\d)</value>
+                    <mask>****-****-****-****</mask>
+                </valueMask>
+
+                <!--
+                    Mask any 11 digit sequence (ACCT ID like) appearing in
+                    any JSON string value. Will NOT match the inner of a
+                    PAN because the surrounding digits violate the
+                    look around.
+                -->
+                <valueMask>
+                    <value>(?&lt;!\d)\d{11}(?!\d)</value>
+                    <mask>***********</mask>
+                </valueMask>
+
+                <!--
+                    QA Checkpoint 3 Issue #5: Mask any 12 digit sequence
+                    (over-sized account ID, e.g., the malformed
+                    100000000000 used in the QA reproduction step).
+                    The 11 digit and 13 to 19 digit value masks above
+                    leave a gap at length 12; this entry closes it so a
+                    rejected-but-still-logged invalid ID is masked
+                    uniformly with the same shape as a valid 11 digit
+                    ACCT mask (defense in depth). The negative
+                    look-around guarantees this regex never matches the
+                    inner of a previously masked 13 to 19 digit PAN.
+                -->
+                <valueMask>
+                    <value>(?&lt;!\d)\d{12}(?!\d)</value>
+                    <mask>************</mask>
+                </valueMask>
+
+                <!--
+                    Mask CVV / CVC tokens embedded in concatenated
+                    messages (e.g., "cvv=123" or "cvc: 4567"). Captures
+                    obvious lexical hints; service code should never log
+                    CVV in any form, this is defense in depth.
+                -->
+                <valueMask>
+                    <value>(?i)\b(?:cvv|cvc|cvv2)\s*[:=]\s*\d{3,4}\b</value>
+                    <mask>cvv=***</mask>
+                </valueMask>
+
+                <!--
+                    Mask Hibernate batch-error column patterns of the
+                    form "card_cvv_cd=('123'::int4)" or
+                    "card_cvv_cd = ?" (bound-parameter placeholder).
+                    QA test report (Issue DB2) demonstrated that the
+                    original \b(?:cvv|cvc|cvv2)\b boundary did NOT
+                    match "card_cvv_cd" because the underscore after
+                    "cvv" is a word character and the \b after "cvv"
+                    therefore did not anchor. This explicit pattern
+                    covers the Hibernate output unambiguously.
+                    Service code already avoids logging CVV; this
+                    remains defense-in-depth and survives the V017
+                    migration that removed the underlying column.
+                -->
+                <valueMask>
+                    <value>(?i)card_cvv_cd\s*=\s*\(?[^,\s)]{0,4}</value>
+                    <mask>card_cvv_cd=***</mask>
+                </valueMask>
+
+            </jsonGeneratorDecorator>
+        </encoder>
+    </appender>
+
+    <!-- ====================================================================
+         Logger overrides  applied to ALL profiles.
+         These quiet noisy third party libraries that would otherwise
+         flood CloudWatch with INFO/DEBUG noise and inflate the
+         OpenSearch index size.
+         ==================================================================== -->
+
+    <!-- Kafka client internal chatter (rebalances, fetch offsets, etc.). -->
+    <logger name="org.apache.kafka" level="WARN"/>
+    <logger name="org.apache.kafka.clients.consumer.internals" level="WARN"/>
+
+    <!--
+        Hibernate SQL + parameter logging. WARN ensures we do NOT log SQL
+        statements at INFO (PCI DSS: SQL statements may contain card /
+        account literals at INFO level if mis configured).
+        Both Hibernate 5 and Hibernate 6 parameter binder logger paths are
+        listed for forward / backward compatibility with future Spring
+        Boot upgrades.
+    -->
+    <logger name="org.hibernate.SQL" level="WARN"/>
+    <logger name="org.hibernate.type.descriptor.sql" level="WARN"/>
+    <logger name="org.hibernate.orm.jdbc.bind" level="WARN"/>
+
+    <!-- Spring Web client request/response logging  keep at INFO. -->
+    <logger name="org.springframework.web.client" level="INFO"/>
+
+    <!-- AWS SDK request signing / retry chatter  keep at WARN. -->
+    <logger name="software.amazon.awssdk.request" level="WARN"/>
+
+    <!-- Spring Cloud AWS Secrets Manager / Parameter Store integration. -->
+    <logger name="io.awspring.cloud" level="INFO"/>
+
+    <!-- ====================================================================
+         Profile specific configuration.
+         Each springProfile block is mutually exclusive at runtime
+         exactly one block is activated per Spring Boot launch (based on
+         SPRING_PROFILES_ACTIVE / spring.profiles.default), so root and
+         audit logger appender references do not double up.
+         ==================================================================== -->
+
+    <!--
+        local / dev / test  colorized human readable output to stdout.
+        com.awsm2.carddemo logs at DEBUG to aid local development; root
+        stays at INFO. Audit logger emits to the same human readable
+        appender so developers can see audit events without OpenSearch.
+    -->
+    <springProfile name="local | dev | test">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_HUMAN"/>
+        </root>
+
+        <!-- Application package  DEBUG for development visibility. -->
+        <logger name="com.awsm2.carddemo" level="DEBUG"/>
+
+        <!--
+            Audit logger (AAP Section 0.6.6). additivity="false" ensures
+            audit events appear EXACTLY ONCE  they go only to the
+            explicit appender attached to the audit logger, NOT to root's
+            appenders. This is critical for OpenSearch index integrity
+            in prod and avoids duplicate log entries in dev.
+        -->
+        <logger name="com.awsm2.carddemo.audit" level="INFO" additivity="false">
+            <appender-ref ref="CONSOLE_HUMAN"/>
+        </logger>
+    </springProfile>
+
+    <!--
+        prod  single line JSON output to stdout for CloudWatch Logs +
+        OpenSearch ingestion. Root at WARN, application at INFO per the
+        AAP Section 0.7.2 production log volume budget. Audit logger at
+        INFO with additivity="false" so audit events appear EXACTLY ONCE
+        in CloudWatch Logs  this is essential for the OpenSearch indexed
+        audit trail to remain authoritative and free of duplicates.
+    -->
+    <springProfile name="prod">
+        <root level="WARN">
+            <appender-ref ref="CONSOLE_JSON"/>
+        </root>
+
+        <!-- Application package  INFO in production (DEBUG would explode
+             CloudWatch costs and is restricted to non prod). -->
+        <logger name="com.awsm2.carddemo" level="INFO"/>
+
+        <!-- Audit logger  never quieted; transaction IDs, timestamps,
+             and operator codes are the regulatory record (AAP
+             Section 0.6.6). -->
+        <logger name="com.awsm2.carddemo.audit" level="INFO" additivity="false">
+            <appender-ref ref="CONSOLE_JSON"/>
+        </logger>
+    </springProfile>
+
+    <!-- ====================================================================
+         Shutdown hook  flush log buffers when ECS Fargate / Docker
+         sends SIGTERM during a rolling deployment or scale in event.
+         DefaultShutdownHook stops the LoggerContext gracefully so in
+         flight log events drain through the appenders before the
+         process exits. (Replaces the deprecated DelayingShutdownHook
+         which was removed in Logback 1.5.) Critical for not losing
+         audit events at shutdown (AAP Section 0.6.6).
+         ==================================================================== -->
+    <shutdownHook class="ch.qos.logback.core.hook.DefaultShutdownHook"/>
+
+</configuration>

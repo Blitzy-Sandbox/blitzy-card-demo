@@ -1,0 +1,718 @@
+# =============================================================================
+# CardDemo ECS Fargate Deployment Workflow
+# =============================================================================
+#
+# Purpose:
+#   Roll out a new immutable container image to the CardDemo Spring Boot
+#   service running on Amazon ECS Fargate behind the Application Load
+#   Balancer. This workflow is the LAST link in the CI/CD pipeline trio:
+#
+#     1. build.yml         — ./mvnw -B clean verify
+#        (compile + unit tests + integration tests + JaCoCo + OWASP)
+#     2. docker-build.yml  — Docker image build + push to ECR with the
+#        immutable ${GITHUB_SHA::8} tag (and optional vN.N.N semver tag)
+#     3. deploy.yml        (THIS FILE) — fetch + render + deploy ECS task
+#        definition with the new image tag, then smoke-test
+#        /actuator/health through the ALB
+#
+# Triggers:
+#   - push of tag v*.*.*   — production rollout of a semver-tagged release
+#   - workflow_dispatch    — manual rollout with explicit environment +
+#                            optional image tag (defaults to short SHA of
+#                            the triggering ref)
+#
+# Security guardrails (PCI-DSS aligned per AAP §0.6.6 + §0.7.2):
+#   - NO long-lived AWS credentials. The workflow uses AWS IAM OIDC
+#     federation via aws-actions/configure-aws-credentials@v4 to assume
+#     the carddemo-${env}-gha-deploy role provisioned by
+#     infrastructure/terraform/iam.tf. There are NO
+#     aws_access_key_id / aws_secret_access_key GitHub secrets.
+#   - NO inline secrets or hardcoded AWS ARNs. Every account-specific
+#     value is sourced from ${{ secrets.* }} or ${{ vars.* }}.
+#   - mask-aws-account-id: true prevents the AWS account ID from being
+#     leaked into the workflow run log (PCI-DSS).
+#   - permissions: id-token: write is REQUIRED for OIDC federation; all
+#     other GitHub-scoped permissions follow least-privilege.
+#   - All third-party action versions are pinned to major tags
+#     (@v4, @v2, @v1) — NEVER @latest or @main (supply-chain security).
+#
+# Operational guardrails:
+#   - Ubuntu 24.04 LTS runner (pinned — NOT ubuntu-latest) for
+#     deterministic, reproducible deploys.
+#   - timeout-minutes: 30 — ECS service stabilization can take several
+#     minutes after a rolling deployment kicks off.
+#   - wait-for-service-stability: true — mandatory per the
+#     .github/workflows/ folder summary; the deploy step blocks until ECS
+#     reports the service stable on the new task definition revision.
+#   - concurrency.cancel-in-progress: false — NEVER cancel an in-flight
+#     deploy; a partially-rolled-out service is worse than a queued one.
+#     Concurrent deploys to the SAME environment queue serially.
+#   - fetch-depth: 1 — shallow clone speeds up checkout; this workflow
+#     does not need full git history.
+#   - Idempotent: re-running with the same image tag is safe (ECS
+#     registers a new task definition revision; service updates are a
+#     no-op when the image is identical).
+#
+# Smoke-test contract:
+#   - After ECS reports the service stable, the workflow resolves the
+#     ALB DNS name via aws elbv2 describe-load-balancers and issues
+#     repeated HTTPS GET requests against /actuator/health (Spring
+#     Actuator endpoint enabled in application-prod.yml per AAP §0.3.4
+#     and §0.7.2). The request retries up to 30 times at 10-second
+#     intervals (≈5 minutes total) to allow ALB target-group registration
+#     and Spring Actuator startup to converge.
+#   - A 200 response with JSON containing "status":"UP" passes the gate.
+#     Anything else fails the workflow.
+#
+# Required GitHub repository configuration (operator runbook —
+# documented in infrastructure/README.md):
+#   - secrets.AWS_DEPLOY_ROLE_ARN          — ARN of carddemo-${env}-gha-deploy
+#                                            IAM role (OIDC trust policy)
+#   - vars.AWS_REGION (default us-east-1)  — region for the deploy
+#   - vars.ECR_REPOSITORY_URL_PROD         — <ACCOUNT>.dkr.ecr.<region>
+#                                            .amazonaws.com/carddemo-prod
+#   - vars.ECR_REPOSITORY_URL_STAGING      — (optional) staging registry
+#   - vars.ECR_REPOSITORY_URL_DEV          — (optional) dev registry
+#
+# References:
+#   - AAP §0.7.2 — "For AWS deployment: docker build, push to ECR,
+#                  deploy via ECS Fargate task definition update"
+#   - AAP §0.4.1 — .github/workflows/deploy.yml listed as CREATE
+#   - AAP §0.3.4, §0.7.2 — Spring Actuator /actuator/health endpoint
+#   - AAP §0.6.6 — PCI-DSS audit/observability constraints
+#   - .github/workflows/ folder summary (verbatim mandatory step list,
+#                                         action pin requirements, OIDC
+#                                         mandate)
+#   - infrastructure/terraform/iam.tf  — OIDC role carddemo-${env}-gha-deploy
+#   - infrastructure/terraform/ecs.tf  — service carddemo-${env}-svc in
+#                                         cluster carddemo-${env}, task
+#                                         family carddemo-${env},
+#                                         container name carddemo-app
+#                                         on port 8080
+#   - infrastructure/terraform/alb.tf  — load balancer carddemo-${env}-alb
+#   - infrastructure/terraform/outputs.tf — Terraform outputs operators
+#                                            copy into GitHub vars/secrets
+#
+# Replaces (legacy COBOL deployment artifacts — preserved as REFERENCE
+# only under samples/jcl/):
+#   - samples/jcl/BMSCMP.jcl — sample mainframe JCL that compiled CICS
+#     BMS maps and issued a CEMT SET PROG(...) NEWCOPY via SDSF batch.
+#     Operationally REPLACED by this workflow's ECS task-definition
+#     update (rolling deployment behind the ALB is the cloud-native
+#     equivalent of CEMT NEWCOPY).
+#   - samples/jcl/CICCMP.jcl — sample mainframe JCL that compiled CICS
+#     COBOL programs and issued CEMT NEWCOPY via SDSF. Operationally
+#     REPLACED by the Maven + Docker + ECS deploy chain that culminates
+#     in this workflow.
+#   - samples/jcl/BATCMP.jcl — sample mainframe JCL that compiled batch
+#     COBOL via the BUILDBAT proc. Operationally REPLACED by the
+#     upstream build.yml + docker-build.yml workflows; this workflow is
+#     the final stage that puts the resulting container image into
+#     production.
+# =============================================================================
+---
+name: Deploy to ECS Fargate
+
+# -----------------------------------------------------------------------------
+# Triggers:
+#   push of v*.*.*    — automated production rollout of semver-tagged
+#                       releases (rolled out to the prod environment).
+#   workflow_dispatch — manual rollout; operator selects environment and
+#                       optionally specifies an image tag (defaults to
+#                       the short SHA of the triggering ref).
+# -----------------------------------------------------------------------------
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: >-
+          ECR image tag to deploy (defaults to short SHA of triggering ref)
+        required: false
+        type: string
+        default: ''
+      environment:
+        description: 'Target environment (dev, staging, prod)'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+        default: prod
+
+# -----------------------------------------------------------------------------
+# Top-level permissions — minimum required for OIDC + ECS deploy.
+#   id-token: write  — REQUIRED for aws-actions/configure-aws-credentials to
+#                      mint a short-lived AWS STS session via OIDC federation.
+#   contents: read   — REQUIRED for actions/checkout to read repository
+#                      contents.
+# All other GitHub-scoped permissions remain at the default (none).
+# -----------------------------------------------------------------------------
+permissions:
+  id-token: write
+  contents: read
+
+# -----------------------------------------------------------------------------
+# Concurrency: prevent overlapping deploys to the SAME environment.
+#
+#   group: deploy-<environment>  — per-environment serialization; concurrent
+#                                   deploys to different environments are
+#                                   allowed (e.g., a dev deploy may run while
+#                                   a prod deploy is in progress).
+#   cancel-in-progress: false    — NEVER cancel an in-flight deploy.
+#                                   Cancelling mid-rollout could leave the
+#                                   ECS service partially updated, with some
+#                                   tasks on the old image and others on the
+#                                   new one. The second deploy queues and
+#                                   waits for the first to finish.
+# -----------------------------------------------------------------------------
+concurrency:
+  group: deploy-${{ github.event.inputs.environment || 'prod' }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to ECS Fargate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    # -------------------------------------------------------------------------
+    # GitHub environment binding:
+    #   name — selects the environment for deployment-protection rules
+    #          (required reviewers, wait timers, environment-scoped secrets).
+    #          Defaults to 'prod' for tag-push triggers; honors the
+    #          workflow_dispatch input otherwise.
+    #   url  — the publicly visible deployment URL surfaced in the GitHub
+    #          Deployments tab. Populated dynamically from the resolved
+    #          ALB DNS name (see Step "Resolve ALB DNS name").
+    # -------------------------------------------------------------------------
+    environment:
+      name: ${{ github.event.inputs.environment || 'prod' }}
+      url: https://${{ steps.alb-dns.outputs.alb_dns_name }}
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Checkout repository.
+      #   fetch-depth: 1 — shallow clone. The deploy workflow does NOT need
+      #   the full git history; it only needs the workflow file itself plus
+      #   any operator-facing scripts in the working tree. Shallow clone
+      #   speeds up checkout by ~3-5 seconds on every run.
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # -----------------------------------------------------------------------
+      # Step 2: Determine the image tag, environment, and downstream ECS /
+      # ECR / ALB resource names.
+      #
+      # Image tag resolution:
+      #   - push of refs/tags/v*.*.* — use the tag name (e.g., v1.0.0)
+      #     verbatim. The matching image MUST have been pushed by
+      #     docker-build.yml during its tag-push trigger.
+      #   - workflow_dispatch — prefer the operator-supplied image_tag
+      #     input. If blank, fall back to the short SHA of the triggering
+      #     ref. The matching short-SHA image MUST have been pushed by
+      #     docker-build.yml from an upstream commit on the same ref.
+      #
+      # Environment resolution:
+      #   - push of refs/tags/v*.*.* — always prod (semver releases are
+      #     production-only).
+      #   - workflow_dispatch — honors the operator-supplied choice.
+      #
+      # ECR repository URL resolution:
+      #   - Looked up from environment-specific repository variables
+      #     (vars.ECR_REPOSITORY_URL_<ENV>). If the variable is unset for
+      #     the resolved environment, the step fails fast with a clear
+      #     error rather than rendering a malformed task definition.
+      #
+      # Outputs:
+      #   - image_tag                  — final tag string (e.g., v1.0.0,
+      #                                   abc12345)
+      #   - environment                — dev / staging / prod
+      #   - ecr_repository_url         — full ECR URI (no tag)
+      #   - ecs_cluster_name           — carddemo-${env}
+      #   - ecs_service_name           — carddemo-${env}-svc
+      #   - ecs_task_definition_family — carddemo-${env}
+      #   - alb_name                   — carddemo-${env}-alb
+      #   - container_name             — carddemo-app (fixed; per ecs.tf)
+      # -----------------------------------------------------------------------
+      - name: Determine image tag and environment
+        id: meta
+        env:
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
+          INPUT_IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+          ECR_REPOSITORY_URL_DEV: ${{ vars.ECR_REPOSITORY_URL_DEV }}
+          ECR_REPOSITORY_URL_STAGING: ${{ vars.ECR_REPOSITORY_URL_STAGING }}
+          ECR_REPOSITORY_URL_PROD: ${{ vars.ECR_REPOSITORY_URL_PROD }}
+        run: |
+          set -euo pipefail
+
+          # -------------------------------------------------------------------
+          # Resolve image_tag and environment from the triggering event.
+          # -------------------------------------------------------------------
+          if [ "${{ github.event_name }}" = "push" ] \
+              && [ "${{ github.ref_type }}" = "tag" ]; then
+            # Tag push — use the tag name verbatim, deploy to prod.
+            TAG="${GITHUB_REF#refs/tags/}"
+            ENV="prod"
+          else
+            # workflow_dispatch — honor inputs.
+            ENV="${INPUT_ENVIRONMENT}"
+            if [ -n "${INPUT_IMAGE_TAG}" ]; then
+              TAG="${INPUT_IMAGE_TAG}"
+            else
+              TAG="${GITHUB_SHA:0:8}"
+            fi
+          fi
+
+          if [ -z "${ENV}" ]; then
+            echo "::error::Unable to resolve target environment"
+            exit 1
+          fi
+          if [ -z "${TAG}" ]; then
+            echo "::error::Unable to resolve image tag"
+            exit 1
+          fi
+
+          # -------------------------------------------------------------------
+          # Resolve the ECR repository URL for the chosen environment.
+          # -------------------------------------------------------------------
+          case "${ENV}" in
+            dev)
+              ECR_URL="${ECR_REPOSITORY_URL_DEV}"
+              ;;
+            staging)
+              ECR_URL="${ECR_REPOSITORY_URL_STAGING}"
+              ;;
+            prod)
+              ECR_URL="${ECR_REPOSITORY_URL_PROD}"
+              ;;
+            *)
+              echo "::error::Unknown environment: ${ENV}"
+              exit 1
+              ;;
+          esac
+
+          if [ -z "${ECR_URL}" ]; then
+            VAR_NAME="ECR_REPOSITORY_URL_$(echo "${ENV}" \
+                | tr '[:lower:]' '[:upper:]')"
+            echo "::error::Repository variable ${VAR_NAME} is not set"
+            exit 1
+          fi
+
+          # -------------------------------------------------------------------
+          # Emit step outputs consumed by downstream steps.
+          # The ECS / ALB resource names follow the canonical naming
+          # convention declared in:
+          #   - infrastructure/terraform/ecs.tf — cluster, service, task
+          #     definition family, container name
+          #   - infrastructure/terraform/alb.tf — load balancer name
+          # -------------------------------------------------------------------
+          {
+            echo "image_tag=${TAG}"
+            echo "environment=${ENV}"
+            echo "ecr_repository_url=${ECR_URL}"
+            echo "ecs_cluster_name=carddemo-${ENV}"
+            echo "ecs_service_name=carddemo-${ENV}-svc"
+            echo "ecs_task_definition_family=carddemo-${ENV}"
+            echo "alb_name=carddemo-${ENV}-alb"
+            echo "container_name=carddemo-app"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Resolved deploy parameters:"
+          echo "  environment              = ${ENV}"
+          echo "  image_tag                = ${TAG}"
+          echo "  ecr_repository_url       = ${ECR_URL}"
+          echo "  ecs_cluster_name         = carddemo-${ENV}"
+          echo "  ecs_service_name         = carddemo-${ENV}-svc"
+          echo "  ecs_task_definition_family = carddemo-${ENV}"
+          echo "  alb_name                 = carddemo-${ENV}-alb"
+          echo "  container_name           = carddemo-app"
+
+      # -----------------------------------------------------------------------
+      # Step 3: Configure AWS credentials via OIDC.
+      #
+      # aws-actions/configure-aws-credentials@v4 exchanges the GitHub OIDC
+      # token for a short-lived AWS STS session by assuming the
+      # carddemo-${env}-gha-deploy IAM role declared in
+      # infrastructure/terraform/iam.tf. No AWS access keys are stored in
+      # GitHub secrets — the only secret is the role ARN, which is not
+      # itself sensitive but is treated as one to centralize rotation.
+      #
+      # role-session-name distinguishes deploy sessions from docker-build
+      # sessions in CloudTrail. The GitHub run_id makes each session
+      # unique and provides a traceable audit trail per
+      # AAP §0.6.6.
+      #
+      # mask-aws-account-id: true prevents the AWS account ID from
+      # appearing in workflow logs — PCI-DSS-aligned per AAP §0.6.6.
+      # -----------------------------------------------------------------------
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-deploy-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          mask-aws-account-id: true
+
+      # -----------------------------------------------------------------------
+      # Step 4: Fetch the current ECS task definition for the target family.
+      #
+      # ECS task definitions are immutable per revision; deploying a new
+      # image requires registering a NEW revision derived from the latest
+      # active revision with only the container image field updated. The
+      # render step (Step 5) consumes this JSON as its base.
+      #
+      # The output JSON is written to taskdef.json in the workflow
+      # workspace and the path is exposed as the
+      # task_definition_path step output.
+      # -----------------------------------------------------------------------
+      - name: Fetch current ECS task definition
+        id: fetch-taskdef
+        env:
+          ECS_TASK_DEFINITION_FAMILY: >-
+            ${{ steps.meta.outputs.ecs_task_definition_family }}
+        run: |
+          set -euo pipefail
+
+          FAMILY="${ECS_TASK_DEFINITION_FAMILY}"
+          echo "Fetching task definition for family: ${FAMILY}"
+          aws ecs describe-task-definition \
+            --task-definition "${FAMILY}" \
+            --query 'taskDefinition' \
+            --output json \
+            > taskdef.json
+
+          # Defensive check: ensure the file is non-empty and parses as JSON.
+          if [ ! -s taskdef.json ]; then
+            echo "::error::Fetched task definition is empty"
+            exit 1
+          fi
+
+          # The amazon-ecs-render-task-definition action requires the JSON
+          # to be a valid object with a containerDefinitions array.
+          REVISION=$(jq -r '.revision' taskdef.json)
+          FAMILY=$(jq -r '.family' taskdef.json)
+          CONTAINER_COUNT=$(jq -r '.containerDefinitions | length' taskdef.json)
+
+          echo "Fetched task definition:"
+          echo "  family       = ${FAMILY}"
+          echo "  revision     = ${REVISION}"
+          echo "  containers   = ${CONTAINER_COUNT}"
+
+          if [ "${CONTAINER_COUNT}" = "0" ]; then
+            echo "::error::Task definition has no container definitions"
+            exit 1
+          fi
+
+          # ----------------------------------------------------------------
+          # Capture the PREVIOUS revision ARN for automatic rollback (Code
+          # Review CP7 Release Safety finding). The ARN is in the form
+          # arn:aws:ecs:<region>:<account>:task-definition/<family>:<rev>.
+          # On smoke-test failure (Step 8b below), we restore the service
+          # to this revision and wait for stability before failing the
+          # workflow — so the unhealthy new revision never traps the
+          # production ALB target group.
+          # ----------------------------------------------------------------
+          PREVIOUS_TASKDEF_ARN=$(jq -r '.taskDefinitionArn' taskdef.json)
+          echo "previous_task_definition_arn=${PREVIOUS_TASKDEF_ARN}" \
+            >> "$GITHUB_OUTPUT"
+          echo "Previous task definition (for rollback): ${PREVIOUS_TASKDEF_ARN}"
+
+          echo "task_definition_path=taskdef.json" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # Step 5: Render the new ECS task definition with the new image tag.
+      #
+      # aws-actions/amazon-ecs-render-task-definition@v1 takes the base
+      # task definition JSON (from Step 4), substitutes the container
+      # image for the named container, and emits a new task definition
+      # JSON file. The output path is exposed via the action's
+      # task-definition output.
+      #
+      # The rendered JSON is consumed by the deploy action in Step 6
+      # which registers it as a NEW revision via
+      # aws ecs register-task-definition and then updates the service
+      # to point at the new revision.
+      # -----------------------------------------------------------------------
+      - name: Render new ECS task definition
+        id: render-taskdef
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: >-
+            ${{ steps.fetch-taskdef.outputs.task_definition_path }}
+          container-name: ${{ steps.meta.outputs.container_name }}
+          image: >-
+            ${{ steps.meta.outputs.ecr_repository_url }}:${{
+            steps.meta.outputs.image_tag }}
+
+      # -----------------------------------------------------------------------
+      # Step 6: Deploy the new task definition to the ECS service.
+      #
+      # aws-actions/amazon-ecs-deploy-task-definition@v2:
+      #   - Calls aws ecs register-task-definition with the rendered JSON
+      #     to create a NEW immutable revision.
+      #   - Calls aws ecs update-service to point the service at the new
+      #     revision. ECS performs a rolling deployment per the service's
+      #     deployment-configuration (minimum-healthy + maximum-percent).
+      #   - Polls aws ecs describe-services until the service reports
+      #     deploymentStatus=PRIMARY with runningCount == desiredCount and
+      #     pendingCount == 0 (i.e., service is STABLE on the new revision).
+      #
+      # wait-for-service-stability: true — MANDATORY per the
+      # .github/workflows/ folder summary. Without it, the workflow would
+      # return success before ECS confirms the rollout is complete, masking
+      # rollout failures (image pull failures, container startup failures,
+      # ALB target-group health-check failures).
+      #
+      # wait-for-minutes: 20 — upper bound on the stability poll. ECS
+      # Fargate task startup is typically 30-90 seconds; 20 minutes is a
+      # generous safety margin for large desired counts or pull latency.
+      # -----------------------------------------------------------------------
+      - name: Deploy to ECS service
+        id: deploy
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: >-
+            ${{ steps.render-taskdef.outputs.task-definition }}
+          service: ${{ steps.meta.outputs.ecs_service_name }}
+          cluster: ${{ steps.meta.outputs.ecs_cluster_name }}
+          wait-for-service-stability: true
+          wait-for-minutes: 20
+
+      # -----------------------------------------------------------------------
+      # Step 7: Resolve the ALB DNS name for the post-deploy smoke test.
+      #
+      # The Application Load Balancer is provisioned by
+      # infrastructure/terraform/alb.tf under the canonical name
+      # carddemo-${env}-alb. The deploy workflow does NOT consume the
+      # alb_dns_name Terraform output directly (that would require
+      # Terraform state access from the runner); instead it resolves the
+      # DNS name via aws elbv2 describe-load-balancers, which only needs
+      # the elasticloadbalancing:DescribeLoadBalancers IAM permission
+      # already granted to the carddemo-${env}-gha-deploy role.
+      # -----------------------------------------------------------------------
+      - name: Resolve ALB DNS name
+        id: alb-dns
+        env:
+          ALB_NAME: ${{ steps.meta.outputs.alb_name }}
+        run: |
+          set -euo pipefail
+
+          echo "Resolving ALB DNS name for load balancer: ${ALB_NAME}"
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --names "${ALB_NAME}" \
+            --query 'LoadBalancers[0].DNSName' \
+            --output text)
+
+          if [ -z "${ALB_DNS}" ] || [ "${ALB_DNS}" = "None" ]; then
+            echo "::error::Could not resolve ALB DNS name for ${ALB_NAME}"
+            exit 1
+          fi
+
+          echo "alb_dns_name=${ALB_DNS}" >> "$GITHUB_OUTPUT"
+          echo "Resolved ALB DNS: ${ALB_DNS}"
+
+      # -----------------------------------------------------------------------
+      # Step 8: Smoke-test the deployment by hitting /actuator/health
+      # through the ALB.
+      #
+      # Spring Boot Actuator exposes /actuator/health (configured in
+      # application-prod.yml per AAP §0.3.4 and §0.7.2). A healthy
+      # response is HTTP 200 with a JSON body containing
+      # "status":"UP". The ALB target group itself is configured to
+      # health-check /actuator/health/readiness (per alb.tf); this
+      # smoke test issues a HOLISTIC check via /actuator/health
+      # after ECS reports the service stable.
+      #
+      # Retry loop:
+      #   - Up to 30 attempts at 10-second intervals (~5 minutes total).
+      #   - Even though the deploy action waits for ECS service stability,
+      #     ALB target-group registration may lag by a few seconds, and
+      #     Spring Actuator health composites may report DOWN transiently
+      #     during database / Kafka / Redis warm-up. The retry loop
+      #     absorbs these benign transients.
+      #
+      # Failure mode (Code Review CP7 Release Safety fix):
+      #   - If no attempt returns 200 with status=UP within the budget,
+      #     the workflow proceeds to Step 8b which AUTOMATICALLY rolls
+      #     back the ECS service to the previous task definition
+      #     revision (captured in Step 4 as
+      #     previous_task_definition_arn). After the rollback completes
+      #     and the service is stable on the previous revision, the
+      #     workflow exits with failure so the operator is alerted
+      #     about the bad release while the production fleet is
+      #     already restored.
+      # -----------------------------------------------------------------------
+      - name: Smoke test /actuator/health
+        id: smoke-test
+        env:
+          ALB_DNS: ${{ steps.alb-dns.outputs.alb_dns_name }}
+        run: |
+          set -euo pipefail
+
+          URL="https://${ALB_DNS}/actuator/health"
+          echo "Smoke-testing: ${URL}"
+
+          MAX_ATTEMPTS=30
+          SLEEP_SECONDS=10
+          ATTEMPT=1
+
+          while [ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]; do
+            echo "Attempt ${ATTEMPT}/${MAX_ATTEMPTS}: GET ${URL}"
+
+            # -s   silent (suppress progress)
+            # -S   show errors even when silent
+            # -o   write response body to file (for inspection)
+            # -w   write HTTP status code to stdout
+            # --max-time 10  bound the connect+transfer time
+            HTTP_STATUS=$(curl -sS \
+              -o /tmp/health.json \
+              -w '%{http_code}' \
+              --max-time 10 \
+              "${URL}" || echo "000")
+
+            if [ "${HTTP_STATUS}" = "200" ]; then
+              BODY=$(cat /tmp/health.json)
+              echo "Response body: ${BODY}"
+              # Spring Actuator's composite health response is
+              # {"status":"UP", "components":{...}}. Match the top-level
+              # status field tolerantly (whitespace + arbitrary trailing
+              # JSON content).
+              if echo "${BODY}" \
+                  | grep -qE '"status"[[:space:]]*:[[:space:]]*"UP"'; then
+                echo "::notice::Smoke test passed (${URL} -> 200 / status=UP)"
+                exit 0
+              else
+                echo "HTTP 200 received but status was not UP; body: ${BODY}"
+              fi
+            else
+              echo "HTTP ${HTTP_STATUS} — retrying in ${SLEEP_SECONDS}s"
+            fi
+
+            ATTEMPT=$((ATTEMPT + 1))
+            sleep "${SLEEP_SECONDS}"
+          done
+
+          echo "::error::Smoke test FAILED after ${MAX_ATTEMPTS} attempts"
+          echo "::error::(~5 minutes elapsed). Service may be unhealthy."
+          echo "::error::Step 8b will roll back to the previous task definition."
+          exit 1
+
+      # -----------------------------------------------------------------------
+      # Step 8b: Automatic rollback on smoke-test failure.
+      #
+      # Triggered ONLY when the smoke-test step (id: smoke-test) failed.
+      # This step restores the ECS service to the previous task definition
+      # captured in Step 4 (steps.fetch-taskdef.outputs.previous_task_definition_arn)
+      # and waits for the service to become STABLE on that prior revision
+      # before failing the workflow. The rollback uses the same
+      # aws-actions/amazon-ecs-deploy-task-definition action so we get the
+      # same ECS stability semantics (waits for desired = running,
+      # pending = 0) used for the forward deployment.
+      #
+      # Why automatic rollback (per Code Review CP7 Major finding):
+      #   The original deploy workflow documented that rollback was a
+      #   "manual operator action or a separate workflow." That violates
+      #   the CP7 release-safety requirement, since a failed smoke test
+      #   would leave the production ALB target group bound to a
+      #   non-functional task definition revision until a human operator
+      #   intervened. This step closes that gap: a smoke-test failure
+      #   immediately drives the service back to the last-known-good
+      #   revision while still signalling failure to the operator.
+      #
+      # Failure mode:
+      #   If the rollback itself fails (e.g., the previous task definition
+      #   has been deregistered, or ECS cannot stabilize), the workflow
+      #   still exits with failure (because the smoke-test step already
+      #   failed). Operators must then engage manually via CodeDeploy
+      #   blue/green or by inspecting the ECS console.
+      # -----------------------------------------------------------------------
+      - name: Roll back to previous task definition on smoke-test failure
+        id: rollback
+        if: failure() && steps.smoke-test.outcome == 'failure'
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: >-
+            ${{ steps.fetch-taskdef.outputs.previous_task_definition_arn }}
+          service: ${{ steps.meta.outputs.ecs_service_name }}
+          cluster: ${{ steps.meta.outputs.ecs_cluster_name }}
+          wait-for-service-stability: true
+          wait-for-minutes: 20
+
+      - name: Annotate rollback outcome
+        if: always() && steps.smoke-test.outcome == 'failure'
+        env:
+          PREVIOUS_TASKDEF_ARN: >-
+            ${{ steps.fetch-taskdef.outputs.previous_task_definition_arn }}
+          ROLLBACK_OUTCOME: ${{ steps.rollback.outcome }}
+        run: |
+          if [ "${ROLLBACK_OUTCOME}" = "success" ]; then
+            echo "::notice::Automatic rollback succeeded — service restored to ${PREVIOUS_TASKDEF_ARN}"
+          else
+            echo "::error::Automatic rollback FAILED (outcome=${ROLLBACK_OUTCOME}). Manual intervention required."
+            echo "::error::Previous task definition was: ${PREVIOUS_TASKDEF_ARN}"
+          fi
+
+      # -----------------------------------------------------------------------
+      # Step 9: Write a workflow summary visible at the top of the run page.
+      #
+      # Captures the rolled-out environment, image tag, ECS resource
+      # names, ALB DNS name, and trigger metadata. The summary is emitted
+      # even when an upstream step fails (if: always()) so operators can
+      # see the intended target without tracing through the run log.
+      # -----------------------------------------------------------------------
+      - name: Write deployment summary
+        if: always()
+        env:
+          ENVIRONMENT: ${{ steps.meta.outputs.environment }}
+          IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
+          ECR_URL: ${{ steps.meta.outputs.ecr_repository_url }}
+          ECS_CLUSTER: ${{ steps.meta.outputs.ecs_cluster_name }}
+          ECS_SERVICE: ${{ steps.meta.outputs.ecs_service_name }}
+          ECS_TASK_FAMILY: >-
+            ${{ steps.meta.outputs.ecs_task_definition_family }}
+          ALB_DNS: ${{ steps.alb-dns.outputs.alb_dns_name }}
+          DEPLOY_STATUS: ${{ steps.deploy.outcome }}
+          SMOKE_STATUS: ${{ steps.smoke-test.outcome }}
+          ROLLBACK_STATUS: ${{ steps.rollback.outcome }}
+          PREVIOUS_TASKDEF_ARN: >-
+            ${{ steps.fetch-taskdef.outputs.previous_task_definition_arn }}
+        run: |
+          {
+            echo "## CardDemo Deployment Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Environment | ${ENVIRONMENT:-unresolved} |"
+            echo "| Image tag | \`${IMAGE_TAG:-unresolved}\` |"
+            echo "| ECR repository | ${ECR_URL:-unresolved} |"
+            echo "| ECS cluster | ${ECS_CLUSTER:-unresolved} |"
+            echo "| ECS service | ${ECS_SERVICE:-unresolved} |"
+            echo "| Task definition family | ${ECS_TASK_FAMILY:-unresolved} |"
+            echo "| ALB DNS | ${ALB_DNS:-unresolved} |"
+            echo "| Deploy step outcome | ${DEPLOY_STATUS:-unknown} |"
+            echo "| Smoke-test outcome | ${SMOKE_STATUS:-unknown} |"
+            if [ -n "${ROLLBACK_STATUS:-}" ] && [ "${ROLLBACK_STATUS}" != "skipped" ]; then
+              echo "| Auto-rollback outcome | ${ROLLBACK_STATUS} |"
+              echo "| Rolled back to | \`${PREVIOUS_TASKDEF_ARN:-unknown}\` |"
+            fi
+            echo "| Triggered by | ${{ github.actor }} |"
+            echo "| Trigger | ${{ github.event_name }} |"
+            echo "| Ref | ${{ github.ref }} |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Runner | ubuntu-24.04 |"
+            echo ""
+            echo "### Health check"
+            echo ""
+            if [ -n "${ALB_DNS:-}" ]; then
+              echo "- Smoke-test URL: https://${ALB_DNS}/actuator/health"
+            else
+              echo "- Smoke-test URL: (ALB DNS not resolved)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,359 @@
+{
+  "Comment": "CardDemo File Provisioning state machine. Replaces the z/OS JCL data-store provisioning workflow: ACCTFILE -> CARDFILE -> XREFFILE -> CUSTFILE -> DISCGRP -> TCATBALF -> TRANTYPE -> TRANCATG -> TRANFILE -> DUSRSECJ. Source JCL artifacts: app/jcl/ACCTFILE.jcl (IDCAMS DELETE/DEFINE/REPRO for AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS, KEYS(11,0) RECORDSIZE(300,300)), app/jcl/CARDFILE.jcl (IDCAMS DELETE/DEFINE/REPRO + AIX/PATH/BLDINDEX for AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS, KEYS(16,0) RECORDSIZE(150,150)), app/jcl/CUSTFILE.jcl (IDCAMS for AWS.M2.CARDDEMO.CUSTDATA.VSAM.KSDS, KEYS(9,0) RECORDSIZE(500,500)), app/jcl/XREFFILE.jcl (IDCAMS for AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS, KEYS(16,0) RECORDSIZE(50,50) + AIX KEYS(11,25)), app/jcl/TRANFILE.jcl (IDCAMS for AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS, KEYS(16,0) RECORDSIZE(350,350) + AIX KEYS(26,304)), app/jcl/DISCGRP.jcl (IDCAMS for AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS, KEYS(16,0) RECORDSIZE(50,50)), app/jcl/TCATBALF.jcl (IDCAMS for AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS, KEYS(17,0) RECORDSIZE(50,50)), app/jcl/TRANCATG.jcl (IDCAMS for AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS, KEYS(6,0) RECORDSIZE(60,60)), app/jcl/TRANTYPE.jcl (IDCAMS for AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS, KEYS(2,0) RECORDSIZE(60,60) SHAREOPTIONS(1,4)), app/jcl/DUSRSECJ.jcl (IEBGENER inline ADMIN001/USER0001 seed + IDCAMS DELETE/DEFINE/REPRO for AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS, KEYS(8,0) RECORDSIZE(80,80)), app/jcl/DEFCUST.jcl (alternative customer cluster define with known mismatched dataset names - NOT propagated per AAP \u00a70.7.3 Minimal Change Clause; correct schema is in V003__create_customer.sql). Implements AAP \u00a70.4.1 and \u00a70.6.3 transformations: ApplyFlywayMigrations Task uses arn:aws:states:::batch:submitJob.sync to run V001-V015 Flyway scripts (replacing all IDCAMS DEFINE CLUSTER + inline REPRO for reference data including BCrypt-hashed seed users per AAP \u00a70.7.1); BulkLoadFactData Map state fans out 5 parallel Glue Spark jobs replacing IDCAMS REPRO from PS to VSAM (parallelization safe since target tables have no foreign-key constraints enforced at load time); ValidateRowCounts Task verifies expected row counts replacing implicit IDCAMS LISTCAT verification; SNS + CloudWatch metrics emit success/failure signals per AAP \u00a70.6.6 observability requirements. Per AAP \u00a70.7.3 Minimal Change Clause the chain preserves the README \u00a7Running full batch provisioning order.",
+  "StartAt": "InitializeProvisioning",
+  "Version": "1.0",
+  "TimeoutSeconds": 7200,
+  "States": {
+    "InitializeProvisioning": {
+      "Type": "Pass",
+      "Comment": "Initialize provisioning context with execution parameters. Aggregates Step Functions execution input (RDS secret ARN, database name, S3 seed-data bucket, KMS key, Glue database, SNS topic) into a single $.context object that downstream Task states reference via $.context.* JSONPath expressions. Replaces JCL: //JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC') and the //*NOTIFY=&SYSUID job-level metadata common to all provisioning JCL members (ACCTFILE.jcl L1-L2, CARDFILE.jcl L1-L2, CUSTFILE.jcl L1-L2, XREFFILE.jcl L1-L2, TRANFILE.jcl L1-L2, DISCGRP.jcl L1-L2, TCATBALF.jcl L1-L2, TRANCATG.jcl L1-L2, TRANTYPE.jcl L1-L2, DUSRSECJ.jcl L1-L2).",
+      "Parameters": {
+        "executionId.$": "$$.Execution.Name",
+        "startTime.$": "$$.State.EnteredTime",
+        "rdsSecretArn.$": "$.rdsSecretArn",
+        "rdsDatabase.$": "$.rdsDatabase",
+        "s3SeedDataBucket.$": "$.s3SeedDataBucket",
+        "kmsKeyArn.$": "$.kmsKeyArn",
+        "glueDatabase.$": "$.glueDatabase",
+        "snsAlertTopicArn.$": "$.snsAlertTopicArn"
+      },
+      "ResultPath": "$.context",
+      "Next": "ApplyFlywayMigrations"
+    },
+    "ApplyFlywayMigrations": {
+      "Type": "Task",
+      "Comment": "Apply Flyway V001-V017 migrations to create the RDS PostgreSQL schema, seed all reference data, and apply security-hardening migrations. This single Task collapses the schema-create + reference-data-seed responsibilities of every provisioning JCL member into one idempotent Flyway run: ACCTFILE.jcl STEP05/STEP10 (IDCAMS DELETE/DEFINE CLUSTER) -> V001__create_account.sql; CARDFILE.jcl STEP05/STEP10/STEP40/STEP50 (DELETE + DEFINE CLUSTER + DEFINE ALTERNATEINDEX + DEFINE PATH) -> V002__create_card.sql; CUSTFILE.jcl STEP05/STEP10 -> V003__create_customer.sql (incorporating the correct KEYS(9) RECORDSIZE(500) layout from CVCUS01Y.cpy and ignoring the DEFCUST.jcl mismatched-dataset bug); XREFFILE.jcl STEP05/STEP10/STEP20/STEP25/STEP30 (DELETE + DEFINE + DEFINE AIX KEYS(11,25) NONUNIQUEKEY + PATH + BLDINDEX) -> V004__create_cardxref.sql with index on xref_acct_id replacing the CXACAIX AIX; TRANFILE.jcl STEP05/STEP10/STEP20/STEP25/STEP30 (DELETE + DEFINE + DEFINE AIX KEYS(26,304) on TRAN-CARD-NUM + TRAN-PROC-TS + PATH + BLDINDEX) -> V005__create_transaction.sql with composite index; TCATBALF.jcl STEP05/STEP10 -> V006__create_tcatbal.sql; DISCGRP.jcl STEP05/STEP10 + STEP15 REPRO -> V007__create_disclosure_group.sql + V012__seed_disclosure_group.sql (51 rows including DEFAULT and ZEROAPR); TRANTYPE.jcl STEP05/STEP10 + STEP15 REPRO -> V008__create_transaction_type.sql + V013__seed_transaction_type.sql (7 rows); TRANCATG.jcl STEP05/STEP10 + STEP15 REPRO -> V009__create_transaction_category.sql + V014__seed_transaction_category.sql (18 rows); DUSRSECJ.jcl PREDEL/STEP01/STEP02/STEP03 (IEBGENER inline ADMIN/USER seed + IDCAMS DELETE/DEFINE/REPRO) -> V010__create_user_security.sql + V015__seed_default_users.sql with BCrypt-hashed passwords per AAP \u00a70.7.1 security improvement (plaintext PASSWORDA/PASSWORDU from DUSRSECJ.jcl L35-L44 SYSUT1 are NOT propagated verbatim). V016__add_user_security_version.sql adds JPA @Version optimistic-lock column to user_security. V017__drop_card_cvv_column.sql drops cards.card_cvv_cd per the PCI-DSS no-CVV-at-rest contract (AAP \u00a70.6.6). The FLYWAY_TARGET environment variable is pinned to the explicit version number '17' (the highest current migration committed to source control under src/main/resources/db/migration/) rather than 'latest' so that provisioning is deterministic and reproducible across LocalStack, dev, and prod -- a 'latest' default would silently include any future-checkpoint migration committed to source control, defeating the controlled-provisioning intent. Operators adding a new Vnnn__*.sql migration MUST bump this constant in lockstep.",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "States.Format('carddemo-flyway-migrate-{}', $.context.executionId)",
+        "JobQueue": "${BATCH_JOB_QUEUE_ARN}",
+        "JobDefinition": "${FLYWAY_MIGRATE_JOB_DEFINITION_ARN}",
+        "ContainerOverrides": {
+          "Environment": [
+            {
+              "Name": "SPRING_PROFILES_ACTIVE",
+              "Value": "prod"
+            },
+            {
+              "Name": "FLYWAY_TARGET",
+              "Value": "17"
+            },
+            {
+              "Name": "RDS_SECRET_ARN",
+              "Value.$": "$.context.rdsSecretArn"
+            },
+            {
+              "Name": "RDS_DATABASE",
+              "Value.$": "$.context.rdsDatabase"
+            }
+          ]
+        }
+      },
+      "ResultPath": "$.flywayResult",
+      "TimeoutSeconds": 1800,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "Batch.AWSBatchException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FailureNotification"
+        }
+      ],
+      "Next": "BulkLoadFactData"
+    },
+    "BulkLoadFactData": {
+      "Type": "Map",
+      "Comment": "Bulk load fact data (Account, Customer, Card, CardCrossReference, TransactionCategoryBalance) from S3 ASCII fixtures to RDS PostgreSQL via parallel AWS Glue Spark jobs. Replaces JCL IDCAMS REPRO from PS to VSAM steps: ACCTFILE.jcl STEP15 (REPRO INFILE(ACCTDATA AWS.M2.CARDDEMO.ACCTDATA.PS) OUTFILE(ACCTVSAM AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS)), CARDFILE.jcl STEP15 (REPRO from AWS.M2.CARDDEMO.CARDDATA.PS), CUSTFILE.jcl STEP15 (REPRO from AWS.M2.CARDDEMO.CUSTDATA.PS), XREFFILE.jcl STEP15 (REPRO from AWS.M2.CARDDEMO.CARDXREF.PS), TCATBALF.jcl STEP15 (REPRO from AWS.M2.CARDDEMO.TCATBALF.PS). Note: TRANFILE.jcl STEP15 REPROs from DALYTRAN.PS.INIT into TRANSACT VSAM which is the daily transaction staging file, not bulk fact data; transactions are loaded by the EOD batch pipeline (eod-batch-pipeline.asl.json), not here. Per AAP \u00a70.6.3 the original JCL chain ran sequentially as IDCAMS REPRO steps; the Map state parallelizes them with MaxConcurrency=5 since there are no foreign-key constraints between the bulk-loaded tables enforced at load time (cross-references resolved at query time). The ItemsPath $.bulkLoadJobs is supplied at execution start by StepFunctionsOrchestrator.startFileProvisioning() with entries describing each table's Glue job name, source S3 URI (for the corresponding *.PS ASCII fixture from app/data/ASCII/ staged in s3://${S3_SEED_DATA_BUCKET}), and target RDS table name. Per-item Glue failures (after the iterator's Retry policy is exhausted) intentionally propagate up: the iterator's InvokeGlueLoadJob state has NO inner Catch, so any unrecoverable failure terminates the Map iteration with a States.TaskFailed / Glue.AWSGlueException error which is caught by the outer Map state's Catch block and routed to FailureNotification. This ensures the downstream ValidateRowCounts and EOD batch pipeline are NOT started against a partially-provisioned data store. Previously an inner ReportLoadFailure Pass state with End:true swallowed per-item failures and allowed the workflow to proceed; that pattern has been removed per the failure-propagation contract.",
+      "ItemsPath": "$.bulkLoadJobs",
+      "MaxConcurrency": 5,
+      "Parameters": {
+        "executionId.$": "$.context.executionId",
+        "rdsSecretArn.$": "$.context.rdsSecretArn",
+        "rdsDatabase.$": "$.context.rdsDatabase",
+        "s3SeedDataBucket.$": "$.context.s3SeedDataBucket",
+        "kmsKeyArn.$": "$.context.kmsKeyArn",
+        "glueDatabase.$": "$.context.glueDatabase",
+        "loadJob.$": "$$.Map.Item.Value"
+      },
+      "Iterator": {
+        "StartAt": "InvokeGlueLoadJob",
+        "States": {
+          "InvokeGlueLoadJob": {
+            "Type": "Task",
+            "Comment": "Invoke AWS Glue Spark job to load one fact table from S3 ASCII fixture to RDS PostgreSQL via JDBC. Replaces IDCAMS REPRO INFILE(<TABLE>DATA DD=<TABLE>.PS) OUTFILE(<TABLE>VSAM DD=<TABLE>.VSAM.KSDS) for the per-table provisioning JCL. The Glue job reads the fixed-width ASCII fixture from s3://${S3_SEED_DATA_BUCKET}/<table>.ps, parses fields per the corresponding copybook layout (CVACT01Y.cpy for account, CVCUS01Y.cpy for customer, CVACT02Y.cpy for card, CVACT03Y.cpy for cardxref, CVTRA01Y.cpy for tcatbal), and bulk-inserts into the RDS target table. KMS-encrypted SSL JDBC connection uses credentials retrieved from $.rdsSecretArn via the Glue secrets manager integration.",
+            "Resource": "arn:aws:states:::glue:startJobRun.sync",
+            "Parameters": {
+              "JobName.$": "$.loadJob.glueJobName",
+              "Arguments": {
+                "--source_s3_uri.$": "$.loadJob.sourceS3Uri",
+                "--target_table.$": "$.loadJob.targetTable",
+                "--rds_secret_arn.$": "$.rdsSecretArn",
+                "--rds_database.$": "$.rdsDatabase",
+                "--kms_key_arn.$": "$.kmsKeyArn",
+                "--enable-metrics": "true",
+                "--enable-continuous-cloudwatch-log": "true"
+              }
+            },
+            "ResultPath": "$.glueResult",
+            "TimeoutSeconds": 3600,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Glue.AWSGlueException",
+                  "Glue.ConcurrentRunsExceededException"
+                ],
+                "IntervalSeconds": 30,
+                "MaxAttempts": 3,
+                "BackoffRate": 2.0
+              },
+              {
+                "ErrorEquals": [
+                  "States.TaskFailed",
+                  "States.Timeout"
+                ],
+                "IntervalSeconds": 60,
+                "MaxAttempts": 2,
+                "BackoffRate": 2.0
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.bulkLoadResults",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FailureNotification"
+        }
+      ],
+      "Next": "ValidateRowCounts"
+    },
+    "ValidateRowCounts": {
+      "Type": "Task",
+      "Comment": "Validate row counts in each loaded table by issuing SELECT COUNT(*) against RDS and comparing against expected baselines. Replaces JCL: implicit IDCAMS LISTCAT verification typically run by operations after each provisioning chain (e.g., LISTCAT ENTRIES(AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS) ALL output reviewed for HI-USED-RBA / NUM-RECORDS). Failure halts the state machine and triggers SNS notification so downstream EOD batch (eod-batch-pipeline.asl.json) is not started against an incompletely-provisioned data store.",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "States.Format('carddemo-validate-rowcounts-{}', $.context.executionId)",
+        "JobQueue": "${BATCH_JOB_QUEUE_ARN}",
+        "JobDefinition": "${VALIDATE_ROWCOUNTS_JOB_DEFINITION_ARN}",
+        "ContainerOverrides": {
+          "Environment": [
+            {
+              "Name": "SPRING_PROFILES_ACTIVE",
+              "Value": "prod"
+            },
+            {
+              "Name": "RDS_SECRET_ARN",
+              "Value.$": "$.context.rdsSecretArn"
+            },
+            {
+              "Name": "RDS_DATABASE",
+              "Value.$": "$.context.rdsDatabase"
+            }
+          ]
+        }
+      },
+      "ResultPath": "$.validationResult",
+      "TimeoutSeconds": 600,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 1,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "Batch.AWSBatchException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FailureNotification"
+        }
+      ],
+      "Next": "EmitSuccessMetric"
+    },
+    "EmitSuccessMetric": {
+      "Type": "Task",
+      "Comment": "Emit CloudWatch metric ProvisioningSucceeded under namespace CardDemo/Provisioning on successful completion of the full provisioning chain. Per AAP \u00a70.6.3 (\"The state machine emits a CloudWatch metric on completion\") and AAP \u00a70.6.6 (CloudWatch + Container Insights observability). The dimension ExecutionId allows operations to correlate the metric back to a specific Step Functions execution and CloudTrail event.",
+      "Resource": "arn:aws:states:::aws-sdk:cloudwatch:putMetricData",
+      "Parameters": {
+        "Namespace": "CardDemo/Provisioning",
+        "MetricData": [
+          {
+            "MetricName": "ProvisioningSucceeded",
+            "Value": 1,
+            "Unit": "Count",
+            "Dimensions": [
+              {
+                "Name": "StateMachine",
+                "Value": "file-provisioning"
+              },
+              {
+                "Name": "ExecutionId",
+                "Value.$": "$.context.executionId"
+              }
+            ]
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "CloudWatch.CloudWatchException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "ProvisioningSucceeded"
+        }
+      ],
+      "Next": "ProvisioningSucceeded"
+    },
+    "ProvisioningSucceeded": {
+      "Type": "Succeed",
+      "Comment": "Terminal success state. Replaces JCL: implicit job-end COND=0 success across the provisioning chain (ACCTFILE.jcl, CARDFILE.jcl, CUSTFILE.jcl, XREFFILE.jcl, TRANFILE.jcl, DISCGRP.jcl, TCATBALF.jcl, TRANCATG.jcl, TRANTYPE.jcl, DUSRSECJ.jcl). On reaching this state the RDS schema is fully provisioned, all reference data and bulk fact data is loaded, and row counts are verified - the EOD batch pipeline (eod-batch-pipeline.asl.json) can be started safely."
+    },
+    "FailureNotification": {
+      "Type": "Task",
+      "Comment": "Publish failure notification to the operations SNS topic with execution context for incident response. Per AAP \u00a70.6.3 (\"notifies via SNS if any Glue job fails\"). Replaces JCL: //*MSGCLASS=H job-level notification on abend (DUSRSECJ.jcl L2 MSGCLASS=H) and the implicit SDSF-based operator alerting that followed any non-zero condition code in the source JCL chain.",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn.$": "$.context.snsAlertTopicArn",
+        "Subject": "CardDemo file-provisioning state machine FAILED",
+        "Message.$": "States.Format('CardDemo file-provisioning execution {} failed at {}. Error: {}. Cause: {}. Review the Step Functions execution history and CloudWatch logs for the failed Batch or Glue job.', $.context.executionId, $.context.startTime, $.error.Error, $.error.Cause)",
+        "MessageAttributes": {
+          "stateMachine": {
+            "DataType": "String",
+            "StringValue": "file-provisioning"
+          },
+          "severity": {
+            "DataType": "String",
+            "StringValue": "ERROR"
+          }
+        }
+      },
+      "ResultPath": "$.snsResult",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Sns.SnsException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.snsError",
+          "Next": "EmitFailureMetric"
+        }
+      ],
+      "Next": "EmitFailureMetric"
+    },
+    "EmitFailureMetric": {
+      "Type": "Task",
+      "Comment": "Emit CloudWatch metric ProvisioningFailed under namespace CardDemo/Provisioning and transition to the terminal Fail state. Per AAP \u00a70.6.6 observability: CloudWatch metrics with StateMachine + ExecutionId dimensions support alarms, dashboards, and incident correlation; the parallel CloudTrail trail captures the underlying StartExecution / StopExecution API calls for the immutable audit log.",
+      "Resource": "arn:aws:states:::aws-sdk:cloudwatch:putMetricData",
+      "Parameters": {
+        "Namespace": "CardDemo/Provisioning",
+        "MetricData": [
+          {
+            "MetricName": "ProvisioningFailed",
+            "Value": 1,
+            "Unit": "Count",
+            "Dimensions": [
+              {
+                "Name": "StateMachine",
+                "Value": "file-provisioning"
+              },
+              {
+                "Name": "ExecutionId",
+                "Value.$": "$.context.executionId"
+              }
+            ]
+          }
+        ]
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "CloudWatch.CloudWatchException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.metricError",
+          "Next": "ProvisioningFailed"
+        }
+      ],
+      "Next": "ProvisioningFailed"
+    },
+    "ProvisioningFailed": {
+      "Type": "Fail",
+      "Comment": "Terminal failure state. The execution is recorded in CloudTrail per AAP \u00a70.6.6 and the FailureNotification SNS publish plus EmitFailureMetric CloudWatch metric provide operator-facing alerts. The downstream EOD batch pipeline (eod-batch-pipeline.asl.json) MUST NOT be started against the partially-provisioned data store; operators should review the failure cause, remediate, and re-run this state machine.",
+      "Error": "ProvisioningFailed",
+      "Cause": "One or more provisioning steps failed. See Step Functions execution history, the FailureNotification SNS message, and the CloudWatch logs for the failed Batch or Glue job."
+    }
+  }
+}

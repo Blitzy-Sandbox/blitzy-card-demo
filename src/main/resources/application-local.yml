@@ -1,0 +1,553 @@
+# =============================================================================
+# AWS CardDemo — Local Development (`local`) Spring Boot Profile
+# =============================================================================
+#
+# Purpose
+# -------
+# LocalStack-backed local development profile overlay for the CardDemo Spring
+# Boot 3.x service (AAP §0.3.1, §0.5.1, §0.7.2). Layered on top of the base
+# `application.yml`, this file overrides ONLY the properties that differ
+# for local execution against the LocalStack-emulated AWS environment.
+#
+# Activation
+# ----------
+# This file is loaded ONLY when `SPRING_PROFILES_ACTIVE=local` is set, which
+# is also the default activation per `application.yml` (`spring.profiles.
+# default: local`). It MUST NEVER be activated for production traffic.
+#
+# Two equivalent execution modes share the same profile:
+#
+#   * Developer workstation:
+#       ./mvnw spring-boot:run                 # uses default 'local' profile
+#       SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run
+#     Connects to LocalStack/Postgres/Redis/Kafka on host loopback addresses
+#     (localhost:4566 / localhost:5432 / localhost:6379 / localhost:9092).
+#
+#   * Docker Compose stack (docker-compose.yml -> `app` service):
+#       docker compose up -d
+#     The Compose service definition injects environment-variable overrides
+#     that swap loopback hostnames for Compose-network service names
+#     (postgres, redis, kafka, localstack). The same JAR runs identically in
+#     both modes — only `${ENV_VAR:default}` placeholders differ.
+#
+# Local Stack Components (AAP §0.5.1)
+# -----------------------------------
+#   * LocalStack Pro 4.14.0  — S3, SQS, SNS, Secrets Manager, KMS,
+#                               OpenSearch, StepFunctions, Glue, Batch, IAM
+#                               (edge port 4566)
+#   * PostgreSQL 16-alpine    — RDS Multi-AZ equivalent (port 5432)
+#   * Redis 7-alpine          — ElastiCache equivalent (port 6379,
+#                               allkeys-lru eviction policy)
+#   * Bitnami Kafka 3.7 KRaft — MSK equivalent (port 9092, PLAINTEXT only —
+#                               LocalStack does not implement MSK IAM)
+#
+# Security posture — local-only, PCI-DSS conventions deferred to prod/dev
+# -----------------------------------------------------------------------
+#   * AWS credentials default to the LocalStack convention `test`/`test`.
+#     These are NOT real credentials — they are documented LocalStack
+#     placeholders that have no production meaning. Real AWS credentials
+#     are sourced from AWS Secrets Manager in dev/prod (AAP §0.7.1).
+#   * JWT signing key is a LOCAL-ONLY placeholder labelled
+#     `local-development-only-*`. Production overlays source the real
+#     signing key from Secrets Manager via Spring Cloud AWS config import.
+#   * `spring.cloud.aws.secretsmanager.enabled: false` —- the auto-config
+#     does NOT attempt to fetch secrets from LocalStack at startup.
+#     Integration tests requiring secrets seed them via
+#     `localstack/init/init-aws.sh` and read them through explicit
+#     SecretsManagerService calls.
+#   * Kafka uses PLAINTEXT (no SASL_SSL / IAM). Production overlays use
+#     SASL_SSL + AWS_MSK_IAM (AAP §0.6.5).
+#   * No real cardholder data ever lands in local; all fixtures originate
+#     from `app/data/ASCII/*.txt` (synthesised test data).
+#
+# Coordinating files
+# ------------------
+#   * `application.yml`                              — base profile this overrides
+#   * `application-dev.yml` / `application-prod.yml` — sibling overlays
+#   * `src/test/resources/application-test.yml`      — JUnit profile
+#   * `docker-compose.yml`                           — Compose stack with env-var
+#                                                      overrides (postgres/redis/
+#                                                      kafka/localstack service DNS)
+#   * `localstack/init/init-aws.sh`                  — creates S3 buckets,
+#                                                      KMS keys, Secrets Manager
+#                                                      entries, SQS queues
+#   * `src/main/java/com/awsm2/carddemo/config/`     — JpaConfig, KafkaConfig,
+#                                                      RedisConfig, SecurityConfig,
+#                                                      AwsSdkConfig, BatchConfig
+#                                                      read these properties
+#
+# AAP cross-references
+# --------------------
+#   §0.3.3 — Cache-aside (Redis allkeys-lru) and event-driven (Kafka) patterns
+#   §0.5.1 — LocalStack Pro 4.14.0 pinned per user environment instructions
+#   §0.6.4 — Secrets Manager dynamic rotation (DISABLED in local)
+#   §0.6.5 — MSK Kafka ordering (acks=all, idempotent producer, manual commit)
+#   §0.7.1 — Refactoring rules (BCrypt, BigDecimal, @Transactional, no plaintext
+#            credentials anywhere — local 'test' placeholders are allowed)
+#   §0.7.2 — Mandatory non-sensitive env vars (AWS_REGION, ECS_CLUSTER_NAME,
+#            RDS_SECRET_ARN, KMS_KEY_ARN, MSK_BOOTSTRAP_SERVERS,
+#            S3_OUTPUT_BUCKET, OPENSEARCH_ENDPOINT)
+# =============================================================================
+
+spring:
+  # ---------------------------------------------------------------------------
+  # Phase 1 / Phase 2 — Profile activation and config-data imports
+  # ---------------------------------------------------------------------------
+  config:
+    activate:
+      on-profile: local
+    # Optional Docker secrets mount (no-op on a bare developer workstation).
+    # When run under Docker Compose with a `secrets:` block, files placed at
+    # /run/secrets/<name> are surfaced as Spring properties named <name>.
+    # The `optional:` prefix guarantees startup proceeds normally when the
+    # directory is missing — required for the developer-workstation mode.
+    import:
+      - "optional:configtree:/run/secrets/"
+
+  # ---------------------------------------------------------------------------
+  # Phase 2 — Spring core (banner-mode is verbose locally for visible startup)
+  # ---------------------------------------------------------------------------
+  main:
+    banner-mode: console
+
+  # ---------------------------------------------------------------------------
+  # Phase 3 — Spring Cloud AWS 3.x: LocalStack endpoint redirection
+  # ---------------------------------------------------------------------------
+  # Redirects ALL AWS SDK v2 client calls (S3, Secrets Manager, Parameter
+  # Store, SNS, SQS, KMS, StepFunctions, OpenSearch, Glue, Batch, ...) to
+  # the LocalStack edge port at http://localhost:4566 (or
+  # http://localstack:4566 inside Compose, via AWS_ENDPOINT_URL env var).
+  #
+  # Property naming — Spring Cloud AWS 3.x uses single-word property prefixes
+  # `secretsmanager` and `parameterstore` (no kebab-case). This matches the
+  # base profile convention and is verified against the published binding
+  # metadata of `io.awspring.cloud:spring-cloud-aws-starter` 3.x.
+  #
+  # Credentials — the LocalStack convention is `test` / `test`. Setting
+  # them explicitly here makes the developer-workstation execution self-
+  # contained (no ~/.aws/credentials required) while still allowing
+  # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars set by docker-compose
+  # to take precedence (Spring env-var source > YAML source).
+  cloud:
+    aws:
+      region:
+        static: ${AWS_REGION:us-east-1}
+      credentials:
+        access-key: ${AWS_ACCESS_KEY_ID:test}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+      # Global endpoint override — applies to every AWS SDK client unless
+      # a per-service override below supersedes it.
+      endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
+      s3:
+        endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
+        # LocalStack requires path-style access; production S3 supports both.
+        path-style-access-enabled: true
+      # Per-service endpoint overrides — explicit form so future per-service
+      # tuning (timeouts, retries) is straightforward.
+      secretsmanager:
+        # DO NOT auto-import secrets from LocalStack at startup. The local
+        # profile uses inline placeholder values (jwt signing-key, etc.)
+        # plus on-demand reads via SecretsManagerService for tests.
+        enabled: false
+        endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
+        region: ${AWS_REGION:us-east-1}
+      parameterstore:
+        # Same rationale as secretsmanager.enabled above.
+        enabled: false
+        endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
+        region: ${AWS_REGION:us-east-1}
+      sns:
+        endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
+        region: ${AWS_REGION:us-east-1}
+      sqs:
+        endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
+        region: ${AWS_REGION:us-east-1}
+
+  # ---------------------------------------------------------------------------
+  # Phase 4 — DataSource: local PostgreSQL (replaces VSAM per AAP §0.6.2)
+  # ---------------------------------------------------------------------------
+  # `localhost:5432` is the developer-workstation default. Docker Compose's
+  # `app` service overrides via SPRING_DATASOURCE_URL=jdbc:postgresql://
+  # postgres:5432/carddemo so the same JAR runs in both contexts unchanged.
+  #
+  # `carddemo`/`carddemo` is the dev-only credential pair created by the
+  # `postgres` Compose service. It NEVER leaves local; production uses RDS
+  # Multi-AZ with credentials sourced from AWS Secrets Manager.
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    password: ${SPRING_DATASOURCE_PASSWORD:carddemo}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: CardDemoHikariCP
+      # Small pool — single-developer or single-CI-runner load only.
+      # Production prod profile uses 20, dev uses 10.
+      maximum-pool-size: 5
+      minimum-idle: 1
+      connection-test-query: SELECT 1
+      # BUG #1 fix (QA CP5 — refined): Hikari hands out connections with
+      # autoCommit=true (the JDBC default). Spring's @Transactional
+      # always toggles autoCommit=false at transaction begin, runs the
+      # SQL, commits/rolls back, then restores autoCommit=true via
+      # DataSourceUtils.resetConnectionAfterTransaction. The earlier
+      # `auto-commit: false` setting left every leased connection in
+      # PostgreSQL's implicit-transaction state (not IDLE), causing
+      # Spring's prepareConnectionForTransaction → setTransactionIsolation
+      # call to fail with "Cannot change transaction isolation level in
+      # the middle of a transaction." That blocked direct JobLauncher
+      # invocations (QA/admin paths) AND any @Transactional method that
+      # declares an explicit isolation level (Spring Batch's
+      # SimpleJobRepository is annotated @Transactional(isolation =
+      # Isolation.SERIALIZABLE)). With autoCommit=true Hikari leases
+      # connections in IDLE state, Spring's setTransactionIsolation
+      # succeeds, and the @Transactional semantics are unchanged.
+      auto-commit: true
+      # Defence in depth: even with autoCommit=true the flag is harmless
+      # (HikariCP only honours it when autoCommit=false), so we keep it
+      # to document intent and to remain safe if anyone later flips
+      # auto-commit back.
+      isolate-internal-queries: true
+      idle-timeout: 300000
+      max-lifetime: 600000
+      connection-timeout: 20000
+      keepalive-time: 60000
+
+  # ---------------------------------------------------------------------------
+  # Phase 5 — JPA / Hibernate (PostgreSQL dialect; Flyway owns schema)
+  # ---------------------------------------------------------------------------
+  # CRITICAL — `ddl-auto: validate` is mandated by AAP §0.6.2 in EVERY
+  # environment (including local). Flyway is the sole schema owner. NEVER
+  # use `create-drop` or `update` here — that would let Hibernate silently
+  # alter the schema and diverge it from the version-controlled migrations.
+  #
+  # `show-sql: true` is acceptable in local only — production uses INFO log
+  # level and never echoes SQL (PCI-DSS — bind parameters can contain PANs).
+  jpa:
+    hibernate:
+      ddl-auto: validate
+      naming:
+        physical-strategy: org.hibernate.boot.model.naming.CamelCaseToUnderscoresNamingStrategy
+    show-sql: true
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        jdbc:
+          time_zone: UTC
+          batch_size: 25
+          lob:
+            non_contextual_creation: true
+        order_inserts: true
+        order_updates: true
+        query:
+          in_clause_parameter_padding: true
+
+  # ---------------------------------------------------------------------------
+  # Phase 6 — Flyway (auto-run migrations on startup against local Postgres)
+  # ---------------------------------------------------------------------------
+  # `baseline-on-migrate: true` is the LOCAL-ONLY convenience override. It
+  # lets developers point Spring at a non-empty PostgreSQL database (e.g.,
+  # one with manually created tables from prior experimentation) without
+  # the migration aborting. Dev/prod overlays MUST set this to `false`
+  # because RDS is always provisioned empty by Terraform.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    validate-on-migrate: true
+    schemas: public
+    table: flyway_schema_history
+
+  # ---------------------------------------------------------------------------
+  # Phase 7 — Redis (ElastiCache equivalent — cache-aside per AAP §0.3.3)
+  # ---------------------------------------------------------------------------
+  # `localhost:6379` is the developer-workstation default. Docker Compose's
+  # `app` service overrides via SPRING_DATA_REDIS_HOST=redis so the same
+  # JAR routes to the `redis` Compose service.
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      timeout: 2s
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 1
+
+  # ---------------------------------------------------------------------------
+  # Phase 8 — Kafka (MSK equivalent — PLAINTEXT for local, SASL_SSL in prod)
+  # ---------------------------------------------------------------------------
+  # AAP §0.6.5 ordering invariants (acks=all, enable-idempotence=true, manual
+  # consumer offset commits) are preserved verbatim from the base profile
+  # because they describe correctness, not transport security. The ONLY
+  # local-specific change is the transport: PLAINTEXT instead of SASL_SSL
+  # with AWS_MSK_IAM (LocalStack does not implement MSK IAM).
+  #
+  # `localhost:9092` is the developer-workstation default. Compose's `app`
+  # service overrides via SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092.
+  #
+  # CRITICAL — Schema requirement (`exports` block of file schema):
+  #   * spring.kafka.bootstrap-servers                            (below)
+  #   * spring.kafka.producer.properties.security.protocol        (below)
+  #   * spring.kafka.consumer.properties.security.protocol        (below)
+  #   * spring.kafka.consumer.group-id                            (below)
+  # All four properties are present in this section as required.
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      # Durability + idempotence preserved from base profile (AAP §0.6.5).
+      acks: all
+      enable-idempotence: true
+      retries: 2147483647
+      properties:
+        # LOCAL ONLY — production uses SASL_SSL + AWS_MSK_IAM. Bitnami
+        # Kafka in docker-compose is configured for PLAINTEXT on :9092
+        # (see docker-compose.yml KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP).
+        security.protocol: PLAINTEXT
+    consumer:
+      # Local-specific consumer group — distinct from dev (`carddemo-dev`),
+      # prod (`carddemo-prod`), and test (`carddemo-test`) to avoid
+      # cross-environment offset commits if a developer accidentally
+      # points local at a non-local broker.
+      group-id: ${SPRING_KAFKA_CONSUMER_GROUP_ID:carddemo-local}
+      enable-auto-commit: false
+      isolation-level: read_committed
+      properties:
+        # LOCAL ONLY — see producer.properties.security.protocol above.
+        security.protocol: PLAINTEXT
+
+  # ---------------------------------------------------------------------------
+  # Phase 9 — Spring Batch (local job repository tables auto-initialised)
+  # ---------------------------------------------------------------------------
+  # `initialize-schema: always` is the LOCAL-ONLY convenience override.
+  # Spring Batch auto-creates BATCH_JOB_INSTANCE, BATCH_STEP_EXECUTION,
+  # etc. on startup if missing. Dev/prod overlays set this to `never`
+  # because the Flyway migrations own those tables in those environments.
+  #
+  # `job.enabled: false` (same as base) — batch jobs are NEVER auto-run
+  # at startup. Local developers invoke them explicitly via
+  # JobLauncherTestUtils in tests or REST endpoints.
+  batch:
+    jdbc:
+      initialize-schema: always
+    job:
+      enabled: false
+
+# =============================================================================
+# Phase 10 — Management / Actuator (all endpoints exposed for local debugging)
+# =============================================================================
+# In local dev, ALL actuator endpoints are exposed on the SAME port (8080)
+# as the application — including `env`, `loggers`, `heapdump`, `threaddump`,
+# `mappings`, `metrics`, `caches`, `flyway`, etc. This is INTENTIONAL for
+# debugging convenience and is a stark departure from dev/prod where
+# Actuator runs on a separate management port (8081) and only a curated
+# subset is exposed (PCI-DSS).
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+      base-path: /actuator
+  endpoint:
+    health:
+      # `always` exposes component-level health to anonymous probes — only
+      # acceptable in local development.
+      show-details: always
+      probes:
+        enabled: true
+  # Bind Actuator to the same port as the application in local dev (8080).
+  # Production binds Actuator to a separate management port (8081).
+  server:
+    port: 8080
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  info:
+    env:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    export:
+      cloudwatch:
+        # LOCAL ONLY — no CloudWatch metric publishing locally; logs only.
+        enabled: false
+
+# =============================================================================
+# Phase 11 — CardDemo-specific application properties
+# =============================================================================
+# Only properties that DIFFER from base `application.yml` are overridden
+# here (Minimal Change Clause — AAP §0.7.3). All other carddemo.* values
+# inherit base profile defaults.
+carddemo:
+  # ---------------------------------------------------------------------------
+  # AWS resource references (AAP §0.7.2 mandatory env vars)
+  # ---------------------------------------------------------------------------
+  # Defaults are LocalStack-friendly fake ARNs (account 000000000000 is the
+  # LocalStack-conventional dummy account ID). Docker Compose overrides
+  # any of these via plain environment variables.
+  aws:
+    region: ${AWS_REGION:us-east-1}
+    # LocalStack endpoint override — applied by AwsSdkConfig to every
+    # AWS SDK client builder unless a per-service override supersedes.
+    endpoint-override: ${AWS_ENDPOINT_URL:http://localhost:4566}
+    ecs:
+      cluster-name: ${ECS_CLUSTER_NAME:carddemo-local}
+    s3:
+      # Default LocalStack-emulated bucket name. The `init-aws.sh` script
+      # is responsible for creating this bucket; if not present, AWS SDK
+      # calls fail with NoSuchBucket and the developer needs to either
+      # run the init script or override the env var to a bucket that
+      # does exist (typically `carddemo-output`, also created by init).
+      output-bucket: ${S3_OUTPUT_BUCKET:carddemo-output-local}
+    kms:
+      # Fake LocalStack KMS CMK ARN. KMS adapter uses this for envelope
+      # encryption tests; real CMK is provisioned by Terraform in dev/prod.
+      key-arn: ${KMS_KEY_ARN:arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000}
+    secrets:
+      # Fake LocalStack Secrets Manager secret ARN. The local profile
+      # does NOT actually read this secret (secretsmanager.enabled=false
+      # above) — it is present only so that @ConfigurationProperties
+      # binding to `RdsSecretsProperties` does not fail with "must not
+      # be empty" on startup.
+      rds-secret-arn: ${RDS_SECRET_ARN:arn:aws:secretsmanager:us-east-1:000000000000:secret:carddemo/rds}
+    opensearch:
+      # LocalStack supports OpenSearch via the same edge port.
+      endpoint: ${OPENSEARCH_ENDPOINT:http://localhost:4566}
+    stepfunctions:
+      eod-batch-pipeline-arn: ${STATE_MACHINE_EOD_ARN:arn:aws:states:us-east-1:000000000000:stateMachine:eod-batch-pipeline}
+      file-provisioning-arn: ${STATE_MACHINE_PROVISIONING_ARN:arn:aws:states:us-east-1:000000000000:stateMachine:file-provisioning}
+      # Local report-pipeline ARN — a separate placeholder ARN so
+      # KafkaEventConsumer#onReportRequested resolves a distinct value
+      # from the file-provisioning ARN (the review fix that ensures
+      # `report.requested` events never accidentally trigger the
+      # file-provisioning pipeline in local development).
+      report-pipeline-arn: ${STATE_MACHINE_REPORT_PIPELINE_ARN:arn:aws:states:us-east-1:000000000000:stateMachine:report-pipeline}
+
+  # ---------------------------------------------------------------------------
+  # Security — JWT signing key is a LOCAL-ONLY placeholder
+  # ---------------------------------------------------------------------------
+  # The string `local-development-only-jwt-signing-secret-32-bytes-min-length`
+  # is 57 ASCII characters = 57 bytes — well above the HS256 minimum of
+  # 32 bytes (256 bits). The leading `local-development-only-` prefix
+  # makes this value unmistakable as a non-production placeholder if it
+  # ever appears in a log or stack trace. Dev/prod overlays inject the
+  # real signing key via Secrets Manager + ECS task definition `secrets:`.
+  security:
+    jwt:
+      signing-key: ${JWT_SIGNING_KEY:local-development-only-jwt-signing-secret-32-bytes-min-length}
+      issuer: carddemo-local
+      expiration-seconds: 3600
+      access-token-ttl-minutes: 60
+      refresh-token-ttl-minutes: 1440
+      # -----------------------------------------------------------------------
+      # JwtTokenProvider (programmatic Secrets Manager fetch via
+      # SecretsManagerService adapter) — LocalStack-backed in the local profile.
+      # -----------------------------------------------------------------------
+      # JwtTokenProvider.initSigningKey() reads the JWT HMAC-SHA256 signing key
+      # at @PostConstruct from AWS Secrets Manager via the
+      # SecretsManagerService adapter. The ARN below targets a LocalStack
+      # endpoint (created by localstack/init/init-aws.sh during local
+      # bootstrap) so that the local dev loop exercises the same code path as
+      # dev/prod without contacting real AWS. The JSON payload at this ARN is
+      # expected to contain a field named `jwtSigningKey` holding a ≥ 32-byte
+      # signing key (e.g.,
+      #   {"jwtSigningKey":"local-development-only-jwt-signing-secret-32-bytes-min-length"}).
+      # When the ARN is unavailable (LocalStack not started or seed not
+      # applied), JwtTokenProvider fails fast at startup with a clear
+      # IllegalStateException — matching the AAP §0.7.1 fail-fast contract
+      # for missing credentials.
+      signing-key-secret-arn: ${JWT_SIGNING_KEY_SECRET_ARN:arn:aws:secretsmanager:us-east-1:000000000000:secret:carddemo/local/jwt-signing-key-lOcAl0}
+      signing-key-secret-field: ${JWT_SIGNING_KEY_SECRET_FIELD:jwtSigningKey}
+      # ISO-8601 token TTL — 60 minutes for local dev so developers do not have
+      # to re-authenticate during a typical local debugging session.
+      expiration: ${JWT_EXPIRATION:PT60M}
+    # -------------------------------------------------------------------------
+    # CORS — local-development allow-list (QA finding C1 remediation)
+    # -------------------------------------------------------------------------
+    # The base profile's wildcard `:*` fallback is replaced here by an
+    # explicit local allow-list that names the standard local UI dev
+    # servers. This eliminates the inherited `*` advertised by the dev
+    # Spring container before any explicit override was supplied (QA
+    # test report §"Issue C1: Wildcard CORS origin on authenticated
+    # API").
+    #
+    # Local development typically runs a Vite/Next.js dev server on
+    # http://localhost:3000 (and occasionally http://localhost:5173 for
+    # Vite default). Additional origins can be appended via the
+    # CORS_ALLOWED_ORIGINS environment variable without code changes.
+    # NOTE: even in the local profile, the configured allow-list does
+    # NOT include `*` — defense in depth so that a developer who copies
+    # the local profile into a non-local environment never inadvertently
+    # exposes `*` to the public internet.
+    cors:
+      allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000}
+      allowed-methods: ${CORS_ALLOWED_METHODS:GET,POST,PUT,DELETE,OPTIONS}
+      allowed-headers: ${CORS_ALLOWED_HEADERS:Authorization,Content-Type,X-Requested-With,Accept}
+      max-age: ${CORS_MAX_AGE:3600}
+
+  # ---------------------------------------------------------------------------
+  # Cache TTLs — short for local dev to surface staleness bugs quickly
+  # ---------------------------------------------------------------------------
+  # Base profile defaults are 300 / 600 / 3600 seconds; local override is
+  # a uniform 60 seconds so that cache-aside refresh logic is exercised
+  # within a typical developer session.
+  cache:
+    ttl-seconds: 60
+    account-balance-ttl-seconds: 60
+    card-detail-ttl-seconds: 60
+    reference-data-ttl-seconds: 60
+
+  # ---------------------------------------------------------------------------
+  # Kafka consumer group (alias for code reading carddemo.kafka.consumer.*)
+  # ---------------------------------------------------------------------------
+  # Some KafkaConfig.java helpers read the group ID under the `carddemo`
+  # namespace rather than `spring.kafka.consumer.group-id`. Centralising
+  # both spellings prevents drift between the Spring property and the
+  # CardDemo-internal override.
+  kafka:
+    consumer:
+      group-id: ${SPRING_KAFKA_CONSUMER_GROUP_ID:carddemo-local}
+
+# =============================================================================
+# Phase 12 — Logging (verbose for development)
+# =============================================================================
+# Local overrides for noisier output during development. Hibernate SQL +
+# bind parameters are DEBUG/TRACE locally (acceptable because no real
+# cardholder data is ever loaded into local). Production keeps these at
+# WARN/INFO (PCI-DSS — PANs MUST NOT appear in logs).
+logging:
+  level:
+    root: INFO
+    com.awsm2.carddemo: DEBUG
+    org.springframework.web: INFO
+    org.springframework.security: INFO
+    org.springframework.boot.actuate: INFO
+    org.springframework.kafka: INFO
+    org.springframework.batch: INFO
+    org.hibernate: WARN
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql: TRACE
+    org.flywaydb: INFO
+    software.amazon.awssdk: WARN
+    io.awspring.cloud: INFO
+    org.apache.kafka: WARN
+
+# =============================================================================
+# Phase 13 — Server (embedded Tomcat — graceful shutdown, compression)
+# =============================================================================
+# `port: 8080` matches the docker-compose port mapping `8080:8080` and the
+# README's documented developer URL. `shutdown: graceful` ensures
+# in-flight HTTP requests complete cleanly when the developer presses
+# Ctrl+C (Spring waits up to 30 s before forced shutdown).
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/plain,text/css,text/javascript
+    min-response-size: 1024
