@@ -83,6 +83,99 @@ public sealed interface FileStatus
         return this instanceof Ok;
     }
 
+    /**
+     * Returns the 2-character COBOL {@code FILE STATUS} code that this permit
+     * represents, preserving the byte-fidelity surface used in COBOL
+     * {@code MOVE CUSTFILE-STATUS TO IO-STATUS} / {@code DISPLAY} sequences.
+     *
+     * <p>Pattern-matching dispatch on the sealed hierarchy (no {@code default})
+     * keeps the mapping exhaustive: adding a new permit forces every site that
+     * calls {@code toCobolCode()} to be updated in lockstep, which is exactly
+     * the compile-time guarantee mandated by AAP &sect;0.6.10.
+     *
+     * @return a non-{@code null} 2-character string matching the COBOL
+     *         {@code FILE STATUS} convention; for {@link IoError} the
+     *         numeric code is zero-padded to 2 digits, or the literal
+     *         {@code "30"} (permanent error) when the embedded code is
+     *         out of the standard 0-99 COBOL range
+     */
+    default String toCobolCode() {
+        return switch (this) {
+            case Ok ok            -> "00";
+            case EndOfFile eof    -> "10";
+            case DuplicateKey dk  -> "22";
+            case NotFound nf      -> "23";
+            case IoError(int code, String description) -> {
+                // IBM Enterprise COBOL FILE STATUS is a 2-character display
+                // representation. Codes 0-99 zero-pad to "00".."99"; codes
+                // outside that range fall back to the synthetic "30"
+                // (permanent error) which is what CardDemo COBOL would
+                // emit for any unexpected I/O failure.
+                if (code >= 0 && code <= 99) {
+                    yield String.format("%02d", code);
+                } else {
+                    yield "30";
+                }
+            }
+        };
+    }
+
+    /**
+     * Maps a 2-character COBOL {@code FILE STATUS} code (e.g. {@code "00"},
+     * {@code "10"}, {@code "22"}, {@code "23"}, {@code "30"}, {@code "35"})
+     * to its sealed {@link FileStatus} permit. Used by file-adapter and
+     * use-case code that already carries the raw 2-byte status (preserved
+     * for byte-fidelity logs) to obtain a typed value suitable for
+     * exhaustive pattern matching.
+     *
+     * <p>Mapping (per IBM Enterprise COBOL FILE STATUS convention):
+     * <ul>
+     *   <li>{@code "00"} &rarr; {@link #OK} (successful completion)</li>
+     *   <li>{@code "10"} &rarr; {@link #END_OF_FILE} (end-of-file on READ)</li>
+     *   <li>{@code "22"} &rarr; {@link #DUPLICATE_KEY} (duplicate key on WRITE)</li>
+     *   <li>{@code "23"} &rarr; {@link #NOT_FOUND} (record not found on keyed READ)</li>
+     *   <li>any other 2-char digit pair (e.g. {@code "30"}, {@code "35"},
+     *       {@code "47"}) &rarr; {@code IoError(numericCode, "FILE STATUS " + code)}</li>
+     *   <li>{@code null}, empty, or non-numeric &rarr;
+     *       {@code IoError(-1, "FILE STATUS <raw>")}</li>
+     * </ul>
+     *
+     * <p>This is the canonical entry point for code that has just observed a
+     * COBOL-style file-status string (e.g. as read from a {@code CUSTFILE-STATUS}
+     * working-storage variable or returned from an adapter) and wants to
+     * dispatch on it via an exhaustive {@code switch} per AAP &sect;0.6.10.
+     *
+     * @param code the raw 2-character COBOL FILE STATUS string, e.g. as
+     *             read from a {@code PIC X(02)} field; may be {@code null}
+     *             or of any length (defensive)
+     * @return a {@link FileStatus} permit matching the code; never
+     *         {@code null}
+     */
+    static FileStatus fromCobolCode(String code) {
+        if (code == null) {
+            return new IoError(-1, "FILE STATUS null");
+        }
+        // Strict-equality compares match the COBOL idiom
+        // IF CUSTFILE-STATUS = '00' which uses byte-for-byte equality.
+        switch (code) {
+            case "00": return OK;
+            case "10": return END_OF_FILE;
+            case "22": return DUPLICATE_KEY;
+            case "23": return NOT_FOUND;
+            default:
+                // Try to parse as a 2-digit numeric code so IoError carries
+                // the numeric form for downstream callers that want to log
+                // or compare it against APPL-RESULT-style constants.
+                int numeric = -1;
+                if (code.length() == 2
+                        && Character.isDigit(code.charAt(0))
+                        && Character.isDigit(code.charAt(1))) {
+                    numeric = (code.charAt(0) - '0') * 10 + (code.charAt(1) - '0');
+                }
+                return new IoError(numeric, "FILE STATUS " + code);
+        }
+    }
+
     /** Successful I/O completion (COBOL FILE STATUS "00"). */
     record Ok() implements FileStatus {}
 

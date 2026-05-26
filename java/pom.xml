@@ -37,10 +37,19 @@
     </modules>
 
     <properties>
-        <!-- Java 25 LTS: per AAP §0.3.4, finalized features only (no preview flag). -->
+        <!-- Java 25 LTS: per AAP §0.3.4 and §0.7.3 ("Java 25 finalized
+             features mandate"), this build uses the modern <release>
+             flag exclusively. The deprecated <source>/<target> property
+             pair is intentionally omitted: per the AAP build rule, the
+             maven-compiler-plugin must compile against the Java 25
+             platform API using <release>${maven.compiler.release}</release>
+             alone. Setting source/target alongside release is redundant
+             at best and a hazard at worst, because mismatched
+             source/target values silently override release. Keeping
+             only release=25 ensures every translated COBOL paragraph
+             compiles against the exact Java 25 platform API surface
+             specified in the AAP. -->
         <maven.compiler.release>25</maven.compiler.release>
-        <maven.compiler.source>25</maven.compiler.source>
-        <maven.compiler.target>25</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 

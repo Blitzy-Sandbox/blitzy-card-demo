@@ -71,6 +71,59 @@ carddemo.app.version=1.0.0-SNAPSHOT
 # absolute. The example values below assume an ``out-of-tree`` data directory
 # named ./data/ at the launch location.
 
+# -----------------------------------------------------------------------------
+# 2.1 Allowed roots for SafePathResolver path containment (CWE-22 mitigation)
+# -----------------------------------------------------------------------------
+# Per AAP §0.6.5 + §0.7.2 (security), every operator-supplied DD path that the
+# composition roots accept (PostTransactionsApp, InterestCalculationApp, etc.)
+# is resolved through SafePathResolver.resolve(key, default, allowedRoot)
+# which rejects values that resolve outside the configured allowed root. The
+# two roots below constrain (a) all INPUT dataset paths (carddemo.file.*) and
+# (b) all OUTPUT dataset paths (DALYREJS, SYSTRAN, GDG +1 generations).
+#
+# carddemo.data.root — root directory that contains all input/master
+#   datasets. Every property of the form ``carddemo.file.<dd>.path`` is
+#   validated to resolve underneath this root. JCL DD mapping: parent
+#   directory of the //DDname DD DSN= path on the COBOL side.
+#   Allowed: any directory path readable by the JVM process. Defaults to
+#   ./data which matches the sample carddemo.file.*.path values below.
+#   Override via env CARDDEMO_DATA_ROOT.
+carddemo.data.root=./data
+
+# carddemo.output.root — root directory under which the application writes
+#   generated artifacts: reject files (DALYREJS), system-transaction files
+#   (SYSTRAN), reports, GDG +1 generations, and any ad-hoc batch output. Every
+#   operator-supplied output path is validated to resolve underneath this
+#   root. JCL DD mapping: parent directory of any //DDname DD DSN= with
+#   DISP=NEW or DISP=MOD on the COBOL side.
+#   Allowed: any directory path writable by the JVM process. Default ./output.
+#   Override via env CARDDEMO_OUTPUT_ROOT.
+carddemo.output.root=./output
+
+# carddemo.file.charset — GLOBAL default codepage for fixed-width file I/O
+#   adapters when no per-file override (carddemo.file.<dd>.charset, see
+#   Section 4 below) is set. This key is read by the file-adapter factory
+#   when wiring a repository whose DD has no explicit charset override; it
+#   acts as the second-priority fallback before the hard-coded IBM-1047
+#   default declared by EbcdicTranscoder.DEFAULT_CHARSET_NAME.
+#   Allowed: any IANA charset name supported by the JVM
+#   (e.g., IBM-1047, US-ASCII, UTF-8). Default: IBM-1047 (matches AAP §0.6.5
+#   "EBCDIC IBM-1047 default"). Override via env CARDDEMO_FILE_CHARSET.
+#   Resolution order at runtime: per-file override (Section 4) >
+#   carddemo.file.charset (this key) > EbcdicTranscoder DEFAULT_CHARSET_NAME.
+carddemo.file.charset=IBM-1047
+
+# carddemo.file.systran.path — output path for the SYSTRAN system-transaction
+#   file written by InterestCalculationApp (CBACT04C). Defaults to a GDG +1
+#   generation underneath carddemo.gdg.root (see Section 8 below) when unset.
+#   If set, the override is validated to resolve underneath
+#   carddemo.output.root for CWE-22 containment per AAP §0.6.5 + §0.7.2.
+#   JCL DD mapping: //SYSTRAN DD DSN=AWS.M2.CARDDEMO.SYSTRAN.PS in
+#   app/jcl/INTCALC.jcl. Override via env CARDDEMO_FILE_SYSTRAN_PATH.
+#   Leave blank (or unset) to use the GDG-derived default.
+#carddemo.file.systran.path=
+
+
 # Account master file
 # (KSDS, key 11 [ACCT-ID PIC 9(11)], record 300, copybook CVACT01Y)
 carddemo.file.acctdata.path=./data/acctdata.dat

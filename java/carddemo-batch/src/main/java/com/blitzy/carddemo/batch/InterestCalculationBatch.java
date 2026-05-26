@@ -29,6 +29,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.util.Objects;
 
 import org.slf4j.Logger;
@@ -307,18 +308,29 @@ public final class InterestCalculationBatch {
      * processing date and the hour portion (typically {@code "00"}) is
      * unused.
      *
-     * <p>The formatter is created with {@link DateTimeFormatter#ofPattern(String)}
-     * which produces a formatter with the system default
-     * {@link java.time.format.ResolverStyle#SMART SMART} resolver style;
-     * this is the same resolver behavior as the COBOL {@code MOVE
-     * PARM-DATE} statement (the COBOL program does no validation of the
-     * date portion; an invalid date causes downstream FILE STATUS
-     * errors, not a PARM parse failure). The two-stage validation in
-     * {@link #parseParmDate(String)} (explicit length check before
-     * parsing) provides a clear error surface for malformed JCL PARMs
-     * before the {@code DateTimeFormatter} sees them.
+     * <p>The formatter is configured with
+     * {@link ResolverStyle#STRICT} per AAP &sect;0.6.4 (strict date
+     * semantics, no silent rollover of invalid calendar dates). The
+     * year pattern is {@code uuuu} (proleptic year, era-less) rather
+     * than {@code yyyy} (YearOfEra) because with the STRICT resolver,
+     * {@code yyyy} requires the era to be supplied separately, causing
+     * plain four-digit year parses such as {@code "2022"} to fail with
+     * {@link DateTimeParseException}. The COBOL source treats the year
+     * field of {@code PARM-DATE} as a plain proleptic value with no era
+     * qualifier, so {@code uuuu} is the correct mapping.</p>
+     *
+     * <p>The hour portion is intentionally <strong>not</strong> parsed
+     * by this formatter; {@link #parseParmDate(String)} validates the
+     * hour substring (positions 8-9) separately as a literal 00&ndash;23
+     * value before passing the 8-character date prefix through this
+     * formatter. This avoids the lenient hour=24 rollover that
+     * {@code HH} parsing can produce in earlier ResolverStyle modes,
+     * and matches the COBOL behavior where the hour portion of
+     * {@code PARM-DATE} is consumed-but-unused by
+     * {@code CBACT04C}.</p>
      */
-    private static final DateTimeFormatter PARM_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHH");
+    private static final DateTimeFormatter PARM_FORMAT =
+            DateTimeFormatter.ofPattern("uuuuMMdd").withResolverStyle(ResolverStyle.STRICT);
 
     // -----------------------------------------------------------------------
     // Instance fields — constructor-injected; all final and never null
@@ -615,12 +627,32 @@ public final class InterestCalculationBatch {
     public int execute(LocalDate processingDate) {
         Objects.requireNonNull(processingDate, "processingDate");
 
+        // Snapshot the batch-run context if a binding is active so the
+        // lifecycle log lines include runId / tenant alongside the
+        // processingDate. Per Checkpoint-5 M7 the run lifecycle logs
+        // must include runId, processingDate, and tenant. If no
+        // binding is active (e.g., the driver is being unit-tested in
+        // isolation), we still log processingDate verbatim and use
+        // the literal "(unbound)" tag for the other two so the log
+        // shape stays consistent across deployment modes.
+        String runId;
+        String tenant;
+        if (BatchRunContext.BATCH_CTX.isBound()) {
+            BatchRunContext ctx = BatchRunContext.BATCH_CTX.get();
+            runId = ctx.runId();
+            tenant = ctx.tenant();
+        } else {
+            runId = "(unbound)";
+            tenant = "(unbound)";
+        }
+
         // Log the start of the run at INFO so operators and log-
         // aggregation tooling can correlate the run with its date scope.
-        // The SLF4J {} placeholder avoids string concatenation when
+        // The SLF4J {} placeholders avoid string concatenation when
         // INFO is disabled (defensive parameterisation per the standard
         // SLF4J idiom).
-        LOG.info("INTCALC start: processingDate={}", processingDate);
+        LOG.info("INTCALC start: runId={}, processingDate={}, tenant={}",
+                runId, processingDate, tenant);
 
         // Capture the wall-clock start time for elapsed-time computation
         // only. Instant.now() reads from the system clock; we do NOT use
@@ -633,8 +665,16 @@ public final class InterestCalculationBatch {
         // DIVISION. Any AbendException or RuntimeException propagates
         // out of execute() unchanged so the caller's exit handler sees
         // the original failure stack (AAP §0.7.1: "identical observable
-        // outcomes").
-        int exitCode = cbAct04C.run(processingDate);
+        // outcomes"). The runId/tenant context is logged at ERROR via
+        // a try/finally so failure paths preserve operator visibility.
+        int exitCode;
+        try {
+            exitCode = cbAct04C.run(processingDate);
+        } catch (RuntimeException re) {
+            LOG.error("INTCALC error: runId={}, processingDate={}, tenant={}, cause={}",
+                    runId, processingDate, tenant, re.toString());
+            throw re;
+        }
 
         // Compute elapsed wall-clock time for the completion log line.
         // Duration.between() handles the Instant arithmetic; we call
@@ -642,12 +682,14 @@ public final class InterestCalculationBatch {
         // reflects a consistent timestamp.
         Duration elapsed = Duration.between(start, Instant.now());
 
-        // Emit the end-of-run INFO log line. The exit code and elapsed
-        // duration are the two pieces of information operators need to
-        // know "did the job succeed and how long did it take"; the use
-        // case itself emits more granular per-record DEBUG/TRACE logs
-        // when enabled.
-        LOG.info("INTCALC end: exitCode={}, elapsed={}", exitCode, elapsed);
+        // Emit the end-of-run INFO log line. The exit code, runId,
+        // processingDate, tenant, and elapsed duration are the five
+        // pieces of information operators need to know "did the job
+        // succeed, for which run/tenant, and how long did it take";
+        // the use case itself emits more granular per-record DEBUG/
+        // TRACE logs when enabled.
+        LOG.info("INTCALC end: runId={}, processingDate={}, tenant={}, exitCode={}, elapsed={}",
+                runId, processingDate, tenant, exitCode, elapsed);
 
         // Return the exit code so the composition root can pass it to
         // System.exit() or its equivalent. Per AAP §0.7.1 ("preserve
@@ -671,7 +713,7 @@ public final class InterestCalculationBatch {
      * {@code app/jcl/INTCALC.jcl:L22}: a 10-character string of
      * zero-padded year-month-day-hour with no separators.
      *
-     * <p>Validation is performed in three stages to produce
+     * <p>Validation is performed in four stages to produce
      * actionable error messages for malformed PARMs:
      * <ol>
      *   <li>Null and blank check &mdash; rejects {@code null},
@@ -680,13 +722,20 @@ public final class InterestCalculationBatch {
      *       is not exactly 10 characters; this catches truncation,
      *       extra characters, and the common mistake of passing an
      *       8-character {@code yyyyMMdd} date instead.</li>
-     *   <li>Format check &mdash; delegates to
+     *   <li>Hour-portion check &mdash; validates positions 8-9 of the
+     *       stripped string as a literal two-ASCII-digit value in
+     *       range 00&ndash;23 (per AAP &sect;0.6.4). This explicit
+     *       range check prevents any silent rollover behavior that
+     *       lenient {@code HH} parsing could otherwise produce on
+     *       hour=24.</li>
+     *   <li>Date format check &mdash; delegates the 8-character date
+     *       prefix to
      *       {@link LocalDate#parse(CharSequence, DateTimeFormatter)}
-     *       with {@link #PARM_FORMAT}; any
-     *       {@link DateTimeParseException} thrown is wrapped in an
-     *       {@link IllegalArgumentException} with a diagnostic message
-     *       naming the rejected PARM string and the original parse
-     *       cause.</li>
+     *       with {@link #PARM_FORMAT} (a STRICT-uuuuMMdd formatter);
+     *       any {@link DateTimeParseException} thrown is wrapped in
+     *       an {@link IllegalArgumentException} with a diagnostic
+     *       message naming the rejected PARM string and the original
+     *       parse cause.</li>
      * </ol>
      *
      * <p>This method is provided as a convenience for callers that
@@ -744,11 +793,50 @@ public final class InterestCalculationBatch {
                     "INTCALC PARM must be 10 characters (yyyyMMddHH), got "
                             + trimmed.length() + ": " + trimmed);
         }
+        // Per AAP §0.6.4, validate the hour substring (positions 8-9) explicitly
+        // as a literal 00–23 value rather than relying on lenient HH parsing
+        // (which can roll over to the next day on hour=24). The hour value is
+        // accepted-but-unused by CBACT04C, mirroring the COBOL behavior.
+        String hourPart = trimmed.substring(8, 10);
+        if (!isAsciiDigitPair(hourPart)) {
+            throw new IllegalArgumentException(
+                    "INTCALC PARM hour portion must be two ASCII digits: " + trimmed);
+        }
+        int hour = (hourPart.charAt(0) - '0') * 10 + (hourPart.charAt(1) - '0');
+        if (hour < 0 || hour > 23) {
+            throw new IllegalArgumentException(
+                    "INTCALC PARM hour portion must be in range 00–23: " + trimmed);
+        }
+        // Parse only the 8-character date prefix; the STRICT-uuuuMMdd formatter
+        // rejects invalid calendar dates (e.g., 2022-02-30) with
+        // DateTimeParseException.
+        String datePart = trimmed.substring(0, 8);
         try {
-            return LocalDate.parse(trimmed, PARM_FORMAT);
+            return LocalDate.parse(datePart, PARM_FORMAT);
         } catch (DateTimeParseException e) {
             throw new IllegalArgumentException(
                     "INTCALC PARM is not a valid yyyyMMddHH date: " + trimmed, e);
         }
+    }
+
+    /**
+     * Helper for {@link #parseParmDate(String)}'s explicit hour
+     * validation: returns {@code true} iff the supplied {@code String}
+     * is exactly two characters and both are ASCII digits
+     * ({@code '0'}&ndash;{@code '9'}). Avoids the locale-sensitive
+     * {@link Character#isDigit(char)} which would accept non-ASCII digit
+     * code points (Arabic-Indic, Devanagari, etc.) that would not round
+     * trip cleanly through the COBOL fixed-width contract.
+     *
+     * @param s the two-character substring to validate
+     * @return {@code true} iff both characters are in {@code '0'..'9'}
+     */
+    private static boolean isAsciiDigitPair(String s) {
+        if (s.length() != 2) {
+            return false;
+        }
+        char c0 = s.charAt(0);
+        char c1 = s.charAt(1);
+        return c0 >= '0' && c0 <= '9' && c1 >= '0' && c1 <= '9';
     }
 }

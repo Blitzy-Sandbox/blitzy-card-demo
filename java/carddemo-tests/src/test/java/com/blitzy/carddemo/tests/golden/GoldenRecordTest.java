@@ -6,6 +6,9 @@
 package com.blitzy.carddemo.tests.golden;
 
 import java.io.IOException;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -659,38 +662,52 @@ public abstract class GoldenRecordTest {
      * reports it in CI) while preventing false failures during the
      * COBOL-capture lead time.</p>
      *
-     * <p>A future revision will provide a default implementation that:</p>
+     * <p><strong>Default implementation (M11 remediation, AAP-aligned)</strong>:
+     * The base class supplies a {@link java.lang.invoke.MethodHandles}-based
+     * no-arg-constructor + {@code void run()} entry-method default that
+     * fits the simplest CBACT-style sequential readers. It performs:</p>
      * <ol>
-     *   <li>Discovers file-based adapter implementations (e.g.&nbsp;
-     *       {@code FileAccountRepository}, {@code FileCardRepository},
-     *       {@code FileCardXrefRepository}, {@code FileCustomerRepository},
-     *       {@code FileTransactionRepository},
-     *       {@code FileDailyTransactionRepository},
-     *       {@code FileTransactionCategoryBalanceRepository},
-     *       {@code FileDiscountGroupRepository},
-     *       {@code FileTransactionTypeRepository},
-     *       {@code FileTransactionCategoryRepository},
-     *       {@code FileUserSecurityRepository}) from the
-     *       {@code carddemo-adapter-file} module.</li>
-     *   <li>Inspects the program class's primary public constructor and
-     *       matches parameter types to instantiated adapters using
+     *   <li>Looks up a public no-arg constructor on {@code programClass}
+     *       via
      *       {@link java.lang.invoke.MethodHandles.Lookup#findConstructor
-     *       MethodHandles.Lookup#findConstructor} (per AAP &sect;0.7.4
-     *       forbidding reflection, this hook uses {@code MethodHandles},
-     *       NOT {@code Class.getDeclaredConstructors()} +
+     *       MethodHandles.Lookup#findConstructor} (AAP &sect;0.7.4
+     *       forbids reflection &mdash; this hook uses
+     *       {@code MethodHandles}, NOT
+     *       {@code Class.getDeclaredConstructors()} +
      *       {@code Constructor.newInstance()}).</li>
-     *   <li>Establishes {@code ScopedValue<BatchRunContext>} bindings for
-     *       batch tests per AAP &sect;0.6.6 (NEVER {@code ThreadLocal}).</li>
-     *   <li>Captures SLF4J output via a Logback file appender to a temporary
-     *       file named {@code "stdout.txt"} in the returned map.</li>
-     *   <li>Invokes the program's primary entry method
-     *       (e.g.&nbsp;{@code run()} for batch programs,
-     *       {@code handle(input)} for online programs).</li>
-     *   <li>Returns a map of output name to output path
-     *       (e.g.&nbsp;{@code "stdout.txt"} &rarr; {@code tempStdoutPath},
-     *       {@code "transact.txt"} &rarr;
-     *       {@code /tmp/run-001/transact.txt}).</li>
+     *   <li>Instantiates the program with no arguments.</li>
+     *   <li>Looks up a public {@code void run()} instance method via
+     *       {@link java.lang.invoke.MethodHandles.Lookup#findVirtual
+     *       MethodHandles.Lookup#findVirtual}.</li>
+     *   <li>Invokes {@code run()} on the new instance.</li>
+     *   <li>Returns a single-entry map &mdash;
+     *       {@code "expected"} mapped to the path of a temp file
+     *       capturing the program's stdout. This matches the default
+     *       {@link #expectedOutputs()} list, which wraps
+     *       {@link #expectedOutputFile()} under the {@code "expected"}
+     *       name.</li>
      * </ol>
+     *
+     * <p>Subclasses whose programs accept port dependencies (e.g.
+     * {@code CbTrn02C}, which constructor-injects 5 repository ports)
+     * MUST override this hook. The base class throws a constructive
+     * {@link UnsupportedOperationException} explaining the gap when the
+     * program does not match the no-arg pattern.</p>
+     *
+     * <p><strong>M19 alignment with AAP &sect;0.6.11</strong>: even with
+     * this default orchestration in place, byte-for-byte parity
+     * assertions for individual translated programs remain
+     * {@link org.junit.jupiter.api.Disabled} until COBOL-captured
+     * expected outputs are committed under
+     * {@code src/test/resources/golden/<program>/expected/}. AAP
+     * &sect;0.6.11 explicitly permits this scaffold state ("Initial
+     * test scaffolding may use placeholder expected files marked
+     * &#64;Disabled until COBOL captures are available; the harness
+     * skeleton, base class, and per-program test classes are created
+     * unconditionally"). The capture procedure is documented in
+     * {@code java/MIGRATION_NOTES.md} &sect;1.13.5. The
+     * {@code @Disabled} annotations are removed in the same PR that
+     * commits non-placeholder expected outputs.</p>
      *
      * <p><em>Structured-record diff hook</em>: per AAP &sect;0.6.11,
      * subclasses can override {@link #maskedRanges(String)} to declare
@@ -716,15 +733,183 @@ public abstract class GoldenRecordTest {
             Class<?> programClass,
             Path inputFile,
             List<Path> auxiliaryInputs) throws Exception {
-        throw new UnsupportedOperationException(
-            "Default runProgram() orchestration is intentionally not implemented in "
-                + "GoldenRecordTest base class. Concrete subclasses must keep "
-                + "byteForByteParity() @Disabled until either (a) this hook is given "
-                + "a default implementation in a follow-up revision, OR (b) the "
-                + "subclass overrides this hook with program-specific wiring. See "
-                + "AAP \u00a70.6.11 and java/MIGRATION_NOTES.md for the COBOL "
-                + "capture procedure. Program: "
-                + (programClass == null ? "<null>" : programClass.getName()));
+        // M11 — Default orchestration using MethodHandles per AAP §0.7.4
+        // (no reflection: no Class.getDeclaredConstructors(), no
+        // Constructor.newInstance(), no Method.invoke()).
+        //
+        // This default fits the simplest CBACT-style pattern: a public
+        // no-arg constructor + a public void run() instance method.
+        // Subclasses whose programs need ports must override.
+        if (programClass == null) {
+            throw new UnsupportedOperationException(
+                "runProgram(): programClass is null. Override programClass() "
+                    + "to return the COBOL-translated Java class under test.");
+        }
+
+        MethodHandle constructorHandle;
+        try {
+            constructorHandle = MethodHandles.publicLookup()
+                .findConstructor(programClass, MethodType.methodType(void.class));
+        } catch (NoSuchMethodException nsme) {
+            // The program declares no public no-arg constructor — it
+            // takes port dependencies. The subclass must override
+            // runProgram() to wire those ports.
+            throw new UnsupportedOperationException(
+                "runProgram() default uses MethodHandles.findConstructor on the "
+                    + "no-arg ctor, but " + programClass.getName()
+                    + " has no public no-arg constructor (it likely takes "
+                    + "constructor-injected ports). Override runProgram() in "
+                    + getClass().getSimpleName() + " to instantiate the program "
+                    + "with file-adapter implementations, set up "
+                    + "ScopedValue<BatchRunContext> if applicable per AAP "
+                    + "\u00a70.6.6, redirect stdout to a temp file, invoke the "
+                    + "entry method, and return the output-path map. See AAP "
+                    + "\u00a70.6.11 and java/MIGRATION_NOTES.md \u00a71.13.5 "
+                    + "for the orchestration plan.",
+                nsme);
+        }
+
+        MethodHandle runHandle;
+        try {
+            runHandle = MethodHandles.publicLookup()
+                .findVirtual(programClass, "run", MethodType.methodType(void.class));
+        } catch (NoSuchMethodException nsme) {
+            // No public void run() — the program likely has a different
+            // entry-method name (e.g. handle(), execute()). Subclass must
+            // override.
+            throw new UnsupportedOperationException(
+                "runProgram() default expects a public void run() method on "
+                    + programClass.getName() + ", but no such method is "
+                    + "declared. Override runProgram() in "
+                    + getClass().getSimpleName() + " to invoke the actual "
+                    + "entry method.",
+                nsme);
+        }
+
+        // Capture stdout to a temp file so the byte-equality assertion
+        // has something to compare against the COBOL DISPLAY capture.
+        Path stdoutCapture = Files.createTempFile("blitzy_golden_stdout_", ".txt");
+        java.io.PrintStream originalOut = System.out;
+        try (var captureStream = new java.io.PrintStream(
+                Files.newOutputStream(stdoutCapture),
+                /* autoFlush */ true,
+                java.nio.charset.StandardCharsets.UTF_8)) {
+            System.setOut(captureStream);
+            // Instantiate via MethodHandle (AAP §0.7.4 — no reflection).
+            // MethodHandle.invoke() declares throws Throwable, which the
+            // surrounding throws Exception cannot cover; rethrow inside a
+            // try/catch that translates Throwable to Exception / Error.
+            try {
+                Object instance = constructorHandle.invoke();
+                // Invoke run() via MethodHandle (AAP §0.7.4 — no reflection).
+                runHandle.invoke(instance);
+            } catch (Exception e) {
+                throw e;
+            } catch (Error e) {
+                throw e;
+            } catch (Throwable t) {
+                // MethodHandle.invoke()'s Throwable supertype covers
+                // exotic types not on Exception/Error branches. Wrap
+                // defensively so callers see a typed Exception.
+                throw new Exception(
+                    "MethodHandle.invoke() threw a non-Exception, non-Error Throwable",
+                    t);
+            }
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        return java.util.Map.of("expected", stdoutCapture);
+    }
+
+    /**
+     * Helper that instantiates {@code programClass} via
+     * {@link java.lang.invoke.MethodHandles.Lookup#findConstructor
+     * MethodHandles.Lookup#findConstructor}, passing the supplied
+     * constructor arguments. Subclasses that override
+     * {@link #runProgram(Class, Path, List)} to inject port
+     * dependencies SHOULD use this helper rather than dropping into
+     * raw reflection (AAP &sect;0.7.4 forbids reflection but permits
+     * {@code MethodHandles}).
+     *
+     * <p>The argument types are derived from each argument's runtime
+     * class via {@code Object.getClass()}. This makes the helper a
+     * convenience for the common case where the constructor parameter
+     * types match the argument types exactly. For constructors that
+     * take an interface parameter where the argument is a concrete
+     * implementation (e.g. {@code CustomerRepository} parameter with
+     * a {@code FileCustomerRepository} argument), subclasses must
+     * supply the explicit {@link MethodType} via the lower-level
+     * {@link #instantiateProgram(Class, MethodType, Object...)} overload.
+     *
+     * @param programClass the Java class under test; must not be {@code null}
+     * @param args         the constructor arguments in declaration order;
+     *                     a {@code null} element is permitted only when
+     *                     the corresponding parameter type can be inferred
+     *                     (which it cannot from {@code null}), so prefer
+     *                     the explicit {@link MethodType} overload when
+     *                     passing nullable arguments
+     * @return a freshly instantiated program; never {@code null}
+     * @throws Throwable any exception thrown by the constructor or by
+     *                   {@code MethodHandle} resolution; declared as
+     *                   {@code Throwable} because
+     *                   {@link MethodHandle#invoke(Object...)} declares it
+     */
+    protected static Object instantiateProgram(
+            Class<?> programClass, Object... args) throws Throwable {
+        if (programClass == null) {
+            throw new IllegalArgumentException("programClass must not be null");
+        }
+        Class<?>[] paramTypes = new Class<?>[args == null ? 0 : args.length];
+        if (args != null) {
+            for (int i = 0; i < args.length; i++) {
+                if (args[i] == null) {
+                    throw new IllegalArgumentException(
+                        "instantiateProgram(Object...) cannot infer parameter "
+                            + "type from a null argument at index " + i
+                            + "; use the explicit MethodType overload "
+                            + "instantiateProgram(Class, MethodType, Object...)");
+                }
+                paramTypes[i] = args[i].getClass();
+            }
+        }
+        return instantiateProgram(
+            programClass, MethodType.methodType(void.class, paramTypes),
+            args == null ? new Object[0] : args);
+    }
+
+    /**
+     * Lower-level {@link MethodHandles}-based instantiation helper.
+     * Looks up the constructor whose signature matches {@code ctorType}
+     * (which MUST have return type {@code void}, the canonical
+     * constructor convention), then invokes it with the supplied
+     * arguments. Use this overload when the constructor parameter
+     * types differ from the runtime classes of the arguments (typical
+     * for port-injected programs where parameter types are domain
+     * interfaces and arguments are file-adapter implementations).
+     *
+     * @param programClass the Java class under test
+     * @param ctorType     the {@link MethodType} describing the
+     *                     constructor signature (return type
+     *                     {@code void}, parameter types in declaration
+     *                     order)
+     * @param args         the constructor arguments matching the
+     *                     parameter types in {@code ctorType}
+     * @return a freshly instantiated program; never {@code null}
+     * @throws Throwable any exception thrown by the constructor or by
+     *                   {@code MethodHandle} resolution
+     */
+    protected static Object instantiateProgram(
+            Class<?> programClass, MethodType ctorType, Object... args) throws Throwable {
+        if (programClass == null) {
+            throw new IllegalArgumentException("programClass must not be null");
+        }
+        if (ctorType == null) {
+            throw new IllegalArgumentException("ctorType must not be null");
+        }
+        MethodHandle handle = MethodHandles.publicLookup()
+            .findConstructor(programClass, ctorType);
+        return handle.invokeWithArguments(args == null ? new Object[0] : args);
     }
 
     /**

@@ -262,11 +262,17 @@ public final class CoUsr00C {
      * <p>Translates the COBOL {@code SELxxxx PIC X(1)} selection field
      * where:
      * <ul>
-     *   <li>{@code ' '} (space) &mdash; no action selected (default)</li>
+     *   <li>{@code ' '} (space) / LOW-VALUES &mdash; no action selected
+     *       (default; maps to {@link None})</li>
      *   <li>{@code 'U'} / {@code 'u'} &mdash; update; XCTL to COUSR02C
-     *       with the selected user-id</li>
+     *       with the selected user-id (maps to {@link Update})</li>
      *   <li>{@code 'D'} / {@code 'd'} &mdash; delete; XCTL to COUSR03C
-     *       with the selected user-id</li>
+     *       with the selected user-id (maps to {@link Delete})</li>
+     *   <li>Any OTHER non-blank character (e.g. {@code 'X'}, {@code '1'},
+     *       {@code '?'}) &mdash; invalid selection; emit
+     *       {@link #MSG_INVALID_SELECTION} and rerender (maps to
+     *       {@link Invalid}, capturing the offending raw character for
+     *       diagnostic / golden-record purposes)</li>
      * </ul>
      * Per AAP &sect;0.1.3 closed taxonomies are sealed; switch over
      * {@code UserAction} MUST be exhaustive with NO {@code default} branch.
@@ -275,35 +281,77 @@ public final class CoUsr00C {
      * pattern</strong> mandated by AAP &sect;0.3.2: closed business
      * taxonomies are expressed as sealed hierarchies so the Java compiler
      * enforces every site that switches on them.
+     *
+     * <p><strong>M16 — COBOL WHEN OTHER fidelity (preserve-as-is).</strong>
+     * Prior to checkpoint 5 remediation, this hierarchy had only three
+     * permits ({@code None}, {@code Update}, {@code Delete}) and the
+     * {@link #fromIndicator(char)} factory collapsed any non-{@code U}
+     * non-{@code D} byte to {@code None}. That collapsed the COBOL
+     * distinction between "no selection" (SPACES / LOW-VALUES &rarr;
+     * silent fallthrough) and "invalid selection" (any other non-blank
+     * byte &rarr; emit the WS-MESSAGE "Invalid selection. Valid values
+     * are U and D" per {@code app/cbl/COUSR00C.cbl} lines 210-214), and
+     * therefore silently swallowed operator typos. The {@link Invalid}
+     * permit restores that distinction: a non-blank non-{@code U}
+     * non-{@code D} byte is now modeled as {@code Invalid(indicator)},
+     * and the {@link #processEnterKey} dispatch surfaces it via
+     * {@link #MSG_INVALID_SELECTION} on the rerendered page.
      */
     public sealed interface UserAction
-            permits UserAction.None, UserAction.Update, UserAction.Delete {
+            permits UserAction.None, UserAction.Update, UserAction.Delete, UserAction.Invalid {
 
         /**
          * Returns the single-character COBOL indicator for this action
-         * &mdash; {@code ' '}, {@code 'U'}, or {@code 'D'}.
+         * &mdash; {@code ' '}, {@code 'U'}, {@code 'D'}, or the raw
+         * offending byte for {@link Invalid}.
          *
-         * @return the indicator byte (always uppercase for U/D, space for None)
+         * @return the indicator byte (uppercase for U/D, space for None,
+         *         raw byte for Invalid)
          */
         char indicator();
 
         /**
          * Decodes a single-character indicator (case-insensitive) back
-         * into the corresponding {@code UserAction} permit. Any character
-         * other than {@code 'U'}, {@code 'u'}, {@code 'D'}, {@code 'd'}
-         * resolves to {@link None#INSTANCE} (matching the COBOL fallthrough
-         * for SPACES, LOW-VALUES, or any non-U/non-D selection).
+         * into the corresponding {@code UserAction} permit.
+         *
+         * <p>Mapping table (M16 — preserves COBOL WHEN OTHER fidelity):
+         * <ul>
+         *   <li>{@code ' '} (space, ASCII 0x20), {@code '\0'} (NUL,
+         *       COBOL LOW-VALUES proxy on ASCII) &rarr;
+         *       {@link None#INSTANCE} (silent fallthrough)</li>
+         *   <li>{@code 'U'} / {@code 'u'} &rarr; {@link Update#INSTANCE}</li>
+         *   <li>{@code 'D'} / {@code 'd'} &rarr; {@link Delete#INSTANCE}</li>
+         *   <li>Any other byte &rarr; {@code new Invalid(c)} (preserving
+         *       the raw byte for diagnostic and golden-record purposes)</li>
+         * </ul>
+         *
+         * <p>The blank-vs-invalid distinction is critical: COBOL
+         * {@code WHEN OTHER} (lines 210-214 of
+         * {@code app/cbl/COUSR00C.cbl}) emits an error message ONLY for
+         * the latter category, not for empty SPACES / LOW-VALUES selections.
          *
          * @param c the indicator byte (typically {@code ' '}, {@code 'U'},
          *          {@code 'u'}, {@code 'D'}, or {@code 'd'})
-         * @return the matching {@code UserAction} singleton; never
+         * @return the matching {@code UserAction} permit; never
          *         {@code null}
          */
         static UserAction fromIndicator(char c) {
+            // Blank or LOW-VALUES → silent fallthrough (no selection).
+            // The compact constructor of CoUsr00Input already normalised
+            // null Java strings to "" for raw BMS fields; an empty raw
+            // selection string maps to a single ' ' character here at the
+            // input-decoding layer.
+            if (c == ' ' || c == '\0') {
+                return None.INSTANCE;
+            }
             return switch (Character.toUpperCase(c)) {
                 case 'U' -> Update.INSTANCE;
                 case 'D' -> Delete.INSTANCE;
-                default  -> None.INSTANCE;  // ' ', LOW-VALUES, or any other character
+                // Any other character (e.g. 'X', '1', '?') is an invalid
+                // selection per COBOL WHEN OTHER. Preserve the original
+                // (pre-uppercase) byte so diagnostic logging and golden
+                // captures can show exactly what the operator typed.
+                default  -> new Invalid(c);
             };
         }
 
@@ -329,6 +377,45 @@ public final class CoUsr00C {
             public static final Delete INSTANCE = new Delete();
 
             @Override public char indicator() { return 'D'; }
+        }
+
+        /**
+         * Invalid selection &mdash; a non-blank, non-U/D byte. Restored
+         * per M16 to preserve COBOL {@code WHEN OTHER} behaviour from
+         * {@code app/cbl/COUSR00C.cbl} lines 210-214, which emit
+         * {@code "Invalid selection. Valid values are U and D"} into
+         * {@code WS-MESSAGE} when the {@code CDEMO-CU00-USR-SEL-FLG}
+         * holds any byte other than space, LOW-VALUES, U, u, D, or d.
+         *
+         * <p>The original {@link #indicator} component carries the raw
+         * (pre-uppercase) byte so that downstream consumers &mdash; in
+         * particular byte-for-byte golden-record parity tests &mdash;
+         * can observe and assert exactly what the operator typed.
+         *
+         * @param indicator the raw single-character byte the operator
+         *                  typed into the {@code SEL0nnI} field; never
+         *                  {@code ' '} or {@code '\0'} (those map to
+         *                  {@link None}) and never {@code 'U'} /
+         *                  {@code 'u'} / {@code 'D'} / {@code 'd'}
+         *                  (those map to {@link Update} / {@link Delete})
+         */
+        record Invalid(char indicator) implements UserAction {
+            // Compact canonical body validates the precondition that
+            // Invalid is reserved for genuinely invalid bytes. The check
+            // mirrors the fromIndicator factory's contract; if a caller
+            // were to construct Invalid(' ') or Invalid('U') directly,
+            // exhaustive switches would behave incorrectly downstream.
+            public Invalid {
+                if (indicator == ' ' || indicator == '\0') {
+                    throw new IllegalArgumentException(
+                        "Invalid permit reserved for non-blank bytes; got blank/LOW-VALUES");
+                }
+                char up = Character.toUpperCase(indicator);
+                if (up == 'U' || up == 'D') {
+                    throw new IllegalArgumentException(
+                        "Invalid permit reserved for non-U/non-D bytes; got '" + indicator + "'");
+                }
+            }
         }
     }
 
@@ -766,8 +853,15 @@ public final class CoUsr00C {
         // ---- Step 1: scan rows 1-10 for first non-None selection ----
         // The selections list carries exactly PAGE_SIZE entries (per the
         // CoUsr00Input compact constructor); we look for the first entry
-        // that is NOT UserAction.None — i.e. Update or Delete.
+        // that is NOT UserAction.None — i.e. Update, Delete, or Invalid
+        // (the latter restored per M16 to preserve COBOL WHEN OTHER
+        // fidelity from app/cbl/COUSR00C.cbl lines 210-214).
         int selRow = firstSelectedRow(input);
+
+        // M16 — buffer for an error message that defers to the forward
+        // page scan rather than triggering an XCTL. Set when the first
+        // selected row holds a UserAction.Invalid byte.
+        String pendingErrorMessage = null;
 
         if (selRow >= 0) {
             // Recover the selected user-id by re-iterating the current
@@ -788,6 +882,18 @@ public final class CoUsr00C {
                     }
                     case UserAction.Delete d -> {
                         return xctlToDelete(commarea, selectedUserId);
+                    }
+                    case UserAction.Invalid inv -> {
+                        // M16 — COBOL WHEN OTHER fidelity. Lines 210-214 of
+                        // app/cbl/COUSR00C.cbl move the literal "Invalid
+                        // selection. Valid values are U and D" into
+                        // WS-MESSAGE and reposition the cursor to USRIDINL,
+                        // but do NOT XCTL. Control falls through to the
+                        // IF USRIDINI = SPACES / forward-scan block below.
+                        // We mirror that exactly: set the deferred error
+                        // message, then continue to Step 2 which rerenders
+                        // the current page via readForwardPage.
+                        pendingErrorMessage = MSG_INVALID_SELECTION;
                     }
                     case UserAction.None n -> {
                         // Unreachable: firstSelectedRow only returns
@@ -810,12 +916,19 @@ public final class CoUsr00C {
         // returns the first row >= start-key inclusive). When the operator
         // typed a search prefix, this is the GTEQ positioning. When blank,
         // start at LOW-VALUES (the file's first record).
+        //
+        // M16 — pendingErrorMessage is non-null only when the first
+        // selected row's action permit was UserAction.Invalid. Passing it
+        // here causes readForwardPage / finishForwardScan to overlay the
+        // "Invalid selection. Valid values are U and D" message onto the
+        // rerendered page output, exactly as the COBOL WHEN OTHER branch
+        // does via WS-MESSAGE.
         String searchKey = trim(input.searchUserId());
         return readForwardPage(commarea,
                 paging.withPageNum(0),
                 /* startKey */ searchKey,
                 /* skipStart */ false,
-                /* errorMessage */ null);
+                /* errorMessage */ pendingErrorMessage);
     }
 
     /**
@@ -827,23 +940,38 @@ public final class CoUsr00C {
      * {@code app/cbl/COUSR00C.cbl} lines 152-186 which uses
      * "first match wins" semantics.
      *
-     * <p>Per the closed-taxonomy design (AAP &sect;0.1.3), a selection
-     * character of {@code 'U'} / {@code 'u'} maps to
-     * {@link UserAction.Update}, {@code 'D'} / {@code 'd'} maps to
-     * {@link UserAction.Delete}, and anything else (including SPACES,
-     * LOW-VALUES, or stray characters like {@code 'X'}) maps to
-     * {@link UserAction.None}. The "first match" here is therefore the
-     * first row where the operator typed an actionable U / D selection.
+     * <p>Per the closed-taxonomy design (AAP &sect;0.1.3 + M16
+     * restoration), a selection character maps as follows:
+     * <ul>
+     *   <li>{@code 'U'} / {@code 'u'} &rarr; {@link UserAction.Update}
+     *       (selected, valid)</li>
+     *   <li>{@code 'D'} / {@code 'd'} &rarr; {@link UserAction.Delete}
+     *       (selected, valid)</li>
+     *   <li>Any other non-blank, non-LOW-VALUES byte (e.g. {@code 'X'},
+     *       {@code '1'}, {@code '?'}) &rarr; {@link UserAction.Invalid}
+     *       (selected, but invalid &mdash; triggers
+     *       {@link #MSG_INVALID_SELECTION} on the rerendered page per
+     *       COBOL WHEN OTHER fidelity)</li>
+     *   <li>SPACES / LOW-VALUES &rarr; {@link UserAction.None} (not selected)</li>
+     * </ul>
+     *
+     * <p>The "first match" returned by this method is the first row that
+     * is <em>selected</em> in any of those three valid-or-invalid senses
+     * (Update, Delete, or Invalid). The caller ({@link #processEnterKey})
+     * then exhaustively switches on the permit to decide between XCTL
+     * (Update / Delete), error rerender (Invalid), and the impossible
+     * None branch (kept only to satisfy compile-time exhaustiveness).
      *
      * @param input the input DTO
      * @return the 0-based row index of the first selected row, or
-     *         {@code -1} if no row has a U / D selection
+     *         {@code -1} if no row has any selection (all rows None)
      */
     private static int firstSelectedRow(CoUsr00Input input) {
         List<CoUsr00C.UserAction> selections = input.selections();
         for (int i = 0; i < selections.size(); i++) {
             // pattern-matching switch with the sealed UserAction
-            // hierarchy: any permit other than None is a "selection".
+            // hierarchy: any permit other than None is a "selection"
+            // (Update / Delete / Invalid all qualify).
             CoUsr00C.UserAction action = selections.get(i);
             if (!(action instanceof CoUsr00C.UserAction.None)) {
                 return i;

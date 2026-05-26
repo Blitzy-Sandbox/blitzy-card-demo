@@ -189,11 +189,17 @@ import org.slf4j.LoggerFactory;
  * @since 1.0.0
  */
 @CobolProgram(
-        value = "CBTRN02C",
+        value = "POSTTRAN",
         sourcePath = "app/jcl/POSTTRAN.jcl",
         translationDate = "2025-10-24",
-        notes = "Composition root for the daily transaction posting job "
-                + "(CBTRN02C engine). Wires 5 file-backed repository adapters "
+        notes = "Composition root for the daily transaction posting JCL job. "
+                + "The annotation value names the JCL job (POSTTRAN), per "
+                + "AAP §0.6.8 program-by-program mapping convention for "
+                + "carddemo-app composition roots which are 1:1 with JCL "
+                + "EXEC steps, not with the underlying COBOL PROGRAM-ID. "
+                + "The underlying use case is CBTRN02C (translated into "
+                + "com.blitzy.carddemo.application.transaction.CbTrn02C). "
+                + "Wires 5 file-backed repository adapters "
                 + "(DailyTransaction, Transaction, CardXref, Account, "
                 + "TransactionCategoryBalance) into the CbTrn02C use case. "
                 + "Translates JCL DSN=AWS.M2.CARDDEMO.DALYREJS(+1) GDG semantics "
@@ -212,20 +218,30 @@ public final class PostTransactionsApp {
     private static final Logger LOG = LoggerFactory.getLogger(PostTransactionsApp.class);
 
     /**
-     * The {@link ScopedValue} binding for this app's {@link BatchRunContext}.
-     * Bound exactly once in {@link #main(String[])} via
+     * Alias for the canonical {@link BatchRunContext#BATCH_CTX} so the
+     * binding is the SAME {@link ScopedValue} identity used by every
+     * other class in the system (composition roots, batch drivers,
+     * use cases). This guarantees that a callee on the same or a child
+     * virtual thread reads the exact value
+     * {@link #main(String[])} bound &mdash; a separate
+     * {@code ScopedValue.newInstance()} would create a distinct
+     * identity even with the same field name (the M6 regression flagged
+     * by the Checkpoint-5 review).
+     *
+     * <p>Per JEP 506 (Final in Java 25): bound exactly once in
+     * {@link #main(String[])} via
      * {@code ScopedValue.where(BATCH_CTX, ctx).call(PostTransactionsApp::execute)};
      * retrieved inside {@link #execute()} via {@code BATCH_CTX.get()}.
-     * Replaces {@link ThreadLocal} entirely per AAP &sect;0.6.6.
+     * Replaces {@link ThreadLocal} entirely per AAP &sect;0.6.6.</p>
      *
-     * <p>Note that {@link BatchRunContext} also exposes its own
-     * {@code BATCH_CTX} static field. The two bindings are kept separate
-     * intentionally so each composition root can scope its own context
-     * independently if a future job needs different metadata; both
-     * bindings can be active concurrently because {@link ScopedValue} keys
-     * are identity-compared, not name-compared.
+     * <p>This field is preserved as a local re-export to keep the
+     * {@code main(String[])} body readable; assigning the canonical
+     * instance to a class-level constant rather than introducing a
+     * separate one means a single {@code grep BATCH_CTX} on
+     * {@code carddemo-app/} still locates every entry point without
+     * the AAP §0.6.6 ScopedValue-identity regression.</p>
      */
-    public static final ScopedValue<BatchRunContext> BATCH_CTX = ScopedValue.newInstance();
+    public static final ScopedValue<BatchRunContext> BATCH_CTX = BatchRunContext.BATCH_CTX;
 
     // -----------------------------------------------------------------------
     // Configuration keys (12-factor per AAP §0.7.2)
@@ -364,12 +380,24 @@ public final class PostTransactionsApp {
         // Exhaustive pattern-matching switch over Integer (Java 21 Final).
         // NO default branch per AAP §0.7.3 ("rely on exhaustiveness
         // checking; no default branches that mask missing cases").
+        //
+        // Per the Checkpoint-5 review (M5) only the COBOL-recognised
+        // return-code set {0, 4, 8, 12, 16} passes through unchanged.
+        // Any other Integer value — including unexpected positives
+        // such as 1, 5, 13, or 17 — is normalised to RC_ERROR (16)
+        // after logging the original value. This matches the COBOL
+        // convention that any non-zero, non-4 return code is treated
+        // as an error in the calling JCL (and is what an operator
+        // reading the system console expects).
+        //
         // Coverage:
-        //   case null  -> RC_ERROR (defensive; .call() returns null only on
-        //                 programmer error since execute() returns a primitive)
-        //   5 known-good return codes (0/4/8/12/16) — each mapped explicitly
-        //   2 guarded patterns for out-of-band values (< 0 and > 16)
-        //   1 unguarded Integer pattern catching 1..3, 5..7, 9..11, 13..15
+        //   case null        -> RC_ERROR (defensive; .call() returns
+        //                       null only on a Throwable that escapes
+        //                       our catch — should never happen but
+        //                       the type system permits it)
+        //   case 0/4/8/12/16 -> identity (standard COBOL RC values)
+        //   case Integer i   -> RC_ERROR (sink; logs the unexpected
+        //                       value for diagnosis)
         int exitCode = switch (rc) {
             case null -> RC_ERROR;
             case 0 -> 0;
@@ -377,9 +405,11 @@ public final class PostTransactionsApp {
             case 8 -> 8;
             case 12 -> 12;
             case 16 -> 16;
-            case Integer i when i < 0 -> RC_ERROR;
-            case Integer i when i > 16 -> RC_ERROR;
-            case Integer i -> i;
+            case Integer i -> {
+                LOG.warn("POSTTRAN: normalising unexpected return code {} to RC_ERROR ({})",
+                        i, RC_ERROR);
+                yield RC_ERROR;
+            }
         };
         System.exit(exitCode);
     }
@@ -518,13 +548,21 @@ public final class PostTransactionsApp {
      *                     {@link Files#list(Path)} fails
      */
     static Path resolveDalyRejsPath() throws IOException {
-        // Explicit-override escape hatch (test convenience). The
-        // resolveTrusted variant requires a non-null default, so we
-        // probe the raw property first via getProperty(...) with a
-        // null default and switch on absence.
+        // Explicit-override escape hatch (test convenience). When set,
+        // the override is routed through SafePathResolver.resolveOutput
+        // which enforces CWE-22 containment under carddemo.output.root.
+        // This prevents an operator-supplied PROP_DALYREJS_PATH from
+        // writing outside the documented output root via traversal
+        // (e.g., "../../etc/passwd"). Per AAP §0.7.2 and the security
+        // rationale in application.properties.example §2.1.
         String explicit = SafePathResolver.getProperty(PROP_DALYREJS_PATH, "");
         if (!explicit.isBlank()) {
-            Path explicitPath = Path.of(explicit).normalize();
+            // Re-resolve through resolveOutput so CWE-22 containment is
+            // enforced. resolveOutput reads the property internally;
+            // passing the same key round-trips the explicit value with
+            // containment applied under carddemo.output.root.
+            Path explicitPath = SafePathResolver.resolveOutput(
+                    PROP_DALYREJS_PATH, explicit);
             Path parent = explicitPath.getParent();
             if (parent != null) {
                 Files.createDirectories(parent);

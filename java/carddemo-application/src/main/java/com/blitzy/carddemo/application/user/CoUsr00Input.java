@@ -54,38 +54,46 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
  *       lines 149-186).</li>
  * </ul>
  *
- * <h2>Minimal-input design (AAP &sect;0.3.5)</h2>
+ * <h2>Field-faithful symbolic-map design (M15 restoration)</h2>
  *
  * <p>The 3270 BMS symbolic map {@code 01 COUSR0AI} carries the standard
  * triplet pattern (length, flag, input value) per editable field, plus
  * header echoes and ten rows of (selection, user-id, first-name,
  * last-name, user-type). On a CICS {@code RECEIVE MAP} the whole
- * symbolic record is delivered to the program, but only two surfaces
- * are truly user-editable on COUSR00:
+ * symbolic record is delivered to the program. To preserve byte-for-byte
+ * symbolic-map fidelity per AAP &sect;0.7.1 (preserve record layouts,
+ * field orderings, padding), this DTO carries every echoed BMS surface,
+ * <em>not just</em> the user-editable ones:
  *
  * <ul>
  *   <li>{@code USRIDINI PIC X(8)} &mdash; an optional search prefix
- *       that positions the USRSEC browse before paging starts.</li>
+ *       that positions the USRSEC browse before paging starts.
+ *       Mapped to {@link #searchUserId()}.</li>
  *   <li>{@code SEL0001I .. SEL0010I PIC X(1)} &mdash; ten per-row
  *       selection characters where {@code 'U'} / {@code 'u'} means
  *       "update this user" (XCTL to {@code COUSR02C}), {@code 'D'} /
  *       {@code 'd'} means "delete this user" (XCTL to
  *       {@code COUSR03C}), and any other byte (typically SPACES or
- *       LOW-VALUES) means "no action".</li>
+ *       LOW-VALUES) means "no action". Mapped to a closed-taxonomy
+ *       {@link CoUsr00C.UserAction} list at {@link #selections()}.</li>
+ *   <li>{@code USRID0nI PIC X(8)}, {@code FNAME0nI PIC X(20)},
+ *       {@code LNAME0nI PIC X(20)}, {@code UTYPE0nI PIC X(1)} for
+ *       {@code n = 01..10} &mdash; the echoed user-id, first-name,
+ *       last-name, and user-type bytes for each row. Although marked
+ *       {@code ASKIP} on the BMS map (operator cannot edit), they are
+ *       part of the symbolic-map input record and are preserved here
+ *       as {@link #rows()} (a list of ten {@link Row} records). This
+ *       preserves the COBOL contract that what was last rendered to the
+ *       terminal also comes back on the next RECEIVE MAP.</li>
  * </ul>
  *
- * <p>The remaining row data (user-ids, first/last names, user types)
- * arrives back on a {@code RECEIVE MAP} only because the BMS terminal
- * echoes the program-rendered display bytes; the operator cannot edit
- * those rows (the BMS attribute is {@code ASKIP}). The Java translation
- * therefore <em>does not</em> carry the echoed row data on the input
- * DTO. Instead, the application class re-derives each row's user-id
- * from the externalised paging cursor encoded in
- * {@code CoUsr00C.PagingState} on demand, which is more robust than
- * trusting the BMS echo and matches the closed-taxonomy design of
- * {@link com.blitzy.carddemo.application.user.CoUsr00C.UserAction} (a
- * sealed type with exactly three permits: {@code None}, {@code Update},
- * {@code Delete}).
+ * <p>The application class {@link CoUsr00C} ultimately drives selection
+ * processing off the closed-taxonomy {@link #selections()} list (an
+ * exhaustive sealed switch over {@link CoUsr00C.UserAction}), but the
+ * raw per-row echoes in {@link #rows()} are preserved for byte-for-byte
+ * symbolic-map parity tests and for any downstream consumer that needs
+ * the literal BMS-echoed bytes (for example, a golden-record harness
+ * comparing the Java RECEIVE MAP capture against the COBOL baseline).
  *
  * <h2>Field-by-field mapping</h2>
  * <table>
@@ -95,6 +103,13 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
  *   <tr><td>USRIDINI</td><td>X(8)</td><td>{@link #searchUserId()}</td></tr>
  *   <tr><td>SEL0001I .. SEL0010I</td><td>X(1) each</td><td>{@link #selections()}
  *       (10 entries, each a {@link CoUsr00C.UserAction} permit)</td></tr>
+ *   <tr><td>SEL0001I .. SEL0010I</td><td>X(1) each (raw byte)</td><td>{@link Row#selection()}
+ *       (one per row in {@link #rows()})</td></tr>
+ *   <tr><td>USRID01I .. USRID10I</td><td>X(8) each</td><td>{@link Row#userId()}
+ *       (one per row in {@link #rows()})</td></tr>
+ *   <tr><td>FNAME01I .. FNAME10I</td><td>X(20) each</td><td>{@link Row#firstName()}</td></tr>
+ *   <tr><td>LNAME01I .. LNAME10I</td><td>X(20) each</td><td>{@link Row#lastName()}</td></tr>
+ *   <tr><td>UTYPE01I .. UTYPE10I</td><td>X(1) each</td><td>{@link Row#userType()}</td></tr>
  * </table>
  *
  * <p>Plus {@link #aidKey()} &mdash; the AID-key state captured at
@@ -138,6 +153,9 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
  *   <li>The compact constructor pads or truncates {@link #selections()}
  *       to exactly {@link #ROW_COUNT} entries; missing or {@code null}
  *       entries are replaced with {@link CoUsr00C.UserAction.None#INSTANCE}.</li>
+ *   <li>The compact constructor pads or truncates {@link #rows()} to
+ *       exactly {@link #ROW_COUNT} entries; missing or {@code null}
+ *       entries are replaced with {@link Row#blank()}.</li>
  *   <li>A {@code null} {@code aidKey} is coerced to {@link AidKey#ENTER}
  *       (the default dispatch path).</li>
  * </ul>
@@ -189,13 +207,23 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
  * @param selections   the ten per-row selection actions, one per BMS
  *                     row {@code SEL0001I .. SEL0010I}, each one of the
  *                     {@link CoUsr00C.UserAction} permits
- *                     ({@code None}, {@code Update}, {@code Delete});
- *                     never {@code null} and always of size exactly
- *                     {@link #ROW_COUNT} (a shorter list is padded with
+ *                     ({@code None}, {@code Update}, {@code Delete},
+ *                     {@code Invalid}); never {@code null} and always
+ *                     of size exactly {@link #ROW_COUNT} (a shorter
+ *                     list is padded with
  *                     {@link CoUsr00C.UserAction.None#INSTANCE}; a
  *                     longer list is truncated to {@link #ROW_COUNT};
  *                     {@code null} elements are replaced with
  *                     {@link CoUsr00C.UserAction.None#INSTANCE}); the
+ *                     returned list is immutable
+ *                     ({@link List#copyOf(java.util.Collection)})
+ * @param rows         the ten per-row BMS field echoes (each a
+ *                     {@link Row} carrying selection, userId, firstName,
+ *                     lastName, userType); never {@code null} and
+ *                     always of size exactly {@link #ROW_COUNT}
+ *                     (a shorter list is padded with {@link Row#blank()};
+ *                     a longer list is truncated; {@code null} elements
+ *                     are replaced with {@link Row#blank()}); the
  *                     returned list is immutable
  *                     ({@link List#copyOf(java.util.Collection)})
  * @param aidKey       AID key captured at {@code RECEIVE MAP} time;
@@ -208,18 +236,26 @@ import com.blitzy.carddemo.domain.annotation.CobolProgram;
  * @since 1.0.0
  */
 @CobolProgram(
-        value = "COUSR00",
+        value = "COUSR00C",
         sourcePath = "app/cpy-bms/COUSR00.CPY",
         translationDate = "2025-10-15",
-        notes = "BMS entry-contract DTO (input side) for the list-users screen. "
-              + "Minimal model: only the search prefix (USRIDINI) and per-row "
-              + "selection actions (SEL0001I..SEL0010I) are carried; per-row "
-              + "user-ids are re-derived on demand from the externalised "
-              + "PagingState rather than trusted from the BMS echo."
+        notes = "BMS entry-contract DTO (input side) for the list-users screen "
+              + "(COBOL PROGRAM-ID COUSR00C, BMS map COUSR00 / mapset COUSR00). "
+              + "Field-faithful symbolic-map model: carries the search prefix "
+              + "(USRIDINI), per-row selection actions (SEL0001I..SEL0010I), "
+              + "AND the per-row echoed BMS field data "
+              + "(USRID0nI/FNAME0nI/LNAME0nI/UTYPE0nI) as a Row sub-record "
+              + "per AAP §0.7.1 preserve-as-is (record layouts, field "
+              + "orderings, padding). The Row data is what the BMS terminal "
+              + "echoes on a RECEIVE MAP and matches the symbolic copybook "
+              + "01 COUSR0AI structure byte-for-byte. Per-row user-ids may "
+              + "also be re-derived from the externalised PagingState as a "
+              + "defensive fallback; both surfaces remain available."
 )
 public record CoUsr00Input(
         String searchUserId,
         List<CoUsr00C.UserAction> selections,
+        List<Row> rows,
         AidKey aidKey
 ) {
 
@@ -278,7 +314,7 @@ public record CoUsr00Input(
         // return an immutable List.copyOf(...) at the end so the record
         // cannot leak a mutable reference. ROW_COUNT initial capacity
         // avoids any internal array growth for the canonical case.
-        ArrayList<CoUsr00C.UserAction> normalized = new ArrayList<>(ROW_COUNT);
+        ArrayList<CoUsr00C.UserAction> normalizedSelections = new ArrayList<>(ROW_COUNT);
         if (selections != null) {
             // Copy up to ROW_COUNT entries from the caller's list,
             // replacing any null entry with None.INSTANCE. We use an
@@ -288,7 +324,7 @@ public record CoUsr00Input(
             int n = Math.min(selections.size(), ROW_COUNT);
             for (int i = 0; i < n; i++) {
                 CoUsr00C.UserAction action = selections.get(i);
-                normalized.add(action == null
+                normalizedSelections.add(action == null
                         ? CoUsr00C.UserAction.None.INSTANCE
                         : action);
             }
@@ -296,13 +332,32 @@ public record CoUsr00Input(
         // Pad the tail with None.INSTANCE (the "no selection" sentinel,
         // matching COBOL SPACES / LOW-VALUES in SEL0nnI) until the list
         // reaches the canonical size of ROW_COUNT.
-        while (normalized.size() < ROW_COUNT) {
-            normalized.add(CoUsr00C.UserAction.None.INSTANCE);
+        while (normalizedSelections.size() < ROW_COUNT) {
+            normalizedSelections.add(CoUsr00C.UserAction.None.INSTANCE);
         }
         // Defensive immutable copy: callers cannot mutate the record's
         // internal list, and downstream consumers always observe exactly
         // ROW_COUNT entries.
-        selections = List.copyOf(normalized);
+        selections = List.copyOf(normalizedSelections);
+
+        // --- Normalise rows to exactly ROW_COUNT entries ----------------
+        // Restored per M15 (BMS symbolic-map field fidelity). The Row
+        // sub-record carries the echoed (selection, userId, firstName,
+        // lastName, userType) for each BMS row USRID0nI/FNAME0nI/
+        // LNAME0nI/UTYPE0nI as declared in app/cpy-bms/COUSR00.CPY.
+        // null entries and short lists are normalised to a blank Row.
+        ArrayList<Row> normalizedRows = new ArrayList<>(ROW_COUNT);
+        if (rows != null) {
+            int n = Math.min(rows.size(), ROW_COUNT);
+            for (int i = 0; i < n; i++) {
+                Row r = rows.get(i);
+                normalizedRows.add(r == null ? Row.blank() : r);
+            }
+        }
+        while (normalizedRows.size() < ROW_COUNT) {
+            normalizedRows.add(Row.blank());
+        }
+        rows = List.copyOf(normalizedRows);
 
         // --- Default aidKey to ENTER ------------------------------------
         if (aidKey == null) {
@@ -389,8 +444,9 @@ public record CoUsr00Input(
     /**
      * Factory returning a fully blank input &mdash; {@link #searchUserId()}
      * {@code ""}, {@link #selections()} of size {@link #ROW_COUNT} all
-     * filled with {@link CoUsr00C.UserAction.None#INSTANCE}, and
-     * {@link #aidKey()} {@link AidKey#ENTER}.
+     * filled with {@link CoUsr00C.UserAction.None#INSTANCE},
+     * {@link #rows()} of size {@link #ROW_COUNT} all filled with
+     * {@link Row#blank()}, and {@link #aidKey()} {@link AidKey#ENTER}.
      *
      * <p>Typical use: the first dispatch into COUSR00 from the admin
      * menu when no search prefix or selection is yet known.
@@ -398,14 +454,15 @@ public record CoUsr00Input(
      * @return an all-empty input record; never {@code null}
      */
     public static CoUsr00Input blank() {
-        return new CoUsr00Input("", List.of(), AidKey.ENTER);
+        return new CoUsr00Input("", List.of(), List.of(), AidKey.ENTER);
     }
 
     /**
      * Factory returning an input with only the
      * {@link #searchUserId()} prefix populated; {@link #selections()}
      * defaults to {@link #ROW_COUNT} entries of
-     * {@link CoUsr00C.UserAction.None#INSTANCE} and {@link #aidKey()}
+     * {@link CoUsr00C.UserAction.None#INSTANCE}, {@link #rows()}
+     * defaults to {@link #ROW_COUNT} blank rows, and {@link #aidKey()}
      * defaults to {@link AidKey#ENTER}.
      *
      * <p>Typical use: programmatic re-entry into COUSR00 with a known
@@ -423,7 +480,137 @@ public record CoUsr00Input(
      *         {@code null}
      */
     public static CoUsr00Input withSearchPrefix(String prefix) {
-        return new CoUsr00Input(prefix, List.of(), AidKey.ENTER);
+        return new CoUsr00Input(prefix, List.of(), List.of(), AidKey.ENTER);
+    }
+
+    /**
+     * Returns the 1-based row index (1..{@link #ROW_COUNT}) of the
+     * first {@link #selections()} entry that is not
+     * {@link CoUsr00C.UserAction.None}, or {@code 0} if no such row
+     * exists. Restored per M15. Translates the COBOL paragraph
+     * {@code PROCESS-ENTER-KEY} loop at lines 149-186 of
+     * {@code app/cbl/COUSR00C.cbl}, which scans
+     * {@code SEL0001I .. SEL0010I} top-to-bottom and breaks on the
+     * first non-blank value.
+     *
+     * @return 1-based selected-row index, or {@code 0} when none
+     */
+    public int firstSelectedRow() {
+        for (int i = 0; i < selections.size(); i++) {
+            if (!(selections.get(i) instanceof CoUsr00C.UserAction.None)) {
+                return i + 1;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Returns a copy of this input with the {@link #aidKey()} replaced
+     * by {@code newAidKey}. Restored per M15 for parity with sibling
+     * {@code CoUsr02Input.withAidKey} / {@code CoUsr03Input.withAidKey}.
+     *
+     * @param newAidKey the new AID key; {@code null} is normalised to
+     *                  {@link AidKey#ENTER} by the compact constructor
+     * @return a new {@link CoUsr00Input} carrying the same search
+     *         prefix, selections, and rows but the supplied AID key;
+     *         never {@code null}
+     */
+    public CoUsr00Input withAidKey(AidKey newAidKey) {
+        return new CoUsr00Input(searchUserId, selections, rows, newAidKey);
+    }
+
+    /**
+     * Returns a copy of this input with the {@link #searchUserId()}
+     * replaced by {@code newSearchUserId}. Restored per M15 for
+     * symmetry with {@link #withAidKey(AidKey)}.
+     *
+     * @param newSearchUserId the new search prefix; may be
+     *                        {@code null} (normalised to {@code ""})
+     *                        or longer than {@link #SEARCH_USER_ID_MAX}
+     *                        characters (truncated)
+     * @return a new {@link CoUsr00Input} carrying the same selections,
+     *         rows, and AID key but the supplied search prefix; never
+     *         {@code null}
+     */
+    public CoUsr00Input withUserIdSearch(String newSearchUserId) {
+        return new CoUsr00Input(newSearchUserId, selections, rows, aidKey);
+    }
+
+    /**
+     * Per-row BMS symbolic-map field group &mdash; the echoed terminal
+     * data for one of the ten user-list rows. Restored per M15 (BMS
+     * field fidelity).
+     *
+     * <p>Mirrors the four-field group declared once per row in the
+     * symbolic copybook {@code app/cpy-bms/COUSR00.CPY}, lines 67-104
+     * for row 01 (and analogous blocks for rows 02-10):</p>
+     * <ul>
+     *   <li>{@code SEL0nnI PIC X(1)} &rarr; {@link #selection()}</li>
+     *   <li>{@code USRID0nI PIC X(8)} &rarr; {@link #userId()}</li>
+     *   <li>{@code FNAME0nI PIC X(20)} &rarr; {@link #firstName()}</li>
+     *   <li>{@code LNAME0nI PIC X(20)} &rarr; {@link #lastName()}</li>
+     *   <li>{@code UTYPE0nI PIC X(1)} &rarr; {@link #userType()}</li>
+     * </ul>
+     *
+     * <p>All five components are {@code String} typed because BMS
+     * {@code PIC X(n)} fields arrive as fixed-width strings with
+     * trailing-space padding. The compact constructor normalises
+     * {@code null} references to empty strings preserving COBOL
+     * SPACES default semantics.</p>
+     *
+     * <p>Note that {@link #selection()} is the raw single-character
+     * BMS byte; the higher-level {@link CoUsr00C.UserAction} sealed
+     * taxonomy lives on the parent record's {@link #selections()}
+     * list, which is computed from these raw bytes by the application
+     * class's input decoder. The redundancy is intentional &mdash; the
+     * BMS-faithful raw bytes are preserved for byte-for-byte parity
+     * tests, while the closed-taxonomy abstraction drives the
+     * exhaustive pattern switches in {@link CoUsr00C}.</p>
+     *
+     * @param selection raw selection byte (1 char); blank/empty for
+     *                  unselected, {@code "U"}/{@code "u"} for update,
+     *                  {@code "D"}/{@code "d"} for delete; never
+     *                  {@code null} (normalised to {@code ""})
+     * @param userId    8-character user-id field echoed for this row;
+     *                  never {@code null} (normalised to {@code ""})
+     * @param firstName 20-character first-name field echoed for this
+     *                  row; never {@code null}
+     * @param lastName  20-character last-name field echoed for this
+     *                  row; never {@code null}
+     * @param userType  single-character user-type field echoed for
+     *                  this row ({@code "A"} = admin, {@code "U"} =
+     *                  user); never {@code null}
+     */
+    public record Row(
+            String selection,
+            String userId,
+            String firstName,
+            String lastName,
+            String userType
+    ) {
+        /**
+         * Compact constructor &mdash; normalises every {@code null}
+         * component to the empty string per COBOL SPACES semantics.
+         */
+        public Row {
+            selection = orEmpty(selection);
+            userId    = orEmpty(userId);
+            firstName = orEmpty(firstName);
+            lastName  = orEmpty(lastName);
+            userType  = orEmpty(userType);
+        }
+
+        /**
+         * Returns a fully blank row &mdash; all five components are
+         * the empty string. Used by the parent record's compact
+         * constructor when padding {@link #rows()} to the canonical
+         * {@link #ROW_COUNT} length.
+         *
+         * @return a blank row; never {@code null}
+         */
+        public static Row blank() {
+            return new Row("", "", "", "", "");
+        }
     }
 
     /**

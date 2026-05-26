@@ -11,6 +11,15 @@ import org.slf4j.LoggerFactory;
 import com.blitzy.carddemo.domain.annotation.CobolProgram;
 import com.blitzy.carddemo.domain.port.CustomerRepository;
 import com.blitzy.carddemo.domain.record.CustomerRecord;
+// M17 — integrate sealed FileStatus hierarchy at the use-case boundary.
+// The COBOL CUSTFILE-STATUS (2-char PIC X(02)) is preserved verbatim as
+// the ioStatus field (for byte-fidelity DISPLAY 'FILE STATUS IS: NNNN'
+// output), but read-loop dispatch now goes through FileStatus.fromCobolCode
+// + an exhaustive pattern switch on the sealed permits per AAP §0.6.10.
+// The non-recoverable abend (CALL 'CEE3ABD') translates to a typed
+// FileStatusException carrying FileStatus.IoError as its first-class payload.
+import com.blitzy.carddemo.domain.status.FileStatus;
+import com.blitzy.carddemo.domain.status.FileStatusException;
 
 /**
  * Java translation of the COBOL batch program {@code CBCUS01C} &mdash; a sequential reader
@@ -351,21 +360,56 @@ public final class CbCus01C {
             this.applResult = APPL_ERROR;
         }
 
-        // COBOL lines 104-115: nested IF on APPL-AOK / APPL-EOF
-        if (applResult == APPL_AOK) {
-            // COBOL line 105: CONTINUE — fall through, no action
-        } else if (applResult == APPL_EOF) {
-            // COBOL line 108: MOVE 'Y' TO END-OF-FILE
-            this.endOfFile = 'Y';
-        } else {
-            // COBOL line 110: DISPLAY 'ERROR READING CUSTOMER FILE'
-            LOGGER.error("ERROR READING CUSTOMER FILE");
-            // COBOL line 111: MOVE CUSTFILE-STATUS TO IO-STATUS
-            this.ioStatus = custfileStatus;
-            // COBOL line 112: PERFORM Z-DISPLAY-IO-STATUS
-            zDisplayIoStatus();
-            // COBOL line 113: PERFORM Z-ABEND-PROGRAM
-            zAbendProgram();
+        // M17 — Use exhaustive pattern matching on the sealed FileStatus
+        // hierarchy to dispatch read outcomes (CONTINUE / END-OF-FILE /
+        // ABEND), replacing the COBOL APPL-RESULT integer cascade with a
+        // typed switch per AAP §0.6.10. The COBOL APPL-RESULT (still
+        // updated above for byte-for-byte WS field fidelity) and the
+        // FileStatus permit are equivalent — APPL-AOK ↔ Ok, APPL-EOF ↔
+        // EndOfFile, APPL-ERROR ↔ IoError — and the typed switch makes
+        // the closed taxonomy compile-time checked. No `default` arm is
+        // permitted (sealed exhaustiveness; AAP §0.7.3).
+        FileStatus status = FileStatus.fromCobolCode(custfileStatus);
+        switch (status) {
+            case FileStatus.Ok ok -> {
+                // COBOL line 105: CONTINUE — fall through, no action
+            }
+            case FileStatus.EndOfFile eof -> {
+                // COBOL line 108: MOVE 'Y' TO END-OF-FILE
+                this.endOfFile = 'Y';
+            }
+            case FileStatus.NotFound nf -> {
+                // FILE STATUS '23' on a SEQUENTIAL read is not expected
+                // from COBOL semantics (it's a keyed-read code), but
+                // exhaustiveness on the sealed type forces handling.
+                // Mirror the COBOL "DISPLAY + ABEND" error path.
+                LOGGER.error("ERROR READING CUSTOMER FILE");
+                this.ioStatus = custfileStatus;
+                zDisplayIoStatus();
+                zAbendProgram();
+            }
+            case FileStatus.DuplicateKey dk -> {
+                // FILE STATUS '22' on a SEQUENTIAL read is also not
+                // expected (it's a WRITE/REWRITE code), but again
+                // exhaustiveness forces handling. Mirror the COBOL
+                // "DISPLAY + ABEND" error path.
+                LOGGER.error("ERROR READING CUSTOMER FILE");
+                this.ioStatus = custfileStatus;
+                zDisplayIoStatus();
+                zAbendProgram();
+            }
+            case FileStatus.IoError ioErr -> {
+                // The catch-all error branch (covers '30' permanent error
+                // and any other non-Ok/non-EOF code).
+                // COBOL line 110: DISPLAY 'ERROR READING CUSTOMER FILE'
+                LOGGER.error("ERROR READING CUSTOMER FILE");
+                // COBOL line 111: MOVE CUSTFILE-STATUS TO IO-STATUS
+                this.ioStatus = custfileStatus;
+                // COBOL line 112: PERFORM Z-DISPLAY-IO-STATUS
+                zDisplayIoStatus();
+                // COBOL line 113: PERFORM Z-ABEND-PROGRAM
+                zAbendProgram();
+            }
         }
         // EXIT (line 116) — Java return implicit.
     }
@@ -495,13 +539,15 @@ public final class CbCus01C {
      * Language Environment (LE) service that performs an immediate, non-recoverable
      * abend with the given ABCODE.
      *
-     * <p>In Java, this is modeled as an unchecked exception. Per AAP &sect;0.6.10
-     * the eventual target is a sealed {@code FileStatus.IoError(int code, String description)}
-     * permit in {@code carddemo-domain}; until that hierarchy is created we throw a
-     * descriptive {@link IllegalStateException} carrying the ABCODE, TIMING, and last
-     * FILE STATUS values. This preserves "identical observable outcomes" (AAP
-     * &sect;0.7.1) &mdash; program halts with an unrecoverable error and the same
-     * diagnostic information that COBOL would have produced.</p>
+     * <p>In Java, this is modeled as a typed unchecked exception per AAP
+     * &sect;0.6.10 (M17 restoration). The exception is a
+     * {@link FileStatusException} that carries a {@link FileStatus.IoError}
+     * payload built from the current {@link #ioStatus} value, allowing
+     * downstream catch sites to pattern-match on the typed FILE STATUS
+     * rather than parsing the exception message string. This preserves
+     * "identical observable outcomes" (AAP &sect;0.7.1) &mdash; program
+     * halts with an unrecoverable error and the same diagnostic
+     * information that COBOL would have produced.</p>
      *
      * <pre>{@code
      *   Z-ABEND-PROGRAM.
@@ -511,26 +557,47 @@ public final class CbCus01C {
      *       CALL 'CEE3ABD'.
      * }</pre>
      *
-     * <p><b>Note:</b> Once {@code carddemo-domain} creates the sealed
-     * {@code FileStatus} hierarchy per AAP &sect;0.6.10, this exception will be
-     * replaced with {@code FileStatus.IoError(STATUS_PERMANENT_ERROR, "CEE3ABD…")}
-     * to provide a typed, pattern-matchable abend reason.</p>
+     * <p>The Java exception's {@code ioError()} payload exposes the typed
+     * permit so callers can do {@code switch (ex.ioError()) { case
+     * IoError(int code, String desc) -> ... }} per the sealed-type
+     * pattern (AAP &sect;0.3.2).</p>
      *
-     * @throws IllegalStateException always &mdash; translation of {@code CALL 'CEE3ABD'}
+     * @throws FileStatusException always &mdash; translation of {@code CALL 'CEE3ABD'}
      */
     private void zAbendProgram() {
         // COBOL line 155: DISPLAY 'ABENDING PROGRAM'
         LOGGER.error("ABENDING PROGRAM");
         // COBOL lines 156-157 (MOVE 0 TO TIMING; MOVE 999 TO ABCODE) are folded
-        // into the exception payload below for diagnostic traceability.
-        // COBOL line 158 (CALL 'CEE3ABD') translates to throwing the unchecked
-        // exception below — the JVM main wrapper in carddemo-app maps this to a
-        // non-zero process exit code mirroring an MVS user abend.
-        throw new IllegalStateException(
-                "CBCUS01C: CEE3ABD non-recoverable abend"
-                        + " (ABCODE=" + CEE3ABD_ABCODE
-                        + " TIMING=" + CEE3ABD_TIMING
-                        + " FILE_STATUS=" + ioStatus + ")");
+        // into the typed payload below for diagnostic traceability.
+        //
+        // M17 — Build the FileStatus.IoError permit from the current
+        // ioStatus (the byte-fidelity 2-char COBOL FILE STATUS). For the
+        // CEE3ABD abend path the description carries the ABCODE+TIMING
+        // diagnostic so catch sites that don't pattern-match still see
+        // the original information in the exception message.
+        FileStatus current = FileStatus.fromCobolCode(ioStatus);
+        FileStatus.IoError payload = (current instanceof FileStatus.IoError existing)
+                ? new FileStatus.IoError(
+                        existing.code(),
+                        "CBCUS01C: CEE3ABD non-recoverable abend"
+                                + " (ABCODE=" + CEE3ABD_ABCODE
+                                + " TIMING=" + CEE3ABD_TIMING + ")")
+                : new FileStatus.IoError(
+                        // Non-IoError permit at abend time is unexpected
+                        // (the read-loop only invokes zAbendProgram on
+                        // error paths), but we synthesize a permanent
+                        // error (-1) for defensive completeness.
+                        -1,
+                        "CBCUS01C: CEE3ABD non-recoverable abend"
+                                + " (ABCODE=" + CEE3ABD_ABCODE
+                                + " TIMING=" + CEE3ABD_TIMING
+                                + " FILE_STATUS=" + ioStatus + ")");
+        // COBOL line 158 (CALL 'CEE3ABD') translates to throwing the typed
+        // unchecked exception below — the JVM main wrapper in carddemo-app
+        // maps this to a non-zero process exit code mirroring an MVS user
+        // abend, AND downstream catch sites can pattern-match on the
+        // exposed FileStatus.IoError payload.
+        throw new FileStatusException(payload);
     }
 
     /**

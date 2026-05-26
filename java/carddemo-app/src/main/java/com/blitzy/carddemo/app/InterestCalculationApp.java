@@ -182,10 +182,16 @@ import org.slf4j.LoggerFactory;
  * @since 1.0.0
  */
 @CobolProgram(
-        value = "CBACT04C",
+        value = "INTCALC",
         sourcePath = "app/jcl/INTCALC.jcl",
         translationDate = "2025-10-24",
-        notes = "Composition root for the monthly interest calculation job (CBACT04C engine). "
+        notes = "Composition root for the monthly interest calculation JCL job. "
+                + "The annotation value names the JCL job (INTCALC), per "
+                + "AAP §0.6.8 program-by-program mapping convention for "
+                + "carddemo-app composition roots which are 1:1 with JCL "
+                + "EXEC steps, not with the underlying COBOL PROGRAM-ID. "
+                + "The underlying use case is CBACT04C (translated into "
+                + "com.blitzy.carddemo.application.account.CbAct04C). "
                 + "Wires 5 file-backed repository adapters (TCATBalance, CardXref, "
                 + "DiscountGroup, Account, Transaction) plus the PARM='YYYYMMDDHH' date. "
                 + "DEFAULT-group fallback lives in the application layer per AAP §0.6.10. "
@@ -200,20 +206,30 @@ public final class InterestCalculationApp {
     private static final Logger LOG = LoggerFactory.getLogger(InterestCalculationApp.class);
 
     /**
-     * Thread-scoped binding for the per-run {@link BatchRunContext}, per
-     * JEP 506 (Final in Java 25). Bound at the top of
+     * Alias for the canonical {@link BatchRunContext#BATCH_CTX} so the
+     * binding is the SAME {@link ScopedValue} identity used by every
+     * other class in the system (composition roots, batch drivers,
+     * use cases). This guarantees that a callee on the same or a child
+     * virtual thread reads the exact value
+     * {@link #main(String[])} bound &mdash; a separate
+     * {@code ScopedValue.newInstance()} would create a distinct
+     * identity even with the same field name, which is the M6
+     * regression flagged by the Checkpoint-5 review.
+     *
+     * <p>Per JEP 506 (Final in Java 25): bound at the top of
      * {@link #main(String[])} via
      * {@code ScopedValue.where(BATCH_CTX, ctx).call(...)} and consulted
      * inside {@link #execute()} via {@code BATCH_CTX.get()}. Replaces
-     * {@link ThreadLocal} entirely per AAP &sect;0.6.6.
+     * {@link ThreadLocal} entirely per AAP &sect;0.6.6.</p>
      *
-     * <p>Distinct from {@link BatchRunContext#BATCH_CTX}: this app-local
-     * binding is what {@code execute()} reads; the shared module-level
-     * binding in {@link BatchRunContext} is provided as the canonical
-     * place to obtain the context from any callee that does not have a
-     * direct reference to this class.
+     * <p>This field is preserved as a local re-export to keep the
+     * {@code main(String[])} body readable; assigning the canonical
+     * instance to a class-level constant rather than introducing a
+     * separate one means a single {@code grep BATCH_CTX} on
+     * {@code carddemo-app/} still locates every entry point without
+     * the AAP §0.6.6 ScopedValue-identity regression.</p>
      */
-    public static final ScopedValue<BatchRunContext> BATCH_CTX = ScopedValue.newInstance();
+    public static final ScopedValue<BatchRunContext> BATCH_CTX = BatchRunContext.BATCH_CTX;
 
     // -----------------------------------------------------------------------
     // Configuration keys — input DDs (12-factor per AAP §0.7.2)
@@ -295,6 +311,26 @@ public final class InterestCalculationApp {
     static final String GENERATION_NAME_FORMAT = "G%04dV00";
 
     // -----------------------------------------------------------------------
+    // Configuration keys — record-byte charset (per AAP §0.6.5)
+    // -----------------------------------------------------------------------
+
+    /**
+     * {@code application.properties} key for the global record-byte
+     * charset (defaults to IBM-1047 EBCDIC per AAP §0.6.5). Matches
+     * the same key used by {@link PostTransactionsApp#PROP_CHARSET}
+     * so a single environment-wide setting drives every composition
+     * root.
+     */
+    static final String PROP_CHARSET = "carddemo.file.charset";
+
+    /**
+     * Default record-byte charset name: {@code "IBM-1047"} (EBCDIC)
+     * per AAP &sect;0.6.5 ("the default codepage for EBCDIC-to-ASCII
+     * transcoding is Charset.forName(\"IBM-1047\")").
+     */
+    static final String DEFAULT_CHARSET_NAME = "IBM-1047";
+
+    // -----------------------------------------------------------------------
     // Configuration keys — PARM (interest accrual date)
     // -----------------------------------------------------------------------
 
@@ -329,9 +365,22 @@ public final class InterestCalculationApp {
      * ensures invalid calendar dates (e.g., 2022-02-30) raise
      * {@link java.time.format.DateTimeParseException} rather than
      * silently rolling over, per AAP &sect;0.6.4.
+     *
+     * <p><strong>Year-pattern selection ({@code uuuu} vs {@code yyyy})</strong>:
+     * with {@link ResolverStyle#STRICT}, the {@code yyyy} pattern letter
+     * denotes {@code YearOfEra} which requires the era to be supplied
+     * separately, causing strict parses of plain four-digit year values
+     * like {@code "20220718"} to fail with
+     * {@link java.time.format.DateTimeParseException}. The
+     * {@code uuuu} pattern letter denotes the proleptic year (era-less),
+     * which is the correct semantics for COBOL date PARMs where the year
+     * is interpreted as a Gregorian/proleptic value rather than an
+     * era-qualified year. This matches the COBOL behavior in
+     * {@code app/cbl/CBACT04C.cbl} where {@code WS-TIMESTAMP} carries a
+     * raw four-digit year with no era qualifier.</p>
      */
     static final DateTimeFormatter PARM_DATE_FORMATTER =
-            DateTimeFormatter.ofPattern("yyyyMMdd").withResolverStyle(ResolverStyle.STRICT);
+            DateTimeFormatter.ofPattern("uuuuMMdd").withResolverStyle(ResolverStyle.STRICT);
 
     // -----------------------------------------------------------------------
     // Return code constants
@@ -422,14 +471,25 @@ public final class InterestCalculationApp {
         // Exhaustive pattern-matching switch over Integer (Java 21 Final).
         // NO default branch per AAP §0.7.3 ("rely on exhaustiveness
         // checking; no default branches that mask missing cases").
+        //
+        // Per the Checkpoint-5 review (M5) only the COBOL-recognised
+        // return-code set {0, 4, 8, 12, 16} passes through unchanged.
+        // Any other Integer value — including unexpected positives
+        // such as 1, 5, 13, or 17 — is normalised to RC_ERROR (16)
+        // after logging the original value. This matches the COBOL
+        // convention that any non-zero, non-4 return code is treated
+        // as an error in the calling JCL (and is what an operator
+        // reading the system console expects).
+        //
         // Coverage:
-        //   case null      -> RC_ERROR (defensive; .call() returns null only on
-        //                     a Throwable that escapes our catch — should
-        //                     never happen but the type system permits it)
+        //   case null         -> RC_ERROR (defensive; .call() returns
+        //                        null only on a Throwable that escapes
+        //                        our catch — should never happen but
+        //                        the type system permits it)
         //   case 0/4/8/12/16 -> identity (standard COBOL RC values)
-        //   case i < 0    -> RC_ERROR (translate to clean error code)
-        //   case i > 16   -> RC_ERROR (clamp; no >16 RC in this job)
-        //   case other    -> identity (Integer wildcard sink)
+        //   case Integer i   -> RC_ERROR (sink; logs the unexpected
+        //                       value for diagnosis)
+        final Integer rcSnapshot = rc;
         int exitCode = switch (rc) {
             case null -> RC_ERROR;
             case 0 -> 0;
@@ -437,10 +497,19 @@ public final class InterestCalculationApp {
             case 8 -> 8;
             case 12 -> 12;
             case 16 -> 16;
-            case Integer i when i < 0 -> RC_ERROR;
-            case Integer i when i > 16 -> RC_ERROR;
-            case Integer i -> i;
+            case Integer i -> {
+                LOG.warn("INTCALC: normalising unexpected return code {} to RC_ERROR ({})",
+                        i, RC_ERROR);
+                yield RC_ERROR;
+            }
         };
+        // Silence "value never used" warnings on rcSnapshot; the local
+        // variable exists to make the original value available to any
+        // future diagnostic enhancement without re-deriving it from
+        // the switch.
+        if (rcSnapshot == null && exitCode != RC_ERROR) {
+            throw new IllegalStateException("RC normalisation invariant broken");
+        }
         System.exit(exitCode);
     }
 
@@ -496,6 +565,21 @@ public final class InterestCalculationApp {
             return RC_ERROR;
         }
 
+        // Resolve the record-byte charset once and pass it to every
+        // file-adapter constructor. Without this, the single-arg adapter
+        // constructors silently default to IBM-1047 EBCDIC, which breaks
+        // any reads/writes against the pre-transcoded ASCII fixtures
+        // under app/data/ASCII/ (used by golden-record harness runs and
+        // by AAP §0.6.5 12-factor codepage overrides). Matches the
+        // resolution used by PostTransactionsApp.
+        Charset charset;
+        try {
+            charset = resolveCharset();
+        } catch (Exception e) {
+            LOG.error("INTCALC: failed to resolve charset for record I/O", e);
+            return RC_ERROR;
+        }
+
         LOG.info("JCL DDs resolved:");
         LOG.info("  TCATBALF = {}", tcatBalfPath);
         LOG.info("  XREFFILE = {}", cardXrefPath);
@@ -503,6 +587,7 @@ public final class InterestCalculationApp {
         LOG.info("  ACCTFILE = {}", acctDataPath);
         LOG.info("  DISCGRP  = {}", discGrpPath);
         LOG.info("  TRANSACT = {} (SYSTRAN GDG +1, LRECL=350 RECFM=F)", systranPath);
+        LOG.info("  charset  = {}", charset);
 
         // Pre-flight: TCATBALF is the only required input.
         if (!Files.exists(tcatBalfPath)) {
@@ -515,17 +600,18 @@ public final class InterestCalculationApp {
         // file handles are released on every exit path (success, error,
         // exception). Plain Java constructor injection (no Spring); per
         // AAP §0.7.4 the COBOL system has no DI container and none is
-        // introduced.
+        // introduced. Each adapter receives the resolved charset so the
+        // per-job codepage override (carddemo.file.charset) is honored.
         try (FileTransactionCategoryBalanceRepository tcatRepo =
-                     new FileTransactionCategoryBalanceRepository(tcatBalfPath);
+                     new FileTransactionCategoryBalanceRepository(tcatBalfPath, charset);
              FileCardXrefRepository xrefRepo =
-                     new FileCardXrefRepository(cardXrefPath);
+                     new FileCardXrefRepository(cardXrefPath, charset);
              FileDiscountGroupRepository discRepo =
-                     new FileDiscountGroupRepository(discGrpPath);
+                     new FileDiscountGroupRepository(discGrpPath, charset);
              FileAccountRepository acctRepo =
-                     new FileAccountRepository(acctDataPath);
+                     new FileAccountRepository(acctDataPath, charset);
              FileTransactionRepository tranRepo =
-                     new FileTransactionRepository(systranPath)) {
+                     new FileTransactionRepository(systranPath, charset)) {
 
             // CbAct04C constructor argument order per the dependency
             // file's signature: (TransactionCategoryBalanceRepository,
@@ -594,13 +680,34 @@ public final class InterestCalculationApp {
      *                     {@link Files#list(Path)} fails
      */
     static Path resolveSystranPath() throws IOException {
-        // Explicit-override escape hatch (test convenience). The
-        // resolveTrusted variant requires a non-null default, so we
-        // probe the raw property first via getProperty(...) with an
-        // empty default and switch on absence.
+        // Explicit-override escape hatch (test convenience). When set,
+        // the override is routed through SafePathResolver.resolveOutput
+        // which enforces CWE-22 containment under carddemo.output.root.
+        // This prevents an operator-supplied PROP_SYSTRAN_PATH from
+        // writing outside the documented output root via traversal
+        // (e.g., "../../etc/passwd"). Per AAP §0.7.2 and the security
+        // rationale in application.properties.example §2.1.
+        //
+        // Implementation note: resolveOutput requires a non-null
+        // default, so we probe the raw property first via getProperty
+        // with an empty default and switch on absence. On the explicit
+        // branch we feed the same explicit value into resolveOutput
+        // by setting it as the system property's default fallback —
+        // resolveOutput then normalises and contains it under the
+        // output root. If the property is absent (the common case),
+        // we fall through to the GDG +1 path computation which uses
+        // the trusted GDG root.
         String explicit = SafePathResolver.getProperty(PROP_SYSTRAN_PATH, "");
         if (!explicit.isBlank()) {
-            Path explicitPath = Path.of(explicit).normalize();
+            // Re-resolve through resolveOutput so CWE-22 containment is
+            // enforced. The first arg is the system-property key; the
+            // second is the default value (which equals the explicit
+            // value here because we already established the property
+            // is set). This is the correct shape because resolveOutput
+            // reads the property internally; passing the same key
+            // round-trips the explicit value with containment applied.
+            Path explicitPath = SafePathResolver.resolveOutput(
+                    PROP_SYSTRAN_PATH, explicit);
             Path parent = explicitPath.getParent();
             if (parent != null) {
                 Files.createDirectories(parent);
@@ -700,5 +807,44 @@ public final class InterestCalculationApp {
             return fromProp;
         }
         return defaultValue;
+    }
+
+    /**
+     * Resolves the character set used by every file-backed repository
+     * adapter for fixed-width record byte transcoding. Mirrors the
+     * resolution used by {@link PostTransactionsApp#resolveCharset()}
+     * so the two composition roots converge on identical charset
+     * semantics for the {@code carddemo.file.charset} key per
+     * AAP &sect;0.6.5.
+     *
+     * <p>Well-known ASCII-family names short-circuit through
+     * {@link StandardCharsets} constants (saves a JDK lookup and
+     * documents the expected values); otherwise the name is resolved
+     * via {@link Charset#forName(String)}, which may throw an
+     * {@link java.nio.charset.UnsupportedCharsetException} or
+     * {@link java.nio.charset.IllegalCharsetNameException} that
+     * propagates to the {@link #execute()} caller and is mapped to
+     * {@link #RC_ERROR}.</p>
+     *
+     * <p>Default: {@value #DEFAULT_CHARSET_NAME} (IBM-1047 EBCDIC) per
+     * AAP &sect;0.6.5. Tests using the pre-transcoded ASCII fixtures
+     * under {@code app/data/ASCII/} override to {@code US-ASCII} via
+     * {@link #PROP_CHARSET}.</p>
+     *
+     * @return the resolved {@link Charset}; never {@code null}
+     */
+    static Charset resolveCharset() {
+        String name = SafePathResolver.getProperty(PROP_CHARSET, DEFAULT_CHARSET_NAME);
+        // Locale.ROOT case-folding avoids the Turkish dotted-I trap and
+        // keeps the switch labels matchable across all JVM locales.
+        return switch (name.toUpperCase(Locale.ROOT)) {
+            case "US-ASCII", "ASCII" -> StandardCharsets.US_ASCII;
+            case "UTF-8", "UTF8" -> StandardCharsets.UTF_8;
+            case "ISO-8859-1", "LATIN-1", "LATIN1" -> StandardCharsets.ISO_8859_1;
+            case "UTF-16" -> StandardCharsets.UTF_16;
+            case "UTF-16BE" -> StandardCharsets.UTF_16BE;
+            case "UTF-16LE" -> StandardCharsets.UTF_16LE;
+            default -> Charset.forName(name);
+        };
     }
 }
