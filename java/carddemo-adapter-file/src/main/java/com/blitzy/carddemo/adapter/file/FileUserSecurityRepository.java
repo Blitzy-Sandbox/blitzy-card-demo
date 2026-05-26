@@ -150,7 +150,7 @@ public final class FileUserSecurityRepository implements UserSecurityRepository 
      * {@link #delete(String)} for DEBUG-level operational diagnostics. The
      * password field is <strong>never</strong> passed to this logger; only
      * the user id and the user-type code (PIC X(01)) are logged. The
-     * concrete backend (logback-classic 1.5.12) is supplied at runtime by
+     * concrete backend (logback-classic 1.5.19) is supplied at runtime by
      * the composition root in {@code carddemo-app}, keeping this adapter
      * free of binding to a specific logging implementation per AAP
      * &sect;0.6.12.

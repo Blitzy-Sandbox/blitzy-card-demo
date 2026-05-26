@@ -43,7 +43,7 @@ import java.util.Properties;
 
 // SLF4J facade (slf4j-api 2.0.16 per parent POM dependencyManagement) is used for the one-time
 // INFO startup log line documenting the resolved default Charset. The concrete logging backend
-// (logback-classic 1.5.12) is supplied at runtime by the composition root in carddemo-app,
+// (logback-classic 1.5.19) is supplied at runtime by the composition root in carddemo-app,
 // keeping this adapter free of binding to a specific backend per AAP §0.6.12.
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

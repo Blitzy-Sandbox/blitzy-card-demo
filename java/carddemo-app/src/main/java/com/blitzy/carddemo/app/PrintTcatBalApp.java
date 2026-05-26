@@ -431,9 +431,9 @@ public final class PrintTcatBalApp {
         LOG.info("PRTCATBL job starting; runId={}, processingDate={}, tenant={}",
                 ctx.runId(), ctx.processingDate(), ctx.tenant());
 
-        Path tcatbalfPath = Path.of(getProp(PROP_TCATBALF_PATH, DEFAULT_TCATBALF_PATH));
-        Path reportPath = Path.of(getProp(PROP_REPORT_PATH, DEFAULT_REPORT_PATH));
-        Path gdgRoot = Path.of(getProp(PROP_GDG_ROOT, DEFAULT_GDG_ROOT));
+        Path tcatbalfPath = SafePathResolver.resolveTrusted(PROP_TCATBALF_PATH, DEFAULT_TCATBALF_PATH);
+        Path reportPath = SafePathResolver.resolveTrusted(PROP_REPORT_PATH, DEFAULT_REPORT_PATH);
+        Path gdgRoot = SafePathResolver.resolveTrusted(PROP_GDG_ROOT, DEFAULT_GDG_ROOT);
 
         // ========================================================
         // Step DELDEF — IEFBR14 with DISP=(MOD,DELETE) on the prior REPT

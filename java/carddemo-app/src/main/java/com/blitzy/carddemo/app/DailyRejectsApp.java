@@ -390,7 +390,7 @@ public final class DailyRejectsApp {
         LOG.info("DALYREJS job starting; runId={}, processingDate={}, tenant={}",
                 ctx.runId(), ctx.processingDate(), ctx.tenant());
 
-        Path gdgRoot = Path.of(getProp(PROP_GDG_ROOT, DEFAULT_GDG_ROOT));
+        Path gdgRoot = SafePathResolver.resolveTrusted(PROP_GDG_ROOT, DEFAULT_GDG_ROOT);
         Path baseDir = gdgRoot.resolve(GDG_BASE_NAME);
 
         if (Files.exists(baseDir)) {

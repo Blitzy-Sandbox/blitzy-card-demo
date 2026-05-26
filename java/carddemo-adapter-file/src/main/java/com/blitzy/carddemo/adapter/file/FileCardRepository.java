@@ -172,7 +172,7 @@ public final class FileCardRepository implements CardRepository {
      * that references the card number argument routes the value through
      * the package-private {@link #maskPan(String)} helper, which exposes
      * only the trailing 4 digits per AAP &sect;0.7.2 (PCI compliance).
-     * The concrete logging backend (logback-classic 1.5.12) is provided
+     * The concrete logging backend (logback-classic 1.5.19) is provided
      * at runtime by the composition root in {@code carddemo-app}; this
      * adapter binds only to the SLF4J facade per AAP &sect;0.6.12.
      */
@@ -260,13 +260,22 @@ public final class FileCardRepository implements CardRepository {
     /**
      * Convenience constructor delegating to the canonical
      * {@link #FileCardRepository(Path, Charset)} constructor with
-     * {@code IBM-1047} (EBCDIC) as the default codepage per AAP
-     * &sect;0.6.5 ("The default codepage for EBCDIC-to-ASCII transcoding
-     * is {@code Charset.forName(\"IBM-1047\")}"). Provided to preserve
+     * {@link EbcdicTranscoder#DEFAULT_CHARSET_NAME} ({@code IBM-1047}
+     * EBCDIC) as the default codepage per AAP &sect;0.6.5 ("The default
+     * codepage for EBCDIC-to-ASCII transcoding is
+     * {@code Charset.forName(\"IBM-1047\")}"). Provided to preserve
      * source-code compatibility with the established codebase convention
      * used by {@code Read*DumpApp} composition roots, which construct
      * repositories with a single {@link Path} argument and rely on the
      * mandated EBCDIC default.
+     *
+     * <p>Routes through {@link EbcdicTranscoder#DEFAULT_CHARSET_NAME}
+     * rather than the hardcoded literal {@code "IBM-1047"} per
+     * MIGRATION_NOTES.md &sect;1.12.17 so any future codepage default
+     * change flows uniformly through a single constant in the
+     * {@code carddemo-adapter-file} module. Matches the same constant
+     * usage in {@code FileAccountRepository}, {@code FileCustomerRepository},
+     * and the other 9 file-backed repository adapters.
      *
      * <p>For an ASCII-encoded input file (e.g., the ASCII fixtures
      * shipped under {@code app/data/ASCII/}), use the canonical two-arg
@@ -282,7 +291,7 @@ public final class FileCardRepository implements CardRepository {
      * @throws NullPointerException if {@code dataFile} is {@code null}
      */
     public FileCardRepository(Path dataFile) {
-        this(dataFile, Charset.forName("IBM-1047"));
+        this(dataFile, Charset.forName(EbcdicTranscoder.DEFAULT_CHARSET_NAME));
     }
 
     /**

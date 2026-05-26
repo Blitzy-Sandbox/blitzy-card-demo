@@ -27,7 +27,7 @@ import com.blitzy.carddemo.domain.record.CardXrefRecord;
 
 // SLF4J facade (slf4j-api 2.0.16 per parent POM dependencyManagement) for
 // DEBUG-level audit lines from save() and delete(). The concrete logging
-// backend (logback-classic 1.5.12) is supplied at runtime by the composition
+// backend (logback-classic 1.5.19) is supplied at runtime by the composition
 // root in carddemo-app, keeping this adapter free of binding to a specific
 // backend per AAP §0.6.12. All card-number values are masked via maskPan(...)
 // before logging per AAP §0.7.2 (PCI compliance: no full PAN in logs).
@@ -205,7 +205,7 @@ public final class FileCardXrefRepository implements CardXrefRepository {
     /**
      * SLF4J logger for DEBUG-level audit lines. Acquired via
      * {@link LoggerFactory#getLogger(Class)} so that the underlying
-     * runtime backend (logback-classic 1.5.12 per AAP &sect;0.5.1) is
+     * runtime backend (logback-classic 1.5.19 per AAP &sect;0.5.1) is
      * resolved at composition-root startup, not at adapter
      * construction. All card-number values logged through this logger
      * MUST be passed through {@link #maskPan(String)} first per AAP

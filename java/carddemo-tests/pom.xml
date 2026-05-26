@@ -120,10 +120,10 @@
             and pluginManagement (per AAP §0.5.1):
               * JUnit Jupiter            5.13.1 (via junit-bom)
               * JUnit Platform Launcher  1.13.1 (jqwik 1.9.3 minimum per AAP §0.5.1)
-              * AssertJ                  3.26.3
+              * AssertJ                  3.27.7
               * jqwik                    1.9.3
               * SLF4J                    2.0.16
-              * Logback                  1.5.12
+              * Logback                  1.5.19
               * maven-compiler-plugin    3.13.0 with &lt;release&gt;25&lt;/release&gt;
               * maven-surefire-plugin    3.5.2
         -->
@@ -416,7 +416,7 @@
             Declared at &lt;scope&gt;test&lt;/scope&gt; per the agent_prompt
             §1.3 mandate to keep the test logging stack isolated from the
             carddemo-app composition root's runtime logging configuration.
-            Version (1.5.12) inherited from the parent POM's
+            Version (1.5.19) inherited from the parent POM's
             dependencyManagement per AAP §0.5.1.
         -->
         <dependency>
@@ -569,7 +569,7 @@
                 per AAP §0.6.11.
               * Rich readable failure diagnostics on every PR gate check.
 
-            Version (3.26.3) inherited from the parent POM's
+            Version (3.27.7) inherited from the parent POM's
             dependencyManagement per AAP §0.5.1.
         -->
         <dependency>
@@ -744,6 +744,200 @@
                         <jfr.recording.dir>${jfr.recording.dir}</jfr.recording.dir>
                     </systemPropertyVariables>
                 </configuration>
+            </plugin>
+
+            <!--
+                ================================================================
+                JaCoCo Maven plugin — 100% line-coverage gate for the
+                Decimals utility (AAP §0.6.1).
+
+                AAP §0.6.1 ("Coverage requirement: 100% line coverage on
+                monetary code") makes this a mandatory PR gate. The
+                DecimalsProperties.java jqwik property test exercises
+                every Decimals helper; the JaCoCo agent measures line
+                coverage and the `check` execution fails the build if
+                line coverage on Decimals.java drops below 100%.
+
+                Execution order:
+                    1. prepare-agent  (initialize phase) — instruments
+                       JVM via -javaagent:jacocoagent.jar
+                    2. surefire test  (test phase) — runs the property
+                       tests, JaCoCo records line execution
+                    3. report  (verify phase) — produces HTML / CSV /
+                       XML reports under target/site/jacoco/
+                    4. check  (verify phase) — enforces the 100% line
+                       coverage threshold on Decimals.java
+
+                The `mvn verify` lifecycle therefore acts as the
+                AAP-mandated coverage gate; the build fails if the
+                Decimals utility regresses below 100% line coverage,
+                exactly as required by AAP §0.6.1.
+
+                Scope: only the Decimals utility (carddemo-domain) is
+                gated at 100%. Other classes in carddemo-domain are
+                covered by the same JaCoCo report (so the broader
+                coverage picture is visible) but are NOT gated at 100%
+                because the AAP only mandates 100% for the
+                "monetary code" surface.
+                ================================================================
+            -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <executions>
+                    <!--
+                        Step 1 — instrument the test JVM.
+                        Binds JaCoCo's java agent into the surefire
+                        `argLine` so the agent runs alongside the
+                        property tests.
+                    -->
+                    <execution>
+                        <id>jacoco-prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+
+                    <!--
+                        Step 2 — generate human + machine readable
+                        reports (HTML, CSV, XML) under
+                        target/site/jacoco/ at the start of the
+                        `verify` phase.
+
+                        Because carddemo-tests has no main sources of
+                        its own, the `report` goal would normally
+                        produce an empty report. The `prepare-package`
+                        execution below (jacoco-stage-domain-classes)
+                        stages a copy of carddemo-domain's compiled
+                        classes (specifically Decimals.class and any
+                        utility-package siblings) into this module's
+                        target/classes/ before the verify phase runs;
+                        this makes the report goal find Decimals.class
+                        and the check goal find its bytecode for rule
+                        evaluation.
+                    -->
+                    <execution>
+                        <id>jacoco-report</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+
+                    <!--
+                        Step 3 — enforce the 100% line coverage gate on
+                        Decimals.java only. The build fails if any
+                        line of Decimals.java is uncovered. Other
+                        classes are not checked here; they remain
+                        visible in the report but unconstrained.
+
+                        AAP §0.6.1 binding: "Coverage requirement:
+                        100% line coverage on monetary code".
+                        Decimals.java is the canonical monetary code
+                        surface per AAP §0.3.3 ("the Decimals utility
+                        is the central facade for all monetary
+                        arithmetic"); other monetary computations in
+                        the application layer call into Decimals and
+                        are exercised transitively by the property
+                        tests and the golden-record harness.
+
+                        Implementation detail (MIGRATION_NOTES.md
+                        §1.12.6): the JaCoCo check goal scans
+                        ${project.build.outputDirectory} for class
+                        files matching the `<includes>` rule. Because
+                        carddemo-tests has no main sources of its own,
+                        we stage Decimals.class from carddemo-domain
+                        into this module's target/classes/ via the
+                        sibling `jacoco-stage-domain-classes`
+                        execution defined below. JaCoCo 0.8.5+ then
+                        automatically filters the utility-class
+                        private constructor of Decimals (per
+                        DecimalsProperties.decimalsIsUtilityClass()'s
+                        Javadoc note) so the rule passes at exactly
+                        100% line coverage.
+                    -->
+                    <execution>
+                        <id>jacoco-check-decimals-100pct</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>CLASS</element>
+                                    <includes>
+                                        <include>com.blitzy.carddemo.domain.util.Decimals</include>
+                                    </includes>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>1.00</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+                maven-resources-plugin — stage carddemo-domain's compiled
+                Decimals.class into this module's target/classes/ so
+                JaCoCo's check goal can locate the bytecode for rule
+                evaluation.
+
+                Why this is required: carddemo-tests has no main sources
+                (its only sources live under src/test/java/), so its
+                target/classes/ is empty at the verify phase. JaCoCo's
+                report and check goals scan ${project.build.outputDirectory}
+                for .class files to apply rules; without staging, the
+                Decimals rule evaluates against an empty class set and
+                silently passes (vacuous truth). Staging makes the rule
+                non-vacuous and enforces the 100% line coverage gate per
+                AAP §0.6.1.
+
+                Staging is bound to `prepare-package` (before verify) so
+                the report and check executions above find the .class file.
+                The reactor order is:
+                  1. carddemo-domain: compile → Decimals.class produced
+                  2. ... other modules ...
+                  3. carddemo-tests: compile → test (jacoco.exec written)
+                                  → prepare-package: stage Decimals.class
+                                  → verify: jacoco report + check
+                so the dependency on carddemo-domain's compiled output is
+                satisfied before staging runs.
+
+                The included pattern is scoped narrowly to the Decimals
+                class (and any utility-package siblings) so we do NOT
+                pollute the report with unrelated domain classes that
+                are not part of the 100% monetary-coverage gate.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>jacoco-stage-domain-classes</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>${project.parent.basedir}/carddemo-domain/target/classes</directory>
+                                    <includes>
+                                        <include>com/blitzy/carddemo/domain/util/Decimals.class</include>
+                                    </includes>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

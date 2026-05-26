@@ -2,7 +2,7 @@
 <!--
     java/carddemo-tests/src/test/resources/logback-test.xml
     ============================================================================
-    Test-scope Logback Classic configuration (version 1.5.12 per AAP §0.5.1).
+    Test-scope Logback Classic configuration (version 1.5.19 per AAP §0.5.1).
 
     AUTO-LOADED by SLF4J + Logback during JUnit test execution because Logback's
     lookup scans for `logback-test.xml` BEFORE `logback.xml`. This file lives on

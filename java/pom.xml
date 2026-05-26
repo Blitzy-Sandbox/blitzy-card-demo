@@ -55,13 +55,56 @@
         <maven-clean-plugin.version>3.4.0</maven-clean-plugin.version>
         <maven-site-plugin.version>3.20.0</maven-site-plugin.version>
 
-        <!-- Library versions (per AAP §0.5.1) -->
+        <!--
+            Library versions (per AAP §0.5.1).
+
+            Security advisories drove two upgrades since the initial pin
+            published in the AAP. The Java agent retains AAP-compliance
+            by treating "no forbidden frameworks" + "all artifacts from
+            Maven Central" as the binding constraint; minor patch-level
+            upgrades to CVE-affected artifacts are explicitly permitted
+            under AAP §0.7.2 ("preserve all existing PCI-relevant
+            controls" and "the user explicitly excludes ... vulnerable
+            dependencies").
+
+              * logback 1.5.12 -> 1.5.19   — addresses CVE-2025-11226
+                                              (logback-core <=1.5.18,
+                                              fixed in 1.5.19); also
+                                              picks up the 1.5.13 SSRF
+                                              fix and intermediate
+                                              configuration ACE
+                                              advisories. Runtime
+                                              ServiceLoader contract
+                                              and SLF4J 2.x binding
+                                              compatibility unchanged
+                                              between 1.5.12 and
+                                              1.5.19.
+              * assertj 3.26.3 -> 3.27.7   — addresses
+                                              CVE-2026-24400 (XXE in
+                                              assertj-core XML
+                                              assertion utilities,
+                                              fixed in 3.27.7). Test
+                                              scope only; the fix is
+                                              backward-compatible.
+        -->
         <junit-jupiter.version>5.13.1</junit-jupiter.version>
         <junit-platform.version>1.13.1</junit-platform.version>
-        <assertj.version>3.26.3</assertj.version>
+        <assertj.version>3.27.7</assertj.version>
         <jqwik.version>1.9.3</jqwik.version>
         <slf4j.version>2.0.16</slf4j.version>
-        <logback.version>1.5.12</logback.version>
+        <logback.version>1.5.19</logback.version>
+
+        <!--
+            JaCoCo Maven plugin — enforces AAP §0.6.1 mandate
+            ("100% line coverage on monetary code"). Version 0.8.14 is
+            required because it is the first release with OFFICIAL
+            support for Java 25 class files (major version 69); earlier
+            versions (0.8.11–0.8.13) either lack Java 25 support
+            entirely or only ship experimental support. Configured in
+            the carddemo-tests module to fail `mvn verify` if
+            Decimals.java line coverage drops below 100%.
+        -->
+        <jacoco-maven-plugin.version>0.8.14</jacoco-maven-plugin.version>
     </properties>
 
     <dependencyManagement>
@@ -163,7 +206,26 @@
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>${maven-surefire-plugin.version}</version>
                     <configuration>
-                        <argLine>-XX:+EnableDynamicAgentLoading -Xshare:auto</argLine>
+                        <!--
+                            argLine composition contract:
+
+                            @{argLine} is the Maven late-binding placeholder
+                            that JaCoCo's prepare-agent execution writes into
+                            during the "initialize" phase. The literal flags
+                            that follow (-XX:+EnableDynamicAgentLoading,
+                            -Xshare:auto) are the project-wide JVM flags
+                            mandated by AAP §0.6.7 (jqwik / AssertJ-style
+                            bytecode helpers require dynamic agent loading
+                            under JDK 25). Modules that do NOT enable JaCoCo
+                            still inherit a benign empty @{argLine} expansion.
+
+                            DO NOT replace @{argLine} with ${argLine} — only
+                            the @{} placeholder is reevaluated at every
+                            Surefire invocation; ${} is captured once at
+                            model-resolution time and would freeze JaCoCo
+                            out of the test argLine.
+                        -->
+                        <argLine>@{argLine} -XX:+EnableDynamicAgentLoading -Xshare:auto</argLine>
                         <includes>
                             <include>**/*Test.java</include>
                             <include>**/*Tests.java</include>
@@ -205,6 +267,23 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-site-plugin</artifactId>
                     <version>${maven-site-plugin.version}</version>
+                </plugin>
+                <!--
+                    JaCoCo Maven plugin — code-coverage measurement and
+                    threshold enforcement. The plugin is declared in the
+                    parent pluginManagement so every module gets the
+                    same version pin (per AAP §0.5.1 pinning discipline).
+                    The actual coverage gate is configured in
+                    carddemo-tests/pom.xml because that is the module
+                    that exercises Decimals.java via DecimalsProperties;
+                    AAP §0.6.1 mandates 100% line coverage on monetary
+                    code (Decimals.java is the canonical monetary
+                    utility).
+                -->
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco-maven-plugin.version}</version>
                 </plugin>
             </plugins>
         </pluginManagement>

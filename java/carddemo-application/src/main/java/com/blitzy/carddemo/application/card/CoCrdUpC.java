@@ -18,8 +18,12 @@ package com.blitzy.carddemo.application.card;
 // JEP 511 (finalized in Java 25): a single declaration imports all packages exported by the
 // java.base module (and the modules it reads). This gives access to java.lang.String,
 // java.util.Objects/Optional/Locale, java.time.*, and java.time.format.DateTimeFormatter
-// used throughout CoCrdUpC for state-machine, validation, optimistic-lock, and SYNCPOINT
-// ROLLBACK translation. Application-defined types still require conventional imports below.
+// used throughout CoCrdUpC for state-machine, validation, optimistic-lock, and
+// compensating-write hardening (the COBOL COCRDUPC source uses EXEC CICS SYNCPOINT
+// commit at app/cbl/COCRDUPC.cbl:L470, NOT SYNCPOINT ROLLBACK; the compensating-write
+// pattern below is an implementation-hardening decision per AAP §0.6.12 and
+// MIGRATION_NOTES.md §1.12.14, not a verbatim SYNCPOINT ROLLBACK translation).
+// Application-defined types still require conventional imports below.
 import module java.base;
 
 import com.blitzy.carddemo.application.ProgramRegistry;
@@ -63,10 +67,17 @@ import org.slf4j.LoggerFactory;
  *       (the {@code 9300-CHECK-CHANGE-IN-REC} translation). The embossed-name comparison
  *       applies {@link java.util.Locale#ROOT} upper-casing to honor the
  *       {@code FUNCTION UPPER-CASE} convention from the COBOL source.</li>
- *   <li>REWRITE with compensating-write rollback: {@link #writeProcessing writeProcessing}
+ *   <li>REWRITE with compensating-write hardening: {@link #writeProcessing writeProcessing}
  *       (the {@code 9200-WRITE-PROCESSING} translation) attempts a save and, on failure,
- *       performs a compensating write to restore the pre-image. This is the
- *       SYNCPOINT ROLLBACK pattern called out in AAP &sect;0.4.1.</li>
+ *       performs a compensating write to restore the pre-image. The COBOL COCRDUPC source
+ *       uses {@code EXEC CICS SYNCPOINT} (commit) at {@code app/cbl/COCRDUPC.cbl:L470},
+ *       NOT {@code SYNCPOINT ROLLBACK} (which AAP &sect;0.4.1 identifies as the sole
+ *       responsibility of COACTUPC). This compensating-write pattern is therefore an
+ *       <strong>implementation-hardening decision</strong> per AAP &sect;0.6.12 and
+ *       MIGRATION_NOTES.md &sect;1.12.14, not a verbatim COBOL SYNCPOINT ROLLBACK
+ *       translation. It is retained as a defense-in-depth measure against partial-update
+ *       inconsistency between the {@link CardRepository} write site and the AID/screen
+ *       acknowledgement returned to the operator.</li>
  *   <li>HIDDEN {@code EXPDAY} field handling: the BMS map declares
  *       {@code EXPDAY ATTRB=(DRK,FSET,PROT)} (hidden, protected); the controller uses
  *       this hidden value as the day-of-month component when reconstructing a
@@ -140,10 +151,13 @@ import org.slf4j.LoggerFactory;
               + "expMonth -> expYear (paragraphs 1210-1260). Concurrent modification "
               + "detection in 9300-CHECK-CHANGE-IN-REC compares pre-read snapshot "
               + "against re-read record state, applying FUNCTION UPPER-CASE to "
-              + "embossed-name comparison. 9200-WRITE-PROCESSING translates SYNCPOINT "
-              + "ROLLBACK as compensating-write that restores the pre-image on REWRITE "
-              + "failure. Valid AID keys: ENTER, PF03 (exit), PF04 (clear), PF05 (save, "
-              + "only when CHANGES-OK-NOT-CONFIRMED), PF12 (cancel, only when NOT "
+              + "embossed-name comparison. 9200-WRITE-PROCESSING applies a "
+              + "compensating-write hardening pattern (implementation-hardening decision "
+              + "per AAP §0.6.12, MIGRATION_NOTES.md §1.12.14) that restores the "
+              + "pre-image on REWRITE failure; the COBOL source itself uses EXEC CICS "
+              + "SYNCPOINT (commit) at app/cbl/COCRDUPC.cbl:L470, not SYNCPOINT ROLLBACK. "
+              + "Valid AID keys: ENTER, PF03 (exit), PF04 (clear), PF05 (save, only "
+              + "when CHANGES-OK-NOT-CONFIRMED), PF12 (cancel, only when NOT "
               + "DETAILS-NOT-FETCHED)."
 )
 public final class CoCrdUpC {
@@ -360,7 +374,10 @@ public final class CoCrdUpC {
         /**
          * COBOL {@code CCUP-CHANGES-OKAYED-BUT-FAILED} ({@code 'F'}); the lock was
          * acquired but the REWRITE failed; a compensating write was attempted to
-         * restore the pre-image (SYNCPOINT ROLLBACK translation).
+         * restore the pre-image (compensating-write hardening per AAP &sect;0.6.12 /
+         * MIGRATION_NOTES.md &sect;1.12.14; the COBOL source uses
+         * {@code EXEC CICS SYNCPOINT} commit at {@code app/cbl/COCRDUPC.cbl:L470},
+         * not {@code SYNCPOINT ROLLBACK}).
          */
         record ChangesOkayedButFailed() implements ChangeAction {
             /** Reusable singleton instance. */
@@ -1528,15 +1545,18 @@ public final class CoCrdUpC {
     }
 
     // ====================================================================================
-    //  9200-WRITE-PROCESSING  (COBOL lines 1420-1494) — SYNCPOINT ROLLBACK translation
+    //  9200-WRITE-PROCESSING  (COBOL lines 1420-1494) — REWRITE + compensating-write hardening
     // ====================================================================================
 
     /**
      * Translation of COBOL paragraph {@code 9200-WRITE-PROCESSING}
      * (lines 1420&ndash;1494). This is the only place in {@code COCRDUPC} that
      * performs persistence; it implements optimistic-lock concurrency control plus
-     * compensating-write rollback (the SYNCPOINT ROLLBACK translation pattern called
-     * out in AAP &sect;0.4.1).
+     * a compensating-write hardening pattern (implementation-hardening decision per
+     * AAP &sect;0.6.12 and MIGRATION_NOTES.md &sect;1.12.14; the COBOL source
+     * itself uses {@code EXEC CICS SYNCPOINT} commit at
+     * {@code app/cbl/COCRDUPC.cbl:L470}, not {@code SYNCPOINT ROLLBACK}, which AAP
+     * &sect;0.4.1 identifies as the sole responsibility of COACTUPC).
      *
      * <p>The COBOL sequence is:
      * <ol>
@@ -1548,14 +1568,19 @@ public final class CoCrdUpC {
      *   <li>If unchanged: {@code INITIALIZE} the update buffer, populate fields,
      *       {@code STRING} the expiry into "YYYY-MM-DD", and
      *       {@code EXEC CICS REWRITE}.</li>
-     *   <li>If REWRITE fails: {@code EXEC CICS SYNCPOINT ROLLBACK} to undo any
-     *       in-flight side effects.</li>
+     *   <li>If REWRITE fails: report the failure to the user. The COBOL code
+     *       does NOT emit {@code EXEC CICS SYNCPOINT ROLLBACK}; CICS will
+     *       implicitly back out the in-flight changes when the task ends
+     *       abnormally.</li>
      * </ol>
      *
      * <p>The Java translation models the same flow with the file-based
-     * {@link CardRepository} port. The {@code SYNCPOINT ROLLBACK} step is realized
-     * as a compensating write that restores the pre-image when {@code save()} on the
-     * proposed record fails. If the compensating write itself fails, both failures
+     * {@link CardRepository} port. Because there is no implicit transactional
+     * back-out in the file-based adapter, the Java implementation adds an
+     * <strong>explicit compensating write</strong> that restores the pre-image when
+     * {@code save()} on the proposed record fails. This is a defense-in-depth
+     * hardening step strictly added by the Java translation and is NOT present in
+     * the COBOL source. If the compensating write itself fails, both failures
      * are logged but the original error is reported to the user.
      *
      * @return one of {@link ChangeAction.ChangesOkayedAndDone},
@@ -1601,11 +1626,16 @@ public final class CoCrdUpC {
         } catch (RuntimeException ex) {
             log.error("REWRITE failed for card={}: {}",
                       maskPan(s.cardSid), ex.getMessage());
-            // SYNCPOINT ROLLBACK: compensating write restores the pre-image
+            // Compensating-write hardening (per AAP §0.6.12 / MIGRATION_NOTES.md §1.12.14):
+            // restore the pre-image when save() of the proposed record fails. The COBOL
+            // source at app/cbl/COCRDUPC.cbl:L470 uses EXEC CICS SYNCPOINT (commit), NOT
+            // SYNCPOINT ROLLBACK; this compensating write is an explicit defense-in-depth
+            // step added by the Java translation because the file-based adapter has no
+            // implicit transactional back-out semantics.
             if (preImageForRollback != null) {
                 try {
                     cardRepository.save(preImageForRollback);
-                    log.warn("Compensating write applied for card={} (SYNCPOINT ROLLBACK)",
+                    log.warn("Compensating write applied for card={} (pre-image restored after REWRITE failure)",
                              maskPan(s.cardSid));
                 } catch (RuntimeException rollbackEx) {
                     log.error("Compensating write also failed for card={}: {}",

@@ -213,12 +213,21 @@ public final class PostTransactionsApp {
         LOG.info("POSTTRAN job starting; runId={}, processingDate={}, tenant={}",
                 ctx.runId(), ctx.processingDate(), ctx.tenant());
 
-        Path dailyTranPath = Path.of(getProp(PROP_DAILYTRAN_PATH, DEFAULT_DAILYTRAN_PATH));
-        Path dalyRejsPath = Path.of(getProp(PROP_DALYREJS_PATH, DEFAULT_DALYREJS_PATH));
-        Path transactPath = Path.of(getProp(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH));
-        Path cardXrefPath = Path.of(getProp(PROP_CARDXREF_PATH, DEFAULT_CARDXREF_PATH));
-        Path acctDataPath = Path.of(getProp(PROP_ACCTDATA_PATH, DEFAULT_ACCTDATA_PATH));
-        Path tcatBalfPath = Path.of(getProp(PROP_TCATBALF_PATH, DEFAULT_TCATBALF_PATH));
+        // Path resolution flows through SafePathResolver so every JCL DD
+        // path is (a) read with documented 12-factor env/sysprop/default
+        // precedence and (b) normalised against any `..` segments per
+        // AAP §0.7.2 (CWE-22 mitigation). resolveTrusted preserves the
+        // trusted-deployment model declared at the top of execute():
+        // the operator who configures these paths is the same one who
+        // controls the data directory layout. Normalisation alone
+        // closes the path-traversal flaw flagged in Checkpoint 4
+        // review S2.
+        Path dailyTranPath = SafePathResolver.resolveTrusted(PROP_DAILYTRAN_PATH, DEFAULT_DAILYTRAN_PATH);
+        Path dalyRejsPath = SafePathResolver.resolveTrusted(PROP_DALYREJS_PATH, DEFAULT_DALYREJS_PATH);
+        Path transactPath = SafePathResolver.resolveTrusted(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH);
+        Path cardXrefPath = SafePathResolver.resolveTrusted(PROP_CARDXREF_PATH, DEFAULT_CARDXREF_PATH);
+        Path acctDataPath = SafePathResolver.resolveTrusted(PROP_ACCTDATA_PATH, DEFAULT_ACCTDATA_PATH);
+        Path tcatBalfPath = SafePathResolver.resolveTrusted(PROP_TCATBALF_PATH, DEFAULT_TCATBALF_PATH);
 
         // Pre-flight: DALYTRAN is the only required input. The other four are
         // read+update / append datasets that the COBOL job creates if absent

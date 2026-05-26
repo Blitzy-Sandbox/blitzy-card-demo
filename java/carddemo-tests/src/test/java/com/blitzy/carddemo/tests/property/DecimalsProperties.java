@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.blitzy.carddemo.domain.util.Decimals;
 import java.lang.reflect.Constructor;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.math.MathContext;
@@ -1130,24 +1129,65 @@ public class DecimalsProperties {
     // Phase 11 - Utility class pattern verification
     // =====================================================================
 
+    /**
+     * Verifies the utility-class enforcement pattern on {@link Decimals}
+     * without invoking the private constructor.
+     *
+     * <p><strong>No-reflection-invocation policy</strong>: per AAP
+     * &sect;0.7.4 the production codebase forbids reflection
+     * ({@code setAccessible} / {@code newInstance}) in new code unless
+     * faithfully translating an existing COBOL construct. Although this
+     * test is in test scope, the rule still applies; therefore the
+     * verification performs reflective <em>inspection</em> only
+     * ({@link Class#getDeclaredConstructor(Class...)},
+     * {@link Constructor#getModifiers()},
+     * {@link Class#getModifiers()},
+     * {@link Class#getDeclaredConstructors()}) and never calls
+     * {@code setAccessible(true)} nor {@code newInstance()}. The
+     * Java reflective inspection of modifier flags is not access-
+     * controlled and does NOT require {@code setAccessible}.</p>
+     *
+     * <p><strong>JaCoCo coverage of the private constructor</strong>:
+     * the private no-arg constructor of a {@code final} utility class
+     * with an empty body is automatically filtered out of JaCoCo's
+     * coverage counters by JaCoCo 0.8.5+'s built-in "Private empty
+     * no-arg constructor" filter (see {@code jacoco-maven-plugin
+     * 0.8.14} in {@code java/pom.xml}). The {@link Decimals}
+     * constructor body is intentionally empty for this reason &mdash;
+     * defensive throwing was removed because it broke filter matching
+     * without providing any added safety beyond the {@code private}
+     * access modifier; see the Javadoc on
+     * {@link Decimals#Decimals()} for details. The 100% line-coverage
+     * gate on {@code Decimals} configured in
+     * {@code carddemo-tests/pom.xml} therefore remains satisfiable
+     * without invoking the constructor.</p>
+     *
+     * <p>Assertions verified:</p>
+     * <ol>
+     *   <li>{@link Decimals} is {@code final} (cannot be subclassed).</li>
+     *   <li>{@link Decimals} declares exactly one constructor (no
+     *       overloads).</li>
+     *   <li>That constructor is {@code private} (cannot be invoked from
+     *       outside the package).</li>
+     * </ol>
+     */
     @Example
-    @Label("Decimals utility class: constructor is private and throws when invoked")
-    void decimalsConstructorIsPrivate() throws Exception {
+    @Label("Decimals utility class: final, single private no-arg constructor (modifier inspection only)")
+    void decimalsIsUtilityClass() throws NoSuchMethodException {
+        // (1) Class is final.
+        assertThat(Modifier.isFinal(Decimals.class.getModifiers()))
+                .as("Decimals must be final to prevent subclassing")
+                .isTrue();
+        // (2) Exactly one declared constructor.
+        Constructor<?>[] ctors = Decimals.class.getDeclaredConstructors();
+        assertThat(ctors)
+                .as("Decimals must declare exactly one constructor")
+                .hasSize(1);
+        // (3) That constructor is private.
         Constructor<Decimals> ctor = Decimals.class.getDeclaredConstructor();
-        assertThat(Modifier.isPrivate(ctor.getModifiers())).isTrue();
-        assertThat(Modifier.isFinal(Decimals.class.getModifiers())).isTrue();
-        ctor.setAccessible(true);
-        try {
-            ctor.newInstance();
-            // If construction succeeds, that is also acceptable for a private
-            // no-op constructor; not all utility classes throw.
-        } catch (InvocationTargetException e) {
-            // Construction throws - canonical utility-class enforcement.
-            assertThat(e.getCause()).isInstanceOfAny(
-                    UnsupportedOperationException.class,
-                    AssertionError.class,
-                    IllegalStateException.class);
-        }
+        assertThat(Modifier.isPrivate(ctor.getModifiers()))
+                .as("Decimals constructor must be private to prevent instantiation")
+                .isTrue();
     }
 
     // =====================================================================
@@ -1388,5 +1428,211 @@ public class DecimalsProperties {
         assertThat((char) buf[0]).isEqualTo('1');
         assertThat((char) buf[1]).isEqualTo('2');
         assertThat((char) buf[2]).isEqualTo('C');
+    }
+
+    // =====================================================================
+    // Phase 15 - formatEditMaskUnsigned coverage tests
+    // (Decimals.java L903-L943; DFSORT EDIT=(T...T.T...T) translation)
+    //
+    // formatEditMaskUnsigned is not in the schema's members_exposed list, but
+    // the AAP §0.6.1 mandate of 100% line coverage on monetary code requires
+    // every branch of this monetary helper to be exercised. The schema is a
+    // minimum, not a maximum (additional helper tests are permitted).
+    //
+    // These tests mirror the canonical examples documented in the
+    // formatEditMaskUnsigned Javadoc (Decimals.java L867-L879) which itself
+    // matches the JCL specification for
+    // EDIT=(TTTTTTTTT.TT) in app/jcl/PRTCATBL.jcl L53-L56.
+    // =====================================================================
+
+    @Example
+    @Label("formatEditMaskUnsigned: 194.00 with (9,2) -> '000000194.00' (12 chars, positive)")
+    void formatEditMaskUnsignedPositiveValue() {
+        String formatted = Decimals.formatEditMaskUnsigned(new BigDecimal("194.00"), 9, 2);
+        assertThat(formatted).isEqualTo("000000194.00");
+        assertThat(formatted).hasSize(12);
+    }
+
+    @Example
+    @Label("formatEditMaskUnsigned: ZERO with (9,2) -> '000000000.00' (12 chars)")
+    void formatEditMaskUnsignedZeroWithDecimal() {
+        String formatted = Decimals.formatEditMaskUnsigned(BigDecimal.ZERO, 9, 2);
+        assertThat(formatted).isEqualTo("000000000.00");
+        assertThat(formatted).hasSize(12);
+    }
+
+    @Example
+    @Label("formatEditMaskUnsigned: -91.90 with (9,2) -> '000000091.90' (absolute value, DFSORT default)")
+    void formatEditMaskUnsignedNegativeValueDropsSign() {
+        // DFSORT unsigned-EDIT default: negative values rendered as their
+        // absolute value (the sign is dropped). This is the basis for the
+        // AAP key insight ("Negative balances are NOT expected for TCATBAL;
+        // if encountered, the EDIT mask would emit them as positive").
+        String formatted = Decimals.formatEditMaskUnsigned(new BigDecimal("-91.90"), 9, 2);
+        assertThat(formatted).isEqualTo("000000091.90");
+        assertThat(formatted).hasSize(12);
+    }
+
+    @Example
+    @Label("formatEditMaskUnsigned: ZERO with (5,0) -> '00000' (5 chars, no decimal point)")
+    void formatEditMaskUnsignedZeroNoDecimal() {
+        String formatted = Decimals.formatEditMaskUnsigned(BigDecimal.ZERO, 5, 0);
+        assertThat(formatted).isEqualTo("00000");
+        assertThat(formatted).hasSize(5);
+    }
+
+    @Example
+    @Label("formatEditMaskUnsigned: 12345.6789 with (5,2) -> '12345.68' (HALF_EVEN rounding)")
+    void formatEditMaskUnsignedRounding() {
+        // 12345.6789 rounded to 2 decimals HALF_EVEN -> 12345.68; integer
+        // part has 5 digits which exactly fills integerDigits=5.
+        String formatted = Decimals.formatEditMaskUnsigned(
+                new BigDecimal("12345.6789"), 5, 2);
+        assertThat(formatted).isEqualTo("12345.68");
+    }
+
+    @Example
+    @Label("formatEditMaskUnsigned: HALF_EVEN rounding pulls 0.005 down to 0.00")
+    void formatEditMaskUnsignedBankersRoundingDown() {
+        // Banker's rounding (HALF_EVEN): 0.005 -> 0.00 (rounds to even).
+        String formatted = Decimals.formatEditMaskUnsigned(
+                new BigDecimal("0.005"), 1, 2);
+        assertThat(formatted).isEqualTo("0.00");
+    }
+
+    @Example
+    @Label("formatEditMaskUnsigned: HALF_EVEN rounding pulls 0.015 up to 0.02")
+    void formatEditMaskUnsignedBankersRoundingUp() {
+        // Banker's rounding (HALF_EVEN): 0.015 -> 0.02 (rounds to even).
+        String formatted = Decimals.formatEditMaskUnsigned(
+                new BigDecimal("0.015"), 1, 2);
+        assertThat(formatted).isEqualTo("0.02");
+    }
+
+    @Example
+    @Label("formatEditMaskUnsigned: integer-only value at exact width emits no padding")
+    void formatEditMaskUnsignedExactWidthNoPadding() {
+        // 99999 with (5,0) -> exactly fills, no leading zero padding required.
+        String formatted = Decimals.formatEditMaskUnsigned(
+                new BigDecimal("99999"), 5, 0);
+        assertThat(formatted).isEqualTo("99999");
+    }
+
+    @Example
+    @Label("formatEditMaskUnsigned: null value throws NullPointerException")
+    void formatEditMaskUnsignedNullValueThrows() {
+        assertThatThrownBy(() -> Decimals.formatEditMaskUnsigned(null, 9, 2))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Property(tries = 50)
+    @Label("formatEditMaskUnsigned: integerDigits < 1 throws IllegalArgumentException")
+    void formatEditMaskUnsignedNonPositiveIntegerDigitsThrows(
+            @ForAll @IntRange(min = -10, max = 0) int integerDigits) {
+        assertThatThrownBy(
+                () -> Decimals.formatEditMaskUnsigned(BigDecimal.ZERO, integerDigits, 2))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Property(tries = 50)
+    @Label("formatEditMaskUnsigned: decimalDigits < 0 throws IllegalArgumentException")
+    void formatEditMaskUnsignedNegativeDecimalDigitsThrows(
+            @ForAll @IntRange(min = -10, max = -1) int decimalDigits) {
+        assertThatThrownBy(
+                () -> Decimals.formatEditMaskUnsigned(BigDecimal.ZERO, 5, decimalDigits))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Example
+    @Label("formatEditMaskUnsigned: integer part exceeding integerDigits throws IllegalArgumentException")
+    void formatEditMaskUnsignedIntegerOverflowThrows() {
+        // 99999.99 has 5 integer digits; integerDigits=3 -> overflow.
+        assertThatThrownBy(
+                () -> Decimals.formatEditMaskUnsigned(new BigDecimal("99999.99"), 3, 2))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Example
+    @Label("formatEditMaskUnsigned: negative value overflow uses absolute value digit count")
+    void formatEditMaskUnsignedNegativeOverflowThrows() {
+        // -99999.99 has 5 integer digits in absolute value; integerDigits=3 -> overflow
+        // (the absolute value's digit count is what matters, not the negative).
+        assertThatThrownBy(
+                () -> Decimals.formatEditMaskUnsigned(new BigDecimal("-99999.99"), 3, 2))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Example
+    @Label("formatEditMaskUnsigned: single integer digit, no decimals -> single digit")
+    void formatEditMaskUnsignedSingleDigit() {
+        String formatted = Decimals.formatEditMaskUnsigned(new BigDecimal("7"), 1, 0);
+        assertThat(formatted).isEqualTo("7");
+        assertThat(formatted).hasSize(1);
+    }
+
+    @Example
+    @Label("formatEditMaskUnsigned: PRTCATBL JCL canonical TCATBAL formatting (9 int, 2 dec)")
+    void formatEditMaskUnsignedPrtCatBlCanonical() {
+        // Reproduce the documented PRTCATBL.jcl L53-L56 OUTREC FIELDS=(
+        // ...TRAN-CAT-BAL,EDIT=(TTTTTTTTT.TT),...) specification with the
+        // canonical TCATBAL examples from the AAP fixtures.
+        assertThat(Decimals.formatEditMaskUnsigned(new BigDecimal("194.00"), 9, 2))
+                .isEqualTo("000000194.00");
+        assertThat(Decimals.formatEditMaskUnsigned(new BigDecimal("1.23"), 9, 2))
+                .isEqualTo("000000001.23");
+        assertThat(Decimals.formatEditMaskUnsigned(new BigDecimal("999999999.99"), 9, 2))
+                .isEqualTo("999999999.99");
+    }
+
+    @Property(tries = 200)
+    @Label("formatEditMaskUnsigned: output width is always integerDigits + (decimalDigits > 0 ? 1 + decimalDigits : 0)")
+    void formatEditMaskUnsignedWidthInvariant(
+            @ForAll("transactionMonetary") BigDecimal value) {
+        // The Javadoc contract: output width is exactly
+        // integerDigits + (decimalDigits > 0 ? 1 + decimalDigits : 0).
+        // Use integerDigits=9, decimalDigits=2 (PIC S9(09)V99 -> 9 + 1 + 2 = 12 chars).
+        String formatted = Decimals.formatEditMaskUnsigned(value, 9, 2);
+        assertThat(formatted).hasSize(12);
+        // Verify embedded decimal point at position 9 (0-indexed).
+        assertThat(formatted.charAt(9)).isEqualTo('.');
+        // Verify all other characters are digits (no sign character).
+        for (int i = 0; i < formatted.length(); i++) {
+            if (i != 9) {
+                assertThat(Character.isDigit(formatted.charAt(i)))
+                        .as("character at position %d must be a digit (got '%c')", i, formatted.charAt(i))
+                        .isTrue();
+            }
+        }
+    }
+
+    @Property(tries = 200)
+    @Label("formatEditMaskUnsigned: output equals absolute value of corresponding formatEditMask digits")
+    void formatEditMaskUnsignedEqualsAbsOfSignedFormatDigits(
+            @ForAll("transactionMonetary") BigDecimal value) {
+        // The documented relationship: formatEditMaskUnsigned == formatEditMask
+        // with the leading sign character dropped (DFSORT unsigned-EDIT default).
+        // formatEditMask emits 12 + 1 (sign) = 13 chars for (9, 2); the substring
+        // at offsets [1, end) is the unsigned representation of the absolute value.
+        String signed = Decimals.formatEditMask(value, 9, 2);
+        String unsignedFromValue = Decimals.formatEditMaskUnsigned(value, 9, 2);
+        // formatEditMask emits a leading ' ' for non-negative and '-' for negative;
+        // formatEditMaskUnsigned drops it entirely.
+        assertThat(unsignedFromValue).isEqualTo(signed.substring(1));
+    }
+
+    @Example
+    @Label("formatEditMaskUnsigned: zero-padding triggered when value has fewer integer digits than integerDigits")
+    void formatEditMaskUnsignedZeroPadding() {
+        // value=1.00 has 1 integer digit; integerDigits=9 -> 8 leading zeros.
+        String formatted = Decimals.formatEditMaskUnsigned(new BigDecimal("1.00"), 9, 2);
+        assertThat(formatted).isEqualTo("000000001.00");
+    }
+
+    @Example
+    @Label("formatEditMaskUnsigned: no zero-padding when value's digit count equals total width")
+    void formatEditMaskUnsignedNoZeroPaddingAtMaxWidth() {
+        // 999999999.99 has 11 unscaled digits exactly equal to totalDigits=11.
+        String formatted = Decimals.formatEditMaskUnsigned(new BigDecimal("999999999.99"), 9, 2);
+        assertThat(formatted).isEqualTo("999999999.99");
     }
 }

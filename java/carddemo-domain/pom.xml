@@ -73,7 +73,7 @@
               * junit-platform-launcher  1.13.1 (required minimum for jqwik 1.9.3 per AAP §0.5.1
                                                   and for JUnit Platform native discovery by
                                                   maven-surefire-plugin 3.5.2)
-              * assertj-core             3.26.3
+              * assertj-core 3.27.7
         -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

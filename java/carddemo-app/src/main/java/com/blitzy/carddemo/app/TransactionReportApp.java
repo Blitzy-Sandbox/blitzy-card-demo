@@ -538,13 +538,13 @@ public final class TransactionReportApp {
                 ctx.runId(), ctx.processingDate(), ctx.tenant(), start, end);
 
         // Resolve all input/output paths from 12-factor configuration.
-        Path transactPath = Path.of(getProp(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH));
-        Path cardxrefPath = Path.of(getProp(PROP_CARDXREF_PATH, DEFAULT_CARDXREF_PATH));
-        Path trantypePath = Path.of(getProp(PROP_TRANTYPE_PATH, DEFAULT_TRANTYPE_PATH));
-        Path trancatgPath = Path.of(getProp(PROP_TRANCATG_PATH, DEFAULT_TRANCATG_PATH));
-        Path reportPath = Path.of(getProp(PROP_TRANREPT_PATH, DEFAULT_TRANREPT_PATH));
-        Path dateparmPath = Path.of(getProp(PROP_DATEPARM_PATH, DEFAULT_DATEPARM_PATH));
-        Path gdgRoot = Path.of(getProp(PROP_GDG_ROOT, DEFAULT_GDG_ROOT));
+        Path transactPath = SafePathResolver.resolveTrusted(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH);
+        Path cardxrefPath = SafePathResolver.resolveTrusted(PROP_CARDXREF_PATH, DEFAULT_CARDXREF_PATH);
+        Path trantypePath = SafePathResolver.resolveTrusted(PROP_TRANTYPE_PATH, DEFAULT_TRANTYPE_PATH);
+        Path trancatgPath = SafePathResolver.resolveTrusted(PROP_TRANCATG_PATH, DEFAULT_TRANCATG_PATH);
+        Path reportPath = SafePathResolver.resolveTrusted(PROP_TRANREPT_PATH, DEFAULT_TRANREPT_PATH);
+        Path dateparmPath = SafePathResolver.resolveTrusted(PROP_DATEPARM_PATH, DEFAULT_DATEPARM_PATH);
+        Path gdgRoot = SafePathResolver.resolveTrusted(PROP_GDG_ROOT, DEFAULT_GDG_ROOT);
 
         // ============================================================
         // STEP05R (REPROC): backup TRANSACT KSDS → BKUP(+1) GDG generation

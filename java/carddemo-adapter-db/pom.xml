@@ -206,7 +206,7 @@
                                                  minimum platform requirement
                                                  used across the reactor by
                                                  carddemo-tests (AAP §0.5.1).
-              * assertj-core             3.26.3 — fluent assertions used to
+              * assertj-core 3.27.7 — fluent assertions used to
                                                  express expectations such as
                                                  SQL result-set parsing
                                                  fidelity, JDBC PreparedStatement

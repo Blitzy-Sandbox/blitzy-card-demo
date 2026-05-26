@@ -1,0 +1,21 @@
+# CBSTM03B GOLDEN-RECORD FIXTURE — input_calls.txt (PLACEHOLDER)
+#
+# AAP §0.6.11 scaffolding placeholder. CbStm03BGoldenTest remains
+# @Disabled until this file is replaced with the committed COBOL
+# capture content. See ../README.md for the authoritative file
+# format contract and the 16 minimum required scenarios.
+#
+# Format: <DD:8>|<OPER:1>|<KEY:25>|<KEY-LN:+9999>
+#
+# Lines beginning with '#' are comments; blank lines are also
+# ignored. The COBOL driver and the Java driver MUST both implement
+# identical comment-stripping and blank-skipping semantics so that
+# the input cursor advances in lockstep across both runtimes.
+#
+# To activate this fixture, follow the capture procedure in
+# java/MIGRATION_NOTES.md §1.6 and replace this file with the
+# captured input_calls.txt. The accompanying stdout.txt must also
+# be captured and committed in the same PR that removes the
+# @Disabled annotation from CbStm03BGoldenTest.
+
+PLACEHOLDER

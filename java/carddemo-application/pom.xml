@@ -130,7 +130,7 @@
                                                   and aligns with jqwik 1.9.3's
                                                   minimum platform requirement
                                                   (AAP §0.5.1)
-              * assertj-core             3.26.3 — fluent assertions for
+              * assertj-core 3.27.7 — fluent assertions for
                                                   paragraph-level method tests,
                                                   LINKAGE SECTION record contracts,
                                                   and EVALUATE pattern-matching

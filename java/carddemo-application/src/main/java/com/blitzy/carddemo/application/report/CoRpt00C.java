@@ -178,7 +178,7 @@ public final class CoRpt00C {
     // ---------------------------------------------------------------------
     // SLF4J logger (org.slf4j:slf4j-api 2.0.16) — replaces COBOL DISPLAY
     // statements per AAP §0.5.1. Backend wired by carddemo-app via
-    // Logback (logback-classic 1.5.12).
+    // Logback (logback-classic 1.5.19).
     // ---------------------------------------------------------------------
     private static final Logger LOGGER = LoggerFactory.getLogger(CoRpt00C.class);
 

@@ -36,7 +36,7 @@ import com.blitzy.carddemo.domain.record.TranRecord;
 // §0.5.1). Used for DEBUG-level logging after successful save() operations
 // documenting the tranId, MASKED PAN (per AAP §0.7.2 PCI compliance — never
 // log the full PAN), and amount. The concrete logging backend (logback-classic
-// 1.5.12) is supplied at runtime by the composition root in carddemo-app,
+// 1.5.19) is supplied at runtime by the composition root in carddemo-app,
 // keeping this adapter free of binding to any specific backend per AAP §0.6.12.
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

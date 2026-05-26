@@ -455,9 +455,9 @@ public final class TransactionBackupApp {
         // configured TRANSACT path; the GDG generation files live under the
         // configured GDG root directory, namespaced by the verbatim GDG base
         // name AWS.M2.CARDDEMO.TRANSACT.BKUP.
-        Path source = Path.of(getProp(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH))
+        Path source = SafePathResolver.resolveTrusted(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH)
                 .toAbsolutePath();
-        Path gdgRoot = Path.of(getProp(PROP_GDG_ROOT, DEFAULT_GDG_ROOT))
+        Path gdgRoot = SafePathResolver.resolveTrusted(PROP_GDG_ROOT, DEFAULT_GDG_ROOT)
                 .toAbsolutePath();
         Path bkupBaseDir = gdgRoot.resolve(BKUP_GDG_BASE);
 

@@ -129,7 +129,7 @@ import org.junit.jupiter.api.Test;
  * the Java translation
  * ({@link com.blitzy.carddemo.application.transaction.CbTrn03C}) preserves
  * the double-add verbatim, and the captured COBOL
- * {@code reptfile.txt} therefore reflects the incorrect-but-preserved
+ * {@code tranrept.txt} therefore reflects the incorrect-but-preserved
  * grand total. Documented in {@code java/MIGRATION_NOTES.md}.</p>
  *
  * <p><strong>Input fixtures</strong> (5 files; 4 from
@@ -184,8 +184,12 @@ import org.junit.jupiter.api.Test;
  * byte-for-byte parity assertion via {@link
  * GoldenRecordTest#byteForByteParity()}):
  * <ul>
- *   <li>{@code reptfile.txt} &mdash; the 133-char-wide paginated detail
- *       report. Each page contains the
+ *   <li>{@code tranrept.txt} &mdash; the 133-char-wide paginated detail
+ *       report (named per the COBOL JCL DD {@code //TRANREPT DD ...} at
+ *       {@code app/jcl/TRANREPT.jcl}; the COBOL {@code SELECT REPORT-FILE
+ *       ASSIGN TO TRANREPT} clause binds {@code FD-REPTFILE-REC} to the
+ *       TRANREPT DD, so the captured output file takes its name from the
+ *       DD rather than from the FD identifier). Each page contains the
  *       {@code REPORT-NAME-HEADER} + {@code WS-BLANK-LINE} +
  *       {@code TRANSACTION-HEADER-1} + {@code TRANSACTION-HEADER-2}
  *       (4 lines emitted by {@code 1120-WRITE-HEADERS}), followed by up
@@ -250,7 +254,7 @@ import org.junit.jupiter.api.Test;
  * {@code FileDateParamsSource}, (4) wire a test-only unmasked
  * {@code FileReportSink} writing to a temp output for byte capture, and
  * (5) return a {@link java.util.Map} keyed by output name
- * ({@code "reptfile.txt"}, {@code "stdout.txt"}) for the base harness to
+ * ({@code "tranrept.txt"}, {@code "stdout.txt"}) for the base harness to
  * compare against {@link #expectedOutputs()}.</p>
  *
  * <p>This test is the <strong>NON-NEGOTIABLE PR gate</strong> per AAP
@@ -272,7 +276,7 @@ import org.junit.jupiter.api.Test;
  * unconditionally present so JUnit discovers and reports this
  * per-program test in CI from day one. The {@code @Disabled} annotation
  * will be removed in the same PR that commits non-placeholder content
- * into {@code src/test/resources/golden/cbtrn03c/expected/reptfile.txt}
+ * into {@code src/test/resources/golden/cbtrn03c/expected/tranrept.txt}
  * and {@code .../stdout.txt}.</p>
  *
  * @see GoldenRecordTest
@@ -342,8 +346,16 @@ public class CbTrn03CGoldenTest extends GoldenRecordTest {
      * {@code app/cbl/CBTRN03C.cbl:L85}), including the
      * incorrect-but-preserved grand total reflecting the EOF
      * stale-TRAN-AMT double-add described in the class Javadoc.
+     *
+     * <p>The fixture file name {@code tranrept.txt} is derived from
+     * the JCL DD {@code //TRANREPT DD ...} at
+     * {@code app/jcl/TRANREPT.jcl} (the COBOL
+     * {@code SELECT REPORT-FILE ASSIGN TO TRANREPT} clause binds the
+     * {@code FD-REPTFILE-REC} FD entry to the DD), per the standard
+     * convention in this test suite of naming fixture files after the
+     * JCL DD they map to rather than after the COBOL FD identifier.</p>
      */
-    private static final String REPTFILE_TXT = "reptfile.txt";
+    private static final String TRANREPT_TXT = "tranrept.txt";
 
     /**
      * Name of the captured COBOL {@code DISPLAY} stream under
@@ -397,7 +409,7 @@ public class CbTrn03CGoldenTest extends GoldenRecordTest {
      *
      * <p>Returns the absolute {@link Path} to the captured COBOL
      * paginated report at
-     * {@code src/test/resources/golden/cbtrn03c/expected/reptfile.txt},
+     * {@code src/test/resources/golden/cbtrn03c/expected/tranrept.txt},
      * resolved via
      * {@link GoldenRecordTest#resolveExpectedOutputPath(String, String)}.
      * This is the primary expected output; the
@@ -406,7 +418,7 @@ public class CbTrn03CGoldenTest extends GoldenRecordTest {
      */
     @Override
     protected Path expectedOutputFile() {
-        return resolveExpectedOutputPath(PROGRAM_DIR, REPTFILE_TXT);
+        return resolveExpectedOutputPath(PROGRAM_DIR, TRANREPT_TXT);
     }
 
     /**
@@ -450,7 +462,7 @@ public class CbTrn03CGoldenTest extends GoldenRecordTest {
      *
      * <p>Declares the two byte-for-byte parity targets for CBTRN03C:
      * <ul>
-     *   <li>{@link #REPTFILE_TXT} &mdash; the 133-char-wide paginated
+     *   <li>{@link #TRANREPT_TXT} &mdash; the 133-char-wide paginated
      *       detail report captured from the COBOL {@code TRANREPT} DD
      *       (FD {@code REPORT-FILE} at
      *       {@code app/cbl/CBTRN03C.cbl:L84-L85}). The captured file
@@ -474,8 +486,8 @@ public class CbTrn03CGoldenTest extends GoldenRecordTest {
     @Override
     protected List<ExpectedOutput> expectedOutputs() {
         return List.of(
-            new ExpectedOutput(REPTFILE_TXT,
-                resolveExpectedOutputPath(PROGRAM_DIR, REPTFILE_TXT)),
+            new ExpectedOutput(TRANREPT_TXT,
+                resolveExpectedOutputPath(PROGRAM_DIR, TRANREPT_TXT)),
             new ExpectedOutput(STDOUT_TXT,
                 resolveExpectedOutputPath(PROGRAM_DIR, STDOUT_TXT))
         );

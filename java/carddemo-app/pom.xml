@@ -284,7 +284,7 @@
             fall back to NOP logging in the shaded jars.
 
             Version inherited from the parent POM's dependencyManagement
-            (logback-classic 1.5.12 per AAP §0.5.1).
+            (logback-classic 1.5.19 per AAP §0.5.1).
         -->
         <dependency>
             <groupId>ch.qos.logback</groupId>
@@ -319,7 +319,7 @@
                                                   28 shaded jars produced
                                                   by maven-shade-plugin
                                                   (AAP §0.5.1).
-              * assertj-core             3.26.3 — fluent assertions for
+              * assertj-core 3.27.7 — fluent assertions for
                                                   main-class command-line
                                                   behavior, exit codes,
                                                   ScopedValue

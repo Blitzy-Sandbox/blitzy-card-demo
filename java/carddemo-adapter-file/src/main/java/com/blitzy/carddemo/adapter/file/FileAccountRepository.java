@@ -153,7 +153,7 @@ public final class FileAccountRepository implements AccountRepository {
 
     /**
      * SLF4J logger for save/delete debug logging. Bound to slf4j-api 2.0.16
-     * per AAP &sect;0.5.1; the concrete backend (logback-classic 1.5.12)
+     * per AAP &sect;0.5.1; the concrete backend (logback-classic 1.5.19)
      * is supplied at runtime by the composition root in {@code carddemo-app}.
      *
      * <p>Note: no PAN/PAN-like values are logged here. The {@code ACCT-ID}

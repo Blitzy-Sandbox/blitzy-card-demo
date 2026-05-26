@@ -430,8 +430,8 @@ public final class DefineTcatBalApp {
         // preserved ASCII fixture under app/ (AAP §0.2.2 immutable). Both
         // paths are normalised to absolute form so log lines and error
         // messages reference unambiguous locations regardless of the JVM cwd.
-        Path target = Path.of(getProp(PROP_TCATBALF_PATH, DEFAULT_TCATBALF_PATH)).toAbsolutePath();
-        Path source = Path.of(getProp(PROP_TCATBALF_SOURCE, DEFAULT_TCATBALF_SOURCE)).toAbsolutePath();
+        Path target = SafePathResolver.resolveTrusted(PROP_TCATBALF_PATH, DEFAULT_TCATBALF_PATH).toAbsolutePath();
+        Path source = SafePathResolver.resolveTrusted(PROP_TCATBALF_SOURCE, DEFAULT_TCATBALF_SOURCE).toAbsolutePath();
 
         Path parentDir = target.getParent() != null
                 ? target.getParent()

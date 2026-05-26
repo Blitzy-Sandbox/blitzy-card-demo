@@ -312,7 +312,7 @@ public final class ReadCustomerDumpApp {
         LOG.info("READCUST (CBCUS01C) job starting; runId={}, processingDate={}, tenant={}",
                 ctx.runId(), ctx.processingDate(), ctx.tenant());
 
-        Path custFilePath = Path.of(getProp(PROP_CUSTDATA_PATH, DEFAULT_CUSTDATA_PATH));
+        Path custFilePath = SafePathResolver.resolveTrusted(PROP_CUSTDATA_PATH, DEFAULT_CUSTDATA_PATH);
         LOG.info("CUSTFILE DD -> path={}", custFilePath);
 
         if (!Files.exists(custFilePath)) {

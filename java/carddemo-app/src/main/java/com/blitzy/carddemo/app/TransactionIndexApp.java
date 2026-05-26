@@ -390,7 +390,7 @@ public final class TransactionIndexApp {
         LOG.info("TRANIDX job starting; runId={}, cluster={}, aix={}",
                 ctx.runId(), CLUSTER_NAME, AIX_NAME);
 
-        Path target = Path.of(getProp(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH));
+        Path target = SafePathResolver.resolveTrusted(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH);
         if (!Files.exists(target)) {
             LOG.warn("TRANIDX: TRANSACT KSDS file not found at {}; returning CC=4",
                     target);

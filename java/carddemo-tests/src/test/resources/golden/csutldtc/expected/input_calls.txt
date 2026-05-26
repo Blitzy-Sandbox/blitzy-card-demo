@@ -1,0 +1,29 @@
+# CSUTLDTC GOLDEN-RECORD FIXTURE — input_calls.txt (PLACEHOLDER)
+#
+# AAP §0.6.11 scaffolding placeholder. DateValidatorGoldenTest
+# remains @Disabled until this file is replaced with the committed
+# COBOL capture content. See ../README.md for the authoritative
+# file format contract.
+#
+# Format: <LS-DATE:10> <LS-DATE-FORMAT:10>
+#   - Field 1: 10-character LS-DATE value (right-padded with spaces
+#     if shorter than 10 characters).
+#   - Field 2: 10-character LS-DATE-FORMAT value (right-padded with
+#     spaces if shorter than 10 characters).
+#   - Fields separated by ASCII space; field widths exactly match
+#     the COBOL LINKAGE SECTION layout at
+#     app/cbl/CSUTLDTC.cbl:L84-L85.
+#
+# Lines beginning with '#' are comments; blank lines are also
+# ignored. The COBOL driver and the Java driver MUST both implement
+# identical comment-stripping and blank-skipping semantics so that
+# the input cursor advances in lockstep across both runtimes.
+#
+# To activate this fixture, follow the capture procedure in
+# java/MIGRATION_NOTES.md §1.6 and replace this file with the
+# captured input_calls.txt. The accompanying call_results.txt and
+# stdout.txt must also be captured and committed in the same PR
+# that removes the @Disabled annotation from
+# DateValidatorGoldenTest.
+
+PLACEHOLDER

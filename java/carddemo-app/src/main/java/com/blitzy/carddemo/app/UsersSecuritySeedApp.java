@@ -385,7 +385,7 @@ public final class UsersSecuritySeedApp {
         // configured path; the PS staging file is a sibling in the same
         // directory (matches the COBOL dataset-naming convention where both
         // datasets share the same high-level qualifier prefix).
-        Path target = Path.of(getProp(PROP_USRSEC_PATH, DEFAULT_USRSEC_PATH)).toAbsolutePath();
+        Path target = SafePathResolver.resolveTrusted(PROP_USRSEC_PATH, DEFAULT_USRSEC_PATH).toAbsolutePath();
         Path parentDir = target.getParent() != null
                 ? target.getParent()
                 : Path.of(".").toAbsolutePath();

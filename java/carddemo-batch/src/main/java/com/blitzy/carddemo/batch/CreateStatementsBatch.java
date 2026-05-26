@@ -195,8 +195,8 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Both paths are constructor parameters supplied by the composition
  * root from {@code application.properties} keys
- * ({@code carddemo.file.statement.text.path} and
- * {@code carddemo.file.statement.html.path}). The driver itself does
+ * ({@code carddemo.file.stmt.text.path} and
+ * {@code carddemo.file.stmt.html.path}). The driver itself does
  * NOT perform any direct file I/O; it forwards the paths to
  * {@link CbStm03A} via the constructor-injected use case reference and
  * exposes them via the accessor methods purely for composition-root
@@ -362,7 +362,7 @@ public final class CreateStatementsBatch {
      * Filesystem location of the {@code STMTFILE} 80-character plain-text
      * statement output ({@code AWS.M2.CARDDEMO.STATEMNT.PS} on z/OS).
      * Set by the composition root from {@code application.properties}
-     * (key {@code carddemo.file.statement.text.path}); supplied via the
+     * (key {@code carddemo.file.stmt.text.path}); supplied via the
      * constructor so this driver is fully testable without environment
      * dependencies.
      *
@@ -388,7 +388,7 @@ public final class CreateStatementsBatch {
      * Filesystem location of the {@code HTMLFILE} 100-character HTML
      * statement output ({@code AWS.M2.CARDDEMO.STATEMNT.HTML} on z/OS).
      * Set by the composition root from {@code application.properties}
-     * (key {@code carddemo.file.statement.html.path}); supplied via the
+     * (key {@code carddemo.file.stmt.html.path}); supplied via the
      * constructor so this driver is fully testable without environment
      * dependencies.
      *

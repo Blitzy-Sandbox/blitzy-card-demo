@@ -647,13 +647,13 @@ public final class CreateStatementsApp {
                 + "STATEMNT.PS). See class Javadoc and java/MIGRATION_NOTES.md.");
 
         // ---- Path resolution (12-factor, env > sysprop > default) -------
-        Path transactPath = Path.of(getProp(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH));
-        Path cardxrefPath = Path.of(getProp(PROP_CARDXREF_PATH, DEFAULT_CARDXREF_PATH));
-        Path custdataPath = Path.of(getProp(PROP_CUSTDATA_PATH, DEFAULT_CUSTDATA_PATH));
-        Path acctdataPath = Path.of(getProp(PROP_ACCTDATA_PATH, DEFAULT_ACCTDATA_PATH));
-        Path stmtTextPath = Path.of(getProp(PROP_STMT_TEXT_PATH, DEFAULT_STMT_TEXT_PATH));
-        Path stmtHtmlPath = Path.of(getProp(PROP_STMT_HTML_PATH, DEFAULT_STMT_HTML_PATH));
-        Path workDir = Path.of(getProp(PROP_WORK_PATH, DEFAULT_WORK_PATH));
+        Path transactPath = SafePathResolver.resolveTrusted(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH);
+        Path cardxrefPath = SafePathResolver.resolveTrusted(PROP_CARDXREF_PATH, DEFAULT_CARDXREF_PATH);
+        Path custdataPath = SafePathResolver.resolveTrusted(PROP_CUSTDATA_PATH, DEFAULT_CUSTDATA_PATH);
+        Path acctdataPath = SafePathResolver.resolveTrusted(PROP_ACCTDATA_PATH, DEFAULT_ACCTDATA_PATH);
+        Path stmtTextPath = SafePathResolver.resolveTrusted(PROP_STMT_TEXT_PATH, DEFAULT_STMT_TEXT_PATH);
+        Path stmtHtmlPath = SafePathResolver.resolveTrusted(PROP_STMT_HTML_PATH, DEFAULT_STMT_HTML_PATH);
+        Path workDir = SafePathResolver.resolveTrusted(PROP_WORK_PATH, DEFAULT_WORK_PATH);
 
         Files.createDirectories(workDir);
         Path trxflSeq = workDir.resolve(WORK_TRXFL_SEQ_FILENAME);

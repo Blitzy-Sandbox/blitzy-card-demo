@@ -446,7 +446,7 @@ public final class ReportFileApp {
 
         // Resolve the GDG root with 12-factor precedence (env var first,
         // system property second, compiled-in default last).
-        Path gdgRoot = Path.of(getProp(PROP_GDG_ROOT, DEFAULT_GDG_ROOT));
+        Path gdgRoot = SafePathResolver.resolveTrusted(PROP_GDG_ROOT, DEFAULT_GDG_ROOT);
         Path baseDir = gdgRoot.resolve(GDG_BASE_NAME);
 
         if (Files.exists(baseDir)) {

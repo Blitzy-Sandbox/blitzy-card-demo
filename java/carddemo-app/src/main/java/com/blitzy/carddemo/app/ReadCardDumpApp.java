@@ -354,7 +354,7 @@ public final class ReadCardDumpApp {
         LOG.info("READCARD (CBACT02C) job starting; runId={}, processingDate={}, tenant={}",
                 ctx.runId(), ctx.processingDate(), ctx.tenant());
 
-        Path cardFilePath = Path.of(getProp(PROP_CARDDATA_PATH, DEFAULT_CARDDATA_PATH));
+        Path cardFilePath = SafePathResolver.resolveTrusted(PROP_CARDDATA_PATH, DEFAULT_CARDDATA_PATH);
         LOG.info("CARDFILE DD -> path={}", cardFilePath);
 
         if (!Files.exists(cardFilePath)) {

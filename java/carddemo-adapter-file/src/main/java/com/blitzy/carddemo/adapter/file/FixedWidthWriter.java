@@ -19,7 +19,7 @@ package com.blitzy.carddemo.adapter.file;
 
 // SLF4J facade (slf4j-api 2.0.16 per parent POM dependencyManagement) is used for
 // DEBUG-level operation logging and a single WARN line on atomic-move fallback.
-// The concrete logging backend (logback-classic 1.5.12) is supplied at runtime
+// The concrete logging backend (logback-classic 1.5.19) is supplied at runtime
 // by the composition root in carddemo-app, keeping this adapter free of binding
 // to a specific backend per AAP §0.6.12.
 import org.slf4j.Logger;

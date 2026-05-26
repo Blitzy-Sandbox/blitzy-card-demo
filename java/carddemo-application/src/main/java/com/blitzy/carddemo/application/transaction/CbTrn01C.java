@@ -440,6 +440,17 @@ public final class CbTrn01C {
      */
     public static final int FLAG_NOT_FOUND = 4;
 
+    /**
+     * Number of trailing PAN digits left visible by {@link #maskPan(String)}.
+     * Per AAP &sect;0.7.2 ("No card PAN logged in full; mask all but last 4
+     * digits in logs and error messages") this constant is fixed at
+     * <strong>4</strong> across every translated program; see
+     * {@code CbTrn03C.PAN_VISIBLE_TAIL} and {@code CoTrn02C.maskPan} for
+     * the parallel implementations used by the other transaction
+     * programs.
+     */
+    private static final int PAN_VISIBLE_TAIL = 4;
+
     // -----------------------------------------------------------------
     // Injected collaborators -- six repositories matching the six
     // SELECT clauses in the COBOL ENVIRONMENT DIVISION at
@@ -993,10 +1004,15 @@ public final class CbTrn01C {
                     // DISPLAY 'CARD NUMBER ' DALYTRAN-CARD-NUM
                     //         ' COULD NOT BE VERIFIED. SKIPPING'
                     //         ' TRANSACTION ID-' DALYTRAN-ID
+                    // Per AAP §0.7.2 the DALYTRAN-CARD-NUM is masked
+                    // before being written to the logger; the
+                    // COBOL output stream produced full digits, but the
+                    // Java log-surface convention masks all but the
+                    // trailing 4 digits to satisfy the PCI policy.
                     LOGGER.info(
                             "CARD NUMBER {} COULD NOT BE VERIFIED."
                                     + " SKIPPING TRANSACTION ID-{}",
-                            state.currentDaly.dalytranCardNum(),
+                            maskPan(state.currentDaly.dalytranCardNum()),
                             state.currentDaly.dalytranId());
                 }
             }
@@ -1466,8 +1482,16 @@ public final class CbTrn01C {
             state.currentXref = xref.get();
             // DISPLAY 'SUCCESSFUL READ OF XREF' (line 235)
             LOGGER.info("SUCCESSFUL READ OF XREF");
-            // DISPLAY 'CARD NUMBER: ' XREF-CARD-NUM (line 236)
-            LOGGER.info("CARD NUMBER: {}", state.currentXref.xrefCardNum());
+            // DISPLAY 'CARD NUMBER: ' XREF-CARD-NUM (line 236).
+            // The COBOL DISPLAY emits the literal 16-digit PAN; per AAP
+            // §0.7.2 PCI policy ("No card PAN logged in full; mask all
+            // but last 4 digits in logs and error messages") the Java
+            // translation masks the leading 12 digits via maskPan(...)
+            // before emission. The logger sink writes
+            // "**************1234"-style output; the underlying COBOL
+            // byte format of the PAN field is unchanged on disk —
+            // masking is a log-surface-only transform.
+            LOGGER.info("CARD NUMBER: {}", maskPan(state.currentXref.xrefCardNum()));
             // DISPLAY 'ACCOUNT ID : ' XREF-ACCT-ID (line 237)
             // NOTE: the original COBOL has a space before the colon
             // ("ACCOUNT ID :"). Preserved verbatim per AAP §0.7.1.
@@ -2081,6 +2105,45 @@ public final class CbTrn01C {
         // data.
         String asText = new String(buffer, StandardCharsets.ISO_8859_1);
         LOGGER.info("{}", asText);
+    }
+
+    /**
+     * Masks a card number for safe logging per AAP &sect;0.7.2 (PCI /
+     * PAN policy: <em>"No card PAN logged in full; mask all but last 4
+     * digits in logs and error messages"</em>). The leading
+     * {@code pan.length() - PAN_VISIBLE_TAIL} bytes are replaced with
+     * asterisks; the trailing {@link #PAN_VISIBLE_TAIL} (=4) bytes are
+     * preserved verbatim.
+     *
+     * <p>Implementation parity with the sibling translations:
+     * {@code CbTrn03C.maskPan}, {@code CoTrn01C.maskPan},
+     * {@code CoTrn02C.maskPan}, {@code CoCrdUpC.maskPan}. The mask
+     * length is computed from the input length so that 13-digit
+     * Amex-style and 16-digit Visa/MC-style PANs both yield the same
+     * trailing-4-visible convention.
+     *
+     * <p>{@code null} and PANs shorter than {@link #PAN_VISIBLE_TAIL}
+     * return four asterisks ("****") to avoid any leakage — a defensive
+     * choice that also keeps log layouts stable when an upstream
+     * adapter erroneously hands in a degenerate value.
+     *
+     * <p>Storage and on-disk file outputs are NOT affected by this
+     * helper; byte-for-byte file parity with the COBOL baseline is
+     * preserved because the masking only runs on the log-message
+     * surface (per AAP &sect;0.1.3 the storage vs logging surfaces are
+     * separate concerns).
+     *
+     * @param pan the raw card number (typically 16 ASCII digits), may
+     *            be {@code null}
+     * @return a masked PAN safe for inclusion in log streams; never
+     *         {@code null}
+     */
+    private static String maskPan(String pan) {
+        if (pan == null || pan.length() < PAN_VISIBLE_TAIL) {
+            return "*".repeat(PAN_VISIBLE_TAIL);
+        }
+        int leadCount = pan.length() - PAN_VISIBLE_TAIL;
+        return "*".repeat(leadCount) + pan.substring(leadCount);
     }
 }
 

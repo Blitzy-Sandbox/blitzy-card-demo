@@ -210,7 +210,7 @@ public final class FileDailyTransactionRepository implements DailyTransactionRep
      * diagnostics on {@link #appendReject} (one log line per appended
      * reject record, masking the PAN per AAP &sect;0.7.2) and
      * {@link #close} (a single line documenting the no-op semantics).
-     * The concrete logging backend (logback-classic 1.5.12) is provided
+     * The concrete logging backend (logback-classic 1.5.19) is provided
      * by the composition root in {@code carddemo-app}; this adapter
      * binds only to the SLF4J API per AAP &sect;0.6.12.
      */

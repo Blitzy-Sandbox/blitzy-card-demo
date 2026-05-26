@@ -196,7 +196,7 @@ public final class FileTransactionCategoryBalanceRepository
     /**
      * SLF4J logger; DEBUG-level on every successful save and delete.
      * Bound to slf4j-api 2.0.16 per AAP &sect;0.5.1; the concrete
-     * backend (logback-classic 1.5.12) is supplied at runtime by the
+     * backend (logback-classic 1.5.19) is supplied at runtime by the
      * composition root in {@code carddemo-app}, keeping this adapter
      * free of backend binding per AAP &sect;0.6.12.
      *

@@ -494,7 +494,7 @@ public final class ReadAccountDumpApp {
         // construction time of the adapter, but if it is missing we
         // prefer a structured diagnostic over a runtime IOException
         // from the first read.
-        Path acctFilePath = Path.of(getProp(PROP_ACCTDATA_PATH, DEFAULT_ACCTDATA_PATH));
+        Path acctFilePath = SafePathResolver.resolveTrusted(PROP_ACCTDATA_PATH, DEFAULT_ACCTDATA_PATH);
         LOG.info("READACCT (CBACT01C) ACCTFILE DD -> path={}", acctFilePath);
 
         if (!Files.exists(acctFilePath)) {

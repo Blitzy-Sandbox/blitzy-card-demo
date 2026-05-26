@@ -380,8 +380,8 @@ public final class CombineTransactionsApp {
         BatchRunContext ctx = BATCH_CTX.get();
         LOG.info("COMBTRAN job starting; runId={}", ctx.runId());
 
-        Path gdgRoot = Path.of(getProp(PROP_GDG_ROOT, DEFAULT_GDG_ROOT));
-        Path transactPath = Path.of(getProp(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH));
+        Path gdgRoot = SafePathResolver.resolveTrusted(PROP_GDG_ROOT, DEFAULT_GDG_ROOT);
+        Path transactPath = SafePathResolver.resolveTrusted(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH);
 
         Path bkupBaseDir = gdgRoot.resolve(GDG_BASE_BKUP);
         Path systranBaseDir = gdgRoot.resolve(GDG_BASE_SYSTRAN);

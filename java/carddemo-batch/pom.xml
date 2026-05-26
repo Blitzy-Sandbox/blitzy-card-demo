@@ -190,7 +190,7 @@
                                             consistent JUnit Platform version
                                             across the multi-module build
                                             (AAP §0.5.1)
-              * assertj-core             3.26.3 — fluent assertions for
+              * assertj-core 3.27.7 — fluent assertions for
                                             batch-run counter values,
                                             reject-record lists, and
                                             ScopedValue propagation outcomes

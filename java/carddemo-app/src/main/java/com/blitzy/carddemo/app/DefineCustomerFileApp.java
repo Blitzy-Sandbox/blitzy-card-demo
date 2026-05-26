@@ -627,8 +627,8 @@ public final class DefineCustomerFileApp {
         // preserved ASCII fixture under app/ (AAP §0.2.2 immutable). Both
         // paths are normalised to absolute form so log lines and error
         // messages reference unambiguous locations regardless of the JVM cwd.
-        Path target = Path.of(getProp(PROP_CUSTDATA_PATH, DEFAULT_CUSTDATA_PATH)).toAbsolutePath();
-        Path source = Path.of(getProp(PROP_CUSTDATA_SOURCE, DEFAULT_CUSTDATA_SOURCE)).toAbsolutePath();
+        Path target = SafePathResolver.resolveTrusted(PROP_CUSTDATA_PATH, DEFAULT_CUSTDATA_PATH).toAbsolutePath();
+        Path source = SafePathResolver.resolveTrusted(PROP_CUSTDATA_SOURCE, DEFAULT_CUSTDATA_SOURCE).toAbsolutePath();
 
         Path parentDir = target.getParent() != null
                 ? target.getParent()
@@ -768,9 +768,9 @@ public final class DefineCustomerFileApp {
      *                     fails
      */
     static int runDefcustSteps() throws IOException {
-        Path deletePath = Path.of(getProp(PROP_DEFCUST_DELETE_PATH, DEFAULT_DEFCUST_DELETE_PATH))
+        Path deletePath = SafePathResolver.resolveTrusted(PROP_DEFCUST_DELETE_PATH, DEFAULT_DEFCUST_DELETE_PATH)
                 .toAbsolutePath();
-        Path definePath = Path.of(getProp(PROP_DEFCUST_DEFINE_PATH, DEFAULT_DEFCUST_DEFINE_PATH))
+        Path definePath = SafePathResolver.resolveTrusted(PROP_DEFCUST_DEFINE_PATH, DEFAULT_DEFCUST_DEFINE_PATH)
                 .toAbsolutePath();
 
         Path defineParent = definePath.getParent() != null

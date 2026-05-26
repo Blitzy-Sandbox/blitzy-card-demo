@@ -399,7 +399,7 @@ public final class ReadCardXrefDumpApp {
         LOG.info("READXREF (CBACT03C) job starting; runId={}, processingDate={}, tenant={}",
                 ctx.runId(), ctx.processingDate(), ctx.tenant());
 
-        Path xrefFilePath = Path.of(getProp(PROP_CARDXREF_PATH, DEFAULT_CARDXREF_PATH));
+        Path xrefFilePath = SafePathResolver.resolveTrusted(PROP_CARDXREF_PATH, DEFAULT_CARDXREF_PATH);
         LOG.info("XREFFILE DD -> path={}", xrefFilePath);
 
         if (!Files.exists(xrefFilePath)) {

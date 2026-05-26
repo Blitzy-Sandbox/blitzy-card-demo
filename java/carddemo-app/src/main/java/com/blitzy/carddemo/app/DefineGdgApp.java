@@ -466,7 +466,7 @@ public final class DefineGdgApp {
         LOG.info("DEFGDGB job starting; runId={}, processingDate={}, tenant={}",
                 ctx.runId(), ctx.processingDate(), ctx.tenant());
 
-        Path gdgRoot = Path.of(getProp(PROP_GDG_ROOT, DEFAULT_GDG_ROOT));
+        Path gdgRoot = SafePathResolver.resolveTrusted(PROP_GDG_ROOT, DEFAULT_GDG_ROOT);
         LOG.info("DEFGDGB: GDG filesystem root resolved to {}", gdgRoot);
         // Ensure the root exists. createDirectories is idempotent and creates
         // intermediate directories as needed, mirroring IDCAMS' implicit

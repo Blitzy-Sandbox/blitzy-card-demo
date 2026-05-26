@@ -462,6 +462,19 @@ public final class CbAct04C {
     private static final int MONETARY_SCALE = 2;
 
     /**
+     * Intermediate scale for the {@code (TRAN-CAT-BAL * DIS-INT-RATE)} product
+     * used by {@link #computeMonthlyInterest(BigDecimal, BigDecimal)}. Two extra
+     * digits beyond {@link #MONETARY_SCALE} are retained so the subsequent
+     * division by {@link #MONTHLY_DIVISOR} does not lose significant digits
+     * before the final scale-2 truncation. This matches the COBOL implicit
+     * numeric promotion that occurs between the {@code MULTIPLY} and
+     * {@code DIVIDE} steps of the {@code COMPUTE WS-MONTHLY-INT =
+     * (TRAN-CAT-BAL * DIS-INT-RATE) / 1200} expression at
+     * {@code app/cbl/CBACT04C.cbl:L462-L468}.
+     */
+    private static final int INTEREST_INTERMEDIATE_SCALE = 4;
+
+    /**
      * The DateTimeFormatter for translating a {@link LocalDate}
      * argument into the 8-character TRAN-ID date prefix per COBOL
      * line 476 ({@code STRING PARM-DATE DELIMITED BY SIZE INTO TRAN-ID}).
@@ -1287,17 +1300,29 @@ public final class CbAct04C {
                                               BigDecimal disIntRate) {
         Objects.requireNonNull(tranCatBal, "tranCatBal");
         Objects.requireNonNull(disIntRate, "disIntRate");
-        // Intermediate product with DECIMAL128 precision so the V99 ×
-        // V99 multiplication does not lose significant digits before
-        // the divide. This mirrors the COBOL implicit numeric promotion
-        // before the COMPUTE divide step.
-        BigDecimal product = tranCatBal.multiply(disIntRate,
-                Decimals.DEFAULT_MATH_CONTEXT);
-        // Final divide with truncation per AAP §0.6.1 (no ROUNDED clause).
-        BigDecimal result = product.divide(MONTHLY_DIVISOR,
+        // Step 1 — multiply at scale 4 with DOWN truncation per AAP §0.6.1
+        // (no ROUNDED clause on the COBOL COMPUTE). Routing through
+        // Decimals.multiply(...) per AAP §0.3.3 central-facade discipline
+        // (MIGRATION_NOTES.md §1.12.15) so any future change to the
+        // monetary MathContext / RoundingMode defaults flows uniformly
+        // through the Decimals facade. Scale 4 retains two extra digits
+        // of intermediate precision so subsequent division by 1200
+        // does not lose significant digits before the final scale-2
+        // truncation.
+        BigDecimal product = Decimals.multiply(tranCatBal, disIntRate,
+                INTEREST_INTERMEDIATE_SCALE, RoundingMode.DOWN);
+        // Step 2 — divide by 1200 at scale 2 with DOWN truncation per
+        // AAP §0.6.1 (no ROUNDED clause). Routing through Decimals.divide
+        // per the same central-facade discipline. The DOWN rounding on
+        // the divide produces the byte-identical result that COBOL
+        // emits via implicit numeric promotion + integer-divide
+        // semantics over PIC S9(09)V99.
+        BigDecimal result = Decimals.divide(product, MONTHLY_DIVISOR,
                 MONETARY_SCALE, RoundingMode.DOWN);
         // Force exact scale 2 — a result of 1.20 must stay "1.20", not
-        // "1.2" (AAP §0.1.3 scale preservation requirement).
+        // "1.2" (AAP §0.1.3 scale preservation requirement). Decimals.divide
+        // already produces a scale-2 BigDecimal, but the explicit scaled()
+        // call guarantees the contract for any future refactor of divide.
         return Decimals.scaled(result, MONETARY_SCALE, RoundingMode.DOWN);
     }
 

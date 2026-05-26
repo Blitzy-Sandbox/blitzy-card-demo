@@ -184,11 +184,11 @@ public final class InterestCalculationApp {
         String parmDate = resolveParmDate();
         LOG.info("INTCALC: PARM='{}' (interest accrual date YYYYMMDDHH)", parmDate);
 
-        Path tcatBalfPath = Path.of(getProp(PROP_TCATBALF_PATH, DEFAULT_TCATBALF_PATH));
-        Path cardXrefPath = Path.of(getProp(PROP_CARDXREF_PATH, DEFAULT_CARDXREF_PATH));
-        Path discGrpPath = Path.of(getProp(PROP_DISCGRP_PATH, DEFAULT_DISCGRP_PATH));
-        Path acctDataPath = Path.of(getProp(PROP_ACCTDATA_PATH, DEFAULT_ACCTDATA_PATH));
-        Path transactPath = Path.of(getProp(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH));
+        Path tcatBalfPath = SafePathResolver.resolveTrusted(PROP_TCATBALF_PATH, DEFAULT_TCATBALF_PATH);
+        Path cardXrefPath = SafePathResolver.resolveTrusted(PROP_CARDXREF_PATH, DEFAULT_CARDXREF_PATH);
+        Path discGrpPath = SafePathResolver.resolveTrusted(PROP_DISCGRP_PATH, DEFAULT_DISCGRP_PATH);
+        Path acctDataPath = SafePathResolver.resolveTrusted(PROP_ACCTDATA_PATH, DEFAULT_ACCTDATA_PATH);
+        Path transactPath = SafePathResolver.resolveTrusted(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH);
 
         // Pre-flight: TCATBALF is the only mandatory input (CBACT04C iterates
         // over it). The other four are read/append datasets that the job

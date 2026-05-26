@@ -434,8 +434,8 @@ public final class DefineAccountFileApp {
         // preserved ASCII fixture under app/ (AAP §0.2.2 immutable). Both
         // paths are normalised to absolute form so log lines and error
         // messages reference unambiguous locations regardless of the JVM cwd.
-        Path target = Path.of(getProp(PROP_ACCTDATA_PATH, DEFAULT_ACCTDATA_PATH)).toAbsolutePath();
-        Path source = Path.of(getProp(PROP_ACCTDATA_SOURCE, DEFAULT_ACCTDATA_SOURCE)).toAbsolutePath();
+        Path target = SafePathResolver.resolveTrusted(PROP_ACCTDATA_PATH, DEFAULT_ACCTDATA_PATH).toAbsolutePath();
+        Path source = SafePathResolver.resolveTrusted(PROP_ACCTDATA_SOURCE, DEFAULT_ACCTDATA_SOURCE).toAbsolutePath();
 
         Path parentDir = target.getParent() != null
                 ? target.getParent()

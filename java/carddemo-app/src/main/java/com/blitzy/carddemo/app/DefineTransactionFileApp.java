@@ -634,8 +634,8 @@ public final class DefineTransactionFileApp {
         // Both paths are normalised to absolute form so log lines and
         // error messages reference unambiguous locations regardless of
         // the JVM cwd.
-        Path target = Path.of(getProp(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH)).toAbsolutePath();
-        Path source = Path.of(getProp(PROP_DALYTRAN_PATH, DEFAULT_DALYTRAN_PATH)).toAbsolutePath();
+        Path target = SafePathResolver.resolveTrusted(PROP_TRANSACT_PATH, DEFAULT_TRANSACT_PATH).toAbsolutePath();
+        Path source = SafePathResolver.resolveTrusted(PROP_DALYTRAN_PATH, DEFAULT_DALYTRAN_PATH).toAbsolutePath();
 
         Path parentDir = target.getParent() != null
                 ? target.getParent()
