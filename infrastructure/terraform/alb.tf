@@ -326,16 +326,28 @@ resource "aws_lb" "carddemo" {
 #     container_name = "...", container_port = var.app_port } block.
 #
 #   * health_check.path = "/actuator/health/readiness" — Spring Boot
-#     Actuator's readiness group (default group composition: readiness
-#     state + Kafka liveness via spring-kafka health indicator + DB
-#     readiness via Hikari DataSource health indicator). A 200 response
-#     means the task is ready to receive traffic; any other response
-#     drains the task from the rotation. Healthy / unhealthy thresholds
-#     and the timeout / interval are tuned so that a transient blip
-#     (e.g., a single failed DB query) does not de-register the task,
-#     but a sustained failure (3 consecutive failures over 90 seconds)
-#     does. This pairs with the ECS task health check on the same path
-#     (set in ecs.tf) for two-tier health enforcement.
+#     Actuator's readiness group. The group composition is explicitly
+#     declared in `application.yml` under
+#     `management.endpoint.health.group.readiness.include` and resolves
+#     to:
+#       - `readinessState`  Spring Boot's built-in readiness state
+#                           transitions (broker post-start to live).
+#       - `db`              the auto-configured DataSourceHealthIndicator
+#                           probing the configured HikariCP DataSource.
+#       - `redis`           the auto-configured RedisHealthIndicator
+#                           probing the Lettuce connection factory.
+#       - `kafka`           the custom KafkaHealthIndicator (introduced
+#                           by QA CP11 M-3 fix — Spring Boot 3.x does
+#                           NOT auto-configure a Kafka health indicator
+#                           on its own).
+#     A 200 response means the task is ready to receive traffic; any
+#     other response drains the task from the rotation. Healthy /
+#     unhealthy thresholds and the timeout / interval are tuned so that
+#     a transient blip (e.g., a single failed DB query) does not
+#     de-register the task, but a sustained failure (3 consecutive
+#     failures over 90 seconds) does. This pairs with the ECS task
+#     health check on the same path (set in ecs.tf) for two-tier health
+#     enforcement.
 #
 #   * stickiness — lb_cookie strategy with 1-hour cookie_duration.
 #     The ALB injects an AWSALB cookie on the first response of a new
@@ -381,10 +393,12 @@ resource "aws_lb_target_group" "carddemo" {
   #
   # path = "/actuator/health/readiness" reaches the Boot Actuator's
   # readiness group endpoint (configured by management.endpoint.health.
-  # probes.enabled=true in application.yml). The endpoint returns 200
-  # when the application is ready to receive traffic, and a non-200
-  # otherwise (database / Kafka / cache connectivity issues will
-  # surface here).
+  # probes.enabled=true in application.yml, with the group composition
+  # explicitly enumerated under management.endpoint.health.group.readiness
+  # .include = readinessState,db,redis,kafka). The endpoint returns 200
+  # only when every contributing component reports UP; a 503 surfaces
+  # when database, Redis, or Kafka connectivity is lost (the Kafka
+  # component is contributed by KafkaHealthIndicator — see QA CP11 M-3).
   #
   # Threshold tuning:
   #   * healthy_threshold = 2   — two consecutive 200s register the

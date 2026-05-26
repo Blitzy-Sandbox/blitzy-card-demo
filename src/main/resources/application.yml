@@ -398,6 +398,28 @@ management:
         # to ECS Fargate liveness/readiness probes and ALB target group
         # health checks (AAP §0.3.3 design pattern).
         enabled: true
+      # =====================================================================
+      # QA CP11 M-3 fix: explicit readiness-group composition.
+      #
+      # Spring Boot 3.x does NOT auto-configure a Kafka health indicator,
+      # so the default readiness group (`readinessState`) would NOT
+      # de-register an ECS task whose Kafka connection is broken. By
+      # explicitly enumerating the components below, the ALB target-group
+      # readiness probe at `/actuator/health/readiness` now reports DOWN
+      # when Kafka, the database, or Redis is unreachable, draining the
+      # task from the rotation per AAP §0.7.2 ("Health endpoints via
+      # Spring Actuator integrated with ECS health checks and ALB target
+      # group health checks").
+      #
+      # The `kafka` component is contributed by the custom
+      # `com.awsm2.carddemo.config.KafkaHealthIndicator` bean introduced
+      # alongside this configuration; the `db` and `redis` components are
+      # supplied by Spring Boot's auto-configured DataSourceHealthIndicator
+      # and RedisHealthIndicator respectively.
+      # =====================================================================
+      group:
+        readiness:
+          include: readinessState,db,redis,kafka
     info:
       enabled: true
   server:

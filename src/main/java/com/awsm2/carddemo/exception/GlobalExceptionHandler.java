@@ -23,6 +23,7 @@ import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
@@ -1506,21 +1507,49 @@ public class GlobalExceptionHandler {
     // =====================================================================
 
     /**
-     * Generates a fresh correlation identifier for distributed tracing.
-     * Emitted in every log record and surfaced back to the caller in the
-     * {@code correlationId} property of the response envelope, enabling
+     * Resolves the correlation identifier for the current request, preferring
+     * the value established by
+     * {@link com.awsm2.carddemo.security.CorrelationIdFilter} in the SLF4J
+     * {@link MDC} (under key {@code "correlationId"}) over a freshly generated
+     * UUID. Emitted in every log record and surfaced back to the caller in
+     * the {@code correlationId} property of the response envelope, enabling
      * operators to stitch together CloudWatch Logs entries, OpenSearch
      * documents, and CloudTrail events for a single request per AAP
      * &sect;0.6.6 (Cross-Cutting: Audit, Observability, and PCI-DSS).
      *
-     * <p>The implementation uses {@link UUID#randomUUID()} which produces a
-     * cryptographically random version-4 UUID; collisions are
-     * astronomically improbable.</p>
+     * <p><b>QA CP11 Finding M-1 fix:</b> the previous implementation always
+     * called {@link UUID#randomUUID()} unconditionally, which contradicted
+     * the documented contract in {@link ApiResponse#correlationId} ("X-
+     * Correlation-Id request header if present; otherwise generated server-
+     * side"). The fix consults the SLF4J MDC first; the
+     * {@code CorrelationIdFilter} (registered at
+     * {@link org.springframework.core.Ordered#HIGHEST_PRECEDENCE} + 10)
+     * populates the MDC entry for every request by either echoing a valid
+     * inbound {@code X-Correlation-Id} header or generating a UUID fallback.
+     * This handler therefore reads back the value that already appears in
+     * Logback structured logs, in the {@code X-Correlation-Id} response
+     * header, and on downstream Kafka record headers (via
+     * {@link com.awsm2.carddemo.adapter.MdcHeaderProducerInterceptor}).</p>
      *
-     * @return a fresh UUID string (e.g.,
-     *         {@code "b3a4f9e8-1c2d-4e5f-8a7b-9c0d1e2f3a4b"})
+     * <p>If the MDC entry is missing or blank &mdash; for example, in unit
+     * tests that exercise this handler outside the servlet stack &mdash; the
+     * method falls back to {@link UUID#randomUUID()} so that callers always
+     * receive a non-null identifier.</p>
+     *
+     * @return the resolved correlation identifier; never {@code null}, never
+     *         blank
      */
     private String generateCorrelationId() {
+        // Prefer the MDC value established by CorrelationIdFilter on the
+        // request thread (QA CP11 M-1 fix). MDC.get returns null if the key
+        // is absent — that occurs only when this handler is invoked outside
+        // the servlet stack (e.g., direct unit test invocation), in which
+        // case we fall back to a fresh UUID so callers always receive a
+        // non-null identifier.
+        String mdcValue = MDC.get("correlationId");
+        if (mdcValue != null && !mdcValue.isBlank()) {
+            return mdcValue;
+        }
         return UUID.randomUUID().toString();
     }
 

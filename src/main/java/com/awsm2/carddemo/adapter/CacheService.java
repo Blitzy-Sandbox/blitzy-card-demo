@@ -16,6 +16,8 @@
  */
 package com.awsm2.carddemo.adapter;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -169,6 +171,62 @@ public class CacheService {
     private static final String KEY_PREFIX = "carddemo:";
 
     /**
+     * Micrometer counter name for cache hits.
+     *
+     * <p>Per AAP &sect;0.7.2 "Spring Actuator health and metrics endpoints
+     * exported to CloudWatch via Micrometer" and AAP &sect;0.7.1
+     * "ElastiCache (Redis) used for account balance caching", the
+     * application MUST emit observable cache-hit/miss counters so that
+     * CloudWatch dashboards can graph cache effectiveness in real time.
+     * The counter is tagged with the cache {@code namespace} so the
+     * hit ratio can be sliced by cache scope ({@code account},
+     * {@code card}, {@code discgrp}, {@code tranType}, etc.) and used to
+     * tune per-scope TTLs.</p>
+     *
+     * <p><b>QA CP11 Finding M-2 fix:</b> the previous implementation
+     * relied on programmatic {@link RedisTemplate} access without
+     * registering Micrometer counters, leaving CloudWatch dashboards
+     * unable to graph the cache hit ratio. This counter, paired with
+     * {@link #METRIC_CACHE_MISSES} below, closes that observability gap
+     * without changing the cache-aside semantics.</p>
+     */
+    private static final String METRIC_CACHE_HITS = "carddemo.cache.hits";
+
+    /**
+     * Micrometer counter name for cache misses. See
+     * {@link #METRIC_CACHE_HITS} for the rationale.
+     *
+     * <p>A cache miss can arise from three distinct conditions, each of
+     * which increments this counter via the same tag set:</p>
+     * <ul>
+     *   <li><b>Cold miss</b> &mdash; the entry was never populated, or
+     *       was already evicted. This is the common case under normal
+     *       cache-aside operation.</li>
+     *   <li><b>Type mismatch</b> &mdash; the cached value's runtime
+     *       type does not match the caller's requested type. Treated as
+     *       a miss for consistency with the production
+     *       {@link CacheService#get(String, String, Class)} semantics
+     *       (production already treats type mismatch as a miss and
+     *       returns {@link Optional#empty()}).</li>
+     *   <li><b>Cache-error miss</b> &mdash; an underlying Redis
+     *       {@link RuntimeException} (driver fault, connection failure,
+     *       timeout) causes the cache-aside fail-open path to be
+     *       exercised, returning {@link Optional#empty()} so the caller
+     *       falls back to the database-of-record. Treated as a miss for
+     *       consistency. A separate WARN log is emitted in this case so
+     *       persistent Redis failures remain visible in CloudWatch Logs.</li>
+     * </ul>
+     */
+    private static final String METRIC_CACHE_MISSES = "carddemo.cache.misses";
+
+    /**
+     * Micrometer tag name used to slice cache hits/misses by cache
+     * namespace. Examples: {@code account}, {@code card},
+     * {@code discgrp}, {@code tranType}, {@code tranCatg}, {@code xref}.
+     */
+    private static final String METRIC_TAG_NAMESPACE = "namespace";
+
+    /**
      * The Spring Data Redis high-level template injected via constructor.
      * Provided by {@link com.awsm2.carddemo.config.RedisConfig#redisTemplate(org.springframework.data.redis.connection.RedisConnectionFactory)}
      * &mdash; Lettuce connection factory + Jackson JSON value serializer +
@@ -195,8 +253,28 @@ public class CacheService {
     private final long defaultTtlSeconds;
 
     /**
-     * Constructor injection — Spring sets the {@link RedisTemplate} once
-     * at startup; the bean is immutable thereafter.
+     * Micrometer {@link MeterRegistry} used to register hit/miss counters
+     * per cache namespace. Wired by Spring DI from the bean published by
+     * {@link com.awsm2.carddemo.config.CloudWatchConfig} (which uses the
+     * {@link io.micrometer.cloudwatch2.CloudWatchMeterRegistry} in
+     * {@code prod}/{@code dev} and the Boot-autoconfigured
+     * {@code SimpleMeterRegistry} in {@code local}/{@code test}).
+     *
+     * <p>Per the Micrometer best-practice, {@link Counter} handles are
+     * obtained on demand via {@link Counter#builder} and the registry
+     * caches them by name + tag set so subsequent calls return the same
+     * meter instance without allocating duplicates.</p>
+     *
+     * <p>QA CP11 Finding M-2 fix: enables emission of
+     * {@link #METRIC_CACHE_HITS} and {@link #METRIC_CACHE_MISSES} so
+     * CloudWatch dashboards can graph cache effectiveness.</p>
+     */
+    private final MeterRegistry meterRegistry;
+
+    /**
+     * Constructor injection — Spring sets the {@link RedisTemplate}, the
+     * default TTL, and the {@link MeterRegistry} once at startup; the
+     * bean is immutable thereafter.
      *
      * <p>This adapter is registered as {@code @Service} per AAP &sect;0.7.3
      * adapter-isolation rule (AWS service integrations live in {@code adapter/}
@@ -211,10 +289,15 @@ public class CacheService {
      * @param defaultTtlSeconds  default cache TTL (seconds); externalised
      *                           via {@code carddemo.cache.default-ttl-seconds};
      *                           default {@code 300}.
+     * @param meterRegistry      Micrometer registry for hit/miss counters
+     *                           (QA CP11 M-2 fix); wired by
+     *                           {@link com.awsm2.carddemo.config.CloudWatchConfig}
+     *                           and never {@code null}.
      */
     public CacheService(
             RedisTemplate<String, Object> redisTemplate,
-            @Value("${carddemo.cache.default-ttl-seconds:300}") long defaultTtlSeconds) {
+            @Value("${carddemo.cache.default-ttl-seconds:300}") long defaultTtlSeconds,
+            MeterRegistry meterRegistry) {
         // Constructor injection only (AAP §0.7.3 — adapter isolation rule).
         // Net-new capability — no source COBOL equivalent. ElastiCache Redis
         // introduces cache-aside per AAP §0.7.1.
@@ -222,6 +305,11 @@ public class CacheService {
         // Guard against misconfiguration: a non-positive default would yield
         // non-expiring entries and silent drift from the database-of-record.
         this.defaultTtlSeconds = (defaultTtlSeconds > 0L) ? defaultTtlSeconds : 300L;
+        // QA CP11 M-2 fix: MeterRegistry wired for cache hit/miss counter
+        // emission. Counter.builder().register(meterRegistry) is idempotent
+        // — the registry caches by name+tag — so call-site allocation is
+        // safe in the hot read path.
+        this.meterRegistry = meterRegistry;
     }
 
     // ---------------------------------------------------------------------
@@ -276,6 +364,10 @@ public class CacheService {
             Object cached = ops.get(redisKey);
             if (cached == null) {
                 LOG.trace("Cache miss key={}", redisKey);
+                // QA CP11 M-2 fix: emit carddemo.cache.misses tagged by
+                // namespace so CloudWatch dashboards can graph the cold-miss
+                // rate per cache scope (AAP §0.7.2 observability).
+                incrementMissCounter(namespace);
                 return Optional.empty();
             }
             if (!type.isInstance(cached)) {
@@ -284,15 +376,30 @@ public class CacheService {
                 // and surface a WARN for ops investigation.
                 LOG.warn("Cache hit with type mismatch key={} expected={} actual={}",
                         redisKey, type.getSimpleName(), cached.getClass().getSimpleName());
+                // QA CP11 M-2 fix: type-mismatch behaves as a miss for the
+                // caller; emit the miss counter so dashboards reflect the
+                // observed cache-effectiveness from the caller's
+                // perspective (AAP §0.7.2 observability).
+                incrementMissCounter(namespace);
                 return Optional.empty();
             }
             LOG.trace("Cache hit key={}", redisKey);
+            // QA CP11 M-2 fix: emit carddemo.cache.hits tagged by namespace
+            // so CloudWatch dashboards can graph the per-scope hit ratio.
+            incrementHitCounter(namespace);
             return Optional.of(type.cast(cached));
         } catch (RuntimeException e) {
             // AAP §0.7.1: cache failures degrade to database miss; never
             // propagate Redis exceptions to the business flow.
             LOG.warn("Cache get failed key={} cause={} — degrading to database miss",
                     redisKey, e.getMessage());
+            // QA CP11 M-2 fix: a cache-error degrade is observed as a miss
+            // by the caller (returns Optional.empty()) so it is counted as
+            // a miss for consistency with the caller-observed semantics.
+            // Persistent Redis failures remain visible via the WARN log
+            // emitted above and via the standard Spring Boot Redis health
+            // indicator.
+            incrementMissCounter(namespace);
             return Optional.empty();
         }
     }
@@ -449,6 +556,83 @@ public class CacheService {
     // ---------------------------------------------------------------------
     // Private helpers
     // ---------------------------------------------------------------------
+
+    /**
+     * Increment the {@value #METRIC_CACHE_HITS} Micrometer counter for the
+     * supplied cache namespace.
+     *
+     * <p>QA CP11 Finding M-2 fix. Emitted on every successful cache read in
+     * {@link #get(String, String, Class)} where the cached value matches the
+     * requested type. Tagged by {@code namespace} so CloudWatch dashboards
+     * can compute per-scope hit ratios (e.g., {@code account} vs.
+     * {@code discgrp}) and operations can tune per-scope TTLs.</p>
+     *
+     * <p>The counter is registered on demand &mdash; {@link Counter#builder}
+     * + {@link Counter.Builder#register(MeterRegistry)} returns the existing
+     * counter when one with the same name and tag set is already
+     * registered, so call-site allocation in the hot read path remains
+     * O(1) lookup after the first registration per namespace.</p>
+     *
+     * <p>The method swallows any unexpected {@link RuntimeException} from
+     * the metrics layer so a meter-registry fault never propagates to the
+     * caller (cache-aside fail-open per AAP &sect;0.7.1).</p>
+     *
+     * @param namespace the cache namespace tag value; never {@code null} or
+     *                  blank in normal operation (already validated by
+     *                  {@link #buildKey} earlier in the call chain)
+     */
+    private void incrementHitCounter(String namespace) {
+        try {
+            // Counter.builder().register(meterRegistry).increment() is the
+            // canonical idiom; the registry caches counters by name + tag
+            // so the lookup is O(1) after the first invocation per
+            // namespace. No need to cache the Counter reference in a field.
+            Counter.builder(METRIC_CACHE_HITS)
+                    .tag(METRIC_TAG_NAMESPACE, namespace)
+                    .description("Cache hits per namespace (QA CP11 M-2; AAP §0.7.2 observability)")
+                    .register(meterRegistry)
+                    .increment();
+        } catch (RuntimeException e) {
+            // Meter-registry faults must never propagate to the business
+            // flow. Logged at TRACE because metrics emission is best-effort
+            // and any persistent failure would already surface via
+            // /actuator/health.
+            LOG.trace("Cache hit metric emission failed namespace={} cause={}",
+                    namespace, e.getMessage());
+        }
+    }
+
+    /**
+     * Increment the {@value #METRIC_CACHE_MISSES} Micrometer counter for the
+     * supplied cache namespace.
+     *
+     * <p>QA CP11 Finding M-2 fix. Emitted from
+     * {@link #get(String, String, Class)} on three distinct miss conditions:
+     * a cold miss (no cached value), a type-mismatch miss (cached value's
+     * type does not match the caller's requested type), and a cache-error
+     * miss (Redis driver fault forcing fail-open). All three increment the
+     * same counter for consistency with the caller-observed semantics
+     * (each returns {@link Optional#empty()} to the caller).</p>
+     *
+     * <p>See {@link #incrementHitCounter(String)} for the rationale on
+     * call-site Counter.builder() allocation and exception swallowing.</p>
+     *
+     * @param namespace the cache namespace tag value; never {@code null} or
+     *                  blank in normal operation (already validated by
+     *                  {@link #buildKey} earlier in the call chain)
+     */
+    private void incrementMissCounter(String namespace) {
+        try {
+            Counter.builder(METRIC_CACHE_MISSES)
+                    .tag(METRIC_TAG_NAMESPACE, namespace)
+                    .description("Cache misses per namespace (QA CP11 M-2; AAP §0.7.2 observability)")
+                    .register(meterRegistry)
+                    .increment();
+        } catch (RuntimeException e) {
+            LOG.trace("Cache miss metric emission failed namespace={} cause={}",
+                    namespace, e.getMessage());
+        }
+    }
 
     /**
      * Construct a namespaced Redis key.

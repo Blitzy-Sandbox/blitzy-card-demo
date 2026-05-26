@@ -16,6 +16,8 @@
  */
 package com.awsm2.carddemo.adapter;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
@@ -53,6 +55,7 @@ class CacheServiceIntegrationTest {
 
     private static LettuceConnectionFactory connectionFactory;
     private static CacheService cacheService;
+    private static MeterRegistry meterRegistry;
 
     @BeforeAll
     static void setUp() {
@@ -74,7 +77,12 @@ class CacheServiceIntegrationTest {
         redisTemplate.setHashValueSerializer(jsonSerializer);
         redisTemplate.afterPropertiesSet();
 
-        cacheService = new CacheService(redisTemplate, 2);
+        // QA CP11 M-2 fix: CacheService now emits carddemo.cache.hits and
+        // carddemo.cache.misses Counter metrics via MeterRegistry.
+        // SimpleMeterRegistry is an in-memory registry suitable for tests.
+        meterRegistry = new SimpleMeterRegistry();
+
+        cacheService = new CacheService(redisTemplate, 2, meterRegistry);
     }
 
     @AfterAll

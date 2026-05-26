@@ -16,6 +16,8 @@
  */
 package com.awsm2.carddemo.adapter;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -189,11 +191,21 @@ class CacheServiceTest {
 
     /**
      * The production {@link CacheService} under test. Instantiated in
-     * {@link #setUp()} with the {@code @Mock redisTemplate} and a
+     * {@link #setUp()} with the {@code @Mock redisTemplate}, a
      * fixed-300-second default TTL matching the production
-     * {@code @Value("${carddemo.cache.default-ttl-seconds:300}")} default.
+     * {@code @Value("${carddemo.cache.default-ttl-seconds:300}")} default,
+     * and a {@link SimpleMeterRegistry} so cache hit/miss counter
+     * emission (QA CP11 M-2 fix) can be observed by tests without
+     * requiring the full Micrometer / CloudWatch stack.
      */
     private CacheService cacheService;
+
+    /**
+     * In-memory {@link MeterRegistry} used to verify the QA CP11 M-2
+     * Micrometer counter emission. Instantiated fresh per test in
+     * {@link #setUp()} so counter snapshots are isolated between methods.
+     */
+    private MeterRegistry meterRegistry;
 
     // -------------------------------------------------------------------------
     // Test fixtures
@@ -287,8 +299,17 @@ class CacheServiceTest {
      */
     @BeforeEach
     void setUp() {
+        // Fresh in-memory registry per test so cache hit/miss counter
+        // assertions are isolated. SimpleMeterRegistry implements the same
+        // MeterRegistry contract the production CloudWatchMeterRegistry
+        // uses, so the test exercises the real Micrometer code path
+        // without requiring AWS connectivity.
+        meterRegistry = new SimpleMeterRegistry();
+
         // Construct the SUT with the production-default TTL.
-        cacheService = new CacheService(redisTemplate, DEFAULT_TTL_SECONDS);
+        // QA CP11 M-2 fix: CacheService now takes a MeterRegistry to
+        // emit carddemo.cache.hits and carddemo.cache.misses counters.
+        cacheService = new CacheService(redisTemplate, DEFAULT_TTL_SECONDS, meterRegistry);
 
         // Defensive: also document the defaultTtlSeconds field via
         // ReflectionTestUtils. The constructor has already set it, but
@@ -1231,5 +1252,176 @@ class CacheServiceTest {
         // evictAll(String)
         assertNotNull(CacheService.class.getMethod("evictAll", String.class),
                 "CacheService must expose evictAll(String)");
+    }
+
+    // =========================================================================
+    // Phase 13 — QA CP11 M-2 fix: Micrometer cache.hits / cache.misses metrics
+    //
+    // These tests verify that the cache adapter emits the
+    // carddemo.cache.hits and carddemo.cache.misses Micrometer counters,
+    // tagged by `namespace`, so that CloudWatch dashboards can compute
+    // per-scope hit ratios. They use the in-memory SimpleMeterRegistry
+    // wired in setUp() and assert the counter sample value after each
+    // get() invocation.
+    //
+    // Counter semantics (matches CacheService.get):
+    //   * hit                            → cache.hits  + 1
+    //   * cold miss (null cached)        → cache.misses + 1
+    //   * type mismatch (wrong type)     → cache.misses + 1 (caller-observed miss)
+    //   * RuntimeException from Redis    → cache.misses + 1 (cache-aside fail-open)
+    // =========================================================================
+
+    /**
+     * Test 13.1: A successful cache hit increments
+     * {@code carddemo.cache.hits} tagged by namespace.
+     */
+    @Test
+    @DisplayName("get hit increments carddemo.cache.hits counter tagged by namespace")
+    void getHit_incrementsHitCounter() {
+        // Given: a cached value exists and matches the requested type.
+        when(valueOperations.get(FULL_KEY_ACCOUNT_12345)).thenReturn(ACCOUNT_BALANCE);
+
+        // When: get is invoked twice for the same account namespace.
+        cacheService.get(NS_ACCOUNT, KEY_ACCT, BigDecimal.class);
+        cacheService.get(NS_ACCOUNT, KEY_ACCT, BigDecimal.class);
+
+        // Then: the hits counter for namespace=account is 2.
+        double hits = meterRegistry.counter("carddemo.cache.hits", "namespace", NS_ACCOUNT).count();
+        assertEquals(2.0, hits, "Two cache hits must emit two increments of carddemo.cache.hits");
+        // And: no misses for the same namespace.
+        double misses = meterRegistry.counter("carddemo.cache.misses", "namespace", NS_ACCOUNT).count();
+        assertEquals(0.0, misses, "Two hits must emit zero misses");
+    }
+
+    /**
+     * Test 13.2: A cold cache miss (no value cached) increments
+     * {@code carddemo.cache.misses} tagged by namespace.
+     */
+    @Test
+    @DisplayName("get cold miss increments carddemo.cache.misses counter tagged by namespace")
+    void getColdMiss_incrementsMissCounter() {
+        // Given: no value cached.
+        when(valueOperations.get(FULL_KEY_ACCOUNT_12345)).thenReturn(null);
+
+        // When: get is invoked.
+        Optional<BigDecimal> result = cacheService.get(NS_ACCOUNT, KEY_ACCT, BigDecimal.class);
+
+        // Then: caller observes a miss.
+        assertTrue(result.isEmpty(), "Cold miss yields Optional.empty");
+        // And: the misses counter for namespace=account is 1.
+        double misses = meterRegistry.counter("carddemo.cache.misses", "namespace", NS_ACCOUNT).count();
+        assertEquals(1.0, misses, "One cold miss must emit one increment of carddemo.cache.misses");
+        // And: no hits.
+        double hits = meterRegistry.counter("carddemo.cache.hits", "namespace", NS_ACCOUNT).count();
+        assertEquals(0.0, hits, "Cold miss must not emit a hit");
+    }
+
+    /**
+     * Test 13.3: A type-mismatch read (cached value's type does not match
+     * the caller's requested type) increments {@code carddemo.cache.misses}
+     * because the caller observes the same Optional.empty as a cold miss.
+     */
+    @Test
+    @DisplayName("get type-mismatch increments carddemo.cache.misses counter (caller-observed miss)")
+    void getTypeMismatch_incrementsMissCounter() {
+        // Given: a String is cached where a BigDecimal is expected.
+        when(valueOperations.get(FULL_KEY_ACCOUNT_12345)).thenReturn("not-a-bigdecimal");
+
+        // When: get is invoked with BigDecimal.class as the type token.
+        Optional<BigDecimal> result = cacheService.get(NS_ACCOUNT, KEY_ACCT, BigDecimal.class);
+
+        // Then: caller observes a miss (Optional.empty, not a hit).
+        assertTrue(result.isEmpty(), "Type mismatch yields Optional.empty");
+        // And: the miss counter is incremented to reflect caller-observed semantics.
+        double misses = meterRegistry.counter("carddemo.cache.misses", "namespace", NS_ACCOUNT).count();
+        assertEquals(1.0, misses, "Type mismatch must increment carddemo.cache.misses for consistency with caller-observed miss");
+        // And: no hit recorded (the underlying value is not returned to the caller).
+        double hits = meterRegistry.counter("carddemo.cache.hits", "namespace", NS_ACCOUNT).count();
+        assertEquals(0.0, hits, "Type mismatch must not emit a hit");
+    }
+
+    /**
+     * Test 13.4: When the Redis client throws {@link RuntimeException},
+     * the adapter degrades to a miss per the cache-aside contract, AND the
+     * miss counter is incremented for caller-observed consistency.
+     */
+    @Test
+    @DisplayName("get redis-exception increments carddemo.cache.misses counter (cache-aside fail-open)")
+    void getRuntimeException_incrementsMissCounter() {
+        // Given: the Redis client throws on the get call.
+        when(valueOperations.get(FULL_KEY_ACCOUNT_12345))
+                .thenThrow(new RuntimeException("simulated Redis connection failure"));
+
+        // When: get is invoked.
+        Optional<BigDecimal> result = cacheService.get(NS_ACCOUNT, KEY_ACCT, BigDecimal.class);
+
+        // Then: caller observes a miss (cache-aside contract).
+        assertTrue(result.isEmpty(), "Redis exception yields Optional.empty per cache-aside contract");
+        // And: the miss counter is incremented.
+        double misses = meterRegistry.counter("carddemo.cache.misses", "namespace", NS_ACCOUNT).count();
+        assertEquals(1.0, misses, "Redis exception must increment carddemo.cache.misses for consistency with caller-observed miss");
+        // And: no hit recorded.
+        double hits = meterRegistry.counter("carddemo.cache.hits", "namespace", NS_ACCOUNT).count();
+        assertEquals(0.0, hits, "Redis exception must not emit a hit");
+    }
+
+    /**
+     * Test 13.5: Counters are independently tagged per namespace so a
+     * mixed workload of hits across multiple cache scopes produces
+     * accurate per-scope counts.
+     */
+    @Test
+    @DisplayName("hit/miss counters are independently tagged per namespace")
+    void counters_areIndependentlyTaggedPerNamespace() {
+        // GIVEN: the account namespace returns a hit, discgrp returns a miss.
+        when(valueOperations.get("carddemo:account:12345")).thenReturn(ACCOUNT_BALANCE);
+        when(valueOperations.get("carddemo:discgrp:GROUP01")).thenReturn(null);
+
+        // WHEN: each namespace is exercised once.
+        cacheService.get(NS_ACCOUNT, KEY_ACCT, BigDecimal.class);
+        cacheService.get(NS_DISCGRP, "GROUP01", BigDecimal.class);
+
+        // THEN: account namespace recorded one hit.
+        assertEquals(1.0,
+                meterRegistry.counter("carddemo.cache.hits", "namespace", NS_ACCOUNT).count(),
+                "account namespace records one hit");
+        assertEquals(0.0,
+                meterRegistry.counter("carddemo.cache.misses", "namespace", NS_ACCOUNT).count(),
+                "account namespace records zero misses");
+        // AND: discgrp namespace recorded one miss.
+        assertEquals(1.0,
+                meterRegistry.counter("carddemo.cache.misses", "namespace", NS_DISCGRP).count(),
+                "discgrp namespace records one miss");
+        assertEquals(0.0,
+                meterRegistry.counter("carddemo.cache.hits", "namespace", NS_DISCGRP).count(),
+                "discgrp namespace records zero hits");
+    }
+
+    /**
+     * Test 13.6: The counters are described via Counter.Builder.description,
+     * surfacing the AAP §0.7.2 + QA CP11 M-2 traceability for ops dashboards.
+     */
+    @Test
+    @DisplayName("cache.hits and cache.misses counters carry a non-blank description")
+    void counterDescriptions_areTraceable() {
+        // Trigger one hit and one miss to materialise both counters.
+        when(valueOperations.get("carddemo:account:12345")).thenReturn(ACCOUNT_BALANCE);
+        when(valueOperations.get("carddemo:account:00099")).thenReturn(null);
+        cacheService.get(NS_ACCOUNT, KEY_ACCT, BigDecimal.class);
+        cacheService.get(NS_ACCOUNT, "00099", BigDecimal.class);
+
+        io.micrometer.core.instrument.Counter hits =
+                meterRegistry.counter("carddemo.cache.hits", "namespace", NS_ACCOUNT);
+        io.micrometer.core.instrument.Counter misses =
+                meterRegistry.counter("carddemo.cache.misses", "namespace", NS_ACCOUNT);
+
+        // The Counter.builder().description(...) is preserved as
+        // meter.getId().getDescription() in the registered meter.
+        String hitDescription = hits.getId().getDescription();
+        String missDescription = misses.getId().getDescription();
+        assertNotNull(hitDescription, "carddemo.cache.hits must carry a description");
+        assertNotNull(missDescription, "carddemo.cache.misses must carry a description");
+        assertFalse(hitDescription.isBlank(), "carddemo.cache.hits description must not be blank");
+        assertFalse(missDescription.isBlank(), "carddemo.cache.misses description must not be blank");
     }
 }
