@@ -785,31 +785,76 @@ Transaction ID is "` (with the two spaces intact) and concatenates the
 generated transaction id and " Press Enter to Continue" suffix. The
 golden-record harness will detect any silent space normalisation.
 
-### 1.4.11 `CoUsr02C` "atleast" typo preservation
+### 1.4.11 `CoUsr02C.MSG_NO_MODIFICATION` &mdash; fabricated-string deviation corrected
 
-**Status**: IMPLEMENTED — the COBOL user-update validation message
-contains a verbatim "atleast" (no space) typo that is preserved.
+**Status**: DEVIATION REMOVED &mdash; a prior translation of
+`COUSR02C` introduced 17 fabricated characters in the
+`MSG_NO_MODIFICATION` constant that did not exist in COBOL source.
+The deviation was discovered by a QA pass and corrected to match the
+COBOL literal byte-for-byte per AAP §0.7.1 (Minimal Change Clause)
+and AAP §0.1.3 (byte-for-byte file fidelity).
 
-**COBOL source**: `app/cbl/COUSR02C.cbl`, paragraph
-`1200-EDIT-MAP-INPUTS`. The COBOL source has the literal:
+**COBOL source (ground truth)**: `app/cbl/COUSR02C.cbl:L240`,
+paragraph `PROCESS-ENTER-KEY` (within `1000-PROCESS-INPUTS`). The
+COBOL source contains the literal:
 
 ```cobol
-MOVE 'User ID can NOT be empty and must be atleast 4 characters...'
-     TO WS-MESSAGE
+               IF USR-MODIFIED-YES
+                   PERFORM UPDATE-USER-SEC-FILE
+               ELSE
+                   MOVE 'Please modify to update ...' TO
+                                   WS-MESSAGE
+                   MOVE DFHRED       TO ERRMSGC  OF COUSR2AO
+                   PERFORM SEND-USRUPD-SCREEN
+               END-IF
 ```
 
-Note the COBOL writes "atleast" (one word) instead of "at least" (two
-words). The standard English spelling is "at least"; the COBOL source
-contains a typo.
+The literal `'Please modify to update ...'` is exactly 27 characters
+with a SINGLE space between "update" and the trailing `"..."`
+ellipsis. The string "atleast" appears ZERO times in the entire
+`app/` tree (verifiable via `grep -rn "atleast" app/`).
 
-**Java translation**:
-`com.blitzy.carddemo.application.user.CoUsr02C` declares the constant
-`MSG_USERID_LENGTH = "User ID can NOT be empty and must be atleast 4
-characters..."` (with "atleast" preserved verbatim). The Javadoc
-documents the intended spelling.
+**Prior incorrect translation** (now removed):
+```java
+private static final String MSG_NO_MODIFICATION =
+    "Please modify atleast one field to update...";   // 44 chars — FABRICATED
+```
 
-**Rationale**: see §1.4.6 — same AAP §0.7.1 preserve-as-is mandate
-applies.
+**Corrected translation** (committed to fix the QA finding):
+```java
+private static final String MSG_NO_MODIFICATION =
+    "Please modify to update ...";                    // 27 chars — verbatim COBOL L240
+```
+
+The class-level Javadoc bullet (line 113-114) and the constant's own
+Javadoc (line 230-236) were updated to match.
+
+**Earlier inaccurate documentation removed from this section**: the
+previous text of §1.4.11 cited a non-existent COBOL line
+(`MOVE 'User ID can NOT be empty and must be atleast 4 characters...'`)
+attributed to a non-existent paragraph (`1200-EDIT-MAP-INPUTS` does
+not exist in `COUSR02C.cbl`; only `COACTUPC.cbl` contains a paragraph
+by that name) and a non-existent Java constant (`MSG_USERID_LENGTH`
+is not declared anywhere in `java/`). That documentation was
+internally inconsistent and is replaced by the current accurate entry
+per AAP §0.8.1 (Citation Discipline).
+
+**Test-infrastructure consistency**: the golden-record harness was
+already correctly written against the COBOL ground truth:
+`java/carddemo-tests/src/test/java/com/blitzy/carddemo/tests/golden/CoUsr02CGoldenTest.java:L641`
+and the activation-checklist text within the test base class both
+cite the verbatim `'Please modify to update ...'`. The expected and
+input fixture READMEs under
+`java/carddemo-tests/src/test/resources/golden/cousr02c/` reference
+the verbatim COBOL message at every relevant site. No fixture data,
+test code, or BMS-output expected file required modification &mdash;
+only the production constant in `CoUsr02C.java` diverged.
+
+**Rationale**: AAP §0.7.1 mandates idiom-for-idiom translation with
+preserved behaviour; fabricating additional text in a user-facing
+message exceeds the migration scope and would cause a guaranteed
+`CoUsr02CGoldenTest` byte-for-byte failure once COBOL baseline
+captures are applied per AAP §0.6.11.
 
 ### 1.4.12 `CbTrn03C` duplicate paragraph names anomaly
 

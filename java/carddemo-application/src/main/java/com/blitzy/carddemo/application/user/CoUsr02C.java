@@ -110,8 +110,8 @@ import org.slf4j.LoggerFactory;
  *   <li>"User Type must be 'A' (Admin) or 'U' (User)"</li>
  *   <li>"User ID NOT found..."</li>
  *   <li>"Unable to lookup User..."</li>
- *   <li>"Please modify atleast one field to update..." (note: "atleast"
- *       not "at least" &mdash; preserved verbatim)</li>
+ *   <li>"Please modify to update ..." (note: SINGLE space before the
+ *       trailing ellipsis &mdash; preserved verbatim from COBOL L240)</li>
  *   <li>"Unable to Update User..."</li>
  *   <li>"Invalid key pressed. Press valid key."</li>
  *   <li>Success: "User &lt;id&gt; has been updated..." (in DFHGREEN)</li>
@@ -227,8 +227,14 @@ public final class CoUsr02C {
     /** "Unable to lookup User..." */
     private static final String MSG_LOOKUP_ERROR = "Unable to lookup User...";
 
-    /** "Please modify atleast one field to update..." (verbatim &mdash; "atleast" not "at least"). */
-    private static final String MSG_NO_MODIFICATION = "Please modify atleast one field to update...";
+    /**
+     * "Please modify to update ..." (verbatim from COBOL
+     * {@code app/cbl/COUSR02C.cbl:L240}, paragraph
+     * {@code PROCESS-ENTER-KEY}). Note the SINGLE space before the
+     * trailing {@code "..."} ellipsis &mdash; preserved byte-for-byte
+     * per AAP &sect;0.1.3.
+     */
+    private static final String MSG_NO_MODIFICATION = "Please modify to update ...";
 
     /** "Unable to Update User..." */
     private static final String MSG_UPDATE_ERROR = "Unable to Update User...";
