@@ -1,0 +1,27 @@
+# =============================================================================
+# CardDemo Java (Maven / Spring Boot) — VCS ignore rules
+# Purpose: keep build output, IDE metadata, and local-only artifacts out of git.
+# Setup/configuration file added by the environment-setup step (no source impact).
+# =============================================================================
+
+# --- Maven build output ---
+target/
+
+# --- Spring Boot / runtime local artifacts ---
+*.log
+logs/
+
+# --- IDE / editor metadata ---
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+
+# --- OS cruft ---
+.DS_Store
+Thumbs.db
