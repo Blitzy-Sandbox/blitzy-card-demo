@@ -280,18 +280,25 @@ CREATE TABLE transaction (
 
 
 -- -------------------------------------------------------------------------------------
--- daily_transaction  (batch staging)
+-- daily_transactions  (batch staging)
 --   Source      : AWS.M2.CARDDEMO.DALYTRAN.PS  (sequential PS staging file, RECLN 350)
 --   Copybook    : CVTRA06Y (DALYTRAN-RECORD) -- byte-for-byte parallel of CVTRA05Y.
 --   Staging table for unposted daily input (POSTTRAN.jcl -> CBTRN02C). Held FK-light on
 --   purpose: it carries raw, possibly-not-yet-valid input (e.g. a card or account that has
 --   not been posted yet), so strict FK constraints would reject legitimate staging rows.
---   The PS file has no VSAM key; daily_transaction_id (DALYTRAN-ID X(16)) is the natural
---   record identifier and is used as the PRIMARY KEY. amount: PIC S9(09)V99 -> NUMERIC(11,2)
+--   The PS file has no VSAM key; transaction_id (DALYTRAN-ID X(16)) is the natural record
+--   identifier and is used as the PRIMARY KEY. amount: PIC S9(09)V99 -> NUMERIC(11,2)
 --   (D-001). FILLER X(20) omitted.
+--   Entity-authoritative naming: the table name (daily_transactions) and primary-key column
+--   (transaction_id) mirror the @Table / @Id @Column mapping of
+--   com.cardemo.model.entity.DailyTransaction, which is the authoritative source for this
+--   table's DDL per its agent contract. The mapping deliberately parallels the transaction
+--   table (DailyTransaction is a 350-byte clone of Transaction): the staging row is read by
+--   DailyTransactionPostingJob, validated (CBTRN02C cascade) and posted into transactions.
+--   The V3 seed loads this table from app/data/ASCII/dailytran.txt (the golden parity fixture).
 -- -------------------------------------------------------------------------------------
-CREATE TABLE daily_transaction (
-    daily_transaction_id VARCHAR(16) NOT NULL,            -- DALYTRAN-ID            PIC X(16)
+CREATE TABLE daily_transactions (
+    transaction_id       VARCHAR(16) NOT NULL,            -- DALYTRAN-ID            PIC X(16)
     type_code            VARCHAR(2),                       -- DALYTRAN-TYPE-CD       PIC X(02)
     category_code        INTEGER,                          -- DALYTRAN-CAT-CD        PIC 9(04)
     source               VARCHAR(10),                       -- DALYTRAN-SOURCE        PIC X(10)
@@ -304,6 +311,6 @@ CREATE TABLE daily_transaction (
     card_number          VARCHAR(16),                       -- DALYTRAN-CARD-NUM      PIC X(16)
     original_timestamp   TIMESTAMP,                         -- DALYTRAN-ORIG-TS       PIC X(26)
     processed_timestamp  TIMESTAMP,                         -- DALYTRAN-PROC-TS       PIC X(26)
-    CONSTRAINT pk_daily_transaction PRIMARY KEY (daily_transaction_id)
+    CONSTRAINT pk_daily_transactions PRIMARY KEY (transaction_id)
 );
 
