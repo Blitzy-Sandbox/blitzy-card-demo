@@ -1,0 +1,463 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+   CardDemo — Greenfield Java 25 LTS + Spring Boot 3.x Migration
+   Root Maven Build Manifest (single source of truth for the dependency closure)
+  ============================================================================
+
+   PROVENANCE & TRACEABILITY
+   This is a brand-new, greenfield build manifest. It has NO source equivalent in
+   the legacy estate. The migrated Java application is a standalone project; the
+   original AWS CardDemo COBOL/CICS/VSAM/JCL/BMS sources are NOT copied into this
+   repository. Traceability to the frozen legacy baseline is by original COBOL
+   repository commit SHA: 27d6c6f (see AAP §0.7.2 — Preservation Requirements).
+
+   The legacy build/install cadence — the DFHCSDUP resource-install job
+   (app/jcl/CBADMCDJ.jcl) plus the BUILDBAT/BUILDBMS/BUILDONL procedures under
+   samples/jcl — is wholly REPLACED by this Maven build and the Spring Boot
+   plugin. CICS CSD GROUP(CARDDEMO) resource registration (mapsets, programs,
+   TRANSIDs) has no Maven analogue: it is realized at runtime by Spring component
+   scanning and the @RequestMapping route table.
+
+   MINIMAL CHANGE CLAUSE (AAP §0.7.1)
+   The dependency surface is intentionally limited to EXACTLY the inventory the
+   authoritative blueprint enumerates (docs/technical-specifications.md L728–L766).
+   No convenience libraries (e.g. Lombok) or code-generation tooling are added.
+   Each technology-substitution point (VSAM→JPA, CICS TDQ→SQS, GDG→S3,
+   3270/BMS→REST, plaintext USRSEC→BCrypt, CEEDAYS→java.time) is documented at the
+   point of declaration below.
+
+   BLUEPRINT INCONSISTENCIES RESOLVED HERE
+   1. Base package / groupId = com.cardemo (authoritative structure diagram,
+      tech-spec L334 & L476). The import-table variant "com.carddemo" is rejected
+      so a single base package is applied uniformly across the target.
+   2. JaCoCo plugin version = 0.8.14 (NOT 0.8.12). Java 25 emits class-file major
+      version 69; JaCoCo gained OFFICIAL Java 25 support in 0.8.14 (0.8.13 was
+      experimental only). Versions < 0.8.13 fail instrumentation with
+      "Unsupported class file major version 69". The blueprint dependency table
+      (L766) cited 0.8.12 as a baseline; per its own fallback rule we pin 0.8.14
+      so `mvn clean verify` can run JaCoCo under Java 25 without error.
+  ============================================================================
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      Spring Boot managed parent. Supplies the dependency BOM (consistent,
+      curated versions for all Spring Boot starters and the wider ecosystem) and
+      sensible plugin defaults. Empty <relativePath/> forces resolution from the
+      repository rather than a parent directory on disk.
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.11</version>
+        <relativePath/>
+    </parent>
+
+    <!-- Project coordinates. Base package == groupId == com.cardemo (see header). -->
+    <groupId>com.cardemo</groupId>
+    <artifactId>carddemo-java</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>CardDemo Java</name>
+    <description>
+        Greenfield Java 25 LTS + Spring Boot 3.x migration of the AWS CardDemo
+        COBOL/CICS/VSAM/JCL/BMS mainframe application. Exposes the legacy online
+        transactions as stateless REST endpoints and the legacy JCL batch suite as
+        Spring Batch jobs, over a PostgreSQL data layer (Spring Data JPA) with AWS
+        S3/SQS/SNS integration. Behavioral parity with the COBOL baseline is
+        preserved; BigDecimal is used for every COMP-3/COMP/PIC decimal field.
+    </description>
+
+    <properties>
+        <!-- Java 25 LTS / OpenJDK 25.0.2 (AAP §0.5.1). Both the Spring Boot
+             convention property (java.version) and the explicit compiler release
+             are set so the compiler targets class-file major version 69. -->
+        <java.version>25</java.version>
+        <maven.compiler.release>25</maven.compiler.release>
+
+        <!-- Deterministic, platform-independent encoding for sources & reports. -->
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- Versions for dependencies NOT governed by the Spring Boot 3.5.11 BOM. -->
+        <!-- Spring Cloud AWS is an independent release train (io.awspring.cloud);
+             its BOM MUST be imported below or the starters have no version. -->
+        <spring-cloud-aws.version>3.3.0</spring-cloud-aws.version>
+        <!-- Testcontainers ships its own BOM (imported below). -->
+        <testcontainers.version>2.0.3</testcontainers.version>
+        <!-- Structured JSON logging encoder — not BOM-managed; pinned explicitly. -->
+        <logstash-logback-encoder.version>8.0</logstash-logback-encoder.version>
+
+        <!-- Build-plugin versions. -->
+        <!-- JaCoCo 0.8.14 = official Java 25 (class-file major 69) support. -->
+        <jacoco.version>0.8.14</jacoco.version>
+        <!-- OWASP dependency-check for the "zero critical/high CVE" gate (§0.7.8). -->
+        <owasp-dependency-check.version>12.1.0</owasp-dependency-check.version>
+        <!-- Surefire (unit) and Failsafe (integration) share one pinned version. -->
+        <maven-surefire-failsafe.version>3.5.2</maven-surefire-failsafe.version>
+
+        <!-- Integration/E2E tests require Docker (Testcontainers) so they are
+             skipped by default and enabled via the `integration` profile, which
+             realizes the `mvn verify -Pintegration` workflow (tech-spec L979). -->
+        <skipITs>true</skipITs>
+    </properties>
+
+    <!--
+      dependencyManagement: import BOMs for the two dependency families the Spring
+      Boot parent does NOT manage. Importing these (type=pom, scope=import) lets
+      the corresponding <dependencies> entries below omit explicit <version> tags.
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <!-- Spring Cloud AWS (S3/SQS/SNS) — independent of the Spring Boot BOM. -->
+            <dependency>
+                <groupId>io.awspring.cloud</groupId>
+                <artifactId>spring-cloud-aws-dependencies</artifactId>
+                <version>${spring-cloud-aws.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- Testcontainers — manages postgresql/localstack/junit-jupiter modules. -->
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- ====================================================================
+             RUNTIME DEPENDENCIES (17) — docs/technical-specifications.md L728–L744
+             Versions marked "(BOM)" are managed by the Spring Boot 3.5.11 parent.
+             ==================================================================== -->
+
+        <!-- REST API framework + embedded Tomcat. Replaces the BMS 3270 SEND/RECEIVE
+             MAP presentation tier with stateless REST endpoints (3270→REST). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- JPA/Hibernate ORM. Replaces VSAM KSDS keyed access with relational
+             access over PostgreSQL (VSAM→JPA repositories). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- Spring Batch. Replaces the JCL/JES batch suite (POSTTRAN, INTCALC,
+             COMBTRAN, CREASTMT, TRANREPT) with Job/Step/Flow orchestration. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <!-- Spring Security. Provides BCrypt password hashing, upgrading the legacy
+             plaintext USRSEC store (constraint C-003) — the single permitted
+             behavioral change — while preserving the sign-on flow. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- Jakarta Bean Validation. Replaces COBOL field edits and the CSSETATY
+             attribute copybook with declarative @Valid field constraints. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Actuator. Health/readiness probes and the metrics endpoint required by
+             the observability requirement (tech-spec §0.8.6). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- AWS S3 client. Replaces sequential PS staging datasets and GDG
+             generations with versioned S3 object keys (GDG→S3). Version via the
+             imported spring-cloud-aws BOM. -->
+        <dependency>
+            <groupId>io.awspring.cloud</groupId>
+            <artifactId>spring-cloud-aws-starter-s3</artifactId>
+        </dependency>
+
+        <!-- AWS SQS client. Replaces the CICS Transient Data Queue WRITEQ bridge
+             (CORPT00C → TDQ 'JOBS' → JES) with an SQS-triggered batch job. -->
+        <dependency>
+            <groupId>io.awspring.cloud</groupId>
+            <artifactId>spring-cloud-aws-starter-sqs</artifactId>
+        </dependency>
+
+        <!-- AWS SNS client. Notification/alert publishing. -->
+        <dependency>
+            <groupId>io.awspring.cloud</groupId>
+            <artifactId>spring-cloud-aws-starter-sns</artifactId>
+        </dependency>
+
+        <!-- PostgreSQL 16+ JDBC driver. Needed only at runtime. Version via parent
+             BOM (~42.7.x). -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Flyway schema migration. Replaces IDCAMS DEFINE CLUSTER provisioning;
+             V1/V2/V3 scripts create tables, indexes, and seed the ASCII fixtures. -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
+        <!-- Distributed tracing: Micrometer → OpenTelemetry bridge + OTLP exporter. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+
+        <!-- Prometheus metrics registry (scrape endpoint via Actuator). -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Structured JSON logging with correlation IDs. NOT BOM-managed — the
+             version is pinned via the property above. -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>${logstash-logback-encoder.version}</version>
+        </dependency>
+
+        <!-- JSON serialization/deserialization. Version via parent BOM. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <!-- ====================================================================
+             TEST DEPENDENCIES (6) — docs/technical-specifications.md L750–L756
+             ==================================================================== -->
+
+        <!-- JUnit 5 + Mockito + AssertJ bundle. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring Batch job testing utilities. -->
+        <dependency>
+            <groupId>org.springframework.batch</groupId>
+            <artifactId>spring-batch-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring Security test context utilities. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers (versions via the imported testcontainers-bom:2.0.3):
+             PostgreSQL for JPA integration tests; LocalStack for verifying every
+             AWS interaction with zero live dependencies; JUnit 5 lifecycle glue.
+             NOTE: Testcontainers 2.x — the version pinned by the blueprint (§0.5.1,
+             testcontainers-bom 2.0.3) — renamed every module with a
+             "testcontainers-" prefix. The blueprint dependency table (L753–L756)
+             listed the legacy 1.x artifact IDs (postgresql / localstack /
+             junit-jupiter); those do NOT exist at 2.0.3 (verified 404 on Maven
+             Central). The 2.x coordinates below are therefore used so the pinned
+             BOM version resolves (verified 200). -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-localstack</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <!-- Stable, version-independent name for the repackaged executable JAR. -->
+        <finalName>carddemo-java</finalName>
+
+        <plugins>
+            <!-- ================================================================
+                 BUILD PLUGINS (5) — docs/technical-specifications.md L762–L766
+                 ================================================================ -->
+
+            <!-- Spring Boot repackage: produces the executable (fat) JAR. Plugin
+                 version and sensible defaults are inherited from the parent. -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!-- Surefire: UNIT tests only (*Test / *Tests). Integration and E2E
+                 classes are excluded here and handled by Failsafe below. Surefire
+                 automatically consumes the `argLine` injected by the JaCoCo agent,
+                 so no explicit argLine wiring is required. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${maven-surefire-failsafe.version}</version>
+                <configuration>
+                    <includes>
+                        <include>**/*Test.java</include>
+                        <include>**/*Tests.java</include>
+                    </includes>
+                    <excludes>
+                        <exclude>**/*IT.java</exclude>
+                        <exclude>**/integration/**</exclude>
+                        <exclude>**/e2e/**</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+
+            <!-- Failsafe: INTEGRATION / E2E tests (*IT + integration/ + e2e/),
+                 bound to the integration-test/verify phases. Skipped by default
+                 (skipITs=true, since these require Docker/Testcontainers); the
+                 `integration` profile flips skipITs to false to realize
+                 `mvn verify -Pintegration` (tech-spec L979). Failsafe also consumes
+                 the JaCoCo `argLine`, appending its coverage to the same exec data
+                 as the unit run for a combined coverage figure. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>${maven-surefire-failsafe.version}</version>
+                <configuration>
+                    <includes>
+                        <include>**/*IT.java</include>
+                        <include>**/integration/**/*.java</include>
+                        <include>**/e2e/**/*.java</include>
+                    </includes>
+                    <skipITs>${skipITs}</skipITs>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>integration-tests</id>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- OWASP dependency-check: fails the build on any CVE with
+                 CVSS >= 7.0 (HIGH/CRITICAL), enforcing the "zero critical/high
+                 CVE" gate (AAP §0.7.8). The `check` goal binds to the verify
+                 phase and scans the full direct + transitive closure. -->
+            <plugin>
+                <groupId>org.owasp</groupId>
+                <artifactId>dependency-check-maven</artifactId>
+                <version>${owasp-dependency-check.version}</version>
+                <configuration>
+                    <failBuildOnCVSS>7</failBuildOnCVSS>
+                    <skipProvidedScope>false</skipProvidedScope>
+                    <skipRuntimeScope>false</skipRuntimeScope>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>owasp-dependency-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- JaCoCo 0.8.14 (official Java 25 / class-file major 69 support).
+                 `prepare-agent` wires the coverage agent into the test JVM via the
+                 `argLine` property (consumed by both Surefire and Failsafe); with
+                 append=true (the default) unit + integration runs accumulate into a
+                 single exec file, yielding COMBINED coverage. The `check` rule
+                 enforces >= 80% LINE coverage at the bundle level, satisfying the
+                 coverage gate (AAP §0.7.8). report/check are bound to `verify` so
+                 they observe both unit and integration coverage. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <executions>
+                    <execution>
+                        <id>jacoco-prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>jacoco-report</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>jacoco-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.80</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- `integration` profile: enables the Failsafe integration/E2E run via
+             `mvn verify -Pintegration`. Requires a Docker daemon for Testcontainers
+             (PostgreSQL + LocalStack). By default (no profile) only unit tests run. -->
+        <profile>
+            <id>integration</id>
+            <properties>
+                <skipITs>false</skipITs>
+            </properties>
+        </profile>
+    </profiles>
+
+</project>
