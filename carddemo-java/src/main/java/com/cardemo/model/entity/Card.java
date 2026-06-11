@@ -5,6 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
+import java.time.LocalDate;
 import java.util.Objects;
 
 /**
@@ -57,10 +58,11 @@ import java.util.Objects;
  *       account-filtered card browse. The relationship to {@code accounts} is a
  *       <em>logical</em> foreign key enforced in the Flyway {@code V1} DDL, not
  *       via an object reference.</li>
- *   <li><strong>CVV &rarr; {@link String}.</strong> {@code CARD-CVV-CD PIC 9(03)}
- *       is held as a 3-character {@link String} so leading zeros are preserved
- *       (a CVV of {@code 007} must never collapse to {@code 7}). It is never
- *       logged (see {@link #toString()}).</li>
+ *   <li><strong>CVV &rarr; {@link Integer}.</strong> {@code CARD-CVV-CD PIC 9(03)}
+ *       is a three-digit numeric code, mapped to {@link Integer} to match the
+ *       authoritative {@code cvv_code INTEGER} column in {@code V1}. Any
+ *       fixed-width {@code 9(03)} rendering is applied at the DTO/API boundary. It
+ *       is never logged (see {@link #toString()}).</li>
  *   <li><strong>Active-status flag &rarr; {@link String}, not an enum.</strong>
  *       {@code CARD-ACTIVE-STATUS PIC X(01)} (typically {@code 'Y'} or
  *       {@code 'N'}) is modelled as a single-character {@link String}. AAP §0.4.1
@@ -69,14 +71,15 @@ import java.util.Objects;
  *       {@code RejectCode} and {@code TransactionSource}); per the Minimal Change
  *       Clause no out-of-scope enum is invented and the single-character contract
  *       is kept for exact parity.</li>
- *   <li><strong>Expiration date &rarr; {@link String}.</strong>
+ *   <li><strong>Expiration date &rarr; {@link LocalDate}.</strong>
  *       {@code CARD-EXPIRAION-DATE PIC X(10)} (the COBOL field name misspells
  *       "expiration"; the Java field uses the correct spelling while the
- *       underlying contract is unchanged) is a fixed 10-character text date
- *       ({@code YYYY-MM-DD}) preserved as a {@link String} for byte-level
- *       external-interface fidelity (AAP §0.7.2). Date <em>validation</em> is a
- *       separate concern handled by {@code service.shared.DateValidationService}
- *       (using {@code LocalDate}), not by this persistence entity.</li>
+ *       underlying contract is unchanged) is a {@code YYYY-MM-DD} text date,
+ *       mapped to {@link LocalDate} to match the authoritative
+ *       {@code expiration_date DATE} column in {@code V1}. The {@code YYYY-MM-DD}
+ *       external representation is preserved at the DTO/API boundary. Date
+ *       <em>validation</em> is a separate concern handled by
+ *       {@code service.shared.DateValidationService}, not by this entity.</li>
  *   <li><strong>Read-update snapshot comparison &rarr; {@code @Version}.</strong>
  *       {@code COCRDUPC} re-read the card record and compared the before-image to
  *       the stored row to detect concurrent modification prior to its
@@ -98,13 +101,13 @@ import java.util.Objects;
  * <h2>Primary-key &amp; column-name contract</h2>
  * <p>The {@link Column} names declared below &mdash; {@code card_number},
  * {@code account_id}, {@code cvv_code}, {@code embossed_name},
- * {@code expiration_date}, {@code active_status} and {@code version} &mdash; are
- * authoritative. The Flyway {@code V1__create_schema.sql} {@code cards} DDL must
- * declare {@code card_number} as the {@code VARCHAR(16)} primary key,
+ * {@code expiration_date}, {@code active_status} and {@code version} &mdash;
+ * match the authoritative Flyway {@code V1__create_schema.sql} {@code card} DDL,
+ * which declares {@code card_number} as the {@code VARCHAR(16)} primary key,
  * {@code account_id} as {@code BIGINT} with a logical foreign key to
- * {@code accounts.account_id}, {@code cvv_code} as {@code VARCHAR(3)},
+ * {@code account.account_id}, {@code cvv_code} as {@code INTEGER},
  * {@code embossed_name} as {@code VARCHAR(50)}, {@code expiration_date} as
- * {@code VARCHAR(10)}, {@code active_status} as {@code VARCHAR(1)} (or
+ * {@code DATE}, {@code active_status} as {@code VARCHAR(1)} (or
  * {@code CHAR(1)}) and {@code version} as {@code BIGINT}. The {@code V3} seed
  * (derived from {@code app/data/ASCII/carddata.txt}, 150-byte records) and the
  * {@code CardRepository} must align with these names and lengths.</p>
@@ -124,7 +127,7 @@ import java.util.Objects;
  * @see Account
  */
 @Entity
-@Table(name = "cards")
+@Table(name = "card")
 public class Card {
 
     /**
@@ -161,15 +164,16 @@ public class Card {
     /**
      * Card verification value (CVV).
      *
-     * <p>Migrated from {@code CARD-CVV-CD PIC 9(03)}: a three-digit code held as a
-     * {@link String} (PostgreSQL {@code VARCHAR(3)}) so leading zeros are
-     * preserved exactly &mdash; a CVV of {@code 007} must not become {@code 7}.
-     * This value is sensitive and is deliberately excluded from
-     * {@link #toString()}.</p>
+     * <p>Migrated from {@code CARD-CVV-CD PIC 9(03)} (a three-digit numeric code)
+     * to an {@link Integer}, matching the authoritative {@code cvv_code INTEGER}
+     * column in {@code V1__create_schema.sql}. Any fixed-width {@code 9(03)}
+     * external-interface rendering is applied at the DTO/API boundary, not in
+     * this persistence column. This value is sensitive and is deliberately
+     * excluded from {@link #toString()}.</p>
      */
-    // CARD-CVV-CD PIC 9(03) -> 3-digit CVV; String preserves leading zeros (007 != 7) -> String(3)
-    @Column(name = "cvv_code", length = 3)
-    private String cardCvvCd;
+    // CARD-CVV-CD PIC 9(03) -> 3-digit numeric CVV -> Integer (V1 cvv_code INTEGER)
+    @Column(name = "cvv_code")
+    private Integer cardCvvCd;
 
     /**
      * Cardholder name as embossed on the physical card.
@@ -187,14 +191,14 @@ public class Card {
      *
      * <p>Migrated from {@code CARD-EXPIRAION-DATE PIC X(10)} (the COBOL field name
      * misspells "expiration"; the Java field uses the correct spelling while the
-     * underlying contract is unchanged). A fixed 10-character text date
-     * ({@code YYYY-MM-DD}) preserved as a {@link String} (PostgreSQL
-     * {@code VARCHAR(10)}) for byte-level external-interface fidelity; no
-     * {@code LocalDate} conversion is performed here.</p>
+     * underlying contract is unchanged) to a {@link LocalDate}, matching the
+     * authoritative {@code expiration_date DATE} column in
+     * {@code V1__create_schema.sql}. The {@code YYYY-MM-DD} external-interface
+     * representation is preserved at the DTO/API boundary, not in this column.</p>
      */
-    // CARD-EXPIRAION-DATE PIC X(10) -> fixed 10-char text date (YYYY-MM-DD) -> String(10)
-    @Column(name = "expiration_date", length = 10)
-    private String cardExpirationDate;
+    // CARD-EXPIRAION-DATE PIC X(10) 'YYYY-MM-DD' -> LocalDate (V1 expiration_date DATE)
+    @Column(name = "expiration_date")
+    private LocalDate cardExpirationDate;
 
     /**
      * Card active-status flag.
@@ -277,21 +281,21 @@ public class Card {
     /**
      * Returns the card verification value ({@code CARD-CVV-CD}).
      *
-     * <p>Returned as a {@link String} so leading zeros are preserved. This value
-     * is sensitive; do not write it to logs.</p>
+     * <p>Returned as an {@link Integer}. This value is sensitive; do not write it
+     * to logs.</p>
      *
-     * @return the 3-character CVV, or {@code null} if unset
+     * @return the CVV, or {@code null} if unset
      */
-    public String getCardCvvCd() {
+    public Integer getCardCvvCd() {
         return cardCvvCd;
     }
 
     /**
      * Sets the card verification value ({@code CARD-CVV-CD}).
      *
-     * @param cardCvvCd the 3-character CVV to set
+     * @param cardCvvCd the CVV to set
      */
-    public void setCardCvvCd(String cardCvvCd) {
+    public void setCardCvvCd(Integer cardCvvCd) {
         this.cardCvvCd = cardCvvCd;
     }
 
@@ -314,20 +318,20 @@ public class Card {
     }
 
     /**
-     * Returns the card expiration date ({@code CARD-EXPIRAION-DATE}) as text.
+     * Returns the card expiration date ({@code CARD-EXPIRAION-DATE}).
      *
-     * @return the 10-character expiration date, or {@code null} if unset
+     * @return the expiration date, or {@code null} if unset
      */
-    public String getCardExpirationDate() {
+    public LocalDate getCardExpirationDate() {
         return cardExpirationDate;
     }
 
     /**
-     * Sets the card expiration date ({@code CARD-EXPIRAION-DATE}) as text.
+     * Sets the card expiration date ({@code CARD-EXPIRAION-DATE}).
      *
-     * @param cardExpirationDate the 10-character expiration date to set
+     * @param cardExpirationDate the expiration date to set
      */
-    public void setCardExpirationDate(String cardExpirationDate) {
+    public void setCardExpirationDate(LocalDate cardExpirationDate) {
         this.cardExpirationDate = cardExpirationDate;
     }
 
@@ -426,7 +430,7 @@ public class Card {
         return "Card{"
                 + "cardNum='" + maskedCardNumber() + '\''
                 + ", cardAcctId=" + cardAcctId
-                + ", cardExpirationDate='" + cardExpirationDate + '\''
+                + ", cardExpirationDate=" + cardExpirationDate
                 + ", cardActiveStatus='" + cardActiveStatus + '\''
                 + ", version=" + version
                 + '}';

@@ -374,17 +374,17 @@ graph LR
 
     subgraph AFTER["AFTER — PostgreSQL 16 + Spring Data JPA"]
         direction TB
-        T1["accounts"]
-        T2["cards"]
-        T3["customers"]
+        T1["account"]
+        T2["card"]
+        T3["customer"]
         T4["card_xref<br/>derived query by card number"]
-        T5["transactions<br/>@Query by date range"]
+        T5["transaction<br/>@Query by date range"]
         T6["user_security"]
         T7["transaction_category_balance<br/>@EmbeddedId"]
         T8["disclosure_group<br/>@EmbeddedId"]
         T9["transaction_type"]
         T10["transaction_category<br/>@EmbeddedId"]
-        T11["daily_transaction"]
+        T11["daily_transactions"]
     end
 
     BEFORE -->|"DEFINE CLUSTER becomes DDL"| FLY

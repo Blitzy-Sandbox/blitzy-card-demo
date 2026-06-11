@@ -4,11 +4,12 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import java.time.LocalDate;
 import java.util.Objects;
 
 /**
  * JPA entity mapping the legacy AWS CardDemo customer record onto the PostgreSQL
- * {@code customers} table.
+ * {@code customer} table.
  *
  * <p>This entity is the Java 25 / Spring Data JPA replacement for the VSAM KSDS
  * dataset {@code CUSTDAT}, whose fixed 500-byte record layout is defined by the
@@ -63,12 +64,13 @@ import java.util.Objects;
  *       customer identifier is mapped to {@link Long} (PostgreSQL {@code BIGINT}),
  *       consistent with the {@link Long}-identifier convention used across the
  *       data model (for example {@code Account.acctId}).</li>
- *   <li><strong>{@code CUST-SSN PIC 9(09)} &rarr; {@link String} of length 9
- *       &mdash; NOT numeric and NOT encrypted.</strong> Two deliberate decisions:
- *       (a) {@link String} preserves leading zeros and the exact nine-character
- *       SSN contract (an SSN such as {@code 001234567} would silently lose its
- *       leading digits if stored as an integer); (b) the SSN is stored
- *       <em>faithfully, without encryption</em>. The blueprint's prose loosely
+ *   <li><strong>{@code CUST-SSN PIC 9(09)} &rarr; {@link Long} (PostgreSQL
+ *       {@code BIGINT}).</strong> The nine-digit Social Security Number is a
+ *       {@code PIC 9(09)} numeric field, mapped to {@link Long} to match the
+ *       authoritative Flyway {@code V1__create_schema.sql} {@code ssn BIGINT}
+ *       column and to stay consistent with the {@link Long}-identifier convention
+ *       applied to the equally-typed {@code CUST-ID PIC 9(09)}. The SSN is stored
+ *       <em>faithfully, without encryption</em>: the blueprint's prose loosely
  *       mentions "SSN encryption", but AAP §0.7.2 fixes the BCrypt password
  *       upgrade as the <em>single permitted behavioral change</em>, so adding SSN
  *       encryption here would be a forbidden second behavioral change. The value
@@ -77,11 +79,11 @@ import java.util.Objects;
  *   <li><strong>{@code CUST-FICO-CREDIT-SCORE PIC 9(03)} &rarr; {@link Integer}.</strong>
  *       A numeric credit score in the 300&ndash;850 range; leading zeros carry no
  *       significance, so an integer mapping is exact and appropriate.</li>
- *   <li><strong>Fixed-text date of birth &rarr; {@link String}.</strong> The
- *       {@code CUST-DOB-YYYY-MM-DD PIC X(10)} field keeps its {@link String} form
- *       (text {@code YYYY-MM-DD}) to preserve byte-level external-interface
- *       fidelity (AAP §0.7.2) and avoid parse failures on legacy spaces/zeros. It
- *       is intentionally <strong>not</strong> a {@code java.time.LocalDate}: date
+ *   <li><strong>Date of birth &rarr; {@link LocalDate}.</strong> The
+ *       {@code CUST-DOB-YYYY-MM-DD PIC X(10)} {@code YYYY-MM-DD} text date is
+ *       mapped to {@link LocalDate} to match the authoritative
+ *       {@code date_of_birth DATE} column in {@code V1}. The {@code YYYY-MM-DD}
+ *       external representation is preserved at the DTO/API boundary; date
  *       validation and future-date checks are a separate concern handled by
  *       {@code service.shared.DateValidationService}, not by this persistence
  *       entity.</li>
@@ -96,16 +98,16 @@ import java.util.Objects;
  * <p>The {@link Column} names declared below &mdash; {@code customer_id},
  * {@code first_name}, {@code middle_name}, {@code last_name},
  * {@code address_line_1}, {@code address_line_2}, {@code address_line_3},
- * {@code address_state_code}, {@code address_country_code}, {@code address_zip},
+ * {@code state_code}, {@code country_code}, {@code zip_code},
  * {@code phone_number_1}, {@code phone_number_2}, {@code ssn},
- * {@code govt_issued_id}, {@code date_of_birth}, {@code eft_account_id},
+ * {@code government_issued_id}, {@code date_of_birth}, {@code eft_account_id},
  * {@code primary_card_holder_indicator} and {@code fico_credit_score} &mdash;
- * are authoritative. The Flyway {@code V1__create_schema.sql} {@code customers}
+ * match the authoritative Flyway {@code V1__create_schema.sql} {@code customer}
  * DDL and the {@code V3__seed_data.sql} seed (loaded from
- * {@code app/data/ASCII/custdata.txt}) must align with them, with
- * {@code customer_id} as {@code BIGINT}, {@code fico_credit_score} as
- * {@code INTEGER} and every remaining column as {@code VARCHAR} of the stated
- * length.</p>
+ * {@code app/data/ASCII/custdata.txt}), with
+ * {@code customer_id} as {@code BIGINT}, {@code ssn} as {@code BIGINT},
+ * {@code fico_credit_score} as {@code INTEGER} and every remaining column as
+ * {@code VARCHAR} of the stated length.</p>
  *
  * <p>Per the Minimal Change Clause this entity is a pure persistence type: it
  * declares exactly the eighteen mapped fields, carries <strong>no</strong>
@@ -120,7 +122,7 @@ import java.util.Objects;
  * and is never copied into this repository.</p>
  */
 @Entity
-@Table(name = "customers")
+@Table(name = "customer")
 public class Customer {
 
     /**
@@ -203,7 +205,7 @@ public class Customer {
      * code, modelled as a {@link String} of length 2.</p>
      */
     // CUST-ADDR-STATE-CD PIC X(02) -> fixed 2-char state code -> String(2)
-    @Column(name = "address_state_code", length = 2)
+    @Column(name = "state_code", length = 2)
     private String custAddrStateCd;
 
     /**
@@ -213,7 +215,7 @@ public class Customer {
      * code, modelled as a {@link String} of length 3.</p>
      */
     // CUST-ADDR-COUNTRY-CD PIC X(03) -> fixed 3-char country code -> String(3)
-    @Column(name = "address_country_code", length = 3)
+    @Column(name = "country_code", length = 3)
     private String custAddrCountryCd;
 
     /**
@@ -223,7 +225,7 @@ public class Customer {
      * alphanumeric field, modelled as a {@link String} of length 10.</p>
      */
     // CUST-ADDR-ZIP PIC X(10) -> fixed 10-char alphanumeric -> String(10)
-    @Column(name = "address_zip", length = 10)
+    @Column(name = "zip_code", length = 10)
     private String custAddrZip;
 
     /**
@@ -249,19 +251,18 @@ public class Customer {
     /**
      * Customer Social Security Number.
      *
-     * <p>Migrated from {@code CUST-SSN PIC 9(09)} to a {@link String} of length 9
-     * &mdash; deliberately <strong>not</strong> numeric and <strong>not</strong>
-     * encrypted. {@link String} preserves leading zeros and the exact
-     * nine-character SSN contract (a value like {@code 001234567} would lose its
-     * leading digits as an integer). Encryption is intentionally omitted: AAP
-     * §0.7.2 designates the BCrypt password upgrade as the single permitted
-     * behavioral change, so encrypting the SSN would constitute a forbidden second
-     * change. The value is stored faithfully; {@link #toString()} masks it so the
-     * full SSN is never written to logs.</p>
+     * <p>Migrated from {@code CUST-SSN PIC 9(09)} to a {@link Long} (PostgreSQL
+     * {@code BIGINT}), matching the authoritative {@code ssn BIGINT} column in
+     * {@code V1__create_schema.sql} and the {@link Long}-identifier convention
+     * applied to the equally-typed {@code CUST-ID PIC 9(09)}. Encryption is
+     * intentionally omitted: AAP §0.7.2 designates the BCrypt password upgrade as
+     * the single permitted behavioral change, so encrypting the SSN would
+     * constitute a forbidden second change. The value is stored faithfully;
+     * {@link #toString()} masks it so the full SSN is never written to logs.</p>
      */
-    // CUST-SSN PIC 9(09) -> 9-char SSN, leading zeros preserved, NOT encrypted -> String(9)
-    @Column(name = "ssn", length = 9)
-    private String custSsn;
+    // CUST-SSN PIC 9(09) -> 9-digit numeric, NOT encrypted -> Long (BIGINT)
+    @Column(name = "ssn")
+    private Long custSsn;
 
     /**
      * Government-issued identification reference (for example a driver's license
@@ -271,22 +272,23 @@ public class Customer {
      * alphanumeric field, modelled as a {@link String} of length 20.</p>
      */
     // CUST-GOVT-ISSUED-ID PIC X(20) -> fixed 20-char alphanumeric -> String(20)
-    @Column(name = "govt_issued_id", length = 20)
+    @Column(name = "government_issued_id", length = 20)
     private String custGovtIssuedId;
 
     /**
      * Customer date of birth as fixed text.
      *
-     * <p>Migrated from {@code CUST-DOB-YYYY-MM-DD PIC X(10)}: a fixed 10-character
-     * text date ({@code YYYY-MM-DD}), preserved as a {@link String} for
-     * byte-level external-interface fidelity. It is intentionally not parsed to a
-     * {@code java.time.LocalDate}; date validation is handled by
+     * <p>Migrated from {@code CUST-DOB-YYYY-MM-DD PIC X(10)} (a {@code YYYY-MM-DD}
+     * text date) to a {@link LocalDate}, matching the authoritative
+     * {@code date_of_birth DATE} column in {@code V1__create_schema.sql}. The
+     * {@code YYYY-MM-DD} external representation is preserved at the DTO/API
+     * boundary; date validation is handled by
      * {@code service.shared.DateValidationService}. (In the alternate copybook
      * {@code CUSTREC.cpy} the same field is named {@code CUST-DOB-YYYYMMDD}.)</p>
      */
-    // CUST-DOB-YYYY-MM-DD PIC X(10) -> fixed 10-char text date (YYYY-MM-DD) -> String(10)
-    @Column(name = "date_of_birth", length = 10)
-    private String custDobYyyyMmDd;
+    // CUST-DOB-YYYY-MM-DD PIC X(10) 'YYYY-MM-DD' -> LocalDate (V1 date_of_birth DATE)
+    @Column(name = "date_of_birth")
+    private LocalDate custDobYyyyMmDd;
 
     /**
      * Electronic funds transfer (EFT) account identifier linked to the customer.
@@ -547,26 +549,26 @@ public class Customer {
 
     /**
      * Returns the Social Security Number ({@code CUST-SSN}) exactly as stored
-     * (nine characters, leading zeros preserved, unencrypted).
+     * (nine-digit numeric value, unencrypted).
      *
      * <p>Callers handling the returned value are responsible for protecting it;
      * {@link #toString()} deliberately masks the SSN so it is not exposed in
      * logs.</p>
      *
-     * @return the 9-character SSN, or {@code null} if unset
+     * @return the 9-digit SSN, or {@code null} if unset
      */
-    public String getCustSsn() {
+    public Long getCustSsn() {
         return custSsn;
     }
 
     /**
      * Sets the Social Security Number ({@code CUST-SSN}). The value is stored
-     * faithfully as a 9-character string; it is neither numerically parsed nor
-     * encrypted (see the class-level note and AAP §0.7.2).
+     * faithfully as a numeric value; it is not encrypted (see the class-level
+     * note and AAP §0.7.2).
      *
-     * @param custSsn the 9-character SSN to set
+     * @param custSsn the 9-digit SSN to set
      */
-    public void setCustSsn(String custSsn) {
+    public void setCustSsn(Long custSsn) {
         this.custSsn = custSsn;
     }
 
@@ -591,21 +593,20 @@ public class Customer {
     }
 
     /**
-     * Returns the date of birth ({@code CUST-DOB-YYYY-MM-DD}) as fixed text.
+     * Returns the date of birth ({@code CUST-DOB-YYYY-MM-DD}).
      *
-     * @return the 10-character text date of birth, or {@code null} if unset
+     * @return the date of birth, or {@code null} if unset
      */
-    public String getCustDobYyyyMmDd() {
+    public LocalDate getCustDobYyyyMmDd() {
         return custDobYyyyMmDd;
     }
 
     /**
-     * Sets the date of birth ({@code CUST-DOB-YYYY-MM-DD}) as fixed text. The
-     * value is preserved verbatim; no {@code LocalDate} parsing is performed here.
+     * Sets the date of birth ({@code CUST-DOB-YYYY-MM-DD}).
      *
-     * @param custDobYyyyMmDd the 10-character text date of birth to set
+     * @param custDobYyyyMmDd the date of birth to set
      */
-    public void setCustDobYyyyMmDd(String custDobYyyyMmDd) {
+    public void setCustDobYyyyMmDd(LocalDate custDobYyyyMmDd) {
         this.custDobYyyyMmDd = custDobYyyyMmDd;
     }
 
@@ -724,7 +725,7 @@ public class Customer {
                 + ", custPhoneNum2='" + custPhoneNum2 + '\''
                 + ", custSsn=" + (custSsn == null ? "null" : "[PROTECTED]")
                 + ", custGovtIssuedId='" + custGovtIssuedId + '\''
-                + ", custDobYyyyMmDd='" + custDobYyyyMmDd + '\''
+                + ", custDobYyyyMmDd=" + custDobYyyyMmDd
                 + ", custEftAccountId='" + custEftAccountId + '\''
                 + ", custPriCardHolderInd='" + custPriCardHolderInd + '\''
                 + ", custFicoCreditScore=" + custFicoCreditScore

@@ -115,23 +115,6 @@ CREATE INDEX idx_card_account_id
     ON card (account_id);
 
 
--- -------------------------------------------------------------------------------------
--- (4) Supporting query index  --  transaction by card number         [SUPPORTING INDEX]
---   Rationale   : transaction.card_number is a logical foreign key to card(card_number)
---                 and the principal non-primary filter for the transaction list/browse
---                 (COTRN00C TransactionListService) and the detail / add flows (COTRN01C,
---                 COTRN02C). TransactionRepository selects transactions by card number;
---                 this index keeps that access path index-served instead of a table scan.
---   Note        : the transaction primary key (pk_transaction on transaction_id) already
---                 serves the max-transaction-id lookup used for auto-ID generation in
---                 COTRN02C (a reverse / MAX scan of the primary-key B-tree), so no extra
---                 index is added for that path.
---   Target      : NON-UNIQUE B-tree index on transaction(card_number).
--- -------------------------------------------------------------------------------------
-CREATE INDEX idx_transaction_card_number
-    ON transaction (card_number);
-
-
 -- =====================================================================================
 -- Intentionally NOT created -- documented per the Minimal Change Clause (AAP 0.7.1:
 -- "only add indexes a documented repository access path requires; do not over-index"):
@@ -144,6 +127,18 @@ CREATE INDEX idx_transaction_card_number
 --   * transaction(original_timestamp) -- no documented access path selects by the
 --     origination timestamp; the processed-timestamp AIX (index #2) plus the primary key
 --     cover the documented chronological and keyed access paths.
+--
+--   * transaction(card_number) -- INTENTIONALLY NOT INDEXED. No VSAM ALTERNATE INDEX and
+--     no keyed COBOL access path selects transactions by card number. The only TRANSACT
+--     alternate index defined by app/jcl/TRANFILE.jcl is KEYS(26,304) = processed_timestamp
+--     (migrated as index #2); the online programs browse/read transactions by their
+--     TRAN-ID primary key (COTRN00C list, COTRN01C detail, COTRN02C add -- the latter
+--     resolves the card via the CARDXREF primary key, not via a transaction-by-card read),
+--     and the card-grouped batch reports (CBTRN03C, CBSTM03A) read the transaction file
+--     SEQUENTIALLY and group by card in working storage rather than by a keyed lookup. A
+--     transaction(card_number) index would therefore be a pure performance optimization
+--     with no source access-path backing, which the Minimal Change Clause (AAP 0.7.1)
+--     forbids; it is consequently NOT created.
 --
 --   * transaction_category_balance(account_id) -- already index-served by the leading
 --     column of its composite primary key (account_id, type_code, category_code); a

@@ -4,6 +4,7 @@ import com.cardemo.model.enums.UserType;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import java.util.List;
 import java.util.Objects;
@@ -107,15 +108,25 @@ import java.util.Objects;
  * {@link List} of {@link UserListItem} rows ({@link #users}), and the next/previous-page
  * arithmetic is the responsibility of {@code service/admin/UserListService}.</p>
  *
- * <h2>Add-operation validation (AAP &sect;0.4.2)</h2>
- * <p>The user id is mandatory only when <em>adding</em> a user; on update and delete it
- * is supplied by the path variable and on a list response it is absent. To express that
- * operation-scoped requirement on this single shared shape without rejecting the other
- * operations, the {@link NotBlank @NotBlank} guard on {@link #userId} is bound to the
- * {@link OnAdd} validation group (the always-on {@link Size @Size(max = 8)} width
- * constraint applies to every operation). The add endpoint activates the guard with
- * {@code @Validated(UserSecurityDto.OnAdd.class)}; the other endpoints validate with the
- * default group, under which {@link #userId} may legally be {@code null}.</p>
+ * <h2>Operation-scoped validation (AAP &sect;0.4.2)</h2>
+ * <p>The field-level edits the COBOL programs enforce differ by operation, so this single
+ * shared shape carries two Bean Validation group tokens, {@link OnAdd} and
+ * {@link OnUpdate}, and the endpoints activate the matching one via
+ * {@code @Validated(UserSecurityDto.OnAdd.class)} /
+ * {@code @Validated(UserSecurityDto.OnUpdate.class)}.</p>
+ * <ul>
+ *   <li><strong>{@link #userId}</strong> is mandatory only when <em>adding</em> a user
+ *       (COUSR01C); on update and delete it is supplied by the path variable and on a
+ *       list response it is absent. Its {@link NotBlank @NotBlank} guard is therefore
+ *       bound to {@link OnAdd} only.</li>
+ *   <li><strong>{@link #firstName}, {@link #lastName} and {@link #password}</strong>
+ *       ({@link NotBlank @NotBlank}) plus <strong>{@link #userType}</strong>
+ *       ({@link NotNull @NotNull}) are bound to {@link OnAdd}/{@link OnUpdate}, faithfully
+ *       reproducing the COUSR01C (add) and COUSR02C (update) edits that rejected an empty
+ *       first name, last name, password or user type. The delete screen ({@code COUSR03})
+ *       carries none of these, so delete validates under the default group.</li>
+ * </ul>
+ * <p>The always-on {@link Size @Size} width constraints apply to every operation.</p>
  *
  * <p><strong>Traceability.</strong> Derived from the frozen COBOL baseline at commit
  * SHA {@code 27d6c6f}. The COBOL source is read-only reference material and is never
@@ -154,6 +165,23 @@ public class UserSecurityDto {
         // Marker only: declares no members. Used solely as a Bean Validation group token.
     }
 
+    /**
+     * Jakarta Bean Validation group marking constraints that apply only when
+     * <strong>updating</strong> a user.
+     *
+     * <p>This pure marker interface (it declares no members) lets the shared DTO carry
+     * the field-level edits the update screen ({@code COUSR02}) enforces &mdash; a
+     * non-blank {@link UserSecurityDto#firstName}, {@link UserSecurityDto#lastName} and
+     * {@link UserSecurityDto#password}, and a non-null {@link UserSecurityDto#userType}.
+     * The update endpoint requests this group via
+     * {@code @Validated(UserSecurityDto.OnUpdate.class)}. The user id on update is taken
+     * from the request path (not the body), so the add-only {@link OnAdd} guard on
+     * {@link UserSecurityDto#userId} is deliberately <em>not</em> part of this group.</p>
+     */
+    public interface OnUpdate {
+        // Marker only: declares no members. Used solely as a Bean Validation group token.
+    }
+
     // ---------------------------------------------------------------------
     // Single-user fields -- add (COUSR01), update (COUSR02), delete (COUSR03)
     // ---------------------------------------------------------------------
@@ -183,9 +211,13 @@ public class UserSecurityDto {
      * <p>Migrated from {@code FNAME PIC X(20)} &mdash; a fixed-length, twenty-character
      * field. {@link Size @Size(max = 20)} preserves the original width. This is the
      * <strong>user</strong> name width {@code X(20)}, deliberately distinct from the
-     * customer name width {@code X(25)} used elsewhere.</p>
+     * customer name width {@code X(25)} used elsewhere. {@link NotBlank @NotBlank}
+     * (bound to {@link OnAdd}/{@link OnUpdate}) reproduces the COUSR01C/COUSR02C edit
+     * that rejected an empty first name on add and update.</p>
      */
     // FNAME PIC X(20) -> 20-char first name -> String(20) (user name X(20), NOT customer X(25))
+    // @NotBlank({OnAdd,OnUpdate}) reproduces the COUSR01C (add) + COUSR02C (update) empty-field edit.
+    @NotBlank(groups = {OnAdd.class, OnUpdate.class}, message = "First name must be supplied")
     @Size(max = 20, message = "First name must not exceed 20 characters")
     private String firstName;
 
@@ -195,9 +227,13 @@ public class UserSecurityDto {
      * <p>Migrated from {@code LNAME PIC X(20)} &mdash; a fixed-length, twenty-character
      * field. {@link Size @Size(max = 20)} preserves the original width. This is the
      * <strong>user</strong> name width {@code X(20)}, deliberately distinct from the
-     * customer name width {@code X(25)} used elsewhere.</p>
+     * customer name width {@code X(25)} used elsewhere. {@link NotBlank @NotBlank}
+     * (bound to {@link OnAdd}/{@link OnUpdate}) reproduces the COUSR01C/COUSR02C edit
+     * that rejected an empty last name on add and update.</p>
      */
     // LNAME PIC X(20) -> 20-char last name -> String(20) (user name X(20), NOT customer X(25))
+    // @NotBlank({OnAdd,OnUpdate}) reproduces the COUSR01C (add) + COUSR02C (update) empty-field edit.
+    @NotBlank(groups = {OnAdd.class, OnUpdate.class}, message = "Last name must be supplied")
     @Size(max = 20, message = "Last name must not exceed 20 characters")
     private String lastName;
 
@@ -206,9 +242,11 @@ public class UserSecurityDto {
      *
      * <p>Migrated from {@code PASSWD PIC X(8)} on the add screen ({@code COUSR01}) and
      * the update screen ({@code COUSR02}) &mdash; a fixed-length, eight-character
-     * field. {@link Size @Size(max = 8)} preserves the original width. The delete screen
-     * ({@code COUSR03}) carries no password, so on a delete this field simply stays
-     * {@code null}.</p>
+     * field. {@link Size @Size(max = 8)} preserves the original width, and
+     * {@link NotBlank @NotBlank} (bound to {@link OnAdd}/{@link OnUpdate}) reproduces the
+     * COUSR01C/COUSR02C edit that rejected an empty password on add and update. The
+     * delete screen ({@code COUSR03}) carries no password, so on a delete this field
+     * simply stays {@code null} (delete validates under the default group).</p>
      *
      * <p><strong>Security (single permitted behavioral change, AAP &sect;0.7.2).</strong>
      * Annotated {@link JsonProperty @JsonProperty(access = WRITE_ONLY)} so it can be
@@ -222,6 +260,9 @@ public class UserSecurityDto {
     //  stored credential is BCrypt-hashed in UserAddService/UserUpdateService (the single
     //  permitted behavioral change, C-003 / §0.7.2), NOT here. WRITE_ONLY: accepted on
     //  deserialization, NEVER serialized into a response; masked in toString(); never logged.
+    // @NotBlank({OnAdd,OnUpdate}) reproduces the COUSR01C (add) + COUSR02C (update) edit that
+    //  rejected an empty password; delete (COUSR03, no password) uses the default group, unaffected.
+    @NotBlank(groups = {OnAdd.class, OnUpdate.class}, message = "Password must be supplied")
     @Size(max = 8, message = "Password must not exceed 8 characters")
     @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private String password;
@@ -233,10 +274,15 @@ public class UserSecurityDto {
      * ({@code COUSR01}/{@code COUSR02}) with condition names {@code 88 ... ADMIN VALUE
      * 'A'} and {@code 88 ... USER VALUE 'U'}. The legacy programs branched on these
      * 88-levels to distinguish administrators from regular users; the same value is
-     * conveyed here type-safely.</p>
+     * conveyed here type-safely. {@link NotNull @NotNull} (bound to
+     * {@link OnAdd}/{@link OnUpdate}) reproduces the COUSR01C/COUSR02C edit that rejected
+     * an empty user type on add and update.</p>
      */
     // COBOL substitution: USRTYPE PIC X(01) (88 'A'=ADMIN / 'U'=USER)
     //  -> type-safe com.cardemo.model.enums.UserType enum (NOT a raw String / local enum).
+    // @NotNull({OnAdd,OnUpdate}) reproduces the COUSR01C (add) + COUSR02C (update) empty-field edit;
+    //  @NotNull (not @NotBlank) because the field is a typed enum, not a String.
+    @NotNull(groups = {OnAdd.class, OnUpdate.class}, message = "User type must be supplied")
     private UserType userType;
 
     // ---------------------------------------------------------------------

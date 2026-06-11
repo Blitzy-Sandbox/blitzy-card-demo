@@ -108,7 +108,7 @@ import com.cardemo.model.key.TransactionCategoryBalanceId;
  * @see Account
  */
 @Entity
-@Table(name = "transaction_category_balances")
+@Table(name = "transaction_category_balance")
 public class TransactionCategoryBalance {
 
     /**

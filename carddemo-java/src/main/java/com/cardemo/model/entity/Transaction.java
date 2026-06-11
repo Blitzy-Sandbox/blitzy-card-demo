@@ -5,11 +5,12 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.Objects;
 
 /**
  * JPA entity mapping the legacy AWS CardDemo transaction record onto the
- * PostgreSQL {@code transactions} table.
+ * PostgreSQL {@code transaction} table.
  *
  * <p>This entity is the Java 25 / Spring Data JPA replacement for the VSAM KSDS
  * dataset {@code TRANSACT}, whose fixed 350-byte record layout is defined by the
@@ -69,13 +70,13 @@ import java.util.Objects;
  *       {@code "POS TERM  "}). Any enum interpretation is a service-layer concern
  *       and is intentionally <strong>not</strong> applied at the persistence
  *       boundary.</li>
- *   <li><strong>Fixed-text timestamps &rarr; {@link String}.</strong> The two
+ *   <li><strong>Timestamps &rarr; {@link LocalDateTime}.</strong> The two
  *       {@code PIC X(26)} timestamp fields ({@code TRAN-ORIG-TS},
- *       {@code TRAN-PROC-TS}) hold 26-character text in the form
- *       {@code YYYY-MM-DD HH:MM:SS.ffffff}. They are kept as {@link String} (not
- *       converted to {@code LocalDateTime}/{@code Instant}) to preserve the exact
- *       26-byte external-interface contract (AAP §0.7.2) and avoid parse failures
- *       on legacy rows that may be spaces or low-values.</li>
+ *       {@code TRAN-PROC-TS}) hold text in the form
+ *       {@code YYYY-MM-DD HH:MM:SS.ffffff}; they are mapped to {@link LocalDateTime}
+ *       to match the authoritative {@code original_timestamp}/{@code processed_timestamp}
+ *       {@code TIMESTAMP} columns in {@code V1}. The 26-byte external-interface
+ *       rendering is preserved at the DTO/API and batch-file boundaries.</li>
  *   <li><strong>No optimistic-locking column.</strong> Unlike {@code Account} and
  *       {@code Card}, the transaction record has no read-update snapshot
  *       comparison in the COBOL estate, so this entity declares no
@@ -110,13 +111,13 @@ import java.util.Objects;
  * {@code type_code}, {@code category_code}, {@code source}, {@code description},
  * {@code amount}, {@code merchant_id}, {@code merchant_name},
  * {@code merchant_city}, {@code merchant_zip}, {@code card_number},
- * {@code original_timestamp} and {@code processed_timestamp} &mdash; are
- * authoritative. The Flyway {@code V1__create_schema.sql} {@code transactions}
- * DDL must align with them ({@code transaction_id} PK {@code VARCHAR(16)};
+ * {@code original_timestamp} and {@code processed_timestamp} &mdash; match the
+ * authoritative Flyway {@code V1__create_schema.sql} {@code transaction}
+ * DDL ({@code transaction_id} PK {@code VARCHAR(16)};
  * {@code amount} {@code NUMERIC(11,2)}; {@code merchant_id} {@code BIGINT};
- * {@code card_number} {@code VARCHAR(16)}; the two timestamps {@code VARCHAR(26)}
- * to match the 26-character text contract), the {@code V2} migration adds the
- * alternate index on {@code card_number}, and the {@code transactions} table is
+ * {@code card_number} {@code VARCHAR(16)}; the two timestamps {@code TIMESTAMP}),
+ * the {@code V2} migration adds the TRANSACT alternate index on
+ * {@code processed_timestamp}, and the {@code transaction} table is
  * populated at runtime by the daily-posting batch job (no static seed row).</p>
  *
  * <p>Per the Minimal Change Clause this entity is a pure persistence type: it
@@ -131,7 +132,7 @@ import java.util.Objects;
  * @see java.math.BigDecimal
  */
 @Entity
-@Table(name = "transactions")
+@Table(name = "transaction")
 public class Transaction {
 
     /**
@@ -265,28 +266,30 @@ public class Transaction {
     private String tranCardNum;
 
     /**
-     * Original transaction timestamp, as 26-character text.
+     * Original transaction timestamp.
      *
-     * <p>Migrated from {@code TRAN-ORIG-TS PIC X(26)}: text in the form
-     * {@code YYYY-MM-DD HH:MM:SS.ffffff}. Kept as a {@link String} of length 26
-     * (not {@code LocalDateTime}) to preserve the exact 26-byte external
-     * contract.</p>
+     * <p>Migrated from {@code TRAN-ORIG-TS PIC X(26)} (text in the form
+     * {@code YYYY-MM-DD HH:MM:SS.ffffff}) to a {@link LocalDateTime}, matching the
+     * authoritative {@code original_timestamp TIMESTAMP} column in
+     * {@code V1__create_schema.sql}. The 26-byte external text rendering is
+     * preserved at the DTO/API and batch-file boundaries, not in this column.</p>
      */
-    // TRAN-ORIG-TS PIC X(26) -> 26-char timestamp text -> String (NOT LocalDateTime)
-    @Column(name = "original_timestamp", length = 26)
-    private String tranOrigTs;
+    // TRAN-ORIG-TS PIC X(26) timestamp text -> LocalDateTime (V1 original_timestamp TIMESTAMP)
+    @Column(name = "original_timestamp")
+    private LocalDateTime tranOrigTs;
 
     /**
-     * Processed transaction timestamp, as 26-character text.
+     * Processed transaction timestamp.
      *
-     * <p>Migrated from {@code TRAN-PROC-TS PIC X(26)}: text in the form
-     * {@code YYYY-MM-DD HH:MM:SS.ffffff}. Kept as a {@link String} of length 26
-     * (not {@code LocalDateTime}) to preserve the exact 26-byte external
-     * contract.</p>
+     * <p>Migrated from {@code TRAN-PROC-TS PIC X(26)} (text in the form
+     * {@code YYYY-MM-DD HH:MM:SS.ffffff}) to a {@link LocalDateTime}, matching the
+     * authoritative {@code processed_timestamp TIMESTAMP} column in
+     * {@code V1__create_schema.sql}. The 26-byte external text rendering is
+     * preserved at the DTO/API and batch-file boundaries, not in this column.</p>
      */
-    // TRAN-PROC-TS PIC X(26) -> 26-char timestamp text -> String (NOT LocalDateTime)
-    @Column(name = "processed_timestamp", length = 26)
-    private String tranProcTs;
+    // TRAN-PROC-TS PIC X(26) timestamp text -> LocalDateTime (V1 processed_timestamp TIMESTAMP)
+    @Column(name = "processed_timestamp")
+    private LocalDateTime tranProcTs;
 
     /**
      * Creates an empty {@code Transaction}.
@@ -509,38 +512,38 @@ public class Transaction {
     }
 
     /**
-     * Returns the original transaction timestamp ({@code TRAN-ORIG-TS}) as text.
+     * Returns the original transaction timestamp ({@code TRAN-ORIG-TS}).
      *
-     * @return the 26-character original timestamp, or {@code null} if unset
+     * @return the original timestamp, or {@code null} if unset
      */
-    public String getTranOrigTs() {
+    public LocalDateTime getTranOrigTs() {
         return tranOrigTs;
     }
 
     /**
-     * Sets the original transaction timestamp ({@code TRAN-ORIG-TS}) as text.
+     * Sets the original transaction timestamp ({@code TRAN-ORIG-TS}).
      *
-     * @param tranOrigTs the 26-character original timestamp to set
+     * @param tranOrigTs the original timestamp to set
      */
-    public void setTranOrigTs(String tranOrigTs) {
+    public void setTranOrigTs(LocalDateTime tranOrigTs) {
         this.tranOrigTs = tranOrigTs;
     }
 
     /**
-     * Returns the processed transaction timestamp ({@code TRAN-PROC-TS}) as text.
+     * Returns the processed transaction timestamp ({@code TRAN-PROC-TS}).
      *
-     * @return the 26-character processed timestamp, or {@code null} if unset
+     * @return the processed timestamp, or {@code null} if unset
      */
-    public String getTranProcTs() {
+    public LocalDateTime getTranProcTs() {
         return tranProcTs;
     }
 
     /**
-     * Sets the processed transaction timestamp ({@code TRAN-PROC-TS}) as text.
+     * Sets the processed transaction timestamp ({@code TRAN-PROC-TS}).
      *
-     * @param tranProcTs the 26-character processed timestamp to set
+     * @param tranProcTs the processed timestamp to set
      */
-    public void setTranProcTs(String tranProcTs) {
+    public void setTranProcTs(LocalDateTime tranProcTs) {
         this.tranProcTs = tranProcTs;
     }
 
@@ -622,8 +625,8 @@ public class Transaction {
                 + ", tranMerchantCity='" + tranMerchantCity + '\''
                 + ", tranMerchantZip='" + tranMerchantZip + '\''
                 + ", tranCardNum='" + maskedCardNumber() + '\''
-                + ", tranOrigTs='" + tranOrigTs + '\''
-                + ", tranProcTs='" + tranProcTs + '\''
+                + ", tranOrigTs=" + tranOrigTs
+                + ", tranProcTs=" + tranProcTs
                 + '}';
     }
 }

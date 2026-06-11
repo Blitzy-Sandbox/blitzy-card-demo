@@ -93,13 +93,6 @@
     .legacy-tag { color: var(--legacy-bd); font-weight: 700; }
     .java-tag { color: var(--java-bd); font-weight: 700; }
 
-    /* ---- Observability placeholder figure (slide 8) ---- */
-    figure.placeholder { margin: .3em auto; width: 82%; border: 3px dashed var(--java-bd); border-radius: 14px;
-      background: repeating-linear-gradient(45deg,#f5f9ff,#f5f9ff 16px,#eaf1ff 16px,#eaf1ff 32px); padding: .8em; }
-    figure.placeholder .ph-title { font-weight: 700; color: var(--java-bd); font-size: .5em; }
-    figure.placeholder .ph-frame { display: flex; align-items: center; justify-content: center; height: 210px;
-      border: 1px solid #b9cdf5; border-radius: 8px; background: #fff; color: #7187b3; font-style: italic; font-size: .46em; margin-top: .4em; }
-    figure.placeholder figcaption { font-size: .4em; color: #52617a; margin-top: .35em; }
     .chips { display: flex; flex-wrap: wrap; gap: .4em; justify-content: center; margin-top: .5em; }
     .chip { background: var(--obs); border: 1px solid var(--obs-bd); color: #2a1a4a; border-radius: 999px; padding: .16em .7em; font-size: .42em; }
 
@@ -192,18 +185,18 @@ graph LR
               <li><b>Run cost &amp; lock-in:</b> MIPS-based licensing and proprietary hardware give way to commodity cloud compute.</li>
               <li><b>Agility:</b> rigid batch windows become elastic, observable, CI/CD-ready Spring services.</li>
               <li><b>Maintainability:</b> a 19,254-line opaque COBOL estate becomes a layered, tested codebase.</li>
-              <li><b>Low risk:</b> 100% behavioral parity preserved; the only intentional behavior change is BCrypt password hashing.</li>
+              <li><b>Low risk:</b> 100% behavioral parity is the migration's design goal &mdash; verified by the characterization-test suite at later checkpoints; the only intentional behavior change is BCrypt password hashing.</li>
             </ul>
           </div>
           <div>
-            <!-- Visual: documented engineering-effort split (project-guide.md): 391 of 434 hours complete = 90.1%. -->
+            <!-- Visual: documented engineering-effort estimate (project-guide.md): 434-hour total split into core migration (391) and production hardening (43). Presented as a scope estimate by category, not a CP1 completion claim. -->
             <div class="mermaid">
 pie showData
-    title Engineering effort (hours) &mdash; 90.1% complete
-    "Completed" : 391
-    "Remaining" : 43
+    title Engineering effort estimate (hours) by category
+    "Core migration" : 391
+    "Production hardening" : 43
             </div>
-            <p class="caption">391 of 434 hours delivered (90.1%). Remaining work is production hardening, not core function.</p>
+            <p class="caption">Estimated 434-hour total effort, split into core migration (391 h) and production hardening (43 h). The Foundation checkpoint (CP1) &mdash; schema, domain model, security and observability scaffolding &mdash; is delivered; the remaining checkpoints complete the services, batch pipeline, AWS integration and test evidence.</p>
           </div>
         </div>
       </section>
@@ -376,7 +369,7 @@ graph TB
             <tr><td><code>COMP-3</code> / <code>PIC S9(n)V99</code></td><td><code>BigDecimal</code> &mdash; never <code>float</code>/<code>double</code></td></tr>
           </tbody>
         </table>
-        <p class="caption">103 Java source files (34,021 lines) generated from 28 COBOL programs. <code>@Version</code> optimistic locking and BCrypt hashing complete the parity-preserving design.</p>
+        <p class="caption">These deterministic rules are applied uniformly across the 28 COBOL programs of the source estate. <code>@Version</code> optimistic locking and BCrypt hashing are part of the parity-preserving design &mdash; the BCrypt upgrade is the single intentional behavioral change.</p>
       </section>
 
       <!-- ============================ SLIDE 6 — BATCH PIPELINE BEFORE/AFTER ============================ -->
@@ -495,12 +488,26 @@ graph LR
       <!-- ============================ SLIDE 8 — OBSERVABILITY DASHBOARD ============================ -->
       <section>
         <h2>Observability &mdash; production-grade from day one</h2>
-        <!-- Visual: clearly-labelled placeholder figure for the Grafana dashboard (docs/grafana-dashboard.json). -->
-        <figure class="placeholder">
-          <div class="ph-title">Grafana dashboard &mdash; <code>docs/grafana-dashboard.json</code></div>
-          <div class="ph-frame">[ Dashboard screenshot placeholder &mdash; import <code>grafana-dashboard.json</code> at http://localhost:3000 (admin/admin) ]</div>
-          <figcaption>Panels: HTTP request rate &middot; latency p50 / p95 / p99 &middot; Spring Batch throughput &amp; job status &middot; JVM heap / GC / threads. Metrics are scraped from <code>/actuator/prometheus</code> by Prometheus and visualized in Grafana.</figcaption>
-        </figure>
+        <!-- Real CP1 visual: the observability pipeline actually wired at CP1 (CorrelationIdFilter,
+             MetricsConfig, logback-spring.xml, prometheus.yml) plus the committed Grafana dashboard
+             definition (docs/grafana-dashboard.json, 14 panels). No placeholder. -->
+        <div class="mermaid">
+flowchart LR
+    APP["CardDemo Spring Boot app<br/>Micrometer meters &middot; Actuator<br/>CorrelationIdFilter (X-Correlation-Id)"]
+    PROM["Prometheus<br/>scrapes /actuator/prometheus"]
+    GRAF["Grafana<br/>grafana-dashboard.json &middot; 14 panels"]
+    JAEGER["Jaeger<br/>OTLP traces"]
+    LOGS["Structured JSON logs<br/>+ correlation IDs<br/>(logback-spring.xml)"]
+    APP -->|"/actuator/prometheus"| PROM
+    PROM --> GRAF
+    APP -->|"OTLP export"| JAEGER
+    APP --> LOGS
+    classDef a fill:#d7f5dd,stroke:#1f9d55,color:#0c3a1f;
+    classDef b fill:#d6e4ff,stroke:#2b59c3,color:#0b2447;
+    class APP a;
+    class PROM,GRAF,JAEGER,LOGS b;
+        </div>
+        <p class="caption" style="font-size:.42em;">Committed at CP1: <code>docs/grafana-dashboard.json</code> (14 panels) &mdash; HTTP request rate &middot; error rate (5xx) &middot; latency p50/p95/p99 &middot; Spring Batch throughput, records processed &amp; rejected-by-reason &middot; authentication attempts &middot; transaction amount posted &middot; JVM memory / GC. Import at <code>http://localhost:3000</code> once the local stack is running.</p>
         <div class="chips">
           <span class="chip">Micrometer &rarr; Prometheus</span>
           <span class="chip">Grafana dashboards</span>
@@ -530,7 +537,7 @@ graph LR
             </tr>
             <tr>
               <th>Medium</th>
-              <td class="rm-green">Branch coverage 64%</td>
+              <td class="rm-green">Branch coverage below target (tracked follow-up)</td>
               <td class="rm-amber">LocalStack-only AWS testing &middot; EBCDIC prod-data migration &middot; No container registry</td>
               <td class="rm-amber">No TLS / HTTPS &middot; No rate limiting</td>
             </tr>
@@ -548,34 +555,38 @@ graph LR
           <span class="rm-green">Green &mdash; accept / backlog</span>
           &nbsp;&middot;&nbsp; source: <code>project-guide.md</code> &sect;1.4 &amp; &sect;6
         </div>
-        <p class="caption">All high-severity items are operational/security hardening for production cutover &mdash; none affect functional parity, which is validated at 100%.</p>
+        <p class="caption">All high-severity items are operational/security hardening for production cutover &mdash; none affect functional parity, the migration's design goal of 100% behavioral parity (parity is verified by the characterization-test suite at later checkpoints).</p>
       </section>
 
       <!-- ============================ SLIDE 10 — VALIDATION GATES SUMMARY ============================ -->
       <section>
-        <h2>Validation gates &mdash; 8 of 8 assessed</h2>
-        <!-- Visual #1: headline KPI strip. -->
+        <h2>Validation gates &mdash; 8-gate model &amp; CP1 status</h2>
+        <!-- Visual #1: headline KPI strip — TARGETS (the measured figures are produced by the gated
+             build/test runs at later checkpoints, not asserted at CP1). -->
         <div class="kpi">
-          <div class="k"><b>81.5%</b>line coverage<br/>(4,347 / 5,334)</div>
-          <div class="k"><b>888</b>tests passing<br/>(729 unit + 159 IT/E2E)</div>
-          <div class="k"><b>100%</b>paragraph<br/>traceability (527)</div>
-          <div class="k"><b>0</b>build warnings<br/>(-Xlint:all)</div>
+          <div class="k"><b>&ge;80%</b>line coverage<br/>(target &middot; JaCoCo)</div>
+          <div class="k"><b>Surefire<br/>+ Failsafe</b>test suite<br/>(CP2 &rarr; FINAL)</div>
+          <div class="k"><b>100%</b>paragraph<br/>traceability (target)</div>
+          <div class="k"><b>0</b>warnings<br/>(CP1 foundation build)</div>
         </div>
         <!-- Visual #2: gate-by-gate checklist table. -->
         <table class="gates">
           <thead><tr><th>#</th><th>Validation gate</th><th>Status</th></tr></thead>
           <tbody>
-            <tr><td>1</td><td>End-to-End Boundary Verification</td><td class="st-ok">&#10003; Verified</td></tr>
-            <tr><td>2</td><td>Zero-Warning Build</td><td class="st-ok">&#10003; Verified</td></tr>
-            <tr><td>3</td><td>Performance Baseline</td><td class="st-ok">&#10003; Verified</td></tr>
-            <tr><td>4</td><td>Named Real-World Validation Artifacts (9 ASCII fixtures)</td><td class="st-ok">&#10003; Verified</td></tr>
-            <tr><td>5</td><td>API / Interface Contract Verification</td><td class="st-ok">&#10003; Verified</td></tr>
-            <tr><td>6</td><td>Unsafe / Low-Level Code Audit</td><td class="st-ok">&#10003; Verified</td></tr>
-            <tr><td>7</td><td>Scope Matching (Extended)</td><td class="st-ok">&#10003; Verified</td></tr>
-            <tr><td>8</td><td>Integration Sign-Off (coverage &amp; traceability &amp; tests verified)</td><td class="st-warn">&#9888; Mixed &mdash; OWASP scan pending</td></tr>
+            <tr><td>1</td><td>End-to-End Boundary Verification</td><td class="st-warn">&#8987; Pending (batch job &mdash; CP2+)</td></tr>
+            <tr><td>2</td><td>Zero-Warning Build</td><td class="st-warn">&#8987; Partial &mdash; CP1 foundation compiles warning-free</td></tr>
+            <tr><td>3</td><td>Performance Baseline</td><td class="st-warn">&#8987; Pending (batch job &mdash; CP2+)</td></tr>
+            <tr><td>4</td><td>Named Real-World Validation Artifacts (9 ASCII fixtures)</td><td class="st-warn">&#8987; Pending (V3 seed &mdash; CP2+)</td></tr>
+            <tr><td>5</td><td>API / Interface Contract Verification</td><td class="st-warn">&#8987; Pending (controllers/AWS &mdash; CP3+)</td></tr>
+            <tr><td>6</td><td>Unsafe / Low-Level Code Audit</td><td class="st-warn">&#8987; Partial &mdash; CP1 code audited clean</td></tr>
+            <tr><td>7</td><td>Scope Matching (Extended)</td><td class="st-warn">&#8987; Pending (subsystems CP2 &rarr; FINAL)</td></tr>
+            <tr><td>8</td><td>Integration Sign-Off (master gate)</td><td class="st-warn">&#8987; Pending (FINAL)</td></tr>
           </tbody>
         </table>
-        <p class="caption">Gates 1&ndash;7 fully verified; Gate&nbsp;8 is the only mixed result &mdash; coverage (81.5%), traceability (100%) and the 888-test suite pass, with the OWASP dependency-check run reported honestly as pending. Detail in <code>validation-gates.md</code>.</p>
+        <p class="caption">The 8-gate model is defined now (verification method per gate fixed); the evidence
+          for each gate is produced by actual build/test runs against the owning code at later checkpoints
+          (CP2 &rarr; FINAL). At CP1 the foundation compiles warning-free and the CP1 code audits clean; the
+          remaining gates are reported honestly as pending. Detail and CP1 status in <code>validation-gates.md</code>.</p>
       </section>
 
       <!-- ============================ SLIDE 11 — TEAM ONBOARDING PATH ============================ -->
@@ -589,7 +600,7 @@ graph LR
 timeline
     title Developer onboarding path
     Clone : git clone the repository : cd carddemo-java
-    Build : mvnw clean verify : 888 tests and 81.5% coverage
+    Build : mvnw clean verify : compile, test and coverage gate
     Run : docker compose up -d : mvnw spring-boot run, local profile
     Verify : actuator health returns UP : sign-in and account view
     Extend : add an entity : add a batch job : add a REST endpoint
@@ -647,7 +658,7 @@ graph LR
     class M1,M2,M3,M4 next;
     class L1,L2,L3,L4,L5 later;
         </div>
-        <p class="caption">Core migration is complete at 90.1%; the roadmap is sequenced by priority &mdash; production-readiness first (CI/CD, OWASP, prod profile, security hardening), then operations, then the documented enhancement backlog.</p>
+        <p class="caption">Beyond the core migration, the roadmap is sequenced by priority &mdash; production-readiness first (CI/CD, OWASP, prod profile, security hardening), then operations, then the documented enhancement backlog.</p>
       </section>
 
     </div><!-- /.slides -->

@@ -69,13 +69,13 @@ import java.util.Objects;
  * </ul>
  *
  * <h2>Column-name contract</h2>
- * <p>The {@link Column} names declared below &mdash; {@code group_id},
- * {@code type_code} and {@code category_code} &mdash; are the authoritative
- * physical column names for the composite key. The {@code DisclosureGroup}
- * entity's {@code disclosure_groups} table mapping and the Flyway
- * {@code V1__create_schema.sql} DDL must use these exact names, with
- * {@code group_id} as {@code VARCHAR(10)}, {@code type_code} as
- * {@code CHAR}/{@code VARCHAR(2)} and {@code category_code} as
+ * <p>The {@link Column} names declared below &mdash; {@code account_group_id},
+ * {@code transaction_type_code} and {@code transaction_category_code} &mdash;
+ * match the authoritative physical column names for the composite key. The
+ * {@code DisclosureGroup} entity's {@code disclosure_group} table mapping and the
+ * Flyway {@code V1__create_schema.sql} DDL declare these exact names, with
+ * {@code account_group_id} as {@code VARCHAR(10)}, {@code transaction_type_code} as
+ * {@code CHAR}/{@code VARCHAR(2)} and {@code transaction_category_code} as
  * {@code INTEGER}.</p>
  *
  * <p><strong>Traceability.</strong> Derived from the frozen COBOL baseline at
@@ -105,7 +105,7 @@ public class DisclosureGroupId implements Serializable {
      * faithful mapping.</p>
      */
     // DIS-ACCT-GROUP-ID PIC X(10) -> fixed-length 10-char alphanumeric -> String(10)
-    @Column(name = "group_id", length = 10, nullable = false)
+    @Column(name = "account_group_id", length = 10, nullable = false)
     private String groupId;
 
     /**
@@ -115,7 +115,7 @@ public class DisclosureGroupId implements Serializable {
      * 2-character alphanumeric field, modelled as a {@link String} of length 2.</p>
      */
     // DIS-TRAN-TYPE-CD PIC X(02) -> fixed-length 2-char alphanumeric -> String(2)
-    @Column(name = "type_code", length = 2, nullable = false)
+    @Column(name = "transaction_type_code", length = 2, nullable = false)
     private String typeCode;
 
     /**
@@ -128,7 +128,7 @@ public class DisclosureGroupId implements Serializable {
      * positions, so no {@code BigDecimal} is used.</p>
      */
     // DIS-TRAN-CAT-CD PIC 9(04) -> 4-digit integer (max 9999) -> Integer
-    @Column(name = "category_code", nullable = false)
+    @Column(name = "transaction_category_code", nullable = false)
     private Integer catCode;
 
     /**

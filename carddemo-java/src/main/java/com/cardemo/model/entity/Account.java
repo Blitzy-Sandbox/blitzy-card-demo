@@ -6,6 +6,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.Objects;
 
 /**
@@ -89,9 +90,8 @@ import java.util.Objects;
  * {@code cash_credit_limit}, {@code open_date}, {@code expiration_date},
  * {@code reissue_date}, {@code current_cycle_credit},
  * {@code current_cycle_debit}, {@code address_zip}, {@code group_id} and
- * {@code version} &mdash; are authoritative. The Flyway
- * {@code V1__create_schema.sql} {@code accounts} DDL and the
- * {@code AccountRepository} must align with them, with {@code account_id} as
+ * {@code version} &mdash; match the authoritative Flyway
+ * {@code V1__create_schema.sql} {@code account} DDL, with {@code account_id} as
  * {@code BIGINT}. Because {@link #acctId} is migrated from
  * {@code ACCT-ID PIC 9(11)} (eleven digits exceed {@code Integer}'s ~2.1-billion
  * ceiling), its type is {@link Long}; the downstream repository is therefore
@@ -114,7 +114,7 @@ import java.util.Objects;
  * @see java.math.BigDecimal
  */
 @Entity
-@Table(name = "accounts")
+@Table(name = "account")
 public class Account {
 
     /**
@@ -178,35 +178,39 @@ public class Account {
     /**
      * Account open date.
      *
-     * <p>Migrated from {@code ACCT-OPEN-DATE PIC X(10)}: a fixed 10-character
-     * text date ({@code YYYY-MM-DD}), preserved as a {@link String} for
-     * byte-level external-interface fidelity.</p>
+     * <p>Migrated from {@code ACCT-OPEN-DATE PIC X(10)} (a {@code YYYY-MM-DD} text
+     * date) to a {@link LocalDate}, matching the authoritative
+     * {@code open_date DATE} column in {@code V1__create_schema.sql}. The
+     * {@code YYYY-MM-DD} external-interface representation is preserved at the
+     * DTO/API and batch-file boundaries, not in this persistence column.</p>
      */
-    // ACCT-OPEN-DATE PIC X(10) -> fixed 10-char text date (YYYY-MM-DD) -> String(10)
-    @Column(name = "open_date", length = 10)
-    private String acctOpenDate;
+    // ACCT-OPEN-DATE PIC X(10) 'YYYY-MM-DD' -> LocalDate (V1 open_date DATE)
+    @Column(name = "open_date")
+    private LocalDate acctOpenDate;
 
     /**
      * Account expiration date.
      *
      * <p>Migrated from {@code ACCT-EXPIRAION-DATE PIC X(10)} (the COBOL field
      * name misspells "expiration"; the Java field uses the correct spelling
-     * while the underlying contract is unchanged). A fixed 10-character text
-     * date preserved as a {@link String}.</p>
+     * while the underlying contract is unchanged) to a {@link LocalDate},
+     * matching the authoritative {@code expiration_date DATE} column in
+     * {@code V1__create_schema.sql}.</p>
      */
-    // ACCT-EXPIRAION-DATE PIC X(10) -> fixed 10-char text date (YYYY-MM-DD) -> String(10)
-    @Column(name = "expiration_date", length = 10)
-    private String acctExpirationDate;
+    // ACCT-EXPIRAION-DATE PIC X(10) 'YYYY-MM-DD' -> LocalDate (V1 expiration_date DATE)
+    @Column(name = "expiration_date")
+    private LocalDate acctExpirationDate;
 
     /**
      * Account card-reissue date.
      *
-     * <p>Migrated from {@code ACCT-REISSUE-DATE PIC X(10)}: a fixed 10-character
-     * text date preserved as a {@link String}.</p>
+     * <p>Migrated from {@code ACCT-REISSUE-DATE PIC X(10)} (a {@code YYYY-MM-DD}
+     * text date) to a {@link LocalDate}, matching the authoritative
+     * {@code reissue_date DATE} column in {@code V1__create_schema.sql}.</p>
      */
-    // ACCT-REISSUE-DATE PIC X(10) -> fixed 10-char text date (YYYY-MM-DD) -> String(10)
-    @Column(name = "reissue_date", length = 10)
-    private String acctReissueDate;
+    // ACCT-REISSUE-DATE PIC X(10) 'YYYY-MM-DD' -> LocalDate (V1 reissue_date DATE)
+    @Column(name = "reissue_date")
+    private LocalDate acctReissueDate;
 
     /**
      * Current-cycle credit total.
@@ -378,56 +382,56 @@ public class Account {
     }
 
     /**
-     * Returns the account open date ({@code ACCT-OPEN-DATE}) as text.
+     * Returns the account open date ({@code ACCT-OPEN-DATE}).
      *
-     * @return the 10-character open date, or {@code null} if unset
+     * @return the open date, or {@code null} if unset
      */
-    public String getAcctOpenDate() {
+    public LocalDate getAcctOpenDate() {
         return acctOpenDate;
     }
 
     /**
-     * Sets the account open date ({@code ACCT-OPEN-DATE}) as text.
+     * Sets the account open date ({@code ACCT-OPEN-DATE}).
      *
-     * @param acctOpenDate the 10-character open date to set
+     * @param acctOpenDate the open date to set
      */
-    public void setAcctOpenDate(String acctOpenDate) {
+    public void setAcctOpenDate(LocalDate acctOpenDate) {
         this.acctOpenDate = acctOpenDate;
     }
 
     /**
-     * Returns the account expiration date ({@code ACCT-EXPIRAION-DATE}) as text.
+     * Returns the account expiration date ({@code ACCT-EXPIRAION-DATE}).
      *
-     * @return the 10-character expiration date, or {@code null} if unset
+     * @return the expiration date, or {@code null} if unset
      */
-    public String getAcctExpirationDate() {
+    public LocalDate getAcctExpirationDate() {
         return acctExpirationDate;
     }
 
     /**
-     * Sets the account expiration date ({@code ACCT-EXPIRAION-DATE}) as text.
+     * Sets the account expiration date ({@code ACCT-EXPIRAION-DATE}).
      *
-     * @param acctExpirationDate the 10-character expiration date to set
+     * @param acctExpirationDate the expiration date to set
      */
-    public void setAcctExpirationDate(String acctExpirationDate) {
+    public void setAcctExpirationDate(LocalDate acctExpirationDate) {
         this.acctExpirationDate = acctExpirationDate;
     }
 
     /**
-     * Returns the account reissue date ({@code ACCT-REISSUE-DATE}) as text.
+     * Returns the account reissue date ({@code ACCT-REISSUE-DATE}).
      *
-     * @return the 10-character reissue date, or {@code null} if unset
+     * @return the reissue date, or {@code null} if unset
      */
-    public String getAcctReissueDate() {
+    public LocalDate getAcctReissueDate() {
         return acctReissueDate;
     }
 
     /**
-     * Sets the account reissue date ({@code ACCT-REISSUE-DATE}) as text.
+     * Sets the account reissue date ({@code ACCT-REISSUE-DATE}).
      *
-     * @param acctReissueDate the 10-character reissue date to set
+     * @param acctReissueDate the reissue date to set
      */
-    public void setAcctReissueDate(String acctReissueDate) {
+    public void setAcctReissueDate(LocalDate acctReissueDate) {
         this.acctReissueDate = acctReissueDate;
     }
 
@@ -586,9 +590,9 @@ public class Account {
         return "Account{"
                 + "acctId=" + acctId
                 + ", acctActiveStatus='" + acctActiveStatus + '\''
-                + ", acctOpenDate='" + acctOpenDate + '\''
-                + ", acctExpirationDate='" + acctExpirationDate + '\''
-                + ", acctReissueDate='" + acctReissueDate + '\''
+                + ", acctOpenDate=" + acctOpenDate
+                + ", acctExpirationDate=" + acctExpirationDate
+                + ", acctReissueDate=" + acctReissueDate
                 + ", acctAddrZip='" + acctAddrZip + '\''
                 + ", acctGroupId='" + acctGroupId + '\''
                 + ", version=" + version

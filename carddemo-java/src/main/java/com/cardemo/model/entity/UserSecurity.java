@@ -44,9 +44,11 @@ import java.util.Objects;
  * mandates that plaintext credential storage be replaced by a salted
  * <strong>BCrypt</strong> hash, which is the sole deviation from strict
  * byte-for-byte parity that the Minimal Change Clause permits. Consequently the
- * mapped column is <em>renamed</em> to {@code password_hash} and <em>widened</em>
- * from 8 to {@code length = 60} characters to accommodate a BCrypt digest
- * (the standard {@code $2a$}/{@code $2b$} 60-character encoding).</p>
+ * mapped {@code password} column is <em>widened</em> from 8 to
+ * {@code length = 72} characters to accommodate a BCrypt digest (the standard
+ * {@code $2a$}/{@code $2b$} encoding is 60 characters; the {@code VARCHAR(72)}
+ * width declared by {@code V1__create_schema.sql} leaves headroom for longer
+ * encoder prefixes), matching the authoritative V1 schema exactly.</p>
  * <p>The sign-on <em>flow</em> itself is preserved exactly: where {@code COSGN00C}
  * compared the entered password to the stored plaintext, the migrated
  * {@code AuthenticationService} now BCrypt-verifies the entered password against
@@ -71,7 +73,7 @@ import java.util.Objects;
  *       matching the keyed VSAM access. It is this entity's sole {@code @Id}.</li>
  *   <li><strong>Password &rarr; BCrypt hash.</strong> See the dedicated section
  *       above: {@code SEC-USR-PWD PIC X(08)} (plaintext) is widened to the
- *       {@code password_hash} {@code VARCHAR(60)} column holding a BCrypt digest.
+ *       {@code password} {@code VARCHAR(72)} column holding a BCrypt digest.
  *       This is the single permitted behavioral change (C-003).</li>
  *   <li><strong>User type &rarr; {@link UserType} via 1-character converter.</strong>
  *       {@code SEC-USR-TYPE PIC X(01)} ({@code 'A'}&nbsp;=&nbsp;admin,
@@ -106,13 +108,13 @@ import java.util.Objects;
  * </ul>
  *
  * <h2>Primary-key &amp; column-name contract</h2>
- * <p>The {@link Column} names declared below are authoritative for the data
+ * <p>The {@link Column} names declared below match the authoritative data
  * layer. The Flyway {@code V1__create_schema.sql} {@code user_security} table
- * must declare {@code user_id} as the {@code VARCHAR(8)} primary key,
+ * declares {@code user_id} as the {@code VARCHAR(8)} primary key,
  * {@code first_name} and {@code last_name} as {@code VARCHAR(20)},
- * {@code password_hash} as {@code VARCHAR(60)} {@code NOT NULL}, and
- * {@code user_type} as {@code CHAR(1)}/{@code VARCHAR(1)} {@code NOT NULL}.
- * Because {@code password_hash} now stores a BCrypt digest (never the original
+ * {@code password} as {@code VARCHAR(72)}, and
+ * {@code user_type} as {@code VARCHAR(1)}.
+ * Because {@code password} now stores a BCrypt digest (never the original
  * 8-character plaintext), the {@code V3} seed must insert BCrypt-hashed fixture
  * passwords (or the application must hash them at seed time).</p>
  *
@@ -168,18 +170,20 @@ public class UserSecurity {
      * <p>Migrated from {@code SEC-USR-PWD PIC X(08)} &mdash; the legacy 8-character
      * <em>plaintext</em> password. This field is the migration's
      * <strong>single permitted behavioral change</strong> (constraint C-003, AAP
-     * §0.7.2): the column is renamed {@code password_hash} and widened to
-     * {@code VARCHAR(60)} to hold a BCrypt digest. The entity is a passive carrier
-     * of the already-encoded hash &mdash; <strong>it performs no hashing</strong>.
-     * BCrypt encoding and verification are done in the service/security layer
-     * ({@code UserAddService} on create, {@code AuthenticationService} on
-     * sign-on). The value is {@code NOT NULL}: every user record must carry a
-     * credential hash.</p>
+     * §0.7.2): the column keeps the authoritative V1 name {@code password} and is
+     * widened to {@code VARCHAR(72)} to hold a BCrypt digest. The entity is a
+     * passive carrier of the already-encoded hash &mdash; <strong>it performs no
+     * hashing</strong>. BCrypt encoding and verification are done in the
+     * service/security layer ({@code UserAddService} on create,
+     * {@code AuthenticationService} on sign-on). The {@code V1} column is declared
+     * nullable to match the authoritative schema; credential presence is enforced
+     * upstream at the DTO/service layer (the COBOL {@code COUSR01C}/{@code COUSR02C}
+     * field edits reject an empty password).</p>
      */
     // SEC-USR-PWD PIC X(08) -> legacy 8-char PLAINTEXT password; SINGLE PERMITTED BEHAVIORAL
-    //   CHANGE (C-003): stored as a BCrypt hash (~60 chars) -> String, column renamed
-    //   password_hash and widened to VARCHAR(60). Entity holds the hash only; no hashing here.
-    @Column(name = "password_hash", length = 60, nullable = false)
+    //   CHANGE (C-003): stored as a BCrypt hash -> String, column keeps authoritative V1 name
+    //   `password` and is widened to VARCHAR(72). Entity holds the hash only; no hashing here.
+    @Column(name = "password", length = 72)
     private String secUsrPwd;
 
     /**
@@ -267,7 +271,7 @@ public class UserSecurity {
 
     /**
      * Returns the BCrypt password hash ({@code SEC-USR-PWD} &rarr;
-     * {@code password_hash}).
+     * {@code password}).
      *
      * <p>The returned value is an opaque BCrypt digest, not a plaintext password;
      * verification is performed by the security layer, never by this entity.</p>
@@ -280,7 +284,7 @@ public class UserSecurity {
 
     /**
      * Sets the BCrypt password hash ({@code SEC-USR-PWD} &rarr;
-     * {@code password_hash}).
+     * {@code password}).
      *
      * <p>The supplied value must already be a BCrypt-encoded hash produced by the
      * service/security layer; this entity does <strong>not</strong> hash, encode

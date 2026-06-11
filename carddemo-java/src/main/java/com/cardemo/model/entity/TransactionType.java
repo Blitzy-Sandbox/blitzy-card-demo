@@ -86,10 +86,10 @@ import java.util.Objects;
  *
  * <h2>Primary-key &amp; column-name contract</h2>
  * <p>The {@link Column} names declared below &mdash; {@code type_code} (primary
- * key) and {@code description} &mdash; are authoritative for the data layer. The
- * Flyway {@code V1__create_schema.sql} {@code transaction_types} table must
- * declare {@code type_code} as the {@code VARCHAR(2)} primary key and
- * {@code description} as {@code VARCHAR(50)}; the {@code V3} seed (loaded from
+ * key) and {@code type_description} &mdash; match the authoritative Flyway
+ * {@code V1__create_schema.sql} {@code transaction_type} table, which declares
+ * {@code type_code} as the {@code VARCHAR(2)} primary key and
+ * {@code type_description} as {@code VARCHAR(50)}; the {@code V3} seed (loaded from
  * {@code app/data/ASCII/trantype.txt}, 60-byte records) must align with these
  * names and lengths. The two-character {@code type_code} width is shared across
  * the schema: it matches {@code transactions.type_code} (the logical foreign key
@@ -103,7 +103,7 @@ import java.util.Objects;
  * @see Transaction
  */
 @Entity
-@Table(name = "transaction_types")
+@Table(name = "transaction_type")
 public class TransactionType {
 
     /**
@@ -130,7 +130,7 @@ public class TransactionType {
      * with its length preserved exactly.</p>
      */
     // TRAN-TYPE-DESC PIC X(50) -> 50-char description -> String(50) (VARCHAR(50))
-    @Column(name = "description", length = 50)
+    @Column(name = "type_description", length = 50)
     private String tranTypeDesc;
 
     /**

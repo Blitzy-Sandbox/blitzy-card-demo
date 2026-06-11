@@ -120,7 +120,7 @@ import java.util.Objects;
  * @see Customer
  */
 @Entity
-@Table(name = "card_cross_references")
+@Table(name = "card_xref")
 public class CardCrossReference {
 
     /**

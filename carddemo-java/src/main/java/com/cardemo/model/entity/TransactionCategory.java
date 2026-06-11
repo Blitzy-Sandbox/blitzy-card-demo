@@ -99,11 +99,11 @@ import com.cardemo.model.key.TransactionCategoryId;
  * <p>The composite primary key is supplied verbatim by
  * {@link TransactionCategoryId}, which declares the authoritative physical column
  * names {@code type_code} ({@code VARCHAR(2)}) and {@code category_code}
- * ({@code INTEGER}). This entity adds the single non-key column {@code description}
- * ({@code VARCHAR(50)}). These names and types are authoritative for the data
- * layer: the Flyway {@code V1__create_schema.sql} {@code transaction_categories}
- * table must declare the two-part composite primary key plus the
- * {@code description} column exactly as named here, and the {@code V3} seed
+ * ({@code INTEGER}). This entity adds the single non-key column
+ * {@code category_description} ({@code VARCHAR(50)}). These names and types match
+ * the authoritative Flyway {@code V1__create_schema.sql} {@code transaction_category}
+ * table, which declares the two-part composite primary key plus the
+ * {@code category_description} column exactly as named here, and the {@code V3} seed
  * (loaded from {@code app/data/ASCII/trancatg.txt}, 60-byte records) must align
  * with these names, types and lengths. The two-character {@code type_code} width
  * is shared across the schema: it matches {@code transaction_types.type_code} and
@@ -118,7 +118,7 @@ import com.cardemo.model.key.TransactionCategoryId;
  * @see TransactionType
  */
 @Entity
-@Table(name = "transaction_categories")
+@Table(name = "transaction_category")
 public class TransactionCategory {
 
     /**
@@ -146,7 +146,7 @@ public class TransactionCategory {
      * field.</p>
      */
     // TRAN-CAT-TYPE-DESC PIC X(50) -> 50-char description -> String(50) (VARCHAR(50))
-    @Column(name = "description", length = 50)
+    @Column(name = "category_description", length = 50)
     private String tranCatTypeDesc;
 
     /**

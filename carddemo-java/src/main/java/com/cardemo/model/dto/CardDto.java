@@ -174,22 +174,27 @@ public class CardDto {
      * The cardholder name embossed on the card.
      *
      * <p>Migrated from {@code CRDNAME PIC X(50)}: a fifty-character name field,
-     * modeled as a {@link String} with the width preserved by {@link Size @Size}.</p>
+     * modeled as a {@link String} with the width preserved by {@link Size @Size}.
+     * Serialized as {@code embossedName} to match the {@code CARD-EMBOSSED-NAME}
+     * COBOL field, the {@code card.embossed_name} V1 column, and the documented API
+     * contract.</p>
      */
-    // CRDNAME PIC X(50) -> 50-char embossed cardholder name -> String(50)
-    @Size(max = 50, message = "Name on card must not exceed 50 characters")
-    private String nameOnCard;
+    // CRDNAME PIC X(50) / CARD-EMBOSSED-NAME -> 50-char embossed cardholder name -> String(50)
+    @Size(max = 50, message = "Embossed name must not exceed 50 characters")
+    private String embossedName;
 
     /**
      * The card active-status code.
      *
      * <p>Migrated from {@code CRDSTCD PIC X(1)}: a single-character active flag
      * (typically {@code 'Y'} active or {@code 'N'} inactive), modeled as a
-     * {@link String} of length one.</p>
+     * {@link String} of length one. Serialized as {@code activeStatus} to match the
+     * {@code CARD-ACTIVE-STATUS} COBOL field, the {@code card.active_status} V1
+     * column, and the documented API contract.</p>
      */
-    // CRDSTCD PIC X(1) -> single-character active flag (Y/N) -> String(1)
-    @Size(max = 1, message = "Card status must be a single character")
-    private String cardStatus;
+    // CRDSTCD PIC X(1) / CARD-ACTIVE-STATUS -> single-character active flag (Y/N) -> String(1)
+    @Size(max = 1, message = "Active status must be a single character")
+    private String activeStatus;
 
     /**
      * The card expiry month component.
@@ -329,40 +334,40 @@ public class CardDto {
     }
 
     /**
-     * Returns the embossed cardholder name ({@code CRDNAME}).
+     * Returns the embossed cardholder name ({@code CRDNAME} / {@code CARD-EMBOSSED-NAME}).
      *
-     * @return the up-to-fifty-character name on the card, or {@code null} if unset
+     * @return the up-to-fifty-character embossed name, or {@code null} if unset
      */
-    public String getNameOnCard() {
-        return nameOnCard;
+    public String getEmbossedName() {
+        return embossedName;
     }
 
     /**
-     * Sets the embossed cardholder name ({@code CRDNAME}).
+     * Sets the embossed cardholder name ({@code CRDNAME} / {@code CARD-EMBOSSED-NAME}).
      *
-     * @param nameOnCard the up-to-fifty-character name on the card to set
+     * @param embossedName the up-to-fifty-character embossed name to set
      */
-    public void setNameOnCard(String nameOnCard) {
-        this.nameOnCard = nameOnCard;
+    public void setEmbossedName(String embossedName) {
+        this.embossedName = embossedName;
     }
 
     /**
-     * Returns the card active-status code ({@code CRDSTCD}).
+     * Returns the card active-status code ({@code CRDSTCD} / {@code CARD-ACTIVE-STATUS}).
      *
      * @return the single-character status flag (e.g. {@code "Y"}/{@code "N"}), or
      *         {@code null} if unset
      */
-    public String getCardStatus() {
-        return cardStatus;
+    public String getActiveStatus() {
+        return activeStatus;
     }
 
     /**
-     * Sets the card active-status code ({@code CRDSTCD}).
+     * Sets the card active-status code ({@code CRDSTCD} / {@code CARD-ACTIVE-STATUS}).
      *
-     * @param cardStatus the single-character status flag to set
+     * @param activeStatus the single-character status flag to set
      */
-    public void setCardStatus(String cardStatus) {
-        this.cardStatus = cardStatus;
+    public void setActiveStatus(String activeStatus) {
+        this.activeStatus = activeStatus;
     }
 
     /**
@@ -539,11 +544,12 @@ public class CardDto {
          * The card active-status code shown on the row.
          *
          * <p>Migrated from {@code CRDSTS{n} PIC X(1)}: a single-character active flag
-         * (e.g. {@code 'Y'}/{@code 'N'}), modeled as a {@link String} of length one.</p>
+         * (e.g. {@code 'Y'}/{@code 'N'}), modeled as a {@link String} of length one.
+         * Serialized as {@code activeStatus} to match the documented API contract.</p>
          */
         // CRDSTS{n} PIC X(1) -> single-character active flag (Y/N) -> String(1)
-        @Size(max = 1, message = "Card status must be a single character")
-        private String cardStatus;
+        @Size(max = 1, message = "Active status must be a single character")
+        private String activeStatus;
 
         /**
          * Default no-argument constructor required by the JSON binder (Jackson).
@@ -607,21 +613,21 @@ public class CardDto {
         }
 
         /**
-         * Returns the row card active-status code ({@code CRDSTS}).
+         * Returns the row card active-status code ({@code CRDSTS} / {@code CARD-ACTIVE-STATUS}).
          *
          * @return the single-character status flag, or {@code null} if unset
          */
-        public String getCardStatus() {
-            return cardStatus;
+        public String getActiveStatus() {
+            return activeStatus;
         }
 
         /**
-         * Sets the row card active-status code ({@code CRDSTS}).
+         * Sets the row card active-status code ({@code CRDSTS} / {@code CARD-ACTIVE-STATUS}).
          *
-         * @param cardStatus the single-character status flag to set
+         * @param activeStatus the single-character status flag to set
          */
-        public void setCardStatus(String cardStatus) {
-            this.cardStatus = cardStatus;
+        public void setActiveStatus(String activeStatus) {
+            this.activeStatus = activeStatus;
         }
 
         /**
@@ -672,7 +678,7 @@ public class CardDto {
                     + "selectionFlag='" + selectionFlag + '\''
                     + ", accountId='" + accountId + '\''
                     + ", cardNumber=" + (cardNumber == null ? "null" : "****")
-                    + ", cardStatus='" + cardStatus + '\''
+                    + ", activeStatus='" + activeStatus + '\''
                     + '}';
         }
     }
@@ -736,8 +742,8 @@ public class CardDto {
         return "CardDto{"
                 + "accountId='" + accountId + '\''
                 + ", cardNumber=" + (cardNumber == null ? "null" : "****")
-                + ", nameOnCard='" + nameOnCard + '\''
-                + ", cardStatus='" + cardStatus + '\''
+                + ", embossedName='" + embossedName + '\''
+                + ", activeStatus='" + activeStatus + '\''
                 + ", expiryMonth='" + expiryMonth + '\''
                 + ", expiryYear='" + expiryYear + '\''
                 + ", expiryDay='" + expiryDay + '\''

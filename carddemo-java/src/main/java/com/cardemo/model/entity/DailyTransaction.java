@@ -5,6 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.Objects;
 
 /**
@@ -83,13 +84,14 @@ import java.util.Objects;
  *       {@code "POS TERM  "} or {@code "OPERATOR  "}). Any enum interpretation is a
  *       service-layer concern and is intentionally <strong>not</strong> applied at
  *       the persistence boundary.</li>
- *   <li><strong>Fixed-text timestamps &rarr; {@link String}.</strong> The two
- *       {@code PIC X(26)} timestamp fields ({@code DALYTRAN-ORIG-TS},
+ *   <li><strong>Fixed-text timestamps &rarr; {@link LocalDateTime}.</strong> The
+ *       two {@code PIC X(26)} timestamp fields ({@code DALYTRAN-ORIG-TS},
  *       {@code DALYTRAN-PROC-TS}) hold 26-character text in the form
- *       {@code YYYY-MM-DD HH:MM:SS.ffffff}. They are kept as {@link String} (not
- *       converted to {@code LocalDateTime}/{@code Instant}) to preserve the exact
- *       26-byte external-interface contract (AAP §0.7.2) and avoid parse failures
- *       on legacy rows that may be spaces or low-values.</li>
+ *       {@code YYYY-MM-DD HH:MM:SS.ffffff}. They map to {@link LocalDateTime} to
+ *       match the authoritative V1 {@code TIMESTAMP} columns (AAP §0.1.2 maps LE
+ *       date/time handling to {@code java.time}); the exact 26-byte
+ *       external-interface rendering is reconstructed at the DTO/batch-file
+ *       boundary rather than at the persistence column.</li>
  *   <li><strong>No optimistic-locking column.</strong> Only {@code Account} and
  *       {@code Card} carry a read-update snapshot comparison in the COBOL estate,
  *       so this staging entity declares no {@code @Version} field (AAP §0.7.5).
@@ -129,7 +131,8 @@ import java.util.Objects;
  * authoritative for the Flyway {@code V1__create_schema.sql}
  * {@code daily_transactions} DDL ({@code transaction_id} PK {@code VARCHAR(16)};
  * {@code amount} {@code NUMERIC(11,2)}; {@code merchant_id} {@code BIGINT};
- * {@code card_number} {@code VARCHAR(16)}; the two timestamp columns). The
+ * {@code card_number} {@code VARCHAR(16)}; {@code original_timestamp} and
+ * {@code processed_timestamp} {@code TIMESTAMP}). The
  * {@code daily_transactions} table is seeded by the Flyway {@code V3} migration
  * from the canonical ASCII fixture {@code app/data/ASCII/dailytran.txt}
  * (350-byte records), which is the golden input for the posting-pipeline parity
@@ -285,28 +288,30 @@ public class DailyTransaction {
     private String dalytranCardNum;
 
     /**
-     * Original transaction timestamp, as 26-character text.
+     * Original transaction timestamp.
      *
-     * <p>Migrated from {@code DALYTRAN-ORIG-TS PIC X(26)}: text in the form
-     * {@code YYYY-MM-DD HH:MM:SS.ffffff}. Kept as a {@link String} of length 26
-     * (not {@code LocalDateTime}) to preserve the exact 26-byte external
-     * contract.</p>
+     * <p>Migrated from {@code DALYTRAN-ORIG-TS PIC X(26)} (text in the form
+     * {@code YYYY-MM-DD HH:MM:SS.ffffff}) to a {@link LocalDateTime}, matching the
+     * authoritative {@code original_timestamp TIMESTAMP} column in
+     * {@code V1__create_schema.sql}. The 26-byte external text rendering is
+     * preserved at the DTO/API and batch-file boundaries, not in this column.</p>
      */
-    // DALYTRAN-ORIG-TS PIC X(26) -> 26-char timestamp text -> String (NOT LocalDateTime)
-    @Column(name = "original_timestamp", length = 26)
-    private String dalytranOrigTs;
+    // DALYTRAN-ORIG-TS PIC X(26) timestamp text -> LocalDateTime (V1 original_timestamp TIMESTAMP)
+    @Column(name = "original_timestamp")
+    private LocalDateTime dalytranOrigTs;
 
     /**
-     * Processed transaction timestamp, as 26-character text.
+     * Processed transaction timestamp.
      *
-     * <p>Migrated from {@code DALYTRAN-PROC-TS PIC X(26)}: text in the form
-     * {@code YYYY-MM-DD HH:MM:SS.ffffff}. Kept as a {@link String} of length 26
-     * (not {@code LocalDateTime}) to preserve the exact 26-byte external
-     * contract.</p>
+     * <p>Migrated from {@code DALYTRAN-PROC-TS PIC X(26)} (text in the form
+     * {@code YYYY-MM-DD HH:MM:SS.ffffff}) to a {@link LocalDateTime}, matching the
+     * authoritative {@code processed_timestamp TIMESTAMP} column in
+     * {@code V1__create_schema.sql}. The 26-byte external text rendering is
+     * preserved at the DTO/API and batch-file boundaries, not in this column.</p>
      */
-    // DALYTRAN-PROC-TS PIC X(26) -> 26-char timestamp text -> String (NOT LocalDateTime)
-    @Column(name = "processed_timestamp", length = 26)
-    private String dalytranProcTs;
+    // DALYTRAN-PROC-TS PIC X(26) timestamp text -> LocalDateTime (V1 processed_timestamp TIMESTAMP)
+    @Column(name = "processed_timestamp")
+    private LocalDateTime dalytranProcTs;
 
     /**
      * Creates an empty {@code DailyTransaction}.
@@ -529,41 +534,38 @@ public class DailyTransaction {
     }
 
     /**
-     * Returns the original transaction timestamp ({@code DALYTRAN-ORIG-TS}) as
-     * text.
+     * Returns the original transaction timestamp ({@code DALYTRAN-ORIG-TS}).
      *
-     * @return the 26-character original timestamp, or {@code null} if unset
+     * @return the original timestamp, or {@code null} if unset
      */
-    public String getDalytranOrigTs() {
+    public LocalDateTime getDalytranOrigTs() {
         return dalytranOrigTs;
     }
 
     /**
-     * Sets the original transaction timestamp ({@code DALYTRAN-ORIG-TS}) as text.
+     * Sets the original transaction timestamp ({@code DALYTRAN-ORIG-TS}).
      *
-     * @param dalytranOrigTs the 26-character original timestamp to set
+     * @param dalytranOrigTs the original timestamp to set
      */
-    public void setDalytranOrigTs(String dalytranOrigTs) {
+    public void setDalytranOrigTs(LocalDateTime dalytranOrigTs) {
         this.dalytranOrigTs = dalytranOrigTs;
     }
 
     /**
-     * Returns the processed transaction timestamp ({@code DALYTRAN-PROC-TS}) as
-     * text.
+     * Returns the processed transaction timestamp ({@code DALYTRAN-PROC-TS}).
      *
-     * @return the 26-character processed timestamp, or {@code null} if unset
+     * @return the processed timestamp, or {@code null} if unset
      */
-    public String getDalytranProcTs() {
+    public LocalDateTime getDalytranProcTs() {
         return dalytranProcTs;
     }
 
     /**
-     * Sets the processed transaction timestamp ({@code DALYTRAN-PROC-TS}) as
-     * text.
+     * Sets the processed transaction timestamp ({@code DALYTRAN-PROC-TS}).
      *
-     * @param dalytranProcTs the 26-character processed timestamp to set
+     * @param dalytranProcTs the processed timestamp to set
      */
-    public void setDalytranProcTs(String dalytranProcTs) {
+    public void setDalytranProcTs(LocalDateTime dalytranProcTs) {
         this.dalytranProcTs = dalytranProcTs;
     }
 
@@ -646,8 +648,8 @@ public class DailyTransaction {
                 + ", dalytranMerchantCity='" + dalytranMerchantCity + '\''
                 + ", dalytranMerchantZip='" + dalytranMerchantZip + '\''
                 + ", dalytranCardNum='" + maskedCardNumber() + '\''
-                + ", dalytranOrigTs='" + dalytranOrigTs + '\''
-                + ", dalytranProcTs='" + dalytranProcTs + '\''
+                + ", dalytranOrigTs=" + dalytranOrigTs
+                + ", dalytranProcTs=" + dalytranProcTs
                 + '}';
     }
 }

@@ -133,7 +133,7 @@ semantics as follows.
   "path": "/api/accounts/00000000011",
   "correlationId": "b3a1c2d4-5e6f-7081-9a2b-3c4d5e6f7081",
   "fieldErrors": [
-    { "field": "acctId", "message": "must be 11 digits" }
+    { "field": "accountId", "message": "must be 11 digits" }
   ]
 }
 ```
@@ -189,18 +189,25 @@ replaced by Spring component scanning and the `@RequestMapping` route table belo
 | `CU02` | `COUSR02C` | `COUSR02` | `UserAdminController` | `PUT /api/admin/users/{id}` |
 | `CU03` | `COUSR03C` | `COUSR03` | `UserAdminController` | `DELETE /api/admin/users/{id}` |
 
-**Transaction-count reconciliation.** The migration blueprint headlines *"18 interactive
-CICS online programs"* (`docs/technical-specifications.md` L13, L209). The frozen baseline at
-commit `27d6c6f` contains exactly **17** online `CO*.cbl` members, **17** BMS mapsets, and
-the **17** distinct transaction IDs enumerated above (3 entry points — sign-on `CC00`, main
-menu `CM00`, admin menu `CA00` — plus the 10 main-menu functions and the 4 admin user-CRUD
-functions). The headline "18" is a known internal inconsistency in the blueprint's
-program-count tally (see AAP §0.1.3, which records the blueprint's internal inconsistencies);
-no eighteenth online program or mapset exists in the source tree, and inventing an extra
-endpoint would violate the Minimal Change Clause. The stale CSD in `CBADMCDJ.jcl`
-additionally binds non-migrated **test** transactions (`CCT1`–`CCT4` → `COTSTP1C`–`COTSTP4C`)
-and an admin transaction `CCDM` → `COADM00C`; these belong to an earlier CardDemo revision,
-are out of scope, and are intentionally excluded from the route table above.
+**Transaction-count reconciliation (authoritative escalation).** The migration blueprint
+headlines *"18 interactive CICS online programs"* (`docs/technical-specifications.md` L13,
+L209). The frozen baseline at commit `27d6c6f` contains exactly **17** online `CO*.cbl`
+members, **17** BMS mapsets, and the **17** distinct transaction IDs enumerated above
+(3 entry points — sign-on `CC00`, main menu `CM00`, admin menu `CA00` — plus the 10
+main-menu functions and the 4 admin user-CRUD functions). This 17-row table is therefore the
+**authoritative** route contract and is intentionally **not** padded to an eighteenth row.
+
+The headline "18" is a known internal inconsistency in the blueprint's program-count tally
+(AAP §0.1.3 explicitly records the blueprint's internal inconsistencies). **Resolution:** no
+eighteenth online program or mapset exists in the source tree at `27d6c6f`, so none is
+invented here — fabricating an extra endpoint solely to match the headline count would
+violate the Minimal Change Clause (§0.7.1, "make only the changes absolutely necessary").
+The discrepancy is **escalated as a documentation defect in the blueprint headline** (the
+"18" should read "17"); it is **not** a missing deliverable in this contract. The stale CSD
+in `CBADMCDJ.jcl` additionally binds non-migrated **test** transactions (`CCT1`–`CCT4` →
+`COTSTP1C`–`COTSTP4C`) and an admin transaction `CCDM` → `COADM00C`; these belong to an
+earlier CardDemo revision, are out of scope, and are intentionally excluded from the route
+table above.
 
 ---
 
@@ -237,7 +244,8 @@ Authenticates a user against the `USRSEC` store and issues a bearer token. Repla
 | `userId` | `SEC-USR-ID` | `String` | 8 | echoes the authenticated user id |
 | `userType` | `SEC-USR-TYPE` → `UserType` | enum | 1 | `ADMIN` (COBOL `'A'`) or `USER` (COBOL `'U'`) |
 | `token` | (new) | `String` | — | JWT bearer token to send on all subsequent calls |
-| `nextRoute` | navigation target | `String` | — | `/api/menu/admin` when `userType=ADMIN`, else `/api/menu/main` — mirrors the COBOL `XCTL` to `COADM01C` vs `COMEN01C` after a successful sign-on |
+| `toTranId` | `CDEMO-TO-TRANID` | `String` | 4 | next CICS transaction id the client should route to — `CA00` (admin menu) when `userType=ADMIN`, else `CM00` (main menu); mirrors the COBOL navigation set before the `XCTL` to `COADM01C` vs `COMEN01C` after a successful sign-on |
+| `toProgram` | `CDEMO-TO-PROGRAM` | `String` | 8 | the target COBOL program name for that route — `COADM01C` when `userType=ADMIN`, else `COMEN01C` |
 
 **Status codes:** `200 OK` (authenticated); `400 Bad Request` (missing/oversized fields);
 `401 Unauthorized` (unknown user id or wrong password — equivalent to the COBOL
@@ -322,7 +330,7 @@ data field is protected/display (output only); the sole input is the `ACCTSID` k
 
 | Field | BMS field | Type | Length / precision | Notes |
 |---|---|---|---|---|
-| `acctId` | `ACCTSID` | `String` (digits) | 11 | account key |
+| `accountId` | `ACCTSID` | `String` (digits) | 11 | account key |
 | `accountStatus` | `ACSTTUS` | `String` | 1 | active flag (`Y`/`N`) |
 | `openDate` | `ADTOPEN` | `String` (date) | 10 | `yyyy-mm-dd` |
 | `expirationDate` | `AEXPDT` | `String` (date) | 10 | |
@@ -350,12 +358,12 @@ data field is protected/display (output only); the sole input is the `ACCTSID` k
 | `city` | `ACSCITY` | `String` | 50 | |
 | `state` | `ACSSTTE` | `String` | 2 | US state code |
 | `zipCode` | `ACSZIPC` | `String` | 5 | |
-| `country` | `ACSCTRY` | `String` | 3 | |
-| `phone1` | `ACSPHN1` | `String` | 13 | formatted phone (display) |
-| `phone2` | `ACSPHN2` | `String` | 13 | formatted phone (display) |
-| `governmentId` | `ACSGOVT` | `String` | 20 | |
+| `countryCode` | `ACSCTRY` | `String` | 3 | |
+| `phoneNumber1` | `ACSPHN1` | `String` | 13 | formatted phone (display) |
+| `phoneNumber2` | `ACSPHN2` | `String` | 13 | formatted phone (display) |
+| `governmentIssuedId` | `ACSGOVT` | `String` | 20 | |
 | `eftAccountId` | `ACSEFTC` | `String` | 10 | |
-| `primaryCardHolderFlag` | `ACSPFLG` | `String` | 1 | |
+| `primaryCardHolderIndicator` | `ACSPFLG` | `String` | 1 | |
 
 **Status codes:** `200 OK`; `400 Bad Request` (`id` not 11 digits); `404 Not Found`
 (account or cross-reference not found — COBOL `FILE STATUS 23`).
@@ -404,16 +412,16 @@ fields, which the request DTO preserves exactly.
 | `city` | `ACSCITY` | `String` | 50 | yes | `@Size(max=50)` |
 | `state` | `ACSSTTE` | `String` | 2 | yes | `@Size(max=2)`, US-state lookup |
 | `zipCode` | `ACSZIPC` | `String` | 5 | yes | `@Size(max=5)`, state/ZIP lookup |
-| `country` | `ACSCTRY` | `String` | 3 | no | `@Size(max=3)` |
+| `countryCode` | `ACSCTRY` | `String` | 3 | no | `@Size(max=3)` |
 | `phone1AreaCode` | `ACSPH1A` | `String` (digits) | 3 | no | NANPA area-code lookup |
 | `phone1Prefix` | `ACSPH1B` | `String` (digits) | 3 | no | `@Digits(integer=3)` |
 | `phone1Line` | `ACSPH1C` | `String` (digits) | 4 | no | `@Digits(integer=4)` |
 | `phone2AreaCode` | `ACSPH2A` | `String` (digits) | 3 | no | NANPA area-code lookup |
 | `phone2Prefix` | `ACSPH2B` | `String` (digits) | 3 | no | `@Digits(integer=3)` |
 | `phone2Line` | `ACSPH2C` | `String` (digits) | 4 | no | `@Digits(integer=4)` |
-| `governmentId` | `ACSGOVT` | `String` | 20 | no | `@Size(max=20)` |
+| `governmentIssuedId` | `ACSGOVT` | `String` | 20 | no | `@Size(max=20)` |
 | `eftAccountId` | `ACSEFTC` | `String` | 10 | no | `@Size(max=10)` |
-| `primaryCardHolderFlag` | `ACSPFLG` | `String` | 1 | no | `@Size(max=1)` |
+| `primaryCardHolderIndicator` | `ACSPFLG` | `String` | 1 | no | `@Size(max=1)` |
 
 **Response — `AccountDto`** (`200 OK`): the refreshed account view (same shape as the
 `GET` response above).
@@ -548,7 +556,7 @@ Paginated browse, optionally filtered by transaction id. The `COTRN00` screen re
 | Field | BMS field | Type | Length / precision | Notes |
 |---|---|---|---|---|
 | `content[].transactionId` | `TRNIDnn` | `String` | 16 | |
-| `content[].originDate` | `TDATEnn` | `String` (date) | 8 | display date |
+| `content[].originationDate` | `TDATEnn` | `String` (date) | 8 | display date |
 | `content[].description` | `TDESCnn` | `String` | 26 | truncated description (list view) |
 | `content[].amount` | `TAMTnnn` | `BigDecimal` | scale 2 | `S9(09)V99` |
 | `page` / `size` / `totalElements` / `hasNext` / `hasPrevious` | — | — | — | pagination metadata |
@@ -570,8 +578,8 @@ Single keyed read (`COTRN01`). All fields are display except the `TRNIDIN` key.
 | `source` | `TRNSRC` | `String` | 10 | |
 | `description` | `TDESC` | `String` | 60 | screen field; backing record holds `PIC X(100)` |
 | `amount` | `TRNAMT` | `BigDecimal` | scale 2 | `S9(09)V99` |
-| `originDate` | `TORIGDT` | `String` (date) | 10 | |
-| `processDate` | `TPROCDT` | `String` (date) | 10 | |
+| `originationDate` | `TORIGDT` | `String` (date) | 10 | |
+| `processingDate` | `TPROCDT` | `String` (date) | 10 | |
 | `merchantId` | `MID` | `String` (digits) | 9 | `TRAN-MERCHANT-ID PIC 9(09)` |
 | `merchantName` | `MNAME` | `String` | 30 | screen field; backing record holds `PIC X(50)` |
 | `merchantCity` | `MCITY` | `String` | 25 | screen field; backing record holds `PIC X(50)` |
@@ -595,20 +603,22 @@ auto-generated. The screen carries a `CONFIRM` (Y/N) field used as a two-step co
 | `source` | `TRNSRC` | `String` | 10 | yes | `@Size(max=10)` |
 | `description` | `TDESC` | `String` | 60 | yes | `@Size(max=60)` |
 | `amount` | `TRNAMT` | `BigDecimal` | scale 2 | yes | `@Digits(integer=9, fraction=2)` |
-| `originDate` | `TORIGDT` | `String` (date) | 10 | yes | valid `yyyy-mm-dd` |
-| `processDate` | `TPROCDT` | `String` (date) | 10 | yes | valid `yyyy-mm-dd` |
+| `originationDate` | `TORIGDT` | `String` (date) | 10 | yes | valid `yyyy-mm-dd` |
+| `processingDate` | `TPROCDT` | `String` (date) | 10 | yes | valid `yyyy-mm-dd` |
 | `merchantId` | `MID` | `String` (digits) | 9 | yes | `@Digits(integer=9)` |
 | `merchantName` | `MNAME` | `String` | 30 | yes | `@Size(max=30)` |
 | `merchantCity` | `MCITY` | `String` | 25 | yes | `@Size(max=25)` |
 | `merchantZip` | `MZIP` | `String` | 10 | yes | `@Size(max=10)` |
-| `confirm` | `CONFIRM` | `String` | 1 | yes | `@Pattern("[YN]")` — must be `Y` to commit |
+| `confirm` | `CONFIRM` | `String` | 1 | no | `@Size(max=1)` — `Y`/`N`, case-insensitive. A blank or otherwise-invalid value triggers a service-level **re-prompt** (it is not rejected with a `400`); the accept/clear/re-prompt decision is conversational logic in `COTRN02C` (accepts `'Y'`/`'y'`/`'N'`/`'n'`), not a DTO field-format rule |
 
 **Response — `TransactionDto`** (`201 Created`): the created transaction including the
 auto-generated `transactionId`. The `Location` header carries
 `/api/transactions/{transactionId}`.
 
-**Status codes:** `201 Created`; `400 Bad Request` (validation; or `confirm != Y`);
-`404 Not Found` (account/card cross-reference not found).
+**Status codes:** `201 Created`; `400 Bad Request` (validation failure);
+`404 Not Found` (account/card cross-reference not found). When `confirm` is not `Y`,
+`COTRN02C` re-prompts for confirmation rather than committing — this conversational
+outcome is handled in service logic, not as a field-format rejection.
 
 **Notes — technology substitution.** `COTRN02C` auto-generates the transaction id by
 browsing the `TRANSACT` file to the end and incrementing the highest id; the Java target
@@ -634,19 +644,21 @@ balance and prompts for a Y/N confirmation before committing.
 | Field | BMS field | Type | Length | Required | Validation |
 |---|---|---|---|---|---|
 | `accountId` | `ACTIDIN` (`UNPROT`) | `String` (digits) | 11 | yes | `@Digits(integer=11)` |
-| `confirm` | `CONFIRM` (`UNPROT`) | `String` | 1 | yes | `@Pattern("[YN]")` — must be `Y` to commit |
+| `confirm` | `CONFIRM` (`UNPROT`) | `String` | 1 | no | `@Size(max=1)` — `Y`/`N`, case-insensitive; the accept/re-prompt decision is conversational logic in `COBIL00C` / `BillPaymentService`, not a DTO field-format rule |
 
 **Response — `BillPaymentResponse`** (`200 OK`):
 
 | Field | BMS field | Type | Length / precision | Notes |
 |---|---|---|---|---|
-| `accountId` | `ACTIDIN` | `String` (digits) | 11 | |
 | `currentBalance` | `CURBAL` | `BigDecimal` | scale 2 | balance presented for confirmation (`ACCT-CURR-BAL`, `S9(10)V99`) |
-| `paymentTransactionId` | generated | `String` | 16 | id of the balancing payment transaction created |
+| `transactionId` | generated | `String` | 16 | id of the balancing payment transaction created |
 | `newBalance` | computed | `BigDecimal` | scale 2 | balance after payment (zero on success) |
+| `confirmationNumber` | generated | `String` | — | confirmation reference returned for the completed payment |
 
-**Status codes:** `200 OK`; `400 Bad Request` (validation; or `confirm != Y`);
-`404 Not Found` (account not found).
+**Status codes:** `200 OK`; `400 Bad Request` (validation failure);
+`404 Not Found` (account not found). When `confirm` is not `Y`, `COBIL00C` /
+`BillPaymentService` re-prompts for confirmation rather than committing the payment —
+this conversational outcome is handled in service logic, not as a field-format rejection.
 
 **Notes — technology substitution.** The balance update and the payment-transaction insert
 are performed in one Spring `@Transactional` method so they commit or roll back together. The
@@ -673,13 +685,13 @@ confirmation.
 | `monthly` | `MONTHLY` | `String` | 1 | conditional | one of `monthly`/`yearly`/`custom` must be selected (`Y`) |
 | `yearly` | `YEARLY` | `String` | 1 | conditional | mutually exclusive with the others |
 | `custom` | `CUSTOM` | `String` | 1 | conditional | when `Y`, the date range is required |
-| `startDateMonth` | `SDTMM` | `String` (digits) | 2 | conditional | `@Digits(integer=2)`, `01`–`12` |
-| `startDateDay` | `SDTDD` | `String` (digits) | 2 | conditional | `@Digits(integer=2)`, `01`–`31` |
-| `startDateYear` | `SDTYYYY` | `String` (digits) | 4 | conditional | `@Digits(integer=4)` |
-| `endDateMonth` | `EDTMM` | `String` (digits) | 2 | conditional | `@Digits(integer=2)`, `01`–`12` |
-| `endDateDay` | `EDTDD` | `String` (digits) | 2 | conditional | `@Digits(integer=2)`, `01`–`31` |
-| `endDateYear` | `EDTYYYY` | `String` (digits) | 4 | conditional | `@Digits(integer=4)` |
-| `confirm` | `CONFIRM` | `String` | 1 | yes | `@Pattern("[YN]")` — must be `Y` to submit |
+| `startMonth` | `SDTMM` | `String` (digits) | 2 | conditional | `@Size(max=2)`, `@Pattern("\d{0,2}")` — structural digit/width only; calendar validity and range (`01`–`12`) are checked by `DateValidationService` (`CSUTLDTC`) for custom reports |
+| `startDay` | `SDTDD` | `String` (digits) | 2 | conditional | `@Size(max=2)`, `@Pattern("\d{0,2}")` — structural only; day validity/range via `DateValidationService` |
+| `startYear` | `SDTYYYY` | `String` (digits) | 4 | conditional | `@Size(max=4)`, `@Pattern("\d{0,4}")` — structural only; year validity via `DateValidationService` |
+| `endMonth` | `EDTMM` | `String` (digits) | 2 | conditional | `@Size(max=2)`, `@Pattern("\d{0,2}")` — structural only; month validity/range via `DateValidationService` |
+| `endDay` | `EDTDD` | `String` (digits) | 2 | conditional | `@Size(max=2)`, `@Pattern("\d{0,2}")` — structural only; day validity/range via `DateValidationService` |
+| `endYear` | `EDTYYYY` | `String` (digits) | 4 | conditional | `@Size(max=4)`, `@Pattern("\d{0,4}")` — structural only; year validity via `DateValidationService` |
+| `confirm` | `CONFIRM` | `String` | 1 | no | `@Size(max=1)` — `Y`/`N`, case-insensitive; the submit/re-prompt decision is conversational logic in `CORPT00C` / `ReportSubmissionService`, not a DTO field-format rule |
 
 **Response — `ReportSubmissionResponse`** (`202 Accepted`):
 
@@ -690,7 +702,9 @@ confirmation.
 | `status` | — | `String` | `SUBMITTED` |
 
 **Status codes:** `202 Accepted` (request queued); `400 Bad Request` (no report type
-selected, invalid/inconsistent date range, or `confirm != Y`).
+selected, or invalid/inconsistent date range). When `confirm` is not `Y`, `CORPT00C` /
+`ReportSubmissionService` re-prompts for confirmation rather than submitting — this
+conversational outcome is handled in service logic, not as a field-format rejection.
 
 **Notes — technology substitution.** `CORPT00C` wrote the report request to the CICS
 Transient Data Queue `JOBS`, which triggered JES batch submission — the only online↔batch
@@ -715,6 +729,18 @@ entity: `UserSecurity` (`app/cpy/CSUSR01Y.cpy`, `USRSEC`).
 > (`ACCESS_DENIED`). This realizes the legacy reachability rule — the user-administration
 > screens were only reachable from the admin menu (`COADM01`), which the sign-on flow routed
 > to exclusively for `'A'`-type users.
+
+> **Binding type and operation-scoped validation.** All four operations bind the single
+> `UserSecurityDto` (the consolidation of the four `COUSR0x` symbolic maps); there is no
+> separate create/update/summary DTO. The field-level edits the COBOL programs enforce differ
+> by operation, so the DTO carries two Jakarta Bean Validation group tokens — `OnAdd` and
+> `OnUpdate` — and the endpoints activate the matching one (`@Validated(UserSecurityDto.OnAdd.class)`
+> on add, `@Validated(UserSecurityDto.OnUpdate.class)` on update). The "Validation" column in
+> the request tables below states the constraint **and the group it fires under**: `userId` is
+> `@NotBlank` only `OnAdd` (update/delete take the id from the path); `firstName`, `lastName`,
+> `password` (`@NotBlank`) and `userType` (`@NotNull`) fire on **both** `OnAdd` and `OnUpdate`,
+> reproducing the COUSR01C (add) and COUSR02C (update) empty-field edits. The always-on
+> `@Size(max=n)` width guards apply to every operation.
 
 #### `GET /api/admin/users` — list users (paginated)
 
@@ -745,15 +771,16 @@ renders **10 rows per page** (`SEL0001`–`SEL0010`, `USRID01`–`USRID10`, `FNA
 Creates a user (`COUSR01`). All fields are unprotected input; the password is `DRK`
 (non-displaying) and is hashed with **BCrypt** on create.
 
-**Request — `UserCreateRequest`** (fields `UNPROT` on `COUSR01`):
+**Request — `UserSecurityDto`, validated `@Validated(UserSecurityDto.OnAdd.class)`** (fields
+`UNPROT` on `COUSR01`):
 
 | Field | BMS field | Type | Length | Required | Validation |
 |---|---|---|---|---|---|
-| `userId` | `USERID` | `String` | 8 | yes | `@NotBlank`, `@Size(max=8)` |
-| `firstName` | `FNAME` | `String` | 20 | yes | `@NotBlank`, `@Size(max=20)` |
-| `lastName` | `LNAME` | `String` | 20 | yes | `@NotBlank`, `@Size(max=20)` |
-| `password` | `PASSWD` (`DRK`) | `String` | 8 | yes | `@NotBlank`, `@Size(max=8)` — **write-only**; BCrypt-hashed; never echoed |
-| `userType` | `USRTYPE` → `UserType` | enum | 1 | yes | `@Pattern("[AU]")` (`A`=admin, `U`=user) |
+| `userId` | `USERID` | `String` | 8 | yes | `@NotBlank(OnAdd)`, `@Size(max=8)` |
+| `firstName` | `FNAME` | `String` | 20 | yes | `@NotBlank(OnAdd,OnUpdate)`, `@Size(max=20)` |
+| `lastName` | `LNAME` | `String` | 20 | yes | `@NotBlank(OnAdd,OnUpdate)`, `@Size(max=20)` |
+| `password` | `PASSWD` (`DRK`) | `String` | 8 | yes | `@NotBlank(OnAdd,OnUpdate)`, `@Size(max=8)` — **write-only**; BCrypt-hashed; never echoed |
+| `userType` | `USRTYPE` → `UserType` | enum | 1 | yes | `@NotNull(OnAdd,OnUpdate)`; JSON value `ADMIN` or `USER` (the `UserType` enum constant names). The byte-exact COBOL codes `'A'`/`'U'` are preserved internally via `UserType.getCode()`; an unrecognized value is rejected at JSON binding (`400`). |
 
 **Response — `UserSecurityDto`** (`201 Created`): the created user **without** the password.
 The `Location` header carries `/api/admin/users/{userId}`.
@@ -768,14 +795,15 @@ type are editable.
 
 **Path parameter:** `id` ← `USRIDIN` (`String`, 8, `@Size(max=8)`).
 
-**Request — `UserUpdateRequest`** (fields `UNPROT` on `COUSR02`):
+**Request — `UserSecurityDto`, validated `@Validated(UserSecurityDto.OnUpdate.class)`** (fields
+`UNPROT` on `COUSR02`):
 
 | Field | BMS field | Type | Length | Required | Validation |
 |---|---|---|---|---|---|
-| `firstName` | `FNAME` | `String` | 20 | yes | `@NotBlank`, `@Size(max=20)` |
-| `lastName` | `LNAME` | `String` | 20 | yes | `@NotBlank`, `@Size(max=20)` |
-| `password` | `PASSWD` (`DRK`) | `String` | 8 | no | `@Size(max=8)` — **write-only**; when present, BCrypt-hashed; never echoed |
-| `userType` | `USRTYPE` → `UserType` | enum | 1 | yes | `@Pattern("[AU]")` |
+| `firstName` | `FNAME` | `String` | 20 | yes | `@NotBlank(OnAdd,OnUpdate)`, `@Size(max=20)` |
+| `lastName` | `LNAME` | `String` | 20 | yes | `@NotBlank(OnAdd,OnUpdate)`, `@Size(max=20)` |
+| `password` | `PASSWD` (`DRK`) | `String` | 8 | yes | `@NotBlank(OnAdd,OnUpdate)`, `@Size(max=8)` — **write-only**; BCrypt-hashed; never echoed. Required on update: `COUSR02C` rejects an empty password (`'Password can NOT be empty...'`). |
+| `userType` | `USRTYPE` → `UserType` | enum | 1 | yes | `@NotNull(OnAdd,OnUpdate)`; JSON value `ADMIN` or `USER` (the `UserType` enum constant names); byte-exact `'A'`/`'U'` preserved via `UserType.getCode()`. |
 
 **Response — `UserSecurityDto`** (`200 OK`): the refreshed user without the password.
 
@@ -807,7 +835,7 @@ never serialized on any response. The COBOL `SEC-USR-TYPE` value (`'A'`/`'U'`) m
 REST DTO field names are derived directly from the BMS symbolic-map field names / COBOL data
 names, and the documented length and type match the originating `PIC` clause exactly. The
 camelCase JSON name is a deterministic transliteration of the COBOL/BMS name (for example
-`ACCTSID` → `acctId`, `ACSFNAM` → `firstName` where the screen label disambiguates, `TRNAMT`
+`ACCTSID` → `accountId`, `ACSFNAM` → `firstName` where the screen label disambiguates, `TRNAMT`
 → `amount`); the mapping is recorded per field in the tables above so it can be audited
 against the frozen sources at commit `27d6c6f`. Where the screen splits a logical value across
 component fields (dates as year/month/day, SSN as three parts, phone as area/prefix/line), the

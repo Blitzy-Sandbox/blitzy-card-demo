@@ -11,7 +11,7 @@ import com.cardemo.model.key.DisclosureGroupId;
 
 /**
  * JPA entity mapping the legacy AWS CardDemo disclosure-group record onto the
- * PostgreSQL {@code disclosure_groups} table.
+ * PostgreSQL {@code disclosure_group} table.
  *
  * <p>This entity is the Java&nbsp;25 / Spring Data JPA replacement for the VSAM
  * KSDS dataset {@code DISCGRP}, whose fixed 50-byte record layout is defined by
@@ -94,12 +94,12 @@ import com.cardemo.model.key.DisclosureGroupId;
  *
  * <h2>Composite-key &amp; column-name contract</h2>
  * <p>The composite primary key is supplied verbatim by {@link DisclosureGroupId},
- * which declares the authoritative physical column names {@code group_id}
- * ({@code VARCHAR(10)}), {@code type_code} ({@code VARCHAR(2)}) and
- * {@code category_code} ({@code INTEGER}). This entity adds the single non-key
- * column {@code interest_rate} ({@code NUMERIC(6,2)}). These names and types are
- * authoritative for the data layer: the Flyway {@code V1__create_schema.sql}
- * {@code disclosure_groups} table must declare the three-part composite primary
+ * which declares the authoritative physical column names {@code account_group_id}
+ * ({@code VARCHAR(10)}), {@code transaction_type_code} ({@code VARCHAR(2)}) and
+ * {@code transaction_category_code} ({@code INTEGER}). This entity adds the single
+ * non-key column {@code interest_rate} ({@code NUMERIC(6,2)}). These names and types
+ * match the authoritative Flyway {@code V1__create_schema.sql}
+ * {@code disclosure_group} table, which declares the three-part composite primary
  * key plus the {@code interest_rate} column exactly as named here, and the
  * {@code V3} seed (loaded from {@code app/data/ASCII/discgrp.txt}, 50-byte
  * records) must align with these names, types and scales.</p>
@@ -111,7 +111,7 @@ import com.cardemo.model.key.DisclosureGroupId;
  * @see DisclosureGroupId
  */
 @Entity
-@Table(name = "disclosure_groups")
+@Table(name = "disclosure_group")
 public class DisclosureGroup {
 
     /**
@@ -122,8 +122,9 @@ public class DisclosureGroup {
      * <p>Migrated from the COBOL {@code DIS-GROUP-KEY} group
      * ({@code DIS-ACCT-GROUP-ID PIC X(10)} + {@code DIS-TRAN-TYPE-CD PIC X(02)} +
      * {@code DIS-TRAN-CAT-CD PIC 9(04)}). The three components are carried by the
-     * embedded {@link DisclosureGroupId} and mapped to the {@code group_id},
-     * {@code type_code} and {@code category_code} columns; they are deliberately
+     * embedded {@link DisclosureGroupId} and mapped to the {@code account_group_id},
+     * {@code transaction_type_code} and {@code transaction_category_code} columns;
+     * they are deliberately
      * not redeclared here. This is the entity's sole identifier, so the
      * downstream repository is
      * {@code JpaRepository<DisclosureGroup, DisclosureGroupId>}.</p>
