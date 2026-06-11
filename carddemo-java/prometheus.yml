@@ -1,0 +1,73 @@
+# =============================================================================
+# CardDemo (Java 25 + Spring Boot 3.x) — Prometheus Scrape Configuration
+# =============================================================================
+# Purpose:
+#   Local-only Prometheus server configuration for the CardDemo observability
+#   stack. The migrated application exposes metrics through Spring Boot Actuator
+#   backed by the Micrometer Prometheus registry (micrometer-registry-prometheus)
+#   at the HTTP endpoint `/actuator/prometheus`. The `prometheus` service defined
+#   in `docker-compose.yml` mounts THIS file at container startup
+#   (default mount path: /etc/prometheus/prometheus.yml) and uses it to scrape
+#   that endpoint as well as Prometheus' own self-monitoring metrics.
+#
+#   This file is the technology replacement for the mainframe estate's complete
+#   absence of runtime observability — the legacy COBOL/CICS application emitted
+#   no metrics. It has NO COBOL source equivalent; it is created from scratch to
+#   satisfy the "observability exercisable locally" requirement.
+#
+# Custom business metrics emitted by the application (Micrometer names):
+#   - carddemo.batch.records.processed   (counter, tagged per batch job)
+#   - carddemo.batch.records.rejected    (counter, tagged with rejection reason)
+#   - carddemo.auth.attempts             (counter, tagged success/failure)
+#   - carddemo.transaction.amount.total  (distribution summary)
+#   NOTE: The Micrometer Prometheus registry exposes these with dots converted
+#   to underscores (e.g. `carddemo_batch_records_processed_total`). No relabeling
+#   is required here — the registry handles naming and Grafana/PromQL queries use
+#   the underscore form. The companion Grafana dashboard
+#   (`docs/grafana-dashboard.json`) visualizes the metrics scraped below.
+#
+# Operational guardrails:
+#   - LOCAL ONLY: every target is a docker-compose service or localhost. There
+#     are no live/production endpoints and no secrets (no credentials, tokens,
+#     or TLS material) in this file.
+#   - SYNC CONTRACT: the `carddemo-app` scrape target host (`app`) MUST match the
+#     application service name declared in `docker-compose.yml`, and the port
+#     (8080) MUST match that service's exposed container port. If the compose
+#     author renames the app service, update the target below to match.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Global defaults — applied to every scrape job unless overridden per job.
+# -----------------------------------------------------------------------------
+global:
+  # How frequently Prometheus scrapes each target. 15s is a sensible local
+  # default that keeps dashboards responsive without overloading the dev app.
+  scrape_interval: 15s
+  # How frequently Prometheus evaluates recording/alerting rules. Kept equal to
+  # the scrape interval for predictable local behavior (no rule files are loaded
+  # in this local stack, so this is the conventional baseline).
+  evaluation_interval: 15s
+
+# -----------------------------------------------------------------------------
+# Scrape jobs.
+# -----------------------------------------------------------------------------
+scrape_configs:
+  # CardDemo Spring Boot application — business + JVM + HTTP metrics exposed via
+  # Spring Boot Actuator and the Micrometer Prometheus registry.
+  - job_name: carddemo-app
+    # Plain HTTP inside the local docker-compose network (no TLS locally).
+    scheme: http
+    # Actuator Prometheus endpoint path. Must remain exactly this value to match
+    # the application's `management.endpoints.web.exposure` configuration.
+    metrics_path: /actuator/prometheus
+    static_configs:
+      # `app` is the docker-compose service name of the application container;
+      # 8080 is its exposed HTTP port. Keep both in sync with docker-compose.yml.
+      - targets: ['app:8080']
+
+  # Prometheus self-monitoring — scrapes Prometheus' own metrics on its default
+  # `/metrics` endpoint. Conventional and useful for verifying the scrape stack
+  # itself is healthy. 9090 is the Prometheus server's own port.
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
