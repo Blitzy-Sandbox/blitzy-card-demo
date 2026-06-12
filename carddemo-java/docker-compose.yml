@@ -1,0 +1,370 @@
+# =============================================================================
+#  CardDemo — Greenfield Java 25 LTS + Spring Boot 3.x Migration
+#  LOCAL runtime & observability stack (docker-compose)
+# =============================================================================
+#
+#  PURPOSE
+#  Defines the COMPLETE local environment to build, run, and OBSERVE the migrated
+#  AWS CardDemo application with ZERO live AWS dependencies. It is the heart of the
+#  "exercisable locally" observability + AWS-verification requirement (AAP §0.3.1,
+#  §0.7.7; tech-spec L320, L530, L1004–L1007). Six services wire together purely by
+#  docker service name on a single user-defined bridge network:
+#
+#    app  ──metrics(/actuator/prometheus)──▶ prometheus ──▶ grafana (dashboards)
+#    app  ──traces(OTLP /v1/traces)────────▶ jaeger
+#    app  ──S3 / SQS / SNS─────────────────▶ localstack   (no live AWS)
+#    app  ──JDBC───────────────────────────▶ postgres     (VSAM → PostgreSQL)
+#
+#  PROVENANCE & TRACEABILITY
+#  Brand-new, greenfield infrastructure artifact. The legacy AWS CardDemo
+#  COBOL/CICS/VSAM/JCL/BMS estate had no container/compose equivalent. Two legacy
+#  provisioning jobs are the SOURCE references for this file's data plane:
+#    • app/jcl/DEFGDGB.jcl  — IDCAMS DEFINE GENERATIONDATAGROUP (6 GDG bases for
+#      TRANSACT backup/daily/combined, TRANREPT, TCATBALF backup, SYSTRAN). GDG
+#      generations are REPLACED by versioned objects in S3 buckets on `localstack`.
+#    • app/jcl/DUSRSECJ.jcl — IDCAMS DEFINE CLUSTER for the USRSEC VSAM KSDS
+#      (KEYS(8,0), RECORDSIZE(80,80)) seeded from in-stream user records. That
+#      VSAM KSDS is REPLACED by a PostgreSQL table (UserSecurity) created and
+#      seeded by Flyway inside the `app` service — no SQL is inlined here.
+#  Traceability to the frozen COBOL baseline is by original commit SHA 27d6c6f.
+#
+#  MINIMAL CHANGE CLAUSE (AAP §0.7.1)
+#  Only the services required to RUN and OBSERVE the app locally are present, and
+#  every technology-substitution point is documented at its point of use
+#  (VSAM KSDS → PostgreSQL, GDG → S3, CICS TDQ → SQS, CICS notifications → SNS,
+#  mainframe observability gap → Prometheus/Grafana/Jaeger).
+#
+#  SECRET POLICY (AAP §0.7.2 / §0.8.3)
+#  NO hardcoded secrets. Every credential/token is a `${VAR:-default}` shell/.env
+#  interpolation. The inline defaults are clearly NON-SECRET local-dev values only
+#  (e.g. carddemo / test); real values are supplied at runtime via the shell or an
+#  uncommitted `.env` file and are never committed. LOCALSTACK_AUTH_TOKEN has NO
+#  default (empty) because it is a genuine Pro-activation secret.
+#
+#  COMPOSE SCHEMA
+#  Compose Specification (no obsolete top-level `version:` key). `name:` pins a
+#  stable project name so container/volume/network names are predictable.
+# =============================================================================
+
+name: carddemo
+
+services:
+
+  # ===========================================================================
+  # postgres — relational data plane (VSAM KSDS  →  PostgreSQL 16)
+  # ===========================================================================
+  # Technology substitution: the legacy estate's 10 VSAM KSDS clusters + 1
+  # sequential PS staging dataset — provisioned on z/OS by IDCAMS `DEFINE CLUSTER`
+  # jobs such as app/jcl/DUSRSECJ.jcl (the USRSEC KSDS, KEYS(8,0)/RECORDSIZE(80,80))
+  # — are consolidated into ONE PostgreSQL 16 database accessed through Spring Data
+  # JPA. This container provides only the empty database; the `app` service's
+  # Flyway migrations (V1 schema → V2 indexes → V3 seed of the 9 ASCII fixtures)
+  # create and populate every table on startup, so NO SQL is inlined here
+  # (AAP §0.4.4, §0.5.1).
+  postgres:
+    image: postgres:16-alpine
+    container_name: carddemo-postgres
+    environment:
+      # Database name is fixed (matches the JDBC URL the app connects with).
+      POSTGRES_DB: carddemo
+      # NON-SECRET local-dev credentials — overridable via the shell or .env.
+      # The `app` service is wired with the SAME values below.
+      POSTGRES_USER: ${POSTGRES_USER:-carddemo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+    ports:
+      # host:container — exposes PostgreSQL for local tooling / psql access.
+      - "5432:5432"
+    volumes:
+      # Named volume persists table data across `docker compose down`/`up`.
+      - carddemo-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` confirms the server is accepting connections. The `$$`
+      # escapes the `$` so Compose passes a literal `$VAR` to the container and
+      # the container's OWN shell expands POSTGRES_USER/POSTGRES_DB (set above).
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # Grace window for first-time initdb before failures are counted.
+      start_period: 30s
+    networks:
+      - carddemo-net
+
+  # ===========================================================================
+  # localstack — AWS emulator (GDG → S3, CICS TDQ → SQS, notifications → SNS)
+  # ===========================================================================
+  # Technology substitution: every AWS interaction is verified locally with ZERO
+  # live AWS (AAP §0.7.7; tech-spec L1004–L1007):
+  #   • GDG generations (app/jcl/DEFGDGB.jcl DEFINE GENERATIONDATAGROUP)  → S3
+  #     buckets carddemo-batch-input / carddemo-batch-output / carddemo-statements
+  #   • CICS TDQ 'JOBS' WRITEQ (CORPT00C online→batch bridge)             → SQS FIFO
+  #     queue carddemo-report-jobs.fifo
+  #   • CICS notifications                                                → SNS
+  # localstack-pro is used per tech-spec L1005. The auth token is a real secret and
+  # is injected at runtime (empty default keeps `docker compose config` clean).
+  localstack:
+    image: localstack/localstack-pro:latest
+    container_name: carddemo-localstack
+    environment:
+      # Only the three services the migration uses are enabled.
+      SERVICES: s3,sqs,sns
+      # Pro activation token — genuine secret, NO default; supply via env/.env.
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
+      # Optional verbose logging (0 = off). Override with LOCALSTACK_DEBUG=1.
+      DEBUG: ${LOCALSTACK_DEBUG:-0}
+      # Lets LocalStack reach the host Docker daemon for Pro features that spawn
+      # helper containers; harmless for the s3/sqs/sns subset used here.
+      DOCKER_HOST: unix:///var/run/docker.sock
+    ports:
+      # Single edge port — all AWS service calls are multiplexed through 4566.
+      - "4566:4566"
+    volumes:
+      # Init hook: scripts in ready.d run once LocalStack reports "ready". The
+      # companion init-aws.sh (separate file) creates the S3 buckets + SQS FIFO
+      # queue named above. Mounting the directory is sufficient; the script is
+      # owned by the localstack-init artifact, not this file.
+      - ./localstack-init:/etc/localstack/init/ready.d
+      # Docker socket for Pro features that orchestrate containers.
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      # LocalStack publishes an aggregate health endpoint on the edge port; a
+      # successful fetch means the emulator is ready to serve s3/sqs/sns.
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      # LocalStack Pro needs extra time to activate and start the services.
+      start_period: 40s
+    networks:
+      - carddemo-net
+
+  # ===========================================================================
+  # jaeger — distributed tracing backend + UI (NEW capability; no legacy peer)
+  # ===========================================================================
+  # The legacy COBOL/CICS application emitted no traces. The migrated app exports
+  # spans via Micrometer Tracing → OpenTelemetry (opentelemetry-exporter-otlp) and
+  # Jaeger receives them over OTLP (tech-spec L824). The all-in-one image bundles
+  # the OTLP collector, storage, and query UI in a single container — ideal for a
+  # local stack. Pinned tag keeps the OTLP behaviour reproducible.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: carddemo-jaeger
+    environment:
+      # Enable the built-in OTLP receivers (gRPC 4317 / HTTP 4318). Required for
+      # the app's OTLP exporter to deliver traces; off by default in 1.x.
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      # Jaeger web UI — browse traces at http://localhost:16686.
+      - "16686:16686"
+      # OTLP ingest — gRPC (4317) and HTTP (4318). The app sends to jaeger:4318.
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - carddemo-net
+
+  # ===========================================================================
+  # prometheus — metrics scraping (NEW capability; no legacy peer)
+  # ===========================================================================
+  # Scrapes the app's Spring Boot Actuator + Micrometer Prometheus endpoint
+  # (/actuator/prometheus) per the companion prometheus.yml, which targets the
+  # `app` service on port 8080 (job carddemo-app). The scrape config is the
+  # SINGLE source of truth and is bind-mounted read-only to Prometheus' default
+  # config path. KEEP the app service named `app` so the target stays valid.
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: carddemo-prometheus
+    volumes:
+      # Mount the companion scrape config (dependency: carddemo-java/prometheus.yml)
+      # to Prometheus' default config location, read-only.
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      # Prometheus web UI / query API — http://localhost:9090.
+      - "9090:9090"
+    depends_on:
+      # Soft ordering only: Prometheus tolerates a not-yet-up target and will
+      # begin scraping once `app` answers, so no health condition is required.
+      - app
+    networks:
+      - carddemo-net
+
+  # ===========================================================================
+  # grafana — metrics dashboards (NEW capability; no legacy peer)
+  # ===========================================================================
+  # Visualizes the Prometheus metrics. Provisioned entirely from declarative,
+  # version-controlled config (no manual clicks): a Prometheus datasource pointing
+  # at the `prometheus` service and the CardDemo observability dashboard sourced
+  # from docs/grafana-dashboard.json. Provisioning files are supplied via Compose
+  # top-level `configs` (see the `configs:` block at the end of this file), so no
+  # extra sidecar files are required. Satisfies the observability "dashboard
+  # template" gate (AAP §0.7.7; tech-spec L834).
+  grafana:
+    image: grafana/grafana:latest
+    container_name: carddemo-grafana
+    environment:
+      # NON-SECRET local-dev admin credentials — overridable via env/.env.
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Local convenience: no sign-up, anonymous viewing of the dashboard.
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      # Grafana web UI — http://localhost:3000.
+      - "3000:3000"
+    volumes:
+      # Named volume persists Grafana state (users, prefs) across restarts.
+      - carddemo-grafana-data:/var/lib/grafana
+    configs:
+      # Datasource provisioning (auto-loaded from /etc/grafana/provisioning/datasources).
+      - source: grafana-datasource
+        target: /etc/grafana/provisioning/datasources/datasource.yml
+      # Dashboard *provider* — tells Grafana to load JSON dashboards from
+      # /etc/grafana/dashboards (a path OUTSIDE the grafana-data volume, so the
+      # mounted JSON below is always visible regardless of volume contents).
+      - source: grafana-dashboard-provider
+        target: /etc/grafana/provisioning/dashboards/provider.yml
+      # The actual dashboard definition, sourced from the docs/ artifact.
+      - source: carddemo-dashboard
+        target: /etc/grafana/dashboards/carddemo-dashboard.json
+    depends_on:
+      # Datasource targets the prometheus service; start it first (soft).
+      - prometheus
+    networks:
+      - carddemo-net
+
+  # ===========================================================================
+  # app — the migrated CardDemo application (28 COBOL programs → Spring Boot)
+  # ===========================================================================
+  # Service name is EXACTLY `app` — this is a SYNC CONTRACT: prometheus.yml scrapes
+  # `app:8080`, so renaming this service breaks metrics scraping. The image is built
+  # from the project Dockerfile (multi-stage Temurin 25 → executable Spring Boot
+  # JAR). All DB/AWS/observability wiring points at the OTHER docker services by
+  # name, so the app reaches its dependencies purely over the carddemo-net bridge.
+  # The container HEALTHCHECK is defined in the Dockerfile (/actuator/health).
+  app:
+    build:
+      # Build context is the carddemo-java/ project dir (this file's directory);
+      # the Dockerfile's COPY paths (pom.xml, mvnw, .mvn, src) are relative to it.
+      context: .
+      dockerfile: Dockerfile
+    image: carddemo-java:local
+    container_name: carddemo-app
+    ports:
+      # REST API + Actuator (incl. /actuator/prometheus scraped by Prometheus).
+      - "8080:8080"
+    environment:
+      # --- Spring profile -----------------------------------------------------
+      # Activate the `local` profile (not baked into the image, so one image runs
+      # everywhere). The base application.yml is profile-agnostic; the env vars
+      # below override its `${...}` placeholders for the docker network.
+      SPRING_PROFILES_ACTIVE: local
+
+      # --- Datasource (VSAM → PostgreSQL) ------------------------------------
+      # Point JPA/Hikari at the `postgres` service (not localhost). Credentials
+      # mirror the postgres service's NON-SECRET local-dev values.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/carddemo
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-carddemo}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+
+      # --- Tracing (Micrometer → OTLP → Jaeger) ------------------------------
+      # Override the OTLP/HTTP trace endpoint to the Jaeger collector. The
+      # /v1/traces path is the OTLP/HTTP convention (matches application.yml).
+      MANAGEMENT_OTLP_TRACING_ENDPOINT: http://jaeger:4318/v1/traces
+
+      # --- AWS → LocalStack (zero live AWS) ----------------------------------
+      # Endpoint override consumed by Spring Cloud AWS. Both keys are set so the
+      # override holds whether the active profile binds `spring.cloud.aws.endpoint`
+      # via the ${AWS_ENDPOINT_URL:...} placeholder (as application-test.yml does)
+      # or relies on relaxed binding of SPRING_CLOUD_AWS_ENDPOINT directly.
+      AWS_ENDPOINT_URL: http://localstack:4566
+      SPRING_CLOUD_AWS_ENDPOINT: http://localstack:4566
+      # LocalStack S3 requires path-style URLs (http://host:4566/bucket/key).
+      SPRING_CLOUD_AWS_S3_PATH_STYLE_ACCESS_ENABLED: "true"
+      # Region for the AWS SDK + Spring Cloud AWS (LocalStack accepts any valid
+      # region). Set both the SDK env var and the Spring property form.
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      SPRING_CLOUD_AWS_REGION_STATIC: ${AWS_DEFAULT_REGION:-us-east-1}
+      # NON-SECRET test credentials — LocalStack ignores the values but the AWS
+      # SDK's default provider chain requires them to be present (§0.8.3).
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+
+      # --- JVM options (optional, supplied at runtime; empty by default) ------
+      JAVA_OPTS: ${JAVA_OPTS:-}
+    depends_on:
+      # Wait for the data plane to be HEALTHY before the app starts (Flyway and
+      # the AWS clients fail fast otherwise). Jaeger only needs to be started —
+      # missing traces must never block application startup.
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    networks:
+      - carddemo-net
+
+
+# =============================================================================
+# configs — declarative provisioning delivered INLINE (no sidecar files needed)
+# =============================================================================
+# Compose top-level `configs` let us ship Grafana's provisioning files as inline
+# content plus one file-backed dashboard, keeping this stack self-contained.
+configs:
+
+  # Grafana datasource provisioning: a single Prometheus datasource that resolves
+  # the `prometheus` service by name over the carddemo-net bridge.
+  grafana-datasource:
+    content: |
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          access: proxy
+          url: http://prometheus:9090
+          isDefault: true
+          editable: true
+
+  # Grafana dashboard *provider*: load every *.json dashboard from
+  # /etc/grafana/dashboards (where the dashboard below is mounted).
+  grafana-dashboard-provider:
+    content: |
+      apiVersion: 1
+      providers:
+        - name: carddemo
+          orgId: 1
+          folder: ''
+          type: file
+          disableDeletion: false
+          updateIntervalSeconds: 30
+          allowUiUpdates: true
+          options:
+            path: /etc/grafana/dashboards
+            foldersFromFilesStructure: false
+
+  # The CardDemo observability dashboard, sourced from the docs/ artifact. It
+  # visualizes the Micrometer/Prometheus metrics scraped per prometheus.yml.
+  carddemo-dashboard:
+    file: ./docs/grafana-dashboard.json
+
+
+# =============================================================================
+# volumes — named, persistent local state (AAP §0.3.1 cross-cutting)
+# =============================================================================
+volumes:
+  # PostgreSQL data directory — survives `docker compose down` (omit -v to keep).
+  carddemo-postgres-data:
+    name: carddemo-postgres-data
+  # Grafana state (users, preferences). Provisioned config is re-applied on boot.
+  carddemo-grafana-data:
+    name: carddemo-grafana-data
+
+
+# =============================================================================
+# networks — single user-defined bridge so services resolve each other by name
+# =============================================================================
+# Every service attaches to carddemo-net, enabling DNS-style resolution of the
+# stable service names (app, postgres, localstack, prometheus, jaeger, grafana)
+# referenced by prometheus.yml, the app's profile env, and init-aws.sh.
+networks:
+  carddemo-net:
+    name: carddemo-net
+    driver: bridge
