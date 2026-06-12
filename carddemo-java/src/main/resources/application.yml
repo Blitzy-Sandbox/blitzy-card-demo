@@ -122,6 +122,39 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+  # ---------------------------------------------------------------------------
+  # Phase 4b — Spring Batch runtime policy (consumed by config/BatchConfig.java)
+  # ---------------------------------------------------------------------------
+  # Technology substitution: the legacy JCL/JES batch suite (app/jcl/POSTTRAN.jcl
+  # EXEC PGM=CBTRN02C, app/jcl/INTCALC.jcl EXEC PGM=CBACT04C, COMBTRAN, CREASTMT,
+  # TRANREPT) is migrated to Spring Batch (decision D-005). The batch INFRASTRUCTURE
+  # (JDBC JobRepository, JobLauncher, JobExplorer, batch transaction manager) is
+  # AUTO-CONFIGURED by spring-boot-starter-batch; @EnableBatchProcessing is
+  # deliberately NOT used (in Boot 3.x it would DISABLE that auto-config). These two
+  # properties are the only batch settings the migration requires (Minimal Change
+  # Clause, AAP section 0.7.1); the jobs/steps and all sequencing/condition-code logic
+  # live in com.cardemo.batch.*.
+  batch:
+    job:
+      # Do NOT auto-run jobs on application startup. Legacy jobs were JES-submitted
+      # ON DEMAND; the target drives the pipeline via BatchPipelineOrchestrator and
+      # an SQS-triggered report job (CORPT00C TDQ 'JOBS' -> carddemo-report-jobs.fifo).
+      # In Boot 3.5.x the JobLauncherApplicationRunner is active by default
+      # (spring.batch.job.enabled matchIfMissing=true) and, with no spring.batch.job.name
+      # set, would launch EVERY Job bean at startup. Disabling it prevents that; on-demand
+      # launching still works through the auto-configured JobLauncher.
+      enabled: false
+    jdbc:
+      # Flyway is the SINGLE schema authority and ddl-auto=validate forbids Hibernate
+      # from creating tables, so the Spring Batch metadata tables (BATCH_JOB_INSTANCE,
+      # BATCH_JOB_EXECUTION, BATCH_STEP_EXECUTION, BATCH_*_SEQ, ...) MUST be provisioned
+      # by Flyway (a db/migration script). Spring Batch must therefore NOT initialize its
+      # own schema (which would race/conflict with Flyway). 'never' makes this explicit and
+      # profile-safe; the Boot default 'embedded' already skips a non-embedded PostgreSQL.
+      # NOTE for the db/migration agent: add the BATCH_* DDL to db/migration or every batch
+      # job fails at runtime with "Table 'BATCH_JOB_INSTANCE' not found".
+      initialize-schema: never
+
 # =============================================================================
 # Phase 5 — Actuator / metrics / health (observability — tech-spec L826-L832)
 # =============================================================================
