@@ -18,6 +18,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -205,14 +206,33 @@ public class WebConfig implements WebMvcConfigurer {
      *       <strong>400 Bad Request</strong>.</li>
      *   <li>{@link MethodArgumentNotValidException} (Jakarta {@code @Valid} DTO failures) &rarr;
      *       <strong>400 Bad Request</strong>, with per-field errors extracted into the body.</li>
+     *   <li>{@link AuthenticationException} (Spring Security authentication failure thrown from
+     *       controller/service code &mdash; for example a bad sign-on credential surfaced by the
+     *       migrated {@code AuthenticationService} &larr; {@code COSGN00C} on the open
+     *       {@code /api/auth/**} route) &rarr; <strong>401 Unauthorized</strong>. This complements,
+     *       and does not replace, the {@code SecurityConfig} {@code HttpStatusEntryPoint}, which
+     *       handles <em>filter-chain</em> unauthenticated access to protected routes
+     *       <em>before</em> the dispatcher; this advice handles auth failures raised
+     *       <em>after</em> dispatch from within handler/service code.</li>
      *   <li>{@link CardDemoException} (abstract base) &rarr; <strong>500 Internal Server Error</strong>
      *       catch-all for any domain exception lacking a more specific handler. Declared last so the
      *       concrete subtypes above match their dedicated handlers first.</li>
      * </ul>
      *
-     * <h2>Error envelope</h2>
+     * <h2>Error envelope &amp; message sanitization (&sect;0.7.2 &mdash; Privacy)</h2>
      * <p>Every handler returns the same {@link ApiError} shape. Stack traces are never leaked to the
-     * client; the 500 handler logs the full stack server-side only. The optional
+     * client; the 500 handler logs the full stack server-side only. <strong>Client-facing messages
+     * are stable, sanitized, code-paired strings &mdash; the raw {@code ex.getMessage()} is never
+     * returned to the caller nor logged at the normal {@code WARN} level.</strong> This matters
+     * because the {@code com.cardemo.exception} hierarchy embeds business context in its detail
+     * messages (account/card/user identifiers, credit limit and attempted-balance amounts,
+     * transaction/expiration dates); echoing those to a public error body or to the application log
+     * would leak sensitive identifiers and financial values. Each 4xx handler therefore logs only
+     * <em>safe metadata</em> &mdash; the HTTP status, the stable domain {@code code}, and the
+     * exception's class name &mdash; and returns a fixed generic message; the per-request
+     * {@code correlationId} (below) ties a sanitized client response back to the server-side log
+     * line, so a separate policy-controlled audit channel can hold any detailed diagnostics without
+     * exposing them here. The optional
      * {@code correlationId} is read from the SLF4J {@link MDC} under the key
      * {@value #CORRELATION_ID_MDC_KEY} &mdash; a character-exact contract with the request
      * correlation-ID filter &mdash; so a client response can be tied back to its server-side log
@@ -239,6 +259,39 @@ public class WebConfig implements WebMvcConfigurer {
          */
         private static final String CORRELATION_ID_MDC_KEY = "correlationId";
 
+        // -----------------------------------------------------------------------------------------
+        // Sanitized, stable client-facing messages (§0.7.2 Privacy). These are returned to the
+        // caller INSTEAD of the raw ex.getMessage(), because the com.cardemo.exception messages can
+        // embed account/card/user identifiers, credit-limit/attempted-balance amounts and
+        // transaction/expiration dates. They are deliberately generic and code-paired so a client
+        // learns the failure category without learning any sensitive business value.
+        // -----------------------------------------------------------------------------------------
+
+        /** Sanitized client message for a missing keyed record (HTTP 404). */
+        private static final String MSG_RECORD_NOT_FOUND = "The requested record was not found";
+
+        /** Sanitized client message for a duplicate-key conflict (HTTP 409). */
+        private static final String MSG_DUPLICATE_RECORD = "A record with the same key already exists";
+
+        /** Sanitized client message for an optimistic-lock conflict (HTTP 409). */
+        private static final String MSG_CONCURRENT_MODIFICATION =
+                "The record was modified by another request; please retry";
+
+        /** Sanitized client message for a credit-limit breach (HTTP 422). */
+        private static final String MSG_CREDIT_LIMIT_EXCEEDED =
+                "The transaction would exceed the account credit limit";
+
+        /** Sanitized client message for an after-expiration rejection (HTTP 422). */
+        private static final String MSG_EXPIRED_CARD =
+                "The transaction was received after the account expiration date";
+
+        /** Sanitized client message for any validation failure (HTTP 400). */
+        private static final String MSG_VALIDATION_FAILED =
+                "Validation failed for one or more request fields";
+
+        /** Sanitized client message for an authentication failure (HTTP 401). */
+        private static final String MSG_AUTHENTICATION_FAILED = "Authentication failed";
+
         /**
          * Maps a missing keyed record to <strong>404 Not Found</strong> &mdash; the COBOL
          * {@code INVALID KEY} / VSAM {@code FILE STATUS '23'} condition.
@@ -250,8 +303,11 @@ public class WebConfig implements WebMvcConfigurer {
         @ExceptionHandler(RecordNotFoundException.class)
         public ResponseEntity<ApiError> handleRecordNotFound(
                 RecordNotFoundException ex, HttpServletRequest request) {
-            log.warn("Record not found (HTTP 404): {}", ex.getMessage());
-            return buildResponse(HttpStatus.NOT_FOUND, "RECORD_NOT_FOUND", ex.getMessage(),
+            // Sanitized (§0.7.2): log only safe metadata (status, code, exception class) — never the
+            // raw message, which carries the looked-up key/identifier. Return a stable generic message.
+            log.warn("Record not found (HTTP 404, code=RECORD_NOT_FOUND, type={})",
+                    ex.getClass().getSimpleName());
+            return buildResponse(HttpStatus.NOT_FOUND, "RECORD_NOT_FOUND", MSG_RECORD_NOT_FOUND,
                     request, null);
         }
 
@@ -266,8 +322,11 @@ public class WebConfig implements WebMvcConfigurer {
         @ExceptionHandler(DuplicateRecordException.class)
         public ResponseEntity<ApiError> handleDuplicateRecord(
                 DuplicateRecordException ex, HttpServletRequest request) {
-            log.warn("Duplicate record (HTTP 409): {}", ex.getMessage());
-            return buildResponse(HttpStatus.CONFLICT, "DUPLICATE_RECORD", ex.getMessage(),
+            // Sanitized (§0.7.2): log only safe metadata — never the raw message, which carries the
+            // colliding key/identifier. Return a stable generic message.
+            log.warn("Duplicate record (HTTP 409, code=DUPLICATE_RECORD, type={})",
+                    ex.getClass().getSimpleName());
+            return buildResponse(HttpStatus.CONFLICT, "DUPLICATE_RECORD", MSG_DUPLICATE_RECORD,
                     request, null);
         }
 
@@ -287,10 +346,13 @@ public class WebConfig implements WebMvcConfigurer {
         @ExceptionHandler(ConcurrentModificationException.class)
         public ResponseEntity<ApiError> handleConcurrentModification(
                 ConcurrentModificationException ex, HttpServletRequest request) {
-            log.warn("Concurrent modification / optimistic-lock conflict (HTTP 409): {}",
-                    ex.getMessage());
-            return buildResponse(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION", ex.getMessage(),
-                    request, null);
+            // Sanitized (§0.7.2): log only safe metadata — never the raw message, which can carry the
+            // affected entity type/identifier. Return a stable generic message.
+            log.warn("Concurrent modification / optimistic-lock conflict "
+                    + "(HTTP 409, code=CONCURRENT_MODIFICATION, type={})",
+                    ex.getClass().getSimpleName());
+            return buildResponse(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION",
+                    MSG_CONCURRENT_MODIFICATION, request, null);
         }
 
         /**
@@ -305,9 +367,12 @@ public class WebConfig implements WebMvcConfigurer {
         @ExceptionHandler(CreditLimitExceededException.class)
         public ResponseEntity<ApiError> handleCreditLimitExceeded(
                 CreditLimitExceededException ex, HttpServletRequest request) {
-            log.warn("Credit limit exceeded (HTTP 422): {}", ex.getMessage());
+            // Sanitized (§0.7.2): log only safe metadata — never the raw message, which carries the
+            // account id, credit limit and attempted balance. Return a stable generic message.
+            log.warn("Credit limit exceeded (HTTP 422, code=CREDIT_LIMIT_EXCEEDED, type={})",
+                    ex.getClass().getSimpleName());
             return buildResponse(HttpStatus.UNPROCESSABLE_ENTITY, "CREDIT_LIMIT_EXCEEDED",
-                    ex.getMessage(), request, null);
+                    MSG_CREDIT_LIMIT_EXCEEDED, request, null);
         }
 
         /**
@@ -322,9 +387,12 @@ public class WebConfig implements WebMvcConfigurer {
         @ExceptionHandler(ExpiredCardException.class)
         public ResponseEntity<ApiError> handleExpiredCard(
                 ExpiredCardException ex, HttpServletRequest request) {
-            log.warn("Transaction after account expiration (HTTP 422): {}", ex.getMessage());
+            // Sanitized (§0.7.2): log only safe metadata — never the raw message, which carries the
+            // account id, expiration date and transaction date. Return a stable generic message.
+            log.warn("Transaction after account expiration (HTTP 422, code=EXPIRED_CARD, type={})",
+                    ex.getClass().getSimpleName());
             return buildResponse(HttpStatus.UNPROCESSABLE_ENTITY, "EXPIRED_CARD",
-                    ex.getMessage(), request, null);
+                    MSG_EXPIRED_CARD, request, null);
         }
 
         /**
@@ -341,13 +409,18 @@ public class WebConfig implements WebMvcConfigurer {
         @ExceptionHandler(ValidationException.class)
         public ResponseEntity<ApiError> handleValidation(
                 ValidationException ex, HttpServletRequest request) {
-            log.warn("Validation failed (HTTP 400): {}", ex.getMessage());
             // getValidationErrors() is never null (defaults to an empty list); the offending field,
-            // when known, is shared by every entry.
+            // when known, is shared by every entry. The per-field rule descriptions are the
+            // validation contract the caller needs to correct its input and are safe to return
+            // (they describe the rule, not a sensitive value) — mirroring the @Valid handler below.
             List<FieldValidationError> fieldErrors = ex.getValidationErrors().stream()
                     .map(message -> new FieldValidationError(ex.getFieldName(), message))
                     .toList();
-            return buildResponse(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", ex.getMessage(),
+            // Sanitized (§0.7.2): log only the field-error count (safe metadata) — never the raw
+            // ex.getMessage(). Return a stable generic top-level message; field-level errors stay.
+            log.warn("Validation failed (HTTP 400, code=VALIDATION_FAILED): {} field error(s)",
+                    fieldErrors.size());
+            return buildResponse(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", MSG_VALIDATION_FAILED,
                     request, fieldErrors);
         }
 
@@ -371,7 +444,42 @@ public class WebConfig implements WebMvcConfigurer {
             log.warn("Request body validation failed (HTTP 400): {} field error(s)",
                     fieldErrors.size());
             return buildResponse(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED",
-                    "Validation failed for one or more request fields", request, fieldErrors);
+                    MSG_VALIDATION_FAILED, request, fieldErrors);
+        }
+
+        /**
+         * Maps a Spring Security authentication failure to <strong>401 Unauthorized</strong> &mdash;
+         * the checkpoint-required global {@code auth -> 401} mapping.
+         *
+         * <p>This handler fires when an {@link AuthenticationException} (for example a
+         * {@code BadCredentialsException} or a {@code UsernameNotFoundException}) is thrown from
+         * within handler or service code <em>after</em> request dispatch &mdash; most notably by the
+         * migrated {@code AuthenticationService} (&larr; {@code COSGN00C}) on the open
+         * {@code /api/auth/**} sign-on route, where a failed credential check is a business outcome
+         * rather than a filter-chain rejection. It is the post-dispatch complement of the
+         * {@code SecurityConfig}
+         * {@link org.springframework.security.web.authentication.HttpStatusEntryPoint}, which
+         * continues to return 401 for <em>filter-chain</em> unauthenticated access to protected
+         * routes; because one acts before dispatch and the other after, they never overlap.</p>
+         *
+         * <p>The raw {@link AuthenticationException#getMessage()} is deliberately neither returned
+         * nor logged at {@code WARN}: it can carry the attempted username. The client receives the
+         * stable, generic {@link #MSG_AUTHENTICATION_FAILED} message and the log records only safe
+         * metadata (status, code, exception class).</p>
+         *
+         * @param ex      the thrown Spring Security authentication exception
+         * @param request the current request, used to populate the error {@code path}
+         * @return a 401 response carrying the standard {@link ApiError} body
+         */
+        @ExceptionHandler(AuthenticationException.class)
+        public ResponseEntity<ApiError> handleAuthentication(
+                AuthenticationException ex, HttpServletRequest request) {
+            // Sanitized (§0.7.2): log only safe metadata — never the raw message, which can carry
+            // the attempted username. Return a stable generic message.
+            log.warn("Authentication failed (HTTP 401, code=AUTHENTICATION_FAILED, type={})",
+                    ex.getClass().getSimpleName());
+            return buildResponse(HttpStatus.UNAUTHORIZED, "AUTHENTICATION_FAILED",
+                    MSG_AUTHENTICATION_FAILED, request, null);
         }
 
         /**
