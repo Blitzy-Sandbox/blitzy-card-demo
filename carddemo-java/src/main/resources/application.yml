@@ -156,6 +156,32 @@ spring:
       initialize-schema: never
 
 # =============================================================================
+# Phase 4c — CardDemo application settings (carddemo.*) — stateless auth token
+# =============================================================================
+# Technology substitution (AAP §0.1.2): the CICS pseudo-conversational
+# `RETURN TRANSID COMMAREA` carry-over of CARDDEMO-COMMAREA is replaced by a
+# self-contained, JDK-only HMAC-SHA256-signed compact token. The settings below
+# are consumed by com.cardemo.security.TokenService (token issuance + validation)
+# and by com.cardemo.security.TokenAuthenticationFilter (per-request validation).
+#
+# Secret policy (AAP §0.7.2): NO real secret is embedded. `secret` is an
+# `${ENV_VAR:default}` placeholder whose inline default is a clearly-labelled
+# NON-SECRET local-development value ONLY (it is intentionally long enough — well
+# over the 32-byte / 256-bit HS256 minimum that TokenService enforces at startup
+# — so the app boots out-of-the-box for local dev). A real, random secret MUST be
+# supplied at runtime via CARDDEMO_SECURITY_TOKEN_SECRET (env var or vault) and is
+# never committed. TokenService fails fast at startup if the secret is blank or
+# shorter than 256 bits.
+carddemo:
+  security:
+    token:
+      # HMAC-SHA256 signing secret. NON-SECRET local-dev default (>= 32 bytes);
+      # ALWAYS overridden in real environments via CARDDEMO_SECURITY_TOKEN_SECRET.
+      secret: ${CARDDEMO_SECURITY_TOKEN_SECRET:local-development-only-carddemo-hs256-token-signing-secret-change-me}
+      # Token lifetime in seconds (non-secret). Defaults to one hour. Env-overridable.
+      ttl-seconds: ${CARDDEMO_SECURITY_TOKEN_TTL_SECONDS:3600}
+
+# =============================================================================
 # Phase 5 — Actuator / metrics / health (observability — tech-spec L826-L832)
 # =============================================================================
 # Technology substitution: the legacy COBOL/CICS application emitted NO metrics,

@@ -150,6 +150,15 @@ class TransactionCombineProcessorTest {
             assertThat(input.getTranCardNum()).isEqualTo(SAMPLE_CARD_NUM);
             assertThat(input.getTranAmt()).isEqualByComparingTo(SAMPLE_AMOUNT);
         }
+
+        @Test
+        @DisplayName("process(null) returns null — COMBTRAN never filters (a null return would drop the item from the chunk)")
+        void nullPassesThrough() {
+            // A Spring Batch ItemProcessor that returns null FILTERS the item out of the chunk;
+            // COMBTRAN is sort-only and never filters, so the identity contract must return exactly
+            // what it is given -- including a null input passed straight through unchanged.
+            assertThat(processor.process(null)).isNull();
+        }
     }
 
     /**

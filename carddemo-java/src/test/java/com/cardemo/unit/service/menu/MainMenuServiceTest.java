@@ -195,6 +195,24 @@ class MainMenuServiceTest {
     }
 
     @Test
+    @DisplayName("selectOption(): an ADMIN context may also select a regular option — the gate only blocks USER picking an ADMIN-only option")
+    void selectOption_adminContext_navigatesRegularOption() {
+        // The COMEN01C admin-only gate (L137-140) fires ONLY for the combination
+        // CDEMO-USRTYP-USER AND option-usrtype = 'A'. An ADMIN principal is therefore
+        // never blocked: it navigates any option exactly as a USER would. Selecting a
+        // regular USER option (10 -> Bill Payment / COBIL00C) under an ADMIN context
+        // pins the CDEMO-USRTYP-USER condition being false (the gate branch not taken).
+        CommArea commArea = new CommArea();
+        commArea.setUserType(UserType.ADMIN);
+
+        var result = service.selectOption("10", commArea);
+
+        assertThat(result.navigate()).isTrue();
+        assertThat(result.targetProgram().trim()).isEqualTo("COBIL00C");
+        assertThat(result.message()).isNull();
+    }
+
+    @Test
     @DisplayName("service constants mirror COMEN01C working storage (WS-TRANID 'CM00' / WS-PGMNAME 'COMEN01C')")
     void selectOption_usesServiceConstants() {
         // COBOL COMEN01C L36-37: WS-PGMNAME VALUE 'COMEN01C', WS-TRANID VALUE 'CM00'.

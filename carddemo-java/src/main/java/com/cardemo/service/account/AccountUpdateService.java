@@ -219,6 +219,20 @@ public class AccountUpdateService {
             throw new ValidationException(errors);
         }
 
+        // PHASE 3b - 9700-CHECK-CHANGE-IN-REC / DATA-WAS-CHANGED-BEFORE-UPDATE: detect a STALE client
+        // form. COACTUPC snapshotted the record image at display time (ACUP-OLD-*) and, before the
+        // REWRITE, compared it against the record re-read for update; a mismatch meant another user had
+        // committed a change in between, so the update was rejected ("Record changed by some one else").
+        // REST analogue: the client echoes the version it saw at view time (request.getVersion()); if it
+        // no longer equals the current committed entity version, the form is stale -> reject with 409
+        // BEFORE writing. This closes the gap that server-side @Version alone cannot: @Version only
+        // catches a change committed AFTER this transaction's read, not a client form loaded before an
+        // earlier completed update. Enforced only when the client supplies a version (opt-in); when
+        // absent, the JPA @Version on saveAndFlush below remains the safety net (AAP §0.7.5).
+        if (request.getVersion() != null && !request.getVersion().equals(account.getVersion())) {
+            throw ConcurrentModificationException.forEntity("Account", null);
+        }
+
         // PHASE 4 - apply the validated values and write both records inside the one transaction.
         applyToAccount(request, account);
         applyToCustomer(request, customer);
@@ -807,6 +821,9 @@ public class AccountUpdateService {
         dto.setPrimaryCardHolderIndicator(cust.getCustPriCardHolderInd());
         dto.setFicoScore(cust.getCustFicoCreditScore() == null
                 ? null : String.valueOf(cust.getCustFicoCreditScore()));
+        // Carry the post-write entity @Version so the redisplayed form holds the new optimistic-lock
+        // token for any subsequent edit (COACTUPC redisplay parity; AAP §0.7.5).
+        dto.setVersion(account.getVersion());
         return dto;
     }
 

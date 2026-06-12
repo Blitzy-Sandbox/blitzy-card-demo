@@ -1,18 +1,10 @@
 package com.cardemo.service.auth;
 
-import java.nio.charset.StandardCharsets;
-import java.security.GeneralSecurityException;
-import java.time.Instant;
-import java.util.Base64;
 import java.util.Locale;
 import java.util.Optional;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,6 +17,7 @@ import com.cardemo.model.dto.SignOnResponse;
 import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.enums.UserType;
 import com.cardemo.repository.UserSecurityRepository;
+import com.cardemo.security.TokenService;
 
 /**
  * Sign-on / authentication business-logic service &mdash; the Java&nbsp;25 /
@@ -67,10 +60,13 @@ import com.cardemo.repository.UserSecurityRepository;
  *   <li><strong>Pseudo-conversational COMMAREA &rarr; stateless signed token
  *       (AAP &sect;0.1.2).</strong> The CICS {@code RETURN TRANSID COMMAREA}
  *       carry-over of {@code CARDDEMO-COMMAREA} is replaced by a self-contained,
- *       JDK-only HMAC-SHA256-signed compact token issued on success (see
- *       {@link #issueToken(String, UserType)}). The signing secret is injected
- *       from configuration (never hardcoded, AAP &sect;0.7.2) and no JWT library
- *       is introduced.</li>
+ *       JDK-only HMAC-SHA256-signed compact token issued on success. The
+ *       token-issuance primitive is owned by the dedicated
+ *       {@link com.cardemo.security.TokenService} (which also validates the same
+ *       token on every protected request via
+ *       {@link com.cardemo.security.TokenAuthenticationFilter}); this service
+ *       merely delegates to it. The signing secret is injected from configuration
+ *       (never hardcoded, AAP &sect;0.7.2) and no JWT library is introduced.</li>
  * </ol>
  *
  * <h2>Transaction semantics</h2>
@@ -147,16 +143,6 @@ public class AuthenticationService {
     private static final String USER_TRAN_ID = "CM00";
 
     // ---------------------------------------------------------------------
-    // Stateless-token constants (COMMAREA -> token substitution, AAP §0.1.2).
-    // ---------------------------------------------------------------------
-
-    /** JDK-guaranteed MAC algorithm used to sign the compact token. */
-    private static final String HMAC_ALGORITHM = "HmacSHA256";
-
-    /** Fixed compact-token header: {@code {"alg":"HS256","typ":"JWT"}}. */
-    private static final String TOKEN_HEADER_JSON = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
-
-    // ---------------------------------------------------------------------
     // Collaborators (constructor-injected — no field injection).
     // ---------------------------------------------------------------------
 
@@ -166,42 +152,41 @@ public class AuthenticationService {
     /** BCrypt encoder from {@code SecurityConfig}; verifies the stored hash (C-003). */
     private final PasswordEncoder passwordEncoder;
 
-    /** HMAC signing secret, injected from configuration; never hardcoded (AAP §0.7.2). */
-    private final String tokenSecret;
-
-    /** Token lifetime in seconds (non-secret; defaults to 3600 when unset). */
-    private final long tokenTtlSeconds;
+    /**
+     * Dedicated stateless-token primitive (COMMAREA -> token substitution, AAP
+     * &sect;0.1.2). This service delegates token issuance to it on a successful
+     * sign-on; the same component validates the token on every protected request.
+     * The signing secret lives entirely inside {@code TokenService} (injected and
+     * validated there), so this service holds no secret material.
+     */
+    private final TokenService tokenService;
 
     /**
      * Constructs the service with its collaborators autowired by Spring.
      *
      * <p>The {@link PasswordEncoder} is the shared {@code BCryptPasswordEncoder}
      * bean exposed by {@code com.cardemo.config.SecurityConfig}; this service
-     * never instantiates its own encoder. The token signing secret and lifetime
-     * are bound from configuration via {@link Value @Value}: the secret has
-     * <strong>no</strong> default (it must be supplied externally so no
-     * credential is hardcoded, AAP &sect;0.7.2), while the non-secret TTL falls
-     * back to one hour.</p>
+     * never instantiates its own encoder. Token issuance is delegated to the
+     * injected {@link TokenService}, which owns and validates the HMAC signing
+     * secret bound from configuration ({@code carddemo.security.token.secret},
+     * never hardcoded, AAP &sect;0.7.2); this service therefore holds no secret
+     * material itself.</p>
      *
      * @param userSecurityRepository keyed access to {@code USRSEC}
      * @param passwordEncoder        the shared BCrypt encoder from {@code SecurityConfig}
-     * @param tokenSecret            HMAC signing secret bound from
-     *                               {@code carddemo.security.token.secret}
-     * @param tokenTtlSeconds        token lifetime bound from
-     *                               {@code carddemo.security.token.ttl-seconds}
-     *                               (default {@code 3600})
+     * @param tokenService           the stateless-token issuer/validator
+     *                               (COMMAREA -&gt; token substitution)
      */
     public AuthenticationService(
             UserSecurityRepository userSecurityRepository,
             PasswordEncoder passwordEncoder,
-            @Value("${carddemo.security.token.secret}") String tokenSecret,
-            @Value("${carddemo.security.token.ttl-seconds:3600}") long tokenTtlSeconds) {
+            TokenService tokenService) {
         this.userSecurityRepository = userSecurityRepository;
         // PasswordEncoder is the BCryptPasswordEncoder @Bean from SecurityConfig (C-003).
         this.passwordEncoder = passwordEncoder;
-        // Secret is injected (@Value), never a hardcoded literal (AAP §0.7.2).
-        this.tokenSecret = tokenSecret;
-        this.tokenTtlSeconds = tokenTtlSeconds;
+        // Token issuance is delegated; the signing secret lives inside TokenService
+        // (injected + validated there), never as a literal here (AAP §0.7.2).
+        this.tokenService = tokenService;
     }
 
     /**
@@ -331,8 +316,9 @@ public class AuthenticationService {
 
         // COMMAREA -> stateless token substitution (AAP §0.1.2): issue a signed
         // token carrying the user identity/type in place of the CICS COMMAREA
-        // carry-over. The signing secret is injected (@Value), never hardcoded.
-        final String token = issueToken(commArea.getUserId(), commArea.getUserType());
+        // carry-over. Delegated to TokenService, which owns the injected signing
+        // secret (never hardcoded) and the token format.
+        final String token = tokenService.issue(commArea.getUserId(), commArea.getUserType());
 
         log.info("User [{}] signed on; routing to program [{}] (tranid [{}])",
                 commArea.getUserId(), commArea.getToProgram(), commArea.getToTranId());
@@ -346,105 +332,6 @@ public class AuthenticationService {
         response.setToTranId(commArea.getToTranId());
         response.setToProgram(commArea.getToProgram());
         return response;
-    }
-
-    /**
-     * Issues a self-contained, JDK-only HMAC-SHA256-signed compact token &mdash;
-     * the stateless replacement for the CICS pseudo-conversational
-     * {@code CARDDEMO-COMMAREA} carry-over (AAP &sect;0.1.2).
-     *
-     * <p>The token is the standard compact triple
-     * {@code base64url(header) + "." + base64url(payload) + "." +
-     * base64url(HMAC-SHA256(header + "." + payload))}. The minimal claim set is
-     * {@code sub} (the signed-in user id), {@code typ} (the {@link UserType} code
-     * {@code 'A'}/{@code 'U'}), {@code iat} (issued-at epoch seconds) and
-     * {@code exp} (expiry = {@code iat + tokenTtlSeconds}). No JWT library is
-     * used and the signing secret is injected (never hardcoded, AAP
-     * &sect;0.7.2).</p>
-     *
-     * @param userId the signed-in user id placed in the {@code sub} claim
-     * @param type   the signed-in user's role placed in the {@code typ} claim
-     * @return the signed compact token
-     */
-    private String issueToken(String userId, UserType type) {
-        final long issuedAt = Instant.now().getEpochSecond();   // iat
-        final long expiresAt = issuedAt + tokenTtlSeconds;      // exp = iat + TTL
-
-        // Minimal claims, JSON built by hand to stay JDK-only (no JWT dependency).
-        // userId is JSON-escaped defensively; typ is the 1-char UserType code.
-        final String payloadJson = "{\"sub\":\"" + jsonEscape(userId) + "\""
-                + ",\"typ\":\"" + type.getCode() + "\""
-                + ",\"iat\":" + issuedAt
-                + ",\"exp\":" + expiresAt + "}";
-
-        final Base64.Encoder encoder = Base64.getUrlEncoder().withoutPadding();
-        final String encodedHeader =
-                encoder.encodeToString(TOKEN_HEADER_JSON.getBytes(StandardCharsets.UTF_8));
-        final String encodedPayload =
-                encoder.encodeToString(payloadJson.getBytes(StandardCharsets.UTF_8));
-        final String signingInput = encodedHeader + "." + encodedPayload;
-        final String signature = encoder.encodeToString(sign(signingInput));
-        return signingInput + "." + signature;
-    }
-
-    /**
-     * Computes the HMAC-SHA256 signature of the compact token's signing input
-     * using the injected secret.
-     *
-     * <p>{@code HmacSHA256} is guaranteed present on every JRE, so a
-     * {@link GeneralSecurityException} here indicates a fatal configuration
-     * error rather than a recoverable condition; it is wrapped in an unchecked
-     * {@link IllegalStateException} so the checked exception never widens the
-     * {@link #signOn(SignOnRequest)} signature.</p>
-     *
-     * @param signingInput the {@code base64url(header) + "." + base64url(payload)} string
-     * @return the raw HMAC-SHA256 signature bytes
-     */
-    private byte[] sign(String signingInput) {
-        try {
-            final Mac mac = Mac.getInstance(HMAC_ALGORITHM);
-            mac.init(new SecretKeySpec(tokenSecret.getBytes(StandardCharsets.UTF_8), HMAC_ALGORITHM));
-            return mac.doFinal(signingInput.getBytes(StandardCharsets.UTF_8));
-        } catch (GeneralSecurityException e) {
-            // HmacSHA256 is JDK-guaranteed; failure is a fatal configuration error.
-            throw new IllegalStateException("Unable to sign the authentication token", e);
-        }
-    }
-
-    /**
-     * Escapes a string for safe inclusion as a JSON string value in the
-     * hand-built token payload.
-     *
-     * <p>The JSON-significant characters ({@code "} and {@code \}), the common
-     * control escapes, and any remaining C0 control character are escaped per
-     * RFC&nbsp;8259 so the payload is always well-formed regardless of the input
-     * (defensive: the user id is normally a short alphanumeric value).</p>
-     *
-     * @param value the raw string value to escape
-     * @return the JSON-escaped value (without surrounding quotes)
-     */
-    private static String jsonEscape(String value) {
-        final StringBuilder sb = new StringBuilder(value.length() + 8);
-        for (int i = 0; i < value.length(); i++) {
-            final char c = value.charAt(i);
-            switch (c) {
-                case '"' -> sb.append("\\\"");
-                case '\\' -> sb.append("\\\\");
-                case '\b' -> sb.append("\\b");
-                case '\f' -> sb.append("\\f");
-                case '\n' -> sb.append("\\n");
-                case '\r' -> sb.append("\\r");
-                case '\t' -> sb.append("\\t");
-                default -> {
-                    if (c < 0x20) {
-                        sb.append(String.format("\\u%04x", (int) c));
-                    } else {
-                        sb.append(c);
-                    }
-                }
-            }
-        }
-        return sb.toString();
     }
 
     // -------------------------------------------------------------------------

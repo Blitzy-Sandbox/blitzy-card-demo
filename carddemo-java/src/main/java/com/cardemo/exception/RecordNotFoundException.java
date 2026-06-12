@@ -128,6 +128,24 @@ public class RecordNotFoundException extends CardDemoException {
     private final String key;
 
     /**
+     * An optional <em>client-safe</em> not-found prompt to surface to the caller
+     * verbatim, distinct from the diagnostic {@link #getMessage() detail message}
+     * (which embeds the lookup {@link #getKey() key}).
+     *
+     * <p>Some COBOL programs emitted a specific, user-facing not-found prompt that
+     * carried no key or PII &mdash; for example {@code COACTVWC} distinguishes
+     * {@code 'Did not find this account in account card xref file'} from
+     * {@code 'Did not find this account in account master file'}. To preserve that
+     * behavioral parity (AAP&nbsp;&sect;0.7.2) the throwing site may pass such a
+     * static prompt here; the centralized web advice surfaces it to the client in
+     * place of the generic message, while still never exposing the key-bearing
+     * detail message. It is {@code null} for every constructor that does not accept
+     * it, so existing call sites are unaffected (backward compatible) and the
+     * advice then falls back to its generic message.</p>
+     */
+    private final String clientSafeMessage;
+
+    /**
      * Constructs the exception with an explicit detail message, leaving the
      * structured {@link #getEntityType() entityType} and {@link #getKey() key}
      * context unset ({@code null}).
@@ -142,6 +160,7 @@ public class RecordNotFoundException extends CardDemoException {
         super(message);
         this.entityType = null;
         this.key = null;
+        this.clientSafeMessage = null;
     }
 
     /**
@@ -170,6 +189,7 @@ public class RecordNotFoundException extends CardDemoException {
         super(message, cause);
         this.entityType = null;
         this.key = null;
+        this.clientSafeMessage = null;
     }
 
     /**
@@ -195,6 +215,42 @@ public class RecordNotFoundException extends CardDemoException {
         super(entityType + " not found for key: " + key);
         this.entityType = entityType;
         this.key = key;
+        this.clientSafeMessage = null;
+    }
+
+    /**
+     * Constructs the exception from the structured {@code entityType} and
+     * {@code key} context <em>and</em> an explicit {@code clientSafeMessage}.
+     *
+     * <p>Identical to {@link #RecordNotFoundException(String, String)} &mdash; the
+     * same deterministic, key-bearing detail message
+     * ({@code "<entityType> not found for key: <key>"}) is composed for diagnostics
+     * and logging &mdash; but additionally records a static, user-facing prompt to
+     * surface to the client verbatim via {@link #getClientSafeMessage()}.</p>
+     *
+     * <p>This overload exists to preserve the specific COBOL not-found prompts that
+     * carried no key or PII (for example {@code COACTVWC}'s
+     * {@code 'Did not find this account in account card xref file'}), reproducing
+     * their user-visible behavior exactly (AAP&nbsp;&sect;0.7.2) while keeping the
+     * key out of the surfaced message. Pass only a constant, non-PII string as
+     * {@code clientSafeMessage}.</p>
+     *
+     * @param entityType        the kind of record that was not found, for example
+     *                          {@code "Account"} or {@code "CardCrossReference"};
+     *                          retrievable via {@link #getEntityType()}
+     * @param key               the lookup key, as a {@code String}, for which no
+     *                          record existed; retrievable via {@link #getKey()}
+     * @param clientSafeMessage a static, key-free prompt to surface to the client
+     *                          verbatim; retrievable via
+     *                          {@link #getClientSafeMessage()}. {@code null} or blank
+     *                          means "no specific prompt", and the web advice falls
+     *                          back to its generic not-found message.
+     */
+    public RecordNotFoundException(String entityType, String key, String clientSafeMessage) {
+        super(entityType + " not found for key: " + key);
+        this.entityType = entityType;
+        this.key = key;
+        this.clientSafeMessage = clientSafeMessage;
     }
 
     /**
@@ -217,5 +273,20 @@ public class RecordNotFoundException extends CardDemoException {
      */
     public String getKey() {
         return key;
+    }
+
+    /**
+     * Returns the optional client-safe not-found prompt to surface to the caller
+     * verbatim, or {@code null} when none was supplied.
+     *
+     * <p>When non-null and non-blank, the centralized web advice renders this
+     * value as the client-facing message instead of its generic not-found text,
+     * preserving the specific COBOL prompt (AAP&nbsp;&sect;0.7.2). The value is a
+     * static, key-free string, so surfacing it exposes no PII or lookup key.</p>
+     *
+     * @return the client-safe prompt, or {@code null} if unset
+     */
+    public String getClientSafeMessage() {
+        return clientSafeMessage;
     }
 }

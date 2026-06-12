@@ -341,6 +341,7 @@ data field is protected/display (output only); the sole input is the `ACCTSID` k
 | `currentCycleCredit` | `ACRCYCR` | `BigDecimal` | scale 2 | `S9(10)V99` |
 | `currentCycleDebit` | `ACRCYDB` | `BigDecimal` | scale 2 | `S9(10)V99` |
 | `accountGroupId` | `AADDGRP` | `String` | 10 | disclosure group id |
+| `version` | — (no BMS field) | `Integer` | — | optimistic-lock token mirrored from the `Account` `@Version`. The COBOL `COACTUPC` read-before-update snapshot has no on-screen field; this token carries that snapshot. Echo it back unchanged on `PUT` for stale-form detection. |
 
 **Response — embedded customer fields** (from `COACTVW`, output / display):
 
@@ -422,9 +423,10 @@ fields, which the request DTO preserves exactly.
 | `governmentIssuedId` | `ACSGOVT` | `String` | 20 | no | `@Size(max=20)` |
 | `eftAccountId` | `ACSEFTC` | `String` | 10 | no | `@Size(max=10)` |
 | `primaryCardHolderIndicator` | `ACSPFLG` | `String` | 1 | no | `@Size(max=1)` |
+| `version` | — (no BMS field) | `Integer` | — | no | the optimistic-lock token from the `GET` response. **Enforced when present:** if it does not equal the account's current stored version the update is rejected with `409 Conflict` (`CONCURRENT_MODIFICATION`) before any write. When omitted, server-side `@Version` remains the safety net. |
 
 **Response — `AccountDto`** (`200 OK`): the refreshed account view (same shape as the
-`GET` response above).
+`GET` response above), including the new `version` after a successful update.
 
 **Status codes:** `200 OK`; `400 Bad Request` (field validation failures, returned as
 `fieldErrors`); `404 Not Found`; `409 Conflict` (optimistic-lock mismatch).
@@ -433,9 +435,15 @@ fields, which the request DTO preserves exactly.
 together and is the system's only `SYNCPOINT ROLLBACK` site; the endpoint maps this to a
 Spring `@Transactional(rollbackFor = …)` method so the dual update is atomic. The program's
 before/after record-image comparison (optimistic concurrency) maps to JPA `@Version` on the
-`Account` entity — a stale update returns `409 Conflict` (`CONCURRENT_MODIFICATION`). Split
-date fields are validated and composed into `java.time.LocalDate` by the service layer
-(replacing the LE `CEEDAYS` date validation).
+`Account` entity — a stale update returns `409 Conflict` (`CONCURRENT_MODIFICATION`). To
+faithfully reproduce the COBOL check (which compared the image read at *display* time against
+the record re-read at *update* time), the `GET` response carries a `version` token that the
+client echoes back on `PUT`; the service compares it against the current stored version **before
+applying any change** and returns `409 Conflict` on a mismatch, so a form loaded before another
+user's completed update is rejected even though server-side `@Version` alone would not detect it.
+The `version` check is enforced only when the client supplies it; the entity `@Version` is the
+fallback safety net otherwise. Split date fields are validated and composed into
+`java.time.LocalDate` by the service layer (replacing the LE `CEEDAYS` date validation).
 
 ---
 
@@ -495,6 +503,7 @@ accepts the account id alongside the card number as a combined key.
 | `activeStatus` | `CRDSTCD` | `String` | 1 | `Y`/`N` |
 | `expiryMonth` | `EXPMON` | `String` (digits) | 2 | |
 | `expiryYear` | `EXPYEAR` | `String` (digits) | 4 | |
+| `version` | — (no BMS field) | `Integer` | — | optimistic-lock token mirrored from the `Card` `@Version`; echo it back unchanged on `PUT` for stale-form detection |
 
 **Status codes:** `200 OK`; `400 Bad Request`; `404 Not Found` (`FILE STATUS 23`).
 
@@ -514,6 +523,7 @@ display key on the screen; the editable fields are the embossed name, status, an
 | `expiryMonth` | `EXPMON` | `String` (digits) | 2 | yes | `@Digits(integer=2)`, `01`–`12` |
 | `expiryYear` | `EXPYEAR` | `String` (digits) | 4 | yes | `@Digits(integer=4)` |
 | `expiryDay` | `EXPDAY` (`DRK`) | `String` (digits) | 2 | no | hidden working field; `@Digits(integer=2)` |
+| `version` | — (no BMS field) | `Integer` | — | no | the optimistic-lock token returned by the `GET` detail; **enforced when present** — if it does not equal the card's current stored version the update is rejected with `409 Conflict` (`CONCURRENT_MODIFICATION`) before any write. When omitted, server-side `@Version` remains the safety net. |
 
 **Response — `CardDto`** (`200 OK`): the refreshed card detail.
 
@@ -521,9 +531,16 @@ display key on the screen; the editable fields are the embossed name, status, an
 (optimistic-lock mismatch).
 
 **Notes — technology substitution.** Like account update, `COCRDUPC` performs a before/after
-record-image comparison; the endpoint maps this to JPA `@Version` on the `Card` entity, so a
-stale update returns `409 Conflict`. The `EXPDAY` field is `DRK` (a hidden working field on
-the screen) and is therefore optional and never displayed.
+record-image comparison to detect changes made by another user between the read and the
+rewrite. The endpoint reproduces this with a two-layer optimistic-concurrency strategy: the
+`GET` detail carries the `Card` `@Version` token, the client echoes that `version` back on the
+`PUT`, and the service compares the client-supplied `version` against the entity's current
+stored version **before any write** — a mismatch is rejected with `409 Conflict`
+(`CONCURRENT_MODIFICATION`), which detects a form loaded before another completed update (the
+stale-client case). The client-version check is enforced only when `version` is supplied; when
+omitted, the server-side JPA `@Version` on the `Card` entity remains the safety net and still
+yields `409 Conflict` on a concurrent change detected after the read. The `EXPDAY` field is
+`DRK` (a hidden working field on the screen) and is therefore optional and never displayed.
 
 ---
 

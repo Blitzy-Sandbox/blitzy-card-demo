@@ -218,12 +218,28 @@ class AdminMenuServiceTest {
     }
 
     @Test
-    @DisplayName("service constants mirror COADM01C working storage (WS-TRANID 'CA00' / WS-PGMNAME 'COADM01C')")
+    @DisplayName("service constants mirror COADM01C working storage (WS-TRANID 'CA00' / WS-PGMNAME 'COADM01C' / REQUIRED_USER_TYPE ADMIN)")
     void selectOption_usesServiceConstants() {
         // COBOL COADM01C working storage: WS-PGMNAME VALUE 'COADM01C',
         // WS-TRANID VALUE 'CA00' — surfaced as the public service constants.
         assertThat(AdminMenuService.TRANSACTION_ID).isEqualTo("CA00");
         assertThat(AdminMenuService.PROGRAM_NAME).isEqualTo("COADM01C");
+        // The Admin Menu is wholly ADMIN-only menu-level metadata (enforced upstream
+        // at sign-on / SecurityConfig, never inside selectOption): the service pins
+        // this as REQUIRED_USER_TYPE = ADMIN.
+        assertThat(AdminMenuService.REQUIRED_USER_TYPE).isEqualTo(UserType.ADMIN);
+    }
+
+    @Test
+    @DisplayName("isAccessibleBy(UserType) — menu-level ADMIN-only metadata: only ADMIN is accessible; USER and null are denied")
+    void isAccessibleBy_onlyAdminIsAccessible() {
+        // Menu-level access metadata (NOT the per-option in-flow gate, which COADM01C
+        // does not have): the Admin Menu as a whole is reachable only by an ADMIN
+        // principal. This characterizes the upstream restriction the controller /
+        // SecurityConfig boundary enforces; USER and a null (unknown) type are denied.
+        assertThat(service.isAccessibleBy(UserType.ADMIN)).isTrue();
+        assertThat(service.isAccessibleBy(UserType.USER)).isFalse();
+        assertThat(service.isAccessibleBy(null)).isFalse();
     }
 
     // ------------------------------------------------------------------

@@ -251,6 +251,23 @@ public class CardDto {
     @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd")
     private LocalDate expirationDate;
 
+    /**
+     * Optimistic-locking version token, mirrored from the {@code Card} entity's JPA
+     * {@code @Version} column.
+     *
+     * <p>This field has <strong>no COBOL {@code PIC} origin</strong>: it is the Java&nbsp;25
+     * realization of the {@code COCRDUPC} <em>read-before-update</em> concurrency check, which
+     * compared the card image read at display time against the record on disk at update time and
+     * rejected the write if it had changed. The card detail/read populates this token; the client
+     * echoes it back on the subsequent update; {@code CardUpdateService} compares it against the
+     * current entity version and rejects a <em>stale</em> form &mdash; one loaded before another
+     * user's completed update &mdash; with a
+     * {@link com.cardemo.exception.ConcurrentModificationException} (HTTP&nbsp;409). It is a
+     * server-issued, client-echoed token, so it carries no input-validation constraint; when
+     * {@code null} the server-side JPA {@code @Version} remains the safety net (AAP&nbsp;&sect;0.7.5).</p>
+     */
+    private Long version;
+
     // ---------------------------------------------------------------------
     // List-view fields -- paginated browse (COCRDLI), seven rows per page
     // ---------------------------------------------------------------------
@@ -440,6 +457,26 @@ public class CardDto {
      */
     public void setExpirationDate(LocalDate expirationDate) {
         this.expirationDate = expirationDate;
+    }
+
+    /**
+     * Returns the optimistic-locking version token (mirrored from the {@code Card} entity
+     * {@code @Version}); {@code null} when unset.
+     *
+     * @return the version token, or {@code null} if unset
+     */
+    public Long getVersion() {
+        return version;
+    }
+
+    /**
+     * Sets the optimistic-locking version token. Populated from the entity on read and echoed
+     * by the client on update for stale-form detection (AAP&nbsp;&sect;0.7.5).
+     *
+     * @param version the version token to set
+     */
+    public void setVersion(Long version) {
+        this.version = version;
     }
 
     // ---------------------------------------------------------------------
@@ -748,6 +785,7 @@ public class CardDto {
                 + ", expiryYear='" + expiryYear + '\''
                 + ", expiryDay='" + expiryDay + '\''
                 + ", expirationDate=" + expirationDate
+                + ", version=" + version
                 + ", pageNumber='" + pageNumber + '\''
                 + ", cards=" + (cards == null ? "null" : "[" + cards.size() + " row(s)]")
                 + '}';

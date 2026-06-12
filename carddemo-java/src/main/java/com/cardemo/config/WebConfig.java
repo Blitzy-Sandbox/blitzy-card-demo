@@ -304,10 +304,19 @@ public class WebConfig implements WebMvcConfigurer {
         public ResponseEntity<ApiError> handleRecordNotFound(
                 RecordNotFoundException ex, HttpServletRequest request) {
             // Sanitized (§0.7.2): log only safe metadata (status, code, exception class) — never the
-            // raw message, which carries the looked-up key/identifier. Return a stable generic message.
+            // raw message, which carries the looked-up key/identifier.
             log.warn("Record not found (HTTP 404, code=RECORD_NOT_FOUND, type={})",
                     ex.getClass().getSimpleName());
-            return buildResponse(HttpStatus.NOT_FOUND, "RECORD_NOT_FOUND", MSG_RECORD_NOT_FOUND,
+            // Behavioral parity (§0.7.2): when the throwing site supplied an explicit client-safe
+            // prompt (a static COBOL not-found message with no key/PII — e.g. COACTVWC's "Did not
+            // find this account in account card xref file"), surface it verbatim so the original
+            // user-facing prompt is preserved; otherwise fall back to the stable generic message.
+            // The key-bearing detail message (ex.getMessage()) is still never exposed.
+            final String clientSafe = ex.getClientSafeMessage();
+            final String clientMessage = (clientSafe != null && !clientSafe.isBlank())
+                    ? clientSafe
+                    : MSG_RECORD_NOT_FOUND;
+            return buildResponse(HttpStatus.NOT_FOUND, "RECORD_NOT_FOUND", clientMessage,
                     request, null);
         }
 

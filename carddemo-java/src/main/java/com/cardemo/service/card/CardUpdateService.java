@@ -287,6 +287,18 @@ public class CardUpdateService {
             return toDto(card);
         }
 
+        // PHASE 3b - stale-form detection (COCRDUPC read-before-update / DATA-WAS-CHANGED-BEFORE-UPDATE):
+        // the client echoes the version it saw when the card detail was displayed (request.getVersion());
+        // if it no longer equals the current committed entity version, another user has since committed a
+        // change and this form is stale -> reject with 409 BEFORE applying/writing. This closes the gap
+        // server-side @Version alone cannot catch: @Version only detects a change committed AFTER this
+        // transaction's read, not a client form loaded before an earlier completed update. Enforced only
+        // when the client supplies a version (opt-in); when absent, the JPA @Version on saveAndFlush below
+        // remains the safety net (AAP §0.7.5).
+        if (request.getVersion() != null && !request.getVersion().equals(card.getVersion())) {
+            throw ConcurrentModificationException.forEntity("Card", null);
+        }
+
         // PHASE 4 - Apply ONLY the editable fields onto the managed entity.
         // CVV and expiry DAY are not user-editable -> carried from the existing record [COCRDUPC 9200 build].
         // The owning account id and the @Version column are likewise left untouched (minimal change, §0.7.1).
@@ -447,6 +459,10 @@ public class CardUpdateService {
             // Optional derived LocalDate, set directly (the entity already supplies a LocalDate).
             dto.setExpirationDate(expiry);
         }
+
+        // Carry the entity @Version so the redisplayed card holds the optimistic-lock token for any
+        // subsequent edit, enabling COCRDUPC-style stale-form detection on the next update (AAP §0.7.5).
+        dto.setVersion(card.getVersion());
 
         // CARD-CVV-CD is sensitive and, like the COCRDUP map, is intentionally not exposed.
         return dto;

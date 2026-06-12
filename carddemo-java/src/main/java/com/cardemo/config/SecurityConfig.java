@@ -2,7 +2,9 @@ package com.cardemo.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -10,6 +12,10 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+import com.cardemo.security.TokenAuthenticationFilter;
+import com.cardemo.security.TokenService;
 
 /**
  * Foundational Spring Security configuration for the greenfield Java 25 LTS + Spring Boot 3.5.11
@@ -56,19 +62,28 @@ import org.springframework.security.web.authentication.HttpStatusEntryPoint;
  * </dl>
  *
  * <h2>Minimal Change Clause &amp; decoupling (AAP &sect;0.7.1)</h2>
- * <p>No speculative security features are introduced (no OAuth2 server, no LDAP, no method-security
- * matrices). To preserve the &quot;foundational infrastructure &mdash; no sibling dependencies&quot;
- * property of the {@code config} package, this class injects <strong>no</strong> service-,
- * repository- or entity-layer bean (in particular no {@code UserDetailsService} and no
- * {@code UserSecurityRepository}); its only imports are framework types. No credential, username,
- * password, API key or token-signing secret is hardcoded anywhere in this file (AAP &sect;0.7.2).</p>
+ * <p>No speculative security features are introduced (no OAuth2 server, no LDAP). The role model is
+ * the minimum the legacy estate requires: the COBOL {@code CDEMO-USER-TYPE} value ({@code 'A'} =
+ * admin, {@code 'U'} = user) becomes a {@code ROLE_ADMIN}/{@code ROLE_USER} authority, enforced both
+ * at the route level for the admin surfaces and (defence in depth) at the admin-service method level
+ * via {@link EnableMethodSecurity method security}. To preserve the &quot;foundational
+ * infrastructure&quot; property of the {@code config} package, this class still injects <strong>no</strong>
+ * service-, repository- or entity-layer bean (no {@code UserDetailsService}, no
+ * {@code UserSecurityRepository}); its only collaborator is the security-infrastructure
+ * {@link TokenService} (package {@code com.cardemo.security}), used to construct the request-side
+ * {@link TokenAuthenticationFilter}. No credential, username, password, API key or token-signing
+ * secret is hardcoded anywhere in this file (AAP &sect;0.7.2).</p>
  *
  * @see org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder
  * @see org.springframework.security.web.SecurityFilterChain
  * @see org.springframework.security.config.http.SessionCreationPolicy#STATELESS
+ * @see com.cardemo.security.TokenAuthenticationFilter
  */
 @Configuration
 @EnableWebSecurity
+// Enables @PreAuthorize on the admin-service methods (defence in depth behind the route rules
+// below). prePostEnabled defaults to true on @EnableMethodSecurity (Spring Security 6).
+@EnableMethodSecurity
 public class SecurityConfig {
 
     /**
@@ -125,9 +140,13 @@ public class SecurityConfig {
      *       a token; the Actuator health/info/metrics/Prometheus endpoints are open so container
      *       liveness/readiness probes and the Prometheus scrape can reach them (matching the
      *       {@code management.endpoints.web.exposure.include} list in {@code application.yml}); the
-     *       Spring {@code /error} dispatch is open so error responses are not themselves blocked; and
-     *       every other request (accounts, cards, transactions, billing, reports, user admin, menu)
-     *       requires an authenticated principal.</li>
+     *       Spring {@code /error} dispatch is open so error responses are not themselves blocked; the
+     *       <strong>admin surfaces</strong> &mdash; the user-administration CRUD under
+     *       {@code /api/admin/**} (&larr; {@code COUSR00C}&ndash;{@code COUSR03C}) and the admin menu
+     *       {@code GET /api/menu/admin} (&larr; {@code COADM01C}) &mdash; require the
+     *       {@code ROLE_ADMIN} authority (a non-admin authenticated caller receives
+     *       {@code 403 Forbidden}); and every other request (accounts, cards, transactions, billing,
+     *       reports, main menu) requires an authenticated principal.</li>
      *   <li><strong>HTTP Basic and form login disabled.</strong> Both browser-oriented mechanisms are
      *       turned off because authentication is performed by {@code AuthenticationService} issuing a
      *       token; no browser credential popup or login page is appropriate for this headless API.</li>
@@ -136,21 +155,30 @@ public class SecurityConfig {
      *       signalling to a client that it must present a token obtained from {@code /api/auth/**}.</li>
      * </ul>
      *
-     * <p><strong>Token-filter registration is intentionally deferred.</strong> The COMMAREA &rarr;
-     * stateless-REST rule means request-scoped auth state is carried by a token issued by
-     * {@code AuthenticationService}. Registering a token-validation {@code Filter} here would couple
-     * this foundational config to the service layer and violate the package's &quot;no sibling
-     * dependencies&quot; rule; per the Minimal Change Clause this config therefore defines only the
-     * posture above and does not invent a JWT subsystem beyond what {@code AuthController} /
-     * {@code AuthenticationService} actually implement. A self-contained token filter, if introduced
-     * later, is wired where it is defined, not here.</p>
+     * <p><strong>Token-validation filter.</strong> The COMMAREA &rarr; stateless-REST rule means
+     * request-scoped auth state is carried by the token issued at sign-on. A
+     * {@link TokenAuthenticationFilter} is therefore registered <em>before</em> the
+     * {@link UsernamePasswordAuthenticationFilter}: on every request it validates a presented
+     * {@code Bearer} token (signature + expiry) via {@link TokenService} and, on success, populates
+     * the {@code SecurityContext} with the token subject and a {@code ROLE_ADMIN}/{@code ROLE_USER}
+     * authority derived from the token's user-type claim &mdash; the stateless analogue of the COBOL
+     * {@code CDEMO-USER-TYPE} role carried in the COMMAREA. This is the component that makes the
+     * admin route rules and the admin-service {@code @PreAuthorize} guards enforceable, closing the
+     * gap where tokens were issued but never validated. The filter is a self-contained
+     * security-infrastructure component (package {@code com.cardemo.security}); it depends only on
+     * {@code TokenService} (not on the service/repository/entity layers), so the {@code config}
+     * package's decoupling property is preserved. It is constructed here (rather than being a
+     * {@code @Component}) so the servlet container does not <em>also</em> auto-register it as a
+     * top-level filter, which would run it twice. No JWT library is introduced.</p>
      *
-     * @param http the {@link HttpSecurity} builder supplied by Spring Security
+     * @param http         the {@link HttpSecurity} builder supplied by Spring Security
+     * @param tokenService the stateless-token validator used to build the request-side filter;
+     *                     injected as a {@code @Bean}-method parameter from the application context
      * @return the built {@link SecurityFilterChain}
      * @throws Exception if the {@link HttpSecurity} builder fails to assemble the chain
      */
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http, TokenService tokenService) throws Exception {
         http
                 // Stateless token/credential API: no cookie session, no web UI -> CSRF inapplicable.
                 .csrf(csrf -> csrf.disable())
@@ -170,12 +198,22 @@ public class SecurityConfig {
                                 "/actuator/metrics/**").permitAll()
                         // Spring error dispatch must not itself require authentication.
                         .requestMatchers("/error").permitAll()
-                        // Everything else (accounts, cards, transactions, billing, reports, admin,
+                        // Admin surfaces require the ADMIN role (COBOL CDEMO-USRTYP-ADMIN). These
+                        // MUST precede anyRequest(): the user-administration CRUD (COUSR00C-COUSR03C)
+                        // under /api/admin/** and the admin menu (COADM01C) at GET /api/menu/admin.
+                        // A non-admin authenticated caller gets 403; an unauthenticated caller gets 401.
+                        .requestMatchers(HttpMethod.GET, "/api/menu/admin").hasRole("ADMIN")
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                        // Everything else (accounts, cards, transactions, billing, reports, main
                         // menu) requires an authenticated principal.
                         .anyRequest().authenticated())
                 // Headless token API: no browser Basic popup and no form-login page.
                 .httpBasic(httpBasic -> httpBasic.disable())
                 .formLogin(formLogin -> formLogin.disable())
+                // Validate the bearer token and establish ROLE_ADMIN/ROLE_USER BEFORE the
+                // username/password filter slot, so the authorization rules above can be enforced.
+                .addFilterBefore(new TokenAuthenticationFilter(tokenService),
+                        UsernamePasswordAuthenticationFilter.class)
                 // Unauthenticated access to a protected endpoint -> 401 (present a token), not a
                 // redirect; correct semantics for a stateless token API.
                 .exceptionHandling(exceptions -> exceptions

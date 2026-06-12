@@ -9,6 +9,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -189,6 +190,10 @@ public class UserListService {
      *         {@link #PAGE_SIZE} rows for the requested page (possibly empty, never {@code null}), with
      *         the one-based {@code pageNumber} and the echoed {@code userIdFilter} set
      */
+    // Admin-only: COUSR00C ran only under the CDEMO-USRTYP-ADMIN context. The method-level ADMIN
+    // gate is defence in depth behind the /api/admin/** route rule in SecurityConfig, and protects
+    // the operation from internal (non-HTTP) misuse. Enforced via @EnableMethodSecurity.
+    @PreAuthorize("hasRole('ADMIN')")
     @Transactional(readOnly = true)
     public UserSecurityDto listUsers(String userIdFilter, int pageNumber) {
         // COMMAREA -> stateless params: the start filter and page number arrive on every call; no

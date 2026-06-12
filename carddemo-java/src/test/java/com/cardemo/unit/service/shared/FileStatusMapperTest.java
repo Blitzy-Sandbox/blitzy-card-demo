@@ -191,6 +191,49 @@ class FileStatusMapperTest {
                     .isInstanceOf(IllegalStateException.class)
                     .isNotInstanceOf(CardDemoException.class);
         }
+
+        @Test
+        @DisplayName("'23' RecordNotFoundException carries the structured diagnostic context (entityType + key + exact message)")
+        void recordNotFoundCarriesStructuredContext() {
+            // Beyond the type, the recoverable exception must propagate the structured
+            // diagnostic context (entityType + key) and the exact COBOL-shaped message,
+            // so the central web advice can build a precise, non-sensitive response.
+            assertThatThrownBy(() -> mapper.verify("23", "Account", "123"))
+                    .isInstanceOfSatisfying(RecordNotFoundException.class, ex -> {
+                        assertThat(ex.getMessage()).isEqualTo("Account not found for key: 123");
+                        assertThat(ex.getEntityType()).isEqualTo("Account");
+                        assertThat(ex.getKey()).isEqualTo("123");
+                    });
+        }
+
+        @Test
+        @DisplayName("'22' DuplicateRecordException carries the structured diagnostic context (entityType + key + exact message)")
+        void duplicateKeyCarriesStructuredContext() {
+            assertThatThrownBy(() -> mapper.verify("22", "Transaction", "TX1"))
+                    .isInstanceOfSatisfying(DuplicateRecordException.class, ex -> {
+                        assertThat(ex.getMessage()).isEqualTo("Transaction already exists for key: TX1");
+                        assertThat(ex.getEntityType()).isEqualTo("Transaction");
+                        assertThat(ex.getKey()).isEqualTo("TX1");
+                    });
+        }
+
+        @ParameterizedTest
+        @NullSource
+        @ValueSource(strings = {"99", "0", "ZZ"})
+        @DisplayName("null / unknown status abends as IllegalStateException with the guarded IllegalArgumentException preserved as cause (9999-ABEND-PROGRAM)")
+        void abendPreservesIllegalArgumentCause(final String code) {
+            // Legacy-parity consolidation: FileStatus.fromCode(<unmapped/null>) raises an
+            // IllegalArgumentException; verify() guards it and re-throws the unrecoverable
+            // IllegalStateException (mirroring CBTRN02C 9999-ABEND-PROGRAM) with the IAE
+            // PRESERVED as the cause — never leaked as the top-level type, never a
+            // CardDemoException. Covers the null input plus the "0"/"ZZ" shapes in addition
+            // to the "99" pinned by unknownCodeAbendsWithoutLeak().
+            assertThatThrownBy(() -> mapper.verify(code, "Account", "123"))
+                    .isInstanceOf(IllegalStateException.class)
+                    .isNotInstanceOf(CardDemoException.class)
+                    .hasMessageContaining("mirrors COBOL 9999-ABEND-PROGRAM")
+                    .hasCauseInstanceOf(IllegalArgumentException.class);
+        }
     }
 
     @Nested

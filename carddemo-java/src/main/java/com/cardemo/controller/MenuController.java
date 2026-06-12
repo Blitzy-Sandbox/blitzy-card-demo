@@ -2,6 +2,7 @@ package com.cardemo.controller;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.enums.UserType;
@@ -47,8 +48,9 @@ import org.springframework.web.bind.annotation.RestController;
  *   <li><strong>{@code SEND MAP('COMEN1A'/'COADM1A')} &rarr; JSON option table.</strong>
  *       The BMS map paint that filled the {@code OPTN001..OPTN0nn} display lines from
  *       the option copybook is replaced by projecting each service option record into a
- *       {@link MenuResponse.MenuOptionView}; option order, number, name and target
- *       program are preserved exactly.</li>
+ *       {@link MenuResponse.MenuOptionView}; option order and number are preserved
+ *       exactly, the option name becomes the {@code label}, and the COBOL target program
+ *       is resolved to the REST {@code targetRoute} the option navigates to.</li>
  *   <li><strong>{@code RETURN TRANSID('CM00'/'CA00') COMMAREA} &rarr; stateless GET.</strong>
  *       The pseudo-conversational hand-off is replaced by a stateless HTTP&nbsp;GET; this
  *       controller holds no conversational state (AAP&nbsp;&sect;0.1.2).</li>
@@ -104,19 +106,44 @@ public class MenuController {
     private static final String MENU_TYPE_MAIN = "main";
 
     /**
-     * Accepted alias of {@link #MENU_TYPE_MAIN}: a request for the {@code "user"} menu
-     * resolves to the same regular-user Main Menu. The canonical {@code menuType} echoed
-     * back in the response is always {@link #MENU_TYPE_MAIN}, regardless of which token
-     * was supplied.
-     */
-    private static final String MENU_TYPE_USER_ALIAS = "user";
-
-    /**
      * Canonical {@code {type}} token selecting the administrator Admin Menu
      * ({@code COADM01C} / {@code CA00}). Also the {@link MenuResponse#menuType()} value
      * returned for that menu.
      */
     private static final String MENU_TYPE_ADMIN = "admin";
+
+    /**
+     * Immutable lookup that resolves a COBOL menu-option <em>target program</em> to the
+     * REST <em>target route</em> the option navigates to, per the authoritative
+     * Transaction-ID route table in {@code docs/api-contracts.md} &sect;4 and the
+     * {@code MenuResponse} contract in &sect;5.2.
+     *
+     * <p>COBOL substitution (Minimal Change Clause, AAP&nbsp;&sect;0.7.1): on the 3270
+     * screen the {@code OPTION} field plus ENTER drove an {@code XCTL} to the chosen
+     * program; the REST contract instead returns the concrete endpoint each option
+     * navigates to, so the client calls it directly with no server-held conversational
+     * state (AAP&nbsp;&sect;0.1.2). The 14 entries cover the 10 Main-Menu and 4 Admin-Menu
+     * option programs; the three entry-point programs ({@code COSGN00C}, {@code COMEN01C},
+     * {@code COADM01C}) are never option targets and are intentionally absent.</p>
+     */
+    private static final Map<String, String> ROUTE_BY_PROGRAM = Map.ofEntries(
+            // Main Menu (COMEN02Y) option targets -> AccountController / CardController /
+            // TransactionController / ReportController / BillingController routes.
+            Map.entry("COACTVWC", "GET /api/accounts/{id}"),
+            Map.entry("COACTUPC", "PUT /api/accounts/{id}"),
+            Map.entry("COCRDLIC", "GET /api/cards"),
+            Map.entry("COCRDSLC", "GET /api/cards/{cardNumber}"),
+            Map.entry("COCRDUPC", "PUT /api/cards/{cardNumber}"),
+            Map.entry("COTRN00C", "GET /api/transactions"),
+            Map.entry("COTRN01C", "GET /api/transactions/{id}"),
+            Map.entry("COTRN02C", "POST /api/transactions"),
+            Map.entry("CORPT00C", "POST /api/reports/submit"),
+            Map.entry("COBIL00C", "POST /api/billing/pay"),
+            // Admin Menu (COADM02Y) option targets -> UserAdminController routes.
+            Map.entry("COUSR00C", "GET /api/admin/users"),
+            Map.entry("COUSR01C", "POST /api/admin/users"),
+            Map.entry("COUSR02C", "PUT /api/admin/users/{id}"),
+            Map.entry("COUSR03C", "DELETE /api/admin/users/{id}"));
 
     /** Service owning the 10-option regular-user Main Menu metadata ({@code COMEN01C}). */
     private final MainMenuService mainMenuService;
@@ -141,21 +168,24 @@ public class MenuController {
      *
      * <p><strong>Endpoint:</strong> {@code GET /api/menu/{type}}.</p>
      *
-     * <p>The {@code type} path token is matched case-insensitively:</p>
+     * <p>The {@code type} path token is matched case-insensitively and must be one of the
+     * two contract values {@code {main, admin}} ({@code docs/api-contracts.md} &sect;5.2):</p>
      * <ul>
-     *   <li>{@code "main"} (canonical) or {@code "user"} (alias) &rarr; the regular-user
-     *       Main Menu &mdash; transaction {@code CM00}, program {@code COMEN01C}, 10
-     *       options &mdash; with HTTP&nbsp;<strong>200 OK</strong>.</li>
+     *   <li>{@code "main"} &rarr; the regular-user Main Menu &mdash; transaction
+     *       {@code CM00}, program {@code COMEN01C}, 10 options &mdash; with
+     *       HTTP&nbsp;<strong>200 OK</strong>.</li>
      *   <li>{@code "admin"} &rarr; the administrator Admin Menu &mdash; transaction
      *       {@code CA00}, program {@code COADM01C}, 4 options &mdash; with
      *       HTTP&nbsp;<strong>200 OK</strong>. The Admin Menu is ADMIN-only; that
-     *       restriction is enforced at the security boundary / sign-on (see the class
-     *       documentation), not in this method.</li>
+     *       restriction is enforced at the security boundary ({@code config/SecurityConfig}
+     *       gates {@code GET /api/menu/admin} with {@code hasRole('ADMIN')}), so a non-admin
+     *       caller receives HTTP&nbsp;<strong>403 Forbidden</strong> before this method
+     *       runs.</li>
      *   <li>any other value &rarr; a {@link ValidationException} that the centralized
      *       advice translates to HTTP&nbsp;<strong>400 Bad Request</strong>.</li>
      * </ul>
      *
-     * @param type the menu selector path token ({@code main}, {@code user} or {@code admin},
+     * @param type the menu selector path token ({@code main} or {@code admin},
      *             case-insensitive)
      * @return {@code 200 OK} carrying the populated {@link MenuResponse}
      * @throws ValidationException if {@code type} is not one of the accepted values
@@ -169,9 +199,13 @@ public class MenuController {
         // here as a {type} -> service selection (AAP §0.6.3).
         final String normalized = (type == null) ? "" : type.trim().toLowerCase(Locale.ROOT);
         return switch (normalized) {
-            // "main" (canonical) and "user" (alias) -> regular-user Main Menu (COMEN01C / CM00).
-            case MENU_TYPE_MAIN, MENU_TYPE_USER_ALIAS -> ResponseEntity.ok(buildMainMenu());
-            // "admin" -> administrator Admin Menu (COADM01C / CA00); ADMIN-only (enforced upstream).
+            // "main" -> regular-user Main Menu (COMEN01C / CM00). Per the api-contracts.md
+            // §5.2 contract only {main, admin} are accepted; the prior "user" alias was
+            // removed because it expanded the external API beyond the contract (Minimal
+            // Change Clause, AAP §0.7.1).
+            case MENU_TYPE_MAIN -> ResponseEntity.ok(buildMainMenu());
+            // "admin" -> administrator Admin Menu (COADM01C / CA00); ADMIN-only, enforced by
+            // the SecurityConfig route rule (GET /api/menu/admin -> hasRole('ADMIN')).
             case MENU_TYPE_ADMIN -> ResponseEntity.ok(buildAdminMenu());
             // Any other token is an invalid route. Reproduce the COBOL invalid-selection
             // rejection as a ValidationException; the central @RestControllerAdvice in
@@ -190,19 +224,14 @@ public class MenuController {
         // COBOL substitution: COMEN01C SEND MAP('COMEN1A') painted the 10 option lines
         // (OPTN001..OPTN010) from the COMEN02Y table; here that table -- owned verbatim by
         // MainMenuService -- is projected into the JSON option list, preserving order 1..10.
+        // Each option's COBOL target program is resolved to its REST targetRoute (§5.2).
         final List<MenuResponse.MenuOptionView> options = mainMenuService.getMenuOptions().stream()
                 .map(option -> new MenuResponse.MenuOptionView(
                         option.number(),
                         option.name(),
-                        option.targetProgram(),
-                        formatUserType(option.allowedUserType())))
+                        resolveRoute(option.targetProgram())))
                 .toList();
-        return new MenuResponse(
-                MENU_TYPE_MAIN,
-                MainMenuService.TRANSACTION_ID,
-                MainMenuService.PROGRAM_NAME,
-                mainMenuService.getOptionCount(),
-                options);
+        return new MenuResponse(MENU_TYPE_MAIN, options);
     }
 
     /**
@@ -215,86 +244,79 @@ public class MenuController {
         // COBOL substitution: COADM01C SEND MAP('COADM1A') painted the 4 option lines
         // (OPTN001..OPTN004) from the COADM02Y table; here that table -- owned verbatim by
         // AdminMenuService -- is projected into the JSON option list, preserving order 1..4.
-        //
-        // Design choice: AdminMenuOption carries no per-option user-type field (COADM02Y has
-        // no usrtype byte); the whole admin menu is implicitly ADMIN-only, so each view's
-        // allowedUserType is set to the ADMIN code 'A', sourced from UserType.ADMIN (the
-        // single source of truth) rather than hard-coded as a literal.
-        final String adminUserType = String.valueOf(UserType.ADMIN.getCode());
+        // Each option's COBOL target program is resolved to its REST targetRoute (§5.2). The
+        // admin menu is implicitly ADMIN-only; that access control is enforced at the
+        // security boundary (SecurityConfig route rule), not encoded per-option in the
+        // response body.
         final List<MenuResponse.MenuOptionView> options = adminMenuService.getMenuOptions().stream()
                 .map(option -> new MenuResponse.MenuOptionView(
                         option.number(),
                         option.name(),
-                        option.targetProgram(),
-                        adminUserType))
+                        resolveRoute(option.targetProgram())))
                 .toList();
-        return new MenuResponse(
-                MENU_TYPE_ADMIN,
-                AdminMenuService.TRANSACTION_ID,
-                AdminMenuService.PROGRAM_NAME,
-                adminMenuService.getOptionCount(),
-                options);
+        return new MenuResponse(MENU_TYPE_ADMIN, options);
     }
 
     /**
-     * Formats a {@link UserType} as its single-character COBOL storage code.
+     * Resolves a COBOL menu-option target program to the REST {@code targetRoute} the
+     * option navigates to, via the {@link #ROUTE_BY_PROGRAM} table (authoritative
+     * {@code docs/api-contracts.md} &sect;4 / &sect;5.2).
      *
-     * <p>Maps {@link UserType#USER} &rarr; {@code "U"} and {@link UserType#ADMIN} &rarr;
-     * {@code "A"}, preserving the 1-byte {@code CDEMO-MENU-OPT-USRTYPE} ({@code PIC X(01)})
-     * external-interface field contract. A {@code null} user type is rendered as
-     * {@code null}.</p>
+     * <p>Every active Main-Menu and Admin-Menu option resolves to a mapped route. As a
+     * defensive fallback that loses no information, an unmapped program (which the fixed
+     * option tables never produce) is returned unchanged rather than yielding {@code null};
+     * a {@code null} input maps to {@code null}.</p>
      *
-     * @param userType the option's permitted user type (may be {@code null})
-     * @return {@code "U"}/{@code "A"} for a non-null user type, or {@code null}
+     * @param targetProgram the COBOL program the option routes to (for example
+     *                       {@code COACTVWC}); may be {@code null}
+     * @return the resolved REST route (for example {@code "GET /api/accounts/{id}"}), the
+     *         original program name if it is not in the route table, or {@code null} when
+     *         {@code targetProgram} is {@code null}
      */
-    private static String formatUserType(final UserType userType) {
-        return (userType == null) ? null : String.valueOf(userType.getCode());
+    private static String resolveRoute(final String targetProgram) {
+        if (targetProgram == null) {
+            return null;
+        }
+        return ROUTE_BY_PROGRAM.getOrDefault(targetProgram, targetProgram);
     }
 
     /**
-     * Self-describing JSON contract for a menu, local to this controller.
+     * Self-describing JSON contract for a menu, local to this controller, matching the
+     * {@code MenuResponse} schema in {@code docs/api-contracts.md} &sect;5.2 exactly: a
+     * {@code menuType} plus the ordered {@code options} list, and nothing else.
      *
      * <p>The CardDemo migration intentionally has <strong>no menu DTO</strong> under
      * {@code model/dto}: the option shape is supplied by the services as nested records
      * ({@code MainMenuService.MenuOption} and {@code AdminMenuService.AdminMenuOption}).
-     * To give both menu types one typed, self-describing contract carrying the
-     * {@code transactionId} / {@code optionCount} metadata &mdash; without introducing a new
-     * top-level DTO file (Minimal Change Clause, AAP&nbsp;&sect;0.7.1) &mdash; that contract
-     * is declared here as an inline nested record.</p>
+     * To give both menu types one typed, self-describing contract &mdash; without
+     * introducing a new top-level DTO file (Minimal Change Clause, AAP&nbsp;&sect;0.7.1)
+     * &mdash; that contract is declared here as an inline nested record.</p>
      *
-     * @param menuType      the canonical menu type ({@code "main"} or {@code "admin"})
-     * @param transactionId the CICS transaction identifier ({@code CM00} for the Main Menu,
-     *                      {@code CA00} for the Admin Menu)
-     * @param programName   the originating COBOL program name ({@code COMEN01C} /
-     *                      {@code COADM01C})
-     * @param optionCount   the number of options ({@code 10} for the Main Menu, {@code 4}
-     *                      for the Admin Menu)
-     * @param options       the ordered option views
+     * @param menuType the menu type echoed from the request path ({@code "main"} or
+     *                 {@code "admin"})
+     * @param options  the ordered option views (one entry per active option)
      */
     public record MenuResponse(
             String menuType,
-            String transactionId,
-            String programName,
-            int optionCount,
             List<MenuOptionView> options) {
 
         /**
-         * A single menu option, mapped from a service option record.
+         * A single menu option, mapped from a service option record to the
+         * {@code MenuOption} schema in {@code docs/api-contracts.md} &sect;5.2.
          *
-         * @param number          the 1-based option number
-         * @param name            the human-readable option name (for example
-         *                        {@code "Account View"} or {@code "User List (Security)"})
-         * @param targetProgram   the COBOL program the option routes to (for example
-         *                        {@code COACTVWC} or {@code COUSR00C})
-         * @param allowedUserType the single-character user-type code permitted to select the
-         *                        option ({@code "U"}/{@code "A"}); {@code "A"} for every Admin
-         *                        Menu option, as that menu is implicitly ADMIN-only
+         * @param optionNumber the value the operator typed into the 3270 {@code OPTION}
+         *                     field to select this row (the 1-based menu row index)
+         * @param label        the 40-character {@code OPTNxxx} option label as shown on the
+         *                     screen (for example {@code "Account View"} or
+         *                     {@code "User List (Security)"})
+         * @param targetRoute  the REST route the option navigates to, resolved from the
+         *                     COBOL target program (for example {@code COACTVWC} &rarr;
+         *                     {@code "GET /api/accounts/{id}"})
          */
         public record MenuOptionView(
-                int number,
-                String name,
-                String targetProgram,
-                String allowedUserType) {
+                int optionNumber,
+                String label,
+                String targetRoute) {
         }
     }
 }

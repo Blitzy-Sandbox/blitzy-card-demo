@@ -7,6 +7,7 @@ import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.enums.UserType;
 import com.cardemo.repository.UserSecurityRepository;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -206,6 +207,10 @@ public class UserAddService {
      *                                  &ldquo;User ID already exist...&rdquo; text (HTTP 409 via the
      *                                  advice layer)
      */
+    // Admin-only: COUSR01C ran only under the CDEMO-USRTYP-ADMIN context. The method-level ADMIN
+    // gate is defence in depth behind the /api/admin/** route rule in SecurityConfig, and protects
+    // the operation from internal (non-HTTP) misuse. Enforced via @EnableMethodSecurity.
+    @PreAuthorize("hasRole('ADMIN')")
     @Transactional
     public UserSecurityDto addUser(UserSecurityDto request) {
         // -------------------------------------------------------------------------------------------

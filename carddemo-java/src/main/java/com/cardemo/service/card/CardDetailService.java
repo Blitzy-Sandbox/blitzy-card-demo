@@ -347,6 +347,11 @@ public class CardDetailService {
             dto.setExpirationDate(expiry);
         }
 
+        // Carry the entity @Version so the card detail (the read that precedes an update) supplies the
+        // optimistic-lock token the client echoes back on the subsequent update, enabling COCRDUPC-style
+        // stale-form detection (AAP §0.7.5).
+        dto.setVersion(card.getVersion());
+
         // CARD-CVV-CD is sensitive and, like the COCRDSL detail map, is intentionally not exposed.
         // CICS SEND/RECEIVE MAP & XCTL navigation intentionally omitted -> handled by CardController.
         return dto;

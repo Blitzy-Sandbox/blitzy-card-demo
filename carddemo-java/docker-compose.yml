@@ -287,6 +287,16 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
 
+      # --- Auth token signing secret (COMMAREA → stateless token, §0.1.2) ----
+      # Consumed by com.cardemo.security.TokenService for HMAC-SHA256 token
+      # signing/validation. TokenService fails fast at startup if this is blank or
+      # shorter than 256 bits. The inline default is a clearly-labelled NON-SECRET
+      # local-dev value (>= 32 bytes) so `docker compose up` works out-of-the-box;
+      # a real random secret is supplied via the CARDDEMO_SECURITY_TOKEN_SECRET env
+      # var (never committed, AAP §0.7.2). Matches the ${VAR:-default} convention
+      # used by the datasource/AWS settings above.
+      CARDDEMO_SECURITY_TOKEN_SECRET: ${CARDDEMO_SECURITY_TOKEN_SECRET:-local-development-only-carddemo-hs256-token-signing-secret-change-me}
+
       # --- JVM options (optional, supplied at runtime; empty by default) ------
       JAVA_OPTS: ${JAVA_OPTS:-}
     depends_on:

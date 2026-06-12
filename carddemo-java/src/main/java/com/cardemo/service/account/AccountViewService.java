@@ -167,7 +167,10 @@ public class AccountViewService {
         // READ, and treat an empty list as the NOTFND ("not found in cross-reference file") condition.
         List<CardCrossReference> crossReferences = cardCrossReferenceRepository.findByXrefAcctId(acctId);
         if (crossReferences.isEmpty()) {
-            throw new RecordNotFoundException(ENTITY_CARD_XREF, String.valueOf(acctId));
+            // Verbatim COACTVWC prompt (app/cbl/COACTVWC.cbl L130); carries no key/PII so it is
+            // surfaced to the client by the central advice, preserving the COBOL user-visible text.
+            throw new RecordNotFoundException(ENTITY_CARD_XREF, String.valueOf(acctId),
+                    "Did not find this account in account card xref file");
         }
         CardCrossReference crossReference = crossReferences.get(0);
         // The customer id is taken from the cross-reference record (XREF-CUST-ID), not from the account.
@@ -176,12 +179,16 @@ public class AccountViewService {
         // Step 2 - COACTVWC 9300-GETACCTDATA-BYACCT (keyed read on ACCT-ID).
         // VSAM ACCTDAT keyed read -> JPA findById; NOTFND -> RecordNotFoundException ("account master").
         Account account = accountRepository.findById(acctId)
-                .orElseThrow(() -> new RecordNotFoundException(ENTITY_ACCOUNT, String.valueOf(acctId)));
+                // Verbatim COACTVWC prompt (app/cbl/COACTVWC.cbl L132); key-free, so surfaced to client.
+                .orElseThrow(() -> new RecordNotFoundException(ENTITY_ACCOUNT, String.valueOf(acctId),
+                        "Did not find this account in account master file"));
 
         // Step 3 - COACTVWC 9400-GETCUSTDATA-BYCUST (keyed read on the CUST-ID resolved from the xref).
         // VSAM CUSTDAT keyed read -> JPA findById; NOTFND -> RecordNotFoundException ("customer master").
         Customer customer = customerRepository.findById(customerId)
-                .orElseThrow(() -> new RecordNotFoundException(ENTITY_CUSTOMER, String.valueOf(customerId)));
+                // Verbatim COACTVWC prompt (app/cbl/COACTVWC.cbl L134); key-free, so surfaced to client.
+                .orElseThrow(() -> new RecordNotFoundException(ENTITY_CUSTOMER, String.valueOf(customerId),
+                        "Did not find associated customer in master file"));
 
         // PHASE 3 - reproduce COACTVWC 1200-SETUP-SCREEN-VARS: map account + customer onto the DTO.
         return assembleDto(account, customer);
@@ -196,25 +203,35 @@ public class AccountViewService {
      *       {@code EQUAL ZEROES}), is the "11 digit Non-Zero Number" rejection;</li>
      *   <li>otherwise the key is parsed to a {@link Long} only <em>after</em> the numeric edit passes.</li>
      * </ol>
-     * <p>The rejection messages are kept identical to the sibling {@code AccountUpdateService}
-     * (the {@code COACTUPC} account-key edit) so both account screens reject an invalid id with the same
-     * text. The eleven-digit width itself is enforced upstream by the controller's
-     * {@code @Pattern("\\d{1,11}")} (matching the BMS {@code ACCTSID PIC X(11)} field), so no extra
-     * length edit is added here (Minimal Change Clause, AAP &sect;0.7.1).</p>
+     * <p>The rejection messages are the <strong>verbatim {@code COACTVWC} literals</strong>
+     * &mdash; {@code "Account number not provided"} ({@code COACTVWC.cbl} L122) and
+     * {@code "Account number must be a non zero 11 digit number"} ({@code COACTVWC.cbl}
+     * L126/L128) &mdash; reproduced exactly for behavioral parity (AAP&nbsp;&sect;0.7.2). They
+     * deliberately <em>differ</em> from the sibling {@code AccountUpdateService} ({@code COACTUPC},
+     * which uses {@code "... must be supplied."} / {@code "... must be a 11 digit Non-Zero Number"}),
+     * because each service must mirror its own source program's prompts. Both are thrown through the
+     * two-argument {@link ValidationException#ValidationException(String, String)} so the centralized
+     * web advice surfaces them as per-field validation errors rather than sanitizing them away. The
+     * eleven-digit width itself is enforced upstream by the controller's {@code @Pattern("\\d{1,11}")}
+     * (matching the BMS {@code ACCTSID PIC X(11)} field), so no extra length edit is added here
+     * (Minimal Change Clause, AAP&nbsp;&sect;0.7.1).</p>
      *
      * @param accountId the raw account filter from the request
      * @return the validated account id as a {@link Long}
      * @throws ValidationException if {@code accountId} is blank, non-numeric or zero
      */
     private Long validateAccountKey(String accountId) {
-        // 2210-EDIT-ACCOUNT: "Not supplied" (CC-ACCT-ID EQUAL LOW-VALUES OR SPACES).
+        // 2210-EDIT-ACCOUNT: "Not supplied" (CC-ACCT-ID EQUAL LOW-VALUES OR SPACES). Verbatim
+        // COACTVWC literal (app/cbl/COACTVWC.cbl L122); two-arg form surfaces it as a field error.
         if (isBlank(accountId)) {
-            throw new ValidationException("Account Number", "Account Number must be supplied.");
+            throw new ValidationException("Account Number", "Account number not provided");
         }
         // 2210-EDIT-ACCOUNT: "Not numeric" / zero (CC-ACCT-ID IS NOT NUMERIC OR EQUAL ZEROES).
+        // Verbatim COACTVWC literal (app/cbl/COACTVWC.cbl L126/L128); two-arg form surfaces it as a
+        // field error (previously a single-arg top-level message that the advice sanitized away).
         String trimmed = accountId.trim();
         if (!isAllDigits(trimmed) || isAllZeros(trimmed)) {
-            throw new ValidationException("Account Number if supplied must be a 11 digit Non-Zero Number");
+            throw new ValidationException("Account Number", "Account number must be a non zero 11 digit number");
         }
         // Numeric edit passed: parse to the keyed-read type.
         return Long.parseLong(trimmed);
@@ -300,6 +317,9 @@ public class AccountViewService {
         dto.setGovernmentIssuedId(customer.getCustGovtIssuedId());   // CUST-GOVT-ISSUED-ID -> ACSGOVTO
         dto.setEftAccountId(customer.getCustEftAccountId());         // CUST-EFT-ACCOUNT-ID -> ACSEFTCO
         dto.setPrimaryCardHolderIndicator(customer.getCustPriCardHolderInd()); // CUST-PRI-CARD-HOLDER-IND -> ACSPFLGO
+        // Optimistic-locking token: carry the entity @Version so the client can echo it on a
+        // subsequent update, enabling COACTUPC-style stale-form detection (AAP §0.7.5).
+        dto.setVersion(account.getVersion());
         return dto;
     }
 

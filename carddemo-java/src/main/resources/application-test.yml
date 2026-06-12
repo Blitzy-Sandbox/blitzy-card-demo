@@ -140,6 +140,19 @@ carddemo:
     sns:
       # Notification fan-out (replaces CICS notification messaging).
       notifications-topic: ${CARDDEMO_SNS_NOTIFICATIONS_TOPIC:carddemo-notifications}
+  # ---------------------------------------------------------------------------
+  # Stateless auth token (carddemo.security.token.*) — test-only signing secret
+  # ---------------------------------------------------------------------------
+  # The base application.yml supplies this via ${CARDDEMO_SECURITY_TOKEN_SECRET}.
+  # Under @ActiveProfiles("test") the full Spring context (e.g. AbstractRepositoryIT
+  # and any @SpringBootTest) must start WITHOUT relying on an external env var, so a
+  # deterministic, NON-SECRET, test-only value is pinned here. It is deliberately
+  # >= 32 bytes (256-bit HS256 minimum that TokenService validates at construction)
+  # and is fake test material that cannot be a real production secret (AAP §0.7.2).
+  security:
+    token:
+      secret: test-only-carddemo-hs256-token-signing-secret-do-not-use-in-prod
+      ttl-seconds: 3600
 
 # =============================================================================
 # Phase 3 — Observability: disable trace export; quiet, deterministic tests

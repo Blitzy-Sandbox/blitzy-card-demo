@@ -6,6 +6,7 @@ import com.cardemo.model.dto.UserSecurityDto;
 import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.repository.UserSecurityRepository;
 import java.util.Optional;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -185,6 +186,10 @@ public class UserDeleteService {
      *                                 &ldquo;User ID NOT found...&rdquo; message (HTTP 404 via the advice
      *                                 layer)
      */
+    // Admin-only: COUSR03C ran only under the CDEMO-USRTYP-ADMIN context. The method-level ADMIN
+    // gate is defence in depth behind the /api/admin/** route rule in SecurityConfig, and protects
+    // the operation from internal (non-HTTP) misuse. Enforced via @EnableMethodSecurity.
+    @PreAuthorize("hasRole('ADMIN')")
     @Transactional(readOnly = true)
     public UserSecurityDto loadUser(String userId) {
         // -------------------------------------------------------------------------------------------
@@ -268,6 +273,10 @@ public class UserDeleteService {
      *                                 &ldquo;User ID NOT found...&rdquo; message (HTTP 404 via the advice
      *                                 layer); no row is deleted in this case
      */
+    // Admin-only: COUSR03C ran only under the CDEMO-USRTYP-ADMIN context. The method-level ADMIN
+    // gate is defence in depth behind the /api/admin/** route rule in SecurityConfig, and protects
+    // the operation from internal (non-HTTP) misuse. Enforced via @EnableMethodSecurity.
+    @PreAuthorize("hasRole('ADMIN')")
     @Transactional
     public UserSecurityDto deleteUser(String userId) {
         // -------------------------------------------------------------------------------------------

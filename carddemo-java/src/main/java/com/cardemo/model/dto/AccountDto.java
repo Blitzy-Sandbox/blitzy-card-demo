@@ -442,6 +442,26 @@ public class AccountDto {
     private String primaryCardHolderIndicator;
 
     /**
+     * Optimistic-locking version token, mirrored from the {@code Account} entity's
+     * JPA {@code @Version} column.
+     *
+     * <p>This field has <strong>no COBOL {@code PIC} origin</strong>: it is the
+     * Java&nbsp;25 realization of the {@code COACTUPC} <em>read-before-update</em>
+     * concurrency check ({@code 1200-COMPARE-OLD-NEW} / {@code 9700-CHECK-CHANGE-IN-REC}),
+     * which compared the record image read at display time against the record on disk at
+     * update time and rejected the write if it had changed
+     * ({@code DATA-WAS-CHANGED-BEFORE-UPDATE}). The account view/read populates this token;
+     * the client echoes it back on the subsequent update; the update service compares it
+     * against the current entity version and rejects a <em>stale</em> form &mdash; one
+     * loaded before another user's completed update &mdash; with a
+     * {@link com.cardemo.exception.ConcurrentModificationException} (HTTP&nbsp;409). It is
+     * a server-issued, client-echoed token, so it carries no input-validation constraint;
+     * when {@code null} (a client that does not participate in the check) the server-side
+     * JPA {@code @Version} remains the safety net (AAP&nbsp;&sect;0.7.5).</p>
+     */
+    private Long version;
+
+    /**
      * Default no-argument constructor required by the JSON binder (Jackson) to
      * instantiate this DTO reflectively before populating its properties via setters.
      */
@@ -1003,6 +1023,26 @@ public class AccountDto {
         this.primaryCardHolderIndicator = primaryCardHolderIndicator;
     }
 
+    /**
+     * Returns the optimistic-locking version token (mirrored from the {@code Account}
+     * entity {@code @Version}); {@code null} when unset.
+     *
+     * @return the version token, or {@code null} if unset
+     */
+    public Long getVersion() {
+        return version;
+    }
+
+    /**
+     * Sets the optimistic-locking version token. Populated from the entity on read and
+     * echoed by the client on update for stale-form detection (AAP&nbsp;&sect;0.7.5).
+     *
+     * @param version the version token to set
+     */
+    public void setVersion(Long version) {
+        this.version = version;
+    }
+
     // ---------------------------------------------------------------------
     // Object contract
     // ---------------------------------------------------------------------
@@ -1087,6 +1127,7 @@ public class AccountDto {
                 + ", governmentIssuedId=" + (governmentIssuedId == null ? "null" : "****")
                 + ", eftAccountId='" + eftAccountId + '\''
                 + ", primaryCardHolderIndicator='" + primaryCardHolderIndicator + '\''
+                + ", version=" + version
                 + '}';
     }
 }
