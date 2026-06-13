@@ -3,6 +3,8 @@ package com.cardemo.unit.batch.writers;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -267,6 +269,53 @@ class StatementWriterTest {
 
             // Fails fast on the first (text) upload; the HTML upload is never attempted.
             verify(s3Template, times(1)).upload(any(String.class), any(String.class),
+                    any(InputStream.class), any(ObjectMetadata.class));
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Distinct-bucket contract — dedicated statements bucket, NEVER the batch-output bucket
+    // ---------------------------------------------------------------------------------------------
+
+    @Nested
+    @DisplayName("Distinct-bucket routing (carddemo-statements, never carddemo-batch-output)")
+    class DistinctBucketContract {
+
+        /**
+         * Guards the dedicated-bucket contract (AAP &sect;0.7.2): both renderings are routed to the
+         * config-resolved statements bucket ({@code carddemo-statements}) and <strong>never</strong> to
+         * the {@code carddemo-batch-output} bucket that the transaction/reject writers use. The writer
+         * reads the destination from
+         * {@link AwsConfig.AwsResourceProperties#getS3()}{@code .getStatementsBucket()} (never a hardcoded
+         * literal), so this test also documents that the two buckets are genuinely distinct in
+         * configuration &mdash; protecting against a regression that mis-points the statement output at
+         * the shared batch-output bucket. The COBOL {@code STMTFILE}/{@code HTMLFILE} datasets were
+         * physically separate from the daily-posting output, so a distinct sink preserves that separation
+         * (Minimal Change Clause, AAP &sect;0.7.1).
+         */
+        @Test
+        @DisplayName("write_routesToStatementsBucketNotBatchOutput: both puts → statements bucket, never batch-output")
+        void write_routesToStatementsBucketNotBatchOutput() {
+            final String statementsBucket = awsProps.getS3().getStatementsBucket();
+            final String batchOutputBucket = awsProps.getS3().getBatchOutputBucket();
+            // The two buckets are a genuinely distinct contract, not aliases (config-regression guard).
+            assertThat(statementsBucket).isEqualTo(STATEMENTS_BUCKET).isNotEqualTo(batchOutputBucket);
+
+            writer.write(Chunk.of(statement(11111111111L, "TXT-BODY-VERBATIM", "<html>HTML-BODY-VERBATIM</html>")));
+
+            // Capture the destination bucket of every upload (one .txt + one .html).
+            final ArgumentCaptor<String> bucketCaptor = ArgumentCaptor.forClass(String.class);
+            verify(s3Template, times(2)).upload(bucketCaptor.capture(), any(String.class),
+                    any(InputStream.class), any(ObjectMetadata.class));
+
+            // Positive: every upload targets the dedicated, config-resolved statements bucket.
+            assertThat(bucketCaptor.getAllValues())
+                    .hasSize(2)
+                    .containsOnly(statementsBucket)
+                    .doesNotContain(batchOutputBucket);
+
+            // Negative guard: the writer NEVER uploads to the batch-output bucket.
+            verify(s3Template, never()).upload(eq(batchOutputBucket), any(String.class),
                     any(InputStream.class), any(ObjectMetadata.class));
         }
     }
