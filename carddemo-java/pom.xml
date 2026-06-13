@@ -264,6 +264,21 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- Mockito core is already supplied transitively by spring-boot-starter-test
+             (version managed by the Spring Boot BOM). It is ALSO declared explicitly
+             here so the maven-dependency-plugin `properties` goal (build section)
+             reliably exposes its jar location as the ${org.mockito:mockito-core:jar}
+             property, which the Surefire/Failsafe argLine uses to load Mockito as an
+             explicit -javaagent. Under Java 25 this prevents Mockito's runtime
+             self-attach and the resulting "Java agent loaded dynamically" /
+             ByteBuddy dynamic-agent warnings (AAP §0.7.8 zero-warning build). No
+             explicit <version> — the BOM keeps it aligned with the bundle above. -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Spring Batch job testing utilities. -->
         <dependency>
             <groupId>org.springframework.batch</groupId>
@@ -321,15 +336,42 @@
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
 
+            <!-- maven-dependency-plugin: the `properties` goal (bound to the
+                 `initialize` phase) sets one build property per resolved dependency
+                 whose value is that artifact's absolute path in the local repository,
+                 e.g. ${org.mockito:mockito-core:jar}. The Surefire/Failsafe argLine
+                 below uses that property to load Mockito as an explicit -javaagent so
+                 it never self-attaches at runtime under Java 25 (AAP §0.7.8). Version
+                 pinned for reproducible, offline builds. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.8.1</version>
+                <executions>
+                    <execution>
+                        <id>resolve-dependency-properties</id>
+                        <phase>initialize</phase>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
             <!-- Surefire: UNIT tests only (*Test / *Tests). Integration and E2E
-                 classes are excluded here and handled by Failsafe below. Surefire
-                 automatically consumes the `argLine` injected by the JaCoCo agent,
-                 so no explicit argLine wiring is required. -->
+                 classes are excluded here and handled by Failsafe below. The argLine
+                 loads Mockito as an explicit Java agent to avoid the Java 25
+                 self-attach/ByteBuddy dynamic-agent warnings; `@{argLine}` is the
+                 late-evaluated placeholder that preserves the JaCoCo coverage agent
+                 injected by `prepare-agent`, and `-Xshare:off` suppresses the
+                 "Sharing is only supported..." CDS warning that appending an agent to
+                 the bootstrap classpath would otherwise emit. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${maven-surefire-failsafe.version}</version>
                 <configuration>
+                    <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
                     <includes>
                         <include>**/*Test.java</include>
                         <include>**/*Tests.java</include>
@@ -346,14 +388,17 @@
                  bound to the integration-test/verify phases. Skipped by default
                  (skipITs=true, since these require Docker/Testcontainers); the
                  `integration` profile flips skipITs to false to realize
-                 `mvn verify -Pintegration` (tech-spec L979). Failsafe also consumes
-                 the JaCoCo `argLine`, appending its coverage to the same exec data
-                 as the unit run for a combined coverage figure. -->
+                 `mvn verify -Pintegration` (tech-spec L979). Its argLine mirrors
+                 Surefire's: `@{argLine}` preserves the JaCoCo coverage agent (so
+                 integration coverage still appends to the same exec data for a
+                 combined figure), plus the explicit Mockito -javaagent and
+                 `-Xshare:off` for a warning-free Java 25 run. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
                 <version>${maven-surefire-failsafe.version}</version>
                 <configuration>
+                    <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
                     <includes>
                         <include>**/*IT.java</include>
                         <include>**/integration/**/*.java</include>

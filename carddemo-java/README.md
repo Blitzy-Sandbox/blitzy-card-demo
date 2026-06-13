@@ -56,8 +56,10 @@ The legacy **Application Inventory** is preserved in full but re-expressed for t
   statement generation, and transaction reporting) become **Spring Batch** jobs.
 
 See the [Functional inventory](#functional-inventory) for the full transaction-to-endpoint and
-job mapping, and [`docs/api-contracts.md`](docs/api-contracts.md) for the authoritative,
-field-by-field REST contract derived from the original BMS screens.
+job mapping **and the per-feature implementation status** (the report-submission endpoint and the
+business Spring Batch pipeline are deferred to CP5 and not yet present in the current build), and
+[`docs/api-contracts.md`](docs/api-contracts.md) for the authoritative, field-by-field REST
+contract derived from the original BMS screens.
 
 ---
 
@@ -147,6 +149,18 @@ Docker); enable them with the `integration` profile in step 5.
 
 Then run the application using **one** of the two modes below.
 
+> **Prerequisite for both modes — set your LocalStack Pro token.** Both modes start the
+> `localstack` service, which runs LocalStack **Pro** (`localstack/localstack-pro`) and has **no
+> default activation token**. Export a valid token **before** running `docker compose up`, or the
+> `localstack` container will fail to start:
+>
+> ```bash
+> export LOCALSTACK_AUTH_TOKEN=<your-localstack-pro-token>
+> ```
+>
+> See the [Environment variables](#environment-variables) section for the full list. Building and
+> unit-testing in step 2 (`./mvnw clean verify`) needs no environment variables.
+
 **3a. Mode A — Fully containerized (simplest first run):**
 
 ```bash
@@ -220,10 +234,16 @@ scrape `GET /actuator/prometheus`. Grafana's default local credentials are `admi
 
 ## Environment variables
 
-No environment variables are required for `./mvnw clean verify` or for a default
-`docker compose up -d` — every value has a clearly non-secret local-dev default. Secrets are
-supplied at runtime via the shell or an **uncommitted** `.env` file and are **never** committed
-to the repository.
+No environment variables are required to **build and unit-test** the project
+(`./mvnw clean verify`) or to run the integration + E2E suite (`./mvnw verify -Pintegration`) —
+Testcontainers provisions its own throwaway PostgreSQL and LocalStack containers for the latter.
+
+**One exception applies to `docker compose`.** The Compose data plane runs LocalStack **Pro**
+(`localstack/localstack-pro`), which has **no default activation token**, so you must export a
+valid `LOCALSTACK_AUTH_TOKEN` **before** any `docker compose up` that starts the `localstack`
+service — that is, both Mode A (the full stack) and Mode B (`postgres localstack jaeger`). Every
+other Compose value has a clearly non-secret local-dev default. Secrets are supplied at runtime
+via the shell or an **uncommitted** `.env` file and are **never** committed to the repository.
 
 | Variable | Secret? | Default | Purpose |
 |---|---|---|---|
@@ -285,7 +305,7 @@ route table below. All paths are prefixed with `/api` and exchange `application/
 | `CT01` | `COTRN01C` | Transaction view | `GET /api/transactions/{id}` |
 | `CT02` | `COTRN02C` | Transaction add | `POST /api/transactions` |
 | `CB00` | `COBIL00C` | Bill payment | `POST /api/billing/pay` |
-| `CR00` | `CORPT00C` | Transaction reports | `POST /api/reports/submit` |
+| `CR00` | `CORPT00C` | Transaction reports | `POST /api/reports/submit` &mdash; _pending CP5_ |
 | `CU00` | `COUSR00C` | List users | `GET /api/admin/users` |
 | `CU01` | `COUSR01C` | Add user | `POST /api/admin/users` |
 | `CU02` | `COUSR02C` | Update user | `PUT /api/admin/users/{id}` |
@@ -296,12 +316,25 @@ route table below. All paths are prefixed with `/api` and exchange `application/
 > functions) — the authoritative count. The full field-by-field request/response contract for
 > every endpoint lives in [`docs/api-contracts.md`](docs/api-contracts.md).
 
+> **Implementation status (CP4).** Sixteen of the seventeen endpoints above are implemented and
+> covered by tests. The report-submission endpoint `POST /api/reports/submit` (`CR00` /
+> `CORPT00C`) is **deferred to CP5** and is **not present in the current build** — its
+> `ReportController` and `ReportSubmissionService` (the CICS TDQ → SQS bridge) do not exist yet, so
+> the route is not callable. It is listed here for the complete target inventory only.
+
 ### Batch jobs → Spring Batch
 
 The legacy data-load JCL (account/card/customer/cross-reference/transaction loads) is replaced by
 **Flyway** migrations that create and seed PostgreSQL on startup (`V1` schema → `V2` indexes →
 `V3` seed). GDG provisioning becomes S3 buckets and the `USRSEC` load becomes the seeded
-`user_security` table. The business pipeline runs as a sequential 5-stage Spring Batch flow:
+`user_security` table. This data-load replacement is implemented in the current build.
+
+> **Implementation status (CP4).** The business batch pipeline described below is **deferred to
+> CP5** and is **not present in the current build** — none of the five Spring Batch jobs nor the
+> `BatchPipelineOrchestrator` exist yet. The table documents the **planned** CP5 design and is
+> included for the complete target inventory only.
+
+When implemented in CP5, the business pipeline will run as a sequential 5-stage Spring Batch flow:
 
 | Stage | Legacy JCL / program | Spring Batch job | Function |
 |---|---|---|---|
@@ -311,9 +344,9 @@ The legacy data-load JCL (account/card/customer/cross-reference/transaction load
 | 4a | `CREASTMT` / `CBSTM03A`,`CBSTM03B` | `StatementGenerationJob` | Produce account statements (text + HTML → S3) |
 | 4b | `TRANREPT` / `CBTRN03C` | `TransactionReportJob` | Date-filtered transaction report → S3 |
 
-Stage ordering and JCL `COND`-code logic are preserved by a `BatchPipelineOrchestrator`
-(`POSTTRAN → INTCALC → COMBTRAN → CREASTMT / TRANREPT`); stages 4a and 4b run in parallel after
-stage 3. The interest formula `(TRAN-CAT-BAL × DIS-INT-RATE) / 1200` is reproduced with
+Stage ordering and JCL `COND`-code logic will be preserved by a `BatchPipelineOrchestrator`
+(`POSTTRAN → INTCALC → COMBTRAN → CREASTMT / TRANREPT`); stages 4a and 4b will run in parallel
+after stage 3. The interest formula `(TRAN-CAT-BAL × DIS-INT-RATE) / 1200` will be reproduced with
 `BigDecimal` and banker's rounding, without algebraic rearrangement.
 
 ---

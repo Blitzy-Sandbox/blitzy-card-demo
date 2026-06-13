@@ -77,7 +77,7 @@ length and type. The migration applies these deterministic rules:
 | Header / chrome fields (`TRNNAME`, `PGMNAME`, `TITLE01`, `TITLE02`, `CURDATE`, `CURTIME`, `APPLID`, `SYSID`) | **Excluded** from the business payload — they are screen chrome supplied by the framework, not domain data |
 | `ERRMSG` (bright/`BRT` error line) | Mapped to the **standardized error response** (`§3`), not a per-DTO field |
 | Pseudo-conversational COMMAREA (`COCOM01Y`) | **Stateless** REST — navigation/user context is carried by the bearer token, not server-side session |
-| AID / PF keys (`DFHAID`: ENTER, PF3=Exit, PF7=page-up, PF8=page-down) | Distinct **endpoints** or **query parameters** (e.g. pagination `page`/`size`), not imported code |
+| AID / PF keys (`DFHAID`: ENTER, PF3=Exit, PF7=page-up, PF8=page-down) | Distinct **endpoints** or **query parameters** (e.g. the **1-based** `page` query parameter at the screen's fixed row capacity; PF7/PF8 = request `page-1`/`page+1`), not imported code |
 
 > **Field-name preservation.** REST DTO field names are derived directly from the
 > symbolic-map field names / COBOL data names, and the documented length/type matches the
@@ -468,20 +468,17 @@ Paginated browse of cards, optionally filtered by account id and/or card number.
 |---|---|---|---|---|---|
 | `accountId` | `ACCTSID` (`UNPROT`) | `String` (digits) | 11 | no | filter by owning account |
 | `cardNumber` | `CARDSID` (`UNPROT`) | `String` | 16 | no | filter by card number |
-| `page` | (PF7/PF8) | `Integer` | — | no | 0-based page index; default `0` |
-| `size` | row capacity | `Integer` | — | no | default **7** (matches the screen) |
+| `page` | (PF7/PF8) | `Integer` | — | no | **1-based** page index; default `1`. The page size is **fixed at 7 rows** (`CardDto.ROWS_PER_PAGE`, the `COCRDLI` screen capacity); there is **no `size` parameter** (BMS-parity fixed-row browse). Out-of-range values are normalized by the service. |
 
-**Response — `PagedResponse<CardSummaryDto>`** (`200 OK`):
+**Response — `CardDto`** (`200 OK`): the list-mode projection of the shared `CardDto`. The browse page is returned as the `cards[]` array (at most **7** rows = `CardDto.ROWS_PER_PAGE`), and `pageNumber` echoes the current 1-based page. This preserves the `COCRDLI` fixed-row screen contract exactly; it is **not** a generic offset/size paged envelope, so there is no `totalElements`/`hasNext`/`hasPrevious` metadata (navigation is the client requesting `page-1` for PF7 / `page+1` for PF8).
 
 | Field | Source | Type | Length | Notes |
 |---|---|---|---|---|
-| `content[].accountId` | `ACCTNOn` | `String` (digits) | 11 | |
-| `content[].cardNumber` | `CRDNUMn` | `String` | 16 | |
-| `content[].activeStatus` | `CRDSTSn` | `String` | 1 | `Y`/`N` |
-| `page` | — | `Integer` | — | current 0-based page |
-| `size` | — | `Integer` | — | rows per page (default 7) |
-| `totalElements` | — | `Long` | — | total matching cards |
-| `hasNext` / `hasPrevious` | PF8 / PF7 | `Boolean` | — | page navigation flags |
+| `cards[].selectionFlag` | `CRDSELn` | `String` | 1 | row selection flag (`S`/blank) |
+| `cards[].accountId` | `ACCTNOn` | `String` (digits) | 11 | |
+| `cards[].cardNumber` | `CRDNUMn` | `String` | 16 | |
+| `cards[].activeStatus` | `CRDSTSn` | `String` | 1 | `Y`/`N` |
+| `pageNumber` | `PAGENO` | `String` | 3 | current **1-based** page (`PAGENO PIC X(03)`) |
 
 #### `GET /api/cards/{cardNumber}` — card detail
 
@@ -565,18 +562,18 @@ Paginated browse, optionally filtered by transaction id. The `COTRN00` screen re
 | Parameter | BMS field | Type | Length | Required | Notes |
 |---|---|---|---|---|---|
 | `transactionId` | `TRNIDIN` (`UNPROT`) | `String` | 16 | no | starting/filter transaction id |
-| `page` | (PF7/PF8) | `Integer` | — | no | 0-based page index; default `0` |
-| `size` | row capacity | `Integer` | — | no | default **10** (matches the screen) |
+| `page` | (PF7/PF8) | `Integer` | — | no | **1-based** page index; default `1`. The page size is **fixed at 10 rows** (`TransactionDto.ROWS_PER_PAGE`, the `COTRN00` screen capacity); there is **no `size` parameter** (BMS-parity fixed-row browse). The service converts the 1-based page to its 0-based browse index and normalizes out-of-range values. |
 
-**Response — `PagedResponse<TransactionSummaryDto>`** (`200 OK`):
+**Response — `TransactionDto`** (`200 OK`): the list-mode projection of the shared `TransactionDto`. The browse page is returned as the `transactions[]` array (at most **10** rows = `TransactionDto.ROWS_PER_PAGE`), and `pageNumber` echoes the current 1-based page. This preserves the `COTRN00` fixed-row screen contract exactly; it is **not** a generic offset/size paged envelope, so there is no `totalElements`/`hasNext`/`hasPrevious` metadata (navigation is the client requesting `page-1` for PF7 / `page+1` for PF8).
 
 | Field | BMS field | Type | Length / precision | Notes |
 |---|---|---|---|---|
-| `content[].transactionId` | `TRNIDnn` | `String` | 16 | |
-| `content[].originationDate` | `TDATEnn` | `String` (date) | 8 | display date |
-| `content[].description` | `TDESCnn` | `String` | 26 | truncated description (list view) |
-| `content[].amount` | `TAMTnnn` | `BigDecimal` | scale 2 | `S9(09)V99` |
-| `page` / `size` / `totalElements` / `hasNext` / `hasPrevious` | — | — | — | pagination metadata |
+| `transactions[].selectionFlag` | `SEL00nn` | `String` | 1 | row selection flag |
+| `transactions[].transactionId` | `TRNIDnn` | `String` | 16 | |
+| `transactions[].date` | `TDATEnn` | `String` (date) | 8 | display date (`TDATE0n PIC X(8)`) |
+| `transactions[].description` | `TDESCnn` | `String` | 26 | truncated description (list view) |
+| `transactions[].amount` | `TAMTnnn` | `BigDecimal` | scale 2 | `S9(09)V99` |
+| `pageNumber` | `PAGENUM` | `String` | 8 | current **1-based** page (`PAGENUM PIC X(08)`) |
 
 #### `GET /api/transactions/{id}` — transaction detail
 
@@ -663,14 +660,15 @@ balance and prompts for a Y/N confirmation before committing.
 | `accountId` | `ACTIDIN` (`UNPROT`) | `String` (digits) | 11 | yes | `@Digits(integer=11)` |
 | `confirm` | `CONFIRM` (`UNPROT`) | `String` | 1 | no | `@Size(max=1)` — `Y`/`N`, case-insensitive; the accept/re-prompt decision is conversational logic in `COBIL00C` / `BillPaymentService`, not a DTO field-format rule |
 
-**Response — `BillPaymentResponse`** (`200 OK`):
+**Response — `BillPaymentRequest.Response`** (`200 OK`) — the nested `Response` type declared on `BillPaymentRequest`:
 
 | Field | BMS field | Type | Length / precision | Notes |
 |---|---|---|---|---|
 | `currentBalance` | `CURBAL` | `BigDecimal` | scale 2 | balance presented for confirmation (`ACCT-CURR-BAL`, `S9(10)V99`) |
 | `transactionId` | generated | `String` | 16 | id of the balancing payment transaction created |
 | `newBalance` | computed | `BigDecimal` | scale 2 | balance after payment (zero on success) |
-| `confirmationNumber` | generated | `String` | — | confirmation reference returned for the completed payment |
+| `message` | `ERRMSG` | `String` | 78 | result / prompt / validation message line (`ERRMSG PIC X(78)`) |
+| `confirmationNumber` | generated | `String` | 16 | confirmation reference (the generated transaction id) for the completed payment |
 
 **Status codes:** `200 OK`; `400 Bad Request` (validation failure);
 `404 Not Found` (account not found). When `confirm` is not `Y`, `COBIL00C` /
@@ -770,18 +768,18 @@ renders **10 rows per page** (`SEL0001`–`SEL0010`, `USRID01`–`USRID10`, `FNA
 | Parameter | BMS field | Type | Length | Required | Notes |
 |---|---|---|---|---|---|
 | `userId` | `USRIDIN` (`UNPROT`) | `String` | 8 | no | starting/filter user id |
-| `page` | (PF7/PF8) | `Integer` | — | no | 0-based page index; default `0` |
-| `size` | row capacity | `Integer` | — | no | default **10** (matches the screen) |
+| `page` | (PF7/PF8) | `Integer` | — | no | **1-based** page index; default `1`. The page size is **fixed at 10 rows** (`UserSecurityDto.ROWS_PER_PAGE`, the `COUSR00` screen capacity); there is **no `size` parameter** (BMS-parity fixed-row browse). A value below one is normalized to one by the service. |
 
-**Response — `PagedResponse<UserSummaryDto>`** (`200 OK`):
+**Response — `UserSecurityDto`** (`200 OK`): the list-mode projection of the shared `UserSecurityDto`. The browse page is returned as the `users[]` array (at most **10** rows = `UserSecurityDto.ROWS_PER_PAGE`), and `pageNumber` echoes the current 1-based page. This preserves the `COUSR00` fixed-row screen contract exactly; it is **not** a generic offset/size paged envelope, so there is no `totalElements`/`hasNext`/`hasPrevious` metadata (navigation is the client requesting `page-1` for PF7 / `page+1` for PF8). The password is never present on list rows.
 
 | Field | BMS field | Type | Length | Notes |
 |---|---|---|---|---|
-| `content[].userId` | `USRIDnn` | `String` | 8 | |
-| `content[].firstName` | `FNAMEnn` | `String` | 20 | |
-| `content[].lastName` | `LNAMEnn` | `String` | 20 | |
-| `content[].userType` | `UTYPEnn` → `UserType` | enum | 1 | `ADMIN` (`'A'`) / `USER` (`'U'`) |
-| `page` / `size` / `totalElements` / `hasNext` / `hasPrevious` | — | — | — | pagination metadata |
+| `users[].selectionFlag` | `SEL00nn` | `String` | 1 | row selection flag (`U`pdate / `D`elete / blank) |
+| `users[].userId` | `USRIDnn` | `String` | 8 | |
+| `users[].firstName` | `FNAMEnn` | `String` | 20 | |
+| `users[].lastName` | `LNAMEnn` | `String` | 20 | |
+| `users[].userType` | `UTYPEnn` → `UserType` | enum | 1 | `ADMIN` (`'A'`) / `USER` (`'U'`) |
+| `pageNumber` | `PAGENUM` | `String` | — | current **1-based** page |
 
 #### `POST /api/admin/users` — add user
 
@@ -833,9 +831,13 @@ delete is confirmed; the REST contract takes only the key.
 
 **Path parameter:** `id` ← `USRIDIN` (`String`, 8, `@Size(max=8)`).
 
-**Response:** `204 No Content` on success.
+**Response — `UserSecurityDto`** (`200 OK`): a confirmation body echoing the deleted user's
+`userId`, `firstName`, `lastName`, and `userType` (never the password) — the REST analogue of
+the `COUSR03C` &ldquo;User &lt;id&gt; ... has been deleted&rdquo; confirmation screen. The
+endpoint deliberately returns **`200 OK` with a body**, not `204 No Content`, to preserve that
+COBOL confirmation-screen parity.
 
-**Status codes:** `204 No Content`; `403 Forbidden`; `404 Not Found`.
+**Status codes:** `200 OK`; `403 Forbidden`; `404 Not Found`.
 
 **Notes — technology substitution.** `USRSEC` plaintext passwords are upgraded to BCrypt
 hashes (`SEC-USR-PWD PIC X(08)` → hashed column). The `PASSWD` field is `DRK` on every user
@@ -871,13 +873,19 @@ positions. Numeric comparisons in the service layer use `BigDecimal.compareTo`, 
 ### 6.3 Pagination
 
 List endpoints (`GET /api/cards`, `GET /api/transactions`, `GET /api/admin/users`) use
-**offset/page-based** pagination via `page` (0-based index) and `size` query parameters,
-mirroring the COBOL pseudo-conversational browse driven by PF7 (page up) and PF8 (page down).
-The default `size` matches each screen's row capacity (7 for cards, 10 for transactions and
-users). Responses carry `page`, `size`, `totalElements`, and `hasNext`/`hasPrevious` flags so
-the client can reproduce the PF7/PF8 navigation. A cursor/keyset-based pagination scheme
-(closer to the original VSAM browse semantics for very large result sets) is a recognized
-**future enhancement and is explicitly out of scope** for this migration.
+**1-based, fixed-row** pagination via a single `page` query parameter (default `1`), mirroring
+the COBOL pseudo-conversational browse driven by PF7 (page up) and PF8 (page down). The page
+size is **fixed at each screen's row capacity** (7 for cards, 10 for transactions and users),
+encoded as the screen DTO's `ROWS_PER_PAGE` constant; there is **no `size` query parameter**.
+Each response is the screen's shared DTO carrying the page rows as a fixed-capacity array
+(`cards[]` / `transactions[]` / `users[]`) plus a `pageNumber` field echoing the current
+1-based page — it is **not** a generic offset/size paged envelope and carries no
+`totalElements` or `hasNext`/`hasPrevious` metadata. The client reproduces PF7/PF8 navigation
+by requesting `page-1` / `page+1`; the service normalizes out-of-range page numbers. This
+preserves the fixed-row BMS screen contract exactly (`COCRDLI`, `COTRN00`, `COUSR00`). A
+cursor/keyset-based pagination scheme (closer to the original VSAM browse semantics for very
+large result sets) is a recognized **future enhancement and is explicitly out of scope** for
+this migration.
 
 ### 6.4 Authentication and authorization
 

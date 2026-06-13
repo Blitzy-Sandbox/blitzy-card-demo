@@ -2,6 +2,7 @@ package com.cardemo.integration.repository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.cardemo.model.dto.TransactionDto;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.repository.TransactionRepository;
 import java.math.BigDecimal;
@@ -48,7 +49,7 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li>{@link TransactionRepository#findByTranIdGreaterThanEqual(String,
  *       org.springframework.data.domain.Pageable)} &mdash; the paged greater-than-or-equal
  *       {@code TRAN-ID} browse of the online transaction-list program {@code COTRN00C}
- *       ({@code STARTBR} GTEQ positioning, {@code SEL0007I}/{@code TRNID07I} 7-rows-per-page screen).</li>
+ *       ({@code STARTBR} GTEQ positioning, {@code SEL0010I}/{@code TRNID10I} 10-rows-per-page screen).</li>
  *   <li>{@link TransactionRepository#findByProcessingDateRange(String, String)} &mdash; the
  *       DFSORT-style processing-date window of the batch report {@code CBTRN03C} /
  *       {@code app/jcl/TRANREPT.jcl} (the {@code TRAN-PROC-TS (1:10)} date prefix, inclusive bounds,
@@ -132,10 +133,17 @@ class TransactionRepositoryIT extends AbstractRepositoryIT {
     private static final String CARD_SECONDARY = "0683586198171516";
 
     /**
-     * Page size of the {@code COTRN00C} transaction-list screen: 7 rows per page (the COBOL screen
-     * array {@code SEL0007I}/{@code TRNID07I}).
+     * Page size of the {@code COTRN00C} transaction-list screen: <strong>10 rows per page</strong>
+     * (the COBOL screen array runs {@code SEL0001I}/{@code TRNID01I} through the final tenth row
+     * {@code SEL0010I}/{@code TRNID10I} in {@code app/cpy-bms/COTRN00.CPY}).
+     *
+     * <p>This constant is bound directly to {@link TransactionDto#ROWS_PER_PAGE} &mdash; the single
+     * authoritative screen-capacity constant carried forward from the BMS symbolic map into the
+     * migrated transaction-list DTO &mdash; so the integration test can never silently drift from the
+     * online browse contract again (the {@link #findByTranIdGreaterThanEqual_paginates()} guard
+     * additionally pins the absolute expected value).</p>
      */
-    private static final int COTRN00C_PAGE_SIZE = 7;
+    private static final int COTRN00C_PAGE_SIZE = TransactionDto.ROWS_PER_PAGE;
 
     /**
      * Exact scale of the {@code amount} column ({@code TRAN-AMT PIC S9(09)V99} &rarr;
@@ -302,16 +310,29 @@ class TransactionRepositoryIT extends AbstractRepositoryIT {
      * browse that reproduces the online transaction-list program {@code COTRN00C}.
      *
      * <p>The caller supplies a page size of {@value #COTRN00C_PAGE_SIZE} via
-     * {@link PageRequest#of(int, int)} (the original 7-rows-per-page screen contract). The returned
+     * {@link PageRequest#of(int, int)} (the original 10-rows-per-page screen contract). The returned
      * {@link Page} reports that requested page size through {@link Page#getSize()} (independent of how
      * many rows the page actually holds), its content never exceeds the page size, every content row
      * satisfies the greater-than-or-equal floor (the {@code STARTBR} GTEQ positioning), and the three
      * saved rows appear on the first page. A second browse from a higher start key proves the strict
      * GTEQ semantics: raising the floor to the second id excludes the lower first id.</p>
+     *
+     * <p>Before exercising the browse, the test asserts a <strong>screen-contract regression guard</strong>:
+     * the page size is exactly {@link TransactionDto#ROWS_PER_PAGE} (ten), the capacity of the
+     * {@code COTRN00} symbolic map ({@code SEL0001I}..{@code SEL0010I}). This prevents the page-size
+     * parity evidence from ever drifting away from the authoritative DTO/screen contract again.</p>
      */
     @Test
-    @DisplayName("findByTranIdGreaterThanEqual paginates the COTRN00C 7-rows/page GTEQ TRAN-ID browse")
+    @DisplayName("findByTranIdGreaterThanEqual paginates the COTRN00C 10-rows/page GTEQ TRAN-ID browse")
     void findByTranIdGreaterThanEqual_paginates() {
+        // Screen-contract regression guard: the COTRN00C page size MUST equal the authoritative
+        // transaction-list DTO capacity (TransactionDto.ROWS_PER_PAGE) AND its absolute value of ten,
+        // matching the BMS symbolic map COTRN00.CPY (SEL0001I..SEL0010I / TRNID01I..TRNID10I).
+        assertThat(COTRN00C_PAGE_SIZE)
+                .as("COTRN00C transaction-browse page size must equal TransactionDto.ROWS_PER_PAGE (the COTRN00 screen capacity)")
+                .isEqualTo(TransactionDto.ROWS_PER_PAGE)
+                .isEqualTo(10);
+
         String id1 = id16(1);
         String id2 = id16(2);
         String id3 = id16(3);
@@ -322,9 +343,9 @@ class TransactionRepositoryIT extends AbstractRepositoryIT {
         Page<Transaction> page =
                 transactionRepository.findByTranIdGreaterThanEqual(id1, PageRequest.of(0, COTRN00C_PAGE_SIZE));
 
-        // getSize() reflects the requested 7-row screen contract, independent of rows actually present.
+        // getSize() reflects the requested 10-row screen contract, independent of rows actually present.
         assertThat(page.getSize())
-                .as("page size must reflect the requested COTRN00C 7-rows-per-page screen contract")
+                .as("page size must reflect the requested COTRN00C 10-rows-per-page screen contract")
                 .isEqualTo(COTRN00C_PAGE_SIZE);
 
         // A single page can hold at most the page size.

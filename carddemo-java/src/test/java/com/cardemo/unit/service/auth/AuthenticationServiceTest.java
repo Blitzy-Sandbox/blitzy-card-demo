@@ -2,6 +2,7 @@ package com.cardemo.unit.service.auth;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -21,9 +22,9 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
-import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.SignOnRequest;
 import com.cardemo.model.dto.SignOnResponse;
@@ -107,11 +108,16 @@ class AuthenticationServiceTest {
     /** COSGN00C L125 — {@code WHEN PASSWDI = SPACES OR LOW-VALUES}. */
     private static final String MSG_ENTER_PASSWORD = "Please enter Password ...";
 
-    /** COSGN00C L249 — {@code READ-USER-SEC-FILE WHEN 13} (DFHRESP NOTFND). */
-    private static final String MSG_USER_NOT_FOUND = "User not found. Try again ...";
-
-    /** COSGN00C L242 — {@code WHEN 0} + {@code SEC-USR-PWD NOT = WS-USER-PWD}. */
-    private static final String MSG_WRONG_PASSWORD = "Wrong Password. Try again ...";
+    // COSGN00C displayed two DISTINCT credential-failure messages on the sign-on
+    // screen — "User not found. Try again ..." (WHEN 13, L249) and "Wrong
+    // Password. Try again ..." (WHEN 0 + mismatch, L242). The migrated REST
+    // contract (api-contracts.md §5.1 + CP4 security review) deliberately
+    // collapses BOTH into a single, indistinguishable 401 so account existence
+    // cannot be probed (username-enumeration defense). The service therefore
+    // throws one BadCredentialsException carrying this generic message for both
+    // branches; these tests assert that uniformity. The COBOL literals are kept
+    // here only as comments for traceability.
+    private static final String MSG_AUTHENTICATION_FAILED = "Authentication failed";
 
     // ---------------------------------------------------------------------
     // Canonical golden test users — sourced from the USRSEC seed in
@@ -251,30 +257,55 @@ class AuthenticationServiceTest {
     // =====================================================================
 
     @Test
-    @DisplayName("READ-USER-SEC-FILE WHEN 13 -> RecordNotFoundException 'User not found. Try again ...'")
-    void unknownUserRaisesRecordNotFound() {
+    @DisplayName("READ-USER-SEC-FILE WHEN 13 (unknown user) -> single BadCredentialsException -> HTTP 401")
+    void unknownUserRaisesBadCredentials() {
         // COSGN00C L247-249: keyed read misses (DFHRESP NOTFND). "NOSUCH" is already upper-case.
+        // The migrated contract maps an unknown user to the SAME generic credential failure as a
+        // wrong password (api-contracts.md §5.1) — a Spring Security AuthenticationException
+        // (BadCredentialsException) that config/WebConfig renders as a generic HTTP 401.
         when(userSecurityRepository.findBySecUsrId("NOSUCH")).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.signOn(request("NOSUCH", RAW_PASSWORD)))
-                .isInstanceOf(RecordNotFoundException.class)
-                .hasMessage(MSG_USER_NOT_FOUND);
+                .isInstanceOf(BadCredentialsException.class)
+                .hasMessage(MSG_AUTHENTICATION_FAILED);
 
         // No record -> the BCrypt verify is never reached.
         verify(passwordEncoder, never()).matches(any(), any());
     }
 
     @Test
-    @DisplayName("READ-USER-SEC-FILE WHEN 0 + password mismatch -> ValidationException 'Wrong Password. Try again ...'")
-    void wrongPasswordRaisesValidation() {
+    @DisplayName("READ-USER-SEC-FILE WHEN 0 + password mismatch -> single BadCredentialsException -> HTTP 401")
+    void wrongPasswordRaisesBadCredentials() {
         // Record found (WHEN 0), but BCrypt verification fails (COSGN00C L223 IF SEC-USR-PWD NOT = WS-USER-PWD).
+        // Mapped to the SAME generic credential failure (BadCredentialsException -> 401) as an unknown user.
         when(userSecurityRepository.findBySecUsrId(USER_ID))
                 .thenReturn(Optional.of(user(USER_ID, STORED_HASH, UserType.USER)));
         when(passwordEncoder.matches(RAW_PASSWORD, STORED_HASH)).thenReturn(false);
 
         assertThatThrownBy(() -> service.signOn(request(USER_ID, RAW_PASSWORD)))
-                .isInstanceOf(ValidationException.class)
-                .hasMessage(MSG_WRONG_PASSWORD);
+                .isInstanceOf(BadCredentialsException.class)
+                .hasMessage(MSG_AUTHENTICATION_FAILED);
+    }
+
+    @Test
+    @DisplayName("Security: unknown-user and wrong-password are INDISTINGUISHABLE (same 401 type + message) — no enumeration")
+    void credentialFailuresAreIndistinguishable() {
+        // Username-enumeration defense (CP4 security review + api-contracts.md §5.1): an unknown user
+        // and a wrong password must surface as the SAME exception type AND the SAME message, so a
+        // caller cannot tell whether the user id exists. This test fails if the service ever
+        // re-introduces a distinguishable 404-vs-400 (or differing-message) split.
+        when(userSecurityRepository.findBySecUsrId("NOSUCH")).thenReturn(Optional.empty());
+        when(userSecurityRepository.findBySecUsrId(USER_ID))
+                .thenReturn(Optional.of(user(USER_ID, STORED_HASH, UserType.USER)));
+        when(passwordEncoder.matches(RAW_PASSWORD, STORED_HASH)).thenReturn(false);
+
+        Throwable unknownUser = catchThrowable(() -> service.signOn(request("NOSUCH", RAW_PASSWORD)));
+        Throwable wrongPassword = catchThrowable(() -> service.signOn(request(USER_ID, RAW_PASSWORD)));
+
+        assertThat(unknownUser).isInstanceOf(BadCredentialsException.class);
+        assertThat(wrongPassword).isInstanceOf(BadCredentialsException.class);
+        assertThat(unknownUser.getClass()).isEqualTo(wrongPassword.getClass());
+        assertThat(unknownUser.getMessage()).isEqualTo(wrongPassword.getMessage());
     }
 
     // =====================================================================

@@ -251,20 +251,29 @@ create_sqs_queue() {
 }
 
 # -----------------------------------------------------------------------------
-# Phase 5 -- SNS topic (optional, idempotent; CICS notifications -> SNS)
+# Phase 5 -- SNS topic (REQUIRED, idempotent; CICS notifications -> SNS)
 #
 # create-topic is naturally idempotent: for an existing name it returns the same
-# ARN. Guarded so the absence of SNS support never aborts the script (SNS is
-# enabled here via SERVICES=s3,sqs,sns).
+# ARN. SNS is part of the REQUIRED AWS resource contract -- it is enabled here
+# via SERVICES=s3,sqs,sns and consumed by the report/notification layers and the
+# CP5 AwsConfig -- so a provisioning failure aborts the script with a non-zero
+# exit, exactly like the S3 and SQS phases above.
 # -----------------------------------------------------------------------------
 create_sns_topic() {
   log "Ensuring SNS topic (CICS notifications -> SNS): ${SNS_TOPIC_NAME}"
-  SNS_TOPIC_ARN="$(awscli sns create-topic --name "${SNS_TOPIC_NAME}" \
-    --output text --query 'TopicArn' 2>/dev/null || true)"
-  if [[ -n "${SNS_TOPIC_ARN:-}" ]]; then
+  # `sns create-topic` is naturally idempotent: for an existing topic name it
+  # returns the SAME TopicArn, so this single call both creates-if-absent and
+  # ensures-if-present. SNS is a REQUIRED resource, so a non-empty ARN is the
+  # success condition and any failure (empty ARN or a non-zero CLI exit) aborts
+  # the script with `exit 1` -- mirroring the S3 and SQS phases above rather than
+  # swallowing the error and exiting 0.
+  if SNS_TOPIC_ARN="$(awscli sns create-topic --name "${SNS_TOPIC_NAME}" \
+       --output text --query 'TopicArn' 2>/dev/null)" \
+       && [[ -n "${SNS_TOPIC_ARN:-}" ]]; then
     log "SNS topic ensured: ${SNS_TOPIC_NAME} (ARN: ${SNS_TOPIC_ARN})"
   else
-    log "WARNING: SNS topic creation returned no ARN; continuing (SNS is optional)."
+    log "ERROR: failed to ensure SNS topic: ${SNS_TOPIC_NAME}"
+    exit 1
   fi
 }
 

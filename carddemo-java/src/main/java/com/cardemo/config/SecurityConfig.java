@@ -4,6 +4,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -126,6 +127,13 @@ public class SecurityConfig {
      * token issued by {@code AuthenticationService}. The chain is intentionally minimal &mdash; it
      * declares only what the migration requires (Minimal Change Clause, AAP &sect;0.7.1):</p>
      * <ul>
+     *   <li><strong>CORS enabled (Security-aware).</strong> {@code .cors(Customizer.withDefaults())}
+     *       enables CORS <em>within</em> the Security filter chain so a cross-origin pre-flight
+     *       ({@code OPTIONS}) is handled before the authorization rules can reject it as
+     *       unauthenticated. The policy itself is declared once in {@code config/WebConfig}
+     *       ({@code addCorsMappings}); Spring Security reuses it via the MVC
+     *       {@code HandlerMappingIntrospector} (no {@code CorsConfigurationSource} bean is defined
+     *       here), keeping CORS single-sourced.</li>
      *   <li><strong>CSRF disabled.</strong> CSRF protection guards cookie/session-backed browser
      *       forms. This API is token-based with {@link SessionCreationPolicy#STATELESS} sessions and
      *       exposes no cookie session and no web UI (AAP &sect;0.3.4), so CSRF protection is both
@@ -180,6 +188,13 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http, TokenService tokenService) throws Exception {
         http
+                // CORS must be enabled INSIDE the Security filter chain (not only in Spring MVC) so a
+                // cross-origin pre-flight (OPTIONS) is handled before the authorization rules below can
+                // reject it as unauthenticated. Customizer.withDefaults() makes Spring Security reuse the
+                // MVC CORS policy declared once in config/WebConfig#addCorsMappings (Spring Security
+                // delegates to the MVC HandlerMappingIntrospector when no CorsConfigurationSource bean is
+                // present), so the CORS policy stays single-sourced — no duplicate configuration here.
+                .cors(Customizer.withDefaults())
                 // Stateless token/credential API: no cookie session, no web UI -> CSRF inapplicable.
                 .csrf(csrf -> csrf.disable())
                 // CICS pseudo-conversational COMMAREA -> stateless REST (tech-spec L29/L83):
