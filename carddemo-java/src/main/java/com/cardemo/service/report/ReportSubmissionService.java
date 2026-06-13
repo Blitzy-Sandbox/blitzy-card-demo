@@ -251,16 +251,23 @@ public class ReportSubmissionService {
      * DateValidationService) three-argument constructor} annotated {@code @Autowired}). A {@code null}
      * clock falls back to the system default zone.
      *
+     * <p>Declared {@code public} so the fast unit test in the sibling {@code com.cardemo.unit.service.report}
+     * package can inject a {@link Clock#fixed(java.time.Instant, java.time.ZoneId) fixed clock} for
+     * deterministic date derivation (the test cannot reach a package-private constructor across
+     * packages, and reflection is disallowed by the zero-unsafe-code build policy). This mirrors the
+     * sibling {@link com.cardemo.service.shared.DateValidationService}'s public {@code Clock}
+     * constructor convention; Spring still selects the {@code @Autowired} three-argument constructor.</p>
+     *
      * @param sqsTemplate           the SQS operations facade
      * @param awsProperties         the bound AWS resource-name properties
      * @param dateValidationService the date validator
      * @param clock                 the clock supplying "today"; {@code null} &rarr;
      *                              {@link Clock#systemDefaultZone()}
      */
-    ReportSubmissionService(SqsTemplate sqsTemplate,
-                            AwsConfig.AwsResourceProperties awsProperties,
-                            DateValidationService dateValidationService,
-                            Clock clock) {
+    public ReportSubmissionService(SqsTemplate sqsTemplate,
+                                   AwsConfig.AwsResourceProperties awsProperties,
+                                   DateValidationService dateValidationService,
+                                   Clock clock) {
         this.sqsTemplate = sqsTemplate;
         this.awsProperties = awsProperties;
         this.dateValidationService = dateValidationService;
