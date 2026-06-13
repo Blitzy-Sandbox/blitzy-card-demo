@@ -3,6 +3,7 @@ package com.cardemo.unit.batch.writers;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -29,6 +30,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,6 +40,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.batch.item.Chunk;
@@ -169,6 +172,35 @@ class TransactionWriterTest {
     }
 
     // ---------------------------------------------------------------------------------------------
+    // Headline parity — COBOL 2000-POST posting ORDER (2700 → 2800 → 2900)
+    // ---------------------------------------------------------------------------------------------
+
+    @Nested
+    @DisplayName("Posting order — COBOL 2700 → 2800 → 2900")
+    class PostingOrder {
+
+        @Test
+        @DisplayName("write_postsInCobolOrder_tcatbalThenAccountThenTransaction: TCATBAL save → Account save → Transaction saveAll")
+        void write_postsInCobolOrder_tcatbalThenAccountThenTransaction() {
+            // One accepted purchase driven through the full 2000-POST cascade.
+            final Account account = account("1000.00", "0.00", "0.00");
+            when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+            final Transaction txn = transaction("0000000000000001", "50.47");
+
+            writer.write(Chunk.of(accepted(txn, account)));
+
+            // Headline behavioural-parity assertion (AAP §0.7.2): the migrated writer must persist in the
+            // EXACT COBOL paragraph order — 2700-UPDATE-TCATBAL (category-balance save) THEN
+            // 2800-UPDATE-ACCOUNT-REC (account save) THEN 2900-WRITE-TRANSACTION-FILE (one bulk saveAll).
+            // InOrder ignores the interleaved findById reads and asserts only the relative order of the writes.
+            final InOrder inOrder = inOrder(categoryBalanceRepository, accountRepository, transactionRepository);
+            inOrder.verify(categoryBalanceRepository).save(any(TransactionCategoryBalance.class)); // 2700
+            inOrder.verify(accountRepository).save(any(Account.class));                            // 2800
+            inOrder.verify(transactionRepository).saveAll(any());                                  // 2900
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Step B — 2700-UPDATE-TCATBAL upsert
     // ---------------------------------------------------------------------------------------------
 
@@ -265,16 +297,23 @@ class TransactionWriterTest {
         }
 
         @Test
-        @DisplayName("account absent → RecordNotFoundException (COBOL 109 INVALID KEY → chunk rollback)")
-        void accountAbsentThrows() {
+        @DisplayName("write_accountAbsentOnUpdate_throwsRejectCode109_andDoesNotWriteTransaction: COBOL 109 INVALID KEY → throw → chunk rollback")
+        void write_accountAbsentOnUpdate_throwsRejectCode109_andDoesNotWriteTransaction() {
             final Account carried = account("0.00", "0.00", "0.00");
             final Transaction txn = transaction("0000000000000006", "10.00");
             when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.empty());
 
+            // Parity note (AAP §0.7.5): COBOL CBTRN02C 2800-UPDATE-ACCOUNT-REC sets reject reason 109
+            // (ACCOUNT_NOT_FOUND_ON_UPDATE) on the REWRITE INVALID KEY path and then *falls through* to
+            // 2900-WRITE-TRANSACTION-FILE. The migrated writer deliberately THROWS instead, so the Spring
+            // Batch chunk rolls back rather than committing an orphaned transaction. This 109 throw is
+            // distinct from the processor-carried rejects 100–103 (covered by RejectWriterTest), which the
+            // accepted-only sink merely skips. The thrown type is the production RecordNotFoundException.
             assertThatThrownBy(() -> writer.write(Chunk.of(accepted(txn, carried))))
                     .isInstanceOf(RecordNotFoundException.class);
 
-            // The transaction is NEVER inserted when the account is missing (no orphaned posting).
+            // The transaction is NEVER inserted when the account is missing (no orphaned posting), and the
+            // S3 backup (which runs only AFTER a successful saveAll) is never reached.
             verify(transactionRepository, never()).saveAll(any());
             verifyNoInteractions(s3Template);
         }
@@ -327,7 +366,7 @@ class TransactionWriterTest {
     class ProcessingTimestamp {
 
         @Test
-        @DisplayName("absent TRAN-PROC-TS is stamped from the clock at COBOL hundredths precision")
+        @DisplayName("write_stampsProcessingTimestampInDb2Format: absent TRAN-PROC-TS is stamped at COBOL hundredths precision and renders to the 26-char DB2 format")
         void stampsWhenAbsent() {
             final Account account = account("0.00", "0.00", "0.00");
             when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
@@ -336,8 +375,19 @@ class TransactionWriterTest {
 
             writer.write(Chunk.of(accepted(txn, account)));
 
-            // 2024-01-15T10:20:30.680 truncated to hundredths (68) then zero-padded -> .680000.
-            assertThat(txn.getTranProcTs()).isEqualTo(LocalDateTime.of(2024, 1, 15, 10, 20, 30, 680_000_000));
+            // Deterministic value (fixed clock): 2024-01-15T10:20:30.680 truncated to hundredths (68) then
+            // zero-padded -> .680000 (COBOL Z-GET-DB2-FORMAT-TIMESTAMP: COB-MIL hundredths + COB-REST "0000").
+            final LocalDateTime stamped = txn.getTranProcTs();
+            assertThat(stamped).isNotNull();
+            assertThat(stamped).isEqualTo(LocalDateTime.of(2024, 1, 15, 10, 20, 30, 680_000_000));
+
+            // External-interface contract: the stamp renders to the 26-character DB2 timestamp format
+            // yyyy-MM-dd-HH.mm.ss.SSSSSS (exactly six fractional digits). This is the Z-GET-DB2-FORMAT-TIMESTAMP
+            // substitution — Transaction.tranProcTs is a LocalDateTime and the 26-byte text is the boundary form.
+            final String db2 = DateTimeFormatter.ofPattern("yyyy-MM-dd-HH.mm.ss.SSSSSS").format(stamped);
+            assertThat(db2).hasSize(26);
+            assertThat(db2).matches("\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{6}");
+            assertThat(db2).isEqualTo("2024-01-15-10.20.30.680000");
         }
 
         @Test
