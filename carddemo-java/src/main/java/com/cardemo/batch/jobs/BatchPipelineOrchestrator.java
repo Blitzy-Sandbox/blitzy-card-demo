@@ -128,6 +128,18 @@ public class BatchPipelineOrchestrator {
     private static final String STOP = "STOP";
 
     /**
+     * Spring Batch flow-transition pattern matching <em>every</em> {@link ExitStatus} exit code (the
+     * pattern {@code "*"} matches zero or more characters). Used on the {@code dailyTransactionPostingStep}
+     * &rarr; {@link #postingDecider()} transition so that <strong>all</strong> posting outcomes &mdash;
+     * {@code COMPLETED} (RC=0), {@link DailyTransactionPostingJob#EXIT_CODE_COMPLETED_WITH_REJECTS} (RC=4)
+     * and any genuine failure &mdash; reach the decider, which is the single JES-{@code COND} decision point.
+     * This is the fix for the RC=4 routing: the implicit {@code .next(decider)} transition would match only
+     * the literal code {@code "COMPLETED"} and would strand a {@code COMPLETED_WITH_REJECTS} step with no
+     * downstream state, failing the job before the decider could PROCEED (AAP &sect;0.7.6 / L1069).
+     */
+    private static final String ANY_EXIT_CODE = "*";
+
+    /**
      * Core/maximum pool size of the {@link #pipelineTaskExecutor()} &mdash; exactly two, one worker thread
      * for each of the two parallel Stage&nbsp;4 sibling flows ({@code CREASTMT} &#x2016; {@code TRANREPT}).
      * A fixed bound of two threads is sufficient and intentional: there are never more than two concurrent
@@ -282,10 +294,23 @@ public class BatchPipelineOrchestrator {
                 .build();
 
         // --- Master pipeline assembly: strictly sequential chain, gated by the POSTTRAN decider. ---
+        //
+        // CRITICAL (RC=4 parity, AAP §0.7.6 / L1069): the posting step is routed to the decider with
+        // .on(ANY_EXIT_CODE) -- NOT the implicit .next(postingDecider). A plain .next(decider) installs a
+        // step->decider transition keyed on the LITERAL exit code "COMPLETED" only. CBTRN02C, however,
+        // emits RETURN-CODE=4 ("success-with-rejects") which DailyTransactionPostingJob surfaces as the
+        // custom ExitStatus "COMPLETED_WITH_REJECTS" (see DailyTransactionPostingJob.RejectCountStepListener).
+        // That custom code matches NO ".next" transition, so the flow would terminate with NO downstream
+        // state and the whole job would report FAILED -- before postingDecider ever runs -- silently
+        // defeating the headline RC=4 -> PROCEED behaviour. Sending EVERY posting exit code to the single
+        // decider makes it the sole condition-code decision point, exactly mirroring a JES COND check on the
+        // prior step's RETURN-CODE: it returns PROCEED for RC=0 (COMPLETED) and RC=4 (COMPLETED_WITH_REJECTS)
+        // and STOP for any genuine failure (e.g. an abend / FAILED), which then halts the pipeline via .fail().
         return new JobBuilder("cardDemoBatchPipelineJob", jobRepository)
                 .start(dailyTransactionPostingStep)        // Stage 1: POSTTRAN  (CBTRN02C)
-                .next(postingDecider)                      // JCL COND checkpoint after STEP15 (RC=4 -> PROCEED)
-                .on(PROCEED).to(interestCalculationStep)   // Stage 2: INTCALC   (CBACT04C) -- only on PROCEED
+                .on(ANY_EXIT_CODE).to(postingDecider)      // JCL COND checkpoint after STEP15: ALL exit codes -> decider
+                .from(postingDecider)
+                .on(PROCEED).to(interestCalculationStep)   // Stage 2: INTCALC   (CBACT04C) -- only on PROCEED (RC=0/RC=4)
                 .next(combineTransactionsStep)             // Stage 3: COMBTRAN  (DFSORT + IDCAMS REPRO)
                 .next(parallelStage4)                      // Stage 4a || 4b: CREASTMT (CBSTM03A) + TRANREPT (CBTRN03C)
                 .from(postingDecider).on(STOP).fail()      // posting failure (RC != 0 and != 4) halts the pipeline
