@@ -150,10 +150,11 @@ semantics as follows.
 | Record not found on keyed read | `23` (INVALID KEY / not found) | `404 Not Found` | `RECORD_NOT_FOUND` | `RecordNotFoundException` |
 | Duplicate key on write | `22` (DUPKEY / DUPREC) | `409 Conflict` | `DUPLICATE_RECORD` | `DuplicateRecordException` |
 | Optimistic-lock snapshot mismatch | before/after image mismatch | `409 Conflict` | `CONCURRENT_MODIFICATION` | `ConcurrentModificationException` |
-| Field validation failure | screen edit / `EVALUATE` reject | `400 Bad Request` | `VALIDATION_ERROR` | `ValidationException` (+ Jakarta `MethodArgumentNotValidException`) |
+| Field validation failure | screen edit / `EVALUATE` reject | `400 Bad Request` | `VALIDATION_FAILED` | `ValidationException` (+ Jakarta `MethodArgumentNotValidException`) |
 | Credit limit exceeded | reject code `102` | `422 Unprocessable Entity` | `CREDIT_LIMIT_EXCEEDED` | `CreditLimitExceededException` |
 | Expired card | reject code `103` | `422 Unprocessable Entity` | `CARD_EXPIRED` | `ExpiredCardException` |
-| Authentication failure (bad user/password) | sign-on reject | `401 Unauthorized` | `AUTHENTICATION_FAILED` | (Spring Security) |
+| Sign-on: unknown user | `COSGN00C` `READ-USER-SEC-FILE` `WHEN 13` (NOTFND) | `404 Not Found` | `RECORD_NOT_FOUND` | `RecordNotFoundException` |
+| Sign-on: wrong password | `COSGN00C` `SEC-USR-PWD NOT = WS-USER-PWD` | `400 Bad Request` | `VALIDATION_FAILED` | `ValidationException` |
 | Authorization failure (non-admin on `/api/admin/**`) | n/a (new gate) | `403 Forbidden` | `ACCESS_DENIED` | (Spring Security) |
 | Unmapped I/O / system error | other `FILE STATUS` | `500 Internal Server Error` | `INTERNAL_ERROR` | `CardDemoException` (base) |
 
@@ -247,9 +248,13 @@ Authenticates a user against the `USRSEC` store and issues a bearer token. Repla
 | `toTranId` | `CDEMO-TO-TRANID` | `String` | 4 | next CICS transaction id the client should route to — `CA00` (admin menu) when `userType=ADMIN`, else `CM00` (main menu); mirrors the COBOL navigation set before the `XCTL` to `COADM01C` vs `COMEN01C` after a successful sign-on |
 | `toProgram` | `CDEMO-TO-PROGRAM` | `String` | 8 | the target COBOL program name for that route — `COADM01C` when `userType=ADMIN`, else `COMEN01C` |
 
-**Status codes:** `200 OK` (authenticated); `400 Bad Request` (missing/oversized fields);
-`401 Unauthorized` (unknown user id or wrong password — equivalent to the COBOL
-`"User not found"` / `"Wrong Password"` messages).
+**Status codes:** `200 OK` (authenticated); `400 Bad Request` — a missing user id or password
+(verbatim `"Please enter User ID ..."` / `"Please enter Password ..."`), a user id beyond the
+`PIC X(08)` width (verbatim `"User ID can NOT be longer than 8 characters ..."`), **or** a wrong
+password (verbatim `"Wrong Password. Try again ..."`, `COSGN00C` L242); `404 Not Found` — an unknown
+user id (verbatim `"User not found. Try again ..."`, `COSGN00C` L249). The two distinct
+credential-failure outcomes (unknown user → `404`, wrong password → `400`) reproduce `COSGN00C`
+behavioral parity exactly (AAP §0.7.2); each carries its verbatim COBOL message.
 
 **Notes — technology substitution.** Password verification uses **BCrypt**
 (`PasswordEncoder.matches`) instead of the COBOL plaintext comparison — the single permitted

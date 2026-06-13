@@ -87,15 +87,17 @@ import org.springframework.web.bind.annotation.RestController;
  * {@code @RestControllerAdvice} in {@code config/WebConfig} ({@code GlobalExceptionHandler}):</p>
  * <ul>
  *   <li>{@code com.cardemo.exception.ValidationException} &rarr; HTTP&nbsp;<strong>400 Bad
- *       Request</strong> &mdash; the ordered blank-field cascade only (empty user id, then empty
- *       password), surfacing the verbatim {@code COSGN00C} messages in the COBOL order.</li>
- *   <li>{@code org.springframework.security.authentication.BadCredentialsException} (a Spring
- *       Security {@code AuthenticationException}) &rarr; HTTP&nbsp;<strong>401 Unauthorized</strong>
- *       &mdash; an <em>unknown user</em> and a <em>wrong password</em> both raise this single
- *       credential-failure type and are rendered with one generic body, so the two outcomes are
- *       indistinguishable to the caller (username-enumeration defense, api-contracts.md&nbsp;&sect;5.1).
- *       {@code COSGN00C} showed two distinct screen messages here; the migrated REST contract
- *       deliberately collapses them to a uniform 401.</li>
+ *       Request</strong> &mdash; the ordered blank-field cascade (empty user id, then empty
+ *       password), the {@code PIC X(08)} over-length user-id guard (QA&nbsp;F3), and the
+ *       <em>wrong-password</em> branch ("Wrong Password. Try again&nbsp;..."; {@code COSGN00C}&nbsp;L242),
+ *       each surfacing its verbatim {@code COSGN00C} message in the COBOL order.</li>
+ *   <li>{@code com.cardemo.exception.RecordNotFoundException} &rarr; HTTP&nbsp;<strong>404 Not
+ *       Found</strong> &mdash; an <em>unknown user</em> ({@code COSGN00C}&nbsp;L249 "User not found.
+ *       Try again&nbsp;..."), carried as the client-safe message. Behavioral parity
+ *       (AAP&nbsp;&sect;0.7.2; QA&nbsp;F1) reproduces the two DISTINCT {@code COSGN00C}
+ *       credential-failure outcomes (unknown user&nbsp;&rarr;&nbsp;404, wrong
+ *       password&nbsp;&rarr;&nbsp;400); an earlier substitution that collapsed both into a single
+ *       generic 401 was an unsanctioned deviation and has been reverted.</li>
  * </ul>
  *
  * <h2>Security</h2>
@@ -158,13 +160,15 @@ public class AuthController {
      * @param request the sign-on request carrying the entered user id and password
      *                ({@code RECEIVE MAP('COSGN0A')} replacement)
      * @return {@code 200 OK} carrying the populated {@link SignOnResponse} (token + identity + routing)
-     * @throws com.cardemo.exception.ValidationException if the user id is empty or the password is
-     *         empty (the ordered blank-field cascade, rendered as HTTP&nbsp;400 by
-     *         {@code config/WebConfig}); propagated, not caught
-     * @throws org.springframework.security.authentication.BadCredentialsException if the user id is
-     *         unknown or the password fails verification &mdash; a single credential-failure type
-     *         rendered as HTTP&nbsp;401 with a generic body by {@code config/WebConfig}
-     *         (username-enumeration defense); propagated, not caught
+     * @throws com.cardemo.exception.ValidationException if the user id is empty, the password is
+     *         empty, the user id exceeds the {@code PIC X(08)} width (QA&nbsp;F3), or the password
+     *         fails BCrypt verification ("Wrong Password. Try again&nbsp;...") &mdash; each rendered as
+     *         HTTP&nbsp;400 with the verbatim {@code COSGN00C} message by {@code config/WebConfig};
+     *         propagated, not caught
+     * @throws com.cardemo.exception.RecordNotFoundException if the user id is unknown (no
+     *         {@code USRSEC} record) &mdash; rendered as HTTP&nbsp;404 with the verbatim "User not
+     *         found. Try again&nbsp;..." client-safe message by {@code config/WebConfig}
+     *         (AAP&nbsp;&sect;0.7.2 behavioral parity; QA&nbsp;F1); propagated, not caught
      */
     // COBOL substitution (AAP §0.7.1): the CICS map exchange and pseudo-conversational return collapse
     // into one stateless POST:
@@ -177,9 +181,11 @@ public class AuthController {
     // blank-field cascade (user id THEN password); @Valid would pre-empt it with a generic
     // MethodArgumentNotValidException and break message order/text parity. Pure delegation only: no
     // business logic, no try/catch, no @ExceptionHandler — domain exceptions propagate to the central
-    // GlobalExceptionHandler in config/WebConfig: blank-field ValidationException -> 400, and a single
-    // BadCredentialsException -> 401 for BOTH unknown-user and wrong-password (generic body; the COBOL
-    // 404/400 distinction is intentionally suppressed per api-contracts.md §5.1 to prevent enumeration).
+    // GlobalExceptionHandler in config/WebConfig: ValidationException -> 400 (blank-field cascade,
+    // PIC X(08) over-length user id, and wrong password), and RecordNotFoundException -> 404 (unknown
+    // user). Behavioral parity (AAP §0.7.2; QA F1) reproduces COSGN00C's two DISTINCT credential-
+    // failure outcomes (unknown user -> 404 "User not found. Try again ...", wrong password -> 400
+    // "Wrong Password. Try again ..."); the earlier single-generic-401 collapse was reverted.
     @PostMapping("/signin")
     public ResponseEntity<SignOnResponse> signIn(@RequestBody final SignOnRequest request) {
         final SignOnResponse response = authenticationService.signOn(request);

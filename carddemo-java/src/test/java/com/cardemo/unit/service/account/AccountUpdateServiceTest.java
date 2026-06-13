@@ -804,6 +804,66 @@ class AccountUpdateServiceTest {
     }
 
     // =================================================================================================
+    // GROUP C.12 — field-width guards (QA F5). COACTUPC relied on the fixed-width BMS PIC fields so an
+    // over-length value could not occur; the REST contract has no such bound, so an over-length string
+    // would otherwise reach the VARCHAR column and surface as a DataIntegrityViolationException 500.
+    // editMaxLength (validated on the TRIMMED value, since trimToNull is what gets persisted) adds one
+    // message per over-length field into the SAME accumulate-then-throw cascade, so the value is a 400.
+    // Each over-length field is also a detected change (1205-COMPARE-OLD-NEW), so the cascade is reached.
+    // =================================================================================================
+
+    @Nested
+    @DisplayName("Group C.12 — editMaxLength field-width guards (QA F5)")
+    class EditMaxLength {
+
+        @Test
+        @DisplayName("First Name > 25 (CUST-FIRST-NAME PIC X(25)) -> \"First Name can NOT be longer than 25 characters.\"")
+        void firstNameTooLong() {
+            AccountDto request = validRequest();
+            request.setFirstName("A".repeat(26)); // all-alpha so only the length edit fails
+            assertThat(errorsFor(request))
+                    .containsExactly("First Name can NOT be longer than 25 characters.");
+        }
+
+        @Test
+        @DisplayName("Address Line 1 > 50 (CUST-ADDR-LINE-1 PIC X(50)) -> \"Address Line 1 can NOT be longer than 50 characters.\"")
+        void addressLine1TooLong() {
+            AccountDto request = validRequest();
+            request.setAddressLine1("A".repeat(51));
+            assertThat(errorsFor(request))
+                    .containsExactly("Address Line 1 can NOT be longer than 50 characters.");
+        }
+
+        @Test
+        @DisplayName("Account Group Id > 10 (ACCT-GROUP-ID PIC X(10)) -> \"Account Group Id can NOT be longer than 10 characters.\"")
+        void accountGroupIdTooLong() {
+            AccountDto request = validRequest();
+            request.setAccountGroupId("A".repeat(11)); // account-level persisted field, not in the BMS cascade
+            assertThat(errorsFor(request))
+                    .containsExactly("Account Group Id can NOT be longer than 10 characters.");
+        }
+
+        @Test
+        @DisplayName("Government Issued Id > 20 (CUST-GOVT-ISSUED-ID PIC X(20)) -> \"Government Issued Id can NOT be longer than 20 characters.\"")
+        void governmentIssuedIdTooLong() {
+            AccountDto request = validRequest();
+            request.setGovernmentIssuedId("0".repeat(21));
+            assertThat(errorsFor(request))
+                    .containsExactly("Government Issued Id can NOT be longer than 20 characters.");
+        }
+
+        @Test
+        @DisplayName("boundary First Name (exactly 25) contributes NO length error (paired with the 1220 sentinel)")
+        void boundaryFirstNameAccepted() {
+            AccountDto request = validRequest();
+            request.setFirstName("A".repeat(25)); // exactly at the PIC X(25) bound -> inclusive, valid
+            request.setAccountStatus("Q");         // sentinel (1220) keeps the call on the throw path
+            // Only the sentinel message is present: the 25-char first name produced no length error.
+            assertThat(errorsFor(request)).containsExactly(SENTINEL_MSG);
+        }
+    }
+
+    // =================================================================================================
     // GROUP D — record-not-found paths (READ ACCTDAT/CUSTDAT UPDATE -> findById). These fail before the
     // field-edit cascade; the account is read first, then the customer, so an absent account never reads
     // the customer. FILE STATUS '23' (NOTFND) -> RecordNotFoundException (HTTP 404).

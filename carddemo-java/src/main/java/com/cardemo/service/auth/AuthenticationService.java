@@ -5,11 +5,11 @@ import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.CommArea;
 import com.cardemo.model.dto.SignOnRequest;
@@ -109,28 +109,43 @@ public class AuthenticationService {
     private static final String MSG_ENTER_PASSWORD = "Please enter Password ...";
 
     // ---------------------------------------------------------------------
-    // Credential-failure message — SECURITY substitution (CP4 review +
-    // api-contracts.md §5.1). COSGN00C displayed two DISTINCT messages on the
-    // sign-on screen for the two credential-failure branches:
-    //     WHEN 13 (DFHRESP NOTFND)                -> "User not found. Try again ..."   (COSGN00C L249)
-    //     WHEN 0 + SEC-USR-PWD NOT = WS-USER-PWD  -> "Wrong Password. Try again ..."   (COSGN00C L242)
-    // The 3270 screen had no HTTP-status notion: BOTH outcomes simply
-    // re-displayed the sign-on screen with an error and let the user retry —
-    // they were the same observable outcome ("authentication did not
-    // succeed"). Mapping them to two different HTTP status CLASSES (unknown
-    // user -> 404, wrong password -> 400) is an unfaithful distinction that
-    // the migration introduced AND a username-enumeration vector. Both
-    // branches therefore now throw a single Spring Security
-    // AuthenticationException (BadCredentialsException), centrally mapped to
-    // HTTP 401 with this one generic message by config/WebConfig
-    // (GlobalExceptionHandler#handleAuthentication). This keeps the two
-    // branches indistinguishable to the caller, matching the documented auth
-    // contract (api-contracts.md §5.1). The verbatim COBOL literals are kept
-    // above only as comments for traceability; they are intentionally NOT
-    // emitted, because suppressing the screen-level message distinction is
-    // precisely what the security contract requires. The ordered blank-field
-    // cascade below is unchanged and still surfaces its verbatim 400 messages.
-    private static final String MSG_AUTHENTICATION_FAILED = "Authentication failed";
+    // Credential-failure messages — verbatim COSGN00C screen literals, RESTORED
+    // to preserve 100% behavioral parity (AAP §0.7.2). COSGN00C displayed two
+    // DISTINCT messages for the two credential-failure branches, and the migration
+    // must reproduce that distinction: the ONLY sanctioned behavioral change in
+    // this system is the C-003 BCrypt password upgrade, so collapsing the two
+    // branches into a single generic 401 (the prior anti-enumeration substitution)
+    // was an unsanctioned deviation that QA F1 flagged. The two branches now map to
+    // distinct typed exceptions and HTTP statuses, each carrying its verbatim text:
+    //     WHEN 13 (DFHRESP NOTFND)                -> RecordNotFoundException -> 404
+    //                                                "User not found. Try again ..."   (COSGN00C L249)
+    //     WHEN 0 + SEC-USR-PWD NOT = WS-USER-PWD  -> ValidationException     -> 400
+    //                                                "Wrong Password. Try again ..."   (COSGN00C L242)
+    // The trailing " ..." (space-dot-dot-dot) is part of the external interface
+    // contract and is reproduced EXACTLY. The ordered blank-field cascade below is
+    // unchanged and still surfaces its own verbatim 400 messages.
+    // ---------------------------------------------------------------------
+
+    /** COSGN00C L249 — {@code WHEN 13 (DFHRESP NOTFND)} unknown-user screen message. */
+    private static final String MSG_USER_NOT_FOUND = "User not found. Try again ...";
+
+    /** COSGN00C L242 — {@code SEC-USR-PWD NOT = WS-USER-PWD} wrong-password screen message. */
+    private static final String MSG_WRONG_PASSWORD = "Wrong Password. Try again ...";
+
+    // ---------------------------------------------------------------------
+    // User-id field-width guard — COSGN00C sign-on map field USERIDI is
+    // PIC X(08), a fixed 8-byte 3270 field that physically cannot hold more than
+    // 8 characters. The REST contract has no intrinsic width limit, so an
+    // over-length user id must be rejected to preserve the external field contract
+    // (AAP §0.7.2; QA F3). The trailing " ..." matches the COBOL message convention.
+    // ---------------------------------------------------------------------
+
+    /** {@code PIC X(08)} fixed width of the COSGN00C user-id field (QA F3). */
+    private static final int USER_ID_MAX_LENGTH = 8;
+
+    /** Over-length user-id rejection message — PIC X(08) width preserved (QA F3). */
+    private static final String MSG_USER_ID_TOO_LONG =
+            "User ID can NOT be longer than 8 characters ...";
 
     // COSGN00C L254 — READ-USER-SEC-FILE EVALUATE WS-RESP-CD WHEN OTHER message
     // 'Unable to verify the User ...' is intentionally NOT declared as code: that
@@ -212,41 +227,49 @@ public class AuthenticationService {
      * authentication action (cascade&nbsp;&rarr; read&nbsp;&rarr;
      * verify&nbsp;&rarr; route).
      *
-     * <p>The four observable failure outcomes and the success outcome map
-     * one-to-one onto {@code COSGN00C} as follows:</p>
+     * <p>The five observable failure outcomes and the success outcome map
+     * one-to-one onto {@code COSGN00C}, each preserving its verbatim screen message
+     * (AAP&nbsp;&sect;0.7.2 behavioral parity), as follows:</p>
      * <ul>
      *   <li>empty user id &rarr; {@link ValidationException} "Please enter User ID ..."
      *       &rarr; HTTP&nbsp;400 ({@code PROCESS-ENTER-KEY}
      *       {@code WHEN USERIDI = SPACES OR LOW-VALUES});</li>
      *   <li>empty password &rarr; {@link ValidationException} "Please enter Password ..."
      *       &rarr; HTTP&nbsp;400 ({@code WHEN PASSWDI = SPACES OR LOW-VALUES});</li>
-     *   <li>unknown user <em>or</em> wrong password &rarr; a single
-     *       {@link org.springframework.security.authentication.BadCredentialsException}
-     *       (a Spring Security {@code AuthenticationException}) &rarr; HTTP&nbsp;<strong>401</strong>
-     *       with a generic body ({@code READ-USER-SEC-FILE} {@code WHEN 13}, and
-     *       {@code WHEN 0} + {@code SEC-USR-PWD NOT = WS-USER-PWD}). COSGN00C
-     *       displayed two distinct screen messages here, but the migrated REST
-     *       contract (api-contracts.md&nbsp;&sect;5.1) deliberately collapses both
-     *       credential failures to one indistinguishable 401 so account existence
-     *       cannot be probed (username-enumeration defense). The verbatim COBOL
-     *       literals are retained as comments for traceability;</li>
+     *   <li>over-length user id (&gt; {@value #USER_ID_MAX_LENGTH} characters) &rarr;
+     *       {@link ValidationException} "User ID can NOT be longer than 8 characters ..."
+     *       &rarr; HTTP&nbsp;400 &mdash; preserves the {@code PIC X(08)} fixed width of the
+     *       {@code USERIDI} 3270 map field (QA F3);</li>
+     *   <li>unknown user &rarr; {@link RecordNotFoundException} "User not found. Try again ..."
+     *       &rarr; HTTP&nbsp;<strong>404</strong> ({@code READ-USER-SEC-FILE} {@code WHEN 13},
+     *       {@code DFHRESP NOTFND}; COSGN00C&nbsp;L249). The verbatim text is carried as the
+     *       client-safe message; the keyed id is retained only for server-side diagnostics;</li>
+     *   <li>wrong password &rarr; {@link ValidationException} "Wrong Password. Try again ..."
+     *       &rarr; HTTP&nbsp;<strong>400</strong> ({@code WHEN 0} +
+     *       {@code SEC-USR-PWD NOT = WS-USER-PWD}; COSGN00C&nbsp;L242), evaluated via the
+     *       C-003 BCrypt verify (the single permitted behavioral change);</li>
      *   <li>success &rarr; a populated {@link SignOnResponse} carrying the issued
      *       token, the signed-in identity and the post-login routing target.</li>
      * </ul>
+     *
+     * <p>Restoring the two distinct credential-failure outcomes (unknown user&nbsp;&rarr;&nbsp;404,
+     * wrong password&nbsp;&rarr;&nbsp;400) reverses an earlier anti-enumeration substitution that
+     * had collapsed both into a single generic 401; that substitution was an unsanctioned
+     * behavioral change under AAP&nbsp;&sect;0.7.2 and was corrected per QA&nbsp;F1.</p>
      *
      * <p>Read-only transaction: {@code COSGN00C} performs no writes and no
      * {@code SYNCPOINT}, so this method runs in a {@code readOnly} transaction.</p>
      *
      * @param request the sign-on request carrying the entered user id and password
      * @return the populated sign-on response on success
-     * @throws ValidationException if the user id is empty or the password is empty
-     *                             (the ordered blank-field cascade; HTTP 400 with the
-     *                             verbatim COBOL message)
-     * @throws org.springframework.security.authentication.BadCredentialsException
-     *                             if the user id is unknown or the password fails BCrypt
-     *                             verification — a single, indistinguishable credential
-     *                             failure rendered as HTTP 401 by {@code config/WebConfig}
-     *                             (api-contracts.md §5.1; username-enumeration defense)
+     * @throws ValidationException     if the user id is empty, the password is empty, the user
+     *                                 id exceeds {@value #USER_ID_MAX_LENGTH} characters, or the
+     *                                 password fails BCrypt verification — each rendered as
+     *                                 HTTP 400 with the verbatim COBOL message
+     * @throws RecordNotFoundException if the user id is unknown (no {@code USRSEC} record) —
+     *                                 rendered as HTTP 404 by {@code config/WebConfig} carrying the
+     *                                 verbatim "User not found. Try again ..." client-safe message
+     *                                 (COSGN00C L249; AAP §0.7.2 behavioral parity)
      */
     @Transactional(readOnly = true)
     public SignOnResponse signOn(SignOnRequest request) {
@@ -270,6 +293,19 @@ public class AuthenticationService {
             throw new ValidationException(MSG_ENTER_PASSWORD);
         }
 
+        // PIC X(08) field-width guard (QA F3) — the COSGN00C sign-on map field
+        // USERIDI is a fixed 8-byte 3270 field, so a user id longer than 8 bytes
+        // could never have been entered on the terminal. The REST contract imposes
+        // no such limit, so reject an over-length user id here to preserve the
+        // external field contract (AAP §0.7.2). The TRIMMED length is checked so
+        // surrounding whitespace (which the fixed-width field would not have
+        // retained) does not itself trip the guard; this runs AFTER the blank-field
+        // cascade (an empty id still yields the verbatim "Please enter User ID ...")
+        // and BEFORE the upper-case/read so an over-length id never reaches the read.
+        if (request.getUserId().trim().length() > USER_ID_MAX_LENGTH) {
+            throw new ValidationException(MSG_USER_ID_TOO_LONG);
+        }
+
         // MOVE FUNCTION UPPER-CASE(USERIDI) TO WS-USER-ID, CDEMO-USER-ID
         // MOVE FUNCTION UPPER-CASE(PASSWDI) TO WS-USER-PWD  (COSGN00C L132-136).
         // Locale.ROOT gives locale-independent upper-casing, matching the COBOL
@@ -291,16 +327,18 @@ public class AuthenticationService {
         // propagation is the faithful mapping (no dedicated project exception exists).
 
         // WHEN 13 (DFHRESP NOTFND): record absent. COSGN00C displayed
-        // "User not found. Try again ..." on the sign-on screen. The migrated
-        // REST contract (api-contracts.md §5.1 + CP4 security review) maps an
-        // unknown user to the SAME generic 401 as a wrong password, so a caller
-        // cannot distinguish "no such user" from "bad password" (username-
-        // enumeration defense). A Spring Security AuthenticationException
-        // (BadCredentialsException) is caught by config/WebConfig and rendered
-        // as HTTP 401 with the generic MSG_AUTHENTICATION_FAILED body.
+        // "User not found. Try again ..." on the sign-on screen (COSGN00C L249).
+        // Behavioral parity (AAP §0.7.2; QA F1) is RESTORED: the unknown-user
+        // branch maps to a distinct RecordNotFoundException rendered as HTTP 404
+        // carrying that verbatim message. The 3-arg constructor supplies the
+        // verbatim text as the CLIENT-SAFE message (surfaced by config/WebConfig
+        // GlobalExceptionHandler#handleRecordNotFound), while the keyed entity id is
+        // retained only for server-side diagnostics and is never echoed to the
+        // caller — the same clientSafe pattern AccountViewService uses for its
+        // "Did not find this account ..." 404.
         if (found.isEmpty()) {
             log.debug("Sign-on failed: no USRSEC record for user id [{}]", upperUserId);
-            throw new BadCredentialsException(MSG_AUTHENTICATION_FAILED);
+            throw new RecordNotFoundException("UserSecurity", upperUserId, MSG_USER_NOT_FOUND);
         }
 
         // WHEN 0: record found.
@@ -320,15 +358,16 @@ public class AuthenticationService {
         // MUST be hashes of the UPPER-CASED password — this service verifies
         // upperPassword. The data-seed agent must stay consistent with this.
         // -----------------------------------------------------------------
-        // COSGN00C displayed "Wrong Password. Try again ..." here. As with the
-        // unknown-user branch above, the migrated contract collapses this to the
-        // SAME generic 401 (BadCredentialsException -> config/WebConfig -> 401)
-        // so wrong-password and unknown-user are indistinguishable to the caller
-        // (api-contracts.md §5.1 + CP4 security review). The C-003 BCrypt verify
+        // COSGN00C displayed "Wrong Password. Try again ..." here (COSGN00C L242).
+        // Behavioral parity (AAP §0.7.2; QA F1) is RESTORED: the wrong-password
+        // branch maps to a distinct ValidationException rendered as HTTP 400
+        // carrying that verbatim message (surfaced by config/WebConfig
+        // GlobalExceptionHandler#handleValidation, whose empty-fieldErrors fallback
+        // emits ex.getMessage() as the top-level message). The C-003 BCrypt verify
         // itself (the single permitted behavioral change) is unchanged.
         if (!passwordEncoder.matches(upperPassword, user.getSecUsrPwd())) {
             log.debug("Sign-on failed: password mismatch for user id [{}]", upperUserId);
-            throw new BadCredentialsException(MSG_AUTHENTICATION_FAILED);
+            throw new ValidationException(MSG_WRONG_PASSWORD);
         }
 
         // -----------------------------------------------------------------

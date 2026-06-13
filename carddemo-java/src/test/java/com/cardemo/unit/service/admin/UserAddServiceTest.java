@@ -110,6 +110,15 @@ class UserAddServiceTest {
     /** {@code COUSR01C} L144-145: empty user-type edit ({@code EVALUATE} branch 5). */
     private static final String MSG_USER_TYPE_EMPTY = "User Type can NOT be empty...";
 
+    /** QA F5 length guard: first name beyond {@code SEC-USR-FNAME PIC X(20)} / {@code VARCHAR(20)}. */
+    private static final String MSG_FIRST_NAME_TOO_LONG = "First Name can NOT be longer than 20 characters...";
+
+    /** QA F5 length guard: last name beyond {@code SEC-USR-LNAME PIC X(20)} / {@code VARCHAR(20)}. */
+    private static final String MSG_LAST_NAME_TOO_LONG = "Last Name can NOT be longer than 20 characters...";
+
+    /** QA F5 length guard: user id beyond {@code SEC-USR-ID PIC X(08)} / {@code VARCHAR(8)}. */
+    private static final String MSG_USER_ID_TOO_LONG = "User ID can NOT be longer than 8 characters...";
+
     /** {@code COUSR01C} L263-264: duplicate-key message (note legacy spelling "exist"). */
     private static final String MSG_USER_ID_ALREADY_EXISTS = "User ID already exist...";
 
@@ -290,6 +299,92 @@ class UserAddServiceTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessage(MSG_PASSWORD_EMPTY);
         verify(userSecurityRepository, never()).save(any());
+    }
+
+    // ===============================================================================================
+    // 3A-bis. Field-width guards (QA F5) — COUSR01C relied on fixed-width BMS PIC fields (FNAME/LNAME
+    //     PIC X(20), USERID PIC X(08)) that could not overflow; the REST contract has no such bound, so
+    //     an over-length value would reach the VARCHAR column and surface as a 500. The service enforces
+    //     the PIC widths AFTER the empty cascade and BEFORE the duplicate probe / WRITE, so an over-length
+    //     value is a 400 (ValidationException) and nothing is persisted. First/last name are validated
+    //     RAW (stored RAW); the user id is validated on its trimmed canonical key.
+    // ===============================================================================================
+
+    @Test
+    @DisplayName("F5: first name > 20 chars -> 'First Name can NOT be longer than 20 characters...'; nothing saved")
+    void overLengthFirstNameRejected() {
+        UserSecurityDto dto = validRequest();
+        dto.setFirstName("A".repeat(21)); // PIC X(20) / VARCHAR(20) -> 21 overflows
+        assertThatThrownBy(() -> userAddService.addUser(dto))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_FIRST_NAME_TOO_LONG);
+        verify(userSecurityRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("F5: last name > 20 chars -> 'Last Name can NOT be longer than 20 characters...'; nothing saved")
+    void overLengthLastNameRejected() {
+        UserSecurityDto dto = validRequest();
+        dto.setLastName("B".repeat(21));
+        assertThatThrownBy(() -> userAddService.addUser(dto))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_LAST_NAME_TOO_LONG);
+        verify(userSecurityRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("F5: user id > 8 chars (after trim) -> 'User ID can NOT be longer than 8 characters...'; nothing saved")
+    void overLengthUserIdRejected() {
+        UserSecurityDto dto = validRequest();
+        dto.setUserId("USER00012"); // 9 chars, no padding -> trimmed length 9 overflows PIC X(08)
+        assertThatThrownBy(() -> userAddService.addUser(dto))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_USER_ID_TOO_LONG);
+        verify(userSecurityRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("F5: empty cascade still wins over a length violation (blank first name beats over-length last name)")
+    void emptyCascadeWinsOverLengthGuard() {
+        UserSecurityDto dto = validRequest();
+        dto.setFirstName("   ");           // blank -> empty-edit branch 1 must win first
+        dto.setLastName("B".repeat(30));   // also over-length, but later in the order
+        assertThatThrownBy(() -> userAddService.addUser(dto))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_FIRST_NAME_EMPTY);
+        verify(userSecurityRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("F5: among length violations, first-error-wins in COBOL field order (first name before last name)")
+    void lengthGuardFirstErrorWins() {
+        UserSecurityDto dto = validRequest();
+        dto.setFirstName("A".repeat(21));  // first in order -> its message wins
+        dto.setLastName("B".repeat(21));
+        assertThatThrownBy(() -> userAddService.addUser(dto))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_FIRST_NAME_TOO_LONG);
+        verify(userSecurityRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("F5: boundary lengths (first/last name exactly 20, user id exactly 8) are accepted and persisted")
+    void boundaryLengthsAccepted() {
+        when(userSecurityRepository.existsById(anyString())).thenReturn(false);
+        when(userSecurityRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        UserSecurityDto dto = validRequest();
+        dto.setFirstName("A".repeat(20));  // exactly at the PIC X(20) bound -> inclusive, valid
+        dto.setLastName("B".repeat(20));
+        dto.setUserId("USERABCD");          // exactly 8 -> inclusive, valid
+
+        UserSecurityDto response = userAddService.addUser(dto);
+
+        verify(userSecurityRepository, times(1)).save(savedCaptor.capture());
+        assertThat(savedCaptor.getValue().getSecUsrFname()).isEqualTo("A".repeat(20));
+        assertThat(savedCaptor.getValue().getSecUsrLname()).isEqualTo("B".repeat(20));
+        assertThat(savedCaptor.getValue().getSecUsrId()).isEqualTo("USERABCD");
+        assertThat(response.getUserId()).isEqualTo("USERABCD");
     }
 
     // ===============================================================================================

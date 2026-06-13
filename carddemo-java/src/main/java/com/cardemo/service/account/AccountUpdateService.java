@@ -340,12 +340,20 @@ public class AccountUpdateService {
         addIfPresent(errors, editFicoScore(req.getFicoScore(), "FICO Score"));
         // 13. First Name -> 1225-EDIT-ALPHA-REQD.
         addIfPresent(errors, editAlphaReqd(req.getFirstName(), "First Name"));
+        // 13a. First Name length guard (QA F5): CUST-FIRST-NAME PIC X(25) / customer.first_name VARCHAR(25).
+        addIfPresent(errors, editMaxLength(req.getFirstName(), "First Name", 25));
         // 14. Middle Name -> 1235-EDIT-ALPHA-OPT.
         addIfPresent(errors, editAlphaOpt(req.getMiddleName(), "Middle Name"));
+        // 14a. Middle Name length guard (QA F5): CUST-MIDDLE-NAME PIC X(25) / customer.middle_name VARCHAR(25).
+        addIfPresent(errors, editMaxLength(req.getMiddleName(), "Middle Name", 25));
         // 15. Last Name -> 1225-EDIT-ALPHA-REQD.
         addIfPresent(errors, editAlphaReqd(req.getLastName(), "Last Name"));
+        // 15a. Last Name length guard (QA F5): CUST-LAST-NAME PIC X(25) / customer.last_name VARCHAR(25).
+        addIfPresent(errors, editMaxLength(req.getLastName(), "Last Name", 25));
         // 16. Address Line 1 -> 1215-EDIT-MANDATORY.
         addIfPresent(errors, editMandatory(req.getAddressLine1(), "Address Line 1"));
+        // 16a. Address Line 1 length guard (QA F5): CUST-ADDR-LINE-1 PIC X(50) / customer.addr_line_1 VARCHAR(50).
+        addIfPresent(errors, editMaxLength(req.getAddressLine1(), "Address Line 1", 50));
         // 17. State -> 1225-EDIT-ALPHA-REQD then (only if alpha-valid) 1270-EDIT-US-STATE-CD.
         boolean stateValid;
         String stateAlphaMsg = editAlphaReqd(req.getState(), "State");
@@ -365,8 +373,12 @@ public class AccountUpdateService {
         addIfPresent(errors, zipMsg);
         // 19. City (Address Line 3) -> 1225-EDIT-ALPHA-REQD.
         addIfPresent(errors, editAlphaReqd(req.getCity(), "City"));
+        // 19a. City length guard (QA F5): CUST-ADDR-LINE-3 PIC X(50) / customer.addr_line_3 VARCHAR(50).
+        addIfPresent(errors, editMaxLength(req.getCity(), "City", 50));
         // 20. Country -> 1225-EDIT-ALPHA-REQD.
         addIfPresent(errors, editAlphaReqd(req.getCountryCode(), "Country"));
+        // 20a. Country length guard (QA F5): CUST-ADDR-COUNTRY-CD PIC X(3) / customer.addr_country_code VARCHAR(3).
+        addIfPresent(errors, editMaxLength(req.getCountryCode(), "Country", 3));
         // 21. Phone 1 -> 1260-EDIT-US-PHONE-NUM.
         addIfPresent(errors, editUsPhone(req.getPhoneNumber1(), "Phone Number 1"));
         // 22. Phone 2 -> 1260-EDIT-US-PHONE-NUM.
@@ -375,6 +387,18 @@ public class AccountUpdateService {
         addIfPresent(errors, editNumReqd(req.getEftAccountId(), "EFT Account Id", 10));
         // 24. Primary Card Holder -> 1220-EDIT-YESNO.
         addIfPresent(errors, editYesNo(req.getPrimaryCardHolderIndicator(), "Primary Card Holder"));
+
+        // Length guards (QA F5) for persisted fields that have NO COBOL per-field screen edit but ARE
+        // written by applyToAccount/applyToCustomer. Without these an over-length value reaches the DB
+        // and surfaces as a 500 instead of a 400. Validated TRIMMED (each is persisted via trimToNull).
+        // Not numbered 1..24 because COACTUPC had no screen edit for them (the fixed-width MOVE bounded
+        // them on the mainframe):
+        //   Account Group Id -> ACCT-GROUP-ID       PIC X(10) / account.account_group_id VARCHAR(10)
+        //   Address Line 2   -> CUST-ADDR-LINE-2    PIC X(50) / customer.addr_line_2     VARCHAR(50)
+        //   Government Id    -> CUST-GOVT-ISSUED-ID PIC X(20) / customer.govt_issued_id  VARCHAR(20)
+        addIfPresent(errors, editMaxLength(req.getAccountGroupId(), "Account Group Id", 10));
+        addIfPresent(errors, editMaxLength(req.getAddressLine2(), "Address Line 2", 50));
+        addIfPresent(errors, editMaxLength(req.getGovernmentIssuedId(), "Government Issued Id", 20));
 
         // 1280-EDIT-US-STATE-ZIP-CD cross-field edit: only when BOTH State and Zip passed individually.
         // CSLKPCDY VALID-US-STATE-ZIP-CD2-COMBO lookup -> ValidationLookupService.isValidStateZip.
@@ -412,6 +436,32 @@ public class AccountUpdateService {
     private String editMandatory(String value, String label) {
         if (isBlank(value)) {
             return label + " must be supplied.";
+        }
+        return null;
+    }
+
+    /**
+     * Length guard (QA F5) &mdash; rejects a value whose <strong>trimmed</strong> length exceeds
+     * {@code max}. {@code COACTUPC} had no such edit because every BMS map field was a fixed-width
+     * {@code PIC X(n)} that could not overflow; the REST contract has no intrinsic width, so this guard
+     * preserves the external field-width contract (AAP&nbsp;&sect;0.7.2) and prevents an over-length
+     * value from reaching its {@code VARCHAR(n)} column and surfacing as an HTTP&nbsp;500
+     * ({@code DataIntegrityViolationException} "value too long").
+     *
+     * <p>The value is trimmed before measuring because every string field is persisted via
+     * {@link #trimToNull(String)} &mdash; this validates exactly what is stored. A {@code null} or
+     * blank value passes through ({@code null} result): this is a pure maximum-length check, so
+     * required-ness remains the responsibility of the field's own mandatory/alpha edit. The message
+     * mirrors the account-edit style ("&lt;label&gt; &lt;text&gt;." with a trailing period).</p>
+     *
+     * @param value the submitted value (may be {@code null})
+     * @param label the COBOL field label used in the message
+     * @param max   the maximum allowed length (the {@code PIC} / {@code VARCHAR} width)
+     * @return the failure message, or {@code null} when the value is null/blank or within {@code max}
+     */
+    private String editMaxLength(String value, String label, int max) {
+        if (value != null && value.trim().length() > max) {
+            return label + " can NOT be longer than " + max + " characters.";
         }
         return null;
     }

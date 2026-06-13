@@ -132,6 +132,21 @@ public class UserAddService {
     /** {@code COUSR01C} L144-145: empty user-type edit message ({@code EVALUATE} branch 5). */
     static final String MSG_USER_TYPE_EMPTY = "User Type can NOT be empty...";
 
+    // Length guards (QA F5). COUSR01C had no "too long" edit because each BMS map field was a
+    // fixed-width PIC that could not overflow (FNAMEI/LNAMEI PIC X(20), USERIDI PIC X(08)); the REST
+    // contract has no such bound, so an over-length value would otherwise reach the VARCHAR column and
+    // surface as a 500. These reject it as a 400 instead, preserving the external field-width contract
+    // (AAP §0.7.2). The "...characters..." ellipsis mirrors the "...empty..." message style above.
+
+    /** First-name length guard: {@code SEC-USR-FNAME PIC X(20)} / {@code user_security.first_name VARCHAR(20)} (QA F5). */
+    static final String MSG_FIRST_NAME_TOO_LONG = "First Name can NOT be longer than 20 characters...";
+
+    /** Last-name length guard: {@code SEC-USR-LNAME PIC X(20)} / {@code user_security.last_name VARCHAR(20)} (QA F5). */
+    static final String MSG_LAST_NAME_TOO_LONG = "Last Name can NOT be longer than 20 characters...";
+
+    /** User-id length guard: {@code SEC-USR-ID PIC X(08)} / {@code user_security.user_id VARCHAR(8)} (QA F5). */
+    static final String MSG_USER_ID_TOO_LONG = "User ID can NOT be longer than 8 characters...";
+
     /**
      * {@code COUSR01C} L263-264: duplicate-key message from the
      * {@code WHEN DFHRESP(DUPKEY) WHEN DFHRESP(DUPREC)} branch. Note the legacy spelling
@@ -253,6 +268,27 @@ public class UserAddService {
         // existence probe and the stored primary key use one canonical value (agent prompt §4.2);
         // getUserId() is guaranteed non-blank by branch 3 above, so trim() is safe.
         final String userId = request.getUserId().trim();
+
+        // -------------------------------------------------------------------------------------------
+        // Step 1b - field-width guards (QA F5). COUSR01C relied on the fixed-width BMS map fields
+        // (FNAMEI/LNAMEI PIC X(20), USERIDI PIC X(08)) to bound these values; the REST contract does
+        // not, so enforce the PIC widths here, AFTER the empty cascade (so a blank field still wins its
+        // "...can NOT be empty..." message) and BEFORE the duplicate probe / WRITE (so an over-length
+        // value is a 400, never a DataIntegrityViolationException 500). First-error-wins, in the COBOL
+        // field order (first name, last name, user id). First/last name are validated RAW because they
+        // are stored RAW (the MOVEs above copy them verbatim, no trim); the user id is validated on its
+        // trimmed canonical key. getFirstName()/getLastName() are non-blank here (empty cascade
+        // branches 1-2 already ran), so length() is safe to call.
+        // -------------------------------------------------------------------------------------------
+        if (request.getFirstName().length() > 20) {
+            throw new ValidationException(MSG_FIRST_NAME_TOO_LONG);
+        }
+        if (request.getLastName().length() > 20) {
+            throw new ValidationException(MSG_LAST_NAME_TOO_LONG);
+        }
+        if (userId.length() > 8) {
+            throw new ValidationException(MSG_USER_ID_TOO_LONG);
+        }
 
         // -------------------------------------------------------------------------------------------
         // Step 2 - WRITE-USER-SEC-FILE duplicate branch (COUSR01C L260-266). EXEC CICS WRITE returned

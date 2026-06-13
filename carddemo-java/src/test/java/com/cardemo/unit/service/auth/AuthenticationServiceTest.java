@@ -22,9 +22,9 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataAccessResourceFailureException;
-import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.SignOnRequest;
 import com.cardemo.model.dto.SignOnResponse;
@@ -109,15 +109,23 @@ class AuthenticationServiceTest {
     private static final String MSG_ENTER_PASSWORD = "Please enter Password ...";
 
     // COSGN00C displayed two DISTINCT credential-failure messages on the sign-on
-    // screen — "User not found. Try again ..." (WHEN 13, L249) and "Wrong
-    // Password. Try again ..." (WHEN 0 + mismatch, L242). The migrated REST
-    // contract (api-contracts.md §5.1 + CP4 security review) deliberately
-    // collapses BOTH into a single, indistinguishable 401 so account existence
-    // cannot be probed (username-enumeration defense). The service therefore
-    // throws one BadCredentialsException carrying this generic message for both
-    // branches; these tests assert that uniformity. The COBOL literals are kept
-    // here only as comments for traceability.
-    private static final String MSG_AUTHENTICATION_FAILED = "Authentication failed";
+    // screen, and behavioral parity (AAP §0.7.2; QA F1) requires the migrated
+    // service to reproduce BOTH verbatim, with distinct typed exceptions / HTTP
+    // statuses (an earlier anti-enumeration substitution that collapsed both into
+    // a single generic 401 was an unsanctioned deviation and has been reverted):
+    //     WHEN 13 (DFHRESP NOTFND)               -> RecordNotFoundException -> 404  (COSGN00C L249)
+    //     WHEN 0 + SEC-USR-PWD NOT = WS-USER-PWD -> ValidationException     -> 400  (COSGN00C L242)
+    // The constants mirror the service literals so a reworded message fails this
+    // test — including the trailing " ..." (space-dot-dot-dot).
+
+    /** COSGN00C L249 — {@code WHEN 13 (DFHRESP NOTFND)} unknown-user screen message (HTTP 404, client-safe). */
+    private static final String MSG_USER_NOT_FOUND = "User not found. Try again ...";
+
+    /** COSGN00C L242 — {@code SEC-USR-PWD NOT = WS-USER-PWD} wrong-password screen message (HTTP 400). */
+    private static final String MSG_WRONG_PASSWORD = "Wrong Password. Try again ...";
+
+    /** {@code PIC X(08)} over-length user-id rejection message (QA F3; HTTP 400). */
+    private static final String MSG_USER_ID_TOO_LONG = "User ID can NOT be longer than 8 characters ...";
 
     // ---------------------------------------------------------------------
     // Canonical golden test users — sourced from the USRSEC seed in
@@ -252,48 +260,67 @@ class AuthenticationServiceTest {
         verifyNoInteractions(userSecurityRepository, passwordEncoder, tokenService);
     }
 
+    @Test
+    @DisplayName("PIC X(08) width: a user id longer than 8 chars -> ValidationException -> HTTP 400 (QA F3)")
+    void overLengthUserIdRejectedBeforeRead() {
+        // COSGN00C's USERIDI map field is PIC X(08): a 12-char user id could never have been entered
+        // on the 3270 screen. Parity (AAP §0.7.2; QA F3) requires rejecting it with the verbatim
+        // length message BEFORE the keyed read, so the repository is never consulted. The guard runs
+        // AFTER the blank-field cascade, so a blank id still wins with its own "Please enter ..." message.
+        assertThatThrownBy(() -> service.signOn(request("USER00012345", RAW_PASSWORD)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_USER_ID_TOO_LONG);
+        verifyNoInteractions(userSecurityRepository, passwordEncoder, tokenService);
+    }
+
     // =====================================================================
     // Phase C — READ-USER-SEC-FILE outcomes.
     // =====================================================================
 
     @Test
-    @DisplayName("READ-USER-SEC-FILE WHEN 13 (unknown user) -> single BadCredentialsException -> HTTP 401")
-    void unknownUserRaisesBadCredentials() {
+    @DisplayName("READ-USER-SEC-FILE WHEN 13 (unknown user) -> RecordNotFoundException -> HTTP 404 (verbatim parity)")
+    void unknownUserRaisesRecordNotFound() {
         // COSGN00C L247-249: keyed read misses (DFHRESP NOTFND). "NOSUCH" is already upper-case.
-        // The migrated contract maps an unknown user to the SAME generic credential failure as a
-        // wrong password (api-contracts.md §5.1) — a Spring Security AuthenticationException
-        // (BadCredentialsException) that config/WebConfig renders as a generic HTTP 401.
+        // Behavioral parity (AAP §0.7.2; QA F1): an unknown user maps to a distinct
+        // RecordNotFoundException rendered as HTTP 404 by config/WebConfig, carrying the verbatim
+        // "User not found. Try again ..." as its CLIENT-SAFE message. getMessage() is the internal
+        // diagnostic detail; the client-safe message is what the caller sees, so it is asserted here.
         when(userSecurityRepository.findBySecUsrId("NOSUCH")).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.signOn(request("NOSUCH", RAW_PASSWORD)))
-                .isInstanceOf(BadCredentialsException.class)
-                .hasMessage(MSG_AUTHENTICATION_FAILED);
+        Throwable thrown = catchThrowable(() -> service.signOn(request("NOSUCH", RAW_PASSWORD)));
+
+        assertThat(thrown).isInstanceOf(RecordNotFoundException.class);
+        assertThat(((RecordNotFoundException) thrown).getClientSafeMessage())
+                .isEqualTo(MSG_USER_NOT_FOUND);
 
         // No record -> the BCrypt verify is never reached.
         verify(passwordEncoder, never()).matches(any(), any());
     }
 
     @Test
-    @DisplayName("READ-USER-SEC-FILE WHEN 0 + password mismatch -> single BadCredentialsException -> HTTP 401")
-    void wrongPasswordRaisesBadCredentials() {
+    @DisplayName("READ-USER-SEC-FILE WHEN 0 + password mismatch -> ValidationException -> HTTP 400 (verbatim parity)")
+    void wrongPasswordRaisesValidationException() {
         // Record found (WHEN 0), but BCrypt verification fails (COSGN00C L223 IF SEC-USR-PWD NOT = WS-USER-PWD).
-        // Mapped to the SAME generic credential failure (BadCredentialsException -> 401) as an unknown user.
+        // Behavioral parity (AAP §0.7.2; QA F1): a wrong password maps to a distinct ValidationException
+        // carrying the verbatim "Wrong Password. Try again ...", rendered as HTTP 400 by config/WebConfig
+        // (its empty-fieldErrors fallback emits ex.getMessage() as the top-level message).
         when(userSecurityRepository.findBySecUsrId(USER_ID))
                 .thenReturn(Optional.of(user(USER_ID, STORED_HASH, UserType.USER)));
         when(passwordEncoder.matches(RAW_PASSWORD, STORED_HASH)).thenReturn(false);
 
         assertThatThrownBy(() -> service.signOn(request(USER_ID, RAW_PASSWORD)))
-                .isInstanceOf(BadCredentialsException.class)
-                .hasMessage(MSG_AUTHENTICATION_FAILED);
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_WRONG_PASSWORD);
     }
 
     @Test
-    @DisplayName("Security: unknown-user and wrong-password are INDISTINGUISHABLE (same 401 type + message) — no enumeration")
-    void credentialFailuresAreIndistinguishable() {
-        // Username-enumeration defense (CP4 security review + api-contracts.md §5.1): an unknown user
-        // and a wrong password must surface as the SAME exception type AND the SAME message, so a
-        // caller cannot tell whether the user id exists. This test fails if the service ever
-        // re-introduces a distinguishable 404-vs-400 (or differing-message) split.
+    @DisplayName("Parity: unknown-user (404) and wrong-password (400) are DISTINCT per COSGN00C — F1 restored")
+    void credentialFailuresAreDistinctPerCobolParity() {
+        // Behavioral parity (AAP §0.7.2; QA F1): COSGN00C surfaced two DISTINCT screen messages for the
+        // two credential-failure branches, so the migrated service must too. An unknown user yields a
+        // RecordNotFoundException (404, client-safe "User not found. Try again ...") while a wrong
+        // password yields a ValidationException (400, "Wrong Password. Try again ..."). This test fails
+        // if the service ever re-collapses them into a single indistinguishable credential failure.
         when(userSecurityRepository.findBySecUsrId("NOSUCH")).thenReturn(Optional.empty());
         when(userSecurityRepository.findBySecUsrId(USER_ID))
                 .thenReturn(Optional.of(user(USER_ID, STORED_HASH, UserType.USER)));
@@ -302,10 +329,15 @@ class AuthenticationServiceTest {
         Throwable unknownUser = catchThrowable(() -> service.signOn(request("NOSUCH", RAW_PASSWORD)));
         Throwable wrongPassword = catchThrowable(() -> service.signOn(request(USER_ID, RAW_PASSWORD)));
 
-        assertThat(unknownUser).isInstanceOf(BadCredentialsException.class);
-        assertThat(wrongPassword).isInstanceOf(BadCredentialsException.class);
-        assertThat(unknownUser.getClass()).isEqualTo(wrongPassword.getClass());
-        assertThat(unknownUser.getMessage()).isEqualTo(wrongPassword.getMessage());
+        // Distinct types (404 vs 400) ...
+        assertThat(unknownUser).isInstanceOf(RecordNotFoundException.class);
+        assertThat(wrongPassword).isInstanceOf(ValidationException.class);
+        assertThat(unknownUser.getClass()).isNotEqualTo(wrongPassword.getClass());
+
+        // ... each carrying its own verbatim COBOL message.
+        assertThat(((RecordNotFoundException) unknownUser).getClientSafeMessage())
+                .isEqualTo(MSG_USER_NOT_FOUND);
+        assertThat(wrongPassword.getMessage()).isEqualTo(MSG_WRONG_PASSWORD);
     }
 
     // =====================================================================

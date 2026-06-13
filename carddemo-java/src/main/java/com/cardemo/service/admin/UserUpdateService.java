@@ -148,6 +148,20 @@ public class UserUpdateService {
     /** {@code COUSR02C} L206: empty user-type edit ({@code UPDATE-USER-INFO} branch 5). */
     static final String MSG_USER_TYPE_EMPTY = "User Type can NOT be empty...";
 
+    // Length guards (QA F5). COUSR02C had no "too long" edit because the BMS map fields were
+    // fixed-width PICs (FNAMEI/LNAMEI PIC X(20)) that could not overflow; the REST contract has no such
+    // bound, so an over-length first/last name would otherwise reach the VARCHAR(20) column and surface
+    // as a 500. These reject it as a 400 instead, preserving the external field-width contract
+    // (AAP §0.7.2). Only first/last name need guarding: the user id is the lookup key (an over-length
+    // id simply finds no row -> the verbatim "User ID NOT found..." 404), and the password widens to a
+    // BCrypt digest that cannot overflow VARCHAR(72). The ellipsis mirrors the "...empty..." style.
+
+    /** First-name length guard: {@code SEC-USR-FNAME PIC X(20)} / {@code user_security.first_name VARCHAR(20)} (QA F5). */
+    static final String MSG_FIRST_NAME_TOO_LONG = "First Name can NOT be longer than 20 characters...";
+
+    /** Last-name length guard: {@code SEC-USR-LNAME PIC X(20)} / {@code user_security.last_name VARCHAR(20)} (QA F5). */
+    static final String MSG_LAST_NAME_TOO_LONG = "Last Name can NOT be longer than 20 characters...";
+
     /**
      * {@code COUSR02C} L342/L379: not-found message from the {@code READ-USER-SEC-FILE} and
      * {@code UPDATE-USER-SEC-FILE} {@code WHEN DFHRESP(NOTFND)} branches.
@@ -364,6 +378,25 @@ public class UserUpdateService {
         // 'A'/'U' codes by construction.
         if (request.getUserType() == null) {
             throw new ValidationException(MSG_USER_TYPE_EMPTY);
+        }
+
+        // -------------------------------------------------------------------------------------------
+        // Step 1b - field-width guards (QA F5). Enforce the PIC X(20) first/last-name widths here,
+        // AFTER the empty cascade (so a blank field still wins its "...can NOT be empty..." message) and
+        // BEFORE the keyed READ / rewrite (so an over-length name is a 400, never a
+        // DataIntegrityViolationException 500 on the VARCHAR(20) column). First-error-wins, in the
+        // COBOL field order (first name, last name). Validated on the normalized (trimmed) value because
+        // the normalized value is exactly what is stored on a change (see Step 3); trailing 3270 padding
+        // is a storage artifact, not data, so it must not count toward the width. getFirstName()/
+        // getLastName() are non-blank here (empty cascade branches 2-3 already ran). The user id is the
+        // lookup key (an over-length id finds no row -> "User ID NOT found..." 404, so no guard here) and
+        // the password widens to a BCrypt digest that cannot overflow, so neither is length-guarded.
+        // -------------------------------------------------------------------------------------------
+        if (normalize(request.getFirstName()).length() > 20) {
+            throw new ValidationException(MSG_FIRST_NAME_TOO_LONG);
+        }
+        if (normalize(request.getLastName()).length() > 20) {
+            throw new ValidationException(MSG_LAST_NAME_TOO_LONG);
         }
 
         // -------------------------------------------------------------------------------------------

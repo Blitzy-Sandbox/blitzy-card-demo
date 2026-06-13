@@ -123,6 +123,12 @@ class UserUpdateServiceTest {
     /** {@code COUSR02C} L206-207: empty user-type edit ({@code UPDATE-USER-INFO} branch 5). */
     private static final String MSG_USER_TYPE_EMPTY = "User Type can NOT be empty...";
 
+    /** QA F5 length guard: first name beyond {@code SEC-USR-FNAME PIC X(20)} / {@code VARCHAR(20)}. */
+    private static final String MSG_FIRST_NAME_TOO_LONG = "First Name can NOT be longer than 20 characters...";
+
+    /** QA F5 length guard: last name beyond {@code SEC-USR-LNAME PIC X(20)} / {@code VARCHAR(20)}. */
+    private static final String MSG_LAST_NAME_TOO_LONG = "Last Name can NOT be longer than 20 characters...";
+
     /** {@code COUSR02C} L342/L379: {@code DFHRESP(NOTFND)} not-found message. */
     private static final String MSG_USER_NOT_FOUND = "User ID NOT found...";
 
@@ -392,6 +398,70 @@ class UserUpdateServiceTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessage(MSG_PASSWORD_EMPTY);
         verify(userSecurityRepository, never()).save(any());
+    }
+
+    // ===============================================================================================
+    // Phase 4A-bis — field-width guards (QA F5). COUSR02C relied on the fixed-width BMS PIC fields
+    //   (FNAME/LNAME PIC X(20)) so an over-length name could not occur; the REST contract has no such
+    //   bound, so the service enforces the PIC widths AFTER the empty cascade and BEFORE the keyed read,
+    //   making an over-length name a 400 (ValidationException) with nothing read and nothing saved. The
+    //   user id is the lookup key (an over-length id simply finds no row -> 404) and the password widens
+    //   to a BCrypt digest, so only first/last name are length-guarded. Names are validated on their
+    //   normalized (trimmed) value, since that is exactly what is stored on a change.
+    // ===============================================================================================
+
+    @Test
+    @DisplayName("F5: first name > 20 chars -> 'First Name can NOT be longer than 20 characters...'; no read, no save")
+    void updateUserOverLengthFirstNameRejected() {
+        UserSecurityDto request = requestMatchingExisting();
+        request.setFirstName("A".repeat(21)); // PIC X(20) / VARCHAR(20) -> 21 overflows
+        assertThatThrownBy(() -> userUpdateService.updateUser(request))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_FIRST_NAME_TOO_LONG);
+        verify(userSecurityRepository, never()).findBySecUsrId(anyString());
+        verify(userSecurityRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("F5: last name > 20 chars -> 'Last Name can NOT be longer than 20 characters...'; no read, no save")
+    void updateUserOverLengthLastNameRejected() {
+        UserSecurityDto request = requestMatchingExisting();
+        request.setLastName("B".repeat(21));
+        assertThatThrownBy(() -> userUpdateService.updateUser(request))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_LAST_NAME_TOO_LONG);
+        verify(userSecurityRepository, never()).findBySecUsrId(anyString());
+        verify(userSecurityRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("F5: empty cascade still wins over a length violation (blank first name beats over-length last name)")
+    void updateUserEmptyCascadeWinsOverLengthGuard() {
+        UserSecurityDto request = requestMatchingExisting();
+        request.setFirstName("   ");          // blank -> empty-edit branch 2 must win first
+        request.setLastName("B".repeat(30));  // also over-length, but later in the order
+        assertThatThrownBy(() -> userUpdateService.updateUser(request))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_FIRST_NAME_EMPTY);
+        verify(userSecurityRepository, never()).findBySecUsrId(anyString());
+        verify(userSecurityRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("F5: boundary first name (exactly 20 chars) is accepted, read, and persisted")
+    void updateUserBoundaryFirstNameAccepted() {
+        UserSecurity existing = existingUser();
+        when(userSecurityRepository.findBySecUsrId(EXISTING_USER_ID)).thenReturn(Optional.of(existing));
+        when(userSecurityRepository.save(any(UserSecurity.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        UserSecurityDto request = requestMatchingExisting();
+        String boundaryName = "A".repeat(20); // exactly at the PIC X(20) bound -> inclusive, valid
+        request.setFirstName(boundaryName);    // differs from the existing name -> change-detected
+
+        userUpdateService.updateUser(request);
+
+        verify(userSecurityRepository, times(1)).save(savedCaptor.capture());
+        assertThat(savedCaptor.getValue().getSecUsrFname()).isEqualTo(boundaryName);
     }
 
     // ===============================================================================================

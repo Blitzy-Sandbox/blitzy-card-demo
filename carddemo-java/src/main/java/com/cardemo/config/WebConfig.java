@@ -18,8 +18,13 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.ErrorResponse;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -307,15 +312,32 @@ public class WebConfig implements WebMvcConfigurer {
             // raw message, which carries the looked-up key/identifier.
             log.warn("Record not found (HTTP 404, code=RECORD_NOT_FOUND, type={})",
                     ex.getClass().getSimpleName());
-            // Behavioral parity (§0.7.2): when the throwing site supplied an explicit client-safe
-            // prompt (a static COBOL not-found message with no key/PII — e.g. COACTVWC's "Did not
-            // find this account in account card xref file"), surface it verbatim so the original
-            // user-facing prompt is preserved; otherwise fall back to the stable generic message.
-            // The key-bearing detail message (ex.getMessage()) is still never exposed.
+            // Behavioral parity (§0.7.2 / QA F1+F2): choose the client-facing message by how the
+            // exception was constructed, so verbatim COBOL not-found prompts are preserved while a
+            // key/PII-bearing detail message is never exposed.
             final String clientSafe = ex.getClientSafeMessage();
-            final String clientMessage = (clientSafe != null && !clientSafe.isBlank())
-                    ? clientSafe
-                    : MSG_RECORD_NOT_FOUND;
+            final String clientMessage;
+            if (clientSafe != null && !clientSafe.isBlank()) {
+                // (1) Highest priority — an explicit client-safe prompt supplied at the throw site
+                // (3-argument constructor): surface it verbatim. Used by COACTVWC's "Did not find
+                // this account in account card xref file" and COSGN00C's "User not found. Try
+                // again ..." (the QA F1 unknown-user branch).
+                clientMessage = clientSafe;
+            } else if (ex.getKey() == null) {
+                // (2) The message-only constructor leaves the structured key UNSET, which is
+                // reserved for hand-composed, key-free (non-PII) COBOL not-found prompts — e.g.
+                // "Account ID NOT found..." (COBIL00C/COTRN02C), "User ID NOT found..." (COUSR02C),
+                // "Did not find cards for this search condition" (COCRDLIC). Surface that verbatim
+                // detail message so the original screen prompt is preserved (QA F2).
+                final String detail = ex.getMessage();
+                clientMessage = (detail != null && !detail.isBlank()) ? detail : MSG_RECORD_NOT_FOUND;
+            } else {
+                // (3) The structured (entityType, key) constructor composes "<type> not found for
+                // key: <key>", which embeds the looked-up key (a potential PII / enumeration
+                // vector). Fall back to the stable generic message and keep the key out of the
+                // response.
+                clientMessage = MSG_RECORD_NOT_FOUND;
+            }
             return buildResponse(HttpStatus.NOT_FOUND, "RECORD_NOT_FOUND", clientMessage,
                     request, null);
         }
@@ -331,11 +353,25 @@ public class WebConfig implements WebMvcConfigurer {
         @ExceptionHandler(DuplicateRecordException.class)
         public ResponseEntity<ApiError> handleDuplicateRecord(
                 DuplicateRecordException ex, HttpServletRequest request) {
-            // Sanitized (§0.7.2): log only safe metadata — never the raw message, which carries the
-            // colliding key/identifier. Return a stable generic message.
+            // Behavioral parity (§0.7.2 / QA F2): the message-only constructor leaves the structured
+            // key UNSET, which is reserved for hand-composed, key-free (non-PII) COBOL duplicate
+            // prompts — e.g. "User ID already exist..." (COUSR01C) and "Tran ID already exist..."
+            // (COTRN02C). Surface that verbatim detail message so the original screen prompt is
+            // preserved. The structured (entityType, key) constructor instead composes
+            // "<type> already exists for key: <key>", which embeds the colliding key (potential
+            // PII); for that case fall back to the stable generic message and keep the key out of
+            // the body.
+            final String clientMessage;
+            if (ex.getKey() == null) {
+                final String detail = ex.getMessage();
+                clientMessage = (detail != null && !detail.isBlank()) ? detail : MSG_DUPLICATE_RECORD;
+            } else {
+                clientMessage = MSG_DUPLICATE_RECORD;
+            }
+            // Sanitized (§0.7.2): log only safe metadata — never the raw key-bearing message.
             log.warn("Duplicate record (HTTP 409, code=DUPLICATE_RECORD, type={})",
                     ex.getClass().getSimpleName());
-            return buildResponse(HttpStatus.CONFLICT, "DUPLICATE_RECORD", MSG_DUPLICATE_RECORD,
+            return buildResponse(HttpStatus.CONFLICT, "DUPLICATE_RECORD", clientMessage,
                     request, null);
         }
 
@@ -425,11 +461,30 @@ public class WebConfig implements WebMvcConfigurer {
             List<FieldValidationError> fieldErrors = ex.getValidationErrors().stream()
                     .map(message -> new FieldValidationError(ex.getFieldName(), message))
                     .toList();
+            // Behavioral parity (§0.7.2 / QA F2): a single-argument ValidationException(message)
+            // carries its verbatim COBOL operator prompt in ex.getMessage() but leaves
+            // getValidationErrors() EMPTY, so no per-field entries are produced above. When there are
+            // no field-level entries, surface that verbatim message as the TOP-LEVEL message instead
+            // of the generic text, preserving the original 3270 screen prompt exactly — e.g. the
+            // sign-on "Please enter User ID ..." / "Wrong Password. Try again ..." (COSGN00C), the
+            // transaction-add edit prompts, the billing/report confirm prompts and the user-admin
+            // PIC-width length guards. These are validation-rule prompts (they describe the rule, not
+            // a sensitive value), so surfacing them leaks nothing. When per-field entries DO exist
+            // (the List / two-argument constructors — e.g. AccountUpdateService's accumulated
+            // field-edit cascade), the stable generic top-level message is kept and the specifics
+            // remain in fieldErrors (unchanged behavior).
+            final String topMessage;
+            if (fieldErrors.isEmpty()) {
+                final String detail = ex.getMessage();
+                topMessage = (detail != null && !detail.isBlank()) ? detail : MSG_VALIDATION_FAILED;
+            } else {
+                topMessage = MSG_VALIDATION_FAILED;
+            }
             // Sanitized (§0.7.2): log only the field-error count (safe metadata) — never the raw
-            // ex.getMessage(). Return a stable generic top-level message; field-level errors stay.
+            // ex.getMessage(). Field-level errors (when present) stay in the body.
             log.warn("Validation failed (HTTP 400, code=VALIDATION_FAILED): {} field error(s)",
                     fieldErrors.size());
-            return buildResponse(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", MSG_VALIDATION_FAILED,
+            return buildResponse(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", topMessage,
                     request, fieldErrors);
         }
 
@@ -507,6 +562,142 @@ public class WebConfig implements WebMvcConfigurer {
         public ResponseEntity<ApiError> handleCardDemo(
                 CardDemoException ex, HttpServletRequest request) {
             log.error("Unhandled CardDemo domain exception (HTTP 500)", ex);
+            return buildResponse(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR",
+                    "An unexpected error occurred while processing the request", request, null);
+        }
+
+        /**
+         * Maps a malformed or unreadable request body to <strong>400 Bad Request</strong> &mdash; the
+         * framework counterpart of a failed {@code RECEIVE MAP} field harvest. Fires when the JSON
+         * body cannot be parsed or bound (for example invalid JSON syntax, or a value that does not
+         * deserialize into its target type such as an unknown {@code UserType}/{@code ReportType}
+         * enum code).
+         *
+         * <p>Before this handler the condition fell through to Spring's default error envelope
+         * ({@code {timestamp,status,error,path}}); it now carries the uniform {@link ApiError}
+         * contract with {@code code}/{@code message}/{@code correlationId} (QA F4). The raw parser
+         * message (which can echo a fragment of the submitted body) is neither returned nor logged.</p>
+         *
+         * @param ex      the thrown message-not-readable exception
+         * @param request the current request, used to populate the error {@code path}
+         * @return a 400 response carrying the standard {@link ApiError} body
+         */
+        @ExceptionHandler(HttpMessageNotReadableException.class)
+        public ResponseEntity<ApiError> handleMessageNotReadable(
+                HttpMessageNotReadableException ex, HttpServletRequest request) {
+            // Sanitized (§0.7.2): log only safe metadata — never ex.getMessage(), which can echo a
+            // fragment of the unparsable request body. Return a stable generic message.
+            log.warn("Malformed request body (HTTP 400, code=MALFORMED_REQUEST, type={})",
+                    ex.getClass().getSimpleName());
+            return buildResponse(HttpStatus.BAD_REQUEST, "MALFORMED_REQUEST",
+                    "The request body is missing or could not be parsed", request, null);
+        }
+
+        /**
+         * Maps an unsupported HTTP method to <strong>405 Method Not Allowed</strong>, carrying the
+         * uniform {@link ApiError} envelope rather than Spring's default error body (QA F4).
+         *
+         * @param ex      the thrown method-not-supported exception
+         * @param request the current request, used to populate the error {@code path}
+         * @return a 405 response carrying the standard {@link ApiError} body
+         */
+        @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+        public ResponseEntity<ApiError> handleMethodNotSupported(
+                HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
+            // The attempted method is the client's own input (not sensitive); safe to log.
+            log.warn("Method not allowed (HTTP 405, code=METHOD_NOT_ALLOWED, method={})",
+                    ex.getMethod());
+            return buildResponse(HttpStatus.METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED",
+                    "The HTTP method is not supported for this endpoint", request, null);
+        }
+
+        /**
+         * Maps an unsupported request media type to <strong>415 Unsupported Media Type</strong>,
+         * carrying the uniform {@link ApiError} envelope rather than Spring's default error body
+         * (QA F4).
+         *
+         * @param ex      the thrown media-type-not-supported exception
+         * @param request the current request, used to populate the error {@code path}
+         * @return a 415 response carrying the standard {@link ApiError} body
+         */
+        @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+        public ResponseEntity<ApiError> handleMediaTypeNotSupported(
+                HttpMediaTypeNotSupportedException ex, HttpServletRequest request) {
+            // The attempted content type is the client's own input (not sensitive); safe to log.
+            log.warn("Unsupported media type (HTTP 415, code=UNSUPPORTED_MEDIA_TYPE, contentType={})",
+                    ex.getContentType());
+            return buildResponse(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "UNSUPPORTED_MEDIA_TYPE",
+                    "The request content type is not supported", request, null);
+        }
+
+        /**
+         * Maps a <em>post-dispatch</em> authorization denial to <strong>403 Forbidden</strong>
+         * &mdash; for a method-level {@code @PreAuthorize} guard (for example on the admin-only user
+         * CRUD services) that throws after request dispatch and therefore reaches this advice.
+         * Returns the uniform {@link ApiError} envelope (QA F4).
+         *
+         * <p><strong>Why this explicit handler is required:</strong> {@link AccessDeniedException}
+         * does <em>not</em> implement {@link ErrorResponse}, so without it the generic
+         * {@link #handleUnexpected(Exception, HttpServletRequest)} below would map a dispatch-time
+         * authorization denial to 500. It does not affect <em>filter-chain</em> authorization
+         * failures (the {@code SecurityConfig} {@code hasRole} route rules), which are handled before
+         * dispatch by the Spring Security {@code ExceptionTranslationFilter} and never reach this
+         * advice &mdash; so the existing filter-level 403s are unchanged.</p>
+         *
+         * @param ex      the thrown access-denied exception
+         * @param request the current request, used to populate the error {@code path}
+         * @return a 403 response carrying the standard {@link ApiError} body
+         */
+        @ExceptionHandler(AccessDeniedException.class)
+        public ResponseEntity<ApiError> handleAccessDenied(
+                AccessDeniedException ex, HttpServletRequest request) {
+            // Sanitized (§0.7.2): log only safe metadata. Return a stable generic message.
+            log.warn("Access denied (HTTP 403, code=ACCESS_DENIED, type={})",
+                    ex.getClass().getSimpleName());
+            return buildResponse(HttpStatus.FORBIDDEN, "ACCESS_DENIED",
+                    "Access is denied", request, null);
+        }
+
+        /**
+         * Final catch-all for any exception without a more specific handler above, guaranteeing every
+         * error leaving the application carries the uniform {@link ApiError} envelope
+         * ({@code code}/{@code message}/{@code correlationId}) instead of Spring's default error body
+         * (QA F4). Resolution is by specificity, not declaration order, so the concrete handlers above
+         * always win for their types; this method only runs for otherwise-unhandled exceptions.
+         *
+         * <p><strong>Status selection.</strong> Spring MVC framework exceptions (for example
+         * {@code NoResourceFoundException} &rarr; 404 for an unknown route,
+         * {@code MethodArgumentTypeMismatchException} &rarr; 400 for a bad path-variable type,
+         * {@code HttpMediaTypeNotAcceptableException} &rarr; 406) implement {@link ErrorResponse} and
+         * declare their own HTTP status. Those are honored verbatim so this catch-all never masks a
+         * well-defined 4xx as a 500 (which would, for instance, regress the documented unknown-route
+         * 404). Only a truly unexpected exception (a {@code DataAccessException} /
+         * {@code DataIntegrityViolationException}, a messaging failure, an {@code NPE}, &hellip;) maps
+         * to <strong>500</strong>.</p>
+         *
+         * <p>The full stack trace is logged server-side for diagnosis but is <em>never</em> leaked to
+         * the client: no stack trace, SQL, package path or framework class name appears in the
+         * body.</p>
+         *
+         * @param ex      the otherwise-unhandled exception
+         * @param request the current request, used to populate the error {@code path}
+         * @return a response carrying the standard {@link ApiError} body at the resolved status
+         */
+        @ExceptionHandler(Exception.class)
+        public ResponseEntity<ApiError> handleUnexpected(Exception ex, HttpServletRequest request) {
+            if (ex instanceof ErrorResponse errorResponse) {
+                // Framework/MVC exception that declares its own status (404/400/406/...). Preserve
+                // that status and render the uniform envelope; do NOT mask a well-defined 4xx as 500.
+                final HttpStatus resolved = HttpStatus.resolve(errorResponse.getStatusCode().value());
+                final HttpStatus status = (resolved != null) ? resolved : HttpStatus.INTERNAL_SERVER_ERROR;
+                log.warn("Framework exception (HTTP {}, code={}, type={})",
+                        status.value(), status.name(), ex.getClass().getSimpleName());
+                return buildResponse(status, status.name(),
+                        "The request could not be processed", request, null);
+            }
+            // Truly unexpected: log the full trace server-side; the client receives only the generic
+            // envelope with the correlation id (no stack trace, SQL or internal detail leaked).
+            log.error("Unhandled exception (HTTP 500, code=INTERNAL_ERROR)", ex);
             return buildResponse(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR",
                     "An unexpected error occurred while processing the request", request, null);
         }
