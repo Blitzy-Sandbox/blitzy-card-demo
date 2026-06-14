@@ -1097,7 +1097,9 @@ class OnlineTransactionE2ETest {
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
             JsonNode result = json(response);
-            assertThat(result.path("submitted").asBoolean()).isTrue();
+            // docs/api-contracts.md §5.7: 202 Accepted carries (jobId, reportType, status="SUBMITTED").
+            assertThat(result.path("status").asText()).isEqualTo("SUBMITTED");
+            assertThat(result.path("jobId").asText()).as("queued job id (api-contracts §5.7)").isNotBlank();
             assertThat(result.path("reportType").asText()).isEqualTo("YEARLY");
 
             // The bridge fired: exactly the report request is observable on the LocalStack FIFO queue.
@@ -1118,7 +1120,11 @@ class OnlineTransactionE2ETest {
                     body("yearly", "Y", "confirm", "N"), userToken());
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-            assertThat(json(response).path("submitted").asBoolean()).isFalse();
+            // docs/api-contracts.md §5.7 cancel path: 200 OK with status="CANCELLED" and a null jobId.
+            JsonNode cancelResult = json(response);
+            assertThat(cancelResult.path("status").asText()).isEqualTo("CANCELLED");
+            assertThat(cancelResult.path("jobId").isNull() || cancelResult.path("jobId").asText().isEmpty())
+                    .as("cancelled submission carries no job id").isTrue();
 
             // No message was published on the cancel path.
             List<Message> messages = sqs.receiveMessage(ReceiveMessageRequest.builder()
@@ -1144,6 +1150,30 @@ class OnlineTransactionE2ETest {
             ResponseEntity<String> response = exchange(HttpMethod.POST, "/api/reports/submit",
                     body("confirm", "Y"), userToken());
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        }
+
+        @Test
+        @DisplayName("Over-width confirm is rejected safely (400) and the raw value is NOT reflected")
+        void overWidthConfirmRejectedSafely() {
+            drainReportQueue();
+            // Finding C: an authenticated caller sends an over-width, no-space confirm. The BMS/PIC
+            // width is 1 (docs/api-contracts.md §5.7), so the service must reject it BEFORE constructing
+            // the "not a valid value to confirm" prompt — and must NOT echo the arbitrary-length value
+            // back in the JSON error body (the response-amplification / reflection vector).
+            String overWidthConfirm = "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"; // 40 chars, no spaces
+
+            ResponseEntity<String> response = exchange(HttpMethod.POST, "/api/reports/submit",
+                    body("yearly", "Y", "confirm", overWidthConfirm), userToken());
+
+            // Rejected at the input boundary with a value-free width message.
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(response.getBody())
+                    .as("over-width confirm must NOT be reflected back to the caller (Finding C)")
+                    .doesNotContain(overWidthConfirm);
+
+            // And nothing was queued.
+            List<Message> messages = receiveReportMessages();
+            assertThat(messages).as("rejected request publishes no message").isEmpty();
         }
     }
 

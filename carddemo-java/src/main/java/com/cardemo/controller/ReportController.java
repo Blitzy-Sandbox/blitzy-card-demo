@@ -1,6 +1,7 @@
 package com.cardemo.controller;
 
 import com.cardemo.model.dto.ReportRequest;
+import com.cardemo.model.dto.ReportSubmissionResponse;
 import com.cardemo.service.report.ReportSubmissionService;
 
 import org.springframework.http.ResponseEntity;
@@ -31,10 +32,11 @@ import org.springframework.web.bind.annotation.RestController;
  *       ({@code CONFIRM PIC X(1)}).</li>
  * </ul>
  * <p>Its symbolic map ({@code app/cpy-bms/CORPT00.CPY}) was migrated into {@link ReportRequest} (the
- * {@code COPY CSSETATY} field contract) and the result shape into the nested record
- * {@link ReportSubmissionService.ReportSubmissionResult}. This controller never re-declares those
- * structures and never copies COBOL/BMS text &mdash; only the screen <em>behavior</em> is reproduced,
- * by delegation to {@link ReportSubmissionService}.</p>
+ * {@code COPY CSSETATY} field contract) and the response shape into the DTO
+ * {@link ReportSubmissionResponse} ({@code jobId}/{@code reportType}/{@code status}; the documented
+ * {@code docs/api-contracts.md} &sect;5.7 contract). This controller never re-declares those structures
+ * and never copies COBOL/BMS text &mdash; only the screen <em>behavior</em> is reproduced, by delegation
+ * to {@link ReportSubmissionService}.</p>
  *
  * <h2>Key insight &mdash; the system's sole online&rarr;batch bridge (AAP &sect;0.6.3)</h2>
  * <p>{@code CORPT00C} is the <strong>single coupling point between the online and batch worlds</strong>
@@ -51,7 +53,7 @@ import org.springframework.web.bind.annotation.RestController;
  * <ul>
  *   <li><strong>{@code RECEIVE MAP('CORPT0A')} / {@code SEND MAP('CORPT0A')} &rarr; request/response
  *       DTO.</strong> The 3270 field harvest and screen paint collapse into Jackson (de)serialization
- *       of {@link ReportRequest} and {@link ReportSubmissionService.ReportSubmissionResult}. Screen
+ *       of {@link ReportRequest} and {@link ReportSubmissionResponse}. Screen
  *       chrome ({@code TRNNAME}, {@code TITLE01}/{@code TITLE02}, {@code CURDATE}, {@code CURTIME},
  *       {@code PGMNAME}), the {@code ERRMSG} line and BMS control bytes have no REST analogue and are
  *       not modeled as request fields (AAP&nbsp;&sect;0.4.2).</li>
@@ -114,7 +116,7 @@ import org.springframework.web.bind.annotation.RestController;
  * this repository (AAP&nbsp;&sect;0.7.2).</p>
  *
  * @see ReportSubmissionService
- * @see ReportSubmissionService.ReportSubmissionResult
+ * @see ReportSubmissionResponse
  * @see ReportRequest
  */
 @RestController
@@ -148,53 +150,58 @@ public class ReportController {
      * custom start/end date parts, and the single-character {@code confirm} flag. All interpretation is
      * performed by {@link ReportSubmissionService#submitReport(ReportRequest)}: a {@code 'Y'}/{@code 'y'}
      * confirmation publishes the report job to the SQS FIFO queue {@code carddemo-report-jobs.fifo} (the
-     * downstream Spring Batch trigger) and yields a {@code submitted == true} result; a
-     * {@code 'N'}/{@code 'n'} confirmation cancels with no publish and yields {@code submitted == false};
-     * a blank/other value, an unselected report type, or an invalid custom date range raises a
-     * {@code ValidationException}. The body is bound as {@code @RequestBody} <strong>without</strong>
-     * {@code @Valid} so the service owns the ordered verbatim COBOL edit messages and parity is preserved
-     * (AAP&nbsp;&sect;0.7.2).</p>
+     * downstream Spring Batch trigger) and yields a {@link ReportSubmissionResponse} with
+     * {@code status == "SUBMITTED"} and the generated {@code jobId}; a {@code 'N'}/{@code 'n'}
+     * confirmation cancels with no publish and yields {@code status == "CANCELLED"} (with a {@code null}
+     * {@code jobId}); a blank/other value, an unselected report type, or an invalid custom date range
+     * raises a {@code ValidationException}. The body is bound as {@code @RequestBody}
+     * <strong>without</strong> {@code @Valid} so the service owns the ordered verbatim COBOL edit
+     * messages and parity is preserved (AAP&nbsp;&sect;0.7.2); the service enforces the documented BMS/PIC
+     * field widths internally (Finding C) so an over-width field is rejected with a value-free width
+     * message rather than being reflected.</p>
      *
      * <p><strong>Status mapping</strong> (a thin presentation choice driven solely by
-     * {@link ReportSubmissionService.ReportSubmissionResult#submitted() submitted()}, not business
-     * logic):</p>
+     * {@link ReportSubmissionResponse#status() status()}, not business logic):</p>
      * <ul>
-     *   <li>{@code submitted() == true} &rarr; HTTP&nbsp;<strong>202 Accepted</strong> &mdash; the report
-     *       job has been published to SQS for <em>asynchronous</em> Spring Batch processing; 202 is the
-     *       canonical "accepted for async processing" status and mirrors the legacy TDQ&nbsp;&rarr;&nbsp;JES
+     *   <li>{@code status() == "SUBMITTED"} &rarr; HTTP&nbsp;<strong>202 Accepted</strong> &mdash; the
+     *       report job has been published to SQS for <em>asynchronous</em> Spring Batch processing; 202
+     *       is the canonical "accepted for async processing" status documented in
+     *       {@code docs/api-contracts.md} &sect;5.7 and mirrors the legacy TDQ&nbsp;&rarr;&nbsp;JES
      *       asynchronous trigger.</li>
-     *   <li>{@code submitted() == false} &rarr; HTTP&nbsp;<strong>200 OK</strong> &mdash; the operator
-     *       cancelled; nothing was queued (a no-op).</li>
+     *   <li>{@code status() == "CANCELLED"} &rarr; HTTP&nbsp;<strong>200 OK</strong> &mdash; the operator
+     *       cancelled; nothing was queued (a no-op). This is the &sect;5.7 conversational outcome handled
+     *       in service logic; the documented 202 submit contract is unchanged by it.</li>
      * </ul>
      *
      * @param request the report-criteria request (report-type flags, optional custom date parts, and
      *                confirm flag) bound from the JSON body
-     * @return {@code 202 Accepted} with the {@link ReportSubmissionService.ReportSubmissionResult} when
-     *         the report job was published; {@code 200 OK} with the result when the submission was
-     *         cancelled
-     * @throws com.cardemo.exception.ValidationException if no report type is selected, the custom date
-     *         range is invalid, or the confirm flag is blank/invalid (rendered as HTTP&nbsp;400 by
-     *         {@code config/WebConfig}); propagated, not caught
+     * @return {@code 202 Accepted} with the {@link ReportSubmissionResponse} ({@code status="SUBMITTED"})
+     *         when the report job was published; {@code 200 OK} with the response
+     *         ({@code status="CANCELLED"}) when the submission was cancelled
+     * @throws com.cardemo.exception.ValidationException if a field exceeds its BMS/PIC width, no report
+     *         type is selected, the custom date range is invalid, or the confirm flag is blank/invalid
+     *         (rendered as HTTP&nbsp;400 by {@code config/WebConfig}); propagated, not caught
      * @throws RuntimeException if the SQS publish fails (rendered as HTTP&nbsp;500 by
      *         {@code config/WebConfig}); propagated, not caught
      */
     // COBOL substitution: CORPT00C RECEIVE MAP('CORPT0A') field harvest -> @RequestBody binding;
-    // SEND MAP('CORPT0A') -> ReportSubmissionResult JSON; RETURN TRANSID('CR00') COMMAREA -> stateless
-    // POST (no conversational state, AAP §0.1.2). The single confirm field collapses the COBOL
-    // multi-turn confirm screen: Y=submit, N=cancel -- all service-owned.
+    // SEND MAP('CORPT0A') -> ReportSubmissionResponse JSON (api-contracts §5.7); RETURN TRANSID('CR00')
+    // COMMAREA -> stateless POST (no conversational state, AAP §0.1.2). The single confirm field
+    // collapses the COBOL multi-turn confirm screen: Y=submit, N=cancel -- all service-owned.
     // SOLE online->batch bridge: CORPT00C WRITEQ TD 'JOBS' (-> JES) becomes an SQS publish to
     // carddemo-report-jobs.fifo (-> Spring Batch), performed inside ReportSubmissionService (AAP §0.6.3).
     // Bound WITHOUT @Valid so a malformed field reaches the service and surfaces the verbatim COBOL edit
     // message rather than a generic MethodArgumentNotValidException (parity, AAP §0.7.2; consistent with
-    // BillingController/AccountController). Status: result.submitted() true -> 202 (accepted for async
-    // batch) vs false -> 200 (cancelled / no-op) -- a presentation choice, not business logic.
+    // BillingController/AccountController). The service enforces the documented field widths internally
+    // (Finding C), closing the over-width reflection vector without a boundary @Valid. Status:
+    // status()=="SUBMITTED" -> 202 (accepted for async batch) vs "CANCELLED" -> 200 (cancelled / no-op),
+    // per api-contracts §5.7 -- a presentation choice, not business logic.
     @PostMapping("/submit")
-    public ResponseEntity<ReportSubmissionService.ReportSubmissionResult> submit(
+    public ResponseEntity<ReportSubmissionResponse> submit(
             @RequestBody final ReportRequest request) {
-        final ReportSubmissionService.ReportSubmissionResult result =
-                reportSubmissionService.submitReport(request);
-        return result.submitted()
-                ? ResponseEntity.accepted().body(result)   // 202: report job queued for async Spring Batch
-                : ResponseEntity.ok(result);               // 200: cancelled / no-op (nothing queued)
+        final ReportSubmissionResponse response = reportSubmissionService.submitReport(request);
+        return "SUBMITTED".equals(response.status())
+                ? ResponseEntity.accepted().body(response)   // 202: report job queued for async Spring Batch
+                : ResponseEntity.ok(response);               // 200: cancelled / no-op (nothing queued)
     }
 }

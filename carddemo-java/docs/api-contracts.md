@@ -722,9 +722,23 @@ confirmation.
 | `status` | — | `String` | `SUBMITTED` |
 
 **Status codes:** `202 Accepted` (request queued); `400 Bad Request` (no report type
-selected, or invalid/inconsistent date range). When `confirm` is not `Y`, `CORPT00C` /
-`ReportSubmissionService` re-prompts for confirmation rather than submitting — this
-conversational outcome is handled in service logic, not as a field-format rejection.
+selected, an invalid/inconsistent date range, or a field exceeding its BMS/PIC width). When
+`confirm` is not `Y`, `CORPT00C` / `ReportSubmissionService` re-prompts for confirmation rather
+than submitting — this conversational outcome is handled in service logic, not as a
+field-format rejection.
+
+**Cancellation response (`200 OK`).** This note is *additive* and does **not** alter the
+`202 Accepted` submit contract documented in the response table above. When `confirm` is
+`N`/`n` the operator cancelled and nothing is queued; the endpoint returns the **same**
+`ReportSubmissionResponse` shape with `status` = `CANCELLED` and a `null` `jobId`, at
+`200 OK`. This is the explicit representation of the conversational "not `Y`" outcome
+referenced under **Status codes** — a confirmed (`Y`) submission still returns
+`202 Accepted` with a generated `jobId` and `status` = `SUBMITTED` exactly as specified.
+
+**Input-width enforcement (boundary parity).** The BMS/PIC widths in the request table
+(`@Size`) are enforced before any report logic runs, reproducing the physical 3270 field
+lengths. An over-width field is rejected with a value-free `400 Bad Request` message that
+names only the field and its maximum width — the offending value is never echoed back.
 
 **Notes — technology substitution.** `CORPT00C` wrote the report request to the CICS
 Transient Data Queue `JOBS`, which triggered JES batch submission — the only online↔batch

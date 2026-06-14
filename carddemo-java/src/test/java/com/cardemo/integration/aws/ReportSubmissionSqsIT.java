@@ -35,6 +35,7 @@ package com.cardemo.integration.aws;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cardemo.model.dto.ReportRequest;
+import com.cardemo.model.dto.ReportSubmissionResponse;
 import com.cardemo.service.report.ReportSubmissionService;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -232,11 +233,12 @@ public class ReportSubmissionSqsIT extends AbstractLocalStackIntegrationTest {
 
         // ---- Act: exercise the REAL production service (TDQ WRITEQ('JOBS') -> SQS publish). ----
         // SqsTemplate.send(...) is synchronous, so the message is enqueued by the time this returns.
-        ReportSubmissionService.ReportSubmissionResult result = reportSubmissionService.submitReport(request);
+        ReportSubmissionResponse result = reportSubmissionService.submitReport(request);
 
-        // ---- Assert: service-level contract. ----
+        // ---- Assert: service-level contract (docs/api-contracts.md §5.7). ----
         assertThat(result).as("submission result").isNotNull();
-        assertThat(result.submitted()).as("YEARLY + confirm 'Y' must submit").isTrue();
+        assertThat(result.status()).as("YEARLY + confirm 'Y' must submit").isEqualTo("SUBMITTED");
+        assertThat(result.jobId()).as("queued job id (api-contracts §5.7)").isNotBlank();
         assertThat(result.reportType()).isEqualTo(REPORT_TYPE_YEARLY);
 
         // ---- Assert: exactly one message landed on the queue. ----
@@ -276,8 +278,8 @@ public class ReportSubmissionSqsIT extends AbstractLocalStackIntegrationTest {
                 .as("FIFO MessageGroupId preserves TDQ-style ordering")
                 .isEqualTo(EXPECTED_MESSAGE_GROUP_ID);
         assertThat(systemAttributes.get(MessageSystemAttributeName.MESSAGE_DEDUPLICATION_ID))
-                .as("FIFO MessageDeduplicationId is unique per submission")
-                .isNotBlank();
+                .as("FIFO MessageDeduplicationId is the returned jobId (api-contracts §5.7)")
+                .isEqualTo(result.jobId());
 
         // Delete what we consumed so the shared queue is clean for the next test (the @AfterEach drain
         // cannot see it for the 30s visibility timeout, so delete it here explicitly).
@@ -290,8 +292,8 @@ public class ReportSubmissionSqsIT extends AbstractLocalStackIntegrationTest {
 
     /**
      * Verifies the cancel path: a {@code confirm = "N"} submission silently cancels &mdash; it returns
-     * {@code submitted() == false} and publishes no message (the COBOL {@code 'N'} branch cleared the
-     * screen and never wrote to the {@code JOBS} TDQ).
+     * {@code status() == "CANCELLED"} with a {@code null} {@code jobId} and publishes no message (the
+     * COBOL {@code 'N'} branch cleared the screen and never wrote to the {@code JOBS} TDQ).
      */
     @Test
     @DisplayName("submitReport(confirm=\"N\") cancels silently and publishes nothing")
@@ -302,11 +304,12 @@ public class ReportSubmissionSqsIT extends AbstractLocalStackIntegrationTest {
         request.setConfirm("N");
 
         // ---- Act. ----
-        ReportSubmissionService.ReportSubmissionResult result = reportSubmissionService.submitReport(request);
+        ReportSubmissionResponse result = reportSubmissionService.submitReport(request);
 
-        // ---- Assert: cancelled, nothing submitted. ----
+        // ---- Assert: cancelled, nothing submitted (docs/api-contracts.md §5.7 cancel path). ----
         assertThat(result).as("submission result").isNotNull();
-        assertThat(result.submitted()).as("confirm 'N' must NOT submit").isFalse();
+        assertThat(result.status()).as("confirm 'N' must NOT submit").isEqualTo("CANCELLED");
+        assertThat(result.jobId()).as("cancelled submission carries no job id").isNull();
 
         // ---- Assert: zero messages were published. A short long-poll is sufficient — nothing was sent,
         // and @AfterEach drained the queue after the previous test, so the queue is known-empty. ----

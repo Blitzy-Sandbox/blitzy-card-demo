@@ -97,6 +97,34 @@ import org.springframework.stereotype.Component;
  * semantics). An orchestrator-supplied business date or job-instance id could be substituted for the
  * generation segment in future without changing this contract.</p>
  *
+ * <h2>Data protection &mdash; private statement-bucket access model (sensitive PII)</h2>
+ * <p>The objects written here are <strong>account statements containing customer and account financial
+ * PII</strong> (customer name and address, account id, balances, and the per-account transaction
+ * detail assembled upstream by {@code StatementProcessor}). The {@code carddemo-statements} bucket is a
+ * <strong>private, non-public</strong> data store and MUST be provisioned accordingly. This writer sets
+ * only per-object metadata (content type and length); <em>bucket-level access control is an
+ * infrastructure/provisioning concern</em>, owned outside this class, and the required posture is:</p>
+ * <ul>
+ *   <li><strong>Block all public access</strong> &mdash; an S3 <em>public-access-block</em> with all
+ *       four flags enabled ({@code BlockPublicAcls}, {@code IgnorePublicAcls}, {@code BlockPublicPolicy},
+ *       {@code RestrictPublicBuckets}); no public ACL or bucket policy may ever expose these objects.</li>
+ *   <li><strong>Encryption at rest</strong> &mdash; default server-side encryption enabled on the
+ *       bucket (SSE-S3 {@code AES256} at minimum, SSE-KMS with a customer-managed key preferred in
+ *       production), so statement content is encrypted without relying on per-request headers.</li>
+ *   <li><strong>Least-privilege access</strong> &mdash; only the batch application's IAM principal may
+ *       write, and only explicitly authorized principals may read; no broad/wildcard grants.</li>
+ *   <li><strong>Encryption in transit</strong> &mdash; TLS-only access (e.g. an {@code aws:SecureTransport}
+ *       deny on non-TLS requests) in production.</li>
+ * </ul>
+ * <p><strong>Local vs. production.</strong> For local development the public-access-block and default
+ * encryption are applied to {@code carddemo-statements} by {@code localstack-init/init-aws.sh} when the
+ * bucket is created, so the LocalStack-backed runtime mirrors the private posture (verification only,
+ * zero live AWS). In a real deployment these controls MUST be enforced by the infrastructure-as-code
+ * that provisions the bucket (public-access-block, default SSE/KMS, bucket policy, and least-privilege
+ * IAM) &mdash; the application deliberately does not, and must not, manage bucket-level security at
+ * runtime. The {@code *IT} integration tests create their own test-owned buckets via Testcontainers/
+ * LocalStack and tear them down, so they neither read from nor depend on a publicly accessible bucket.</p>
+ *
  * <h2>Error handling (COBOL write-error parity)</h2>
  * <p>If an upload fails, the {@link S3Template} exception is allowed to propagate so the Spring Batch
  * step fails, mirroring the {@code ABEND}-on-write-error behaviour of the COBOL sequential

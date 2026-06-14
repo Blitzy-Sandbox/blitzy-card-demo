@@ -222,6 +222,64 @@ create_s3_buckets() {
 }
 
 # -----------------------------------------------------------------------------
+# Phase 3b -- Private access model for the PII-bearing statements bucket.
+#
+# carddemo-statements stores account statements containing CUSTOMER / ACCOUNT
+# FINANCIAL PII (customer name/address, account id, balances, transaction
+# detail; written by StatementWriter / StatementProcessor). It MUST be a
+# private, non-public, encrypted-at-rest bucket. Here we mirror that posture on
+# LocalStack so local runs validate against a private bucket:
+#   * public-access-block: block ALL public access (all four flags on);
+#   * default SSE: server-side encryption (AES256) enabled by default.
+#
+# PRODUCTION REQUIREMENT (documented; NOT enforced by the application at
+# runtime). A real deployment MUST provision this bucket via
+# infrastructure-as-code with an equivalent public-access-block, default SSE
+# (SSE-KMS with a customer-managed key preferred over SSE-S3 AES256), a
+# least-privilege bucket policy / IAM (only the batch principal may write; only
+# authorized principals may read), and TLS-only access (an aws:SecureTransport
+# deny on non-TLS requests). StatementWriter sets only per-object metadata and
+# deliberately never manages bucket-level security at runtime.
+#
+# TOLERANCE: these hardening calls are BEST-EFFORT on LocalStack. The community
+# image may not fully implement put-public-access-block / put-bucket-encryption;
+# a non-fatal failure is logged (WARN) and the script CONTINUES -- the controls
+# are a production-IaC responsibility and LocalStack is verification-only. This
+# keeps the ready.d hook re-run safe and never blocks local startup. (Contrast
+# with the S3/SQS/SNS create phases, where a failure is fatal because those
+# resources are required for the app to function.)
+# -----------------------------------------------------------------------------
+harden_statements_bucket() {
+  log "Hardening private access model on PII-bearing statements bucket: ${S3_STATEMENTS_BUCKET}"
+
+  # Block ALL public access (BlockPublicAcls, IgnorePublicAcls, BlockPublicPolicy,
+  # RestrictPublicBuckets) -- no public ACL or bucket policy may ever expose the
+  # PII-bearing statement objects.
+  if awscli s3api put-public-access-block \
+       --bucket "${S3_STATEMENTS_BUCKET}" \
+       --public-access-block-configuration \
+         BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true \
+       >/dev/null 2>&1; then
+    log "Public-access-block enabled (all four flags) on: ${S3_STATEMENTS_BUCKET}"
+  else
+    log "WARN: could not set public-access-block on ${S3_STATEMENTS_BUCKET} (LocalStack best-effort; MUST be enforced by production IaC). Continuing."
+  fi
+
+  # Default server-side encryption at rest (SSE-S3 AES256 minimum; SSE-KMS with a
+  # customer-managed key preferred in production). put-bucket-encryption is
+  # idempotent (re-applying the same configuration is a no-op).
+  if awscli s3api put-bucket-encryption \
+       --bucket "${S3_STATEMENTS_BUCKET}" \
+       --server-side-encryption-configuration \
+         '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}' \
+       >/dev/null 2>&1; then
+    log "Default SSE (AES256) enabled on: ${S3_STATEMENTS_BUCKET}"
+  else
+    log "WARN: could not set default encryption on ${S3_STATEMENTS_BUCKET} (LocalStack best-effort; MUST be enforced by production IaC). Continuing."
+  fi
+}
+
+# -----------------------------------------------------------------------------
 # Phase 4 -- SQS FIFO queue (idempotent; CICS TDQ -> SQS, decision D-004)
 #
 # This replaces the single online->batch bridge in CORPT00C, which issued
@@ -284,6 +342,7 @@ main() {
   log "Starting LocalStack AWS resource provisioning for CardDemo..."
   wait_for_localstack
   create_s3_buckets
+  harden_statements_bucket
   create_sqs_queue
   create_sns_topic
 
@@ -293,6 +352,8 @@ main() {
   for bucket in ${S3_BUCKETS}; do
     log "    - ${bucket}"
   done
+  log "  Private access model (public-access-block + default SSE), best-effort:"
+  log "    - ${S3_STATEMENTS_BUCKET} (PII-bearing statements)"
   log "  SQS FIFO queue:"
   log "    - ${REPORT_QUEUE_NAME}"
   log "  SNS topic:"

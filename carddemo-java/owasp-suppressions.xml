@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OWASP dependency-check suppression file (AAP §0.7.8 — "zero critical/high CVE"
+  gate; the finding's resolution explicitly permits "any valid suppressions only
+  if justified"). Every entry below is a documented CPE/scope FALSE POSITIVE or a
+  not-applicable-to-this-closure match: dependency-check matched a shared CPE to
+  the wrong artifact, or to a module that is provably absent from the resolved
+  dependency tree. No genuine vulnerability is suppressed.
+
+  Scoping discipline:
+    * Each <suppress> is scoped to the EXACT flagged artifact (packageUrl) AND the
+      EXACT CVE(s). No blanket/product-wide suppressions are used.
+    * packageUrl matches are version-agnostic (@.*$) so a future patch bump does
+      not silently re-open the gate — but the CVE list stays pinned, so any NEW
+      CVE on the same artifact still fails the build.
+    * Evidence for each rationale was verified against `mvn dependency:tree` and
+      the dependency-check JSON report (vulnerableSoftware CPE ranges) at the time
+      of writing.
+
+  Schema: https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+    <!-- =====================================================================
+         org.eclipse.angus:angus-activation  —  CVE-2025-7962  (FALSE POSITIVE)
+         =====================================================================
+         CVE-2025-7962 is an SMTP-injection flaw in Jakarta/Angus *Mail* (the
+         CPEs recorded by the NVD are cpe:2.3:a:eclipse:angus_mail [< 2.0.4] and
+         cpe:2.3:a:eclipse:jakarta_mail [< 1.6.8; 2.0.0–2.0.2]). The flagged
+         artifact, org.eclipse.angus:angus-activation, is the Jakarta *Activation*
+         (JAF) implementation — a different product that merely shares the
+         `org.eclipse.angus` Maven group, which dependency-check mis-mapped to the
+         eclipse:angus_mail CPE. No mail artifact (angus-mail, jakarta.mail-api,
+         com.sun.mail) is present in the resolved dependency tree, so the
+         vulnerable Mail/SMTP code is not on the classpath. angus-activation has no
+         SMTP capability and 2.0.3 is its current release (there is no "2.0.4"
+         activation fix — that version refers to angus-mail). -->
+    <suppress>
+        <notes><![CDATA[
+            CPE false positive. CVE-2025-7962 affects Angus/Jakarta MAIL (SMTP
+            injection), not the Jakarta ACTIVATION implementation. angus-activation
+            shares the org.eclipse.angus group but contains no mail/SMTP code, and
+            no mail artifact exists in the dependency tree (verified via
+            dependency:tree). Suppressed for this CVE only.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.eclipse\.angus/angus-activation@.*$</packageUrl>
+        <cve>CVE-2025-7962</cve>
+    </suppress>
+
+    <!-- =====================================================================
+         org.apache.logging.log4j:log4j-api  —  CVE-2026-34478 / -34479 /
+         -34480 / -34481  (FALSE POSITIVE)
+         =====================================================================
+         All four CVEs are in Log4j *Core* layout classes:
+           * CVE-2026-34478 — Rfc5424Layout
+           * CVE-2026-34479 — Log4j1XmlLayout (Log4j 1.x bridge)
+           * CVE-2026-34480 — XmlLayout
+           * CVE-2026-34481 — JsonTemplateLayout
+         These classes live exclusively in org.apache.logging.log4j:log4j-core.
+         This application logs through SLF4J/Logback; the ONLY Log4j2 artifact on
+         the classpath is the log4j-*api* facade (pulled transitively by
+         log4j-to-slf4j to route any Log4j2 API calls into SLF4J). log4j-core is
+         ABSENT from the dependency tree (verified via dependency:tree —
+         only log4j-api and log4j-to-slf4j are present), so the vulnerable layout
+         classes can never be loaded or executed. Scoped to log4j-api specifically:
+         if log4j-core were ever added, these CVEs would correctly surface on it. -->
+    <suppress>
+        <notes><![CDATA[
+            CPE false positive. CVE-2026-34478/-34479/-34480/-34481 are in Log4j
+            CORE layout classes (Rfc5424/Log4j1Xml/Xml/JsonTemplate). Only the
+            log4j-API facade is present (via log4j-to-slf4j -> SLF4J/Logback);
+            log4j-core is absent from the dependency tree (verified). The
+            vulnerable classes are not on the classpath. Scoped to log4j-api only.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.apache\.logging\.log4j/log4j-api@.*$</packageUrl>
+        <cve>CVE-2026-34478</cve>
+        <cve>CVE-2026-34479</cve>
+        <cve>CVE-2026-34480</cve>
+        <cve>CVE-2026-34481</cve>
+    </suppress>
+
+    <!-- =====================================================================
+         io.micrometer:micrometer-registry-prometheus  —  CVE-2026-42154
+         (FALSE POSITIVE)
+         =====================================================================
+         CVE-2026-42154 is in the Prometheus *server* (the Go monitoring server,
+         CPE cpe:2.3:a:prometheus:prometheus, affected < 3.5.3 and 3.6.0–3.11.3):
+         its remote-read endpoint /api/v1/read mishandles input. The flagged
+         artifact, io.micrometer:micrometer-registry-prometheus 1.15.x, is the
+         Micrometer Java CLIENT library that merely EXPOSES application metrics in
+         Prometheus exposition format; it is not the Prometheus server and ships no
+         /api/v1/read endpoint. The product and version lines do not even overlap
+         (Micrometer 1.15.x vs Prometheus-server 3.x). dependency-check mis-mapped
+         the "prometheus" token to the prometheus:prometheus CPE. -->
+    <suppress>
+        <notes><![CDATA[
+            CPE false positive. CVE-2026-42154 affects the Prometheus Go SERVER
+            (/api/v1/read remote-read endpoint). This artifact is the Micrometer
+            Java CLIENT registry that exposes metrics in Prometheus format; it is
+            not the server and has no such endpoint. Suppressed for this CVE only.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/io\.micrometer/micrometer-registry-prometheus@.*$</packageUrl>
+        <cve>CVE-2026-42154</cve>
+    </suppress>
+
+    <!-- =====================================================================
+         io.netty:netty-transport  —  CVE-2026-42582  (NOT APPLICABLE)
+         =====================================================================
+         Per the authoritative Netty 4.2.13.Final release notes, CVE-2026-42582 is
+         a flaw in netty-codec-*http3* (non-Huffman header-block decode). That
+         HTTP/3 codec module is a 4.2.x-line component and is ABSENT from this
+         closure — the only HTTP codec present is netty-codec-http2 (verified via
+         dependency:tree; no netty-codec-http3 / http3 / quic artifact resolves).
+         The NVD CPE for this CVE (cpe:2.3:a:netty:netty, versionEndExcluding
+         4.2.13 with NO lower bound) therefore over-matches the entire 4.1.x line,
+         landing on netty-transport 4.1.135.Final purely by shared product CPE.
+
+         netty here is used only CLIENT-side by the AWS SDK v2 netty-nio-client
+         (software.amazon.awssdk:netty-nio-client, via spring-cloud-aws S3/SQS/SNS)
+         to call trusted AWS / LocalStack endpoints; the application's own HTTP
+         server is embedded Tomcat, not netty. The published fix is Netty 4.2.13,
+         but Netty 4.1 and 4.2 cannot share a classpath and 4.2.x requires Spring
+         Boot 4.x — a major-version migration outside the Minimal Change Clause
+         (§0.7.1). netty is already pinned to the latest 4.1.x patch (4.1.135.Final)
+         via the netty-bom override in pom.xml, which resolves the genuine 4.1.x
+         CVEs. Because the over-broad netty:netty CPE matches EVERY io.netty
+         module at 4.1.135 (dependency-check assigns CVE-2026-42582 to
+         netty-transport, netty-transport-classes-epoll, and potentially other
+         netty-* jars sharing that CPE), this suppression is scoped to all
+         io.netty modules — but ONLY for this single CVE. None of the modules on
+         the classpath is netty-codec-http3, so the vulnerable code is absent. -->
+    <suppress>
+        <notes><![CDATA[
+            Not applicable to this closure. CVE-2026-42582 is in netty-codec-http3
+            (4.2.x line); that module is ABSENT (only netty-codec-http2 present,
+            verified). The NVD CPE lacks a lower bound and over-matches 4.1.x. netty
+            is pinned to the latest 4.1.x patch (4.1.135.Final) and used client-side
+            only against trusted AWS/LocalStack endpoints (app server is Tomcat). The
+            fix (4.2.13) needs Netty 4.2.x + Spring Boot 4.x, outside the Minimal
+            Change Clause. The over-broad netty:netty CPE matches multiple io.netty
+            modules (netty-transport, netty-transport-classes-epoll, ...); scoped to
+            all io.netty modules for THIS CVE only.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/io\.netty/.*@.*$</packageUrl>
+        <cve>CVE-2026-42582</cve>
+    </suppress>
+
+    <!-- =====================================================================
+         io.opentelemetry.semconv:opentelemetry-semconv  —  CVE-2026-39883
+         (FALSE POSITIVE)
+         =====================================================================
+         CVE-2026-39883 is in OpenTelemetry-*Go* (the Go SDK): the fix for
+         CVE-2026-24051 changed a Darwin `ioreg` command invocation. The NVD CPE
+         explicitly targets the `go` platform
+         (cpe:2.3:a:opentelemetry:opentelemetry:*:*:*:*:*:go:*:*, range
+         1.15.0–1.43.0). The flagged artifact,
+         io.opentelemetry.semconv:opentelemetry-semconv, is a Java jar of GENERATED
+         semantic-convention constants (String/AttributeKey definitions) with no
+         command execution, no `ioreg`, and no platform-specific code at all. The
+         match is purely the shared "opentelemetry" product token across two
+         different language ecosystems. -->
+    <suppress>
+        <notes><![CDATA[
+            CPE false positive. CVE-2026-39883 affects OpenTelemetry-GO (Darwin
+            `ioreg` command); the CPE targets the `go` platform. This is a Java
+            constants jar with no command/exec or platform code. Suppressed for
+            this CVE only.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/io\.opentelemetry\.semconv/opentelemetry-semconv@.*$</packageUrl>
+        <cve>CVE-2026-39883</cve>
+    </suppress>
+
+</suppressions>

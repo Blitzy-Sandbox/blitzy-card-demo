@@ -15,6 +15,7 @@ import io.awspring.cloud.sqs.operations.SqsTemplate;
 import com.cardemo.config.AwsConfig;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.ReportRequest;
+import com.cardemo.model.dto.ReportSubmissionResponse;
 import com.cardemo.service.shared.DateValidationService;
 
 /**
@@ -100,7 +101,8 @@ public class ReportSubmissionService {
 
     // -------------------------------------------------------------------------------------------------
     // User-facing report names (COBOL WS-REPORT-NAME literals, CORPT00C.cbl L214 / L240 / L433). These
-    // appear inside the confirmation and success messages and so are part of the observable contract.
+    // appear inside the verbatim "please confirm to print the <name> report..." prompt and so are part
+    // of the observable contract.
     // -------------------------------------------------------------------------------------------------
 
     /** COBOL {@code MOVE 'Monthly' TO WS-REPORT-NAME} (CORPT00C.cbl L214). */
@@ -126,6 +128,38 @@ public class ReportSubmissionService {
 
     /** Machine report-type token for a custom-range report (payload contract). */
     private static final String REPORT_TYPE_CUSTOM = "CUSTOM";
+
+    // -------------------------------------------------------------------------------------------------
+    // Response-contract status values (docs/api-contracts.md §5.7). The accepted (queued) outcome is
+    // reported as SUBMITTED with the generated jobId at HTTP 202; the operator-cancelled ('N') outcome
+    // reuses the same response shape as CANCELLED with a null jobId at HTTP 200 (the conversational
+    // outcome handled in service logic per §5.7 "Notes" — nothing is queued, and the 202 contract is
+    // not weakened).
+    // -------------------------------------------------------------------------------------------------
+
+    /** Response {@code status} for a confirmed, queued report submission (HTTP 202; api-contracts §5.7). */
+    private static final String STATUS_SUBMITTED = "SUBMITTED";
+
+    /** Response {@code status} for an operator cancellation ({@code 'N'}/{@code 'n'}; HTTP 200, no publish). */
+    private static final String STATUS_CANCELLED = "CANCELLED";
+
+    // -------------------------------------------------------------------------------------------------
+    // BMS/PIC field widths (docs/api-contracts.md §5.7 request table). These reproduce the physical
+    // 3270 map field lengths that CORPT00C relied upon — a terminal could never deliver a value wider
+    // than its defined field. The REST DTO documents the same widths with Jakarta @Size/@Pattern, but
+    // the /submit endpoint binds the body WITHOUT @Valid so that the verbatim COBOL prompts remain
+    // owned by this service; enforceInputWidths(...) supplies the equivalent structural bound at the
+    // service boundary and (critically) never reflects the offending value.
+    // -------------------------------------------------------------------------------------------------
+
+    /** Width of a single-character selection/confirmation flag (BMS PIC X(1); §5.7 {@code @Size(max=1)}). */
+    private static final int FLAG_WIDTH = 1;
+
+    /** Width of a two-digit month/day component (BMS PIC X(2); §5.7 {@code @Size(max=2)}). */
+    private static final int MM_DD_WIDTH = 2;
+
+    /** Width of a four-digit year component (BMS PIC X(4); §5.7 {@code @Size(max=4)}). */
+    private static final int YYYY_WIDTH = 4;
 
     /**
      * FIFO message-group id for every report-submission message. SQS FIFO queues require a
@@ -189,8 +223,6 @@ public class ReportSubmissionService {
     private static final String MSG_CONFIRM_PREFIX = "Please confirm to print the ";
     /** CORPT00C.cbl L469 suffix of the "please confirm" message. */
     private static final String MSG_CONFIRM_SUFFIX = " report...";
-    /** CORPT00C.cbl L450 suffix of the success message. */
-    private static final String MSG_SUBMITTED_SUFFIX = " report submitted for printing ...";
     /** CORPT00C.cbl L486 prefix of the "not a valid value to confirm" message. */
     private static final String MSG_INVALID_CONFIRM_PREFIX = "\"";
     /** CORPT00C.cbl L488 suffix of the "not a valid value to confirm" message. */
@@ -293,20 +325,28 @@ public class ReportSubmissionService {
      * COBOL message; no further checks run. The central {@code @RestControllerAdvice} maps that
      * exception to HTTP&nbsp;400.</p>
      *
-     * @param request the bound, Jakarta-validated report-criteria payload (the {@code RECEIVE MAP}
-     *                replacement); the three report-type flags, the six custom-date components, and the
-     *                confirmation flag are read from it
-     * @return a {@link ReportSubmissionResult}: {@code submitted == true} with the success message on a
-     *         {@code 'Y'} confirmation, or {@code submitted == false} with a {@code null} message on an
-     *         {@code 'N'} cancellation
-     * @throws ValidationException on the first validation or confirmation failure (HTTP 400), carrying
-     *                             the exact COBOL message string
+     * @param request the bound report-criteria payload (the {@code RECEIVE MAP} replacement); the three
+     *                report-type flags, the six custom-date components, and the confirmation flag are
+     *                read from it
+     * @return a {@link ReportSubmissionResponse} (docs/api-contracts.md §5.7): {@code (jobId, reportType,
+     *         status="SUBMITTED")} with the generated job id on a {@code 'Y'} confirmation, or
+     *         {@code (null, reportType, status="CANCELLED")} on an {@code 'N'} cancellation
+     * @throws ValidationException on the first input-width or validation/confirmation failure (HTTP 400),
+     *                             carrying the exact COBOL message string (or, for an over-width field, a
+     *                             value-free width message)
      */
-    public ReportSubmissionResult submitReport(ReportRequest request) {
+    public ReportSubmissionResponse submitReport(ReportRequest request) {
         // A null body carries no report-type selection; this is the COBOL WHEN OTHER outcome.
         if (request == null) {
             throw new ValidationException(MSG_SELECT_REPORT_TYPE);
         }
+
+        // Finding C / api-contracts §5.7: enforce the BMS/PIC field widths BEFORE any business logic.
+        // The /submit endpoint binds the body without @Valid (to keep the verbatim COBOL prompts owned
+        // by this service), so the documented @Size widths are applied here instead. This reproduces the
+        // physical 3270 field boundaries and bounds every field — most importantly 'confirm' — so the
+        // downstream "not a valid value to confirm" prompt can never reflect an arbitrary-length value.
+        enforceInputWidths(request);
 
         // COBOL EVALUATE TRUE (CORPT00C.cbl L212-443): a report-type flag is "selected" when it is
         // NOT = SPACES AND NOT = LOW-VALUES (i.e. any non-blank value). Precedence is fixed:
@@ -339,9 +379,9 @@ public class ReportSubmissionService {
      * (COBOL {@code FUNCTION CURRENT-DATE}).</p>
      *
      * @param request the report request (its confirmation flag drives the gate)
-     * @return the submission or cancellation result
+     * @return the submission ({@code SUBMITTED}) or cancellation ({@code CANCELLED}) response
      */
-    private ReportSubmissionResult processMonthly(ReportRequest request) {
+    private ReportSubmissionResponse processMonthly(ReportRequest request) {
         LocalDate today = LocalDate.now(clock);
         LocalDate startDate = today.withDayOfMonth(1);
         // Equivalent to COBOL "day=1, month+1 (roll year if >12), then minus one day" = last day of
@@ -356,9 +396,9 @@ public class ReportSubmissionService {
      * the injected {@link Clock}).
      *
      * @param request the report request (its confirmation flag drives the gate)
-     * @return the submission or cancellation result
+     * @return the submission ({@code SUBMITTED}) or cancellation ({@code CANCELLED}) response
      */
-    private ReportSubmissionResult processYearly(ReportRequest request) {
+    private ReportSubmissionResponse processYearly(ReportRequest request) {
         int year = LocalDate.now(clock).getYear();
         LocalDate startDate = LocalDate.of(year, 1, 1);
         LocalDate endDate = LocalDate.of(year, 12, 31);
@@ -408,10 +448,10 @@ public class ReportSubmissionService {
      * {@code valid() == false} result is simply treated as invalid.</p>
      *
      * @param request the report request (its six date components and confirmation flag are read)
-     * @return the submission or cancellation result
+     * @return the submission ({@code SUBMITTED}) or cancellation ({@code CANCELLED}) response
      * @throws ValidationException on the first failing check, with the verbatim COBOL message
      */
-    private ReportSubmissionResult processCustom(ReportRequest request) {
+    private ReportSubmissionResponse processCustom(ReportRequest request) {
         // ---- (5a) Empty checks — exact COBOL order, fail-fast on the first blank component. ----
         requireNotEmpty(request.getStartMonth(), MSG_START_MONTH_EMPTY);
         requireNotEmpty(request.getStartDay(), MSG_START_DAY_EMPTY);
@@ -492,27 +532,33 @@ public class ReportSubmissionService {
      * <ul>
      *   <li><strong>blank/empty</strong> (COBOL {@code CONFIRMI = SPACES OR LOW-VALUES}, L464) &rarr;
      *       throw {@link ValidationException} "{@code Please confirm to print the <name> report...}".</li>
-     *   <li><strong>{@code 'Y'} / {@code 'y'}</strong> (L478) &rarr; publish the message and return a
-     *       success result whose message is "{@code <name> report submitted for printing ...}".</li>
-     *   <li><strong>{@code 'N'} / {@code 'n'}</strong> (L480) &rarr; cancel silently: do not publish,
-     *       do not throw, and return a {@code submitted == false} result with a {@code null} message
-     *       (COBOL cleared the screen via {@code INITIALIZE-ALL-FIELDS} and set the error flag so the
-     *       success message was suppressed).</li>
+     *   <li><strong>{@code 'Y'} / {@code 'y'}</strong> (L478) &rarr; generate a stable job id, publish
+     *       the message to SQS (using that id as the FIFO {@code MessageDeduplicationId}), and return a
+     *       {@link ReportSubmissionResponse} {@code (jobId, reportType, status="SUBMITTED")} &mdash; the
+     *       accepted (HTTP 202) outcome of docs/api-contracts.md §5.7.</li>
+     *   <li><strong>{@code 'N'} / {@code 'n'}</strong> (L480) &rarr; cancel silently: do not publish and
+     *       do not throw; return {@code (null, reportType, status="CANCELLED")} (COBOL cleared the screen
+     *       via {@code INITIALIZE-ALL-FIELDS} and set the error flag so nothing was submitted). This
+     *       conversational outcome is the §5.7 "Notes" path; the response is mapped to HTTP 200 and the
+     *       documented 202 contract is not weakened.</li>
      *   <li><strong>any other value</strong> (L484) &rarr; throw {@link ValidationException}
-     *       "{@code "<value>" is not a valid value to confirm...}".</li>
+     *       "{@code "<value>" is not a valid value to confirm...}". The reflected value is bounded to a
+     *       single character by {@link #enforceInputWidths(ReportRequest)} (Finding C).</li>
      * </ul>
      *
      * @param request    the report request (its confirmation flag is read)
-     * @param reportName the user-facing report name ({@code Monthly}/{@code Yearly}/{@code Custom})
-     * @param reportType the canonical machine report-type token carried in the payload
+     * @param reportName the user-facing report name ({@code Monthly}/{@code Yearly}/{@code Custom}),
+     *                   used only to build the verbatim "please confirm" prompt
+     * @param reportType the canonical machine report-type token carried in the payload and the response
      * @param startDate  the inclusive range start
      * @param endDate    the inclusive range end
-     * @return the submission result on confirmation, or the cancellation result on {@code 'N'}/{@code 'n'}
+     * @return {@code (jobId, reportType, "SUBMITTED")} on a {@code 'Y'} confirmation, or
+     *         {@code (null, reportType, "CANCELLED")} on {@code 'N'}/{@code 'n'}
      * @throws ValidationException when confirmation is blank or an unrecognized value
      */
-    private ReportSubmissionResult confirmAndSubmit(ReportRequest request, String reportName,
-                                                    String reportType, LocalDate startDate,
-                                                    LocalDate endDate) {
+    private ReportSubmissionResponse confirmAndSubmit(ReportRequest request, String reportName,
+                                                      String reportType, LocalDate startDate,
+                                                      LocalDate endDate) {
         String confirm = request.getConfirm();
 
         // COBOL L464: IF CONFIRMI = SPACES OR LOW-VALUES -> "Please confirm ...".
@@ -522,17 +568,21 @@ public class ReportSubmissionService {
 
         // COBOL EVALUATE on CONFIRMI (L477-494): Y/y proceed, N/n cancel, otherwise error.
         if (confirm.equals("Y") || confirm.equals("y")) {
+            // Generate the stable job identifier ONCE (api-contracts §5.7 ReportSubmissionResponse.jobId).
+            // It doubles as the SQS FIFO MessageDeduplicationId so the returned id is the exact identity
+            // of the queued message — a genuinely confirmed re-submission gets a fresh id and is never
+            // deduplicated away.
+            String jobId = UUID.randomUUID().toString();
             // TDQ WRITEQ('JOBS') / JES submission -> single SQS publish (the only online->batch bridge).
-            publishReportJob(reportType, startDate, endDate);
-            // Success message (COBOL L449-451): STRING WS-REPORT-NAME DELIMITED BY SPACE
-            // ' report submitted for printing ...' DELIMITED BY SIZE INTO WS-MESSAGE.
-            String message = reportName + MSG_SUBMITTED_SUFFIX;
-            return new ReportSubmissionResult(true, message, reportType, startDate, endDate);
+            publishReportJob(jobId, reportType, startDate, endDate);
+            return new ReportSubmissionResponse(jobId, reportType, STATUS_SUBMITTED);
         } else if (confirm.equals("N") || confirm.equals("n")) {
-            // COBOL L480-483: cancel — clear fields, suppress the success message, do not submit.
-            return new ReportSubmissionResult(false, null, reportType, startDate, endDate);
+            // COBOL L480-483: cancel — clear fields, suppress submission, do not submit. No job id.
+            return new ReportSubmissionResponse(null, reportType, STATUS_CANCELLED);
         } else {
             // COBOL L484-490: '"' CONFIRMI DELIMITED BY SPACE '" is not a valid value to confirm...'.
+            // confirm is bounded to <= 1 char by enforceInputWidths(...), so this never reflects an
+            // arbitrary-length value (Finding C).
             throw new ValidationException(
                     MSG_INVALID_CONFIRM_PREFIX + delimitBySpace(confirm) + MSG_INVALID_CONFIRM_SUFFIX);
         }
@@ -550,11 +600,14 @@ public class ReportSubmissionService {
      * from {@link com.cardemo.config.AwsConfig.AwsResourceProperties} and is never hardcoded.</p>
      *
      * <p>Because the destination is a <strong>FIFO</strong> queue, both a {@code MessageGroupId} (a
-     * fixed group preserving TDQ-style ordering) and a {@code MessageDeduplicationId} (a fresh
-     * {@link UUID} per submission, so a genuinely confirmed re-submission is never deduplicated) are
-     * set. The {@link SqsTemplate} serializes the payload record to JSON via the configured Jackson
-     * converter; the {@link LocalDate} fields render as ISO-8601 {@code YYYY-MM-DD}, matching the COBOL
-     * {@code PARM-START-DATE}/{@code PARM-END-DATE} ({@code YYYY-MM-DD}) contract.</p>
+     * fixed group preserving TDQ-style ordering) and a {@code MessageDeduplicationId} are set. The
+     * deduplication id is the caller-supplied {@code jobId} &mdash; the same stable identifier returned
+     * to the client as {@link ReportSubmissionResponse#jobId()} (api-contracts &sect;5.7) &mdash; so the
+     * returned id is the exact identity of the queued message and a genuinely confirmed re-submission
+     * (a fresh {@code jobId}) is never deduplicated away. The {@link SqsTemplate} serializes the payload
+     * record to JSON via the configured Jackson converter; the {@link LocalDate} fields render as
+     * ISO-8601 {@code YYYY-MM-DD}, matching the COBOL {@code PARM-START-DATE}/{@code PARM-END-DATE}
+     * ({@code YYYY-MM-DD}) contract.</p>
      *
      * <p><strong>Publish-failure path.</strong> COBOL checked {@code WS-RESP-CD} after the
      * {@code WRITEQ TD} and, on a non-{@code NORMAL} response, emitted "{@code Unable to Write TDQ
@@ -563,34 +616,87 @@ public class ReportSubmissionService {
      * {@code @RestControllerAdvice} (&rarr; HTTP&nbsp;500). It is deliberately <em>not</em> wrapped in
      * a {@code CardDemoException} (that base type is {@code abstract} and cannot be instantiated).</p>
      *
+     * @param jobId      the stable job identifier (returned to the client and used as the FIFO
+     *                   {@code MessageDeduplicationId})
      * @param reportType the canonical machine report-type token
      * @param startDate  the inclusive range start
      * @param endDate    the inclusive range end
      */
-    private void publishReportJob(String reportType, LocalDate startDate, LocalDate endDate) {
+    private void publishReportJob(String jobId, String reportType, LocalDate startDate, LocalDate endDate) {
         String queue = awsProperties.getSqs().getReportJobsQueue();
         ReportJobMessage message = new ReportJobMessage(reportType, startDate, endDate);
         try {
             sqsTemplate.send(to -> to
                     .queue(queue)
                     .payload(message)
-                    .messageGroupId(SQS_MESSAGE_GROUP_ID)                 // FIFO ordering group
-                    .messageDeduplicationId(UUID.randomUUID().toString())); // unique per submission
+                    .messageGroupId(SQS_MESSAGE_GROUP_ID)   // FIFO ordering group
+                    .messageDeduplicationId(jobId));        // == returned jobId; unique per submission
         } catch (RuntimeException ex) {
             // COBOL parity (WIRTE-JOBSUB-TDQ): WS-RESP-CD != NORMAL -> 'Unable to Write TDQ (JOBS)...'.
             // Surface the failure (log + propagate); the central advice renders HTTP 500. Do NOT wrap
             // in CardDemoException (abstract).
             log.error("Failed to publish report-submission message to SQS queue [{}] "
-                    + "(TDQ WRITEQ('JOBS') parity path); reportType={}", queue, reportType, ex);
+                    + "(TDQ WRITEQ('JOBS') parity path); jobId={}, reportType={}", queue, jobId, reportType, ex);
             throw ex;
         }
-        log.info("Published report-submission message to SQS queue [{}]: reportType={}, "
-                + "startDate={}, endDate={}", queue, reportType, startDate, endDate);
+        log.info("Published report-submission message to SQS queue [{}]: jobId={}, reportType={}, "
+                + "startDate={}, endDate={}", queue, jobId, reportType, startDate, endDate);
     }
 
     // =================================================================================================
     // Private helpers
     // =================================================================================================
+
+    /**
+     * Enforces the BMS/PIC field widths of the inbound report criteria <strong>before</strong> any
+     * business logic runs (Finding C; docs/api-contracts.md &sect;5.7 request table). This reproduces the
+     * physical 3270 map field boundaries that {@code CORPT00C} relied upon &mdash; a terminal could never
+     * deliver a value wider than its defined field. The REST DTO documents the same widths with Jakarta
+     * {@code @Size}/{@code @Pattern}, but the {@code /submit} endpoint binds the body without
+     * {@code @Valid} (so the verbatim COBOL prompts stay owned by this service), so the equivalent
+     * structural bound is applied here. Every field is checked in BMS map order; the first over-width
+     * field fails fast.
+     *
+     * <p><strong>Security (the core of Finding C):</strong> on a violation the thrown message names only
+     * the field and its maximum width &mdash; it <em>never</em> reflects the offending value &mdash; and
+     * because {@code confirm} is bounded to a single character here, the downstream "not a valid value to
+     * confirm" prompt can no longer echo an arbitrary-length value back to the caller. Semantic content
+     * (digit/range/real-date) validation is intentionally left to the existing COBOL-faithful cascade in
+     * {@link #processCustom(ReportRequest)}, which carries the verbatim COBOL messages.</p>
+     *
+     * @param request the report request to bound-check (already known non-{@code null})
+     * @throws ValidationException naming the first over-width field and its maximum width (HTTP 400)
+     */
+    private void enforceInputWidths(ReportRequest request) {
+        requireMaxWidth(request.getMonthly(), "Monthly selection flag", FLAG_WIDTH);
+        requireMaxWidth(request.getYearly(), "Yearly selection flag", FLAG_WIDTH);
+        requireMaxWidth(request.getCustom(), "Custom selection flag", FLAG_WIDTH);
+        requireMaxWidth(request.getStartMonth(), "Start Month", MM_DD_WIDTH);
+        requireMaxWidth(request.getStartDay(), "Start Day", MM_DD_WIDTH);
+        requireMaxWidth(request.getStartYear(), "Start Year", YYYY_WIDTH);
+        requireMaxWidth(request.getEndMonth(), "End Month", MM_DD_WIDTH);
+        requireMaxWidth(request.getEndDay(), "End Day", MM_DD_WIDTH);
+        requireMaxWidth(request.getEndYear(), "End Year", YYYY_WIDTH);
+        requireMaxWidth(request.getConfirm(), "Confirmation flag", FLAG_WIDTH);
+    }
+
+    /**
+     * Bounded width check mirroring {@code AccountUpdateService.editMaxLength}: throws a message naming
+     * only the field {@code label} and its {@code max} width and <strong>never</strong> reflecting
+     * {@code value}. A {@code null} value (an unsupplied optional field) passes; the trimmed length is
+     * compared so trailing 3270 padding is ignored, exactly as the COBOL {@code DELIMITED BY SPACE}
+     * handling would treat it.
+     *
+     * @param value the raw inbound field value (may be {@code null})
+     * @param label the human-readable field label used in the (value-free) error message
+     * @param max   the maximum permitted character width (the BMS/PIC field length)
+     * @throws ValidationException if {@code value} (trimmed) exceeds {@code max} characters
+     */
+    private void requireMaxWidth(String value, String label, int max) {
+        if (value != null && value.trim().length() > max) {
+            throw new ValidationException(label + " can NOT be longer than " + max + " characters.");
+        }
+    }
 
     /**
      * Reports whether a report-type flag was selected, mirroring the COBOL test
@@ -725,7 +831,7 @@ public class ReportSubmissionService {
     }
 
     // =================================================================================================
-    // Nested payload / result types (kept local to this service per the Minimal Change Clause)
+    // Nested payload type (kept local to this service per the Minimal Change Clause)
     // =================================================================================================
 
     /**
@@ -736,27 +842,14 @@ public class ReportSubmissionService {
      * {@code PARM-START-DATE}/{@code PARM-END-DATE} contract. Kept as a nested type (not a separate
      * top-level DTO) per the Minimal Change Clause (AAP &sect;0.7.1).
      *
+     * <p>The caller-facing response is the separate top-level
+     * {@link com.cardemo.model.dto.ReportSubmissionResponse} ({@code jobId}/{@code reportType}/
+     * {@code status}); this internal SQS payload is intentionally distinct from it.</p>
+     *
      * @param reportType the canonical machine report-type token ({@code MONTHLY}/{@code YEARLY}/{@code CUSTOM})
      * @param startDate  the inclusive range start
      * @param endDate    the inclusive range end
      */
     public record ReportJobMessage(String reportType, LocalDate startDate, LocalDate endDate) {
-    }
-
-    /**
-     * The outcome returned to the caller (the {@code ReportController}). On a {@code 'Y'} confirmation,
-     * {@code submitted} is {@code true} and {@code message} holds the verbatim COBOL success text; on an
-     * {@code 'N'} cancellation, {@code submitted} is {@code false} and {@code message} is {@code null}
-     * (COBOL showed no message on cancel). The report type and derived range are always included for
-     * the caller's convenience.
-     *
-     * @param submitted  {@code true} when the message was published; {@code false} on cancellation
-     * @param message    the success message, or {@code null} on cancellation
-     * @param reportType the canonical machine report-type token
-     * @param startDate  the inclusive range start
-     * @param endDate    the inclusive range end
-     */
-    public record ReportSubmissionResult(boolean submitted, String message, String reportType,
-                                         LocalDate startDate, LocalDate endDate) {
     }
 }

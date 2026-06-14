@@ -3,6 +3,7 @@ package com.cardemo.unit.service.report;
 import com.cardemo.config.AwsConfig;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.ReportRequest;
+import com.cardemo.model.dto.ReportSubmissionResponse;
 import com.cardemo.service.report.ReportSubmissionService;
 import com.cardemo.service.shared.DateValidationService;
 
@@ -324,10 +325,11 @@ class ReportSubmissionServiceTest {
         void monthlySelected_proceedsToPublish() {
             stubQueue();
 
-            ReportSubmissionService.ReportSubmissionResult result =
+            ReportSubmissionResponse result =
                     service.submitReport(selectMonthly("Y"));
 
-            assertThat(result.submitted()).isTrue();
+            assertThat(result.status()).isEqualTo("SUBMITTED");
+            assertThat(result.jobId()).as("queued job id (api-contracts §5.7)").isNotBlank();
             verify(sqsTemplate, times(1)).send(any());
         }
 
@@ -336,10 +338,11 @@ class ReportSubmissionServiceTest {
         void yearlySelected_proceedsToPublish() {
             stubQueue();
 
-            ReportSubmissionService.ReportSubmissionResult result =
+            ReportSubmissionResponse result =
                     service.submitReport(selectYearly("Y"));
 
-            assertThat(result.submitted()).isTrue();
+            assertThat(result.status()).isEqualTo("SUBMITTED");
+            assertThat(result.jobId()).as("queued job id (api-contracts §5.7)").isNotBlank();
             verify(sqsTemplate, times(1)).send(any());
         }
 
@@ -349,10 +352,11 @@ class ReportSubmissionServiceTest {
             stubRealDatesValid(); // CSUTLDTC replacement: both start & end report valid
             stubQueue();
 
-            ReportSubmissionService.ReportSubmissionResult result =
+            ReportSubmissionResponse result =
                     service.submitReport(validCustom("Y"));
 
-            assertThat(result.submitted()).isTrue();
+            assertThat(result.status()).isEqualTo("SUBMITTED");
+            assertThat(result.jobId()).as("queued job id (api-contracts §5.7)").isNotBlank();
             verify(sqsTemplate, times(1)).send(any());
         }
 
@@ -696,10 +700,11 @@ class ReportSubmissionServiceTest {
             stubRealDatesValid(); // both START and END report valid
             // Confirm 'N' so the cascade reaches (and silently cancels at) the confirmation gate,
             // proving both real-date checks passed without reaching a publish.
-            ReportSubmissionService.ReportSubmissionResult result =
+            ReportSubmissionResponse result =
                     service.submitReport(validCustom("N"));
 
-            assertThat(result.submitted()).isFalse();
+            assertThat(result.status()).isEqualTo("CANCELLED");
+            assertThat(result.jobId()).as("cancelled submission carries no job id").isNull();
             verify(dateValidationService, times(2)).validateDate(anyString(), eq(DATE_FORMAT));
             verify(sqsTemplate, never()).send(any());
         }
@@ -835,24 +840,24 @@ class ReportSubmissionServiceTest {
         }
 
         @Test
-        @DisplayName("confirm 'N' → silent cancel (no exception, no publish, submitted=false)")
+        @DisplayName("confirm 'N' → silent cancel (no exception, no publish, status=CANCELLED)")
         void uppercaseNSilentCancel() {
-            ReportSubmissionService.ReportSubmissionResult result =
+            ReportSubmissionResponse result =
                     service.submitReport(selectMonthly("N"));
 
-            assertThat(result.submitted()).isFalse();
-            assertThat(result.message()).isNull();
+            assertThat(result.status()).isEqualTo("CANCELLED");
+            assertThat(result.jobId()).as("cancelled submission carries no job id").isNull();
             verify(sqsTemplate, never()).send(any());
         }
 
         @Test
         @DisplayName("confirm 'n' (lowercase) → silent cancel")
         void lowercaseNSilentCancel() {
-            ReportSubmissionService.ReportSubmissionResult result =
+            ReportSubmissionResponse result =
                     service.submitReport(selectMonthly("n"));
 
-            assertThat(result.submitted()).isFalse();
-            assertThat(result.message()).isNull();
+            assertThat(result.status()).isEqualTo("CANCELLED");
+            assertThat(result.jobId()).as("cancelled submission carries no job id").isNull();
             verify(sqsTemplate, never()).send(any());
         }
 
@@ -949,75 +954,68 @@ class ReportSubmissionServiceTest {
     }
 
     // =============================================================================================
-    // 5.10 Result & success message (CORPT00C.cbl L445-456) — the returned ReportSubmissionResult.
-    //      The success message is "<Name> report submitted for printing ..." (note the single space
-    //      before the trailing dots); the result also carries the machine token + the derived/parsed
-    //      range. A cancel ('N') yields submitted=false with a null message.
+    // 5.10 Response contract (docs/api-contracts.md §5.7) — the returned ReportSubmissionResponse.
+    //      A confirmed ('Y') submission yields status="SUBMITTED" with a generated, non-blank jobId
+    //      and the canonical machine reportType token; a cancel ('N') yields status="CANCELLED" with a
+    //      null jobId. The derived/parsed date RANGE is carried by the SQS payload (ReportJobMessage)
+    //      and is asserted exhaustively in §5.2/§5.3/§5.9 — it is not part of the API response shape.
     // =============================================================================================
 
     @Nested
-    @DisplayName("5.10 Result & success message")
-    class ResultAndSuccessMessage {
+    @DisplayName("5.10 Response contract (api-contracts §5.7)")
+    class ResponseContract {
 
         @Test
-        @DisplayName("MONTHLY confirmed → submitted, 'Monthly report submitted for printing ...', month range")
+        @DisplayName("MONTHLY confirmed → SUBMITTED, non-blank jobId, reportType=MONTHLY")
         void monthlySuccessResult() {
             stubQueue();
 
-            ReportSubmissionService.ReportSubmissionResult result =
+            ReportSubmissionResponse result =
                     service.submitReport(selectMonthly("Y"));
 
-            assertThat(result.submitted()).isTrue();
-            assertThat(result.message()).isEqualTo("Monthly report submitted for printing ...");
+            assertThat(result.status()).isEqualTo("SUBMITTED");
+            assertThat(result.jobId()).as("queued job id (api-contracts §5.7)").isNotBlank();
             assertThat(result.reportType()).isEqualTo("MONTHLY");
-            assertThat(result.startDate()).isEqualTo(LocalDate.of(2024, 3, 1));
-            assertThat(result.endDate()).isEqualTo(LocalDate.of(2024, 3, 31));
         }
 
         @Test
-        @DisplayName("YEARLY confirmed → 'Yearly report submitted for printing ...', calendar-year range")
+        @DisplayName("YEARLY confirmed → SUBMITTED, non-blank jobId, reportType=YEARLY")
         void yearlySuccessResult() {
             stubQueue();
 
-            ReportSubmissionService.ReportSubmissionResult result =
+            ReportSubmissionResponse result =
                     service.submitReport(selectYearly("Y"));
 
-            assertThat(result.submitted()).isTrue();
-            assertThat(result.message()).isEqualTo("Yearly report submitted for printing ...");
+            assertThat(result.status()).isEqualTo("SUBMITTED");
+            assertThat(result.jobId()).as("queued job id (api-contracts §5.7)").isNotBlank();
             assertThat(result.reportType()).isEqualTo("YEARLY");
-            assertThat(result.startDate()).isEqualTo(LocalDate.of(2024, 1, 1));
-            assertThat(result.endDate()).isEqualTo(LocalDate.of(2024, 12, 31));
         }
 
         @Test
-        @DisplayName("CUSTOM confirmed → 'Custom report submitted for printing ...', parsed range")
+        @DisplayName("CUSTOM confirmed → SUBMITTED, non-blank jobId, reportType=CUSTOM")
         void customSuccessResult() {
             stubRealDatesValid();
             stubQueue();
 
-            ReportSubmissionService.ReportSubmissionResult result =
+            ReportSubmissionResponse result =
                     service.submitReport(validCustom("Y"));
 
-            assertThat(result.submitted()).isTrue();
-            assertThat(result.message()).isEqualTo("Custom report submitted for printing ...");
+            assertThat(result.status()).isEqualTo("SUBMITTED");
+            assertThat(result.jobId()).as("queued job id (api-contracts §5.7)").isNotBlank();
             assertThat(result.reportType()).isEqualTo("CUSTOM");
-            assertThat(result.startDate()).isEqualTo(LocalDate.of(2023, 6, 1));
-            assertThat(result.endDate()).isEqualTo(LocalDate.of(2023, 6, 30));
         }
 
         @Test
-        @DisplayName("cancel ('N') → submitted=false, null message, range still populated")
+        @DisplayName("cancel ('N') → CANCELLED, null jobId, reportType still populated")
         void cancelResult() {
-            ReportSubmissionService.ReportSubmissionResult result =
+            ReportSubmissionResponse result =
                     service.submitReport(selectMonthly("N"));
 
-            assertThat(result.submitted()).isFalse();
-            assertThat(result.message()).isNull();
-            // COBOL cleared the screen and suppressed the success message, but the derived range is
-            // still carried back; the token is the machine value.
+            assertThat(result.status()).isEqualTo("CANCELLED");
+            assertThat(result.jobId()).as("cancelled submission carries no job id").isNull();
+            // COBOL cleared the screen and suppressed submission; the machine report-type token is
+            // still carried back for the caller's convenience.
             assertThat(result.reportType()).isEqualTo("MONTHLY");
-            assertThat(result.startDate()).isEqualTo(LocalDate.of(2024, 3, 1));
-            assertThat(result.endDate()).isEqualTo(LocalDate.of(2024, 3, 31));
         }
     }
 }
