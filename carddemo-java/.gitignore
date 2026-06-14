@@ -7,6 +7,10 @@
 # --- Maven build output ---
 target/
 
+# --- Maven wrapper downloaded binary (fetched on-demand by ./mvnw from
+#     wrapperUrl in .mvn/wrapper/maven-wrapper.properties; not version-controlled) ---
+.mvn/wrapper/maven-wrapper.jar
+
 # --- Spring Boot / runtime local artifacts ---
 *.log
 logs/
