@@ -228,6 +228,12 @@ public class UserAddService {
     @PreAuthorize("hasRole('ADMIN')")
     @Transactional
     public UserSecurityDto addUser(UserSecurityDto request) {
+        // CWE-20 null-body guard: the controller omits @Valid to preserve COBOL message ordering, so a
+        // JSON `null` body would otherwise NPE on the first emptiness edit (HTTP 500). Map an absent
+        // body to the empty-first-name branch -> the same verbatim first-error (HTTP 400).
+        if (request == null) {
+            throw new ValidationException(MSG_FIRST_NAME_EMPTY);
+        }
         // -------------------------------------------------------------------------------------------
         // Step 1 - PROCESS-ENTER-KEY EVALUATE TRUE (COUSR01C L117-151): ordered, first-error-wins
         // emptiness edits. Each guarded throw reproduces one EVALUATE branch in the exact COBOL order;

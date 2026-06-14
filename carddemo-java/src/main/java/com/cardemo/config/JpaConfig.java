@@ -4,7 +4,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.data.jpa.repository.config.EnableJpaAuditing;
 
 /**
- * Foundational JPA / Hibernate configuration for the greenfield Java 25 LTS + Spring Boot 3.5.11
+ * Foundational JPA / Hibernate configuration for the greenfield Java 25 LTS + Spring Boot 3.5.15
  * migration of the AWS CardDemo COBOL/CICS/VSAM/JCL/BMS mainframe application.
  *
  * <p>This {@code @Configuration} formalizes the persistence-layer policy that backs the

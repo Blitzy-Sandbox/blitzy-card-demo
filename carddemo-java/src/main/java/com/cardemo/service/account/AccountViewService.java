@@ -2,6 +2,7 @@ package com.cardemo.service.account;
 
 import java.util.List;
 
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -153,6 +154,7 @@ public class AccountViewService {
      * @throws RecordNotFoundException if no cross-reference, account or customer record exists for the id
      *                                 ({@code 9200}/{@code 9300}/{@code 9400} {@code NOTFND})
      */
+    @Observed(name = "carddemo.account.view", contextualName = "account.view")
     @Transactional(readOnly = true)
     public AccountDto viewAccount(String accountId) {
         // PHASE 1 - reproduce COACTVWC 2210-EDIT-ACCOUNT: validate the account filter before any read.

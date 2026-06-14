@@ -146,28 +146,120 @@
     </suppress>
 
     <!-- =====================================================================
-         io.opentelemetry.semconv:opentelemetry-semconv  —  CVE-2026-39883
-         (FALSE POSITIVE)
+         io.opentelemetry.semconv:opentelemetry-semconv  —  CVE-2026-39882 /
+         CVE-2026-39883  (FALSE POSITIVE)
          =====================================================================
-         CVE-2026-39883 is in OpenTelemetry-*Go* (the Go SDK): the fix for
-         CVE-2026-24051 changed a Darwin `ioreg` command invocation. The NVD CPE
-         explicitly targets the `go` platform
-         (cpe:2.3:a:opentelemetry:opentelemetry:*:*:*:*:*:go:*:*, range
-         1.15.0–1.43.0). The flagged artifact,
-         io.opentelemetry.semconv:opentelemetry-semconv, is a Java jar of GENERATED
-         semantic-convention constants (String/AttributeKey definitions) with no
-         command execution, no `ioreg`, and no platform-specific code at all. The
-         match is purely the shared "opentelemetry" product token across two
-         different language ecosystems. -->
+         Both CVEs are in OpenTelemetry-*Go* (the Go SDK), whose NVD CPE explicitly
+         targets the `go` platform
+         (cpe:2.3:a:opentelemetry:opentelemetry:*:*:*:*:*:go:*:*):
+           * CVE-2026-39882 — the otlp HTTP exporters (traces/metrics/logs) read
+             the full HTTP response body into an unbounded in-memory bytes.Buffer
+             (Go memory-exhaustion); fixed in OpenTelemetry-Go 1.43.0.
+           * CVE-2026-39883 — incomplete fix of CVE-2026-24051; changed a Darwin
+             `ioreg` command invocation (Go), range 1.15.0–1.43.0.
+         The flagged artifact, io.opentelemetry.semconv:opentelemetry-semconv, is a
+         Java jar of GENERATED semantic-convention constants (String/AttributeKey
+         definitions) with no HTTP exporter, no `bytes.Buffer`, no command
+         execution, and no platform-specific code at all. The match is purely the
+         shared "opentelemetry" product token across two different language
+         ecosystems (Go vs Java). Scoped to this artifact and these two CVEs only. -->
     <suppress>
         <notes><![CDATA[
-            CPE false positive. CVE-2026-39883 affects OpenTelemetry-GO (Darwin
-            `ioreg` command); the CPE targets the `go` platform. This is a Java
-            constants jar with no command/exec or platform code. Suppressed for
-            this CVE only.
+            CPE false positive. CVE-2026-39882 (Go otlp HTTP exporter unbounded
+            response buffer) and CVE-2026-39883 (Go Darwin `ioreg` command) both
+            affect OpenTelemetry-GO; the CPE targets the `go` platform. This is a
+            Java constants jar with no exporter/command/platform code. Suppressed
+            for these two CVEs only.
         ]]></notes>
         <packageUrl regex="true">^pkg:maven/io\.opentelemetry\.semconv/opentelemetry-semconv@.*$</packageUrl>
+        <cve>CVE-2026-39882</cve>
         <cve>CVE-2026-39883</cve>
+    </suppress>
+
+    <!-- =====================================================================
+         org.apache.logging.log4j:log4j-api  —  CVE-2025-68161 / CVE-2026-34477
+         (FALSE POSITIVE)
+         =====================================================================
+         Both CVEs are in the Log4j *Core* SocketAppender / SslConfiguration:
+           * CVE-2025-68161 — the Socket Appender in Apache Log4j Core
+             (2.0-beta9 .. 2.25.2) skips TLS hostname verification of the peer
+             certificate even when verifyHostName / log4j2.sslVerifyHostName is set.
+           * CVE-2026-34477 — the incomplete fix of CVE-2025-68161 (the <Ssl>
+             verifyHostName attribute path remained unverified).
+         The SocketAppender and its SslConfiguration live exclusively in
+         org.apache.logging.log4j:log4j-core. This application logs through
+         SLF4J/Logback; the ONLY Log4j2 artifact on the classpath is the
+         log4j-*api* facade (pulled transitively by log4j-to-slf4j to route any
+         Log4j2 API calls into SLF4J). log4j-core is ABSENT from the dependency
+         tree (verified via dependency:tree — only log4j-api and log4j-to-slf4j
+         are present), so the SocketAppender code can never be loaded, configured,
+         or executed, and the application opens no Log4j network/TLS socket at all.
+         Scoped to log4j-api specifically: if log4j-core were ever added, these
+         CVEs would correctly surface on it. -->
+    <suppress>
+        <notes><![CDATA[
+            CPE false positive. CVE-2025-68161 and CVE-2026-34477 are in the Log4j
+            CORE SocketAppender / SslConfiguration (TLS hostname verification).
+            Only the log4j-API facade is present (via log4j-to-slf4j -> SLF4J/
+            Logback); log4j-core is absent from the dependency tree (verified), so
+            the SocketAppender is not on the classpath. Scoped to log4j-api only.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.apache\.logging\.log4j/log4j-api@.*$</packageUrl>
+        <cve>CVE-2025-68161</cve>
+        <cve>CVE-2026-34477</cve>
+    </suppress>
+
+    <!-- =====================================================================
+         org.hibernate.validator:hibernate-validator  —  CVE-2025-15104
+         (FALSE POSITIVE)
+         =====================================================================
+         CVE-2025-15104 is a restriction-bypass (DNS-rebinding SSRF) in "The Nu
+         Html Checker (vnu / validator.nu)" — an HTML-validation web service. Its
+         NVD CPE is cpe:2.3:a:validator:validator:*. The flagged artifact,
+         org.hibernate.validator:hibernate-validator 8.0.3.Final, is the Jakarta
+         Bean Validation (JSR 380) reference implementation — a completely
+         different product that merely shares the generic "validator" token, which
+         dependency-check mis-mapped to the validator:validator CPE. Hibernate
+         Validator performs in-JVM constraint validation of bean fields; it issues
+         no outbound HTTP/HTTPS requests and exposes no hostname-protection control
+         that could be bypassed. -->
+    <suppress>
+        <notes><![CDATA[
+            CPE false positive. CVE-2025-15104 affects the Nu Html Checker
+            (validator.nu) HTML-validation service (CPE validator:validator), not
+            the Hibernate Validator Jakarta Bean Validation engine. Hibernate
+            Validator makes no outbound HTTP requests. Suppressed for this CVE only.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.hibernate\.validator/hibernate-validator@.*$</packageUrl>
+        <cve>CVE-2025-15104</cve>
+    </suppress>
+
+    <!-- =====================================================================
+         org.jetbrains.kotlin:kotlin-stdlib  —  CVE-2020-29582  (ALREADY PATCHED)
+         =====================================================================
+         CVE-2020-29582 affects "JetBrains Kotlin *before 1.4.21*" — a vulnerable
+         Java temp-file/temp-folder API (insecure default permissions allowing
+         local information disclosure). It was fixed in Kotlin 1.4.21. The flagged
+         artifact, org.jetbrains.kotlin:kotlin-stdlib 1.9.25, is FIVE minor
+         versions past the fix and is NOT vulnerable; it is present only
+         transitively (no application Kotlin code exists). dependency-check matched
+         the jetbrains:kotlin product CPE without honoring the < 1.4.21 upper bound,
+         so the match over-reaches the patched 1.9.x line. The shared jetbrains:kotlin
+         CPE lands on BOTH resolved Kotlin modules — kotlin-stdlib 1.9.25 and its
+         companion kotlin-stdlib-jdk7 1.9.25 — so the packageUrl below is scoped to
+         all kotlin-stdlib* artifacts, but ONLY for this single CVE; a future Kotlin
+         CVE on the same jars would still surface. -->
+    <suppress>
+        <notes><![CDATA[
+            Already patched / version over-match. CVE-2020-29582 was fixed in
+            Kotlin 1.4.21; the resolved artifacts are kotlin-stdlib 1.9.25 and
+            kotlin-stdlib-jdk7 1.9.25 (>> 1.4.21) and are not vulnerable. Present
+            transitively only (no Kotlin app code). The CPE match ignores the
+            < 1.4.21 upper bound and hits both stdlib modules. Scoped to all
+            kotlin-stdlib* artifacts for this CVE only.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.jetbrains\.kotlin/kotlin-stdlib.*@.*$</packageUrl>
+        <cve>CVE-2020-29582</cve>
     </suppress>
 
 </suppressions>

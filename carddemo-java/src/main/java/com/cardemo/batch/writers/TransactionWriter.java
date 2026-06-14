@@ -7,6 +7,7 @@ import com.cardemo.model.entity.Account;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.entity.TransactionCategoryBalance;
 import com.cardemo.model.key.TransactionCategoryBalanceId;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.TransactionCategoryBalanceRepository;
 import com.cardemo.repository.TransactionRepository;
@@ -185,6 +186,20 @@ public class TransactionWriter implements ItemWriter<PostedTransactionResult> {
     private final Clock clock;
 
     /**
+     * Business-metrics facade (observability cross-cutting requirement, AAP §0.7.7).
+     *
+     * <p>Technology substitution: the legacy COBOL batch ({@code CBTRN02C}) emitted no telemetry. After
+     * each chunk's accepted transactions are persisted, this writer increments
+     * {@code carddemo.batch.records.processed} (tag {@code job=DailyTransactionPosting}) once per posted
+     * record and records each posted amount onto {@code carddemo.transaction.amount.total} via
+     * {@link MetricsConfig.BusinessMetrics}. Telemetry-only; it never alters the posting result.</p>
+     */
+    private final MetricsConfig.BusinessMetrics businessMetrics;
+
+    /** Metric {@code job} tag value for this writer's batch job (matches {@code DailyTransactionPostingJob}). */
+    private static final String JOB_NAME = "DailyTransactionPosting";
+
+    /**
      * Production constructor used by Spring for component injection. Uses the system-default-zone
      * {@link Clock} so the {@code TRAN-PROC-TS} fallback and the S3 generation prefix are stamped from
      * the current time (faithful to {@code FUNCTION CURRENT-DATE}).
@@ -194,15 +209,18 @@ public class TransactionWriter implements ItemWriter<PostedTransactionResult> {
      * @param accountRepository         the account repository ({@code 2800} update); must not be {@code null}
      * @param s3Template                the auto-configured S3 template (posted-stream backup); must not be {@code null}
      * @param awsResourceProperties     the AWS resource-name holder (output-bucket source); must not be {@code null}
+     * @param businessMetrics           the observability facade (AAP §0.7.7) onto which posted records
+     *                                  and amounts are recorded; must not be {@code null}
      */
     @Autowired
     public TransactionWriter(final TransactionRepository transactionRepository,
                              final TransactionCategoryBalanceRepository categoryBalanceRepository,
                              final AccountRepository accountRepository,
                              final S3Template s3Template,
-                             final AwsConfig.AwsResourceProperties awsResourceProperties) {
+                             final AwsConfig.AwsResourceProperties awsResourceProperties,
+                             final MetricsConfig.BusinessMetrics businessMetrics) {
         this(transactionRepository, categoryBalanceRepository, accountRepository,
-                s3Template, awsResourceProperties, Clock.systemDefaultZone());
+                s3Template, awsResourceProperties, businessMetrics, Clock.systemDefaultZone());
     }
 
     /**
@@ -215,6 +233,7 @@ public class TransactionWriter implements ItemWriter<PostedTransactionResult> {
      * @param accountRepository         the account repository; must not be {@code null}
      * @param s3Template                the S3 template; must not be {@code null}
      * @param awsResourceProperties     the AWS resource-name holder; must not be {@code null}
+     * @param businessMetrics           the observability facade (AAP §0.7.7); must not be {@code null}
      * @param clock                     the clock used for the timestamp fallback and S3 key; must not be {@code null}
      */
     public TransactionWriter(final TransactionRepository transactionRepository,
@@ -222,12 +241,14 @@ public class TransactionWriter implements ItemWriter<PostedTransactionResult> {
                              final AccountRepository accountRepository,
                              final S3Template s3Template,
                              final AwsConfig.AwsResourceProperties awsResourceProperties,
+                             final MetricsConfig.BusinessMetrics businessMetrics,
                              final Clock clock) {
         this.transactionRepository = transactionRepository;
         this.categoryBalanceRepository = categoryBalanceRepository;
         this.accountRepository = accountRepository;
         this.s3Template = s3Template;
         this.awsResourceProperties = awsResourceProperties;
+        this.businessMetrics = businessMetrics;
         this.clock = clock;
     }
 
@@ -301,6 +322,14 @@ public class TransactionWriter implements ItemWriter<PostedTransactionResult> {
 
         // Step D (persist) — COBOL: 2900. One bulk JPA insert replacing the per-record VSAM WRITE.
         transactionRepository.saveAll(postedThisChunk);
+
+        // Observability (AAP §0.7.7): record one processed record and its amount per posted
+        // transaction, AFTER the authoritative DB write succeeds (a failed saveAll propagates above
+        // and these counters are not touched). Telemetry-only; never feeds back into posting logic.
+        for (final Transaction posted : postedThisChunk) {
+            businessMetrics.recordBatchRecordProcessed(JOB_NAME);
+            businessMetrics.recordTransactionAmount(posted.getTranAmt());
+        }
 
         // Step E — NEW (GDG -> S3): back up the posted stream AFTER the DB writes succeed.
         backupToS3(postedThisChunk);

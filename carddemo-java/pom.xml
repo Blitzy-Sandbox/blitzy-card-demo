@@ -85,6 +85,14 @@
      - io.opentelemetry.semconv:opentelemetry-semconv  CVE-2026-39883 — the flaw is
        in OpenTelemetry-*Go* (Darwin `ioreg`); the CPE targets the `go` platform.
        This is a Java constants jar with no command/exec logic.
+    For final-evidence completeness, owasp-suppressions.xml ALSO documents five
+    informational MEDIUM (CVSS < 7.0, below this gate) CPE/version false positives
+    so the persisted report is pristine (zero reported): log4j-api SocketAppender
+    CVE-2025-68161/-34477 (Log4j *Core*, absent), hibernate-validator CVE-2025-15104
+    (Nu Html Checker validator.nu, a different product), kotlin-stdlib(+jdk7)
+    CVE-2020-29582 (fixed in Kotlin 1.4.21; resolved at 1.9.25), and
+    opentelemetry-semconv CVE-2026-39882 (OpenTelemetry-Go OTLP exporter). The
+    passing HTML+JSON report is persisted under docs/evidence/owasp/.
   ============================================================================
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -133,7 +141,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
-        <!-- Versions for dependencies NOT governed by the Spring Boot 3.5.11 BOM. -->
+        <!-- Versions for dependencies NOT governed by the Spring Boot 3.5.15 BOM. -->
         <!-- Spring Cloud AWS is an independent release train (io.awspring.cloud);
              its BOM MUST be imported below or the starters have no version. -->
         <spring-cloud-aws.version>3.3.0</spring-cloud-aws.version>
@@ -223,7 +231,7 @@
     <dependencies>
         <!-- ====================================================================
              RUNTIME DEPENDENCIES (17) — docs/technical-specifications.md L728–L744
-             Versions marked "(BOM)" are managed by the Spring Boot 3.5.11 parent.
+             Versions marked "(BOM)" are managed by the Spring Boot 3.5.15 parent.
              ==================================================================== -->
 
         <!-- REST API framework + embedded Tomcat. Replaces the BMS 3270 SEND/RECEIVE

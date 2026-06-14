@@ -240,6 +240,18 @@ class BillPaymentServiceTest {
         verifyNoInteractions(accountRepository, transactionRepository, cardCrossReferenceRepository);
     }
 
+    @Test
+    @DisplayName("3.1 null request body -> ValidationException 'Acct ID can NOT be empty...', no account read")
+    void processBillPayment_nullRequestBody_throwsValidationException() {
+        // A JSON `null` body must not NPE into a generic 500; it maps to the empty-account-id edit
+        // (HTTP 400) before READ-ACCTDAT, preserving COBOL message precedence.
+        assertThatThrownBy(() -> billPaymentService.processBillPayment(null))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Acct ID can NOT be empty");
+
+        verifyNoInteractions(accountRepository, transactionRepository, cardCrossReferenceRepository);
+    }
+
     // ===============================================================================================
     // 3.2 — Confirm-flag branching: Y / N / blank / other
     // COBOL PROCESS-ENTER-KEY: EVALUATE CONFIRMI OF COBIL0AI (L172-194).

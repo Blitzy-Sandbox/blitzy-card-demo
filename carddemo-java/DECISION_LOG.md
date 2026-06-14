@@ -25,7 +25,10 @@ Log and Traceability Requirements" and §0.8.6 cross-cutting requirements).
 The five seed entries below (`D-001`–`D-005`) reproduce the blueprint's documented
 decisions verbatim (`docs/technical-specifications.md` L911–L915). Entries `D-006` and
 `D-007` record the two blueprint inconsistencies that **this** migration resolved, and the
-resolved values are applied directly in `pom.xml` and the `src/` package tree.
+resolved values are applied directly in `pom.xml` and the `src/` package tree. Entries
+`D-008`–`D-011` record the non-trivial design decisions settled during implementation
+(stateless bearer-token state, `@EmbeddedId` composite keys, `HALF_EVEN` interest rounding,
+and the `ACCT-ID` → `Long`/`BIGINT` primary-key mapping).
 
 ## Resolved Decisions
 
@@ -38,21 +41,19 @@ resolved values are applied directly in `pom.xml` and the `src/` package tree.
 | D-005 | Spring Batch for JCL pipeline | Custom scheduler, Quartz, Temporal | JCL jobs are sequential batch with condition codes; Spring Batch provides native step sequencing and condition evaluation | Learning curve for Step/Job/Flow abstractions |
 | D-006 | Base package `com.cardemo` (not `com.carddemo`) | `com.carddemo` (used by the blueprint's COBOL→Java import table, tech-spec L783–L799) | The authoritative target-structure diagrams (tech-spec L334 `src/main/java/com/cardemo/` and L476 `src/test/java/com/cardemo/`) use `com.cardemo`; the blueprint is internally inconsistent and a single base package must be applied uniformly across `src/`. `com.cardemo` is adopted as the `pom.xml` `<groupId>` and the root of every package. | Import-table references to `com.carddemo` (tech-spec L783–L799) must be reconciled to `com.cardemo` wherever they are consumed during code generation |
 | D-007 | JaCoCo Maven plugin pinned to `0.8.14` (not `0.8.12`) | `0.8.12` (cited by the blueprint dependency table, tech-spec L766); leaving both versions unresolved | Java 25 emits class-file major version 69; JaCoCo gained **official** Java 25 support in `0.8.14` (`0.8.13` was experimental only), and versions `< 0.8.13` fail instrumentation with "Unsupported class file major version 69". The project-guide technology appendix (L520) already cites `0.8.14`. A single version is pinned in `pom.xml` as `<jacoco.version>0.8.14</jacoco.version>` so `mvn clean verify` runs JaCoCo under Java 25 without error. | None at the pinned version; `0.8.14` is the current stable release with Java 25 support |
+| D-008 | **JWT-style stateless bearer token** for the pseudo-conversational state carried by the CICS `COMMAREA` | Server-side session-scoped state; sticky-session affinity | The target is stateless (no CICS pseudo-conversational region), so per-request context is carried in a compact HS256-signed bearer token rather than server memory. Implemented in `security/TokenService.java` (`HmacSHA256`, `{"alg":"HS256","typ":"JWT"}` header) and enforced statelessly in `config/SecurityConfig.java`. Resolves the §0.1.2 rule "CICS `RETURN TRANSID COMMAREA` → stateless REST with context propagation". | Signing secret must be a runtime secret ≥ 256 bits (no default; see `.env.example`); token theft risk is mitigated by short TTL and HTTPS at the edge |
+| D-009 | **`@EmbeddedId`** (over `@IdClass`) for the composite-key entities `TCATBAL`, `DISCGRP`, `TRANCATG` | JPA `@IdClass` | `@EmbeddedId` keeps each composite key as one cohesive, reusable value type and reads naturally in derived queries. Implemented as `@Embeddable` key classes `key/TransactionCategoryBalanceId.java`, `key/DisclosureGroupId.java`, `key/TransactionCategoryId.java`, referenced via `@EmbeddedId` on the corresponding entities. Resolves the §0.3.3 "Composite key → `@EmbeddedId` / `@IdClass`" choice. | `@EmbeddedId` requires the key type to implement `equals`/`hashCode` and be `Serializable` (done); slightly more verbose access to individual key parts |
+| D-010 | **`RoundingMode.HALF_EVEN`** (banker's rounding) for the interest formula `(TRAN-CAT-BAL × DIS-INT-RATE) / 1200` | `HALF_UP`, `DOWN`, unrounded `BigDecimal.divide` (throws on non-terminating) | HALF_EVEN reproduces the COBOL `COMPUTE … ROUNDED` half-even default and avoids systematic rounding bias across many postings. Implemented at `batch/processors/InterestCalculationProcessor.java:559` (`.divide(INTEREST_DIVISOR, MONTHLY_INTEREST_SCALE, RoundingMode.HALF_EVEN)`), preserving the formula without algebraic rearrangement (§0.7.6). Resolves the §0.7.3 decimal-precision rounding rule. | If a specific dataset proves the legacy host used a different rounding, the single constant must be revisited; covered by interest-calculation parity tests |
+| D-011 | **`Long` (BIGINT)** for the `ACCT-ID` primary key (`Account.acctId`) | `String` (preserve fixed 11-digit width / leading zeros), `BigInteger`, `Integer` (too narrow) | `ACCT-ID` is `PIC 9(11)` — a purely numeric key whose maximum (99,999,999,999) fits comfortably in a 64-bit `Long` (and PostgreSQL `BIGINT`), preserving numeric ordering and keyed-access semantics. As an integer identifier it is NOT a COMP-3/COMP decimal amount, so the `BigDecimal` rule (§0.7.3) does not apply. Implemented as `@Id private Long acctId;` in `model/entity/Account.java`. | Any contract needing the zero-padded 11-digit display form must reapply left-padding at the API/DTO boundary (handled by the account DTO formatting) |
 
 ## Forthcoming Decisions
 
-The decision points below are **expected** to be resolved as the corresponding components
-are implemented. They are recorded here so the log remains the single source of truth, but
-they are **not yet decided** — no rationale is asserted until the implementing change is
-made, at which point each row is promoted into the *Resolved Decisions* table above with a
-monotonic `D-NNN` identifier and full rationale. These rows therefore intentionally carry a
-`Status` of *Forthcoming* and list only the options under consideration.
-
-| # | Decision Point | Options Under Consideration | Status | Blueprint Reference |
-|---|---|---|---|---|
-| D-008 | State propagation for the pseudo-conversational (CICS COMMAREA → stateless REST) flow | JWT bearer token vs. server-side session-scoped token | Forthcoming — to be recorded when the authentication/session layer is implemented | Transformation rule "CICS `RETURN TRANSID COMMAREA` → Stateless REST with context propagation (JWT or session-scoped state)" (tech-spec §0.1.2) |
-| D-009 | Composite-key mapping strategy for `TCATBAL`, `DISCGRP`, `TRANCATG` | JPA `@EmbeddedId` vs. `@IdClass` | Forthcoming — to be recorded when the composite-key entities are implemented (the §0.4.1 entity table currently leans toward `@EmbeddedId`) | Design-pattern table "Composite key → `@EmbeddedId` / `@IdClass`" (tech-spec §0.3.3) |
-| D-010 | Rounding mode for the interest formula `(TRAN-CAT-BAL × DIS-INT-RATE) / 1200` | `RoundingMode.HALF_EVEN` (banker's rounding), pending confirmation against the COBOL `COMPUTE`/`ROUNDED` behavior | Forthcoming — to be confirmed when `InterestCalculationJob` is implemented | Decimal-precision rule for the interest formula (tech-spec Decimal Precision Rules) |
+_None outstanding._ All previously-forthcoming decision points (`D-008` state propagation,
+`D-009` composite-key strategy, `D-010` interest rounding mode) have been implemented and
+promoted into **Resolved Decisions** above with full rationale and risks. `D-011` (the
+`ACCT-ID` → `Long`/`BIGINT` primary-key mapping) was recorded at the same time. When a new
+non-trivial decision point arises, add it here as *Forthcoming*, then promote it under the next
+free `D-NNN` once the implementing change lands (see *Maintaining This Log*).
 
 ## Maintaining This Log
 

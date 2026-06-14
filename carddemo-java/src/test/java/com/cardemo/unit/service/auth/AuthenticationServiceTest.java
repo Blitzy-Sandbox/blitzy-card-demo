@@ -30,6 +30,7 @@ import com.cardemo.model.dto.SignOnRequest;
 import com.cardemo.model.dto.SignOnResponse;
 import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.enums.UserType;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.UserSecurityRepository;
 import com.cardemo.security.TokenService;
 import com.cardemo.service.auth.AuthenticationService;
@@ -168,17 +169,23 @@ class AuthenticationServiceTest {
     @Mock
     private TokenService tokenService;
 
+    /** Observability facade (AAP §0.7.7) — mocked so the auth-attempt recording is asserted via Mockito. */
+    @Mock
+    private MetricsConfig.BusinessMetrics businessMetrics;
+
     /** System under test, wired by explicit constructor injection in {@link #setUp()}. */
     private AuthenticationService service;
 
     /**
-     * Constructs the service with the three Mockito mocks via its real constructor signature
-     * {@code AuthenticationService(UserSecurityRepository, PasswordEncoder, TokenService)}. Explicit
-     * construction is preferred over {@code @InjectMocks} so the wiring is unambiguous and stable.
+     * Constructs the service with the four Mockito mocks via its real constructor signature
+     * {@code AuthenticationService(UserSecurityRepository, PasswordEncoder, TokenService,
+     * MetricsConfig.BusinessMetrics)}. Explicit construction is preferred over {@code @InjectMocks} so
+     * the wiring is unambiguous and stable.
      */
     @BeforeEach
     void setUp() {
-        service = new AuthenticationService(userSecurityRepository, passwordEncoder, tokenService);
+        service = new AuthenticationService(userSecurityRepository, passwordEncoder, tokenService,
+                businessMetrics);
     }
 
     // ---------------------------------------------------------------------
@@ -234,6 +241,17 @@ class AuthenticationServiceTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessage(MSG_ENTER_USER_ID);
         // The guard throws before any read or verify (the COBOL ERR-FLG-ON re-display path).
+        verifyNoInteractions(userSecurityRepository, passwordEncoder, tokenService);
+    }
+
+    @Test
+    @DisplayName("CWE-20 null-body guard: null SignOnRequest -> ValidationException 'Please enter User ID ...' (HTTP 400, not 500)")
+    void nullRequestBodyRejectedAsValidation() {
+        // A JSON `null` request body (the controller omits @Valid to preserve message ordering) must not
+        // NPE into a generic 500; it maps to the empty-user-id first-error exactly like SPACES/LOW-VALUES.
+        assertThatThrownBy(() -> service.signOn(null))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_ENTER_USER_ID);
         verifyNoInteractions(userSecurityRepository, passwordEncoder, tokenService);
     }
 
@@ -295,6 +313,9 @@ class AuthenticationServiceTest {
 
         // No record -> the BCrypt verify is never reached.
         verify(passwordEncoder, never()).matches(any(), any());
+
+        // Observability (AAP §0.7.7): a failed credential verification is recorded.
+        verify(businessMetrics).recordAuthAttempt(false);
     }
 
     @Test
@@ -311,6 +332,9 @@ class AuthenticationServiceTest {
         assertThatThrownBy(() -> service.signOn(request(USER_ID, RAW_PASSWORD)))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage(MSG_WRONG_PASSWORD);
+
+        // Observability (AAP §0.7.7): a failed credential verification is recorded.
+        verify(businessMetrics).recordAuthAttempt(false);
     }
 
     @Test
@@ -378,6 +402,9 @@ class AuthenticationServiceTest {
         assertThat(response.getUserType()).isEqualTo(UserType.USER);
         assertThat(response.getUserId()).isEqualTo(USER_ID);
         assertThat(response.getToken()).isNotBlank();
+
+        // Observability (AAP §0.7.7): a successful authentication is recorded.
+        verify(businessMetrics).recordAuthAttempt(true);
     }
 
     // =====================================================================

@@ -9,7 +9,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.validation.annotation.Validated;
 
 /**
- * AWS infrastructure {@code @Configuration} for the greenfield Java 25 LTS + Spring Boot 3.5.11
+ * AWS infrastructure {@code @Configuration} for the greenfield Java 25 LTS + Spring Boot 3.5.15
  * migration of the AWS CardDemo COBOL/CICS/VSAM/JCL/BMS mainframe application.
  *
  * <p>This {@code @Configuration} is component-scanned by {@code CardDemoApplication} (base package

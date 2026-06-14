@@ -13,6 +13,7 @@ import com.cardemo.config.AwsConfig;
 import com.cardemo.model.dto.PostedTransactionResult;
 import com.cardemo.model.entity.DailyTransaction;
 import com.cardemo.model.enums.RejectCode;
+import com.cardemo.observability.MetricsConfig;
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Template;
 import java.io.IOException;
@@ -151,6 +152,10 @@ class RejectWriterTest {
     @Mock
     private S3Template s3Template;
 
+    /** Observability facade (AAP §0.7.7) — mocked so rejected-record recording is asserted. */
+    @Mock
+    private MetricsConfig.BusinessMetrics businessMetrics;
+
     /**
      * Real (not mocked) AWS resource-name holder. Its defaults expose
      * {@code getS3().getBatchOutputBucket() == carddemo-batch-output}, so the writer resolves the bucket
@@ -163,8 +168,8 @@ class RejectWriterTest {
 
     @BeforeEach
     void setUp() {
-        // Test-friendly 3-arg constructor pins the clock so the S3 generation prefix is deterministic.
-        writer = new RejectWriter(s3Template, awsProps, FIXED_CLOCK);
+        // Test-friendly constructor pins the clock so the S3 generation prefix is deterministic.
+        writer = new RejectWriter(s3Template, awsProps, businessMetrics, FIXED_CLOCK);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -412,6 +417,10 @@ class RejectWriterTest {
         assertThat(codeField).hasSize(REASON_CODE_LENGTH).containsOnlyDigits();
         assertThat(codeField).isEqualTo("0100")
                 .isEqualTo(String.format("%04d", RejectCode.INVALID_CARD_NUMBER.getCode()));
+
+        // Observability wiring (AAP §0.7.7): each rejected record increments the rejected-counter
+        // tagged with the reject-code name, proving BusinessMetrics is invoked by the reject flow.
+        verify(businessMetrics).recordBatchRecordRejected("INVALID_CARD_NUMBER");
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -528,6 +537,11 @@ class RejectWriterTest {
         assertThat(record1.substring(0, 16)).isEqualTo("DTX0000000000002");
         assertThat(record1.substring(DALYTRAN_RECORD_LENGTH, DALYTRAN_RECORD_LENGTH + REASON_CODE_LENGTH))
                 .isEqualTo("0102");
+
+        // Observability wiring (AAP §0.7.7): one rejected-counter increment per record, each tagged
+        // with its own distinct reject-code name (proves per-reason tagging across a multi-item chunk).
+        verify(businessMetrics).recordBatchRecordRejected("INVALID_CARD_NUMBER");
+        verify(businessMetrics).recordBatchRecordRejected("OVERLIMIT_TRANSACTION");
     }
 
     @Test

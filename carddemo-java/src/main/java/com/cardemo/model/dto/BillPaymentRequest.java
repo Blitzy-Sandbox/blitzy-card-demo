@@ -500,10 +500,12 @@ public class BillPaymentRequest {
         /**
          * Value-based equality across all response fields.
          *
-         * <p>The {@link BigDecimal} balances participate via
-         * {@link Objects#equals(Object, Object)}; note this is scale-sensitive, so for
-         * penny-level numeric parity callers should compare the individual amounts
-         * with {@link BigDecimal#compareTo(BigDecimal)} (AAP &sect;0.7.3).</p>
+         * <p>The {@link BigDecimal} balances are compared <strong>scale-insensitively</strong>
+         * via {@link BigDecimal#compareTo(BigDecimal)} (so {@code 50.00} equals {@code 50}),
+         * honoring AAP &sect;0.7.3, which mandates {@code compareTo} over the scale-sensitive
+         * {@link BigDecimal#equals(Object)} for monetary value comparison. {@link #hashCode()}
+         * normalizes the same fields with {@link BigDecimal#stripTrailingZeros()} so it stays
+         * consistent with this equality.</p>
          *
          * @param o the object to compare with
          * @return {@code true} if {@code o} is an equal response
@@ -517,23 +519,56 @@ public class BillPaymentRequest {
                 return false;
             }
             Response that = (Response) o;
-            return Objects.equals(currentBalance, that.currentBalance)
+            return numericEquals(currentBalance, that.currentBalance)
                     && Objects.equals(transactionId, that.transactionId)
-                    && Objects.equals(newBalance, that.newBalance)
+                    && numericEquals(newBalance, that.newBalance)
                     && Objects.equals(message, that.message)
                     && Objects.equals(confirmationNumber, that.confirmationNumber);
         }
 
         /**
          * Hash code derived from all response fields, consistent with
-         * {@link #equals(Object)}.
+         * {@link #equals(Object)}. The monetary {@link BigDecimal} fields are
+         * normalized with {@link BigDecimal#stripTrailingZeros()} so values that are
+         * {@code compareTo}-equal (e.g. {@code 50.00} and {@code 50}) hash identically
+         * (AAP &sect;0.7.3).
          *
          * @return the hash code for this response
          */
         @Override
         public int hashCode() {
-            return Objects.hash(currentBalance, transactionId, newBalance, message,
-                    confirmationNumber);
+            return Objects.hash(normalizeScale(currentBalance), transactionId,
+                    normalizeScale(newBalance), message, confirmationNumber);
+        }
+
+        /**
+         * Null-safe, scale-insensitive equality for a monetary {@link BigDecimal}:
+         * two values are equal when both are {@code null}, or both are non-null and
+         * {@link BigDecimal#compareTo(BigDecimal)} returns {@code 0} (so {@code 50.00}
+         * equals {@code 50}). Mandated by AAP &sect;0.7.3 over the scale-sensitive
+         * {@link BigDecimal#equals(Object)}.
+         *
+         * @param a first amount (may be {@code null})
+         * @param b second amount (may be {@code null})
+         * @return {@code true} if the two amounts are numerically equal
+         */
+        private static boolean numericEquals(BigDecimal a, BigDecimal b) {
+            if (a == null || b == null) {
+                return a == b;
+            }
+            return a.compareTo(b) == 0;
+        }
+
+        /**
+         * Scale-normalized form of a monetary {@link BigDecimal} for hashing: strips
+         * trailing zeros so {@code compareTo}-equal values produce equal hash codes,
+         * keeping {@link #hashCode()} consistent with {@link #equals(Object)}.
+         *
+         * @param v the amount to normalize (may be {@code null})
+         * @return the value with trailing zeros stripped, or {@code null}
+         */
+        private static BigDecimal normalizeScale(BigDecimal v) {
+            return v == null ? null : v.stripTrailingZeros();
         }
 
         /**

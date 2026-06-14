@@ -29,8 +29,8 @@ import org.springframework.web.bind.annotation.RestController;
  * AAP&nbsp;&sect;0.4.1 (tech-spec&nbsp;L652: <em>{@code controller/UserAdminController.java} CREATE &larr;
  * {@code app/bms/COUSR00.bms}&ndash;{@code COUSR03.bms} &mdash; "CRUD {@code /api/admin/users/*}"</em>)
  * and of AAP&nbsp;&sect;0.3.4 (BMS&nbsp;&rarr;&nbsp;REST contract translation). It preserves features
- * <strong>F-018</strong> (User List), <strong>F-019</strong> (User Add), <strong>F-020</strong>
- * (User Update) and <strong>F-021</strong> (User Delete) without expansion (Minimal Change Clause,
+ * <strong>F-014</strong> (User List), <strong>F-015</strong> (User Add), <strong>F-016</strong>
+ * (User Update) and <strong>F-017</strong> (User Delete) without expansion (Minimal Change Clause,
  * AAP&nbsp;&sect;0.7.1).</p>
  *
  * <h2>Authoritative source artifacts (read-only reference, never copied)</h2>
@@ -343,10 +343,15 @@ public class UserAdminController {
     @PutMapping("/{id}")
     public ResponseEntity<UserSecurityDto> updateUser(@PathVariable("id") final String id,
                                                       @RequestBody final UserSecurityDto request) {
+        // CWE-20 null-body guard: a JSON `null` body would NPE on setUserId below (HTTP 500). Synthesize
+        // an empty DTO so the authoritative path {id} is still stamped and the request flows into the
+        // service's ordered COBOL edits; with the user id present, the (absent) first name is rejected
+        // with the verbatim first-error (HTTP 400) -- exactly as an empty COUSR2A map would behave.
+        final UserSecurityDto target = (request != null) ? request : new UserSecurityDto();
         // Path identifies the resource: stamp the authoritative {id} onto the request before delegating
         // (the COBOL REWRITE was keyed by USRIDIN). UserSecurityDto exposes the user id via setUserId.
-        request.setUserId(id);
-        return ResponseEntity.ok(userUpdateService.updateUser(request));
+        target.setUserId(id);
+        return ResponseEntity.ok(userUpdateService.updateUser(target));
     }
 
     /**

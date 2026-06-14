@@ -6,6 +6,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.regex.Pattern;
 
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,7 +23,7 @@ import com.cardemo.service.shared.DateValidationService;
 /**
  * Transaction-add service &mdash; the Java&nbsp;25 / Spring&nbsp;Boot&nbsp;3.x translation of the
  * online CICS program <strong>{@code app/cbl/COTRN02C.cbl}</strong> (CICS transaction {@code CT02},
- * BMS mapset {@code COTRN02}). Adding a transaction is feature <strong>F-???</strong>'s add path of
+ * BMS mapset {@code COTRN02}). Adding a transaction is feature <strong>F-012</strong>'s add path of
  * the preserved CardDemo estate: it resolves a card cross-reference (by account <em>or</em> card),
  * runs an ordered cascade of field validations, auto-generates the next transaction id and writes a
  * new row to the {@code TRANSACT} VSAM KSDS (now the PostgreSQL {@code transaction} table).
@@ -315,8 +316,15 @@ public class TransactionAddService {
      * @throws DuplicateRecordException when the generated id collides with an existing row
      *                                  (the {@code DFHRESP(DUPKEY)} path, HTTP&nbsp;409)
      */
+    @Observed(name = "carddemo.transaction.add", contextualName = "transaction.add")
     @Transactional
     public TransactionDto addTransaction(TransactionDto request) {
+        // CWE-20 null-body guard: the controller omits @Valid to preserve COBOL message ordering, so a
+        // JSON `null` body would otherwise NPE inside resolveCrossReference (HTTP 500). Map an absent
+        // body to COBOL's "no key entered" path -> the same verbatim first-error (HTTP 400).
+        if (request == null) {
+            throw new ValidationException(MSG_ACCT_OR_CARD_REQUIRED);
+        }
         // PROCESS-ENTER-KEY (L164-188): key fields -> data fields -> confirm, in this exact order.
         resolveCrossReference(request);   // (1) VALIDATE-INPUT-KEY-FIELDS
         validateDataFields(request);      // (2) VALIDATE-INPUT-DATA-FIELDS

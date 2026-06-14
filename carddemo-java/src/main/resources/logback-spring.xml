@@ -58,7 +58,7 @@
       defines properties such as CONSOLE_LOG_CHARSET. The include defines NO
       appenders and NO root logger, so it does not conflict with the
       profile-scoped roots declared below. (Resource verified present in
-      spring-boot-3.5.11.jar: org/springframework/boot/logging/logback/defaults.xml.)
+      spring-boot-3.5.15.jar: org/springframework/boot/logging/logback/defaults.xml.)
     -->
     <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
 

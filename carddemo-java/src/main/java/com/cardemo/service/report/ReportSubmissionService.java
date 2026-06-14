@@ -21,7 +21,7 @@ import com.cardemo.service.shared.DateValidationService;
 /**
  * Report-submission service &mdash; the Java&nbsp;25 / Spring&nbsp;Boot&nbsp;3.x translation of the
  * online CICS program <strong>{@code app/cbl/CORPT00C.cbl}</strong> (CICS transaction {@code CR00},
- * BMS map {@code CORPT0A}, mapset {@code CORPT00}). It realizes feature <strong>F-018</strong>
+ * BMS map {@code CORPT0A}, mapset {@code CORPT00}). It realizes feature <strong>F-013</strong>
  * (transaction-report submission) of the preserved CardDemo estate.
  *
  * <h2>Why this service is architecturally special</h2>

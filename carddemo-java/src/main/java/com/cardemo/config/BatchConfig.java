@@ -4,7 +4,7 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * Foundational Spring Batch infrastructure configuration for the greenfield Java 25 LTS + Spring
- * Boot 3.5.11 migration of the AWS CardDemo COBOL/CICS/VSAM/JCL/BMS mainframe application.
+ * Boot 3.5.15 migration of the AWS CardDemo COBOL/CICS/VSAM/JCL/BMS mainframe application.
  *
  * <p>This {@code @Configuration} formalizes the batch-runtime policy that backs the
  * <strong>JCL&nbsp;&rarr;&nbsp;Spring&nbsp;Batch</strong> migration (decision <strong>D-005</strong>,

@@ -17,7 +17,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * Per-request correlation-ID servlet {@link Filter} for the greenfield Java 25 LTS + Spring Boot
- * 3.5.11 migration of the AWS CardDemo COBOL/CICS mainframe application.
+ * 3.5.15 migration of the AWS CardDemo COBOL/CICS mainframe application.
  *
  * <h2>Provenance &mdash; net-new observability component (no COBOL equivalent)</h2>
  * <p>This class has <strong>no COBOL source</strong>: it is a pure technology-substitution

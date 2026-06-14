@@ -360,7 +360,12 @@ public class CardUpdateService {
 
         // 1230-EDIT-NAME: required, then alphabets and spaces only (INSPECT CONVERTING A-Za-z -> spaces,
         // remaining TRIM length must be 0). A null/blank name is "not supplied".
-        String name = request.getEmbossedName();
+        // CWE-20 null-body guard placed at the FIRST body-field access: the account/card edits above
+        // operate on non-null path variables and run first (preserving COBOL first-error order even
+        // when a path id is itself invalid), so a JSON `null` body fails exactly here. A null request
+        // collapses to a null name, which isNotSupplied() rejects with the verbatim "name not provided"
+        // first-error (HTTP 400) instead of a 500 NPE.
+        String name = (request == null) ? null : request.getEmbossedName();
         if (isNotSupplied(name)) {
             throw new ValidationException(MSG_NAME_NOT_PROVIDED);
         }

@@ -314,8 +314,10 @@ curl -s -X POST http://localhost:8080/api/auth/signin \
 curl -s http://localhost:8080/api/accounts/00000000001 \
   -H "Authorization: Bearer <token>" | python3 -m json.tool
 
-# Main-menu options (mirrors the COBOL CM00 menu routing):
-curl -s http://localhost:8080/api/menu/main | python3 -m json.tool
+# Main-menu options (mirrors the COBOL CM00 menu routing; substitute the token from sign-in).
+# /api/menu/main is protected by SecurityConfig, so the Bearer token is required (401 without it):
+curl -s http://localhost:8080/api/menu/main \
+  -H "Authorization: Bearer <token>" | python3 -m json.tool
 ```
 
 The complete endpoint catalogue — every route, request/response field, and validation rule, mapped

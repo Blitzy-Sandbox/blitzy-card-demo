@@ -245,6 +245,12 @@ public class BillPaymentService {
      */
     @Transactional
     public BillPaymentRequest.Response processBillPayment(BillPaymentRequest request) {
+        // CWE-20 null-body guard: a JSON `null` request body would otherwise NPE on the first field
+        // deref below and surface as a generic HTTP 500. Map an absent body to the empty-account-id
+        // path so it raises the SAME verbatim first-error (HTTP 400), preserving COBOL precedence.
+        if (request == null) {
+            throw new ValidationException(MSG_ACCT_ID_EMPTY);
+        }
 
         // --- Step A: account-id presence edit (COBIL00C EVALUATE TRUE / ACTIDINI empty, L158-167) ---
         // The DTO @NotBlank normally catches this at the controller; re-checked here so parity holds

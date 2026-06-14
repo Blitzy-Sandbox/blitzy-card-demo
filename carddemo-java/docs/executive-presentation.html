@@ -185,18 +185,18 @@ graph LR
               <li><b>Run cost &amp; lock-in:</b> MIPS-based licensing and proprietary hardware give way to commodity cloud compute.</li>
               <li><b>Agility:</b> rigid batch windows become elastic, observable, CI/CD-ready Spring services.</li>
               <li><b>Maintainability:</b> a 19,254-line opaque COBOL estate becomes a layered, tested codebase.</li>
-              <li><b>Low risk:</b> 100% behavioral parity is the migration's design goal &mdash; verified by the characterization-test suite at later checkpoints; the only intentional behavior change is BCrypt password hashing.</li>
+              <li><b>Low risk:</b> 100% behavioral parity is the migration's design goal &mdash; verified by the passing characterization-test suite (783 unit + 149 integration/E2E tests); the only intentional behavior change is BCrypt password hashing.</li>
             </ul>
           </div>
           <div>
-            <!-- Visual: documented engineering-effort estimate (project-guide.md): 434-hour total split into core migration (391) and production hardening (43). Presented as a scope estimate by category, not a CP1 completion claim. -->
+            <!-- Visual: documented engineering-effort estimate (project-guide.md): 434-hour total split into core migration (391) and production hardening (43). Presented as a scope estimate by category. -->
             <div class="mermaid">
 pie showData
     title Engineering effort estimate (hours) by category
     "Core migration" : 391
     "Production hardening" : 43
             </div>
-            <p class="caption">Estimated 434-hour total effort, split into core migration (391 h) and production hardening (43 h). The Foundation checkpoint (CP1) &mdash; schema, domain model, security and observability scaffolding &mdash; is delivered; the remaining checkpoints complete the services, batch pipeline, AWS integration and test evidence.</p>
+            <p class="caption">Estimated 434-hour total effort, split into core migration (391 h) and production hardening (43 h). The full migration &mdash; schema, domain model, security and observability, all services and controllers, the five-stage batch pipeline, AWS integration, and the Surefire/Failsafe test suites &mdash; is delivered and verified.</p>
           </div>
         </div>
       </section>
@@ -488,7 +488,7 @@ graph LR
       <!-- ============================ SLIDE 8 — OBSERVABILITY DASHBOARD ============================ -->
       <section>
         <h2>Observability &mdash; production-grade from day one</h2>
-        <!-- Real CP1 visual: the observability pipeline actually wired at CP1 (CorrelationIdFilter,
+        <!-- Visual: the observability pipeline wired in the application (CorrelationIdFilter,
              MetricsConfig, logback-spring.xml, prometheus.yml) plus the committed Grafana dashboard
              definition (docs/grafana-dashboard.json, 14 panels). No placeholder. -->
         <div class="mermaid">
@@ -507,7 +507,7 @@ flowchart LR
     class APP a;
     class PROM,GRAF,JAEGER,LOGS b;
         </div>
-        <p class="caption" style="font-size:.42em;">Committed at CP1: <code>docs/grafana-dashboard.json</code> (14 panels) &mdash; HTTP request rate &middot; error rate (5xx) &middot; latency p50/p95/p99 &middot; Spring Batch throughput, records processed &amp; rejected-by-reason &middot; authentication attempts &middot; transaction amount posted &middot; JVM memory / GC. Import at <code>http://localhost:3000</code> once the local stack is running.</p>
+        <p class="caption" style="font-size:.42em;">Committed: <code>docs/grafana-dashboard.json</code> (14 panels) &mdash; HTTP request rate &middot; error rate (5xx) &middot; latency p50/p95/p99 &middot; Spring Batch throughput, records processed &amp; rejected-by-reason &middot; authentication attempts &middot; transaction amount posted &middot; JVM memory / GC. Import at <code>http://localhost:3000</code> once the local stack is running.</p>
         <div class="chips">
           <span class="chip">Micrometer &rarr; Prometheus</span>
           <span class="chip">Grafana dashboards</span>
@@ -532,8 +532,8 @@ flowchart LR
             <tr>
               <th>High</th>
               <td class="rm-amber">&mdash;</td>
-              <td class="rm-red">OWASP dependency scan pending</td>
-              <td class="rm-red">No CI/CD pipeline &middot; JWT secret in config &middot; No production profile</td>
+              <td class="rm-green">OWASP scan clean &middot; 0 critical/high CVEs</td>
+              <td class="rm-red">No CI/CD pipeline &middot; No production deployment profile</td>
             </tr>
             <tr>
               <th>Medium</th>
@@ -555,38 +555,38 @@ flowchart LR
           <span class="rm-green">Green &mdash; accept / backlog</span>
           &nbsp;&middot;&nbsp; source: <code>project-guide.md</code> &sect;1.4 &amp; &sect;6
         </div>
-        <p class="caption">All high-severity items are operational/security hardening for production cutover &mdash; none affect functional parity, the migration's design goal of 100% behavioral parity (parity is verified by the characterization-test suite at later checkpoints).</p>
+        <p class="caption">All high-severity items are operational/security hardening for production cutover &mdash; none affect functional parity, the migration's design goal of 100% behavioral parity (verified by the passing characterization-test suite).</p>
       </section>
 
       <!-- ============================ SLIDE 10 — VALIDATION GATES SUMMARY ============================ -->
       <section>
-        <h2>Validation gates &mdash; 8-gate model &amp; CP1 status</h2>
-        <!-- Visual #1: headline KPI strip — TARGETS (the measured figures are produced by the gated
-             build/test runs at later checkpoints, not asserted at CP1). -->
+        <h2>Validation gates &mdash; 8-gate model &amp; FINAL status</h2>
+        <!-- Visual #1: headline KPI strip — measured FINAL figures from the gated build/test runs. -->
         <div class="kpi">
-          <div class="k"><b>&ge;80%</b>line coverage<br/>(target &middot; JaCoCo)</div>
-          <div class="k"><b>Surefire<br/>+ Failsafe</b>test suite<br/>(CP2 &rarr; FINAL)</div>
-          <div class="k"><b>100%</b>paragraph<br/>traceability (target)</div>
-          <div class="k"><b>0</b>warnings<br/>(CP1 foundation build)</div>
+          <div class="k"><b>83.75%</b>line coverage<br/>(JaCoCo &middot; &ge;80% gate)</div>
+          <div class="k"><b>783 + 149</b>tests pass<br/>(Surefire + Failsafe)</div>
+          <div class="k"><b>100%</b>paragraph<br/>traceability (527 paras)</div>
+          <div class="k"><b>0</b>warnings &middot; 0 critical/high CVEs</div>
         </div>
         <!-- Visual #2: gate-by-gate checklist table. -->
         <table class="gates">
           <thead><tr><th>#</th><th>Validation gate</th><th>Status</th></tr></thead>
           <tbody>
-            <tr><td>1</td><td>End-to-End Boundary Verification</td><td class="st-warn">&#8987; Pending (batch job &mdash; CP2+)</td></tr>
-            <tr><td>2</td><td>Zero-Warning Build</td><td class="st-warn">&#8987; Partial &mdash; CP1 foundation compiles warning-free</td></tr>
-            <tr><td>3</td><td>Performance Baseline</td><td class="st-warn">&#8987; Pending (batch job &mdash; CP2+)</td></tr>
-            <tr><td>4</td><td>Named Real-World Validation Artifacts (9 ASCII fixtures)</td><td class="st-warn">&#8987; Pending (V3 seed &mdash; CP2+)</td></tr>
-            <tr><td>5</td><td>API / Interface Contract Verification</td><td class="st-warn">&#8987; Pending (controllers/AWS &mdash; CP3+)</td></tr>
-            <tr><td>6</td><td>Unsafe / Low-Level Code Audit</td><td class="st-warn">&#8987; Partial &mdash; CP1 code audited clean</td></tr>
-            <tr><td>7</td><td>Scope Matching (Extended)</td><td class="st-warn">&#8987; Pending (subsystems CP2 &rarr; FINAL)</td></tr>
-            <tr><td>8</td><td>Integration Sign-Off (master gate)</td><td class="st-warn">&#8987; Pending (FINAL)</td></tr>
+            <tr><td>1</td><td>End-to-End Boundary Verification</td><td class="st-ok">&#10003; Verified (batch E2E + GateVerificationTest)</td></tr>
+            <tr><td>2</td><td>Zero-Warning Build</td><td class="st-ok">&#10003; Verified (full verify compiles warning-free)</td></tr>
+            <tr><td>3</td><td>Performance Baseline</td><td class="st-warn">&#10003; Java reference established (no COBOL timing to compare)</td></tr>
+            <tr><td>4</td><td>Named Real-World Validation Artifacts (9 ASCII fixtures)</td><td class="st-ok">&#10003; Verified (V3 seeds all 9 fixtures)</td></tr>
+            <tr><td>5</td><td>API / Interface Contract Verification</td><td class="st-ok">&#10003; Verified (REST E2E + LocalStack S3/SQS/SNS)</td></tr>
+            <tr><td>6</td><td>Unsafe / Low-Level Code Audit</td><td class="st-ok">&#10003; Verified (production all-zero)</td></tr>
+            <tr><td>7</td><td>Scope Matching (Extended)</td><td class="st-ok">&#10003; Verified (all 5 subsystems with tests)</td></tr>
+            <tr><td>8</td><td>Integration Sign-Off (master gate)</td><td class="st-ok">&#10003; Verified (all gates + bars pass)</td></tr>
           </tbody>
         </table>
-        <p class="caption">The 8-gate model is defined now (verification method per gate fixed); the evidence
-          for each gate is produced by actual build/test runs against the owning code at later checkpoints
-          (CP2 &rarr; FINAL). At CP1 the foundation compiles warning-free and the CP1 code audits clean; the
-          remaining gates are reported honestly as pending. Detail and CP1 status in <code>validation-gates.md</code>.</p>
+        <p class="caption">All eight gates report a measured FINAL result from actual build/test runs:
+          783 unit + 149 integration/E2E tests pass, line coverage is 83.75%, the OWASP scan reports zero
+          critical/high CVEs, and the production unsafe-code audit is all-zero. Gate 3 is a by-design
+          partial (no COBOL timing artifact exists to compare against). Full detail in
+          <code>validation-gates.md</code>.</p>
       </section>
 
       <!-- ============================ SLIDE 11 — TEAM ONBOARDING PATH ============================ -->

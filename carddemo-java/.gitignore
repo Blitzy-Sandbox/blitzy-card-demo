@@ -26,6 +26,13 @@ logs/
 .classpath
 .factorypath
 
+# --- Local environment secrets (CWE-798: never commit a real .env; the
+#     committed template is .env.example, which carries only NON-SECRET
+#     placeholders and is explicitly re-included below) ---
+.env
+.env.local
+!.env.example
+
 # --- OS cruft ---
 .DS_Store
 Thumbs.db

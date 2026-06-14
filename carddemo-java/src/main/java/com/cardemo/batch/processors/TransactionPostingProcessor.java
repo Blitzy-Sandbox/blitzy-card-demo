@@ -8,6 +8,7 @@ import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.enums.RejectCode;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
+import io.micrometer.observation.annotation.Observed;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -257,6 +258,7 @@ public class TransactionPostingProcessor
      * @return a non-{@code null} {@link PostedTransactionResult}: accepted (with the
      *         mapped transaction) or rejected (with the failing reason)
      */
+    @Observed(name = "carddemo.batch.posting.process", contextualName = "batch.posting.process-item")
     @Override
     public PostedTransactionResult process(DailyTransaction item) {
         // WS-VALIDATION-FAIL-REASON accumulator: COBOL MOVE 0 TO WS-VALIDATION-FAIL-REASON

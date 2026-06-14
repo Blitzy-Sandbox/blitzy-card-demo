@@ -56,8 +56,9 @@ The legacy **Application Inventory** is preserved in full but re-expressed for t
   statement generation, and transaction reporting) become **Spring Batch** jobs.
 
 See the [Functional inventory](#functional-inventory) for the full transaction-to-endpoint and
-job mapping **and the per-feature implementation status** (the report-submission endpoint and the
-business Spring Batch pipeline are deferred to CP5 and not yet present in the current build), and
+job mapping **and the per-feature implementation status** (all seventeen online endpoints —
+including the report-submission endpoint — and the full five-stage business Spring Batch pipeline
+are implemented and covered by tests in the current build), and
 [`docs/api-contracts.md`](docs/api-contracts.md) for the authoritative, field-by-field REST
 contract derived from the original BMS screens.
 
@@ -68,7 +69,7 @@ contract derived from the original BMS screens.
 | Layer | Technology | Version | Replaces (legacy) |
 |---|---|---|---|
 | Language / runtime | Java (OpenJDK) LTS | 25.0.2 | COBOL |
-| Application framework | Spring Boot | 3.5.11 | CICS online region |
+| Application framework | Spring Boot | 3.5.15 | CICS online region |
 | Web / API | Spring MVC (REST) + Jakarta Validation | 3.5.x (BOM) | BMS 3270 maps |
 | Persistence | Spring Data JPA / Hibernate | 3.5.x / 6.x | VSAM KSDS + access |
 | Batch | Spring Batch | 5.x (BOM) | JCL jobs / JES |
@@ -272,12 +273,20 @@ secret, so the credentials below are unchanged from the mainframe demo:
 | `ADMIN001` | `PASSWORD` | Admin User | User-administration functions |
 | `USER0001` | `PASSWORD` | Regular User | Back-office card functions |
 
-Authenticate to obtain a token, then pass it as a bearer token on subsequent calls:
+Authenticate to obtain a token, then pass it as a bearer token on every subsequent call. All
+endpoints except `POST /api/auth/signin` and the `/actuator/**` probes are protected by
+`SecurityConfig`, so a request to a protected route **without** a valid
+`Authorization: Bearer <token>` header returns `401 Unauthorized`:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/auth/signin \
+# 1. Sign in and capture the bearer token from the JSON response (the `token` field)
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/signin \
   -H "Content-Type: application/json" \
-  -d '{"userId":"USER0001","password":"PASSWORD"}'
+  -d '{"userId":"USER0001","password":"PASSWORD"}' | jq -r '.token')
+
+# 2. Call a protected endpoint with the bearer token (returns the main-menu JSON)
+curl -s http://localhost:8080/api/menu/main \
+  -H "Authorization: Bearer ${TOKEN}"
 ```
 
 ---
@@ -305,7 +314,7 @@ route table below. All paths are prefixed with `/api` and exchange `application/
 | `CT01` | `COTRN01C` | Transaction view | `GET /api/transactions/{id}` |
 | `CT02` | `COTRN02C` | Transaction add | `POST /api/transactions` |
 | `CB00` | `COBIL00C` | Bill payment | `POST /api/billing/pay` |
-| `CR00` | `CORPT00C` | Transaction reports | `POST /api/reports/submit` &mdash; _pending CP5_ |
+| `CR00` | `CORPT00C` | Transaction reports | `POST /api/reports/submit` |
 | `CU00` | `COUSR00C` | List users | `GET /api/admin/users` |
 | `CU01` | `COUSR01C` | Add user | `POST /api/admin/users` |
 | `CU02` | `COUSR02C` | Update user | `PUT /api/admin/users/{id}` |
@@ -316,11 +325,11 @@ route table below. All paths are prefixed with `/api` and exchange `application/
 > functions) — the authoritative count. The full field-by-field request/response contract for
 > every endpoint lives in [`docs/api-contracts.md`](docs/api-contracts.md).
 
-> **Implementation status (CP4).** Sixteen of the seventeen endpoints above are implemented and
-> covered by tests. The report-submission endpoint `POST /api/reports/submit` (`CR00` /
-> `CORPT00C`) is **deferred to CP5** and is **not present in the current build** — its
-> `ReportController` and `ReportSubmissionService` (the CICS TDQ → SQS bridge) do not exist yet, so
-> the route is not callable. It is listed here for the complete target inventory only.
+> **Implementation status.** All seventeen endpoints above are implemented and covered by tests.
+> The report-submission endpoint `POST /api/reports/submit` (`CR00` / `CORPT00C`) is implemented by
+> `ReportController` and `ReportSubmissionService` — the CICS TDQ → SQS bridge — which publishes the
+> report request to the `carddemo-report-jobs.fifo` SQS queue and is exercised end-to-end against
+> LocalStack.
 
 ### Batch jobs → Spring Batch
 
@@ -329,12 +338,12 @@ The legacy data-load JCL (account/card/customer/cross-reference/transaction load
 `V3` seed). GDG provisioning becomes S3 buckets and the `USRSEC` load becomes the seeded
 `user_security` table. This data-load replacement is implemented in the current build.
 
-> **Implementation status (CP4).** The business batch pipeline described below is **deferred to
-> CP5** and is **not present in the current build** — none of the five Spring Batch jobs nor the
-> `BatchPipelineOrchestrator` exist yet. The table documents the **planned** CP5 design and is
-> included for the complete target inventory only.
+> **Implementation status.** The business batch pipeline described below is **implemented and
+> covered by tests** in the current build — all five Spring Batch jobs and the
+> `BatchPipelineOrchestrator` exist and are exercised by integration and end-to-end tests
+> (`BatchPipelineE2ETest`, `BatchPipelineOrchestratorIT`).
 
-When implemented in CP5, the business pipeline will run as a sequential 5-stage Spring Batch flow:
+The business pipeline runs as a sequential 5-stage Spring Batch flow:
 
 | Stage | Legacy JCL / program | Spring Batch job | Function |
 |---|---|---|---|
@@ -344,9 +353,9 @@ When implemented in CP5, the business pipeline will run as a sequential 5-stage 
 | 4a | `CREASTMT` / `CBSTM03A`,`CBSTM03B` | `StatementGenerationJob` | Produce account statements (text + HTML → S3) |
 | 4b | `TRANREPT` / `CBTRN03C` | `TransactionReportJob` | Date-filtered transaction report → S3 |
 
-Stage ordering and JCL `COND`-code logic will be preserved by a `BatchPipelineOrchestrator`
-(`POSTTRAN → INTCALC → COMBTRAN → CREASTMT / TRANREPT`); stages 4a and 4b will run in parallel
-after stage 3. The interest formula `(TRAN-CAT-BAL × DIS-INT-RATE) / 1200` will be reproduced with
+Stage ordering and JCL `COND`-code logic are preserved by the `BatchPipelineOrchestrator`
+(`POSTTRAN → INTCALC → COMBTRAN → CREASTMT / TRANREPT`); stages 4a and 4b run in parallel after
+stage 3. The interest formula `(TRAN-CAT-BAL × DIS-INT-RATE) / 1200` is reproduced with
 `BigDecimal` and banker's rounding, without algebraic rearrangement.
 
 ---

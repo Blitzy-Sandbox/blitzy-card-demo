@@ -40,7 +40,7 @@ import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.exception.ValidationException;
 
 /**
- * Web-layer {@code @Configuration} for the greenfield Java&nbsp;25 LTS + Spring Boot 3.5.11
+ * Web-layer {@code @Configuration} for the greenfield Java&nbsp;25 LTS + Spring Boot 3.5.15
  * migration of the AWS CardDemo COBOL/CICS/VSAM/JCL/BMS mainframe application.
  *
  * <h2>Provenance &mdash; net-new cross-cutting web infrastructure (no single COBOL source)</h2>

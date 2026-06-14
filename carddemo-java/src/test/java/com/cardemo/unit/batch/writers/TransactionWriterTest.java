@@ -19,6 +19,7 @@ import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.entity.TransactionCategoryBalance;
 import com.cardemo.model.enums.RejectCode;
 import com.cardemo.model.key.TransactionCategoryBalanceId;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.TransactionCategoryBalanceRepository;
 import com.cardemo.repository.TransactionRepository;
@@ -119,6 +120,10 @@ class TransactionWriterTest {
     @Mock
     private S3Template s3Template;
 
+    /** Observability facade (AAP §0.7.7) — mocked so processed-record and amount recording is asserted. */
+    @Mock
+    private MetricsConfig.BusinessMetrics businessMetrics;
+
     @Captor
     private ArgumentCaptor<List<Transaction>> savedTransactionsCaptor;
 
@@ -136,7 +141,7 @@ class TransactionWriterTest {
     @BeforeEach
     void setUp() {
         writer = new TransactionWriter(transactionRepository, categoryBalanceRepository,
-                accountRepository, s3Template, awsProps, FIXED_CLOCK);
+                accountRepository, s3Template, awsProps, businessMetrics, FIXED_CLOCK);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -197,6 +202,12 @@ class TransactionWriterTest {
             inOrder.verify(categoryBalanceRepository).save(any(TransactionCategoryBalance.class)); // 2700
             inOrder.verify(accountRepository).save(any(Account.class));                            // 2800
             inOrder.verify(transactionRepository).saveAll(any());                                  // 2900
+
+            // Observability wiring (AAP §0.7.7): exactly one accepted record emits one processed-counter
+            // increment tagged with the job name and one transaction-amount summary recording. This
+            // proves BusinessMetrics is invoked by the runtime posting flow, not merely defined.
+            verify(businessMetrics).recordBatchRecordProcessed("DailyTransactionPosting");
+            verify(businessMetrics).recordTransactionAmount(any());
         }
     }
 

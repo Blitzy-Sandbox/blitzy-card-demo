@@ -1,5 +1,5 @@
 # =============================================================================
-# CardDemo (Java 25 LTS + Spring Boot 3.5.11) — `test` PROFILE OVERRIDES
+# CardDemo (Java 25 LTS + Spring Boot 3.5.15) — `test` PROFILE OVERRIDES
 # =============================================================================
 # Purpose:
 #   Profile-specific Spring Boot configuration activated for automated tests
@@ -160,7 +160,7 @@ carddemo:
 # The base profile wires Micrometer -> OTLP -> Jaeger at 100% sampling. Tests
 # must NOT require an external collector, so trace EXPORT is fully disabled here
 # via TWO independent, mutually-reinforcing switches (both verified valid for
-# Spring Boot 3.5.11 against the actuator-autoconfigure configuration metadata):
+# Spring Boot 3.5.15 against the actuator-autoconfigure configuration metadata):
 #   1. management.tracing.sampling.probability = 0.0
 #        -> no spans are ever recorded / sampled.
 #   2. management.otlp.tracing.export.enabled = false

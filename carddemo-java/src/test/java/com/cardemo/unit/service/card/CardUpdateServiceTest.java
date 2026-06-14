@@ -299,6 +299,18 @@ class CardUpdateServiceTest {
     }
 
     @Test
+    @DisplayName("CWE-20 null-body guard: null request (account+card valid) → 'Card name not provided'; never saves")
+    void updateCard_nullRequestBody_throwsCardNameNotProvided() {
+        // A JSON `null` body passes the path-driven account/card edits (which run first, preserving COBOL
+        // first-error order) and fails at the first body-field (name) edit with the verbatim first-error
+        // (HTTP 400) instead of NPEing into a generic 500.
+        assertThatThrownBy(() -> service.updateCard(ACCOUNT, CARD, null))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("Card name not provided");
+        verify(cardRepository, never()).saveAndFlush(any(Card.class));
+    }
+
+    @Test
     @DisplayName("card non-numeric (account valid) → 16-digit CARD ID FILTER message; never saves")
     void updateCard_cardNonNumeric_accountValid_throwsCard16Digit() {
         assertThatThrownBy(() -> service.updateCard(ACCOUNT, "12A4567890123456", request("Jane Smith", "Y", "11", "2030")))

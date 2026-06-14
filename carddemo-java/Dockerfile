@@ -72,7 +72,7 @@ COPY .mvn/ .mvn/
 RUN chmod +x mvnw
 
 # Warm the local Maven repository: bootstrap Maven 3.9.9 via the wrapper and
-# resolve the full dependency closure declared in pom.xml (Spring Boot 3.5.11
+# resolve the full dependency closure declared in pom.xml (Spring Boot 3.5.15
 # BOM, Spring Cloud AWS 3.3.0, Testcontainers 2.0.3, Flyway, …). Flags:
 # -B = batch / non-interactive, -ntp = suppress transfer-progress noise.
 RUN ./mvnw -B -ntp dependency:go-offline

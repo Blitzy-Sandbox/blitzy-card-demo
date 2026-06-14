@@ -244,6 +244,18 @@ class TransactionAddServiceTest {
         }
 
         @Test
+        @DisplayName("CWE-20 null-body guard: null request -> 'Account or Card Number must be entered...' (no collaborator touched)")
+        void nullRequestBody_rejectedBeforeAnyLookup() {
+            // A JSON `null` body (the controller omits @Valid to preserve message ordering) must not NPE
+            // inside resolveCrossReference; it maps to the first key-field edit (HTTP 400) before any READ.
+            assertThatThrownBy(() -> service.addTransaction(null))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("Account or Card Number must be entered");
+
+            verifyNoInteractions(cardCrossReferenceRepository, transactionRepository, dateValidationService);
+        }
+
+        @Test
         @DisplayName("account numeric but CXACAIX empty -> 'Account ID NOT found...' (READ-CXACAIX NOTFND)")
         void accountNumericNotFound_rejected() {
             TransactionDto request = validRequest();

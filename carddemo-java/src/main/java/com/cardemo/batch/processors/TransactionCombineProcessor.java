@@ -8,7 +8,7 @@ import org.springframework.stereotype.Component;
 /**
  * Spring Batch {@link ItemProcessor} and reusable sort {@link Comparator} that reproduce the
  * legacy AWS CardDemo <strong>{@code COMBTRAN}</strong> combine/sort step in the greenfield
- * Java&nbsp;25 LTS + Spring Boot&nbsp;3.5.11 migration.
+ * Java&nbsp;25 LTS + Spring Boot&nbsp;3.5.15 migration.
  *
  * <h2>Provenance &mdash; translated from JCL (no COBOL program exists)</h2>
  * <p>This component is translated from the JES job <strong>{@code app/jcl/COMBTRAN.jcl}</strong>

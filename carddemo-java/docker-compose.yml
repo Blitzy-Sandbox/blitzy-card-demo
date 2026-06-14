@@ -282,20 +282,26 @@ services:
       # region). Set both the SDK env var and the Spring property form.
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       SPRING_CLOUD_AWS_REGION_STATIC: ${AWS_DEFAULT_REGION:-us-east-1}
-      # NON-SECRET test credentials — LocalStack ignores the values but the AWS
-      # SDK's default provider chain requires them to be present (§0.8.3).
+      # NON-SECRET throwaway LocalStack placeholders (CWE-798: NOT real credentials).
+      # Every AWS client in this stack is pinned to the LocalStack edge endpoint
+      # (AWS_ENDPOINT_URL=http://localstack:4566 above), and LocalStack IGNORES
+      # credential values entirely, so "test"/"test" can never authenticate against
+      # — or even reach — a live AWS account (AAP §0.7.7 zero-live-AWS / §0.8.3). They
+      # are present only because the AWS SDK default provider chain requires non-empty
+      # values; a real run would override them via the AWS_* env vars (see .env.example).
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
 
       # --- Auth token signing secret (COMMAREA → stateless token, §0.1.2) ----
       # Consumed by com.cardemo.security.TokenService for HMAC-SHA256 token
-      # signing/validation. TokenService fails fast at startup if this is blank or
-      # shorter than 256 bits. The inline default is a clearly-labelled NON-SECRET
-      # local-dev value (>= 32 bytes) so `docker compose up` works out-of-the-box;
-      # a real random secret is supplied via the CARDDEMO_SECURITY_TOKEN_SECRET env
-      # var (never committed, AAP §0.7.2). Matches the ${VAR:-default} convention
-      # used by the datasource/AWS settings above.
-      CARDDEMO_SECURITY_TOKEN_SECRET: ${CARDDEMO_SECURITY_TOKEN_SECRET:-local-development-only-carddemo-hs256-token-signing-secret-change-me}
+      # signing/validation. CWE-798 hardening: there is intentionally NO inline
+      # default for the token signing key — it is REQUIRED and supplied exclusively
+      # via the CARDDEMO_SECURITY_TOKEN_SECRET env var (see .env.example). The `:?`
+      # form makes `docker compose up` FAIL FAST with a clear message when it is
+      # unset, so the stack can never sign tokens with a known committed key
+      # (AAP §0.7.2). Copy .env.example to .env and set a real >= 256-bit random
+      # secret before running.
+      CARDDEMO_SECURITY_TOKEN_SECRET: ${CARDDEMO_SECURITY_TOKEN_SECRET:?set CARDDEMO_SECURITY_TOKEN_SECRET to a random >=256-bit value (see .env.example); no default is provided}
 
       # --- JVM options (optional, supplied at runtime; empty by default) ------
       JAVA_OPTS: ${JAVA_OPTS:-}

@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.RestController;
  * single route <strong>{@code POST /api/auth/signin}</strong> &mdash; authenticate a user and, on
  * success, issue a session token &mdash; and is a thin adapter over {@link AuthenticationService}.
  *
- * <p>This controller is the Java&nbsp;25 / Spring&nbsp;Boot&nbsp;3.5.11 realization of
+ * <p>This controller is the Java&nbsp;25 / Spring&nbsp;Boot&nbsp;3.5.15 realization of
  * AAP&nbsp;&sect;0.4.1 (tech-spec&nbsp;L646: <em>{@code controller/AuthController.java} CREATE &larr;
  * {@code app/bms/COSGN00.bms}, {@code app/cpy-bms/COSGN00.CPY} &mdash; "POST /api/auth/signin"</em>)
  * and of AAP&nbsp;&sect;0.3.4 (BMS&nbsp;&rarr;&nbsp;REST contract translation). It preserves feature

@@ -4,7 +4,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
- * Spring Boot bootstrap entry point for the greenfield <strong>Java 25 LTS + Spring Boot 3.5.11</strong>
+ * Spring Boot bootstrap entry point for the greenfield <strong>Java 25 LTS + Spring Boot 3.5.15</strong>
  * migration of the AWS CardDemo COBOL/CICS/VSAM/JCL/BMS mainframe application.
  *
  * <p>This class carries the single {@code main(String[])} that launches the entire migrated

@@ -26,7 +26,7 @@ import com.cardemo.config.AwsConfig;
 
 /**
  * Custom Spring Boot Actuator {@link HealthIndicator} definitions for the greenfield Java 25 LTS +
- * Spring Boot 3.5.11 migration of the AWS CardDemo COBOL/CICS/VSAM/JCL/BMS mainframe application.
+ * Spring Boot 3.5.15 migration of the AWS CardDemo COBOL/CICS/VSAM/JCL/BMS mainframe application.
  *
  * <h2>Provenance &mdash; net-new observability component (no COBOL equivalent)</h2>
  * <p>This class has <strong>no COBOL source</strong>: it is a pure technology-substitution component

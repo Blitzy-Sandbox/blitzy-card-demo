@@ -3,6 +3,7 @@ package com.cardemo.service.auth;
 import java.util.Locale;
 import java.util.Optional;
 
+import io.micrometer.observation.annotation.Observed;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -16,12 +17,13 @@ import com.cardemo.model.dto.SignOnRequest;
 import com.cardemo.model.dto.SignOnResponse;
 import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.enums.UserType;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.UserSecurityRepository;
 import com.cardemo.security.TokenService;
 
 /**
  * Sign-on / authentication business-logic service &mdash; the Java&nbsp;25 /
- * Spring&nbsp;Boot&nbsp;3.5.11 translation of the legacy AWS CardDemo CICS COBOL
+ * Spring&nbsp;Boot&nbsp;3.5.15 translation of the legacy AWS CardDemo CICS COBOL
  * program <strong>{@code app/cbl/COSGN00C.cbl}</strong> (PROGRAM-ID
  * {@code COSGN00C}, CICS transaction id {@code CC00}, function "Signon Screen
  * for the CardDemo Application").
@@ -195,6 +197,18 @@ public class AuthenticationService {
     private final TokenService tokenService;
 
     /**
+     * Business-metrics facade (observability cross-cutting requirement, AAP §0.7.7).
+     *
+     * <p>Technology substitution: the legacy COBOL/CICS {@code COSGN00C} emitted no
+     * telemetry. This service records every credential-verification outcome onto the
+     * {@code carddemo.auth.attempts} counter (tag {@code outcome=success|failure}) via
+     * {@link MetricsConfig.BusinessMetrics#recordAuthAttempt(boolean)} so the sign-on
+     * flow contributes real business telemetry to Prometheus/Grafana. Metrics calls are
+     * telemetry-only and never alter the authentication result.</p>
+     */
+    private final MetricsConfig.BusinessMetrics businessMetrics;
+
+    /**
      * Constructs the service with its collaborators autowired by Spring.
      *
      * <p>The {@link PasswordEncoder} is the shared {@code BCryptPasswordEncoder}
@@ -209,17 +223,22 @@ public class AuthenticationService {
      * @param passwordEncoder        the shared BCrypt encoder from {@code SecurityConfig}
      * @param tokenService           the stateless-token issuer/validator
      *                               (COMMAREA -&gt; token substitution)
+     * @param businessMetrics        the observability facade onto which each
+     *                               authentication outcome is recorded (AAP §0.7.7)
      */
     public AuthenticationService(
             UserSecurityRepository userSecurityRepository,
             PasswordEncoder passwordEncoder,
-            TokenService tokenService) {
+            TokenService tokenService,
+            MetricsConfig.BusinessMetrics businessMetrics) {
         this.userSecurityRepository = userSecurityRepository;
         // PasswordEncoder is the BCryptPasswordEncoder @Bean from SecurityConfig (C-003).
         this.passwordEncoder = passwordEncoder;
         // Token issuance is delegated; the signing secret lives inside TokenService
         // (injected + validated there), never as a literal here (AAP §0.7.2).
         this.tokenService = tokenService;
+        // Observability (AAP §0.7.7): record every credential-verification outcome.
+        this.businessMetrics = businessMetrics;
     }
 
     /**
@@ -271,8 +290,16 @@ public class AuthenticationService {
      *                                 verbatim "User not found. Try again ..." client-safe message
      *                                 (COSGN00C L249; AAP §0.7.2 behavioral parity)
      */
+    @Observed(name = "carddemo.auth.signon", contextualName = "auth.sign-on")
     @Transactional(readOnly = true)
     public SignOnResponse signOn(SignOnRequest request) {
+        // CWE-20 null-body guard: the controller deliberately omits @Valid to preserve COBOL message
+        // ordering, so a JSON `null` request body would otherwise NPE on the first field deref and
+        // surface as a generic HTTP 500. Treat an absent body as an absent/empty COMMAREA, yielding the
+        // SAME verbatim first-error the empty-user-id WHEN clause raises (HTTP 400, not a 500).
+        if (request == null) {
+            throw new ValidationException(MSG_ENTER_USER_ID);
+        }
         // -----------------------------------------------------------------
         // PROCESS-ENTER-KEY EVALUATE TRUE cascade (COSGN00C L117-130).
         // ORDER IS MANDATORY and first-match-wins, with no fall-through
@@ -338,6 +365,8 @@ public class AuthenticationService {
         // "Did not find this account ..." 404.
         if (found.isEmpty()) {
             log.debug("Sign-on failed: no USRSEC record for user id [{}]", upperUserId);
+            // Observability (AAP §0.7.7): a failed credential verification (unknown user).
+            businessMetrics.recordAuthAttempt(false);
             throw new RecordNotFoundException("UserSecurity", upperUserId, MSG_USER_NOT_FOUND);
         }
 
@@ -367,6 +396,8 @@ public class AuthenticationService {
         // itself (the single permitted behavioral change) is unchanged.
         if (!passwordEncoder.matches(upperPassword, user.getSecUsrPwd())) {
             log.debug("Sign-on failed: password mismatch for user id [{}]", upperUserId);
+            // Observability (AAP §0.7.7): a failed credential verification (wrong password).
+            businessMetrics.recordAuthAttempt(false);
             throw new ValidationException(MSG_WRONG_PASSWORD);
         }
 
@@ -410,6 +441,8 @@ public class AuthenticationService {
         response.setUserType(commArea.getUserType());
         response.setToTranId(commArea.getToTranId());
         response.setToProgram(commArea.getToProgram());
+        // Observability (AAP §0.7.7): a successful authentication attempt.
+        businessMetrics.recordAuthAttempt(true);
         return response;
     }
 

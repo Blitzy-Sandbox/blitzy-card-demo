@@ -19,7 +19,7 @@ import com.cardemo.security.TokenAuthenticationFilter;
 import com.cardemo.security.TokenService;
 
 /**
- * Foundational Spring Security configuration for the greenfield Java 25 LTS + Spring Boot 3.5.11
+ * Foundational Spring Security configuration for the greenfield Java 25 LTS + Spring Boot 3.5.15
  * migration of the AWS CardDemo COBOL/CICS mainframe application.
  *
  * <p>This {@code @Configuration} is the single home of the application's HTTP security posture and

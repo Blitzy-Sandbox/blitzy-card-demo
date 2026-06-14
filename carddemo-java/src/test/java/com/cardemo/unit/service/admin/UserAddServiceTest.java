@@ -193,6 +193,17 @@ class UserAddServiceTest {
     }
 
     @Test
+    @DisplayName("CWE-20 null-body guard: null request -> 'First Name can NOT be empty...'; nothing saved")
+    void nullRequestBodyRejectedAsValidation() {
+        // A JSON `null` body (the controller omits @Valid to preserve message ordering) must not NPE into
+        // a generic 500; it maps to the first emptiness edit (HTTP 400) before any save.
+        assertThatThrownBy(() -> userAddService.addUser(null))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_FIRST_NAME_EMPTY);
+        verify(userSecurityRepository, never()).save(any());
+    }
+
+    @Test
     @DisplayName("Null first name (LOW-VALUES) -> 'First Name can NOT be empty...'; nothing saved")
     void nullFirstName() {
         UserSecurityDto dto = validRequest();

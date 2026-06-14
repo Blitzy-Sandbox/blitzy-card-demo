@@ -11,7 +11,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.stereotype.Component;
 
 /**
- * Custom business-metric definitions for the greenfield Java 25 LTS + Spring Boot 3.5.11 migration
+ * Custom business-metric definitions for the greenfield Java 25 LTS + Spring Boot 3.5.15 migration
  * of the AWS CardDemo COBOL/CICS mainframe application.
  *
  * <h2>Provenance &mdash; net-new observability component (no COBOL equivalent)</h2>

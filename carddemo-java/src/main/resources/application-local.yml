@@ -1,5 +1,5 @@
 # =============================================================================
-# CardDemo (Java 25 LTS + Spring Boot 3.5.11) — `local` PROFILE OVERRIDES
+# CardDemo (Java 25 LTS + Spring Boot 3.5.15) — `local` PROFILE OVERRIDES
 # =============================================================================
 # Purpose:
 #   Profile-specific Spring Boot configuration for running CardDemo on a
@@ -135,6 +135,20 @@ spring:
 #   * CICS TDQ 'JOBS' WRITEQ (CORPT00C online->batch bridge) -> SQS FIFO trigger (D-004).
 #   * CICS notification messaging -> SNS topic fan-out.
 carddemo:
+  # ---------------------------------------------------------------------------
+  # Auth-token signing secret — local-dev NON-SECRET default
+  # ---------------------------------------------------------------------------
+  # The base application.yml intentionally carries NO default for the token secret
+  # (CWE-798: a production/base run fails fast when CARDDEMO_SECURITY_TOKEN_SECRET is
+  # unset). The `local` profile restores a clearly-labelled NON-SECRET developer
+  # default here — mirroring the NON-SECRET AWS ("test"/"test") and DB
+  # (carddemo/carddemo) local defaults in this same file — so a host
+  # `mvn spring-boot:run -Plocal` or `docker compose up` boots out-of-the-box. It is
+  # >= 32 bytes (the 256-bit HS256 minimum TokenService enforces at startup).
+  # docker-compose OVERRIDES it via CARDDEMO_SECURITY_TOKEN_SECRET. NEVER production.
+  security:
+    token:
+      secret: ${CARDDEMO_SECURITY_TOKEN_SECRET:local-development-only-carddemo-hs256-token-signing-secret-change-me}
   aws:
     s3:
       # Batch file staging input (replaces sequential PS datasets / GDG input generations).

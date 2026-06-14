@@ -4,6 +4,7 @@ import com.cardemo.config.AwsConfig;
 import com.cardemo.model.dto.PostedTransactionResult;
 import com.cardemo.model.entity.DailyTransaction;
 import com.cardemo.model.enums.RejectCode;
+import com.cardemo.observability.MetricsConfig;
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Template;
 import java.io.ByteArrayInputStream;
@@ -231,6 +232,16 @@ public class RejectWriter implements ItemWriter<PostedTransactionResult> {
     private final Clock clock;
 
     /**
+     * Business-metrics facade (observability cross-cutting requirement, AAP §0.7.7).
+     *
+     * <p>Technology substitution: the legacy COBOL batch ({@code CBTRN02C} reject branch) emitted no
+     * telemetry. For each rejected record observed in a chunk, this writer increments
+     * {@code carddemo.batch.records.rejected} (tag {@code reason=<RejectCode>}) via
+     * {@link MetricsConfig.BusinessMetrics}. Telemetry-only; it never alters the reject record.</p>
+     */
+    private final MetricsConfig.BusinessMetrics businessMetrics;
+
+    /**
      * Production constructor used by Spring for component injection. Uses the system-default-zone
      * {@link Clock} so the S3 generation prefix reflects the current date.
      *
@@ -238,11 +249,14 @@ public class RejectWriter implements ItemWriter<PostedTransactionResult> {
      *                              {@code null}
      * @param awsResourceProperties the bound AWS resource-name properties supplying the batch-output
      *                              bucket; must not be {@code null}
+     * @param businessMetrics       the observability facade (AAP §0.7.7) onto which each rejected
+     *                              record is recorded; must not be {@code null}
      */
     @Autowired
     public RejectWriter(final S3Template s3Template,
-                        final AwsConfig.AwsResourceProperties awsResourceProperties) {
-        this(s3Template, awsResourceProperties, Clock.systemDefaultZone());
+                        final AwsConfig.AwsResourceProperties awsResourceProperties,
+                        final MetricsConfig.BusinessMetrics businessMetrics) {
+        this(s3Template, awsResourceProperties, businessMetrics, Clock.systemDefaultZone());
     }
 
     /**
@@ -251,14 +265,17 @@ public class RejectWriter implements ItemWriter<PostedTransactionResult> {
      *
      * @param s3Template            the S3 template; must not be {@code null}
      * @param awsResourceProperties the bound AWS resource-name properties; must not be {@code null}
+     * @param businessMetrics       the observability facade (AAP §0.7.7); must not be {@code null}
      * @param clock                 the clock used for the S3 generation prefix; must not be
      *                              {@code null}
      */
     public RejectWriter(final S3Template s3Template,
                         final AwsConfig.AwsResourceProperties awsResourceProperties,
+                        final MetricsConfig.BusinessMetrics businessMetrics,
                         final Clock clock) {
         this.s3Template = s3Template;
         this.awsResourceProperties = awsResourceProperties;
+        this.businessMetrics = businessMetrics;
         this.clock = clock;
     }
 
@@ -300,6 +317,11 @@ public class RejectWriter implements ItemWriter<PostedTransactionResult> {
                 continue;
             }
             rejectRecords.add(formatRejectRecord(item));
+
+            // Observability (AAP §0.7.7): record one rejected record per non-zero-reason item, tagged
+            // by its canonical RejectCode (low-cardinality). Telemetry-only; never alters the record.
+            final RejectCode itemRejectCode = item.rejectCode();
+            businessMetrics.recordBatchRecordRejected(itemRejectCode != null ? itemRejectCode.name() : null);
 
             // Track the first/last rejected daily-transaction id for the deterministic S3 key.
             final String dalytranId = item.originalTransaction().getDalytranId();
