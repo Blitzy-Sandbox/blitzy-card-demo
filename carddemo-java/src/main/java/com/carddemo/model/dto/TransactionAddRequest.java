@@ -32,34 +32,34 @@ import java.math.BigDecimal;
  * legend — are intentionally excluded from this request contract. Source commit
  * 27d6c6f.</p>
  *
- * @param accountId    account identifier (COBOL {@code ACTIDIN}); numeric, up to 11 digits
- * @param cardNumber   card number (COBOL {@code CARDNIN}); numeric, up to 16 digits
- * @param typeCode     transaction type code (COBOL {@code TTYPCD}); up to 2 characters
- * @param categoryCode transaction category code (COBOL {@code TCATCD}); up to 4 characters
- * @param source       transaction source (COBOL {@code TRNSRC}); up to 10 characters
- * @param description  transaction description (COBOL {@code TDESC}); up to 60 characters
+ * @param accountId    account identifier (COBOL {@code ACTIDIN}); mandatory, numeric, up to 11 digits
+ * @param cardNumber   card number (COBOL {@code CARDNIN}); mandatory, numeric, up to 16 digits
+ * @param typeCode     transaction type code (COBOL {@code TTYPCD}); mandatory, exactly 2 numeric digits
+ * @param categoryCode transaction category code (COBOL {@code TCATCD}); mandatory, exactly 4 numeric digits
+ * @param source       transaction source (COBOL {@code TRNSRC}); mandatory, up to 10 characters
+ * @param description  transaction description (COBOL {@code TDESC}); mandatory, up to 60 characters
  * @param amount       transaction amount (COBOL {@code TRNAMT} / {@code TRAN-AMT PIC S9(9)V99})
- * @param originDate   origination date (COBOL {@code TORIGDT}); up to 10 characters
- * @param processDate  processing date (COBOL {@code TPROCDT}); up to 10 characters
- * @param merchantId   merchant identifier (COBOL {@code MID}); up to 9 characters
- * @param merchantName merchant name (COBOL {@code MNAME}); up to 30 characters
- * @param merchantCity merchant city (COBOL {@code MCITY}); up to 25 characters
- * @param merchantZip  merchant ZIP code (COBOL {@code MZIP}); up to 10 characters
- * @param confirm      confirmation flag (COBOL {@code CONFIRM}); single character
+ * @param originDate   origination date (COBOL {@code TORIGDT}); mandatory, {@code YYYY-MM-DD} format
+ * @param processDate  processing date (COBOL {@code TPROCDT}); mandatory, {@code YYYY-MM-DD} format
+ * @param merchantId   merchant identifier (COBOL {@code MID}); mandatory, numeric, up to 9 digits
+ * @param merchantName merchant name (COBOL {@code MNAME}); mandatory, up to 30 characters
+ * @param merchantCity merchant city (COBOL {@code MCITY}); mandatory, up to 25 characters
+ * @param merchantZip  merchant ZIP code (COBOL {@code MZIP}); mandatory, up to 10 characters
+ * @param confirm      confirmation flag (COBOL {@code CONFIRM}); optional, one of {@code Y}/{@code y}/{@code N}/{@code n} when present
  */
 public record TransactionAddRequest(
         @NotBlank @Pattern(regexp = "\\d{1,11}") @Size(max = 11) String accountId,
         @NotBlank @Pattern(regexp = "\\d{1,16}") @Size(max = 16) String cardNumber,
-        @Size(max = 2) String typeCode,
-        @Size(max = 4) String categoryCode,
-        @Size(max = 10) String source,
-        @Size(max = 60) String description,
+        @NotBlank @Pattern(regexp = "\\d{2}") @Size(max = 2) String typeCode,
+        @NotBlank @Pattern(regexp = "\\d{4}") @Size(max = 4) String categoryCode,
+        @NotBlank @Size(max = 10) String source,
+        @NotBlank @Size(max = 60) String description,
         @NotNull @Digits(integer = 9, fraction = 2) BigDecimal amount,
-        @Size(max = 10) String originDate,
-        @Size(max = 10) String processDate,
-        @Size(max = 9) String merchantId,
-        @Size(max = 30) String merchantName,
-        @Size(max = 25) String merchantCity,
-        @Size(max = 10) String merchantZip,
-        @Size(max = 1) String confirm) {
+        @NotBlank @Pattern(regexp = "\\d{4}-\\d{2}-\\d{2}") @Size(max = 10) String originDate,
+        @NotBlank @Pattern(regexp = "\\d{4}-\\d{2}-\\d{2}") @Size(max = 10) String processDate,
+        @NotBlank @Pattern(regexp = "\\d{1,9}") @Size(max = 9) String merchantId,
+        @NotBlank @Size(max = 30) String merchantName,
+        @NotBlank @Size(max = 25) String merchantCity,
+        @NotBlank @Size(max = 10) String merchantZip,
+        @Pattern(regexp = "[YyNn]?") @Size(max = 1) String confirm) {
 }

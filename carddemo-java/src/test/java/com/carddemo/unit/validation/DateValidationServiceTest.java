@@ -42,11 +42,12 @@ class DateValidationServiceTest {
     }
 
     @Test
-    @DisplayName("Month 13 is an invalid calendar value (2508)")
-    void month13IsBadDateValue() {
+    @DisplayName("Month 13 is an invalid month (2517)")
+    void month13IsInvalidMonth() {
         DateValidationResult result = service.validateDate("2024-13-01", "YYYY-MM-DD");
         assertFalse(result.valid());
-        assertEquals(DateValidationService.MSG_BAD_DATE_VALUE, result.messageNumber());
+        assertEquals(DateValidationService.MSG_INVALID_MONTH, result.messageNumber());
+        assertEquals(DateValidationService.RESULT_INVALID_MONTH, result.resultText());
     }
 
     @Test
@@ -66,11 +67,29 @@ class DateValidationServiceTest {
     }
 
     @Test
-    @DisplayName("Month 00 is an invalid calendar value (2508)")
-    void month00IsBadDateValue() {
+    @DisplayName("Month 00 is an invalid month (2517)")
+    void month00IsInvalidMonth() {
         DateValidationResult result = service.validateDate("2024-00-01", "YYYY-MM-DD");
         assertFalse(result.valid());
-        assertEquals(DateValidationService.MSG_BAD_DATE_VALUE, result.messageNumber());
+        assertEquals(DateValidationService.MSG_INVALID_MONTH, result.messageNumber());
+        assertEquals(DateValidationService.RESULT_INVALID_MONTH, result.resultText());
+    }
+
+    @Test
+    @DisplayName("Invalid month outranks a bad day when both are wrong (2517)")
+    void invalidMonthOutranksBadDay() {
+        DateValidationResult result = service.validateDate("2024-13-32", "YYYY-MM-DD");
+        assertFalse(result.valid());
+        assertEquals(DateValidationService.MSG_INVALID_MONTH, result.messageNumber());
+    }
+
+    @Test
+    @DisplayName("Zero year with an accompanying failure is year-in-era-zero (2521)")
+    void zeroYearIsYearInEraZero() {
+        DateValidationResult result = service.validateDate("0000-13-01", "YYYY-MM-DD");
+        assertFalse(result.valid());
+        assertEquals(DateValidationService.MSG_YEAR_IN_ERA_ZERO, result.messageNumber());
+        assertEquals(DateValidationService.RESULT_YEAR_IN_ERA_ZERO, result.resultText());
     }
 
     @Test

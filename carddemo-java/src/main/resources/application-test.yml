@@ -193,3 +193,13 @@ carddemo:
       report-queue: ${SQS_REPORT_QUEUE:carddemo-report-jobs.fifo}
     sns:
       notifications-topic: ${SNS_NOTIFICATIONS_TOPIC:carddemo-notifications}
+
+  # ---------------------------------------------------------------------------
+  # Web / CORS — explicit for the test profile (consumed by config/WebConfig).
+  # Declared here (matching the base application.yml key) so every read property
+  # exists in configuration; the permissive "*" default is appropriate for the
+  # hermetic test context and is env-overridable via CARDDEMO_CORS_ALLOWED_ORIGINS.
+  # ---------------------------------------------------------------------------
+  web:
+    cors:
+      allowed-origins: ${CARDDEMO_CORS_ALLOWED_ORIGINS:*}

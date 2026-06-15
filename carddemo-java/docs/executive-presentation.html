@@ -563,35 +563,44 @@ flowchart LR
         <div class="divider-rule"></div>
       </section>
 
-      <!-- ===== Slide 13: THE 8 VALIDATION GATES (styled checklist) ===== -->
+      <!-- ===== Slide 13: VALIDATION GATES 1-4 (styled checklist) ===== -->
       <section>
         <span class="eyebrow">Validation Framework</span>
-        <h2 class="slide-heading">The Eight Validation Gates</h2>
+        <h2 class="slide-heading">Validation Gates 1&ndash;4</h2>
         <div class="heading-accent"></div>
         <ul class="checklist">
           <li><span class="check-icon"><i data-lucide="circle-check" width="22" height="22"></i></span>
-            <span><strong>Gate 1 — End-to-end boundary</strong><span class="gate-desc">Real file through the posting job</span></span></li>
+            <span><strong>Gate 1 &mdash; End-to-end boundary</strong><span class="gate-desc">Real file posted</span></span></li>
           <li><span class="check-icon"><i data-lucide="circle-check" width="22" height="22"></i></span>
-            <span><strong>Gate 2 — Zero-warning build</strong><span class="gate-desc">Clean verify, warnings as errors</span></span></li>
+            <span><strong>Gate 2 &mdash; Zero-warning build</strong><span class="gate-desc">Warnings as errors</span></span></li>
           <li><span class="check-icon"><i data-lucide="circle-check" width="22" height="22"></i></span>
-            <span><strong>Gate 3 — Performance baseline</strong><span class="gate-desc">Throughput and memory captured</span></span></li>
+            <span><strong>Gate 3 &mdash; Performance baseline</strong><span class="gate-desc">Throughput captured</span></span></li>
           <li><span class="check-icon"><i data-lucide="circle-check" width="22" height="22"></i></span>
-            <span><strong>Gate 4 — Named real-world artifacts</strong><span class="gate-desc">All nine ASCII fixtures processed</span></span></li>
-          <li><span class="check-icon"><i data-lucide="circle-check" width="22" height="22"></i></span>
-            <span><strong>Gate 5 — Contract verification</strong><span class="gate-desc">Records, REST, SQS, S3 layouts</span></span></li>
-          <li><span class="check-icon"><i data-lucide="circle-check" width="22" height="22"></i></span>
-            <span><strong>Gate 6 — Unsafe-code audit</strong><span class="gate-desc">Reflection and raw SQL near zero</span></span></li>
-          <li><span class="check-icon"><i data-lucide="circle-check" width="22" height="22"></i></span>
-            <span><strong>Gate 7 — Scope matching</strong><span class="gate-desc">Multi-subsystem batch and I/O</span></span></li>
-          <li><span class="check-icon"><i data-lucide="circle-check" width="22" height="22"></i></span>
-            <span><strong>Gate 8 — Integration sign-off</strong><span class="gate-desc">Coverage, CVE scan, traceability</span></span></li>
+            <span><strong>Gate 4 &mdash; Named artifacts</strong><span class="gate-desc">Nine fixtures loaded</span></span></li>
         </ul>
       </section>
 
-      <!-- ===== Slide 14: RISK MATRIX (color-coded table) ===== -->
+      <!-- ===== Slide 13b: VALIDATION GATES 5-8 (styled checklist) ===== -->
+      <section>
+        <span class="eyebrow">Validation Framework</span>
+        <h2 class="slide-heading">Validation Gates 5&ndash;8</h2>
+        <div class="heading-accent"></div>
+        <ul class="checklist">
+          <li><span class="check-icon"><i data-lucide="circle-check" width="22" height="22"></i></span>
+            <span><strong>Gate 5 &mdash; Contract verification</strong><span class="gate-desc">REST, SQS, S3</span></span></li>
+          <li><span class="check-icon"><i data-lucide="circle-check" width="22" height="22"></i></span>
+            <span><strong>Gate 6 &mdash; Unsafe-code audit</strong><span class="gate-desc">Reflection near zero</span></span></li>
+          <li><span class="check-icon"><i data-lucide="circle-check" width="22" height="22"></i></span>
+            <span><strong>Gate 7 &mdash; Scope matching</strong><span class="gate-desc">Multi-subsystem batch</span></span></li>
+          <li><span class="check-icon"><i data-lucide="circle-check" width="22" height="22"></i></span>
+            <span><strong>Gate 8 &mdash; Integration sign-off</strong><span class="gate-desc">Coverage and CVE scan</span></span></li>
+        </ul>
+      </section>
+
+      <!-- ===== Slide 14: RISK MATRIX 1 of 2 (color-coded table) ===== -->
       <section>
         <span class="eyebrow">Risk Posture</span>
-        <h2 class="slide-heading">Risk Matrix</h2>
+        <h2 class="slide-heading">Risk Matrix &mdash; Primary</h2>
         <div class="heading-accent"></div>
         <table class="risk-matrix">
           <thead>
@@ -599,29 +608,43 @@ flowchart LR
           </thead>
           <tbody>
             <tr>
-              <td>Spring Boot 3.5 OSS support ends 2026-06-30; 4.0 is GA</td>
+              <td>Spring Boot 3.5 end-of-support</td>
               <td><span class="risk-badge low">Low</span></td>
-              <td>Forward-looking, out of scope; upgrade path tracked</td>
+              <td>Out of scope; path tracked</td>
             </tr>
             <tr>
-              <td>AWS exercised only via LocalStack</td>
+              <td>AWS via LocalStack only</td>
               <td><span class="risk-badge low">Low</span></td>
-              <td>Contracts verified locally; endpoints swap by config</td>
+              <td>Verified locally; config swap</td>
             </tr>
             <tr>
-              <td>BigDecimal arithmetic overhead</td>
+              <td>BigDecimal overhead</td>
               <td><span class="risk-badge low">Low</span></td>
-              <td>Bounded to financial fields; preserves exact precision</td>
+              <td>Bounded to money fields</td>
             </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ===== Slide 14b: RISK MATRIX 2 of 2 (color-coded table) ===== -->
+      <section>
+        <span class="eyebrow">Risk Posture</span>
+        <h2 class="slide-heading">Risk Matrix &mdash; Further</h2>
+        <div class="heading-accent"></div>
+        <table class="risk-matrix">
+          <thead>
+            <tr><th>Risk</th><th>Rating</th><th>Mitigation</th></tr>
+          </thead>
+          <tbody>
             <tr>
-              <td>Password migration plaintext to BCrypt</td>
+              <td>Password move to BCrypt</td>
               <td><span class="risk-badge medium">Medium</span></td>
-              <td>Hash-on-first-login preserves the existing login flow</td>
+              <td>Hash on first login</td>
             </tr>
             <tr>
-              <td>SQS FIFO 300 messages/second ceiling</td>
+              <td>SQS FIFO throughput ceiling</td>
               <td><span class="risk-badge low">Low</span></td>
-              <td>Sufficient for report-submission volume</td>
+              <td>Sufficient for reports</td>
             </tr>
           </tbody>
         </table>

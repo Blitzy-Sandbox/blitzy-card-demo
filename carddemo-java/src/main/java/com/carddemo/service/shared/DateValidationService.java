@@ -79,6 +79,12 @@ public class DateValidationService {
     /** Result text for non-numeric data in numeric positions. */
     public static final String RESULT_NON_NUMERIC = "Nonnumeric data";
 
+    /** Result text for an out-of-range month value (FC-INVALID-MONTH). */
+    public static final String RESULT_INVALID_MONTH = "Invalid month";
+
+    /** Result text for a zero year-in-era (FC-YEAR-IN-ERA-ZERO). */
+    public static final String RESULT_YEAR_IN_ERA_ZERO = "YearInEra is 0";
+
     /** Result text for the generic invalid-date fallback (CSUTLDTC WHEN OTHER). */
     public static final String RESULT_INVALID = "Date is invalid";
 
@@ -88,6 +94,13 @@ public class DateValidationService {
      * FC-UNSUPP-RANGE ({@value #MSG_UNSUPPORTED_RANGE}) feedback outcome.
      */
     private static final LocalDate LILLIAN_EPOCH = LocalDate.of(1582, 10, 15);
+
+    /**
+     * Sentinel returned by {@link #extractNumericField(String, String, char)}
+     * when the requested field letter is not present in the format, distinguishing
+     * an absent field from a legitimately parsed zero value.
+     */
+    private static final int FIELD_ABSENT = -1;
 
     /**
      * Creates the stateless date-validation service. The component holds no
@@ -136,6 +149,24 @@ public class DateValidationService {
             if (hasNonDigitInNumericPositions(value, fmt)) {
                 return new DateValidationResult(false, SEVERITY_INVALID, MSG_NON_NUMERIC_DATA,
                         RESULT_NON_NUMERIC, date, cobolFormat);
+            }
+            // Every numeric position holds a digit, so the parse failed on a value
+            // rule. Classify it in the same precedence CEEDAYS applies among value
+            // errors: year-in-era-zero, then invalid month, then a generic bad date
+            // value (such as a day that does not exist for the resolved month). The
+            // era-zero case is only reachable when a zero year accompanies another
+            // failure; a standalone zero year parses and is screened by the Lillian
+            // range check above. Invalid-era is not represented because the accepted
+            // formats are era-less (proleptic year), so CEEDAYS cannot raise it here.
+            int year = extractNumericField(value, fmt, 'Y');
+            if (year == 0) {
+                return new DateValidationResult(false, SEVERITY_INVALID, MSG_YEAR_IN_ERA_ZERO,
+                        RESULT_YEAR_IN_ERA_ZERO, date, cobolFormat);
+            }
+            int month = extractNumericField(value, fmt, 'M');
+            if (month != FIELD_ABSENT && (month < 1 || month > 12)) {
+                return new DateValidationResult(false, SEVERITY_INVALID, MSG_INVALID_MONTH,
+                        RESULT_INVALID_MONTH, date, cobolFormat);
             }
             return new DateValidationResult(false, SEVERITY_INVALID, MSG_BAD_DATE_VALUE,
                     RESULT_BAD_DATE_VALUE, date, cobolFormat);
@@ -250,6 +281,36 @@ public class DateValidationService {
             }
         }
         return false;
+    }
+
+    /**
+     * Extracts the integer value occupying the run of {@code letter} positions
+     * ({@code Y}, {@code M}, or {@code D}) in {@code value}, located by the matching
+     * run in {@code fmt}. Returns {@link #FIELD_ABSENT} when the format contains no
+     * such field. Invoked only after
+     * {@link #hasNonDigitInNumericPositions(String, String)} has confirmed every
+     * numeric position holds a digit, so the located substring parses cleanly, and
+     * only when {@code value.length() == fmt.length()} so the indices are in range.
+     *
+     * @param value  the trimmed candidate date value
+     * @param fmt    the trimmed COBOL picture format of equal length
+     * @param letter the field letter to extract ({@code Y}, {@code M}, or {@code D})
+     * @return the parsed field value, or {@link #FIELD_ABSENT} if the field is absent
+     */
+    private int extractNumericField(String value, String fmt, char letter) {
+        char up = Character.toUpperCase(letter);
+        int start = -1;
+        for (int i = 0; i < fmt.length(); i++) {
+            if (Character.toUpperCase(fmt.charAt(i)) == up) {
+                start = i;
+                break;
+            }
+        }
+        if (start < 0) {
+            return FIELD_ABSENT;
+        }
+        int run = runLength(fmt, start, up);
+        return Integer.parseInt(value.substring(start, start + run));
     }
 
     /**

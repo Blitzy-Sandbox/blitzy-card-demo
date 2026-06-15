@@ -147,7 +147,11 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,prometheus,metrics
+        # Conservative actuator surface (AAP §0.7.1 / CP1 contract): only health,
+        # info, and the Prometheus scrape endpoint. The raw /actuator/metrics
+        # browser is intentionally NOT exposed; all metrics reach Prometheus via
+        # /actuator/prometheus (export enabled below). Never expose "*".
+        include: health,info,prometheus
   endpoint:
     health:
       # Keep base conservative; the local profile may relax to "always".
@@ -155,6 +159,15 @@ management:
       # Enable Kubernetes-style liveness/readiness health groups.
       probes:
         enabled: true
+      # Readiness must reflect external-dependency availability so traffic is not
+      # routed to an instance that cannot serve it. Fold the dependency indicators
+      # (Boot's built-in `db` plus the additive postgres/s3/sqs indicators from
+      # observability/HealthIndicators) into the readiness group. Liveness stays
+      # state-only (livenessState) so a dependency outage never restarts an
+      # otherwise-healthy pod (Observability rule, AAP §0.7.1).
+      group:
+        readiness:
+          include: readinessState,db,postgres,s3,sqs
   metrics:
     distribution:
       # Server-side histogram buckets -> http_server_requests_seconds_bucket,
@@ -232,3 +245,16 @@ carddemo:
       report-queue: ${SQS_REPORT_QUEUE:carddemo-report-jobs.fifo}
     sns:
       notifications-topic: ${SNS_NOTIFICATIONS_TOPIC:carddemo-notifications}
+
+  # ---------------------------------------------------------------------------
+  # Web / CORS  (consumed by config/WebConfig.corsConfigurationSource)
+  # Comma-separated list of origins permitted to call the REST API; applied to
+  # every path by the CORS source that Spring Security wires in. Override per
+  # environment via the CARDDEMO_CORS_ALLOWED_ORIGINS environment variable (for
+  # example a deployment would set it to the SPA origin); the default "*" is a
+  # permissive developer/local default and is safe because credentials are NOT
+  # allowed (stateless JWT travels in the Authorization header, not cookies).
+  # ---------------------------------------------------------------------------
+  web:
+    cors:
+      allowed-origins: ${CARDDEMO_CORS_ALLOWED_ORIGINS:*}
