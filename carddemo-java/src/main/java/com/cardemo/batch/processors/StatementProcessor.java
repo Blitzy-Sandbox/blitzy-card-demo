@@ -140,6 +140,8 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Acc
 
     /** Width of a {@code STMT-FILE} text record: {@code FD-STMTFILE-REC PIC X(80)}. */
     private static final int TEXT_LINE_WIDTH = 80;
+    /** Width of an {@code HTML-FILE} record: {@code FD-HTMLFILE-REC PIC X(100)}. */
+    private static final int HTML_LINE_WIDTH = 100;
     /** {@code ST-NAME PIC X(75)} &mdash; the composed customer name field. */
     private static final int NAME_WIDTH = 75;
     /** {@code ST-ADD1}/{@code ST-ADD2 PIC X(50)} &mdash; address lines 1 and 2. */
@@ -430,6 +432,18 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Acc
         text.add(textLine(CAPTION_TOTAL_EXP + " ".repeat(56) + "$" + stTotal));         // ST-LINE14A
         text.add(textLine(BANNER_END));                                                 // ST-LINE15
         appendHtmlFooter(html);                                                         // </td></tr></table></body></html>
+
+        // COBOL CBSTM03A emits every HTML record from a PIC X(100) field: the
+        // FD record FD-HTMLFILE-REC is PIC X(100) and the HTML work fields
+        // HTML-FIXED-LN / HTML-ADDR-LN / HTML-BSIC-LN / HTML-TRAN-LN are all
+        // PIC X(100), so each "WRITE FD-HTMLFILE-REC FROM ..." writes exactly 100
+        // space-padded bytes. Normalize every assembled HTML line to that fixed
+        // LRECL-100 record contract (AAP §0.7.2 "external interface ... record
+        // lengths ... preserved exactly"), mirroring the text path's per-line
+        // textLine(TEXT_LINE_WIDTH=80) normalization. Lines are pad-only in
+        // practice (the widest assembled line is < 100); a hypothetical longer
+        // line is truncated to 100, matching the COBOL PIC X(100) field width.
+        html.replaceAll(StatementProcessor::htmlLine);
 
         final String textBody = String.join("\n", text);
         final String htmlBody = String.join("\n", html);
@@ -781,6 +795,23 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Acc
      */
     private static String textLine(String content) {
         return padRight(content, TEXT_LINE_WIDTH);
+    }
+
+    /**
+     * Fits a value into a fixed-width HTML record, reproducing the
+     * {@code FD-HTMLFILE-REC PIC X(100)} contract: the value is right-padded with
+     * spaces (or truncated) to exactly {@link #HTML_LINE_WIDTH} characters. This is
+     * the HTML counterpart of {@link #textLine(String)} and shares the same
+     * {@link #padRight(String, int)} primitive, so every {@code WRITE
+     * FD-HTMLFILE-REC FROM ...} in {@code CBSTM03A} maps to one exactly-100-character
+     * record (space-padded), preserving the external record-length contract
+     * (AAP &sect;0.7.2).
+     *
+     * @param content the assembled HTML markup fragment for one record
+     * @return an exactly {@link #HTML_LINE_WIDTH}-character line
+     */
+    private static String htmlLine(String content) {
+        return padRight(content, HTML_LINE_WIDTH);
     }
 
     /**

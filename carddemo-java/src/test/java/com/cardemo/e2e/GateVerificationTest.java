@@ -1267,7 +1267,7 @@ class GateVerificationTest {
             }
         }
 
-        // --- Statements: text LRECL ≤ 80, HTML LRECL ≤ 100; both formats present. ---
+        // --- Statements: text LRECL == 80, HTML LRECL == 100 (fixed-width records); both formats present. ---
         List<String> textKeys = new ArrayList<>();
         List<String> htmlKeys = new ArrayList<>();
         for (String key : listKeys(STATEMENTS_BUCKET, STATEMENTS_PREFIX)) {
@@ -1282,12 +1282,12 @@ class GateVerificationTest {
         for (String line : getObjectAsString(STATEMENTS_BUCKET, textKeys.get(0)).split("\n", -1)) {
             assertThat(line.length())
                     .as("text statement records are LRECL 80 (FD-STMTFILE-REC PIC X(80))")
-                    .isLessThanOrEqualTo(STATEMENT_TEXT_LRECL);
+                    .isEqualTo(STATEMENT_TEXT_LRECL);
         }
         for (String line : getObjectAsString(STATEMENTS_BUCKET, htmlKeys.get(0)).split("\n", -1)) {
             assertThat(line.length())
                     .as("HTML statement records are LRECL 100 (FD-HTMLFILE-REC PIC X(100))")
-                    .isLessThanOrEqualTo(STATEMENT_HTML_LRECL);
+                    .isEqualTo(STATEMENT_HTML_LRECL);
         }
 
         // --- SQS FIFO message schema on carddemo-report-jobs.fifo (CORPT00C TDQ-WRITEQ parity). ---

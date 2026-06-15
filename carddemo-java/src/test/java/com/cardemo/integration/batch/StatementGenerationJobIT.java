@@ -371,6 +371,22 @@ class StatementGenerationJobIT extends AbstractBatchJobIT {
         assertThat(sampleHtml)
                 .as("the paired .html object is a full HTML statement document")
                 .contains("<!DOCTYPE html>", "Bank of XYZ", "Transaction Summary");
+
+        // CBSTM03A external record-length parity (AAP §0.7.2 "record lengths ... preserved exactly"):
+        // STMT-FILE is FD-STMTFILE-REC PIC X(80) and HTML-FILE is FD-HTMLFILE-REC PIC X(100), so EVERY
+        // text record is exactly 80 bytes and EVERY HTML record exactly 100 bytes (space-padded). These
+        // fixed-width per-line checks are the golden-width fixture that durably guards the HTML pad-to-100:
+        // a ≤-style bound would silently pass for under-width HTML and mask a missing pad (QA FINDING #1/#2).
+        for (String line : sampleText.split("\n", -1)) {
+            assertThat(line.length())
+                    .as("text statement record is LRECL 80 (FD-STMTFILE-REC PIC X(80)): [%s]", line)
+                    .isEqualTo(80);
+        }
+        for (String line : sampleHtml.split("\n", -1)) {
+            assertThat(line.length())
+                    .as("HTML statement record is LRECL 100 (FD-HTMLFILE-REC PIC X(100)): [%s]", line)
+                    .isEqualTo(100);
+        }
     }
 
     /**

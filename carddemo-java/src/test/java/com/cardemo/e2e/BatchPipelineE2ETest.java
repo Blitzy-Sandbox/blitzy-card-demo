@@ -1143,7 +1143,7 @@ class BatchPipelineE2ETest {
                 .as("a statement with transactions spans multiple lines (header + transaction lines)").isGreaterThan(1);
         for (String line : textBody.split("\n", -1)) {
             assertThat(line.length()).as("text statement records are LRECL 80 (FD-STMTFILE-REC PIC X(80)): [%s]", line)
-                    .isLessThanOrEqualTo(80);
+                    .isEqualTo(80);
         }
 
         String htmlKey = htmlKeys.stream().filter(k -> k.endsWith("/" + sampleAccountId + ".html")).findFirst()
@@ -1152,7 +1152,7 @@ class BatchPipelineE2ETest {
         assertThat(htmlBody).as("HTML statement contains markup").contains("<");
         for (String line : htmlBody.split("\n", -1)) {
             assertThat(line.length()).as("HTML statement records are LRECL 100 (FD-HTMLFILE-REC PIC X(100)): [%s]", line)
-                    .isLessThanOrEqualTo(100);
+                    .isEqualTo(100);
         }
     }
 
