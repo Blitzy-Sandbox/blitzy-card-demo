@@ -178,8 +178,8 @@ class UserListServiceTest {
 
             // page 3 (1-based) -> Spring Data page index 2 (0-based).
             assertThat(captureBrowse().getPageNumber()).isEqualTo(2);
-            // pageNumber echoed 1-based, as a String (the DTO field is PIC X(8) -> String).
-            assertThat(dto.getPageNumber()).isEqualTo("3");
+            // pageNumber echoed 1-based, ZERO-PADDED to the full PIC X(8) width (F-PAGE-001).
+            assertThat(dto.getPageNumber()).isEqualTo("00000003");
         }
 
         @ParameterizedTest
@@ -192,7 +192,8 @@ class UserListServiceTest {
 
             // Clamped to 1 (1-based) -> Spring Data page index 0.
             assertThat(captureBrowse().getPageNumber()).isEqualTo(0);
-            assertThat(dto.getPageNumber()).isEqualTo("1");
+            // pageNumber echoed 1-based, ZERO-PADDED to the full PIC X(8) width (F-PAGE-001).
+            assertThat(dto.getPageNumber()).isEqualTo("00000001");
         }
 
         @Test
@@ -270,7 +271,8 @@ class UserListServiceTest {
             UserSecurityDto dto = service.listUsers(null, 1);
 
             assertThat(dto.getUsers()).isNotNull().isEmpty();
-            assertThat(dto.getPageNumber()).isEqualTo("1");
+            // pageNumber echoed 1-based, ZERO-PADDED to the full PIC X(8) width (F-PAGE-001).
+            assertThat(dto.getPageNumber()).isEqualTo("00000001");
         }
     }
 }

@@ -1200,7 +1200,10 @@ class OnlineTransactionE2ETest {
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
             JsonNode dto = json(response);
             assertThat(dto.path("users")).hasSize(10); // 10 seeded USRSEC users fill page 1
-            assertThat(dto.path("pageNumber").asText()).isEqualTo("1");
+            // QA F-PAGE-001: pageNumber is the 8-char zero-padded COUSR00C field
+            // (CDEMO-CU00-PAGE-NUM PIC 9(08) -> PAGENUM PIC X(8)), identical to the transaction-list
+            // contract — so page 1 serializes "00000001", not the previously-emitted unpadded "1".
+            assertThat(dto.path("pageNumber").asText()).isEqualTo("00000001");
             assertNoPasswordEchoed(dto);
         }
 

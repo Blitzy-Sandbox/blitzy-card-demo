@@ -12,6 +12,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
+import java.sql.SQLException;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
@@ -32,6 +33,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.DuplicateKeyException;
 
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.exception.ValidationException;
@@ -441,6 +443,139 @@ class TransactionAddServiceTest {
     }
 
     // -----------------------------------------------------------------------------------------------
+    // Step 2a' — field-width guards (QA F-TXNLEN-001). COTRN02C had no explicit "too long" edits
+    // because the fixed-width BMS COTRN2A map physically capped each input (TTYPCD X(2), TCATCD X(4),
+    // TRNSRC X(10), TDESC X(60), MID X(9), MNAME X(30), MCITY X(25), MZIP X(10)). The REST contract
+    // has no such cap, so the service enforces these widths to preserve the external input contract
+    // (AAP §0.7.2) and to keep an over-width value a clean first-error-wins 400 — never a VARCHAR
+    // overflow that the over-broad catch previously mis-mapped to a 409 "Tran ID already exist...".
+    // These guards fire AFTER every empty edit (so a blank field keeps its "...can NOT be empty..."
+    // message) and BEFORE the numeric/format edits and the WRITE.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * The width edits that run once all eleven fields are non-empty and before the numeric/format
+     * edits: each non-amount/non-date input field is rejected when its raw length exceeds the fixed
+     * BMS screen width it mirrors, with the matching verbatim {@code "...can NOT be longer than N
+     * characters..."} message. Because these edits sit between the empty cascade and the numeric/date
+     * cascade, a width failure reaches neither {@link TransactionRepository} nor
+     * {@link DateValidationService} (proven by {@code verifyNoInteractions}).
+     */
+    @Nested
+    @DisplayName("Step 2a' — field-width guards (QA F-TXNLEN-001: over-width -> 400, not 409)")
+    class Step2aPrime_WidthGuards {
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource(
+                "com.cardemo.unit.service.transaction.TransactionAddServiceTest#overLengthFieldCases")
+        @DisplayName("each over-width field yields its verbatim 'can NOT be longer than N characters' message")
+        void overWidthField_yieldsItsTooLongMessage(String label, Consumer<TransactionDto> overfiller,
+                String expectedMessage) {
+            TransactionDto request = validRequest();
+            request.setCardNumber(null);
+            overfiller.accept(request);
+            stubStep1Valid();
+
+            assertThatThrownBy(() -> service.addTransaction(request))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining(expectedMessage);
+
+            // Width failure is a pure pre-write 400: the WRITE and the date validation are never reached.
+            verifyNoInteractions(transactionRepository, dateValidationService);
+        }
+
+        @Test
+        @DisplayName("ordering: an empty field (Description) still precedes ALL width edits")
+        void emptyCascadePrecedesWidthCascade() {
+            TransactionDto request = validRequest();
+            request.setCardNumber(null);
+            request.setTypeCode("123");     // over width (3 > 2) — a later (width) edit
+            request.setDescription("");      // empty — an earlier (empty) edit, must win
+            stubStep1Valid();
+
+            assertThatThrownBy(() -> service.addTransaction(request))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("Description can NOT be empty");
+
+            verifyNoInteractions(transactionRepository, dateValidationService);
+        }
+
+        @Test
+        @DisplayName("ordering: Type width precedes Merchant Zip width -> 'Type CD can NOT be longer...'")
+        void typeWidthBeforeMerchantZipWidth_typeWins() {
+            TransactionDto request = validRequest();
+            request.setCardNumber(null);
+            request.setTypeCode("123");                 // earlier width edit
+            request.setMerchantZip("12345678901");      // later width edit (must NOT win)
+            stubStep1Valid();
+
+            assertThatThrownBy(() -> service.addTransaction(request))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("Type CD can NOT be longer than 2 characters");
+
+            verifyNoInteractions(transactionRepository, dateValidationService);
+        }
+
+        @Test
+        @DisplayName("boundary: each field at exactly its max width is accepted (reaches the WRITE)")
+        void exactMaxWidth_isAccepted() {
+            TransactionDto request = validRequest();
+            request.setCardNumber(null);
+            request.setTypeCode("01");                       // 2 == max
+            request.setCategoryCode("0001");                 // 4 == max
+            request.setSource("SRC1234567");                 // 10 == max
+            request.setDescription("D".repeat(60));          // 60 == max
+            request.setMerchantId("123456789");              // 9 == max
+            request.setMerchantName("M".repeat(30));         // 30 == max
+            request.setMerchantCity("C".repeat(25));         // 25 == max
+            request.setMerchantZip("1234567890");            // 10 == max
+            stubKeyAndDatesValid();
+            when(transactionRepository.findMaxTransactionId()).thenReturn(Optional.empty());
+
+            assertThatCode(() -> service.addTransaction(request)).doesNotThrowAnyException();
+
+            verify(transactionRepository).saveAndFlush(any(Transaction.class));
+        }
+    }
+
+    /**
+     * Supplies the eight width-edit cases as (label, mutator, expected-message) tuples in the exact
+     * COBOL field order. Each mutator sets exactly one field to a value one character past its limit,
+     * leaving every other {@link #validRequest()} field within width so the targeted guard is the one
+     * that fires. Declared {@code static} so the {@code @Nested} {@code @ParameterizedTest} can
+     * reference it by fully-qualified {@code #}-method name.
+     *
+     * @return the ordered stream of over-width field cases
+     */
+    static Stream<Arguments> overLengthFieldCases() {
+        return Stream.of(
+                Arguments.arguments("typeCode 3 chars (max 2)",
+                        (Consumer<TransactionDto>) dto -> dto.setTypeCode("123"),
+                        "Type CD can NOT be longer than 2 characters"),
+                Arguments.arguments("categoryCode 5 chars (max 4)",
+                        (Consumer<TransactionDto>) dto -> dto.setCategoryCode("00001"),
+                        "Category CD can NOT be longer than 4 characters"),
+                Arguments.arguments("source 11 chars (max 10)",
+                        (Consumer<TransactionDto>) dto -> dto.setSource("0123456789X"),
+                        "Source can NOT be longer than 10 characters"),
+                Arguments.arguments("description 61 chars (max 60)",
+                        (Consumer<TransactionDto>) dto -> dto.setDescription("D".repeat(61)),
+                        "Description can NOT be longer than 60 characters"),
+                Arguments.arguments("merchantId 10 chars (max 9)",
+                        (Consumer<TransactionDto>) dto -> dto.setMerchantId("1234567890"),
+                        "Merchant ID can NOT be longer than 9 characters"),
+                Arguments.arguments("merchantName 31 chars (max 30)",
+                        (Consumer<TransactionDto>) dto -> dto.setMerchantName("M".repeat(31)),
+                        "Merchant Name can NOT be longer than 30 characters"),
+                Arguments.arguments("merchantCity 26 chars (max 25)",
+                        (Consumer<TransactionDto>) dto -> dto.setMerchantCity("C".repeat(26)),
+                        "Merchant City can NOT be longer than 25 characters"),
+                Arguments.arguments("merchantZip 11 chars (max 10)",
+                        (Consumer<TransactionDto>) dto -> dto.setMerchantZip("12345678901"),
+                        "Merchant Zip can NOT be longer than 10 characters"));
+    }
+
+    // -----------------------------------------------------------------------------------------------
     // Step 2b — numeric edits (COTRN02C L322-337): type code then category code.
     // -----------------------------------------------------------------------------------------------
 
@@ -841,28 +976,73 @@ class TransactionAddServiceTest {
 
     /**
      * The duplicate-key path: when the synchronous {@code saveAndFlush} surfaces a
-     * {@link DataIntegrityViolationException} (the JPA mapping of the COBOL
+     * <em>unique-key</em> {@link DataIntegrityViolationException} (the JPA mapping of the COBOL
      * {@code DFHRESP(DUPKEY)}/{@code DFHRESP(DUPREC)} branch), the service throws a
      * {@link DuplicateRecordException} carrying the verbatim {@code "Tran ID already exist..."} message
      * &mdash; note {@code "exist"}, not {@code "exists"}.
+     *
+     * <p>Per QA <strong>F-TXNLEN-001</strong> the catch is narrowed: only a true unique-key violation
+     * &mdash; Spring's typed {@link DuplicateKeyException} or a wrapped {@link SQLException} carrying
+     * SQLState {@code "23505"} (PostgreSQL {@code unique_violation}) &mdash; maps to the 409. Any
+     * <em>other</em> integrity violation (NOT NULL, FK, CHECK, value-too-long) is re-thrown unchanged
+     * so it is never mislabeled as a duplicate id; these tests pin both halves of that contract.</p>
      */
     @Nested
-    @DisplayName("Step 4 — duplicate key (DFHRESP(DUPKEY)/DUPREC -> DuplicateRecordException)")
+    @DisplayName("Step 4 — duplicate key (narrowed: only unique violations -> DuplicateRecordException)")
     class Step4_Duplicate {
 
         @Test
-        @DisplayName("saveAndFlush throws DataIntegrityViolationException -> 'Tran ID already exist...'")
+        @DisplayName("saveAndFlush throws DuplicateKeyException -> 'Tran ID already exist...'")
         void duplicateKey_throwsDuplicateRecordException() {
             TransactionDto request = validRequest();
             request.setCardNumber(null);
             stubKeyAndDatesValid();
             when(transactionRepository.findMaxTransactionId()).thenReturn(Optional.empty());
             when(transactionRepository.saveAndFlush(any(Transaction.class)))
-                    .thenThrow(new DataIntegrityViolationException("dup"));
+                    .thenThrow(new DuplicateKeyException("dup"));
 
             assertThatThrownBy(() -> service.addTransaction(request))
                     .isInstanceOf(DuplicateRecordException.class)
                     .hasMessageContaining("Tran ID already exist"); // "exist", not "exists"
+        }
+
+        @Test
+        @DisplayName("DIVE wrapping SQLState 23505 (unique_violation) -> 'Tran ID already exist...'")
+        void uniqueViolationSqlState_throwsDuplicateRecordException() {
+            TransactionDto request = validRequest();
+            request.setCardNumber(null);
+            stubKeyAndDatesValid();
+            when(transactionRepository.findMaxTransactionId()).thenReturn(Optional.empty());
+            // A generic DataIntegrityViolationException whose cause chain carries the PostgreSQL
+            // unique_violation SQLState — exactly what Hibernate surfaces for a primary-key collision.
+            when(transactionRepository.saveAndFlush(any(Transaction.class)))
+                    .thenThrow(new DataIntegrityViolationException(
+                            "duplicate key value violates unique constraint",
+                            new SQLException("dup", "23505")));
+
+            assertThatThrownBy(() -> service.addTransaction(request))
+                    .isInstanceOf(DuplicateRecordException.class)
+                    .hasMessageContaining("Tran ID already exist");
+        }
+
+        @Test
+        @DisplayName("non-duplicate DIVE (e.g. SQLState 23502 NOT NULL) propagates unchanged — NOT a 409")
+        void nonDuplicateIntegrityViolation_propagatesUnchanged() {
+            TransactionDto request = validRequest();
+            request.setCardNumber(null);
+            stubKeyAndDatesValid();
+            when(transactionRepository.findMaxTransactionId()).thenReturn(Optional.empty());
+            // A NOT-NULL violation (SQLState 23502) is NOT a duplicate id; the narrowed catch must
+            // re-throw it verbatim so the centralized advice maps it to 500, never a misleading 409.
+            DataIntegrityViolationException notNull = new DataIntegrityViolationException(
+                    "null value in column violates not-null constraint",
+                    new SQLException("not null", "23502"));
+            when(transactionRepository.saveAndFlush(any(Transaction.class))).thenThrow(notNull);
+
+            assertThatThrownBy(() -> service.addTransaction(request))
+                    .isInstanceOf(DataIntegrityViolationException.class)
+                    .isNotInstanceOf(DuplicateRecordException.class)
+                    .isSameAs(notNull);
         }
     }
 }

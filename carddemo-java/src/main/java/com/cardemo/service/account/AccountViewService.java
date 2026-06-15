@@ -213,10 +213,19 @@ public class AccountViewService {
      * which uses {@code "... must be supplied."} / {@code "... must be a 11 digit Non-Zero Number"}),
      * because each service must mirror its own source program's prompts. Both are thrown through the
      * two-argument {@link ValidationException#ValidationException(String, String)} so the centralized
-     * web advice surfaces them as per-field validation errors rather than sanitizing them away. The
-     * eleven-digit width itself is enforced upstream by the controller's {@code @Pattern("\\d{1,11}")}
-     * (matching the BMS {@code ACCTSID PIC X(11)} field), so no extra length edit is added here
-     * (Minimal Change Clause, AAP&nbsp;&sect;0.7.1).</p>
+     * web advice surfaces them as per-field validation errors rather than sanitizing them away.</p>
+     *
+     * <p>The eleven-digit width (BMS {@code ACCTSID PIC X(11)}) is enforced <em>here in the service</em>
+     * by a {@code length > 11} guard folded into the numeric/zero edit (QA INFO finding: a 12-digit key
+     * previously slipped past the numeric/zero edit, parsed to a {@link Long} and returned a misleading
+     * {@code 404} from the keyed read instead of a {@code 400}). An over-width key is now rejected with
+     * the same verbatim {@code "... non zero 11 digit number"} literal and surfaces as a {@code 400},
+     * never reaching the keyed read. The {@link com.cardemo.controller.AccountController} deliberately
+     * carries <strong>no</strong> {@code @Pattern} or other bean-validation constraint on the path
+     * variable: it delegates the full ordered edit &mdash; blank, then non-numeric/zero/over-width
+     * &mdash; to this method so each rejection keeps its exact COBOL message (a controller
+     * {@code @Pattern} would emit a generic {@code ConstraintViolationException}, breaking verbatim
+     * parity). Minimal Change Clause, AAP&nbsp;&sect;0.7.1 / &sect;0.7.2.</p>
      *
      * @param accountId the raw account filter from the request
      * @return the validated account id as a {@link Long}
@@ -231,8 +240,14 @@ public class AccountViewService {
         // 2210-EDIT-ACCOUNT: "Not numeric" / zero (CC-ACCT-ID IS NOT NUMERIC OR EQUAL ZEROES).
         // Verbatim COACTVWC literal (app/cbl/COACTVWC.cbl L126/L128); two-arg form surfaces it as a
         // field error (previously a single-arg top-level message that the advice sanitized away).
+        // QA INFO finding: the over-width case (length > 11) is folded into the SAME edit so a 12+ digit
+        // key is a 400 with the verbatim message, not a 404 from the keyed read. This reproduces the
+        // fixed BMS ACCTSID PIC X(11) screen width (external interface contract, AAP §0.7.2) that the
+        // 3270 field physically enforced; a value that passes is therefore always <= 11 digits and
+        // parses safely. The shared "non zero 11 digit number" literal covers non-numeric, zero AND
+        // over-width inputs (a 12-digit value is, literally, not an "11 digit number").
         String trimmed = accountId.trim();
-        if (!isAllDigits(trimmed) || isAllZeros(trimmed)) {
+        if (!isAllDigits(trimmed) || isAllZeros(trimmed) || trimmed.length() > 11) {
             throw new ValidationException("Account Number", "Account number must be a non zero 11 digit number");
         }
         // Numeric edit passed: parse to the keyed-read type.

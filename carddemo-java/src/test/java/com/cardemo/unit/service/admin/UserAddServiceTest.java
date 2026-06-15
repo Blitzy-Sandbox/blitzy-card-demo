@@ -119,6 +119,9 @@ class UserAddServiceTest {
     /** QA F5 length guard: user id beyond {@code SEC-USR-ID PIC X(08)} / {@code VARCHAR(8)}. */
     private static final String MSG_USER_ID_TOO_LONG = "User ID can NOT be longer than 8 characters...";
 
+    /** QA F-PWD-001 length guard: password beyond the legacy {@code PASSWDI PIC X(08)} input width. */
+    private static final String MSG_PASSWORD_TOO_LONG = "Password can NOT be longer than 8 characters...";
+
     /** {@code COUSR01C} L263-264: duplicate-key message (note legacy spelling "exist"). */
     private static final String MSG_USER_ID_ALREADY_EXISTS = "User ID already exist...";
 
@@ -348,6 +351,29 @@ class UserAddServiceTest {
     void overLengthUserIdRejected() {
         UserSecurityDto dto = validRequest();
         dto.setUserId("USER00012"); // 9 chars, no padding -> trimmed length 9 overflows PIC X(08)
+        assertThatThrownBy(() -> userAddService.addUser(dto))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_USER_ID_TOO_LONG);
+        verify(userSecurityRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("F-PWD-001: password > 8 chars -> 'Password can NOT be longer than 8 characters...'; nothing saved")
+    void overLengthPasswordRejected() {
+        UserSecurityDto dto = validRequest();
+        dto.setPassword("PASSWORD9"); // 9 chars -> overflows the legacy PASSWDI PIC X(08) input width
+        assertThatThrownBy(() -> userAddService.addUser(dto))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_PASSWORD_TOO_LONG);
+        verify(userSecurityRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("F-PWD-001: password length guard runs in COBOL field order (over-length user id beats over-length password)")
+    void userIdLengthWinsOverPasswordLength() {
+        UserSecurityDto dto = validRequest();
+        dto.setUserId("USER00012");        // over-length user id (branch before password) -> its message wins
+        dto.setPassword("PASSWORD9");      // also over-length, but later in the order
         assertThatThrownBy(() -> userAddService.addUser(dto))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage(MSG_USER_ID_TOO_LONG);

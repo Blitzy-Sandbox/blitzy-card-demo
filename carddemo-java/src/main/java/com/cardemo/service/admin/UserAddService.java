@@ -148,6 +148,14 @@ public class UserAddService {
     static final String MSG_USER_ID_TOO_LONG = "User ID can NOT be longer than 8 characters...";
 
     /**
+     * Password length guard: the legacy {@code PASSWDI} / {@code SEC-USR-PWD PIC X(08)} input field
+     * (QA F-PWD-001). The 8-character INPUT contract is the legacy field width and is enforced here on
+     * the raw typed value; it is independent of the C-003 BCrypt storage change (the stored digest
+     * widens to {@code VARCHAR(72)}). Phrased to match the sibling {@link #MSG_USER_ID_TOO_LONG}.
+     */
+    static final String MSG_PASSWORD_TOO_LONG = "Password can NOT be longer than 8 characters...";
+
+    /**
      * {@code COUSR01C} L263-264: duplicate-key message from the
      * {@code WHEN DFHRESP(DUPKEY) WHEN DFHRESP(DUPREC)} branch. Note the legacy spelling
      * &ldquo;exist&rdquo; (not &ldquo;exists&rdquo;) is preserved verbatim.
@@ -276,15 +284,18 @@ public class UserAddService {
         final String userId = request.getUserId().trim();
 
         // -------------------------------------------------------------------------------------------
-        // Step 1b - field-width guards (QA F5). COUSR01C relied on the fixed-width BMS map fields
-        // (FNAMEI/LNAMEI PIC X(20), USERIDI PIC X(08)) to bound these values; the REST contract does
-        // not, so enforce the PIC widths here, AFTER the empty cascade (so a blank field still wins its
-        // "...can NOT be empty..." message) and BEFORE the duplicate probe / WRITE (so an over-length
-        // value is a 400, never a DataIntegrityViolationException 500). First-error-wins, in the COBOL
-        // field order (first name, last name, user id). First/last name are validated RAW because they
-        // are stored RAW (the MOVEs above copy them verbatim, no trim); the user id is validated on its
-        // trimmed canonical key. getFirstName()/getLastName() are non-blank here (empty cascade
-        // branches 1-2 already ran), so length() is safe to call.
+        // Step 1b - field-width guards (QA F5 / F-PWD-001). COUSR01C relied on the fixed-width BMS map
+        // fields (FNAMEI/LNAMEI PIC X(20), USERIDI PIC X(08), PASSWDI PIC X(08)) to bound these values;
+        // the REST contract does not, so enforce the PIC widths here, AFTER the empty cascade (so a blank
+        // field still wins its "...can NOT be empty..." message) and BEFORE the duplicate probe / WRITE
+        // (so an over-length value is a 400, never a DataIntegrityViolationException 500). First-error-
+        // wins, in the COBOL field order (first name, last name, user id, password). First/last name and
+        // password are validated RAW: the names are stored RAW (the MOVEs below copy them verbatim, no
+        // trim) and the password is BCrypt-encoded from the RAW typed value below, so the raw character
+        // count is the legacy 8-char screen-field contract (the BCrypt digest itself widens to the
+        // VARCHAR(72) column; this guard is the INPUT-contract parity check, not 500-prevention). The
+        // user id is validated on its trimmed canonical key. getFirstName()/getLastName()/getPassword()
+        // are non-blank here (empty-cascade branches already ran), so length() is safe to call.
         // -------------------------------------------------------------------------------------------
         if (request.getFirstName().length() > 20) {
             throw new ValidationException(MSG_FIRST_NAME_TOO_LONG);
@@ -294,6 +305,9 @@ public class UserAddService {
         }
         if (userId.length() > 8) {
             throw new ValidationException(MSG_USER_ID_TOO_LONG);
+        }
+        if (request.getPassword().length() > 8) {
+            throw new ValidationException(MSG_PASSWORD_TOO_LONG);
         }
 
         // -------------------------------------------------------------------------------------------

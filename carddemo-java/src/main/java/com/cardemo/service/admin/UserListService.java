@@ -265,9 +265,12 @@ public class UserListService {
         }
         dto.setUsers(items);
 
-        // PAGENUM is a fixed-width PIC X(8) field -> the DTO page number is a String; set the 1-based
-        // value as text (matches CDEMO-CU00-PAGE-NUM displayed on the screen) [COUSR00C L327].
-        dto.setPageNumber(String.valueOf(normalizedPageNumber));
+        // PAGENUM is a fixed-width PIC X(8) field -> the DTO page number is a String; stamp the 1-based
+        // value ZERO-PADDED to the full 8-character width (matches CDEMO-CU00-PAGE-NUM PIC 9(08) moved to
+        // PAGENUMO PIC X(8) and displayed on the screen) [COUSR00C L327]. The %08d format preserves the
+        // exact field layout (AAP §0.7.2) and keeps this byte-identical to the sibling COTRN00C page
+        // field, which TransactionListService renders the same way (PIC 9(08) -> "00000001").
+        dto.setPageNumber(String.format("%08d", normalizedPageNumber));
 
         // USRIDIN echoed back so the stateless caller knows the active start filter (the legacy screen
         // carried this field); a null filter is echoed as null.

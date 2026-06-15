@@ -129,6 +129,9 @@ class UserUpdateServiceTest {
     /** QA F5 length guard: last name beyond {@code SEC-USR-LNAME PIC X(20)} / {@code VARCHAR(20)}. */
     private static final String MSG_LAST_NAME_TOO_LONG = "Last Name can NOT be longer than 20 characters...";
 
+    /** QA F-PWD-001 length guard: password beyond the legacy {@code PASSWDI PIC X(08)} input width. */
+    private static final String MSG_PASSWORD_TOO_LONG = "Password can NOT be longer than 8 characters...";
+
     /** {@code COUSR02C} L342/L379: {@code DFHRESP(NOTFND)} not-found message. */
     private static final String MSG_USER_NOT_FOUND = "User ID NOT found...";
 
@@ -401,13 +404,14 @@ class UserUpdateServiceTest {
     }
 
     // ===============================================================================================
-    // Phase 4A-bis — field-width guards (QA F5). COUSR02C relied on the fixed-width BMS PIC fields
-    //   (FNAME/LNAME PIC X(20)) so an over-length name could not occur; the REST contract has no such
-    //   bound, so the service enforces the PIC widths AFTER the empty cascade and BEFORE the keyed read,
-    //   making an over-length name a 400 (ValidationException) with nothing read and nothing saved. The
-    //   user id is the lookup key (an over-length id simply finds no row -> 404) and the password widens
-    //   to a BCrypt digest, so only first/last name are length-guarded. Names are validated on their
-    //   normalized (trimmed) value, since that is exactly what is stored on a change.
+    // Phase 4A-bis — field-width guards (QA F5 / F-PWD-001). COUSR02C relied on the fixed-width BMS PIC
+    //   fields (FNAME/LNAME PIC X(20), PASSWD PIC X(08)) so an over-length value could not occur; the
+    //   REST contract has no such bound, so the service enforces the PIC widths AFTER the empty cascade
+    //   and BEFORE the keyed read, making an over-length value a 400 (ValidationException) with nothing
+    //   read and nothing saved. The user id is the lookup key (an over-length id simply finds no row ->
+    //   404), so only first/last name and password are length-guarded. Names are validated on their
+    //   normalized (trimmed) value (that is what is stored on a change); the password is validated on the
+    //   RAW value (it is matched/encoded RAW via BCrypt), enforcing the legacy 8-char PASSWDI input.
     // ===============================================================================================
 
     @Test
@@ -430,6 +434,18 @@ class UserUpdateServiceTest {
         assertThatThrownBy(() -> userUpdateService.updateUser(request))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage(MSG_LAST_NAME_TOO_LONG);
+        verify(userSecurityRepository, never()).findBySecUsrId(anyString());
+        verify(userSecurityRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("F-PWD-001: password > 8 chars -> 'Password can NOT be longer than 8 characters...'; no read, no save")
+    void updateUserOverLengthPasswordRejected() {
+        UserSecurityDto request = requestMatchingExisting();
+        request.setPassword("NEWPASS12"); // 9 chars -> overflows the legacy PASSWDI PIC X(08) input width
+        assertThatThrownBy(() -> userUpdateService.updateUser(request))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_PASSWORD_TOO_LONG);
         verify(userSecurityRepository, never()).findBySecUsrId(anyString());
         verify(userSecurityRepository, never()).save(any());
     }

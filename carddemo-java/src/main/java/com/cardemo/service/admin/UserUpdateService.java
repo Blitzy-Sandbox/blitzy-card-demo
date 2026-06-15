@@ -163,6 +163,14 @@ public class UserUpdateService {
     static final String MSG_LAST_NAME_TOO_LONG = "Last Name can NOT be longer than 20 characters...";
 
     /**
+     * Password length guard: the legacy {@code PASSWDI} / {@code SEC-USR-PWD PIC X(08)} input field
+     * (QA F-PWD-001). The 8-character INPUT contract is the legacy field width and is enforced here on
+     * the raw typed value; it is independent of the C-003 BCrypt storage change (the stored digest
+     * widens to {@code VARCHAR(72)}). Phrased to match the sibling {@link #MSG_FIRST_NAME_TOO_LONG}.
+     */
+    static final String MSG_PASSWORD_TOO_LONG = "Password can NOT be longer than 8 characters...";
+
+    /**
      * {@code COUSR02C} L342/L379: not-found message from the {@code READ-USER-SEC-FILE} and
      * {@code UPDATE-USER-SEC-FILE} {@code WHEN DFHRESP(NOTFND)} branches.
      */
@@ -381,22 +389,30 @@ public class UserUpdateService {
         }
 
         // -------------------------------------------------------------------------------------------
-        // Step 1b - field-width guards (QA F5). Enforce the PIC X(20) first/last-name widths here,
-        // AFTER the empty cascade (so a blank field still wins its "...can NOT be empty..." message) and
-        // BEFORE the keyed READ / rewrite (so an over-length name is a 400, never a
-        // DataIntegrityViolationException 500 on the VARCHAR(20) column). First-error-wins, in the
-        // COBOL field order (first name, last name). Validated on the normalized (trimmed) value because
-        // the normalized value is exactly what is stored on a change (see Step 3); trailing 3270 padding
-        // is a storage artifact, not data, so it must not count toward the width. getFirstName()/
-        // getLastName() are non-blank here (empty cascade branches 2-3 already ran). The user id is the
-        // lookup key (an over-length id finds no row -> "User ID NOT found..." 404, so no guard here) and
-        // the password widens to a BCrypt digest that cannot overflow, so neither is length-guarded.
+        // Step 1b - field-width guards (QA F5 / F-PWD-001). Enforce the PIC X(20) first/last-name and
+        // PIC X(08) password widths here, AFTER the empty cascade (so a blank field still wins its
+        // "...can NOT be empty..." message) and BEFORE the keyed READ / rewrite (so an over-length value
+        // is a 400, never a DataIntegrityViolationException 500 on the VARCHAR column). First-error-wins,
+        // in the COBOL field order (first name, last name, password). First/last name are validated on
+        // the normalized (trimmed) value because the normalized value is exactly what is stored on a
+        // change (see Step 3); trailing 3270 padding is a storage artifact, not data, so it must not
+        // count toward the width. The password, in contrast, is validated on the RAW typed value: it is
+        // matched/encoded RAW (BCrypt, see Step 3 below), never normalized, so the raw character count is
+        // the legacy 8-char PASSWDI screen-field contract. This password guard enforces that INPUT
+        // contract for parity with the sibling add/userId/name guards; the BCrypt digest itself widens to
+        // the VARCHAR(72) column and cannot overflow, so this is a parity check, NOT 500-prevention. The
+        // user id is the lookup key (an over-length id finds no row -> "User ID NOT found..." 404, so no
+        // guard here). getFirstName()/getLastName()/getPassword() are non-blank here (empty-cascade
+        // branches already ran).
         // -------------------------------------------------------------------------------------------
         if (normalize(request.getFirstName()).length() > 20) {
             throw new ValidationException(MSG_FIRST_NAME_TOO_LONG);
         }
         if (normalize(request.getLastName()).length() > 20) {
             throw new ValidationException(MSG_LAST_NAME_TOO_LONG);
+        }
+        if (request.getPassword().length() > 8) {
+            throw new ValidationException(MSG_PASSWORD_TOO_LONG);
         }
 
         // -------------------------------------------------------------------------------------------

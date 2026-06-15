@@ -2,12 +2,14 @@ package com.cardemo.service.transaction;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.sql.SQLException;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.regex.Pattern;
 
 import io.micrometer.observation.annotation.Observed;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -189,6 +191,41 @@ public class TransactionAddService {
     /** {@code 'Merchant ID must be Numeric...'} &mdash; COTRN02C L432. */
     private static final String MSG_MERCH_ID_NOT_NUMERIC = "Merchant ID must be Numeric...";
 
+    // ---------------------------------------------------------------------------------------------
+    // Field-width guards (QA F-TXNLEN-001). COTRN02C had no explicit "too long" edits because the
+    // fixed-width BMS COTRN2A map fields physically capped each input (TTYPCD X(2), TCATCD X(4),
+    // TRNSRC X(10), TDESC X(60), MID X(9), MNAME X(30), MCITY X(25), MZIP X(10)). The REST contract
+    // has no such cap, so these widths are enforced here to preserve the external input contract
+    // (AAP §0.7.2) and to keep an over-width value a clean 400 rather than a DB overflow mapped to a
+    // misleading 409. The widths mirror the TransactionDto @Size constraints exactly (the dead
+    // bean-validation widths the controller's @RequestBody-without-@Valid left unenforced) and are
+    // all <= the underlying column widths, so a value that passes can never overflow on write. The
+    // labels match the sibling "...can NOT be empty..." messages above for a consistent contract.
+    // ---------------------------------------------------------------------------------------------
+    /** Type-code width guard: {@code TTYPCD PIC X(2)} (BMS COTRN2A) / {@code TransactionDto @Size(max=2)}. */
+    private static final String MSG_TYPE_TOO_LONG = "Type CD can NOT be longer than 2 characters...";
+
+    /** Category-code width guard: {@code TCATCD PIC X(4)} / {@code @Size(max=4)}. */
+    private static final String MSG_CAT_TOO_LONG = "Category CD can NOT be longer than 4 characters...";
+
+    /** Source width guard: {@code TRNSRC PIC X(10)} / {@code @Size(max=10)}. */
+    private static final String MSG_SOURCE_TOO_LONG = "Source can NOT be longer than 10 characters...";
+
+    /** Description width guard: {@code TDESC PIC X(60)} / {@code @Size(max=60)}. */
+    private static final String MSG_DESC_TOO_LONG = "Description can NOT be longer than 60 characters...";
+
+    /** Merchant-id width guard: {@code MID PIC X(9)} / {@code @Size(max=9)}. */
+    private static final String MSG_MERCH_ID_TOO_LONG = "Merchant ID can NOT be longer than 9 characters...";
+
+    /** Merchant-name width guard: {@code MNAME PIC X(30)} / {@code @Size(max=30)}. */
+    private static final String MSG_MERCH_NAME_TOO_LONG = "Merchant Name can NOT be longer than 30 characters...";
+
+    /** Merchant-city width guard: {@code MCITY PIC X(25)} / {@code @Size(max=25)}. */
+    private static final String MSG_MERCH_CITY_TOO_LONG = "Merchant City can NOT be longer than 25 characters...";
+
+    /** Merchant-zip width guard: {@code MZIP PIC X(10)} / {@code @Size(max=10)}. */
+    private static final String MSG_MERCH_ZIP_TOO_LONG = "Merchant Zip can NOT be longer than 10 characters...";
+
     /** {@code 'Confirm to add this transaction...'} &mdash; COTRN02C L178. */
     private static final String MSG_CONFIRM_PROMPT = "Confirm to add this transaction...";
 
@@ -341,15 +378,56 @@ public class TransactionAddService {
         // DFHRESP(DUPKEY)/DFHRESP(DUPREC) -> DuplicateRecordException (HTTP 409). The COBOL WHEN OTHER
         // ("Unable to Add Transaction...") is a CICS infra/IO failure; in Java the corresponding
         // unexpected DataAccessException is left to propagate (no domain exception is invented for it).
+        // QA F-TXNLEN-001: the catch is NARROWED to true unique-key violations only. The legacy DUPKEY
+        // path is specifically a primary-key collision, so only a DuplicateKeyException (Spring's
+        // translation of a unique violation) or a wrapped SQL "23505" (PostgreSQL unique_violation) is
+        // mapped to the verbatim "Tran ID already exist..." 409. Any OTHER DataIntegrityViolationException
+        // (e.g. a NOT-NULL / FK / CHECK / value-too-long violation) is NOT a duplicate id, so it is
+        // re-thrown unchanged and surfaces through the centralized advice as a 500 - never mislabeled as
+        // a duplicate. (The §2a' width guards above already prevent the value-too-long case from reaching
+        // here at all; this narrowing is the correct error-mapping backstop, faithful to DFHRESP(DUPKEY).)
         try {
             transactionRepository.saveAndFlush(newTransaction);
-        } catch (DataIntegrityViolationException duplicate) {
-            throw new DuplicateRecordException(MSG_TRAN_DUPLICATE, duplicate);
+        } catch (DataIntegrityViolationException ex) {
+            if (isUniqueKeyViolation(ex)) {
+                throw new DuplicateRecordException(MSG_TRAN_DUPLICATE, ex);
+            }
+            throw ex;
         }
 
         // Success (COBOL NORMAL branch): the generated id is the canonical machine-readable result.
         request.setTransactionId(newTranId);
         return request;
+    }
+
+    /**
+     * Determines whether a {@link DataIntegrityViolationException} represents a true unique-key
+     * (primary-key) collision &mdash; the Java analogue of the CICS {@code DFHRESP(DUPKEY)} /
+     * {@code DFHRESP(DUPREC)} condition (QA F-TXNLEN-001). A unique violation is recognized either by
+     * Spring's typed {@link DuplicateKeyException} (its translation of a unique-constraint breach) or by
+     * an underlying {@link SQLException} carrying SQLState {@code "23505"} (PostgreSQL
+     * {@code unique_violation}) anywhere in the cause chain. Every other integrity violation (NOT NULL,
+     * foreign key, check, value-too-long) returns {@code false} so it is never mislabeled as a duplicate
+     * id; it propagates unchanged to the centralized advice (HTTP 500).
+     *
+     * @param ex the integrity violation thrown by the flush
+     * @return {@code true} only for a unique / primary-key violation
+     */
+    private static boolean isUniqueKeyViolation(DataIntegrityViolationException ex) {
+        if (ex instanceof DuplicateKeyException) {
+            return true;
+        }
+        for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
+            if (cause instanceof SQLException sqlException
+                    && "23505".equals(sqlException.getSQLState())) {
+                return true;
+            }
+            // Defensive stop: a self-referential cause chain must not loop forever.
+            if (cause.getCause() == cause) {
+                break;
+            }
+        }
+        return false;
     }
 
     /**
@@ -491,6 +569,39 @@ public class TransactionAddService {
         }
         if (!hasValue(dto.getMerchantZip())) {
             throw new ValidationException(MSG_MERCH_ZIP_EMPTY);
+        }
+
+        // (2a') Field-width guards (QA F-TXNLEN-001), in COBOL field order. Enforced AFTER the empty
+        // edits (so a blank field still wins its "...can NOT be empty..." message) and BEFORE the
+        // numeric/format edits and the WRITE (so an over-width value is a first-error-wins 400, never a
+        // DataIntegrityViolationException 500/409 on a VARCHAR column). The raw value length is checked:
+        // it mirrors the fixed-width 3270 screen field (which could hold at most N characters) and, for
+        // the text fields, is exactly what buildTransaction stores. All non-amount/non-date input fields
+        // are present here (the empty cascade above already ran). Date fields are LocalDate (Jackson-
+        // parsed) and the amount is a BigDecimal, so neither has a string width to guard.
+        if (dto.getTypeCode().length() > 2) {
+            throw new ValidationException(MSG_TYPE_TOO_LONG);
+        }
+        if (dto.getCategoryCode().length() > 4) {
+            throw new ValidationException(MSG_CAT_TOO_LONG);
+        }
+        if (dto.getSource().length() > 10) {
+            throw new ValidationException(MSG_SOURCE_TOO_LONG);
+        }
+        if (dto.getDescription().length() > 60) {
+            throw new ValidationException(MSG_DESC_TOO_LONG);
+        }
+        if (dto.getMerchantId().length() > 9) {
+            throw new ValidationException(MSG_MERCH_ID_TOO_LONG);
+        }
+        if (dto.getMerchantName().length() > 30) {
+            throw new ValidationException(MSG_MERCH_NAME_TOO_LONG);
+        }
+        if (dto.getMerchantCity().length() > 25) {
+            throw new ValidationException(MSG_MERCH_CITY_TOO_LONG);
+        }
+        if (dto.getMerchantZip().length() > 10) {
+            throw new ValidationException(MSG_MERCH_ZIP_TOO_LONG);
         }
 
         // (2b) Numeric edits (L322-337): type code then category code.

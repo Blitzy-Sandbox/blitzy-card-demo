@@ -437,8 +437,11 @@ class AccountViewServiceTest {
             verifyNoInteractions(cardCrossReferenceRepository, accountRepository, customerRepository);
         }
 
-        @ParameterizedTest(name = "non-numeric/zero key [{0}] -> \"...non zero 11 digit number\"")
-        @ValueSource(strings = {"abc", "ABC123", "12A45", "00000000000", "0", "-1"})
+        @ParameterizedTest(name = "non-numeric/zero/over-width key [{0}] -> \"...non zero 11 digit number\"")
+        // "123456789012" (12 digits) is the QA INFO over-width case: it is all-digits and non-zero, so it
+        // previously slipped past this edit, parsed to a Long and returned a misleading 404 from the keyed
+        // read. The length > 11 guard now rejects it here with the same verbatim literal (a 400).
+        @ValueSource(strings = {"abc", "ABC123", "12A45", "00000000000", "0", "-1", "123456789012"})
         void viewAccount_nonNumericOrZeroId_throwsElevenDigitNonZero(String input) {
             Throwable thrown = catchThrowable(() -> service.viewAccount(input));
 

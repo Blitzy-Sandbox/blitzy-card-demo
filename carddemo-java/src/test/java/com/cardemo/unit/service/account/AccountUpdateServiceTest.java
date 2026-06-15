@@ -288,8 +288,11 @@ class AccountUpdateServiceTest {
         }
 
         @ParameterizedTest(name = "invalid accountId [{0}] -> \"...11 digit Non-Zero Number\"")
-        @ValueSource(strings = {"abc", "00000000000", "12A45", "-1", "0"})
-        @DisplayName("non-numeric or all-zero account id -> 11-digit-non-zero message, no I/O")
+        // "123456789012" (12 digits) is the QA INFO over-width case: all-digits and non-zero, so it
+        // previously parsed to a Long and returned a misleading 404; the length > 11 guard now rejects it
+        // here (400) with the verbatim COACTUPC literal, matching the sibling AccountViewService edit.
+        @ValueSource(strings = {"abc", "00000000000", "12A45", "-1", "0", "123456789012"})
+        @DisplayName("non-numeric, all-zero or over-width account id -> 11-digit-non-zero message, no I/O")
         void nonNumericOrZeroAccountIdRejected(String badId) {
             assertThatThrownBy(() -> accountUpdateService.updateAccount(badId, validRequest()))
                     .isInstanceOf(ValidationException.class)

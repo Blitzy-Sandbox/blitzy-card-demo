@@ -260,20 +260,31 @@ public class AccountUpdateService {
 
     /**
      * Validates the account key and returns it as a {@link Long}, reproducing {@code 1210-EDIT-ACCOUNT}:
-     * a blank key (SPACES / LOW-VALUES) is the "must be supplied" prompt; a non-numeric or zero key is
-     * the "11 digit Non-Zero Number" error. The check is value-based (a zero of any width fails),
-     * matching {@code CC-ACCT-ID-N EQUAL ZEROS}.
+     * a blank key (SPACES / LOW-VALUES) is the "must be supplied" prompt; a non-numeric, zero or
+     * over-width (more than 11 digits) key is the "11 digit Non-Zero Number" error. The check is
+     * value-based (a zero of any width fails), matching {@code CC-ACCT-ID-N EQUAL ZEROS}, and the
+     * {@code length > 11} guard reproduces the fixed BMS {@code ACCTSID PIC X(11)} screen width
+     * (external interface contract, AAP&nbsp;&sect;0.7.2). This mirrors the sibling
+     * {@link AccountViewService} edit exactly &mdash; both the view ({@code COACTVWC}) and update
+     * ({@code COACTUPC}) paths share the same {@code PIC X(11)} key contract &mdash; so a 12+ digit key
+     * is a {@code 400} on <em>both</em> endpoints rather than a misleading {@code 404} (QA INFO finding,
+     * cross-endpoint consistency). Each service keeps its own verbatim program literal.
      *
      * @param accountId the request-path account identifier
      * @return the parsed account key
-     * @throws ValidationException if the key is blank, non-numeric or zero
+     * @throws ValidationException if the key is blank, non-numeric, zero or longer than 11 digits
      */
     private Long validateAccountKey(String accountId) {
         if (isBlank(accountId)) {
             throw new ValidationException("Account Number", "Account Number must be supplied.");
         }
         String trimmed = accountId.trim();
-        if (!isAllDigits(trimmed) || isAllZeros(trimmed)) {
+        // 1210-EDIT-ACCOUNT non-numeric/zero edit; the over-width case (length > 11) is folded in so a
+        // 12+ digit key is a 400 with the verbatim COACTUPC literal, not a 404 from the keyed read —
+        // reproducing the BMS ACCTSID PIC X(11) screen width and matching the sibling AccountViewService
+        // (QA INFO finding, cross-endpoint consistency). A value that passes is therefore always <= 11
+        // digits and parses safely.
+        if (!isAllDigits(trimmed) || isAllZeros(trimmed) || trimmed.length() > 11) {
             throw new ValidationException("Account Number if supplied must be a 11 digit Non-Zero Number");
         }
         return Long.parseLong(trimmed);

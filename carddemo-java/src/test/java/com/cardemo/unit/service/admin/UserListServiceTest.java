@@ -74,7 +74,8 @@ import org.springframework.data.domain.Sort;
  *   <li>The page number is one-based and clamped to a floor of one; it is converted to Spring
  *       Data's zero-based index, and the one-based value is echoed on the response DTO. The DTO's
  *       {@code pageNumber} accessor is a {@link String} (the legacy {@code PAGENUM} is
- *       {@code PIC X(8)}), so the echoed value is asserted as {@code "1"}/{@code "3"}.</li>
+ *       {@code PIC X(8)}), zero-padded to the full width (F-PAGE-001), so the echoed value is
+ *       asserted as {@code "00000001"}/{@code "00000003"}.</li>
  *   <li>Each browsed row maps {@code secUsrId}/{@code secUsrFname}/{@code secUsrLname}/
  *       {@code secUsrType} field-for-field; the credential ({@code secUsrPwd}) is never exposed.</li>
  *   <li>The selection flag is left blank on display (row selection routing is a controller concern,
@@ -245,8 +246,9 @@ class UserListServiceTest {
                 .findBySecUsrIdGreaterThanEqual(anyString(), pageableCaptor.capture());
         // Clamped one-based page 1 -> Spring Data zero-based index 0.
         assertThat(pageableCaptor.getValue().getPageNumber()).isZero();
-        // DTO echoes the one-based page number; pageNumber is PIC X(8) -> String, so compare to "1".
-        assertThat(dto.getPageNumber()).isEqualTo("1");
+        // DTO echoes the one-based page number ZERO-PADDED to the full PIC X(8) width (F-PAGE-001),
+        // so page 1 -> "00000001" (byte-identical to the sibling COTRN00C PAGENUM PIC 9(08)).
+        assertThat(dto.getPageNumber()).isEqualTo("00000001");
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -255,7 +257,7 @@ class UserListServiceTest {
     // ------------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("One-based page 3 -> zero-based index 2; DTO echoes \"3\" [COUSR00C L327]")
+    @DisplayName("One-based page 3 -> zero-based index 2; DTO echoes \"00000003\" [COUSR00C L327]")
     void shouldConvertOneBasedPageToZeroBased() {
         when(userSecurityRepository.findBySecUsrIdGreaterThanEqual(anyString(), any(Pageable.class)))
                 .thenReturn(pageOf());
@@ -265,7 +267,8 @@ class UserListServiceTest {
         verify(userSecurityRepository)
                 .findBySecUsrIdGreaterThanEqual(anyString(), pageableCaptor.capture());
         assertThat(pageableCaptor.getValue().getPageNumber()).isEqualTo(2);
-        assertThat(dto.getPageNumber()).isEqualTo("3");
+        // DTO echoes the one-based page number ZERO-PADDED to the full PIC X(8) width (F-PAGE-001).
+        assertThat(dto.getPageNumber()).isEqualTo("00000003");
     }
 
     // ------------------------------------------------------------------------------------------------
