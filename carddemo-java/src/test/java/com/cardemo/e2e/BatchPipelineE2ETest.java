@@ -95,7 +95,6 @@ import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
@@ -214,11 +213,11 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 @Testcontainers
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-@TestPropertySource(properties = {
-        // Flyway provisions only the business tables; the Spring Batch BATCH_* metadata tables must be
-        // created by Spring Batch's own initializer (default 'embedded' is a no-op on real PostgreSQL).
-        "spring.batch.jdbc.initialize-schema=always"
-})
+// The Spring Batch BATCH_* metadata tables are provisioned by Flyway (db/migration/V5__batch_metadata.sql)
+// exactly as in production, so this e2e test runs with the PRODUCTION setting
+// `spring.batch.jdbc.initialize-schema=never` (inherited from application.yml — NO override) and launches
+// the real pipeline against the same Flyway-owned batch schema (re: QA FINAL 7 F-1 — tests must not mask
+// the production schema-provisioning path).
 @Import(BatchPipelineE2ETest.SecurityCorsTestConfig.class)
 @DisplayName("Batch pipeline e2e — POSTTRAN→INTCALC→COMBTRAN→(CREASTMT‖TRANREPT) parity (CBTRN02C/CBACT04C/CBTRN03C/CBSTM03A)")
 class BatchPipelineE2ETest {

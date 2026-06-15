@@ -414,9 +414,10 @@ class GateVerificationTest {
         // it false guarantees no Job auto-executes on context startup.
         registry.add("spring.batch.job.enabled", () -> "false");
 
-        // Flyway provisions only the business tables; the Spring Batch BATCH_* metadata tables must be
-        // created by Spring Batch's own initializer (the default 'embedded' is a no-op on real PostgreSQL).
-        registry.add("spring.batch.jdbc.initialize-schema", () -> "always");
+        // The Spring Batch BATCH_* metadata tables are provisioned by Flyway
+        // (db/migration/V5__batch_metadata.sql) exactly as in production, so this gate test does NOT
+        // override `spring.batch.jdbc.initialize-schema` — it inherits the PRODUCTION `never` from
+        // application.yml (re: QA FINAL 7 F-1 — tests must not mask the production provisioning path).
 
         // POSTTRAN reads the 300 Flyway-V3-seeded DailyTransaction rows from the DB (self-contained); the
         // reader is injected by type, so this flows through the standalone job AND the orchestrator alike.

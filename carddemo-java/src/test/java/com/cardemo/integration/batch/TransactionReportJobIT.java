@@ -45,7 +45,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
@@ -77,11 +76,12 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  * <p>Conventions inherited from {@link AbstractBatchJobIT}: real PostgreSQL + LocalStack Testcontainers,
  * {@code webEnvironment=NONE}, {@code @ActiveProfiles("test")}, manual {@code launchJob(...)} (six {@code Job}
  * beans exist, so {@code @SpringBatchTest} auto-wiring would be ambiguous), and per-launch
- * {@code uniqueParams(...)}. The {@code @TestPropertySource} below provisions the Spring Batch metadata
- * tables (Flyway only creates business tables), and {@code SecurityCorsTestConfig} supplies the
- * {@link CorsConfigurationSource} bean the production security graph requires under {@code webEnvironment=NONE}.</p>
+ * {@code uniqueParams(...)}. The Spring Batch metadata tables are provisioned by Flyway
+ * ({@code db/migration/V5__batch_metadata.sql}) exactly as in production, so this IT runs with the
+ * PRODUCTION {@code spring.batch.jdbc.initialize-schema=never} (inherited from {@code application.yml} —
+ * no override); and {@code SecurityCorsTestConfig} supplies the {@link CorsConfigurationSource} bean the
+ * production security graph requires under {@code webEnvironment=NONE}.</p>
  */
-@TestPropertySource(properties = "spring.batch.jdbc.initialize-schema=always")
 @Import(TransactionReportJobIT.SecurityCorsTestConfig.class)
 @DisplayName("TransactionReportJob (Stage-4b) integration — CBTRN03C report parity")
 class TransactionReportJobIT extends AbstractBatchJobIT {

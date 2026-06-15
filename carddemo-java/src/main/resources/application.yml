@@ -155,8 +155,10 @@ spring:
       # by Flyway (a db/migration script). Spring Batch must therefore NOT initialize its
       # own schema (which would race/conflict with Flyway). 'never' makes this explicit and
       # profile-safe; the Boot default 'embedded' already skips a non-embedded PostgreSQL.
-      # NOTE for the db/migration agent: add the BATCH_* DDL to db/migration or every batch
-      # job fails at runtime with "Table 'BATCH_JOB_INSTANCE' not found".
+      # The BATCH_* DDL is provided by db/migration/V5__batch_metadata.sql (the canonical
+      # spring-batch-core schema-postgresql.sql), which Flyway applies on startup BEFORE any
+      # job launches; without it every batch job fails at runtime with
+      # "relation \"batch_job_instance\" does not exist".
       initialize-schema: never
 
 # =============================================================================

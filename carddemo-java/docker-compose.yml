@@ -102,8 +102,10 @@ services:
   #   • CICS notifications                                                → SNS
   # localstack-pro is used per tech-spec L1005. The auth token is a real secret and
   # is injected at runtime (empty default keeps `docker compose config` clean).
+  # Pinned tag (not :latest) keeps the AWS-emulator provisioning behaviour reproducible
+  # and prevents non-deterministic version/CVE drift on `docker compose pull` (QA FINAL 7 F-2).
   localstack:
-    image: localstack/localstack-pro:latest
+    image: localstack/localstack-pro:2026.5.3
     container_name: carddemo-localstack
     environment:
       # Only the three services the migration uses are enabled.
@@ -170,8 +172,9 @@ services:
   # `app` service on port 8080 (job carddemo-app). The scrape config is the
   # SINGLE source of truth and is bind-mounted read-only to Prometheus' default
   # config path. KEEP the app service named `app` so the target stays valid.
+  # Pinned tag (not :latest) keeps the scrape/runtime behaviour reproducible (QA FINAL 7 F-2).
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.12.0
     container_name: carddemo-prometheus
     volumes:
       # Mount the companion scrape config (dependency: carddemo-java/prometheus.yml)
@@ -197,8 +200,9 @@ services:
   # top-level `configs` (see the `configs:` block at the end of this file), so no
   # extra sidecar files are required. Satisfies the observability "dashboard
   # template" gate (AAP §0.7.7; tech-spec L834).
+  # Pinned tag (not :latest) keeps the dashboard runtime reproducible (QA FINAL 7 F-2).
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:13.0.2
     container_name: carddemo-grafana
     environment:
       # NON-SECRET local-dev admin credentials — overridable via env/.env.

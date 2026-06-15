@@ -54,7 +54,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
@@ -101,8 +100,10 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
  * {@code launchJob(...)}/{@code uniqueParams(...)}/{@code putObject(...)}/{@code countObjects(...)}/
  * {@code emptyBucket(...)} helpers — none redeclared here. The production job is autowired
  * <strong>by bean name</strong> ({@code cardDemoBatchPipelineJob}) to disambiguate the six {@code Job}
- * beans in the context. The {@code @TestPropertySource} below provisions the Spring Batch metadata
- * tables (Flyway only creates business tables), and {@code SecurityCorsTestConfig} supplies the
+ * beans in the context. The Spring Batch metadata tables are provisioned by Flyway
+ * ({@code db/migration/V5__batch_metadata.sql}) exactly as in production, so this IT runs with the
+ * PRODUCTION {@code spring.batch.jdbc.initialize-schema=never} (inherited from {@code application.yml} —
+ * no override), and {@code SecurityCorsTestConfig} supplies the
  * {@link CorsConfigurationSource} bean the production security graph requires under
  * {@code webEnvironment = NONE}. The {@code *IT} suffix routes this class to {@code maven-failsafe-plugin}
  * under the Maven {@code integration} profile.</p>
@@ -116,11 +117,12 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
  * @see AbstractBatchJobIT
  * @see DailyTransactionPostingJob
  */
-// Create the Spring Batch metadata schema (BATCH_JOB_INSTANCE, BATCH_JOB_EXECUTION, ...) in the
-// Testcontainers PostgreSQL: the Flyway migrations provision only business tables, and for a
-// non-embedded database `spring.batch.jdbc.initialize-schema` defaults to `embedded` (a no-op). The
-// inherited `clearJobRepository()` (@BeforeEach) and every `launchJob(...)` require these tables.
-@TestPropertySource(properties = "spring.batch.jdbc.initialize-schema=always")
+// The Spring Batch metadata tables (BATCH_JOB_INSTANCE, BATCH_JOB_EXECUTION, BATCH_*_SEQ, ...) are
+// provisioned by Flyway (db/migration/V5__batch_metadata.sql) exactly as in production, so this IT
+// deliberately runs with the PRODUCTION setting `spring.batch.jdbc.initialize-schema=never` (inherited
+// from application.yml — NO override here). The inherited `clearJobRepository()` (@BeforeEach) and every
+// `launchJob(...)` therefore exercise the SAME Flyway-owned batch schema the production app uses (re:
+// QA FINAL 7 F-1 — tests must not mask the production schema-provisioning path).
 @Import(BatchPipelineOrchestratorIT.SecurityCorsTestConfig.class)
 @DisplayName("BatchPipelineOrchestrator (cardDemoBatchPipelineJob) — sequencing, COND PROCEED/STOP routing, and the Stage-4 parallel split")
 class BatchPipelineOrchestratorIT extends AbstractBatchJobIT {

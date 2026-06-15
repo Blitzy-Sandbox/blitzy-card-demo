@@ -46,7 +46,6 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.Sort;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
@@ -117,15 +116,12 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
  * @see Transaction
  * @see TransactionRepository
  */
-// Create the Spring Batch metadata schema (BATCH_JOB_INSTANCE, BATCH_JOB_EXECUTION, ...) in the
-// Testcontainers PostgreSQL: the Flyway migrations provision only business tables, and for a
-// non-embedded database `spring.batch.jdbc.initialize-schema` defaults to `embedded` (a no-op). The
-// inherited `clearJobRepository()` (@BeforeEach) and every `launchJob(...)` require these tables. Spring
-// Boot's BatchDataSourceScriptDatabaseInitializer runs the batch DDL with continueOnError=true, so even
-// though this IT's context is distinct from its siblings' and they share the singleton PostgreSQL, a
-// repeat run of the (non-IF-NOT-EXISTS) batch DDL logs-and-ignores the "already exists" errors, leaving
-// the existing tables intact (the whole batch IT suite coexists safely on one shared database).
-@TestPropertySource(properties = "spring.batch.jdbc.initialize-schema=always")
+// The Spring Batch metadata tables (BATCH_JOB_INSTANCE, BATCH_JOB_EXECUTION, BATCH_*_SEQ, ...) are
+// provisioned by Flyway (db/migration/V5__batch_metadata.sql) exactly as in production, so this IT
+// deliberately runs with the PRODUCTION setting `spring.batch.jdbc.initialize-schema=never` (inherited
+// from application.yml — NO override here). The inherited `clearJobRepository()` (@BeforeEach) and every
+// `launchJob(...)` therefore exercise the SAME Flyway-owned batch schema the production app uses (re:
+// QA FINAL 7 F-1 — tests must not mask the production schema-provisioning path).
 @Import(CombineTransactionsJobIT.SecurityCorsTestConfig.class)
 class CombineTransactionsJobIT extends AbstractBatchJobIT {
 

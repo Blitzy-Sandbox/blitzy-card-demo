@@ -47,7 +47,6 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
@@ -103,12 +102,12 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
  *
  * @see AbstractBatchJobIT
  */
-// Create the Spring Batch metadata schema (BATCH_JOB_INSTANCE, BATCH_JOB_EXECUTION, ...) in the
-// Testcontainers PostgreSQL: the Flyway migrations provision only business tables, and for a
-// non-embedded database `spring.batch.jdbc.initialize-schema` defaults to `embedded` (a no-op). The
-// inherited `clearJobRepository()` (@BeforeEach) and every `launchJob(...)` require these tables. This
-// IT owns a single cached ApplicationContext, so the PostgreSQL batch DDL runs exactly once.
-@TestPropertySource(properties = "spring.batch.jdbc.initialize-schema=always")
+// The Spring Batch metadata tables (BATCH_JOB_INSTANCE, BATCH_JOB_EXECUTION, BATCH_*_SEQ, ...) are
+// provisioned by Flyway (db/migration/V5__batch_metadata.sql) exactly as in production, so this IT
+// deliberately runs with the PRODUCTION setting `spring.batch.jdbc.initialize-schema=never` (inherited
+// from application.yml — NO override here). The inherited `clearJobRepository()` (@BeforeEach) and every
+// `launchJob(...)` therefore exercise the SAME Flyway-owned batch schema the production app uses (re:
+// QA FINAL 7 F-1 — tests must not mask the production schema-provisioning path).
 @Import(InterestCalculationJobIT.SecurityCorsTestConfig.class)
 class InterestCalculationJobIT extends AbstractBatchJobIT {
 

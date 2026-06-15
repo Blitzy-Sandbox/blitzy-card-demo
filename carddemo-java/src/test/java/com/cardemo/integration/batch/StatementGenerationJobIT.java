@@ -55,7 +55,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
@@ -95,14 +94,14 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
  * {@code webEnvironment=NONE}, {@code @ActiveProfiles("test")}, manual {@code launchJob(...)} (six
  * {@code Job} beans exist, so {@code @SpringBatchTest} auto-wiring would be ambiguous), per-launch
  * {@code uniqueParams()}, and the {@code listKeys}/{@code countObjects}/{@code getObjectAsString}/
- * {@code putObject}/{@code emptyBucket} S3 helpers — none redeclared here. The {@code @TestPropertySource}
- * below provisions the Spring Batch metadata tables (Flyway only creates the business tables; for a
- * non-embedded database {@code spring.batch.jdbc.initialize-schema} defaults to {@code embedded}, a
- * no-op, and the inherited {@code clearJobRepository()} / {@code launchJob(...)} require those tables),
- * and {@code SecurityCorsTestConfig} supplies the {@link CorsConfigurationSource} bean the production
+ * {@code putObject}/{@code emptyBucket} S3 helpers — none redeclared here. The Spring Batch metadata
+ * tables are provisioned by Flyway ({@code db/migration/V5__batch_metadata.sql}) exactly as in
+ * production, so this IT runs with the PRODUCTION {@code spring.batch.jdbc.initialize-schema=never}
+ * (inherited from {@code application.yml} — no override) and the inherited {@code clearJobRepository()} /
+ * {@code launchJob(...)} exercise the same Flyway-owned batch schema the production app uses; and
+ * {@code SecurityCorsTestConfig} supplies the {@link CorsConfigurationSource} bean the production
  * security graph requires under {@code webEnvironment=NONE}.</p>
  */
-@TestPropertySource(properties = "spring.batch.jdbc.initialize-schema=always")
 @Import(StatementGenerationJobIT.SecurityCorsTestConfig.class)
 @DisplayName("StatementGenerationJob (Stage-4a) integration — CREASTMT/CBSTM03A prepare-then-generate parity")
 class StatementGenerationJobIT extends AbstractBatchJobIT {

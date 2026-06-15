@@ -113,17 +113,17 @@ import org.springframework.context.annotation.Configuration;
  * {@code application.yml}), Hibernate will <strong>not</strong> create any tables &mdash; including the
  * Spring Batch metadata tables ({@code BATCH_JOB_INSTANCE}, {@code BATCH_JOB_EXECUTION},
  * {@code BATCH_JOB_EXECUTION_PARAMS}, {@code BATCH_JOB_EXECUTION_CONTEXT}, {@code BATCH_STEP_EXECUTION},
- * {@code BATCH_STEP_EXECUTION_CONTEXT}, and the {@code BATCH_*_SEQ} sequences). These tables must
- * therefore be provisioned by <strong>Flyway</strong> (DDL added to a {@code db/migration} script
- * &mdash; e.g. appended to {@code V1__create_schema.sql} or a dedicated migration; the canonical DDL is
- * the PostgreSQL {@code schema-postgresql.sql} shipped inside {@code spring-batch-core}). To avoid
- * racing or conflicting with Flyway's ownership, Spring Batch's own schema initializer is turned off
- * via <strong>{@code spring.batch.jdbc.initialize-schema=never}</strong> in {@code application.yml}
+ * {@code BATCH_STEP_EXECUTION_CONTEXT}, and the {@code BATCH_*_SEQ} sequences). These tables are
+ * therefore provisioned by <strong>Flyway</strong> in
+ * <strong>{@code db/migration/V5__batch_metadata.sql}</strong> &mdash; the canonical PostgreSQL
+ * {@code schema-postgresql.sql} shipped inside {@code spring-batch-core} (copied verbatim and
+ * version-matched to the resolved {@code spring-batch-core}). To avoid racing or conflicting with
+ * Flyway's ownership, Spring Batch's own schema initializer is turned off via
+ * <strong>{@code spring.batch.jdbc.initialize-schema=never}</strong> in {@code application.yml}
  * (the Boot default {@code embedded} already skips a non-embedded PostgreSQL, but {@code never} makes
- * the intent explicit and safe under every profile). <strong>Action for the {@code db/migration}
- * agent:</strong> ensure the {@code BATCH_*} tables/sequences exist in a Flyway migration, or every
- * batch job will fail at runtime with "Table 'BATCH_JOB_INSTANCE' not found". Setting
- * {@code initialize-schema=always} here is explicitly avoided.</p>
+ * the intent explicit and safe under every profile). Without {@code V5__batch_metadata.sql} every
+ * batch job would fail at runtime with {@code relation "batch_job_instance" does not exist}; setting
+ * {@code initialize-schema=always} here is explicitly avoided so Flyway stays the single schema owner.</p>
  *
  * <h2>Minimal Change Clause &amp; secret policy (AAP &sect;0.7.1 / &sect;0.7.2)</h2>
  * <p>No speculative batch features are introduced: no remote/partitioned steps, no custom batch
