@@ -220,6 +220,27 @@ management:
       group:
         readiness:
           include: readinessState,database,s3,sqs
+  # ---------------------------------------------------------------------------
+  # Phase 5b — Health-indicator auto-config (distinct from `endpoint.health`)
+  # ---------------------------------------------------------------------------
+  # Disable Spring Boot's built-in `db` DataSourceHealthIndicator. Rationale
+  # (finding F-OBS-1): the custom `database` indicator in
+  # observability/HealthIndicators.java already reports PostgreSQL connectivity
+  # AND now bounds its probe to ~2s (PROBE_TIMEOUT_SECONDS) via a dedicated
+  # executor, so the built-in `db` indicator is redundant. Worse, the built-in
+  # `db` indicator borrows a connection inline (dataSource.getConnection()),
+  # which — during a database outage — blocks for the full HikariCP
+  # `connection-timeout` (30000ms, see spring.datasource.hikari above) and would
+  # add a SECOND ~30s stall to /actuator/health (~60s total), defeating the
+  # "fast and cheap" readiness intent (AAP §0.7.7). Disabling it leaves the
+  # bounded custom `database` indicator as the single PostgreSQL health source,
+  # so /actuator/health and /actuator/health/readiness degrade within ~1–2s.
+  # NOTE: the HikariCP connection-timeout itself is intentionally NOT lowered —
+  # it governs BUSINESS connection acquisition, and changing it would alter
+  # runtime behaviour beyond the migration (Minimal Change Clause, AAP §0.7.1).
+  health:
+    db:
+      enabled: false
   metrics:
     tags:
       # Common tag added to every meter so Prometheus/Grafana can scope queries

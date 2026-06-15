@@ -2,9 +2,15 @@ package com.cardemo.observability;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+
+import jakarta.annotation.PreDestroy;
 
 import javax.sql.DataSource;
 
@@ -133,11 +139,56 @@ public class HealthIndicators {
 
     /**
      * Short, fixed timeout (in seconds) applied to every probe so a slow or hung dependency cannot
-     * stall frequent readiness polling. Used as the {@link Connection#isValid(int)} timeout and as
-     * the {@code SqsAsyncClient.getQueueUrl(...)} future {@code get} timeout. Kept intentionally low
-     * (within the 1&ndash;2&nbsp;second guidance) because these probes run on the readiness path.
+     * stall frequent readiness polling. Used as the {@link Connection#isValid(int)} timeout, as the
+     * wall-clock bound for the database probe's {@code Future.get(...)} on the
+     * {@link #databaseProbeExecutor}, and as the {@code SqsAsyncClient.getQueueUrl(...)} future
+     * {@code get} timeout. Kept intentionally low (within the 1&ndash;2&nbsp;second guidance) because
+     * these probes run on the readiness path.
      */
     private static final int PROBE_TIMEOUT_SECONDS = 2;
+
+    /**
+     * Dedicated, bounded executor used <em>only</em> to run the PostgreSQL connectivity probe under a
+     * hard {@link #PROBE_TIMEOUT_SECONDS} wall-clock ceiling.
+     *
+     * <h3>Why a separate executor is required (finding F-OBS-1)</h3>
+     * <p>The probe's first action, {@code dataSource.getConnection()}, blocks for up to the HikariCP
+     * {@code spring.datasource.hikari.connection-timeout} (default 30&nbsp;000&nbsp;ms) when the
+     * database is unreachable &mdash; and that wait happens <em>before</em> the in-probe
+     * {@link Connection#isValid(int)} timeout can ever take effect. Running the probe inline on the
+     * Actuator request thread therefore let a database outage stall {@code /actuator/health} and the
+     * frequently-polled {@code /actuator/health/readiness} for ~30&ndash;60&nbsp;seconds, defeating the
+     * &quot;fast and cheap&quot; readiness-probe intent. By executing the borrow-and-validate work on
+     * this executor and waiting on the returned {@link Future} with
+     * {@code get(PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS)}, the indicator now returns {@code DOWN}
+     * within the ~2&nbsp;second bound regardless of the HikariCP connection-timeout &mdash; mirroring
+     * the bounded {@code get(timeout)} pattern already used by {@link #sqsHealthIndicator}. The global
+     * HikariCP {@code connection-timeout} is intentionally left at its production value (the
+     * Minimal-Change Clause, AAP &sect;0.7.1, forbids altering business connection-acquisition
+     * behaviour); only the health probe is bounded.</p>
+     *
+     * <p>Two daemon worker threads are sufficient because readiness polling is periodic and each
+     * timed-out task is {@linkplain Future#cancel(boolean) cancelled with interruption} (HikariCP
+     * aborts a blocked {@code getConnection()} on interrupt), so worker threads are released promptly.
+     * Daemon threads never block JVM shutdown, and {@link #shutdownDatabaseProbeExecutor()} disposes
+     * the pool deterministically when the Spring context closes.</p>
+     */
+    private final ExecutorService databaseProbeExecutor = Executors.newFixedThreadPool(2, runnable -> {
+        final Thread thread = new Thread(runnable, "carddemo-db-health-probe");
+        thread.setDaemon(true);
+        return thread;
+    });
+
+    /**
+     * Disposes the {@link #databaseProbeExecutor} when the Spring application context shuts down so the
+     * (daemon) probe threads are released deterministically rather than relying on JVM exit.
+     * {@link ExecutorService#shutdownNow()} also interrupts any probe still blocked on a hung
+     * {@code getConnection()}.
+     */
+    @PreDestroy
+    void shutdownDatabaseProbeExecutor() {
+        databaseProbeExecutor.shutdownNow();
+    }
 
     /**
      * Health indicator for PostgreSQL connectivity, surfaced under the health key {@code database}
@@ -150,9 +201,26 @@ public class HealthIndicators {
      * (or any other unchecked runtime failure) is caught and rendered as {@code DOWN} so the probe
      * never throws &mdash; the mandatory graceful-degradation contract.</p>
      *
+     * <h3>Bounded execution &mdash; ~2&nbsp;second ceiling under a database outage (finding F-OBS-1)</h3>
+     * <p>The borrow-and-validate work runs on the dedicated {@link #databaseProbeExecutor} and the
+     * caller waits on the {@link Future} with {@code get(}{@link #PROBE_TIMEOUT_SECONDS}{@code ,
+     * TimeUnit.SECONDS)}. This is required because {@code dataSource.getConnection()} blocks for up to
+     * the HikariCP {@code connection-timeout} (~30&nbsp;s) when the database is unreachable,
+     * <em>before</em> the in-probe {@link Connection#isValid(int)} timeout can apply &mdash; which
+     * previously stalled {@code /actuator/health} (~60&nbsp;s) and {@code /actuator/health/readiness}
+     * (~30&nbsp;s). With the bound, a database outage now surfaces as {@code DOWN} within
+     * ~{@value #PROBE_TIMEOUT_SECONDS}&nbsp;seconds: a {@link TimeoutException} on the {@code get} adds
+     * a {@code reason=probe timed out} detail and cancels/interrupts the worker, keeping the readiness
+     * path &quot;fast and cheap&quot;. The global HikariCP {@code connection-timeout} is deliberately
+     * left unchanged so business connection-acquisition behaviour is preserved (Minimal-Change Clause);
+     * only this health probe is bounded.</p>
+     *
      * <p>This is a custom indicator under the distinct key {@code database}; it intentionally does not
-     * override Spring Boot's built-in {@code db} {@code DataSourceHealthIndicator} (see the class
-     * Javadoc).</p>
+     * override Spring Boot's built-in {@code db} {@code DataSourceHealthIndicator}. To avoid a second,
+     * <em>unbounded</em> {@code getConnection()} block on {@code /actuator/health} during a database
+     * outage, that redundant built-in {@code db} indicator is disabled via
+     * {@code management.health.db.enabled=false} in {@code application.yml}; this bounded
+     * {@code database} indicator is the single source of PostgreSQL health (see the class Javadoc).</p>
      *
      * @param dataSource the auto-configured application {@link DataSource} (injected; never created
      *                   here). Spring Boot configures it from {@code spring.datasource.*}.
@@ -161,18 +229,47 @@ public class HealthIndicators {
     @Bean
     public HealthIndicator databaseHealthIndicator(final DataSource dataSource) {
         return () -> {
-            try (Connection connection = dataSource.getConnection()) {
-                if (connection.isValid(PROBE_TIMEOUT_SECONDS)) {
-                    return Health.up()
-                            .withDetail("database", "PostgreSQL")
+            // Borrow-and-validate is submitted to a dedicated executor and bounded by
+            // future.get(PROBE_TIMEOUT_SECONDS): dataSource.getConnection() blocks up to the HikariCP
+            // connection-timeout (~30s) when the DB is down, which would otherwise stall the readiness
+            // path long before the in-probe isValid() timeout applies (finding F-OBS-1).
+            final Callable<Health> probeTask = () -> {
+                try (Connection connection = dataSource.getConnection()) {
+                    if (connection.isValid(PROBE_TIMEOUT_SECONDS)) {
+                        return Health.up()
+                                .withDetail("database", "PostgreSQL")
+                                .build();
+                    }
+                    // Connection obtained but failed its own validity self-check within the timeout.
+                    return Health.down()
+                            .withDetail("reason", "connection invalid")
                             .build();
+                } catch (SQLException e) {
+                    // Could not obtain or validate a connection (driver / pool / network failure).
+                    return Health.down(e).build();
                 }
-                // Connection obtained but failed its own validity self-check within the timeout.
-                return Health.down()
-                        .withDetail("reason", "connection invalid")
+            };
+
+            final Future<Health> future = databaseProbeExecutor.submit(probeTask);
+            try {
+                // Hard wall-clock ceiling: a DB outage now surfaces as DOWN within
+                // ~PROBE_TIMEOUT_SECONDS instead of blocking for the full HikariCP connection-timeout.
+                return future.get(PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            } catch (TimeoutException e) {
+                // Probe exceeded its short bound (e.g. getConnection() still blocked on the pool).
+                // Interrupt the worker so a blocked getConnection() is aborted and its thread freed.
+                future.cancel(true);
+                return Health.down(e)
+                        .withDetail("reason", "probe timed out")
                         .build();
-            } catch (SQLException e) {
-                // Could not obtain or validate a connection (driver / pool / network failure).
+            } catch (ExecutionException e) {
+                // The probe task itself failed; surface the underlying cause as DOWN.
+                final Throwable cause = e.getCause() != null ? e.getCause() : e;
+                return Health.down(cause).build();
+            } catch (InterruptedException e) {
+                // Restore the interrupt status, cancel the in-flight probe, then degrade gracefully.
+                future.cancel(true);
+                Thread.currentThread().interrupt();
                 return Health.down(e).build();
             } catch (RuntimeException e) {
                 // Defensive catch-all so health() can never propagate an unexpected unchecked
