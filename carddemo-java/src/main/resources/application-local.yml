@@ -1,0 +1,215 @@
+# =============================================================================
+# CardDemo (Java 25 LTS + Spring Boot 3.5.15) — `local` PROFILE OVERRIDES
+# =============================================================================
+# Purpose:
+#   Profile-specific Spring Boot configuration for running CardDemo on a
+#   developer machine OR via `docker-compose` against a LOCAL PostgreSQL 16 and
+#   a LocalStack emulator (S3/SQS/SNS) with ZERO live AWS dependencies. It
+#   LAYERS ON TOP of the profile-agnostic application.yml: ONLY the values that
+#   must differ or be added for the local runtime appear here; everything else
+#   (JPA ddl-auto=validate, Flyway enabled, HikariCP pool shape, Actuator
+#   exposure, metrics tags, base logging levels, the auth-token signing secret)
+#   is INHERITED from application.yml. Do NOT duplicate inherited settings here.
+#
+#   Activated by SPRING_PROFILES_ACTIVE=local. The `app` service in
+#   carddemo-java/docker-compose.yml sets exactly that, and supplies the
+#   service-name endpoint overrides (postgres / localstack / jaeger) as
+#   environment variables — so this SAME file runs unchanged both on a host
+#   (localhost defaults below) and inside the compose network (env overrides).
+#
+# KEY INSIGHT — the linchpin of the "every AWS interaction verifiable against
+#   LocalStack with zero live dependencies" gate (AAP §0.7.7):
+#   Every value uses the ${ENV_VAR:default} pattern. The DEFAULTS target a host
+#   developer (localhost:5432 / http://localhost:4566 / http://localhost:4318),
+#   while docker-compose injects the in-network service names
+#   (postgres:5432 / http://localstack:4566 / http://jaeger:4318) via the
+#   environment. No edits are ever required to switch between the two. The
+#   AWS endpoint can therefore only ever resolve to LocalStack — never live AWS.
+#
+#   The logical S3 bucket / SQS queue / SNS topic names below MUST stay in
+#   lockstep with carddemo-java/localstack-init/init-aws.sh (which provisions
+#   them) and with the sibling application-test.yml (which binds the SAME
+#   carddemo.aws.* keys via one @ConfigurationProperties bean). They are
+#   reproduced here byte-for-byte for that reason.
+#
+# Secret policy (AAP §0.7.2 / §0.8.3):
+#   NO real secrets. The AWS credentials are the conventional LocalStack
+#   NON-SECRET placeholders ("test"/"test") consumed only when the corresponding
+#   env vars are unset; LocalStack ignores credential values entirely. Nothing
+#   here can reach a live AWS account. Real credentials, when ever needed, are
+#   supplied exclusively through the AWS_* environment variables (AAP §0.8.3).
+#
+# Provenance & traceability:
+#   Brand-new greenfield artifact with NO COBOL source equivalent — it replaces
+#   JCL/dataset declarations (AAP §0.5.2). Base package com.cardemo (D-006).
+#   The profile is encoded by the FILE NAME (`application-local.yml`); there are
+#   intentionally no `---`/`spring.config.activate.on-profile` separators.
+#   Traceability to the frozen legacy baseline is by COBOL repo commit SHA
+#   27d6c6f.
+# =============================================================================
+
+spring:
+
+  # ---------------------------------------------------------------------------
+  # Phase 1 — Datasource: local PostgreSQL 16
+  # ---------------------------------------------------------------------------
+  # Technology-substitution note (AAP §0.1.2): the legacy VSAM KSDS/PS datasets
+  # are migrated to PostgreSQL 16 tables (Spring Data JPA). Flyway (inherited,
+  # ENABLED) runs V1__create_schema / V2__create_indexes / V3__seed_data on
+  # startup, and `spring.jpa.hibernate.ddl-auto=validate` (inherited) makes
+  # Hibernate validate the entities against the Flyway-built schema rather than
+  # create it. Those two settings are INHERITED from application.yml and are
+  # intentionally NOT redeclared here (minimal change, AAP §0.7.1 / §0.7.7).
+  datasource:
+    # `driver-class-name: org.postgresql.Driver` is INHERITED from application.yml
+    # — not overridden here (the local profile uses the real PostgreSQL driver).
+    #
+    # Default targets a host developer's PostgreSQL on localhost:5432, database
+    # `carddemo`. docker-compose OVERRIDES this to the in-network postgres
+    # service via `SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/carddemo`.
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
+    # NON-SECRET local-development credentials (NOT real secrets, AAP §0.7.2).
+    # These reference POSTGRES_USER / POSTGRES_PASSWORD so a developer who points
+    # their local `postgres` container (or docker-compose's `postgres` service,
+    # which reads the SAME POSTGRES_USER/POSTGRES_PASSWORD vars) at custom values
+    # gets them picked up automatically. Both default to `carddemo`.
+    # Precedence note: in docker-compose the `app` service also exports
+    # SPRING_DATASOURCE_USERNAME / SPRING_DATASOURCE_PASSWORD, which Spring binds
+    # to these same keys at a HIGHER precedence than this YAML and therefore win
+    # there — so credentials stay correct in BOTH host and compose runs.
+    username: ${POSTGRES_USER:carddemo}
+    password: ${POSTGRES_PASSWORD:carddemo}
+    # HikariCP pool shape (pool-name / maximum-pool-size / connection-timeout) is
+    # INHERITED from application.yml — no local override (minimal change, AAP §0.7.1).
+
+  # ---------------------------------------------------------------------------
+  # Phase 2 — AWS -> LocalStack (Spring Cloud AWS 3.3.0; ZERO live AWS)
+  # ---------------------------------------------------------------------------
+  # The spring-cloud-aws-starter-{s3,sqs,sns} (3.3.0) auto-configuration is on
+  # the MAIN classpath, so the S3 / SQS / SNS client beans are built at startup.
+  # The AWS SDK v2 clients are LAZY (no network call at bean-creation time), so
+  # these values let the context load even before LocalStack is reachable.
+  cloud:
+    aws:
+      region:
+        # Fixed region for the emulator; LocalStack accepts any valid AWS region.
+        # docker-compose also sets SPRING_CLOUD_AWS_REGION_STATIC from
+        # ${AWS_DEFAULT_REGION:-us-east-1} for the same effect.
+        static: ${AWS_DEFAULT_REGION:us-east-1}
+      credentials:
+        # NON-SECRET LocalStack placeholders, used ONLY when AWS_ACCESS_KEY_ID /
+        # AWS_SECRET_ACCESS_KEY are unset. LocalStack ignores credential values;
+        # "test"/"test" cannot match a real AWS key pattern (AAP §0.7.2 / §0.8.3).
+        # A live run would supply real values exclusively via these env vars.
+        access-key: ${AWS_ACCESS_KEY_ID:test}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+      # GLOBAL endpoint override consumed by EVERY auto-configured AWS client
+      # (S3, SQS, SNS). Verified valid for Spring Cloud AWS 3.x (matches the
+      # sibling application-test.yml). Defaults to the standard LocalStack edge
+      # port for a host run; docker-compose OVERRIDES it to the in-network
+      # emulator via `AWS_ENDPOINT_URL=http://localstack:4566` (and additionally
+      # mirrors it as SPRING_CLOUD_AWS_ENDPOINT). This indirection guarantees the
+      # endpoint can only ever point at LocalStack — never a live AWS endpoint.
+      endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
+      s3:
+        # REQUIRED for LocalStack S3: use path-style URLs
+        # (http://host:4566/bucket/key) instead of virtual-host style
+        # (http://bucket.host/...), which does not resolve against the emulator.
+        # Verified valid Spring Cloud AWS 3.x property key. docker-compose also
+        # sets SPRING_CLOUD_AWS_S3_PATH_STYLE_ACCESS_ENABLED=true for parity.
+        path-style-access-enabled: true
+
+# =============================================================================
+# Phase 3 — Application-level AWS resource names (carddemo.aws.*)
+# =============================================================================
+# Logical S3 bucket / SQS queue / SNS topic names bound by config/AwsConfig and
+# consumed by service/report/ReportSubmissionService + the batch writers. These
+# keys and defaults are IDENTICAL to the sibling application-test.yml (one
+# @ConfigurationProperties(prefix="carddemo.aws") bean binds across BOTH
+# profiles, so the key paths MUST match) and to the names provisioned by
+# localstack-init/init-aws.sh (the single source of truth). Every value is
+# env-overridable; the env-var names match those declared in init-aws.sh.
+#
+# Technology substitutions (AAP §0.1.2 / Minimal Change Clause §0.7.1):
+#   * GDG generations / sequential PS datasets -> versioned S3 objects (D-003).
+#   * CICS TDQ 'JOBS' WRITEQ (CORPT00C online->batch bridge) -> SQS FIFO trigger (D-004).
+#   * CICS notification messaging -> SNS topic fan-out.
+carddemo:
+  # ---------------------------------------------------------------------------
+  # Auth-token signing secret — local-dev NON-SECRET default
+  # ---------------------------------------------------------------------------
+  # The base application.yml intentionally carries NO default for the token secret
+  # (CWE-798: a production/base run fails fast when CARDDEMO_SECURITY_TOKEN_SECRET is
+  # unset). The `local` profile restores a clearly-labelled NON-SECRET developer
+  # default here — mirroring the NON-SECRET AWS ("test"/"test") and DB
+  # (carddemo/carddemo) local defaults in this same file — so a host
+  # `mvn spring-boot:run -Plocal` or `docker compose up` boots out-of-the-box. It is
+  # >= 32 bytes (the 256-bit HS256 minimum TokenService enforces at startup).
+  # docker-compose OVERRIDES it via CARDDEMO_SECURITY_TOKEN_SECRET. NEVER production.
+  security:
+    token:
+      secret: ${CARDDEMO_SECURITY_TOKEN_SECRET:local-development-only-carddemo-hs256-token-signing-secret-change-me}
+  aws:
+    s3:
+      # Batch file staging input (replaces sequential PS datasets / GDG input generations).
+      batch-input-bucket: ${CARDDEMO_S3_BATCH_INPUT_BUCKET:carddemo-batch-input}
+      # Batch file staging output (replaces GDG output generations).
+      batch-output-bucket: ${CARDDEMO_S3_BATCH_OUTPUT_BUCKET:carddemo-batch-output}
+      # Generated statement output (CBSTM03A/CBSTM03B -> StatementGenerationJob).
+      statements-bucket: ${CARDDEMO_S3_STATEMENTS_BUCKET:carddemo-statements}
+    sqs:
+      # Online->batch bridge: CORPT00C TDQ 'JOBS' WRITEQ -> SQS FIFO queue trigger.
+      # The `.fifo` suffix is MANDATORY for a FIFO queue and must not be dropped.
+      report-jobs-queue: ${CARDDEMO_SQS_REPORT_JOBS_QUEUE:carddemo-report-jobs.fifo}
+    sns:
+      # Notification fan-out (replaces CICS notification messaging).
+      notifications-topic: ${CARDDEMO_SNS_NOTIFICATIONS_TOPIC:carddemo-notifications}
+    timeout:
+      # Explicit, auditable AWS SDK api-call timeout bounds (decision D-013; AAP S0.7.1 resilience
+      # hardening). Bound into AwsConfig.AwsResourceProperties.Timeout and applied to every
+      # auto-configured client by the AwsConfig sync/async client customizers so an outbound AWS
+      # call fast-fails within a known ceiling instead of relying on implicit SDK defaults. Spring
+      # accepts Duration unit suffixes (e.g. 60s, 20s) directly.
+      # Overall per-call ceiling spanning all retry attempts -> apiCallTimeout.
+      api-call: ${CARDDEMO_AWS_API_CALL_TIMEOUT:60s}
+      # Per single-attempt ceiling (before a retry) -> apiCallAttemptTimeout.
+      api-call-attempt: ${CARDDEMO_AWS_API_CALL_ATTEMPT_TIMEOUT:20s}
+
+# =============================================================================
+# Phase 4 — Observability: tracing -> Jaeger (ENABLED for local)
+# =============================================================================
+# Unlike the `test` profile (which disables trace export), the local profile
+# runs the full Micrometer -> OTLP -> Jaeger pipeline because docker-compose
+# starts a `jaeger` service. Both values below align with the base
+# application.yml defaults and are restated here to (a) make the local tracing
+# intent explicit and self-documenting, (b) document the docker-compose override
+# to the in-network jaeger collector, and (c) contrast deliberately with the
+# `test` profile's 0.0 sampling.
+management:
+  otlp:
+    tracing:
+      # OTLP/HTTP span exporter target. Default points at a host Jaeger's OTLP
+      # HTTP port; docker-compose OVERRIDES it to the in-network jaeger service
+      # via `MANAGEMENT_OTLP_TRACING_ENDPOINT=http://jaeger:4318/v1/traces`.
+      # `management.otlp.tracing.endpoint` is the correct Spring Boot 3.x key.
+      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
+  tracing:
+    sampling:
+      # Full sampling for local development so every request is traced end-to-end
+      # in Jaeger. Reaffirms the base default (1.0); the `test` profile sets 0.0
+      # to avoid requiring a collector.
+      probability: 1.0
+
+# =============================================================================
+# Phase 5 — Logging (local developer verbosity)
+# =============================================================================
+# The logback-spring.xml `local` <springProfile> already routes output to the
+# readable colorized plaintext console (STDOUT_PLAIN) and raises com.cardemo to
+# DEBUG. Spring Boot applies these logging.level.* properties AFTER logback is
+# parsed, so this property has the FINAL say — it is restated here to keep the
+# DEBUG intent visible and authoritative at the configuration layer. Only this
+# delta is added; root / org.flywaydb levels are INHERITED from application.yml.
+logging:
+  level:
+    # Verbose application logging for local debugging (base is INFO).
+    com.cardemo: DEBUG

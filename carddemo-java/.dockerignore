@@ -1,0 +1,51 @@
+# =============================================================================
+# CardDemo Java (Maven / Spring Boot) — Docker build-context ignore rules
+# =============================================================================
+# Purpose (QA FINAL 7 F-3): keep build output, VCS metadata, local logs, secrets,
+# and IDE/OS cruft OUT of the Docker build context — for context-transfer
+# efficiency and defense-in-depth (so a stray local `.env` can never leak into an
+# image layer). This mirrors the intent of .gitignore for the image build.
+#
+# IMPORTANT — do NOT exclude any input the Dockerfile STAGE 1 needs:
+#   COPY pom.xml ./        COPY mvnw mvnw.cmd ./        COPY .mvn/ .mvn/        COPY src/ src/
+# The patterns below are deliberately limited to non-inputs so the multi-stage
+# build (`./mvnw clean package` then a JRE runtime) continues to succeed exactly
+# as verified. In particular, the whole .mvn/ directory is intentionally NOT
+# ignored (the Dockerfile copies it and `./mvnw` resolves the wrapper jar there).
+# -----------------------------------------------------------------------------
+
+# --- Maven build output (NOT a COPY input; the fat jar is produced inside STAGE 1) ---
+target/
+
+# --- Version-control metadata (never needed inside the image) ---
+.git/
+.gitignore
+.gitattributes
+
+# --- Runtime / local log artifacts ---
+*.log
+logs/
+
+# --- Local environment secrets (CWE-798: a real .env must never enter an image;
+#     .env.example carries only NON-SECRET placeholders and is not a build input) ---
+.env
+.env.local
+
+# --- IDE / editor metadata ---
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+
+# --- OS cruft ---
+.DS_Store
+Thumbs.db
+
+# --- Docker artifacts themselves (compose/Dockerfile are not build inputs of the image) ---
+docker-compose.yml
+.dockerignore

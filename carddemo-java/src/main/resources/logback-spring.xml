@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+   CardDemo — Greenfield Java 25 LTS + Spring Boot 3.x Migration
+   Logback Configuration — Structured JSON Logging + Correlation IDs
+  ============================================================================
+
+   PROVENANCE & TRACEABILITY
+   Brand-new, greenfield artifact with NO COBOL source equivalent. The legacy
+   AWS CardDemo COBOL/CICS application shipped ZERO logging infrastructure
+   (docs/technical-specifications.md L818): no log records, no correlation
+   identifiers, no structured output. This file CREATES the observability
+   logging layer from scratch and is the single authority for log APPENDER and
+   ENCODER configuration. The sibling application.yml deliberately sets only
+   logging LEVELS and delegates the appenders / MDC pattern here (see
+   application.yml "Phase 7 — Logging"). Traceability to the frozen legacy
+   baseline is by original COBOL repository commit SHA: 27d6c6f.
+
+   MINIMAL CHANGE CLAUSE (AAP §0.7.1)
+   Logging is a net-new technology-substitution layer (CICS/COBOL observability
+   gap -> SLF4J/Logback + structured JSON + Micrometer tracing). Nothing here
+   alters business behavior; it only makes the running application observable.
+   The configuration is intentionally minimal: two stdout appenders and three
+   profile bindings — no convenience features beyond the migration requirement.
+
+   WHY THE FILENAME IS "logback-spring.xml" (NOT "logback.xml")
+   The "-spring" suffix is MANDATORY. Spring Boot only evaluates the
+   <springProfile> conditional blocks below when the configuration is loaded
+   through its own LogbackLoggingSystem, which it does for "logback-spring.xml".
+   A plain "logback.xml" is read by Logback directly, before the Spring
+   context starts, and every <springProfile> block would be silently ignored.
+
+   MDC FIELD SOURCES (the three correlation keys emitted in the JSON output)
+     * traceId, spanId  -> injected into the SLF4J MDC by the Micrometer
+                           OpenTelemetry tracing bridge (pom.xml:
+                           micrometer-tracing-bridge-otel + opentelemetry-
+                           exporter-otlp). These are Spring Boot's default
+                           correlation MDC keys.
+     * correlationId    -> injected per HTTP request by
+                           com.cardemo.observability.CorrelationIdFilter into
+                           the MDC. Together these enable the end-to-end
+                           request/batch tracing required by AAP §0.7.7
+                           (tech-spec L816-L836, L822).
+
+   12-FACTOR / CONTAINER LOGGING
+   stdout-ONLY. There is intentionally NO FileAppender and NO host path: in the
+   container deployment, Docker collects stdout and forwards it to the
+   aggregation stack (the docker-compose Grafana / Prometheus / Jaeger
+   pipeline). No secrets, no absolute paths. scan="true" is NOT enabled, so the
+   configuration is deterministic with no background reload thread.
+  ============================================================================
+-->
+<configuration>
+
+    <!--
+      Reuse Spring Boot's curated Logback conventions: this registers the
+      %clr (ANSI color) and %wex / %wEx (wrapped exception) conversion words and
+      defines properties such as CONSOLE_LOG_CHARSET. The include defines NO
+      appenders and NO root logger, so it does not conflict with the
+      profile-scoped roots declared below. (Resource verified present in
+      spring-boot-3.5.15.jar: org/springframework/boot/logging/logback/defaults.xml.)
+    -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- ====================================================================
+         PROFILE-SCOPED APPENDER DEFINITIONS (<springProfile>)
+         ====================================================================
+         TECHNOLOGY-SUBSTITUTION / ZERO-WARNING NOTE (AAP §0.7.8)
+         Each appender is DEFINED INSIDE the <springProfile> block whose root
+         references it. Defining an appender OUTSIDE its consuming profile — e.g.
+         STDOUT_JSON at the top level while the active "local" profile wires only
+         STDOUT_PLAIN — makes Logback emit the startup WARNING:
+             "Appender named [STDOUT_JSON] not referenced. Skipping further
+              processing." (ch.qos.logback.core.model.processor.AppenderModelHandler)
+         Scoping each definition to its own profile guarantees that, for any single
+         active profile, exactly one appender is instantiated and it is ALWAYS
+         referenced — eliminating that avoidable warning and satisfying the
+         zero-warning build/runtime gate. The definition blocks are placed BEFORE
+         the root-wiring blocks so every <appender-ref> resolves against an
+         already-defined appender in Logback's document-order processing.
+    -->
+
+    <!-- ====================================================================
+         STDOUT_JSON — structured JSON to stdout (default / container / prod)
+         ====================================================================
+         Encoder: net.logstash.logback.encoder.LogstashEncoder, supplied by
+         net.logstash.logback:logstash-logback-encoder:8.0 (declared in pom.xml).
+         LogstashEncoder emits, by DEFAULT, these top-level JSON fields for every
+         event: @timestamp, @version, message, logger_name, thread_name, level,
+         level_value, and — when an exception is logged — stack_trace. Because
+         includeMdc is true, EVERY SLF4J MDC entry is also rendered as its own
+         top-level JSON field, so the three correlation keys for this application
+         appear automatically and WITHOUT a whitelist:
+                 "traceId"        (Micrometer OpenTelemetry tracing bridge)
+                 "spanId"         (Micrometer OpenTelemetry tracing bridge)
+                 "correlationId"  (com.cardemo.observability.CorrelationIdFilter)
+         Any additional MDC context an application component sets is captured
+         too — deliberately NOT whitelisted so the encoder stays future-proof.
+         DEFINED ONLY for the non-local, non-test profiles (where it is wired into
+         the root), so it is never instantiated-but-unreferenced.
+    -->
+    <springProfile name="!local &amp; !test">
+        <appender name="STDOUT_JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <!-- Static service identifier merged into every JSON log line; keeps
+                     aggregated logs filterable by service. Matches
+                     spring.application.name and the Micrometer "application" tag. -->
+                <customFields>{"application":"carddemo"}</customFields>
+                <!-- MDC propagation ON (default): traceId / spanId / correlationId
+                     (and any other MDC value) become top-level JSON fields. -->
+                <includeMdc>true</includeMdc>
+            </encoder>
+        </appender>
+    </springProfile>
+
+    <!-- ====================================================================
+         STDOUT_PLAIN — human-readable console (local / test developer view)
+         ====================================================================
+         A compact, colorized single-line pattern that surfaces the SAME
+         correlation identifiers inline — [traceId,spanId,correlationId] — so a
+         developer can follow a request across log lines during local dev / test
+         without a log aggregator. The ":-" default makes the bracket render
+         cleanly when an identifier is absent (e.g. startup logs emitted before
+         any request has populated the MDC). Stack traces are appended
+         automatically by Logback's PatternLayout (no explicit %ex needed).
+         DEFINED ONLY for the local + test profiles (where it is wired into the
+         root), so it is never instantiated-but-unreferenced.
+    -->
+    <springProfile name="local | test">
+        <appender name="STDOUT_PLAIN" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <charset>UTF-8</charset>
+                <pattern>%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(%-5level) %clr([%X{traceId:-},%X{spanId:-},%X{correlationId:-}]){magenta} %clr(%logger{36}){cyan} %clr(-){faint} %msg%n</pattern>
+            </encoder>
+        </appender>
+    </springProfile>
+
+    <!-- ====================================================================
+         PROFILE-AWARE ROOT WIRING (<springProfile>)
+         ====================================================================
+         Exactly one block below activates per run and references the appender
+         defined for that SAME profile above. NOTE: Spring Boot applies the
+         logging.level.* properties from application.yml AFTER this file is
+         parsed, so those properties have the final say over logger levels. The
+         levels set here are sensible defaults consistent with application.yml
+         (root=INFO, com.cardemo=INFO), with com.cardemo raised to DEBUG only
+         under the local developer profile.
+    -->
+
+    <!-- local: docker-compose sets SPRING_PROFILES_ACTIVE=local. Readable,
+         colorized console with verbose application logging for development. -->
+    <springProfile name="local">
+        <logger name="com.cardemo" level="DEBUG"/>
+        <root level="INFO">
+            <appender-ref ref="STDOUT_PLAIN"/>
+        </root>
+    </springProfile>
+
+    <!-- test: activated via @ActiveProfiles("test"). Readable console kept
+         quiet (INFO) so automated test output stays clean and deterministic. -->
+    <springProfile name="test">
+        <logger name="com.cardemo" level="INFO"/>
+        <root level="INFO">
+            <appender-ref ref="STDOUT_PLAIN"/>
+        </root>
+    </springProfile>
+
+    <!-- default / container / prod (NEITHER local NOR test): structured JSON to
+         stdout for machine aggregation by the observability stack. "&amp;" is
+         the XML escaping for the "&" (logical AND) operator inside the
+         springProfile expression. -->
+    <springProfile name="!local &amp; !test">
+        <logger name="com.cardemo" level="INFO"/>
+        <root level="INFO">
+            <appender-ref ref="STDOUT_JSON"/>
+        </root>
+    </springProfile>
+
+</configuration>

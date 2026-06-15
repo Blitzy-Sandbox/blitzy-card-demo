@@ -1,0 +1,212 @@
+# =============================================================================
+# CardDemo (Java 25 LTS + Spring Boot 3.5.15) — `test` PROFILE OVERRIDES
+# =============================================================================
+# Purpose:
+#   Profile-specific Spring Boot configuration activated for automated tests
+#   via @ActiveProfiles("test"). It LAYERS ON TOP of the profile-agnostic
+#   application.yml: ONLY the values that must differ for a hermetic test run
+#   appear here; everything else (JPA ddl-auto=validate, Flyway enabled,
+#   HikariCP pool shape, metrics tags, base logging levels) is INHERITED from
+#   application.yml. Do NOT duplicate inherited settings here.
+#
+#   Scope of the `test` profile (AAP §0.7.7 / tech-spec L1009-L1018):
+#     * Datasource       -> Testcontainers PostgreSQL 16 (ephemeral, per-run).
+#     * AWS (S3/SQS/SNS) -> Testcontainers LocalStack (ZERO live AWS).
+#     * Tracing          -> export DISABLED (no Jaeger/OTLP collector required).
+#   Tests "create and destroy their own resources" (@BeforeAll / @AfterAll) and
+#   depend on NO running docker-compose stack.
+#
+# KEY INSIGHT — the context must load WITHOUT external services at parse time:
+#   The values below are safe, self-contained DEFAULTS so the Spring context
+#   (including the Spring Cloud AWS auto-configuration, whose starters are on the
+#   MAIN classpath) can be built even before any container is wired. Integration
+#   / e2e tests then OVERRIDE the live endpoints at runtime via
+#   @DynamicPropertySource from a @Container PostgreSQLContainer /
+#   LocalStackContainer.
+#
+# Secret policy (AAP §0.7.2 / §0.8.3):
+#   NO real secrets. Every credential here is a clearly-labelled NON-SECRET
+#   throwaway placeholder ("test"/"test") consumed only by the local
+#   Testcontainers PostgreSQL and the LocalStack emulator. Nothing here can ever
+#   reach a live AWS account or a real database.
+#
+# Provenance & traceability:
+#   Brand-new greenfield artifact with NO COBOL source equivalent. Base package
+#   com.cardemo. Profile is encoded by the FILE NAME (`application-test.yml`);
+#   there are intentionally no `---`/`spring.config.activate.on-profile`
+#   separators. Traceability to the frozen legacy baseline is by COBOL repo
+#   commit SHA 27d6c6f.
+# =============================================================================
+
+spring:
+
+  # ---------------------------------------------------------------------------
+  # Phase 1 — Datasource: Testcontainers PostgreSQL 16  (strategy (a))
+  # ---------------------------------------------------------------------------
+  # CHOSEN STRATEGY (a): the Testcontainers JDBC URL scheme. The special
+  # `jdbc:tc:` URL makes Testcontainers transparently start (and reuse) a
+  # `postgres:16-alpine` container the first time a JDBC connection is opened —
+  # so NO @DynamicPropertySource wiring is needed for the database, keeping the
+  # integration-test base class free of DB lifecycle plumbing.
+  #   (Strategy (b) — injecting a @Container PostgreSQLContainer via
+  #   @DynamicPropertySource — is the alternative when a base class centralizes
+  #   container lifecycle; we prefer (a) here for simplicity and self-containment.)
+  #
+  # Technology-substitution note (AAP §0.4.4 / §0.7.2): Flyway (inherited,
+  # ENABLED) runs V1__create_schema / V2__create_indexes / V3__seed_data INSIDE
+  # this throwaway container, so tests validate against the EXACT production
+  # schema + the canonical 9-fixture seed — the mechanism that proves 100%
+  # behavioral parity. `spring.jpa.hibernate.ddl-auto=validate` is inherited, so
+  # Hibernate never creates the schema; it only validates the entities against
+  # the Flyway-built tables.
+  datasource:
+    # OVERRIDES the base `org.postgresql.Driver`. The Testcontainers driver
+    # (org.testcontainers:jdbc — present transitively via testcontainers-postgresql,
+    # test scope) interprets the `jdbc:tc:` URL and owns the container lifecycle.
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+    # `jdbc:tc:postgresql:16-alpine:///carddemo`
+    #   tc           -> route the connection through Testcontainers
+    #   postgresql   -> database type
+    #   16-alpine    -> the postgres:16-alpine image tag (matches prod/docker-compose)
+    #   ///carddemo  -> logical database name created inside the container
+    url: jdbc:tc:postgresql:16-alpine:///carddemo
+    # NON-SECRET throwaway credentials. With the `jdbc:tc:` scheme the container
+    # manages its OWN credentials (PostgreSQLContainer defaults are test/test),
+    # so these values are effectively ignored for the container connection; they
+    # are supplied only so HikariCP is fully configured. NEVER real secrets
+    # (AAP §0.7.2).
+    username: test
+    password: test
+    # HikariCP pool shape (pool-name / maximum-pool-size / connection-timeout) is
+    # INHERITED from application.yml — no test override (minimal change, AAP §0.7.1).
+
+  # ---------------------------------------------------------------------------
+  # Phase 2 — AWS -> LocalStack (Testcontainers LocalStackContainer)
+  # ---------------------------------------------------------------------------
+  # The spring-cloud-aws-starter-{s3,sqs,sns} (3.3.0) auto-configuration sits on
+  # the MAIN classpath, so the S3 / SQS / SNS client beans are built during
+  # context startup under the `test` profile as well. The AWS SDK v2 clients are
+  # LAZY (no network call at bean-creation time), so the safe defaults below let
+  # the context load with NO emulator running yet. Integration / e2e tests
+  # OVERRIDE the endpoint at runtime from a LocalStackContainer, e.g.:
+  #   @DynamicPropertySource
+  #   static void awsProps(DynamicPropertyRegistry registry) {
+  #       registry.add("spring.cloud.aws.endpoint", () -> localstack.getEndpoint());
+  #   }
+  # ZERO live AWS: the endpoint can only ever resolve to LocalStack / Testcontainers.
+  cloud:
+    aws:
+      region:
+        # Fixed region for the emulator; LocalStack accepts any valid AWS region.
+        static: us-east-1
+      credentials:
+        # NON-SECRET placeholders — LocalStack ignores credential values. These
+        # are deliberately fake and cannot match a real AWS key pattern (AAP §0.7.2).
+        access-key: test
+        secret-key: test
+      # Global endpoint override consumed by every AWS client. Defaults to the
+      # standard LocalStack edge port; overridden per-run by @DynamicPropertySource
+      # to the container's mapped endpoint. `AWS_ENDPOINT_URL` permits CI override.
+      endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
+      s3:
+        # REQUIRED for LocalStack S3: use path-style URLs
+        # (http://host:4566/bucket/key) instead of virtual-host style
+        # (http://bucket.host/...), which does not resolve against the emulator.
+        # Verified valid Spring Cloud AWS 3.x property key.
+        path-style-access-enabled: true
+
+# =============================================================================
+# Phase 2 (cont.) — Application-level AWS resource names (carddemo.aws.*)
+# =============================================================================
+# Logical S3 bucket / SQS queue / SNS topic names consumed by the AWS
+# configuration + batch/report layer. They REUSE the same logical names as the
+# `local` profile so behavior is identical across environments; integration
+# tests CREATE these resources inside the ephemeral LocalStack container in
+# @BeforeAll and tear them down in @AfterAll. Every name is env-overridable so a
+# test may substitute a unique name to isolate parallel runs.
+# Technology substitution (AAP §0.1.2): GDG generations -> versioned S3 keys;
+# CICS TDQ 'JOBS' WRITEQ -> SQS FIFO trigger; CICS notifications -> SNS topic.
+carddemo:
+  aws:
+    s3:
+      # Batch file staging (replaces sequential PS datasets / GDG generations).
+      batch-input-bucket: ${CARDDEMO_S3_BATCH_INPUT_BUCKET:carddemo-batch-input}
+      batch-output-bucket: ${CARDDEMO_S3_BATCH_OUTPUT_BUCKET:carddemo-batch-output}
+      # Generated statement output (CBSTM03A/CBSTM03B -> StatementGenerationJob).
+      statements-bucket: ${CARDDEMO_S3_STATEMENTS_BUCKET:carddemo-statements}
+    sqs:
+      # Online->batch bridge: CORPT00C TDQ 'JOBS' WRITEQ -> SQS FIFO queue trigger.
+      report-jobs-queue: ${CARDDEMO_SQS_REPORT_JOBS_QUEUE:carddemo-report-jobs.fifo}
+    sns:
+      # Notification fan-out (replaces CICS notification messaging).
+      notifications-topic: ${CARDDEMO_SNS_NOTIFICATIONS_TOPIC:carddemo-notifications}
+    timeout:
+      # Explicit, auditable AWS SDK api-call timeout bounds (decision D-013; AAP S0.7.1). Applied to
+      # every auto-configured client by the AwsConfig sync/async client customizers. Kept identical
+      # to the local profile and deliberately generous so the LocalStack-backed Testcontainers ITs'
+      # small-object S3/SQS/SNS operations never trip them (connection-refused still fails fast).
+      api-call: ${CARDDEMO_AWS_API_CALL_TIMEOUT:60s}
+      api-call-attempt: ${CARDDEMO_AWS_API_CALL_ATTEMPT_TIMEOUT:20s}
+  # ---------------------------------------------------------------------------
+  # Stateless auth token (carddemo.security.token.*) — test-only signing secret
+  # ---------------------------------------------------------------------------
+  # The base application.yml supplies this via ${CARDDEMO_SECURITY_TOKEN_SECRET}.
+  # Under @ActiveProfiles("test") the full Spring context (e.g. AbstractRepositoryIT
+  # and any @SpringBootTest) must start WITHOUT relying on an external env var, so a
+  # deterministic, NON-SECRET, test-only value is pinned here. It is deliberately
+  # >= 32 bytes (256-bit HS256 minimum that TokenService validates at construction)
+  # and is fake test material that cannot be a real production secret (AAP §0.7.2).
+  security:
+    token:
+      secret: test-only-carddemo-hs256-token-signing-secret-do-not-use-in-prod
+      ttl-seconds: 3600
+
+# =============================================================================
+# Phase 3 — Observability: disable trace export; quiet, deterministic tests
+# =============================================================================
+# The base profile wires Micrometer -> OTLP -> Jaeger at 100% sampling. Tests
+# must NOT require an external collector, so trace EXPORT is fully disabled here
+# via TWO independent, mutually-reinforcing switches (both verified valid for
+# Spring Boot 3.5.15 against the actuator-autoconfigure configuration metadata):
+#   1. management.tracing.sampling.probability = 0.0
+#        -> no spans are ever recorded / sampled.
+#   2. management.otlp.tracing.export.enabled = false
+#        -> the OTLP/HTTP span exporter is not wired, so no connection to the
+#           :4318 collector is ever attempted.
+# Metrics remain on the Prometheus registry (pull-based; nothing is pushed), so
+# they require no collector either.
+management:
+  tracing:
+    sampling:
+      # OVERRIDES base 1.0. Zero sampling => zero export => no Jaeger required.
+      probability: 0.0
+  otlp:
+    tracing:
+      export:
+        # Explicitly disable the OTLP/HTTP span exporter for the test profile.
+        enabled: false
+  # Actuator surface trimmed to the health (liveness/readiness) endpoint only —
+  # OPTIONAL test-friendly override of the base `health,info,metrics,prometheus`.
+  # Prometheus/Jaeger are not running during tests, so the scrape/info/metrics
+  # endpoints add no value. Delete this block to inherit the full base exposure.
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+# =============================================================================
+# Phase 3 (cont.) — Logging (test-friendly levels)
+# =============================================================================
+# The logback-spring.xml `test` <springProfile> already routes output to the
+# readable plaintext console (STDOUT_PLAIN) at INFO, and the application.yml
+# logging levels (root / com.cardemo / org.flywaydb = INFO) are INHERITED and
+# have the final say. Below we ONLY add deltas that quiet the noisy, test-only
+# infrastructure loggers so automated test output stays clean and deterministic.
+logging:
+  level:
+    # Testcontainers + docker-java emit verbose container-lifecycle chatter on
+    # every integration test; cap them at WARN. (These loggers exist only on the
+    # test classpath.) Flyway stays at INFO (inherited) so migration ordering
+    # remains visible during integration/e2e runs.
+    org.testcontainers: WARN
+    com.github.dockerjava: WARN

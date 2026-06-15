@@ -1,0 +1,283 @@
+# =============================================================================
+# CardDemo (Java 25 LTS + Spring Boot 3.5.15) — MAIN / PROFILE-AGNOSTIC CONFIG
+# =============================================================================
+# Purpose:
+#   Base Spring Boot configuration for the greenfield migration of the AWS
+#   CardDemo COBOL/CICS/VSAM/JCL/BMS mainframe application to Java. This file
+#   holds ONLY the settings that are shared by EVERY profile. Environment-
+#   specific values (concrete datasource URL/credentials, AWS/LocalStack
+#   endpoints + region, lowered trace sampling, etc.) live in the sibling
+#   profile documents `application-local.yml` and `application-test.yml`.
+#
+#   This file is FOUNDATIONAL: it wires JPA (schema *validated*, not generated),
+#   Flyway startup migration, Actuator/Prometheus metrics, Micrometer -> OTLP
+#   tracing, and base logging — all consumed at runtime by the sibling
+#   `src/main/java/com/cardemo/**` application code.
+#
+# Provenance & traceability:
+#   Brand-new, greenfield artifact with NO COBOL source equivalent. Per AAP
+#   section 0.5.2 it REPLACES the legacy JCL/dataset declarations (IDCAMS
+#   DEFINE CLUSTER provisioning, DD statements) with externalized Spring config.
+#   Traceability to the frozen legacy baseline is by COBOL repo commit 27d6c6f.
+#
+# Minimal Change Clause (AAP section 0.7.1):
+#   Each technology-substitution point (VSAM KSDS -> PostgreSQL/JPA,
+#   IDCAMS provisioning -> Flyway, 3270/BMS -> REST, CICS observability gap ->
+#   Actuator/Micrometer/OTLP) is documented at the point of declaration below.
+#   No setting is added beyond what the migration requires.
+#
+# Secret policy (AAP sections 0.7.2 / 0.8.3):
+#   NO real secrets are embedded. Every credential / endpoint is an
+#   `${ENV_VAR:default}` placeholder. The inline defaults are clearly-commented
+#   NON-SECRET local development values only; real values are always supplied at
+#   runtime via environment variables (or a vault) and never committed.
+#
+# YAML structure:
+#   Single document — there are intentionally NO `---` profile separators here
+#   (profile-specific documents are separate FILES, not extra documents in this
+#   one). Keep this file profile-agnostic.
+# =============================================================================
+
+spring:
+
+  # ---------------------------------------------------------------------------
+  # Phase 1 — Application identity & profile policy
+  # ---------------------------------------------------------------------------
+  application:
+    # Logical service name. Used as a common tag by Micrometer metrics and by
+    # the tracing exporter, and as the Prometheus job label (see prometheus.yml,
+    # which scrapes the `app` service). Keep in sync with metrics tag below.
+    name: carddemo
+
+  # NOTE on active profile (intentionally NOT set here):
+  #   `spring.profiles.active` is supplied at RUNTIME, never hardcoded, so this
+  #   base file stays environment-neutral:
+  #     - docker-compose.yml sets the env var SPRING_PROFILES_ACTIVE=local
+  #     - integration/unit tests use @ActiveProfiles("test")
+  #   This file must be runnable with EITHER the `local` or `test` profile
+  #   active; it must not pin one.
+
+  # ---------------------------------------------------------------------------
+  # Phase 2 — Datasource (driver + pool defaults)
+  # ---------------------------------------------------------------------------
+  # Technology substitution: the 10 VSAM KSDS clusters + 1 sequential PS staging
+  # dataset of the legacy estate are replaced by a single PostgreSQL 16 database
+  # accessed through Spring Data JPA. The concrete URL/credentials are resolved
+  # per profile/env; only the driver and connection-pool shape are fixed here.
+  datasource:
+    # PostgreSQL 16 JDBC driver (org.postgresql:postgresql from pom.xml).
+    driver-class-name: org.postgresql.Driver
+    # Env-overridable JDBC URL. Local default points at localhost; docker-compose
+    # overrides the host to the `postgres` service (SPRING_DATASOURCE_URL=
+    # jdbc:postgresql://postgres:5432/carddemo). NON-SECRET local default.
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
+    # Datasource credentials — REQUIRED at runtime via the environment, with NO base
+    # default (CWE-798, AAP §0.7.2): a production/base run resolves these ONLY from
+    # SPRING_DATASOURCE_USERNAME / SPRING_DATASOURCE_PASSWORD (env var or vault) and
+    # fails to start if they are unset, so no DB password is ever committed. The
+    # `local` profile (application-local.yml) supplies NON-SECRET carddemo/carddemo
+    # developer defaults; the `test` profile uses Testcontainers test/test.
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    # HikariCP pool tuning — intentionally minimal (no enhancement beyond
+    # migration needs, AAP section 0.7.1). Defaults are sensible; these are set
+    # explicitly only to document intent.
+    hikari:
+      pool-name: carddemo-hikari-pool
+      maximum-pool-size: 10
+      # Max wait (ms) for a connection from the pool before failing fast.
+      connection-timeout: 30000
+
+  # ---------------------------------------------------------------------------
+  # Phase 3 — JPA / Hibernate
+  # ---------------------------------------------------------------------------
+  jpa:
+    hibernate:
+      # KEYSTONE of the data-fidelity contract (AAP sections 0.4.4 / 0.7.3):
+      # Flyway is the SINGLE schema authority. Hibernate must NEVER create,
+      # update, or alter tables — it only VALIDATES that the JPA entities in
+      # com.cardemo.model.entity.* (and the @EmbeddedId keys in
+      # com.cardemo.model.key.*) match the Flyway-created schema. Any divergence
+      # in table/column name, SQL type, length, precision, or scale fails
+      # startup — guaranteeing the NUMERIC(p,s) precision mirrors the COBOL PIC
+      # clauses exactly. Do NOT change this value.
+      ddl-auto: validate
+    # Disable Open Session In View: no lazy loading in the web layer. Each
+    # service method controls its own transaction/fetch boundary explicitly.
+    open-in-view: false
+    # SQL is observed through structured logging / tracing, not console echo.
+    show-sql: false
+    # Dialect is intentionally NOT pinned: Spring Boot auto-detects the correct
+    # PostgreSQL dialect for the connected PostgreSQL 16 server. Pinning a
+    # deprecated explicit dialect class is avoided.
+
+  # ---------------------------------------------------------------------------
+  # Phase 4 — Flyway (schema migration on startup) — AAP section 0.4.4
+  # ---------------------------------------------------------------------------
+  # Technology substitution: replaces the IDCAMS `DEFINE CLUSTER` / `REPRO`
+  # provisioning JCL (app/jcl/*FILE.jcl). Flyway runs on application startup,
+  # BEFORE any @Service or Spring Batch job executes, applying versioned scripts
+  # from classpath:db/migration in strict order:
+  #   V1__create_schema.sql   -> all 11 tables (VSAM/PS entities)
+  #   V2__create_indexes.sql  -> alternate indexes (CXACAIX, TRANSACT AIX)
+  #   V3__seed_data.sql       -> the 9 ASCII fixtures as INSERT rows
+  # This single-phase, compile-time + startup ordering satisfies AAP section 0.4.4.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  # ---------------------------------------------------------------------------
+  # Phase 4b — Spring Batch runtime policy (consumed by config/BatchConfig.java)
+  # ---------------------------------------------------------------------------
+  # Technology substitution: the legacy JCL/JES batch suite (app/jcl/POSTTRAN.jcl
+  # EXEC PGM=CBTRN02C, app/jcl/INTCALC.jcl EXEC PGM=CBACT04C, COMBTRAN, CREASTMT,
+  # TRANREPT) is migrated to Spring Batch (decision D-005). The batch INFRASTRUCTURE
+  # (JDBC JobRepository, JobLauncher, JobExplorer, batch transaction manager) is
+  # AUTO-CONFIGURED by spring-boot-starter-batch; @EnableBatchProcessing is
+  # deliberately NOT used (in Boot 3.x it would DISABLE that auto-config). These two
+  # properties are the only batch settings the migration requires (Minimal Change
+  # Clause, AAP section 0.7.1); the jobs/steps and all sequencing/condition-code logic
+  # live in com.cardemo.batch.*.
+  batch:
+    job:
+      # Do NOT auto-run jobs on application startup. Legacy jobs were JES-submitted
+      # ON DEMAND; the target drives the pipeline via BatchPipelineOrchestrator and
+      # an SQS-triggered report job (CORPT00C TDQ 'JOBS' -> carddemo-report-jobs.fifo).
+      # In Boot 3.5.x the JobLauncherApplicationRunner is active by default
+      # (spring.batch.job.enabled matchIfMissing=true) and, with no spring.batch.job.name
+      # set, would launch EVERY Job bean at startup. Disabling it prevents that; on-demand
+      # launching still works through the auto-configured JobLauncher.
+      enabled: false
+    jdbc:
+      # Flyway is the SINGLE schema authority and ddl-auto=validate forbids Hibernate
+      # from creating tables, so the Spring Batch metadata tables (BATCH_JOB_INSTANCE,
+      # BATCH_JOB_EXECUTION, BATCH_STEP_EXECUTION, BATCH_*_SEQ, ...) MUST be provisioned
+      # by Flyway (a db/migration script). Spring Batch must therefore NOT initialize its
+      # own schema (which would race/conflict with Flyway). 'never' makes this explicit and
+      # profile-safe; the Boot default 'embedded' already skips a non-embedded PostgreSQL.
+      # The BATCH_* DDL is provided by db/migration/V5__batch_metadata.sql (the canonical
+      # spring-batch-core schema-postgresql.sql), which Flyway applies on startup BEFORE any
+      # job launches; without it every batch job fails at runtime with
+      # "relation \"batch_job_instance\" does not exist".
+      initialize-schema: never
+
+# =============================================================================
+# Phase 4c — CardDemo application settings (carddemo.*) — stateless auth token
+# =============================================================================
+# Technology substitution (AAP §0.1.2): the CICS pseudo-conversational
+# `RETURN TRANSID COMMAREA` carry-over of CARDDEMO-COMMAREA is replaced by a
+# self-contained, JDK-only HMAC-SHA256-signed compact token. The settings below
+# are consumed by com.cardemo.security.TokenService (token issuance + validation)
+# and by com.cardemo.security.TokenAuthenticationFilter (per-request validation).
+#
+# Secret policy (AAP §0.7.2 — CWE-798 hardening): NO secret is embedded here and
+# there is intentionally NO inline default. `secret` resolves ONLY from the
+# CARDDEMO_SECURITY_TOKEN_SECRET environment variable (or a vault-injected env
+# var). When it is absent the placeholder resolves to empty and TokenService
+# FAILS FAST at startup (it rejects a blank secret or one shorter than 256 bits),
+# so a production/base deployment can NEVER sign tokens with a known committed key.
+# The `local` profile (application-local.yml) supplies a clearly-labelled
+# NON-SECRET developer default so local/compose runs still boot out-of-the-box,
+# and the `test` profile (application-test.yml) supplies a deterministic test
+# secret; the real secret is supplied exclusively via the env var, never committed.
+carddemo:
+  security:
+    token:
+      # HMAC-SHA256 signing secret — REQUIRED at runtime via the environment, with NO
+      # base default (CWE-798): production fails fast when CARDDEMO_SECURITY_TOKEN_SECRET
+      # is unset. Local-dev/test defaults live in application-local.yml / application-test.yml.
+      secret: ${CARDDEMO_SECURITY_TOKEN_SECRET}
+      # Token lifetime in seconds (non-secret). Defaults to one hour. Env-overridable.
+      ttl-seconds: ${CARDDEMO_SECURITY_TOKEN_TTL_SECONDS:3600}
+
+# =============================================================================
+# Phase 5 — Actuator / metrics / health (observability — tech-spec L826-L832)
+# =============================================================================
+# Technology substitution: the legacy COBOL/CICS application emitted NO metrics,
+# tracing, or health signals. The observability stack below is created from
+# scratch and is exercisable locally (Prometheus + Jaeger via docker-compose).
+management:
+  endpoints:
+    web:
+      exposure:
+        # Expose only the endpoints the observability stack needs. `prometheus`
+        # publishes /actuator/prometheus, scraped by prometheus.yml at app:8080.
+        # `health` backs the Kubernetes-style liveness/readiness probes.
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      # Enable /actuator/health/liveness and /actuator/health/readiness groups.
+      probes:
+        enabled: true
+      # Conservative base: component details only for authorized callers.
+      # Local profile may relax this to `always` for readability.
+      show-details: when_authorized
+      # Readiness group (tech-spec L826-L832): include the built-in readinessState
+      # PLUS the custom database/s3/sqs indicators defined in
+      # observability/HealthIndicators.java, so the Kubernetes-style
+      # /actuator/health/readiness probe reflects true downstream-dependency
+      # readiness (DataSource reachability + S3 bucket + SQS queue). Spring strips
+      # the "HealthIndicator" suffix, so bean databaseHealthIndicator -> health key
+      # database, s3HealthIndicator -> s3, sqsHealthIndicator -> sqs.
+      group:
+        readiness:
+          include: readinessState,database,s3,sqs
+  # ---------------------------------------------------------------------------
+  # Phase 5b — Health-indicator auto-config (distinct from `endpoint.health`)
+  # ---------------------------------------------------------------------------
+  # Disable Spring Boot's built-in `db` DataSourceHealthIndicator. Rationale
+  # (finding F-OBS-1): the custom `database` indicator in
+  # observability/HealthIndicators.java already reports PostgreSQL connectivity
+  # AND now bounds its probe to ~2s (PROBE_TIMEOUT_SECONDS) via a dedicated
+  # executor, so the built-in `db` indicator is redundant. Worse, the built-in
+  # `db` indicator borrows a connection inline (dataSource.getConnection()),
+  # which — during a database outage — blocks for the full HikariCP
+  # `connection-timeout` (30000ms, see spring.datasource.hikari above) and would
+  # add a SECOND ~30s stall to /actuator/health (~60s total), defeating the
+  # "fast and cheap" readiness intent (AAP §0.7.7). Disabling it leaves the
+  # bounded custom `database` indicator as the single PostgreSQL health source,
+  # so /actuator/health and /actuator/health/readiness degrade within ~1–2s.
+  # NOTE: the HikariCP connection-timeout itself is intentionally NOT lowered —
+  # it governs BUSINESS connection acquisition, and changing it would alter
+  # runtime behaviour beyond the migration (Minimal Change Clause, AAP §0.7.1).
+  health:
+    db:
+      enabled: false
+  metrics:
+    tags:
+      # Common tag added to every meter so Prometheus/Grafana can scope queries
+      # per application. Matches spring.application.name above.
+      application: carddemo
+  # ---------------------------------------------------------------------------
+  # Phase 6 — Tracing (Micrometer -> OTLP -> Jaeger) — tech-spec L824
+  # ---------------------------------------------------------------------------
+  # Uses micrometer-tracing-bridge-otel + opentelemetry-exporter-otlp (pom.xml).
+  tracing:
+    sampling:
+      # Full sampling for the migration baseline so every request is traceable
+      # while validating behavioral parity. Profiles may lower this in volume
+      # environments. (Spring Boot's default would otherwise sample only 10%.)
+      probability: 1.0
+  otlp:
+    tracing:
+      # OTLP/HTTP trace endpoint. Property key `management.otlp.tracing.endpoint`
+      # is the correct Spring Boot 3.x key (the management.opentelemetry.* form
+      # is Spring Boot 4 only). Env-overridable; docker-compose overrides the
+      # host to the Jaeger collector (http://jaeger:4318/v1/traces). The default
+      # /v1/traces path is the OTLP/HTTP convention. NON-SECRET local default.
+      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
+
+# =============================================================================
+# Phase 7 — Logging (base levels only)
+# =============================================================================
+# Only LEVELS are set here. The structured JSON appenders and the
+# correlationId/traceId/spanId MDC pattern are defined by logback-spring.xml
+# (with logstash-logback-encoder). Appender configuration is intentionally NOT
+# duplicated here.
+logging:
+  level:
+    root: INFO
+    # Application packages (base package com.cardemo == pom.xml groupId).
+    com.cardemo: INFO
+    # Surface Flyway migration ordering/versioning at startup.
+    org.flywaydb: INFO

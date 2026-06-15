@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="description" content="Executive summary of the AWS CardDemo COBOL to Java 25 + Spring Boot 3.x migration (legacy baseline commit 27d6c6f)." />
+  <title>CardDemo Migration — Executive Summary</title>
+
+  <!--
+    ================================================================================
+    CardDemo Migration — Executive reveal.js Deck
+    ================================================================================
+    Technology-substitution / documentation note (Minimal Change Clause, spec section 0.7.1):
+
+    * This is a self-contained reveal.js 5.x slide deck. It is the ONLY non-Markdown,
+      executable-JS deliverable in the docs set. CDN assets (reveal.js + Mermaid) are
+      loaded from jsDelivr; if the CDN is unavailable the file still OPENS in a browser
+      (slides remain navigable) — it simply renders without theme styling and/or without
+      rendered diagrams. No secrets or credentials are embedded.
+
+    * Diagrams are authored in Mermaid and REUSE the exact definitions from
+      docs/architecture-before-after.md (Diagram 1 -> slide 3, Diagram 2 -> slide 4,
+      Diagram 3 -> slide 6, Diagram 4 -> slide 7) so the deck and the architecture doc
+      stay visually consistent.
+
+    * IMPORTANT Mermaid-in-HTML escaping: Mermaid reads each block's textContent, so a
+      raw <br/> inside a label would be parsed by the browser as a DOM element and lost.
+      Every line break inside a Mermaid label is therefore written as the HTML entity
+      &lt;br/&gt; which decodes back to "<br/>" for Mermaid. Node/edge labels are quoted.
+
+    * Mermaid + reveal.js lazy-loading: reveal.js hides non-present slides (display:none),
+      so Mermaid cannot measure text in them at page load. We therefore initialize Mermaid
+      with startOnLoad:false and render each slide's diagrams JUST-IN-TIME — once after
+      Reveal.initialize() resolves (for the initial/deep-linked slide) and again on every
+      'slidechanged' event (for lazily-shown slides). Rendering is idempotent because
+      Mermaid marks processed nodes with data-processed="true". See the scripts at the
+      bottom of <body>.
+    ================================================================================
+  -->
+
+  <!-- reveal.js core + a light ("white") theme so Mermaid's default (light) palette and the
+       coloured classDef fills used by the architecture diagrams remain legible. CDN assets. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.2.1/dist/reveal.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.2.1/dist/theme/white.css" id="theme" />
+
+  <style>
+    /* ---- Shared palette (kept consistent with architecture-before-after.md) ---- */
+    :root {
+      --legacy:#fde7c9; --legacy-bd:#b5651d;
+      --java:#d6e4ff;   --java-bd:#2b59c3;
+      --data:#d7f5dd;   --data-bd:#1f9d55;
+      --aws:#ffe3c2;    --aws-bd:#ec7211;
+      --obs:#ece3ff;    --obs-bd:#7c3aed;
+      --ink:#0b2447;
+    }
+
+    /* ---- Typography / headings (override white theme's ALL-CAPS headings) ---- */
+    .reveal h1, .reveal h2, .reveal h3 { text-transform: none; color: var(--ink); letter-spacing: -0.01em; }
+    .reveal h1 { font-size: 1.5em; overflow-wrap: normal; word-break: keep-all; }
+    .reveal h2 { font-size: 1.15em; margin-bottom: .25em; }
+    .reveal .slides { text-align: center; }
+    .reveal section { line-height: 1.25; }
+    .reveal .subtitle { font-size: .62em; color: var(--java-bd); font-weight: 700; margin: .1em 0 .25em; }
+    .reveal .tagline { font-size: .5em; color: #52617a; }
+    .reveal .caption { font-size: .42em; color: #52617a; margin: .4em auto 0; max-width: 92%; }
+    .reveal ul, .reveal ol { display: inline-block; text-align: left; }
+    .reveal .biz-list { font-size: .56em; max-width: 96%; }
+    .reveal .biz-list li { margin: .18em 0; }
+    .reveal code { background: #eef2f7; border-radius: 4px; padding: .03em .32em; color: #1c3a6e; }
+
+    /* ---- Mermaid sizing so dense diagrams fit a projected 1280x800 canvas ----
+       max-height is given in canvas pixels (not vh): reveal.js scales the whole 1280x800
+       canvas with a CSS transform, so a px cap scales uniformly with the rest of the slide
+       and keeps even the tall before/after diagrams inside the visible slide area. */
+    .reveal .mermaid { display: flex; justify-content: center; margin: .2em 0; }
+    .reveal .mermaid svg { max-width: 100% !important; height: auto; max-height: 540px; }
+
+    /* ---- KPI strip ---- */
+    .kpi { display: flex; gap: .7em; justify-content: center; flex-wrap: wrap; margin: .35em 0; }
+    .kpi .k { background: var(--ink); color: #fff; border-radius: 10px; padding: .3em .8em; font-size: .46em; min-width: 110px; }
+    .kpi .k b { display: block; font-size: 1.7em; line-height: 1.1; color: #7fd1a0; }
+
+    /* ---- Two-column helper ---- */
+    .two-col { display: flex; gap: 1.1em; align-items: center; justify-content: center; }
+    .two-col > div { flex: 1; }
+
+    /* ---- Mapping tables (slide 5) ---- */
+    table.map { border-collapse: collapse; margin: .25em auto; width: 92%; font-size: .47em; }
+    table.map th, table.map td { border: 1px solid #cbd5e1; padding: .38em .55em; text-align: left; }
+    table.map thead th { background: var(--ink); color: #fff; }
+    table.map td.num { text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--java-bd); }
+    table.map caption { caption-side: top; font-size: 1em; font-weight: 700; color: var(--ink); padding: .2em; }
+    .legacy-tag { color: var(--legacy-bd); font-weight: 700; }
+    .java-tag { color: var(--java-bd); font-weight: 700; }
+
+    .chips { display: flex; flex-wrap: wrap; gap: .4em; justify-content: center; margin-top: .5em; }
+    .chip { background: var(--obs); border: 1px solid var(--obs-bd); color: #2a1a4a; border-radius: 999px; padding: .16em .7em; font-size: .42em; }
+
+    /* ---- Risk matrix (slide 9) ---- */
+    table.riskmx { border-collapse: collapse; margin: .35em auto; width: 96%; font-size: .42em; table-layout: fixed; }
+    table.riskmx th, table.riskmx td { border: 1px solid #cbd5e1; padding: .45em .5em; vertical-align: middle; text-align: center; }
+    table.riskmx thead th, table.riskmx tbody th { background: #eef2f7; color: var(--ink); }
+    .rm-red   { background: #f6c4be; color: #5a1a12; font-weight: 600; }
+    .rm-amber { background: #fde0b6; color: #5a3a12; font-weight: 600; }
+    .rm-green { background: #c9ebcc; color: #14401d; font-weight: 600; }
+    .rm-legend { font-size: .4em; color: #52617a; margin-top: .25em; }
+    .rm-legend span { display: inline-block; padding: .1em .5em; border-radius: 4px; margin: 0 .2em; }
+
+    /* ---- Validation gates table (slide 10) ---- */
+    table.gates { border-collapse: collapse; margin: .25em auto; width: 90%; font-size: .46em; }
+    table.gates th, table.gates td { border: 1px solid #cbd5e1; padding: .32em .55em; text-align: left; }
+    table.gates thead th { background: #eef2f7; color: var(--ink); }
+    .st-ok { color: var(--data-bd); font-weight: 700; white-space: nowrap; }
+    .st-warn { color: #d98a00; font-weight: 700; white-space: nowrap; }
+
+    /* ---- Onboarding step list (slide 11) ---- */
+    ol.steps { font-size: .48em; max-width: 100%; margin: 0; }
+    ol.steps li { margin: .26em 0; }
+    ol.steps code { font-size: .95em; }
+
+    /* ---- Persistent footer ---- */
+    .deck-footer { position: fixed; bottom: 8px; left: 14px; font-size: 12px; color: #8090a8; z-index: 30; }
+    .deck-footer code { background: transparent; color: var(--java-bd); }
+  </style>
+</head>
+<body>
+  <noscript>
+    <p style="font-family:sans-serif;padding:2rem;">
+      This executive presentation is an interactive reveal.js slide deck and requires JavaScript.
+      Please enable JavaScript, or read <code>docs/architecture-before-after.md</code> and
+      <code>docs/project-guide.md</code> for the same content.
+    </p>
+  </noscript>
+
+  <div class="reveal">
+    <div class="slides">
+
+      <!-- ============================ SLIDE 1 — TITLE + PROJECT SCOPE ============================ -->
+      <section data-state="title">
+        <h1>CardDemo Mainframe &rarr; Java Modernization</h1>
+        <p class="subtitle">AWS CardDemo COBOL / CICS / VSAM / JCL / BMS &rarr; Java&nbsp;25&nbsp;LTS + Spring&nbsp;Boot&nbsp;3.x</p>
+        <p class="tagline">Executive Summary &middot; Legacy baseline commit <code>27d6c6f</code> &middot; COBOL sources not copied (SHA-only traceability)</p>
+        <!-- Visual: end-to-end migration flow (z/OS source tiers -> Java/Spring/AWS target tiers).
+             Adapted from the technical-specification scope diagram; counts match docs/project-guide.md. -->
+        <div class="mermaid">
+graph LR
+    subgraph SRC["Source: z/OS Mainframe"]
+        direction TB
+        A1["BMS 3270 maps&lt;br/&gt;17 mapsets"]
+        A2["COBOL online&lt;br/&gt;17 CICS programs"]
+        A3["COBOL batch&lt;br/&gt;10 programs"]
+        A4["VSAM KSDS&lt;br/&gt;11 datasets + AIX/PATH"]
+        A5["JCL jobs&lt;br/&gt;29 jobs"]
+        A6["Copybooks&lt;br/&gt;28 record/logic"]
+    end
+    subgraph TGT["Target: Java 25 + Spring Boot 3.x"]
+        direction TB
+        B1["REST controllers&lt;br/&gt;Spring MVC + DTO"]
+        B2["Service layer&lt;br/&gt;Spring @Service"]
+        B3["Spring Batch&lt;br/&gt;Job / Step / Flow"]
+        B4["PostgreSQL 16&lt;br/&gt;Spring Data JPA"]
+        B5["Flyway + AWS&lt;br/&gt;S3 / SQS / SNS via LocalStack"]
+        B6["POJOs / entities&lt;br/&gt;BigDecimal precision"]
+    end
+    A1 -->|"field contracts preserved"| B1
+    A2 -->|"business logic migrated"| B2
+    A3 -->|"batch semantics mapped"| B3
+    A4 -->|"schema migration"| B4
+    A5 -->|"step sequencing"| B5
+    A6 -->|"record layouts to POJOs"| B6
+    classDef mf fill:#fde7c9,stroke:#b5651d,color:#3a2a14;
+    classDef java fill:#d6e4ff,stroke:#2b59c3,color:#0b2447;
+    class A1,A2,A3,A4,A5,A6 mf;
+    class B1,B2,B3,B4,B5,B6 java;
+        </div>
+      </section>
+
+      <!-- ============================ SLIDE 2 — BUSINESS VALUE ============================ -->
+      <section>
+        <h2>Why modernize &mdash; business value &amp; delivery status</h2>
+        <div class="two-col">
+          <div>
+            <ul class="biz-list">
+              <li><b>Skills risk:</b> COBOL/CICS expertise is scarce and retiring; Java draws from a large talent pool.</li>
+              <li><b>Run cost &amp; lock-in:</b> MIPS-based licensing and proprietary hardware give way to commodity cloud compute.</li>
+              <li><b>Agility:</b> rigid batch windows become elastic, observable, CI/CD-ready Spring services.</li>
+              <li><b>Maintainability:</b> a 19,254-line opaque COBOL estate becomes a layered, tested codebase.</li>
+              <li><b>Low risk:</b> 100% behavioral parity is the migration's design goal &mdash; verified by the passing characterization-test suite (807 unit + 151 integration/E2E tests); the only intentional behavior change is BCrypt password hashing.</li>
+            </ul>
+          </div>
+          <div>
+            <!-- Visual: documented engineering-effort estimate (project-guide.md): 434-hour total split into core migration (391) and production hardening (43). Presented as a scope estimate by category. -->
+            <div class="mermaid">
+pie showData
+    title Engineering effort estimate (hours) by category
+    "Core migration" : 391
+    "Production hardening" : 43
+            </div>
+            <p class="caption">Estimated 434-hour total effort, split into core migration (391 h) and production hardening (43 h). The full migration &mdash; schema, domain model, security and observability, all services and controllers, the five-stage batch pipeline, AWS integration, and the Surefire/Failsafe test suites &mdash; is delivered and verified.</p>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- ============================ SLIDE 3 — BEFORE ARCHITECTURE ============================ -->
+      <section>
+        <h2>Before &mdash; z/OS mainframe architecture</h2>
+        <!-- Visual: Diagram 1 from docs/architecture-before-after.md (reused verbatim; <br/> escaped). -->
+        <div class="mermaid">
+graph TB
+    TERM["3270 Terminal&lt;br/&gt;17 BMS 24x80 mapsets"]
+
+    subgraph CICSRGN["CICS Region — pseudo-conversational online (17 programs)"]
+        direction TB
+        ONL_AUTH["Auth&lt;br/&gt;COSGN00C"]
+        ONL_MENU["Menu&lt;br/&gt;COMEN01C / COADM01C"]
+        ONL_ACCT["Account&lt;br/&gt;COACTVWC / COACTUPC"]
+        ONL_CARD["Card&lt;br/&gt;COCRDLIC / COCRDSLC / COCRDUPC"]
+        ONL_TRAN["Transaction&lt;br/&gt;COTRN00C / COTRN01C / COTRN02C"]
+        ONL_BILL["Billing&lt;br/&gt;COBIL00C"]
+        ONL_RPT["Report&lt;br/&gt;CORPT00C"]
+        ONL_USR["User Admin&lt;br/&gt;COUSR00C..COUSR03C"]
+    end
+
+    subgraph VSAMLYR["VSAM Data Layer — 11 KSDS datasets + AIX/PATH"]
+        direction TB
+        V1["ACCTDAT"]
+        V2["CARDDAT"]
+        V3["CUSTDAT"]
+        V4["CARDXREF + CXACAIX"]
+        V5["TRANSACT + AIX"]
+        V6["USRSEC"]
+        V7["TCATBAL / DISCGRP"]
+        V8["TRANTYPE / TRANCATG"]
+        V9["DALYTRAN — PS staging"]
+    end
+
+    subgraph JESBATCH["JES Batch — 29 JCL jobs, 10 COBOL batch programs"]
+        direction TB
+        B1["Stage 1 POSTTRAN&lt;br/&gt;CBTRN02C"]
+        B2["Stage 2 INTCALC&lt;br/&gt;CBACT04C"]
+        B3["Stage 3 COMBTRAN&lt;br/&gt;DFSORT + REPRO"]
+        B4["Stage 4a CREASTMT&lt;br/&gt;CBSTM03A/B"]
+        B5["Stage 4b TRANREPT&lt;br/&gt;CBTRN03C"]
+    end
+
+    TDQ["CICS TDQ — JOBS queue&lt;br/&gt;online to batch bridge"]
+
+    TERM -->|"SEND / RECEIVE MAP"| CICSRGN
+    CICSRGN -->|"EXEC CICS READ / REWRITE"| VSAMLYR
+    ONL_RPT -->|"WRITEQ TD"| TDQ
+    TDQ -->|"triggers JES submission"| JESBATCH
+    JESBATCH -->|"keyed + sequential I/O"| VSAMLYR
+    B1 --> B2 --> B3 --> B4
+    B3 --> B5
+
+    classDef mf fill:#fde7c9,stroke:#b5651d,color:#3a2a14;
+    classDef data fill:#d7f5dd,stroke:#1f9d55,color:#0c3a1f;
+    class TERM,ONL_AUTH,ONL_MENU,ONL_ACCT,ONL_CARD,ONL_TRAN,ONL_BILL,ONL_RPT,ONL_USR,B1,B2,B3,B4,B5,TDQ mf;
+    class V1,V2,V3,V4,V5,V6,V7,V8,V9 data;
+        </div>
+        <p class="caption">A CICS/VSAM monolith: 3270 screens drive program-per-screen transactions that read/rewrite VSAM directly; JES schedules a 5-stage batch pipeline. The only online&rarr;batch link is the <code>CORPT00C</code> TDQ bridge.</p>
+      </section>
+
+      <!-- ============================ SLIDE 4 — AFTER ARCHITECTURE ============================ -->
+      <section>
+        <h2>After &mdash; Java / Spring Boot / AWS architecture</h2>
+        <!-- Visual: Diagram 2 from docs/architecture-before-after.md (reused verbatim; <br/> escaped). -->
+        <div class="mermaid">
+graph TB
+    CLIENT["REST Client&lt;br/&gt;JSON over HTTP"]
+
+    subgraph APP["Spring Boot Application — com.cardemo"]
+        direction TB
+        subgraph WEB["Controller layer — 8 @RestController"]
+            direction TB
+            C_AUTH["AuthController"]
+            C_MENU["MenuController"]
+            C_ACCT["AccountController"]
+            C_CARD["CardController"]
+            C_TRAN["TransactionController"]
+            C_BILL["BillingController"]
+            C_RPT["ReportController"]
+            C_USR["UserAdminController"]
+        end
+        subgraph SVC["Service layer — 20 @Service"]
+            direction TB
+            S_AUTH["auth / account / card"]
+            S_TRAN["transaction / billing / report"]
+            S_ADMIN["admin / menu / shared"]
+        end
+        subgraph REPO["Repository layer — 11 JpaRepository"]
+            direction TB
+            R_ALL["AccountRepository .. DailyTransactionRepository"]
+        end
+        subgraph BATCH["Spring Batch — 6 jobs / 5 processors / 5 readers / 3 writers"]
+            direction TB
+            BAT["DailyTransactionPostingJob .. BatchPipelineOrchestrator"]
+        end
+    end
+
+    PG["PostgreSQL 16&lt;br/&gt;11 tables + indexes via Flyway"]
+
+    subgraph AWS["AWS via LocalStack"]
+        direction TB
+        S3["S3&lt;br/&gt;batch staging + output — GDG replacement"]
+        SQS["SQS&lt;br/&gt;report-jobs.fifo — TDQ replacement"]
+        SNS["SNS&lt;br/&gt;notifications"]
+    end
+
+    subgraph OBS["Observability"]
+        direction TB
+        PROM["Prometheus&lt;br/&gt;/actuator/prometheus"]
+        GRAF["Grafana&lt;br/&gt;dashboards"]
+        JAEG["Jaeger&lt;br/&gt;OTLP tracing"]
+    end
+
+    CLIENT -->|"HTTP + JWT"| WEB
+    WEB -->|"DTO in / out"| SVC
+    SVC -->|"@Transactional"| REPO
+    REPO -->|"JPA / JDBC"| PG
+    BATCH -->|"saveAll / read"| PG
+    C_RPT -->|"publish"| SQS
+    SQS -->|"triggers"| BATCH
+    BATCH -->|"get / put objects"| S3
+    SVC -->|"events"| SNS
+    APP -.->|"metrics"| PROM
+    APP -.->|"traces"| JAEG
+    PROM -.-> GRAF
+
+    classDef java fill:#d6e4ff,stroke:#2b59c3,color:#0b2447;
+    classDef data fill:#d7f5dd,stroke:#1f9d55,color:#0c3a1f;
+    classDef aws fill:#ffe3c2,stroke:#ec7211,color:#3a2a14;
+    classDef obs fill:#ece3ff,stroke:#7c3aed,color:#2a1a4a;
+    class CLIENT,C_AUTH,C_MENU,C_ACCT,C_CARD,C_TRAN,C_BILL,C_RPT,C_USR,S_AUTH,S_TRAN,S_ADMIN,R_ALL,BAT java;
+    class PG data;
+    class S3,SQS,SNS aws;
+    class PROM,GRAF,JAEG obs;
+        </div>
+        <p class="caption">A layered Spring Boot application (<code>com.cardemo</code>): controllers &rarr; services &rarr; repositories over PostgreSQL&nbsp;16. AWS S3/SQS/SNS (via LocalStack) replace GDG/TDQ; Prometheus, Grafana and Jaeger provide observability.</p>
+      </section>
+
+      <!-- ============================ SLIDE 5 — COBOL-TO-JAVA MAPPING ============================ -->
+      <section>
+        <h2>What maps to what &mdash; COBOL &rarr; Java</h2>
+        <!-- Visual #1: artifact-count mapping table. -->
+        <table class="map">
+          <caption>Artifact inventory &rarr; target components</caption>
+          <thead>
+            <tr><th>Legacy artifact (z/OS)</th><th>Count</th><th>Java / Spring target</th><th>Count</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="legacy-tag">COBOL programs</span></td><td class="num">28</td><td><span class="java-tag">Services + Controllers + Batch jobs</span></td><td class="num">20 + 8 + 6</td></tr>
+            <tr><td><span class="legacy-tag">Copybooks</span></td><td class="num">28</td><td><span class="java-tag">Entities + DTOs + Enums + Keys</span></td><td class="num">11 + 9 + 4 + 3</td></tr>
+            <tr><td><span class="legacy-tag">VSAM datasets</span></td><td class="num">11</td><td><span class="java-tag">PostgreSQL tables (Spring Data JPA)</span></td><td class="num">11</td></tr>
+            <tr><td><span class="legacy-tag">BMS 3270 mapsets</span></td><td class="num">17</td><td><span class="java-tag">REST controllers</span></td><td class="num">8</td></tr>
+            <tr><td><span class="legacy-tag">JCL jobs</span></td><td class="num">29</td><td><span class="java-tag">Spring Batch (5-stage pipeline)</span></td><td class="num">6 jobs</td></tr>
+          </tbody>
+        </table>
+        <!-- Visual #2: key construct-level transformation rules (from the transformation-rule table). -->
+        <table class="map">
+          <caption>Key construct transformations (deterministic rules)</caption>
+          <thead><tr><th>Legacy construct</th><th>Java / Spring / AWS target</th></tr></thead>
+          <tbody>
+            <tr><td>VSAM KSDS / AIX (keyed access)</td><td><code>@Entity</code> + <code>JpaRepository</code> / derived <code>@Query</code></td></tr>
+            <tr><td>CICS TDQ <code>WRITEQ</code></td><td>AWS <b>SQS</b> publish (Spring Cloud AWS)</td></tr>
+            <tr><td>GDG generations</td><td>AWS <b>S3</b> versioned object keys</td></tr>
+            <tr><td>CICS <code>SYNCPOINT ROLLBACK</code></td><td><code>@Transactional(rollbackFor=...)</code></td></tr>
+            <tr><td><code>COMP-3</code> / <code>PIC S9(n)V99</code></td><td><code>BigDecimal</code> &mdash; never <code>float</code>/<code>double</code></td></tr>
+          </tbody>
+        </table>
+        <p class="caption">These deterministic rules are applied uniformly across the 28 COBOL programs of the source estate. <code>@Version</code> optimistic locking and BCrypt hashing are part of the parity-preserving design &mdash; the BCrypt upgrade is the single intentional behavioral change.</p>
+      </section>
+
+      <!-- ============================ SLIDE 6 — BATCH PIPELINE BEFORE/AFTER ============================ -->
+      <section>
+        <h2>Batch pipeline &mdash; JES/JCL vs Spring Batch</h2>
+        <!-- Visual: Diagram 3 from docs/architecture-before-after.md (reused verbatim; <br/> escaped). -->
+        <div class="mermaid">
+graph LR
+    subgraph BEFORE["BEFORE — JES / JCL 5-stage pipeline"]
+        direction LR
+        J1["POSTTRAN&lt;br/&gt;CBTRN02C"]
+        JC1{"COND code&lt;br/&gt;RC = 0?"}
+        J2["INTCALC&lt;br/&gt;CBACT04C"]
+        JC2{"COND code&lt;br/&gt;RC = 0?"}
+        J3["COMBTRAN&lt;br/&gt;DFSORT + IDCAMS REPRO"]
+        J4["CREASTMT&lt;br/&gt;CBSTM03A/B"]
+        J5["TRANREPT&lt;br/&gt;CBTRN03C"]
+        JX1["Bypass remaining steps"]
+        J1 --> JC1
+        JC1 -->|"RC = 0"| J2
+        JC1 -->|"RC not 0 — abend"| JX1
+        J2 --> JC2
+        JC2 -->|"RC = 0"| J3
+        JC2 -->|"RC not 0 — abend"| JX1
+        J3 --> J4
+        J3 --> J5
+    end
+
+    subgraph AFTER["AFTER — Spring Batch BatchPipelineOrchestrator"]
+        direction LR
+        K1["DailyTransactionPostingJob&lt;br/&gt;Step + ItemProcessor"]
+        KD1{"JobExecutionDecider&lt;br/&gt;ExitStatus"}
+        K2["InterestCalculationJob"]
+        KD2{"JobExecutionDecider&lt;br/&gt;ExitStatus"}
+        K3["CombineTransactionsJob&lt;br/&gt;Comparator + saveAll"]
+        KSP{{"FlowBuilder split"}}
+        K4["StatementGenerationJob"]
+        K5["TransactionReportJob"]
+        KX1["Stop — no further steps"]
+        K1 --> KD1
+        KD1 -->|"COMPLETED"| K2
+        KD1 -->|"FAILED — stop"| KX1
+        K2 --> KD2
+        KD2 -->|"COMPLETED"| K3
+        KD2 -->|"FAILED — stop"| KX1
+        K3 --> KSP
+        KSP --> K4
+        KSP --> K5
+    end
+
+    classDef mf fill:#fde7c9,stroke:#b5651d,color:#3a2a14;
+    classDef java fill:#d6e4ff,stroke:#2b59c3,color:#0b2447;
+    class J1,J2,J3,J4,J5,JX1,JC1,JC2 mf;
+    class K1,K2,K3,K4,K5,KX1,KD1,KD2,KSP java;
+        </div>
+        <p class="caption">The 5-stage pipeline maps 1:1: <code>COND</code>-code gating becomes <code>JobExecutionDecider</code>, and the post-COMBTRAN fan-out (CREASTMT &amp; TRANREPT) becomes an explicit <code>FlowBuilder.split()</code> &mdash; sequential dependencies and abort-on-failure preserved.</p>
+      </section>
+
+      <!-- ============================ SLIDE 7 — DATA MIGRATION STRATEGY ============================ -->
+      <section>
+        <h2>Data migration &mdash; VSAM &rarr; Flyway &rarr; PostgreSQL</h2>
+        <!-- Visual: Diagram 4 from docs/architecture-before-after.md (reused verbatim; <br/> escaped). -->
+        <div class="mermaid">
+graph LR
+    subgraph BEFORE["BEFORE — VSAM datasets (11)"]
+        direction TB
+        D1["ACCTDAT — KSDS"]
+        D2["CARDDAT — KSDS + AIX"]
+        D3["CUSTDAT — KSDS"]
+        D4["CARDXREF — KSDS&lt;br/&gt;CXACAIX alt index + PATH"]
+        D5["TRANSACT — KSDS&lt;br/&gt;AIX + PATH"]
+        D6["USRSEC — KSDS"]
+        D7["TCATBAL — KSDS"]
+        D8["DISCGRP — KSDS"]
+        D9["TRANTYPE — KSDS"]
+        D10["TRANCATG — KSDS"]
+        D11["DALYTRAN — PS staging"]
+    end
+
+    subgraph FLY["Flyway migrations — run on startup"]
+        direction TB
+        FV1["V1__create_schema.sql&lt;br/&gt;11 tables from DEFINE CLUSTER"]
+        FV2["V2__create_indexes.sql&lt;br/&gt;CXACAIX + TRANSACT AIX"]
+        FV3["V3__seed_data.sql&lt;br/&gt;9 ASCII fixtures"]
+        FV4["V4__user_type_not_null.sql&lt;br/&gt;user_type NOT NULL constraint"]
+        FV5["V5__batch_metadata.sql&lt;br/&gt;Spring Batch metadata tables"]
+        FV1 --> FV2 --> FV3 --> FV4 --> FV5
+    end
+
+    subgraph AFTER["AFTER — PostgreSQL 16 + Spring Data JPA"]
+        direction TB
+        T1["accounts"]
+        T2["cards"]
+        T3["customers"]
+        T4["card_xref&lt;br/&gt;derived query by card number"]
+        T5["transactions&lt;br/&gt;@Query by date range"]
+        T6["user_security"]
+        T7["transaction_category_balance&lt;br/&gt;@EmbeddedId"]
+        T8["disclosure_group&lt;br/&gt;@EmbeddedId"]
+        T9["transaction_type"]
+        T10["transaction_category&lt;br/&gt;@EmbeddedId"]
+        T11["daily_transaction"]
+    end
+
+    BEFORE -->|"DEFINE CLUSTER becomes DDL"| FLY
+    FLY -->|"provisions + seeds"| AFTER
+
+    classDef data fill:#d7f5dd,stroke:#1f9d55,color:#0c3a1f;
+    classDef mig fill:#d6e4ff,stroke:#2b59c3,color:#0b2447;
+    class D1,D2,D3,D4,D5,D6,D7,D8,D9,D10,D11 data;
+    class T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11 data;
+    class FV1,FV2,FV3,FV4,FV5 mig;
+        </div>
+        <p class="caption">VSAM <code>DEFINE CLUSTER</code> specs become DDL. Flyway <code>V1</code>&ndash;<code>V5</code> create the schema, indexes (incl. alternate indexes), seed the 9 ASCII fixtures &mdash; the canonical parity data &mdash; enforce the <code>user_type</code> NOT NULL constraint, and provision the Spring Batch metadata tables on startup.</p>
+      </section>
+
+
+      <!-- ============================ SLIDE 8 — OBSERVABILITY DASHBOARD ============================ -->
+      <section>
+        <h2>Observability &mdash; production-grade from day one</h2>
+        <!-- Visual: the observability pipeline wired in the application (CorrelationIdFilter,
+             MetricsConfig, logback-spring.xml, prometheus.yml) plus the committed Grafana dashboard
+             definition (docs/grafana-dashboard.json, 14 panels). No placeholder. -->
+        <div class="mermaid">
+flowchart LR
+    APP["CardDemo Spring Boot app<br/>Micrometer meters &middot; Actuator<br/>CorrelationIdFilter (X-Correlation-Id)"]
+    PROM["Prometheus<br/>scrapes /actuator/prometheus"]
+    GRAF["Grafana<br/>grafana-dashboard.json &middot; 14 panels"]
+    JAEGER["Jaeger<br/>OTLP traces"]
+    LOGS["Structured JSON logs<br/>+ correlation IDs<br/>(logback-spring.xml)"]
+    APP -->|"/actuator/prometheus"| PROM
+    PROM --> GRAF
+    APP -->|"OTLP export"| JAEGER
+    APP --> LOGS
+    classDef a fill:#d7f5dd,stroke:#1f9d55,color:#0c3a1f;
+    classDef b fill:#d6e4ff,stroke:#2b59c3,color:#0b2447;
+    class APP a;
+    class PROM,GRAF,JAEGER,LOGS b;
+        </div>
+        <p class="caption" style="font-size:.42em;">Committed: <code>docs/grafana-dashboard.json</code> (14 panels) &mdash; HTTP request rate &middot; error rate (5xx) &middot; latency p50/p95/p99 &middot; Spring Batch throughput, records processed &amp; rejected-by-reason &middot; authentication attempts &middot; transaction amount posted &middot; JVM memory / GC. Import at <code>http://localhost:3000</code> once the local stack is running.</p>
+        <div class="chips">
+          <span class="chip">Micrometer &rarr; Prometheus</span>
+          <span class="chip">Grafana dashboards</span>
+          <span class="chip">OTLP traces &rarr; Jaeger</span>
+          <span class="chip">Structured JSON logs + correlation IDs</span>
+          <span class="chip">Actuator health / readiness</span>
+        </div>
+        <p class="caption">Distributed tracing, a Prometheus metrics endpoint, structured logging with correlation IDs and health/readiness probes ship with the initial implementation and are exercisable locally.</p>
+      </section>
+
+      <!-- ============================ SLIDE 9 — RISK ASSESSMENT MATRIX ============================ -->
+      <section>
+        <h2>Risk assessment &mdash; likelihood &times; impact</h2>
+        <!-- Visual: colour-coded likelihood x impact heat-map (CSS classes rm-red / rm-amber / rm-green).
+             Risks drawn from docs/project-guide.md sections 1.4 and 6 (no invented risks). -->
+        <table class="riskmx">
+          <thead>
+            <tr><th rowspan="2">Impact &darr;</th><th colspan="3">Likelihood &rarr;</th></tr>
+            <tr><th>Low</th><th>Medium</th><th>High</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>High</th>
+              <td class="rm-amber">&mdash;</td>
+              <td class="rm-green">OWASP scan clean &middot; 0 critical/high CVEs</td>
+              <td class="rm-red">No CI/CD pipeline &middot; No production deployment profile</td>
+            </tr>
+            <tr>
+              <th>Medium</th>
+              <td class="rm-green">Branch coverage below target (tracked follow-up)</td>
+              <td class="rm-amber">LocalStack-only AWS testing &middot; EBCDIC prod-data migration &middot; No container registry</td>
+              <td class="rm-amber">No TLS / HTTPS &middot; No rate limiting</td>
+            </tr>
+            <tr>
+              <th>Low</th>
+              <td class="rm-green">&mdash;</td>
+              <td class="rm-green">HikariCP pool not tuned</td>
+              <td class="rm-green">No OpenAPI / Swagger docs</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="rm-legend">
+          <span class="rm-red">Red &mdash; address now</span>
+          <span class="rm-amber">Amber &mdash; plan / monitor</span>
+          <span class="rm-green">Green &mdash; accept / backlog</span>
+          &nbsp;&middot;&nbsp; source: <code>project-guide.md</code> &sect;1.4 &amp; &sect;6
+        </div>
+        <p class="caption">All high-severity items are operational/security hardening for production cutover &mdash; none affect functional parity, the migration's design goal of 100% behavioral parity (verified by the passing characterization-test suite).</p>
+      </section>
+
+      <!-- ============================ SLIDE 10 — VALIDATION GATES SUMMARY ============================ -->
+      <section>
+        <h2>Validation gates &mdash; 8-gate model &amp; FINAL status</h2>
+        <!-- Visual #1: headline KPI strip — measured FINAL figures from the gated build/test runs. -->
+        <div class="kpi">
+          <div class="k"><b>83.59%</b>line coverage<br/>(JaCoCo &middot; &ge;80% gate)</div>
+          <div class="k"><b>807 + 151</b>tests pass<br/>(Surefire + Failsafe)</div>
+          <div class="k"><b>100%</b>paragraph<br/>traceability (527 paras)</div>
+          <div class="k"><b>0</b>warnings &middot; 0 critical/high CVEs</div>
+        </div>
+        <!-- Visual #2: gate-by-gate checklist table. -->
+        <table class="gates">
+          <thead><tr><th>#</th><th>Validation gate</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>End-to-End Boundary Verification</td><td class="st-ok">&#10003; Verified (batch E2E + GateVerificationTest)</td></tr>
+            <tr><td>2</td><td>Zero-Warning Build</td><td class="st-ok">&#10003; Verified (full verify compiles warning-free)</td></tr>
+            <tr><td>3</td><td>Performance Baseline</td><td class="st-warn">&#10003; Java reference established (no COBOL timing to compare)</td></tr>
+            <tr><td>4</td><td>Named Real-World Validation Artifacts (9 ASCII fixtures)</td><td class="st-ok">&#10003; Verified (V3 seeds all 9 fixtures)</td></tr>
+            <tr><td>5</td><td>API / Interface Contract Verification</td><td class="st-ok">&#10003; Verified (REST E2E + LocalStack S3/SQS/SNS)</td></tr>
+            <tr><td>6</td><td>Unsafe / Low-Level Code Audit</td><td class="st-ok">&#10003; Verified (production all-zero)</td></tr>
+            <tr><td>7</td><td>Scope Matching (Extended)</td><td class="st-ok">&#10003; Verified (all 5 subsystems with tests)</td></tr>
+            <tr><td>8</td><td>Integration Sign-Off (master gate)</td><td class="st-ok">&#10003; Verified (all gates + bars pass)</td></tr>
+          </tbody>
+        </table>
+        <p class="caption">All eight gates report a measured FINAL result from actual build/test runs:
+          807 unit + 151 integration/E2E tests pass, line coverage is 83.59%, the OWASP scan reports zero
+          critical/high CVEs, and the production unsafe-code audit is all-zero. Gate 3 is a by-design
+          partial (no COBOL timing artifact exists to compare against). Full detail in
+          <code>validation-gates.md</code>.</p>
+      </section>
+
+      <!-- ============================ SLIDE 11 — TEAM ONBOARDING PATH ============================ -->
+      <section>
+        <h2>Onboarding &mdash; clean machine to running app</h2>
+        <div class="two-col">
+          <div>
+            <!-- Visual #1: onboarding timeline (Mermaid). Colons are the timeline separator, so command
+                 text here is colon-free; exact commands appear in the ordered list to the right. -->
+            <div class="mermaid">
+timeline
+    title Developer onboarding path
+    Clone : git clone the repository : cd carddemo-java
+    Build : mvnw clean verify : compile, test and coverage gate
+    Run : docker compose up -d : mvnw spring-boot run, local profile
+    Verify : actuator health returns UP : sign-in and account view
+    Extend : add an entity : add a batch job : add a REST endpoint
+            </div>
+          </div>
+          <div>
+            <!-- Visual #2: styled ordered list with the exact commands. -->
+            <ol class="steps">
+              <li><b>Clone &amp; build:</b> <code>git clone &lt;repo&gt;</code> &rarr; <code>cd carddemo-java</code> &rarr; <code>./mvnw clean verify</code></li>
+              <li><b>Start local stack:</b> <code>docker compose up -d</code> (PostgreSQL, LocalStack, Jaeger, Prometheus, Grafana)</li>
+              <li><b>Run the app:</b> <code>./mvnw spring-boot:run -Dspring-boot.run.profiles=local</code></li>
+              <li><b>Verify health:</b> <code>curl localhost:8080/actuator/health</code> &rarr; <code>{"status":"UP"}</code></li>
+              <li><b>Integration suite:</b> <code>./mvnw verify -Pintegration</code> (Testcontainers)</li>
+              <li><b>Extend:</b> add an entity, a batch job, or a REST endpoint</li>
+            </ol>
+          </div>
+        </div>
+        <p class="caption">Full clean-machine-to-running-app instructions, ports and pitfalls are documented in <code>onboarding-guide.md</code>.</p>
+      </section>
+
+      <!-- ============================ SLIDE 12 — NEXT STEPS & RECOMMENDED IMPROVEMENTS ============================ -->
+      <section>
+        <h2>Next steps &amp; recommended improvements</h2>
+        <!-- Visual: priority-laned roadmap (Now / Next / Later), colour-coded by priority.
+             "Now/Next" = project-guide.md remaining work; "Later" = onboarding-guide.md section 6 backlog. -->
+        <div class="mermaid">
+graph LR
+    subgraph NOW["Now — production readiness (High, ~21h)"]
+        direction TB
+        N1["CI/CD pipeline&lt;br/&gt;GitHub Actions"]
+        N2["OWASP dependency scan&lt;br/&gt;and remediation"]
+        N3["Production profile&lt;br/&gt;application-prod.yml"]
+        N4["Security hardening&lt;br/&gt;JWT rotation, TLS, rate limiting"]
+    end
+    subgraph NEXT["Next — operations (Medium, ~20h)"]
+        direction TB
+        M1["Deployment&lt;br/&gt;K8s / ECS manifests"]
+        M2["Performance testing&lt;br/&gt;and optimization"]
+        M3["Production data migration&lt;br/&gt;EBCDIC strategy"]
+        M4["Monitoring and alerting"]
+    end
+    subgraph LATER["Later — enhancement backlog (out of scope)"]
+        direction TB
+        L1["Swagger / OpenAPI docs"]
+        L2["Cursor-based pagination"]
+        L3["Redis caching&lt;br/&gt;reference data"]
+        L4["Async batch jobs via REST"]
+        L5["HikariCP pool tuning"]
+    end
+    NOW --> NEXT --> LATER
+    classDef now fill:#f6c4be,stroke:#c0392b,color:#3a1414;
+    classDef next fill:#fde0b6,stroke:#ec7211,color:#3a2a14;
+    classDef later fill:#c9ebcc,stroke:#1f9d55,color:#0c3a1f;
+    class N1,N2,N3,N4 now;
+    class M1,M2,M3,M4 next;
+    class L1,L2,L3,L4,L5 later;
+        </div>
+        <p class="caption">Beyond the core migration, the roadmap is sequenced by priority &mdash; production-readiness first (CI/CD, OWASP, prod profile, security hardening), then operations, then the documented enhancement backlog.</p>
+      </section>
+
+    </div><!-- /.slides -->
+  </div><!-- /.reveal -->
+
+  <!-- Persistent footer (outside .slides so it stays fixed across all slides). -->
+  <div class="deck-footer">AWS CardDemo &middot; COBOL &rarr; Java&nbsp;25 + Spring&nbsp;Boot&nbsp;3.x &middot; legacy baseline commit <code>27d6c6f</code></div>
+
+  <!-- reveal.js core (UMD build exposes the global `Reveal`). CDN asset. -->
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.2.1/dist/reveal.js"></script>
+
+  <!--
+    Mermaid wiring (see the documentation comment in <head>). Mermaid 11 ships as an ES module,
+    so it is imported here. The deck is intentionally resilient:
+      * Mermaid is loaded inside try/catch — if its CDN is unavailable the slides still initialize.
+      * Mermaid uses startOnLoad:false; diagrams are rendered JUST-IN-TIME per slide so that
+        reveal.js' lazy/hidden slides (display:none at load) render correctly when shown.
+      * Rendering is idempotent (Mermaid sets data-processed="true"), so revisiting a slide is a no-op.
+      * After each render we call Reveal.layout() so the freshly-sized SVG is re-fitted to the slide.
+  -->
+  <script type="module">
+    let mermaid = null;
+    try {
+      const mod = await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs');
+      mermaid = mod.default;
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: 'default',
+        securityLevel: 'loose',
+        flowchart: { htmlLabels: true, useMaxWidth: true },
+        themeVariables: { fontFamily: 'Source Sans Pro, Helvetica, sans-serif' }
+      });
+    } catch (err) {
+      console.error('[executive-presentation] Mermaid CDN unavailable — diagrams will not render, but slides remain navigable.', err);
+    }
+
+    // Render every not-yet-processed Mermaid block inside the given slide element.
+    function renderSlideDiagrams(slide) {
+      if (!mermaid || !slide) return;
+      const nodes = slide.querySelectorAll('.mermaid:not([data-processed="true"])');
+      if (!nodes.length) return;
+      mermaid.run({ nodes, suppressErrors: true })
+        .then(function () { if (typeof Reveal !== 'undefined' && typeof Reveal.layout === 'function') Reveal.layout(); })
+        .catch(function (e) { console.error('[executive-presentation] mermaid.run failed', e); });
+    }
+
+    if (typeof Reveal !== 'undefined') {
+      // initialize() resolves once the deck is ready and the initial (possibly hash-deep-linked) slide is shown.
+      await Reveal.initialize({
+        hash: true,
+        slideNumber: 'c/t',
+        width: 1280,
+        height: 800,
+        margin: 0.045,
+        center: false,
+        controls: true,
+        progress: true,
+        transition: 'slide'
+      });
+      // Render the initial slide, then render subsequent slides as they are shown (covers lazy slides).
+      renderSlideDiagrams(Reveal.getCurrentSlide());
+      if (typeof Reveal.on === 'function') {
+        Reveal.on('slidechanged', function (event) { renderSlideDiagrams(event.currentSlide); });
+      }
+    } else {
+      console.error('[executive-presentation] reveal.js CDN unavailable; the deck cannot run as a slideshow.');
+      // Fallback: if only reveal.js failed, still render any diagrams so the content is not blank.
+      if (mermaid) { mermaid.run({ querySelector: '.mermaid', suppressErrors: true }).catch(function () {}); }
+    }
+  </script>
+</body>
+</html>
+
