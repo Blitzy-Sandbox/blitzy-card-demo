@@ -6,6 +6,7 @@ import com.cardemo.model.dto.UserSecurityDto;
 import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.enums.UserType;
 import com.cardemo.repository.UserSecurityRepository;
+import java.util.Locale;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -335,7 +336,20 @@ public class UserAddService {
         // BCrypt-hashed via the injected shared PasswordEncoder before persistence (stored form widens
         // to the 60-char digest in the VARCHAR(72) `password` column). The INPUT contract stays the
         // legacy 8-char @Size(max=8); NO new password-complexity rule is added (no enhancement).
-        entity.setSecUsrPwd(passwordEncoder.encode(request.getPassword()));
+        //
+        // BEHAVIORAL-PARITY FIX (QA F-AUTH-1, AAP §0.7.2): the password is UPPER-CASED with
+        // Locale.ROOT BEFORE encoding. On the mainframe the 3270 terminal's UCTRAN feature
+        // uppercased every keystroke on BOTH the add screen (COUSR01) and the sign-on screen
+        // (COSGN00) before the program received it, so the stored password was always upper-case;
+        // COUSR01C L157 (MOVE PASSWDI TO SEC-USR-PWD) therefore stored an already-upper-cased value.
+        // The migration reproduces that terminal-level UCTRAN here so add-then-login works exactly as
+        // it did on the mainframe. This MUST match AuthenticationService, which verifies the
+        // upper-cased password (COSGN00C L132-136 MOVE FUNCTION UPPER-CASE(PASSWDI)), and the Flyway
+        // V3 seed, whose BCrypt hashes are of the upper-cased secret. Without this, any user added
+        // with a non-all-upper-case password would be permanently locked out (no case variant would
+        // verify against the lower/mixed-case hash). Locale.ROOT gives locale-independent
+        // upper-casing, matching the COBOL intrinsic FUNCTION UPPER-CASE.
+        entity.setSecUsrPwd(passwordEncoder.encode(request.getPassword().toUpperCase(Locale.ROOT)));
 
         // -------------------------------------------------------------------------------------------
         // Step 4 - EXEC CICS WRITE DATASET('USRSEC') (COUSR01C L240-248) -> JpaRepository.save.

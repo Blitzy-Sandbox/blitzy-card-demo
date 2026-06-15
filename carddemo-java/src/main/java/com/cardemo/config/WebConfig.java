@@ -26,8 +26,10 @@ import org.springframework.web.ErrorResponse;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
@@ -651,6 +653,71 @@ public class WebConfig implements WebMvcConfigurer {
         }
 
         /**
+         * Maps a query- or path-parameter <em>type-conversion</em> failure to
+         * <strong>400 Bad Request</strong>, carrying the uniform {@link ApiError} envelope
+         * (QA&nbsp;F-VAL-1). Fires when a request parameter cannot be converted to its declared
+         * handler-method type &mdash; most notably a non-numeric, integer-overflowing or fractional
+         * {@code page} query parameter on the paginated list endpoints ({@code GET /api/cards},
+         * {@code GET /api/transactions}, {@code GET /api/admin/users}), each of which binds a
+         * {@code @RequestParam int page}.
+         *
+         * <p><strong>Why this explicit handler is required:</strong>
+         * {@link MethodArgumentTypeMismatchException} extends {@code TypeMismatchException} (a
+         * {@code BeansException}) and does <em>not</em> implement {@link ErrorResponse} in this Spring
+         * Framework version. Without this handler it would fall through to the generic
+         * {@link #handleUnexpected(Exception, HttpServletRequest)} below and be reported as
+         * <strong>500</strong> &mdash; a malformed client-supplied parameter incorrectly surfaced as a
+         * server error (which also pollutes the 5xx error-rate metrics). A failed parameter type
+         * conversion is a client input error, so the correct status is 400.</p>
+         *
+         * <p>The raw {@link MethodArgumentTypeMismatchException#getMessage()} and the rejected value
+         * are neither returned nor logged (§0.7.2); only the offending parameter name &mdash; the
+         * client's own field label, not a sensitive value &mdash; appears, as safe log metadata and in
+         * the stable client message.</p>
+         *
+         * @param ex      the thrown type-mismatch exception
+         * @param request the current request, used to populate the error {@code path}
+         * @return a 400 response carrying the standard {@link ApiError} body
+         */
+        @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+        public ResponseEntity<ApiError> handleTypeMismatch(
+                MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
+            // Sanitized (§0.7.2): log only the parameter name (the client's own field label, safe
+            // metadata) — never ex.getMessage()/ex.getValue(), which echo the rejected value.
+            log.warn("Parameter type mismatch (HTTP 400, code=VALIDATION_FAILED, parameter={})",
+                    ex.getName());
+            return buildResponse(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED",
+                    "Request parameter '" + ex.getName() + "' has an invalid value", request, null);
+        }
+
+        /**
+         * Maps a missing required request parameter to <strong>400 Bad Request</strong>, carrying the
+         * uniform {@link ApiError} envelope (QA&nbsp;F-VAL-1). Fires when a {@code @RequestParam}
+         * declared without a default value is absent from the request.
+         *
+         * <p>Like {@link MethodArgumentTypeMismatchException}, a
+         * {@link MissingServletRequestParameterException} does <em>not</em> implement
+         * {@link ErrorResponse}, so an explicit handler is required to keep the generic catch-all from
+         * reporting an absent client-supplied parameter as a 500. A missing required parameter is a
+         * client input error, so the correct status is 400.</p>
+         *
+         * @param ex      the thrown missing-parameter exception
+         * @param request the current request, used to populate the error {@code path}
+         * @return a 400 response carrying the standard {@link ApiError} body
+         */
+        @ExceptionHandler(MissingServletRequestParameterException.class)
+        public ResponseEntity<ApiError> handleMissingParameter(
+                MissingServletRequestParameterException ex, HttpServletRequest request) {
+            // The missing parameter name is the client's own field label (safe metadata); return a
+            // stable message that names it so the caller can correct the request.
+            log.warn("Missing request parameter (HTTP 400, code=VALIDATION_FAILED, parameter={})",
+                    ex.getParameterName());
+            return buildResponse(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED",
+                    "Required request parameter '" + ex.getParameterName() + "' is missing",
+                    request, null);
+        }
+
+        /**
          * Maps a <em>post-dispatch</em> authorization denial to <strong>403 Forbidden</strong>
          * &mdash; for a method-level {@code @PreAuthorize} guard (for example on the admin-only user
          * CRUD services) that throws after request dispatch and therefore reaches this advice.
@@ -685,15 +752,18 @@ public class WebConfig implements WebMvcConfigurer {
          * (QA F4). Resolution is by specificity, not declaration order, so the concrete handlers above
          * always win for their types; this method only runs for otherwise-unhandled exceptions.
          *
-         * <p><strong>Status selection.</strong> Spring MVC framework exceptions (for example
-         * {@code NoResourceFoundException} &rarr; 404 for an unknown route,
-         * {@code MethodArgumentTypeMismatchException} &rarr; 400 for a bad path-variable type,
-         * {@code HttpMediaTypeNotAcceptableException} &rarr; 406) implement {@link ErrorResponse} and
-         * declare their own HTTP status. Those are honored verbatim so this catch-all never masks a
-         * well-defined 4xx as a 500 (which would, for instance, regress the documented unknown-route
-         * 404). Only a truly unexpected exception (a {@code DataAccessException} /
-         * {@code DataIntegrityViolationException}, a messaging failure, an {@code NPE}, &hellip;) maps
-         * to <strong>500</strong>.</p>
+         * <p><strong>Status selection.</strong> Spring MVC framework exceptions that implement
+         * {@link ErrorResponse} (for example {@code NoResourceFoundException} &rarr; 404 for an unknown
+         * route, {@code HttpMediaTypeNotAcceptableException} &rarr; 406) declare their own HTTP status.
+         * Those are honored verbatim so this catch-all never masks a well-defined 4xx as a 500 (which
+         * would, for instance, regress the documented unknown-route 404). Parameter-binding failures
+         * that do <em>not</em> implement {@link ErrorResponse} &mdash;
+         * {@code MethodArgumentTypeMismatchException} (a bad {@code @RequestParam}/path-variable type,
+         * such as a non-numeric {@code page}) and {@code MissingServletRequestParameterException}
+         * &mdash; are mapped to <strong>400</strong> by their own dedicated handlers above
+         * (QA&nbsp;F-VAL-1) and therefore never reach this branch. Only a truly unexpected exception
+         * (a {@code DataAccessException} / {@code DataIntegrityViolationException}, a messaging
+         * failure, an {@code NPE}, &hellip;) maps to <strong>500</strong>.</p>
          *
          * <p>The full stack trace is logged server-side for diagnosis but is <em>never</em> leaked to
          * the client: no stack trace, SQL, package path or framework class name appears in the

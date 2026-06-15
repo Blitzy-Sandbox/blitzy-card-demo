@@ -6,6 +6,7 @@ import com.cardemo.model.dto.UserSecurityDto;
 import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.enums.UserType;
 import com.cardemo.repository.UserSecurityRepository;
+import java.util.Locale;
 import java.util.Optional;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -459,11 +460,22 @@ public class UserUpdateService {
         // re-encoded with BCrypt (never stored as plaintext). request.getPassword() is guaranteed
         // non-null by the branch-4 emptiness edit above. This is the single permitted behavioral
         // change of the migration (constraint C-003, AAP §0.7.2); no new password rule is added.
+        //
+        // BEHAVIORAL-PARITY FIX (QA F-AUTH-1, AAP §0.7.2): the typed password is UPPER-CASED with
+        // Locale.ROOT for BOTH the change-detection compare AND the re-encode. On the mainframe the
+        // 3270 terminal's UCTRAN uppercased every keystroke on the update screen (COUSR02) before the
+        // program received it, so the stored password was always upper-case. Reproducing that
+        // terminal-level UCTRAN here keeps update consistent with UserAddService and with
+        // AuthenticationService (which verifies the upper-cased password). Without it, a user whose
+        // password is changed to a non-all-upper-case value would be locked out at the next sign-on,
+        // and the change-detection compare against an upper-cased seed/added hash would be wrong.
+        // Locale.ROOT gives locale-independent upper-casing, matching FUNCTION UPPER-CASE.
+        final String upperPassword = request.getPassword().toUpperCase(Locale.ROOT);
         final boolean passwordChanged =
-                !passwordEncoder.matches(request.getPassword(), entity.getSecUsrPwd());
+                !passwordEncoder.matches(upperPassword, entity.getSecUsrPwd());
         if (passwordChanged) {
-            entity.setSecUsrPwd(passwordEncoder.encode(request.getPassword())); // MOVE PASSWDI TO SEC-USR-PWD (BCrypt-encoded)
-            modified = true;                                                    // SET USR-MODIFIED-YES TO TRUE
+            entity.setSecUsrPwd(passwordEncoder.encode(upperPassword)); // MOVE PASSWDI TO SEC-USR-PWD (BCrypt-encoded, UCTRAN-uppercased)
+            modified = true;                                            // SET USR-MODIFIED-YES TO TRUE
         }
 
         // IF USRTYPEI OF COUSR2AI NOT = SEC-USR-TYPE (COUSR02C L231-234). Direct type-safe enum

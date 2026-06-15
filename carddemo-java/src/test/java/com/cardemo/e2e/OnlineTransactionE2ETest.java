@@ -1244,6 +1244,36 @@ class OnlineTransactionE2ETest {
         }
 
         @Test
+        @DisplayName("F-AUTH-1: a user created with a MIXED-CASE password can sign in (UCTRAN parity, §0.7.2)")
+        void createWithMixedCasePasswordThenLoginSucceeds() {
+            // QA F-AUTH-1 reproduction: before the fix, add/update stored the RAW password while
+            // sign-on uppercased it, so any user provisioned with a non-all-upper-case password was
+            // permanently locked out (masked only because the seed password "PASSWORD" is upper-case).
+            // The mainframe 3270 UCTRAN uppercased terminal input on BOTH the add and sign-on screens,
+            // so add-then-login always worked. The migration now reproduces that on both paths.
+            String newUserId = "E2EAUTH1";
+            String mixedCasePassword = "MyPass12"; // deliberately mixed-case (8 chars, legacy PASSWDI width)
+            ResponseEntity<String> response = exchange(HttpMethod.POST, "/api/admin/users",
+                    body("userId", newUserId, "firstName", "Mixed", "lastName", "Case",
+                            "password", mixedCasePassword, "userType", "USER"),
+                    adminToken());
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+            assertNoPasswordEchoed(json(response));
+
+            // The stored secret is a BCrypt hash of the UPPER-CASED password (not the raw plaintext).
+            UserSecurity stored = userSecurityRepository.findById(newUserId).orElseThrow();
+            assertThat(stored.getSecUsrPwd()).startsWith("$2");
+            assertThat(stored.getSecUsrPwd()).isNotEqualTo(mixedCasePassword);
+
+            // Sign-on with the EXACT mixed-case password the user was created with succeeds (the core
+            // F-AUTH-1 defect). signIn(...) asserts HTTP 200 internally and returns the issued token.
+            assertThat(signIn(newUserId, mixedCasePassword)).isNotBlank();
+            // Sign-on with the all-upper-case variant also succeeds — both reconcile to UCTRAN parity.
+            assertThat(signIn(newUserId, mixedCasePassword.toUpperCase(java.util.Locale.ROOT))).isNotBlank();
+        }
+
+        @Test
         @DisplayName("Create with an existing id returns 409")
         void createDuplicateReturns409() {
             // ADMIN001 is a seeded id, so this is a deterministic duplicate regardless of test order.

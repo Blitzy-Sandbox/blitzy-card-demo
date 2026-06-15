@@ -15,6 +15,7 @@ import com.cardemo.model.dto.UserSecurityDto;
 import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.enums.UserType;
 import com.cardemo.repository.UserSecurityRepository;
+import java.util.Locale;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -271,7 +272,14 @@ class UserAddServiceTest {
             assertThat(saved.getSecUsrPwd()).isNotNull();
             assertThat(saved.getSecUsrPwd()).isNotEqualTo(RAW_PASSWORD);
             assertThat(saved.getSecUsrPwd()).startsWith("$2"); // BCrypt digest prefix
-            assertThat(passwordEncoder.matches(RAW_PASSWORD, saved.getSecUsrPwd())).isTrue();
+            // Behavioral-parity (QA F-AUTH-1, AAP §0.7.2): the stored hash is of the UPPER-CASED
+            // password, reproducing the mainframe 3270 UCTRAN that uppercased terminal input before
+            // COUSR01C stored it (COUSR01C L157). This MUST match AuthenticationService, which
+            // verifies the upper-cased password (COSGN00C L132-136), so add-then-login works for any
+            // case of input. Therefore the stored hash verifies against the UPPER-CASED form, and a
+            // mixed/lower-case raw input does NOT verify — proving the uppercasing actually happened.
+            assertThat(passwordEncoder.matches(RAW_PASSWORD.toUpperCase(Locale.ROOT), saved.getSecUsrPwd())).isTrue();
+            assertThat(passwordEncoder.matches(RAW_PASSWORD, saved.getSecUsrPwd())).isFalse();
             // The credential/hash is never echoed back (DTO password is WRITE_ONLY).
             assertThat(response.getPassword()).isNull();
         }

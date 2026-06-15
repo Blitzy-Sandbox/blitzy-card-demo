@@ -81,11 +81,13 @@ length and type. The migration applies these deterministic rules:
 
 > **Field-name preservation.** REST DTO field names are derived directly from the
 > symbolic-map field names / COBOL data names, and the documented length/type matches the
-> `PIC` clause exactly. Where the original screen splits a logical value across several
+> `PIC` clause exactly. Where the original screen split a logical value across several
 > physical fields (for example a date as `…YEAR`/`…MON`/`…DAY`, an SSN as
-> `ACTSSN1`/`ACTSSN2`/`ACTSSN3`, or a phone as `…PH1A`/`…PH1B`/`…PH1C`), the request DTO
-> preserves each component field so the contract round-trips with zero loss; the service
-> layer is responsible for composing/decomposing the persisted value.
+> `ACTSSN1`/`ACTSSN2`/`ACTSSN3`, or a phone as `…PH1A`/`…PH1B`/`…PH1C`), the DTO
+> **consolidates** those components into a single canonical value — a `LocalDate` for each
+> date, one `ssn` string, one `phoneNumber1`/`phoneNumber2` string — and the service layer
+> composes/decomposes the persisted component layout internally. No data is lost; the API
+> exposes the consolidated value rather than the screen's physical sub-fields.
 
 > **Decimal precision.** Monetary and decimal fields are displayed on the 3270 screen as
 > formatted `PIC X(n)` strings, but the *value contract* is the backing record copybook's
@@ -116,10 +118,17 @@ length and type. The migration applies these deterministic rules:
 
 ## 3. Common error contract
 
-Every endpoint returns errors using a single, standardized JSON envelope. This replaces the
-3270 `ERRMSG` line (the bright/`BRT` field present on every screen) and the COBOL
-`FILE STATUS` / reject-code handling. The HTTP status is derived from the COBOL failure
-semantics as follows.
+Every error raised **once a request reaches the application's controllers or services** is
+returned using a single, standardized JSON envelope, rendered by the `@RestControllerAdvice`
+handler. This replaces the 3270 `ERRMSG` line (the bright/`BRT` field present on every screen)
+and the COBOL `FILE STATUS` / reject-code handling. The HTTP status is derived from the COBOL
+failure semantics as follows.
+
+> **Scope of the envelope.** The standardized envelope covers every advice-handled status
+> (`400`/`401`/`403`/`404`/`409`/`415`/`422`/`500`). The **two Spring Security filter-chain
+> responses listed below are the documented exception**, because they are produced *before*
+> request dispatch reaches the advice and therefore carry a different shape (see
+> "Security-layer responses" after the table).
 
 **Error response body:**
 
@@ -160,6 +169,23 @@ semantics as follows.
 
 All typed exceptions extend the `com.cardemo.exception.CardDemoException` base class and are
 rendered to the envelope above by a single `@RestControllerAdvice` handler.
+
+**Security-layer responses (the documented exception to the envelope).** Spring Security's
+filter chain rejects unauthenticated and unauthorized requests **before** they are dispatched to
+a controller, so these two responses do **not** pass through the `@RestControllerAdvice` and do
+**not** carry the `code`/`correlationId` envelope:
+
+| Condition | HTTP status | Body shape |
+|---|---|---|
+| No / invalid / expired bearer token on any protected route (filter-chain `HttpStatusEntryPoint`) | `401 Unauthorized` | **empty body** (status line only) |
+| Authenticated non-admin caller on `/api/admin/**` (filter-chain `hasRole` rule) | `403 Forbidden` | **bare Spring shape** `{ "timestamp", "status", "error", "path" }` — no `code`/`correlationId` |
+
+The advice still produces the **enveloped** `401 AUTHENTICATION_FAILED` and `403 ACCESS_DENIED`
+for the *post-dispatch* equivalents that reach it — a failed sign-on credential check on the
+open `/api/auth/**` route (a business outcome of `COSGN00C`, not a filter rejection) and a
+method-level `@PreAuthorize` denial, respectively. The `403` row in the status-mapping table
+above refers to that post-dispatch, enveloped case; the filter-chain `403` uses the bare shape
+documented here.
 
 ---
 
@@ -377,58 +403,55 @@ data field is protected/display (output only); the sole input is the `ACCTSID` k
 #### `PUT /api/accounts/{id}` — update account
 
 Updates the account and its customer in a single transaction. On `COACTUP` every data field
-is unprotected (operator-enterable); the screen splits dates and identifiers across component
-fields, which the request DTO preserves exactly.
+is unprotected (operator-enterable). The legacy 3270 screen split dates, the SSN and the phone
+numbers across component sub-fields (year/month/day, three SSN parts, area/prefix/line); the
+migrated request DTO **consolidates** each of these into a single canonical value — one
+`LocalDate` per date, one `ssn` string, and one `phoneNumber1`/`phoneNumber2` string. The
+service layer composes/decomposes the legacy component pieces internally (replacing the LE
+`CEEDAYS` date edit), so the API client works exclusively with the consolidated values.
 
-**Path parameter:** `id` ← `ACCTSID` (`String`, 11 digits, `@Digits(integer=11)`).
+**Path parameter:** `id` ← `ACCTSID` (`String`, 11 digits).
 
-**Request — `AccountUpdateRequest`** (fields are `UNPROT` on `COACTUP`):
+**Request body — `AccountDto`.** The update request binds the **same consolidated
+`AccountDto`** documented under the `GET` response above (it is the one canonical account shape;
+there is no separate split-field request model). The controller binds it as `@RequestBody`
+**without** `@Valid`: input validation is performed by `AccountUpdateService` as the ordered
+`COACTUPC` field-edit cascade, which returns the verbatim COBOL operator messages (preserving
+3270 message parity, §0.7.2). The "Validation (service-enforced)" column below therefore
+describes the rule the **service** applies, not a controller-level Jakarta constraint. Fields
+not present in the JSON are treated as absent by the service edit cascade.
 
-| Field | BMS field | Type | Length / precision | Required | Validation |
-|---|---|---|---|---|---|
-| `accountStatus` | `ACSTTUS` | `String` | 1 | yes | `@Pattern("[YN]")` |
-| `openDateYear` | `OPNYEAR` | `String` (digits) | 4 | yes | `@Digits(integer=4)` |
-| `openDateMonth` | `OPNMON` | `String` (digits) | 2 | yes | `@Digits(integer=2)` |
-| `openDateDay` | `OPNDAY` | `String` (digits) | 2 | yes | `@Digits(integer=2)` |
-| `expirationYear` | `EXPYEAR` | `String` (digits) | 4 | yes | `@Digits(integer=4)` |
-| `expirationMonth` | `EXPMON` | `String` (digits) | 2 | yes | `@Digits(integer=2)` |
-| `expirationDay` | `EXPDAY` | `String` (digits) | 2 | yes | `@Digits(integer=2)` |
-| `reissueYear` | `RISYEAR` | `String` (digits) | 4 | yes | `@Digits(integer=4)` |
-| `reissueMonth` | `RISMON` | `String` (digits) | 2 | yes | `@Digits(integer=2)` |
-| `reissueDay` | `RISDAY` | `String` (digits) | 2 | yes | `@Digits(integer=2)` |
-| `creditLimit` | `ACRDLIM` | `BigDecimal` | scale 2 | yes | `@Digits(integer=10, fraction=2)` |
-| `cashCreditLimit` | `ACSHLIM` | `BigDecimal` | scale 2 | yes | `@Digits(integer=10, fraction=2)` |
-| `currentBalance` | `ACURBAL` | `BigDecimal` | scale 2 | yes | `@Digits(integer=10, fraction=2)` |
-| `currentCycleCredit` | `ACRCYCR` | `BigDecimal` | scale 2 | yes | `@Digits(integer=10, fraction=2)` |
-| `currentCycleDebit` | `ACRCYDB` | `BigDecimal` | scale 2 | yes | `@Digits(integer=10, fraction=2)` |
-| `accountGroupId` | `AADDGRP` | `String` | 10 | no | `@Size(max=10)` |
-| `customerId` | `ACSTNUM` | `String` (digits) | 9 | yes | `@Digits(integer=9)` |
-| `ssnPart1` | `ACTSSN1` | `String` (digits) | 3 | yes | `@Digits(integer=3)` |
-| `ssnPart2` | `ACTSSN2` | `String` (digits) | 2 | yes | `@Digits(integer=2)` |
-| `ssnPart3` | `ACTSSN3` | `String` (digits) | 4 | yes | `@Digits(integer=4)` |
-| `dateOfBirthYear` | `DOBYEAR` | `String` (digits) | 4 | yes | `@Digits(integer=4)` |
-| `dateOfBirthMonth` | `DOBMON` | `String` (digits) | 2 | yes | `@Digits(integer=2)` |
-| `dateOfBirthDay` | `DOBDAY` | `String` (digits) | 2 | yes | `@Digits(integer=2)` |
-| `ficoScore` | `ACSTFCO` | `String` (digits) | 3 | yes | `@Digits(integer=3)` |
-| `firstName` | `ACSFNAM` | `String` | 25 | yes | `@Size(max=25)` |
-| `middleName` | `ACSMNAM` | `String` | 25 | no | `@Size(max=25)` |
-| `lastName` | `ACSLNAM` | `String` | 25 | yes | `@Size(max=25)` |
-| `addressLine1` | `ACSADL1` | `String` | 50 | yes | `@Size(max=50)` |
-| `addressLine2` | `ACSADL2` | `String` | 50 | no | `@Size(max=50)` |
-| `city` | `ACSCITY` | `String` | 50 | yes | `@Size(max=50)` |
-| `state` | `ACSSTTE` | `String` | 2 | yes | `@Size(max=2)`, US-state lookup |
-| `zipCode` | `ACSZIPC` | `String` | 5 | yes | `@Size(max=5)`, state/ZIP lookup |
-| `countryCode` | `ACSCTRY` | `String` | 3 | no | `@Size(max=3)` |
-| `phone1AreaCode` | `ACSPH1A` | `String` (digits) | 3 | no | NANPA area-code lookup |
-| `phone1Prefix` | `ACSPH1B` | `String` (digits) | 3 | no | `@Digits(integer=3)` |
-| `phone1Line` | `ACSPH1C` | `String` (digits) | 4 | no | `@Digits(integer=4)` |
-| `phone2AreaCode` | `ACSPH2A` | `String` (digits) | 3 | no | NANPA area-code lookup |
-| `phone2Prefix` | `ACSPH2B` | `String` (digits) | 3 | no | `@Digits(integer=3)` |
-| `phone2Line` | `ACSPH2C` | `String` (digits) | 4 | no | `@Digits(integer=4)` |
-| `governmentIssuedId` | `ACSGOVT` | `String` | 20 | no | `@Size(max=20)` |
-| `eftAccountId` | `ACSEFTC` | `String` | 10 | no | `@Size(max=10)` |
-| `primaryCardHolderIndicator` | `ACSPFLG` | `String` | 1 | no | `@Size(max=1)` |
-| `version` | — (no BMS field) | `Integer` | — | no | the optimistic-lock token from the `GET` response. **Enforced when present:** if it does not equal the account's current stored version the update is rejected with `409 Conflict` (`CONCURRENT_MODIFICATION`) before any write. When omitted, server-side `@Version` remains the safety net. |
+| Field | BMS field(s) | Type | Length / precision | Validation (service-enforced) |
+|---|---|---|---|---|
+| `accountStatus` | `ACSTTUS` | `String` | 1 | active flag, `Y`/`N` |
+| `openDate` | `ADTOPEN` (screen `OPNYEAR`+`OPNMON`+`OPNDAY`) | `LocalDate` | `yyyy-mm-dd` | valid calendar date (strict, no normalization) |
+| `expirationDate` | `AEXPDT` (screen `EXPYEAR`+`EXPMON`+`EXPDAY`) | `LocalDate` | `yyyy-mm-dd` | valid calendar date |
+| `reissueDate` | `AREISDT` (screen `RISYEAR`+`RISMON`+`RISDAY`) | `LocalDate` | `yyyy-mm-dd` | valid calendar date |
+| `creditLimit` | `ACRDLIM` | `BigDecimal` | scale 2 | `S9(10)V99` |
+| `cashCreditLimit` | `ACSHLIM` | `BigDecimal` | scale 2 | `S9(10)V99` |
+| `currentBalance` | `ACURBAL` | `BigDecimal` | scale 2 | `S9(10)V99` |
+| `currentCycleCredit` | `ACRCYCR` | `BigDecimal` | scale 2 | `S9(10)V99` |
+| `currentCycleDebit` | `ACRCYDB` | `BigDecimal` | scale 2 | `S9(10)V99` |
+| `accountGroupId` | `AADDGRP` | `String` | 10 | disclosure group id |
+| `customerId` | `ACSTNUM` | `String` (digits) | 9 | numeric customer key |
+| `ssn` | `ACTSSN1`+`ACTSSN2`+`ACTSSN3` (consolidated) | `String` | up to 12 | single SSN value (the three screen parts consolidated) |
+| `dateOfBirth` | `ACSTDOB` (screen `DOBYEAR`+`DOBMON`+`DOBDAY`) | `LocalDate` | `yyyy-mm-dd` | valid calendar date |
+| `ficoScore` | `ACSTFCO` | `String` (digits) | 3 | numeric |
+| `firstName` | `ACSFNAM` | `String` | 25 | |
+| `middleName` | `ACSMNAM` | `String` | 25 | |
+| `lastName` | `ACSLNAM` | `String` | 25 | |
+| `addressLine1` | `ACSADL1` | `String` | 50 | |
+| `addressLine2` | `ACSADL2` | `String` | 50 | |
+| `city` | `ACSCITY` | `String` | 50 | |
+| `state` | `ACSSTTE` | `String` | 2 | US-state lookup |
+| `zipCode` | `ACSZIPC` | `String` | 5 | state/ZIP-prefix lookup |
+| `countryCode` | `ACSCTRY` | `String` | 3 | |
+| `phoneNumber1` | `ACSPH1A`+`ACSPH1B`+`ACSPH1C` (consolidated) | `String` | 13 | single phone value; NANPA area-code lookup |
+| `phoneNumber2` | `ACSPH2A`+`ACSPH2B`+`ACSPH2C` (consolidated) | `String` | 13 | single phone value; NANPA area-code lookup |
+| `governmentIssuedId` | `ACSGOVT` | `String` | 20 | |
+| `eftAccountId` | `ACSEFTC` | `String` | 10 | |
+| `primaryCardHolderIndicator` | `ACSPFLG` | `String` | 1 | |
+| `version` | — (no BMS field) | `Long` | — | the optimistic-lock token from the `GET` response. **Enforced when present:** if it does not equal the account's current stored version the update is rejected with `409 Conflict` (`CONCURRENT_MODIFICATION`) before any write. When omitted, server-side `@Version` remains the safety net. |
 
 **Response — `AccountDto`** (`200 OK`): the refreshed account view (same shape as the
 `GET` response above), including the new `version` after a successful update.
@@ -447,8 +470,11 @@ client echoes back on `PUT`; the service compares it against the current stored 
 applying any change** and returns `409 Conflict` on a mismatch, so a form loaded before another
 user's completed update is rejected even though server-side `@Version` alone would not detect it.
 The `version` check is enforced only when the client supplies it; the entity `@Version` is the
-fallback safety net otherwise. Split date fields are validated and composed into
-`java.time.LocalDate` by the service layer (replacing the LE `CEEDAYS` date validation).
+fallback safety net otherwise. The API request carries each date as a single
+`java.time.LocalDate` (the legacy screen's year/month/day, three-part SSN and area/prefix/line
+components are already consolidated in `AccountDto`); the service layer performs strict calendar
+validation on those dates (replacing the LE `CEEDAYS` date validation) and reassembles the
+legacy component layouts internally where the persisted record demands them.
 
 ---
 
@@ -635,13 +661,24 @@ auto-generated. The screen carries a `CONFIRM` (Y/N) field used as a two-step co
 | `confirm` | `CONFIRM` | `String` | 1 | no | `@Size(max=1)` — `Y`/`N`, case-insensitive. A blank or otherwise-invalid value triggers a service-level **re-prompt** (it is not rejected with a `400`); the accept/clear/re-prompt decision is conversational logic in `COTRN02C` (accepts `'Y'`/`'y'`/`'N'`/`'n'`), not a DTO field-format rule |
 
 **Response — `TransactionDto`** (`201 Created`): the created transaction including the
-auto-generated `transactionId`. The `Location` header carries
-`/api/transactions/{transactionId}`.
+auto-generated `transactionId`. The generated id is carried in the **response body** (the
+`transactionId` field); **no `Location` header is emitted** — the legacy `COTRN02C` flow had no
+such concept and none is added (Minimal Change Clause, §0.7.1).
 
-**Status codes:** `201 Created`; `400 Bad Request` (validation failure);
-`404 Not Found` (account/card cross-reference not found). When `confirm` is not `Y`,
-`COTRN02C` re-prompts for confirmation rather than committing — this conversational
-outcome is handled in service logic, not as a field-format rejection.
+**Status codes:** `201 Created`; `400 Bad Request` (validation failure, **including an
+unresolved account id / card cross-reference**). When `confirm` is not `Y`, `COTRN02C`
+re-prompts for confirmation rather than committing — this conversational outcome is handled in
+service logic, not as a field-format rejection.
+
+> **Why an unresolved account/cross-reference here is `400`, not `404` (behavioral parity,
+> §0.7.2).** In `COTRN02C` the account/card cross-reference is resolved by the `CXACAIX`
+> alternate-index lookup *inside* the `VALIDATE-INPUT-KEY-FIELDS` edit cascade; a miss sets the
+> error flag and re-displays the add screen with an edit message — i.e. it is a **field-validation
+> reject**, so `TransactionAddService` raises `ValidationException` → `400 VALIDATION_FAILED`.
+> This is deliberately different from `POST /api/billing/pay`, whose `COBIL00C` performs a
+> *direct keyed read* of `ACCTDAT` and treats a miss as a **record-not-found** condition →
+> `RecordNotFoundException` → `404`. The two endpoints mirror their distinct COBOL sources
+> exactly and are intentionally **not** homogenized.
 
 **Notes — technology substitution.** `COTRN02C` auto-generates the transaction id by
 browsing the `TRANSACT` file to the end and incrementing the highest id; the Java target
@@ -844,7 +881,9 @@ Creates a user (`COUSR01`). All fields are unprotected input; the password is `D
 | `userType` | `USRTYPE` → `UserType` | enum | 1 | yes | `@NotNull(OnAdd,OnUpdate)`; JSON value `ADMIN` or `USER` (the `UserType` enum constant names). The byte-exact COBOL codes `'A'`/`'U'` are preserved internally via `UserType.getCode()`; an unrecognized value is rejected at JSON binding (`400`). |
 
 **Response — `UserSecurityDto`** (`201 Created`): the created user **without** the password.
-The `Location` header carries `/api/admin/users/{userId}`.
+The created `userId` is carried in the **response body**; **no `Location` header is emitted**
+(the legacy `COUSR01` flow had no such concept and none is added — Minimal Change Clause,
+§0.7.1).
 
 **Status codes:** `201 Created`; `400 Bad Request` (validation); `403 Forbidden` (non-admin);
 `409 Conflict` (user id already exists — `FILE STATUS 22`).
@@ -902,10 +941,13 @@ names, and the documented length and type match the originating `PIC` clause exa
 camelCase JSON name is a deterministic transliteration of the COBOL/BMS name (for example
 `ACCTSID` → `accountId`, `ACSFNAM` → `firstName` where the screen label disambiguates, `TRNAMT`
 → `amount`); the mapping is recorded per field in the tables above so it can be audited
-against the frozen sources at commit `27d6c6f`. Where the screen splits a logical value across
+against the frozen sources at commit `27d6c6f`. Where the screen split a logical value across
 component fields (dates as year/month/day, SSN as three parts, phone as area/prefix/line), the
-DTO preserves each component so the contract round-trips losslessly. No field is added,
-removed, renamed beyond this transliteration, or re-typed relative to the screen contract.
+DTO **consolidates** those components into a single canonical value (a `LocalDate` for each
+date, one `ssn` string, one `phoneNumber1`/`phoneNumber2` string), and the service layer
+composes/decomposes the persisted component layout internally — no data is lost. Apart from
+this transliteration and consolidation, no field is added, removed, renamed, or re-typed
+relative to the screen contract.
 
 ### 6.2 Decimal precision
 
