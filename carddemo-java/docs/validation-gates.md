@@ -71,6 +71,22 @@ drives — is delivered and passing at FINAL.
 
 ### 1.2 Gate index — FINAL status
 
+> **Canonical build commands.** Two Maven invocations bound the quality gates, and the difference matters
+> for the coverage gate:
+>
+> - **`./mvnw -B verify -Pintegration`** — the **canonical full-gate command**. It runs unit tests
+>   (Surefire) **and** integration/E2E tests (Failsafe, via Testcontainers PostgreSQL + LocalStack),
+>   producing the **combined** JaCoCo line-coverage figure that AAP §0.7.8 requires (**≥ 80 %**;
+>   measured **83.59 %**), and runs the OWASP CVE gate. This is the command whose figures are recorded
+>   throughout this report.
+> - **`./mvnw -B clean verify`** — the unit-only build (Docker not required). It compiles warning-free,
+>   runs the Surefire unit suite, runs the OWASP CVE gate, and produces the JaCoCo **report**. Because a
+>   *combined* unit+integration coverage figure cannot exist without the integration run, the JaCoCo
+>   bundle **check** (`<minimum>0.80</minimum>`) is scoped to the integration profile
+>   (`<skip>${skipITs}</skip>` on the `jacoco-check` execution in `pom.xml`); this command therefore does
+>   **not** fail on a unit-only coverage figure. Run the full-gate command above to enforce the ≥ 80 %
+>   combined-coverage bar.
+
 | Gate | Title | Verification method | Primary evidence artifact | FINAL status |
 |---|---|---|---|:---:|
 | [Gate 1](#gate-1) | End-to-End Boundary Verification | Run `DailyTransactionPostingJob` on `dailytran.txt`; compare to COBOL baseline | Comparison table | ✅ Verified (`BatchPipelineE2ETest`, `GateVerificationTest`) |
@@ -154,10 +170,31 @@ the build as clean only when **zero warnings** are emitted.
 
 - **Command:** `mvn clean verify` with the compiler configured for
   `<compilerArgs><arg>-Xlint:all</arg></compilerArgs>` (and `-Werror` intent — warnings are not
-  tolerated).
+  tolerated). The compile/lint dimension of this gate is satisfied by the default `mvn clean verify`;
+  the integration/E2E and combined-coverage dimensions are realized by the canonical full-gate command
+  `mvn verify -Pintegration` (see the *Canonical build commands* note in §1.2).
 - **Allowed suppressions:** only framework-generated code may be suppressed — the **JPA static
   metamodel** and **MapStruct**-generated mappers. No hand-written source carries an unjustified
   `@SuppressWarnings`.
+- **Accepted framework/toolchain warnings (AAP §0.7.8 carve-out).** §0.7.8 admits warnings emitted by
+  framework-generated or third-party code that the application does not author and cannot remove without
+  forking a dependency. The following are explicitly accepted because they originate entirely outside
+  hand-written CardDemo source and have no application-level remediation:
+  - **`sun.misc.Unsafe::objectFieldOffset` terminal-deprecation** (JVM, Java 25) emitted by the
+    OpenTelemetry SDK's *shaded* `io.opentelemetry.internal.shaded.jctools` (inside
+    `opentelemetry-sdk-trace`) and by Maven's bundled Guava during the build. The call sites live in
+    shaded/relocated third-party bytecode; they are resolved upstream only by a future OpenTelemetry
+    release and are tracked with the OpenTelemetry dependency item in §2.2.
+  - **Apache Lucene "incubating Vector API" notice** emitted only by the OWASP `dependency-check`
+    engine's embedded Lucene during a CVE scan — a scan-time tool, not a runtime/application dependency.
+  - **Apache Commons Logging discovery notice** — a transitive logging-bridge probe; CardDemo logs
+    exclusively through SLF4J/Logback and authors no commons-logging call.
+
+  Each is a third-party/JVM diagnostic, not a CardDemo source warning; the hand-written tree compiles
+  and runs warning-free. The single avoidable application-level runtime warning that DID originate in
+  this repository — Logback's *"Appender named [STDOUT_JSON] not referenced"* under the `local`/`test`
+  profiles — has been eliminated by scoping each appender definition to the `<springProfile>` that
+  references it (`src/main/resources/logback-spring.xml`).
 - **Tie-in:** blueprint Build & Quality rules — *Zero-Warning Build* (§0.7.8).
 
 **Deliverable evidence — build-log excerpt.** The full-project `mvn clean verify` over the complete source
@@ -371,7 +408,13 @@ is the **final** gate.
 
 **Configuration note.** The thresholds above are pinned in the build configuration: JaCoCo
 `<minimum>0.80</minimum>`; OWASP `failBuildOnCVSS` of **7** (CVSS ≥ 7.0 = high/critical). The **measured**
-values that satisfy these thresholds are produced by the gated build and recorded above.
+values that satisfy these thresholds are produced by the gated build and recorded above. The JaCoCo
+bundle **check** is scoped to the integration profile (`<skip>${skipITs}</skip>` on the `jacoco-check`
+execution), so the **≥ 80 % combined** coverage bar is enforced by the canonical full-gate command
+`./mvnw -B verify -Pintegration` (where unit + integration probes accumulate to **83.59 %**). The
+unit-only `./mvnw -B clean verify` still compiles warning-free, runs the unit suite, runs the OWASP gate,
+and emits the JaCoCo report — it does not fail on a unit-only coverage figure (see the *Canonical build
+commands* note in §1.2).
 
 **FINAL status:** ✅ **Verified.** Every constituent gate and quality bar has produced its evidence from an
 actual run: 807 Surefire unit tests and 151 Failsafe integration/E2E tests pass (1 documented skip),
@@ -390,7 +433,7 @@ project-wide bars. These are summarized here with their **target** and **measure
 | # | Quality bar | Mechanism | Target | FINAL status |
 |---|---|---|---|:---:|
 | 1 | **Zero-warning build** | `mvn clean verify`, `-Xlint:all` (`-Werror` intent) | 0 warnings (framework suppressions only) | ✅ Full `verify` compiles warning-free |
-| 2 | **Line coverage** | JaCoCo `jacoco-maven-plugin` 0.8.14, rule `<minimum>0.80</minimum>` | ≥ 80 % | ✅ 83.59 % (3,845 / 4,600 lines) |
+| 2 | **Line coverage** | JaCoCo `jacoco-maven-plugin` 0.8.14, rule `<minimum>0.80</minimum>`; combined gate enforced by `./mvnw -B verify -Pintegration` (check integration-scoped via `<skip>${skipITs}</skip>`) | ≥ 80 % | ✅ 83.59 % (3,845 / 4,600 lines) |
 | 3 | **OWASP — zero critical/high CVEs** | `dependency-check-maven` 12.1.0, `failBuildOnCVSS` = 7 | 0 critical/high | ✅ 0 critical/high (engine 12.1.0; report persisted) |
 | 4 | **Unsafe-code audit** | Static audit (see [Gate 6](#gate-6)) | Production zero; test-tree justified | ✅ Production all-zero; test-tree documented |
 
@@ -406,8 +449,37 @@ current tree) are:
   assumption for the FK-consistent reject-101 scenario).
 - **JaCoCo line coverage:** **83.59 %** — 3,845 of 4,600 lines covered (gate `<minimum>0.80</minimum>`).
 
-Coverage is **gated on the line dimension** (`<minimum>0.80</minimum>`) and the gated `verify` build passes
-that rule. Every figure above traces to a real Surefire/Failsafe/JaCoCo run.
+Coverage is **gated on the line dimension** (`<minimum>0.80</minimum>`) and the gated
+`./mvnw -B verify -Pintegration` build passes that rule (the bundle check is integration-scoped via
+`<skip>${skipITs}</skip>`, so the combined figure is what the gate measures). Every figure above traces
+to a real Surefire/Failsafe/JaCoCo run.
+
+### 2.2 Dependency CVE tracking
+
+The OWASP gate (bar 3 / [Gate 8](#gate-8)) is the authoritative CVE gate: `dependency-check-maven`
+12.1.0 with `failBuildOnCVSS=7` reports **zero unsuppressed critical/high CVEs** on the delivered
+dependency tree, and that gate passes. Beyond the gate, the items below are **proactively tracked**
+(some surfaced by independent advisory lookup rather than by the pinned scanner snapshot) so the
+upgrade path is recorded; none of them violates the zero critical/high bar.
+
+**OpenTelemetry dependency item.** The OpenTelemetry API/SDK family (`opentelemetry-api`,
+`opentelemetry-sdk*`, `opentelemetry-exporter-otlp`, and their shaded internals) resolves to
+**1.49.0**, brought in **transitively** through `micrometer-tracing-bridge-otel` and **managed by the
+Spring Boot 3.5.11 BOM's `opentelemetry.version` property** — it is *not* pinned independently in
+`pom.xml`. (Only `io.opentelemetry.semconv:opentelemetry-semconv`, which ships on a separate release
+train, is explicitly version-managed in `pom.xml`.) Two tracked items attach to this dependency:
+
+| Tracked item | Affected artifact / version | Severity | Gate impact | Status & upgrade path |
+|---|---|---|:---:|---|
+| **CVE-2026-45292** (GHSA-rcgg-9c38-7xpx) | `io.opentelemetry:opentelemetry-api:1.49.0` | **LOW** (availability-oriented) | **None** — below the `failBuildOnCVSS=7` threshold; not flagged by the pinned `dependency-check` 12.1.0 snapshot (the `opentelemetry-api-1.49.0.jar` entry reports 0 CVEs). Surfaced by independent advisory lookup. | Fixed upstream in a later OpenTelemetry release. The fixed version is adopted **automatically and transitively** when the Spring Boot managed `opentelemetry.version` advances to include it. Under the **Minimal Change Clause (§0.7.1)** the BOM-managed version is **not** manually overridden, since an independent pin would diverge the API/SDK from the Spring-Boot-validated train and risk the managed-dependency contract. |
+| **`sun.misc.Unsafe::objectFieldOffset` terminal-deprecation** (Java 25) | shaded `io.opentelemetry.internal.shaded.jctools` inside `opentelemetry-sdk-trace` | n/a (build-time JVM notice) | **None** — accepted framework/toolchain warning per the [Gate 2](#gate-2) AAP §0.7.8 carve-out | Call sites live in shaded/relocated third-party bytecode with no application-level remediation; resolved upstream only by a future OpenTelemetry release on the managed train. |
+
+Because both items are remediated by the **same** upstream OpenTelemetry advance and the version is
+Spring-Boot-managed, the single tracked action is: **adopt the fixed OpenTelemetry version when a
+compatible Spring Boot / Spring Cloud AWS dependency update makes it the managed default**, then
+re-run the OWASP gate and the Gate 2 warning scan to confirm both items clear. No interim manual
+override is taken, consistent with the Minimal Change Clause (§0.7.1) and the blueprint dependency
+constraints (§0.5).
 
 ---
 

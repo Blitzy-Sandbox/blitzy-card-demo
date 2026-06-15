@@ -63,6 +63,24 @@
     <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
 
     <!-- ====================================================================
+         PROFILE-SCOPED APPENDER DEFINITIONS (<springProfile>)
+         ====================================================================
+         TECHNOLOGY-SUBSTITUTION / ZERO-WARNING NOTE (AAP §0.7.8)
+         Each appender is DEFINED INSIDE the <springProfile> block whose root
+         references it. Defining an appender OUTSIDE its consuming profile — e.g.
+         STDOUT_JSON at the top level while the active "local" profile wires only
+         STDOUT_PLAIN — makes Logback emit the startup WARNING:
+             "Appender named [STDOUT_JSON] not referenced. Skipping further
+              processing." (ch.qos.logback.core.model.processor.AppenderModelHandler)
+         Scoping each definition to its own profile guarantees that, for any single
+         active profile, exactly one appender is instantiated and it is ALWAYS
+         referenced — eliminating that avoidable warning and satisfying the
+         zero-warning build/runtime gate. The definition blocks are placed BEFORE
+         the root-wiring blocks so every <appender-ref> resolves against an
+         already-defined appender in Logback's document-order processing.
+    -->
+
+    <!-- ====================================================================
          STDOUT_JSON — structured JSON to stdout (default / container / prod)
          ====================================================================
          Encoder: net.logstash.logback.encoder.LogstashEncoder, supplied by
@@ -78,18 +96,22 @@
                  "correlationId"  (com.cardemo.observability.CorrelationIdFilter)
          Any additional MDC context an application component sets is captured
          too — deliberately NOT whitelisted so the encoder stays future-proof.
+         DEFINED ONLY for the non-local, non-test profiles (where it is wired into
+         the root), so it is never instantiated-but-unreferenced.
     -->
-    <appender name="STDOUT_JSON" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-            <!-- Static service identifier merged into every JSON log line; keeps
-                 aggregated logs filterable by service. Matches
-                 spring.application.name and the Micrometer "application" tag. -->
-            <customFields>{"application":"carddemo"}</customFields>
-            <!-- MDC propagation ON (default): traceId / spanId / correlationId
-                 (and any other MDC value) become top-level JSON fields. -->
-            <includeMdc>true</includeMdc>
-        </encoder>
-    </appender>
+    <springProfile name="!local &amp; !test">
+        <appender name="STDOUT_JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <!-- Static service identifier merged into every JSON log line; keeps
+                     aggregated logs filterable by service. Matches
+                     spring.application.name and the Micrometer "application" tag. -->
+                <customFields>{"application":"carddemo"}</customFields>
+                <!-- MDC propagation ON (default): traceId / spanId / correlationId
+                     (and any other MDC value) become top-level JSON fields. -->
+                <includeMdc>true</includeMdc>
+            </encoder>
+        </appender>
+    </springProfile>
 
     <!-- ====================================================================
          STDOUT_PLAIN — human-readable console (local / test developer view)
@@ -101,19 +123,23 @@
          cleanly when an identifier is absent (e.g. startup logs emitted before
          any request has populated the MDC). Stack traces are appended
          automatically by Logback's PatternLayout (no explicit %ex needed).
+         DEFINED ONLY for the local + test profiles (where it is wired into the
+         root), so it is never instantiated-but-unreferenced.
     -->
-    <appender name="STDOUT_PLAIN" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <charset>UTF-8</charset>
-            <pattern>%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(%-5level) %clr([%X{traceId:-},%X{spanId:-},%X{correlationId:-}]){magenta} %clr(%logger{36}){cyan} %clr(-){faint} %msg%n</pattern>
-        </encoder>
-    </appender>
+    <springProfile name="local | test">
+        <appender name="STDOUT_PLAIN" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <charset>UTF-8</charset>
+                <pattern>%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(%-5level) %clr([%X{traceId:-},%X{spanId:-},%X{correlationId:-}]){magenta} %clr(%logger{36}){cyan} %clr(-){faint} %msg%n</pattern>
+            </encoder>
+        </appender>
+    </springProfile>
 
     <!-- ====================================================================
          PROFILE-AWARE ROOT WIRING (<springProfile>)
          ====================================================================
-         Exactly one block below activates per run; appenders are defined once
-         above and merely referenced here. NOTE: Spring Boot applies the
+         Exactly one block below activates per run and references the appender
+         defined for that SAME profile above. NOTE: Spring Boot applies the
          logging.level.* properties from application.yml AFTER this file is
          parsed, so those properties have the final say over logger levels. The
          levels set here are sensible defaults consistent with application.yml

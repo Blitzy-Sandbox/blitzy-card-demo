@@ -100,17 +100,25 @@ services:
   #   • CICS TDQ 'JOBS' WRITEQ (CORPT00C online→batch bridge)             → SQS FIFO
   #     queue carddemo-report-jobs.fifo
   #   • CICS notifications                                                → SNS
-  # localstack-pro is used per tech-spec L1005. The auth token is a real secret and
-  # is injected at runtime (empty default keeps `docker compose config` clean).
-  # Pinned tag (not :latest) keeps the AWS-emulator provisioning behaviour reproducible
-  # and prevents non-deterministic version/CVE drift on `docker compose pull` (QA FINAL 7 F-2).
+  # TECH-SUBSTITUTION (Issue 1 / AAP §0.7.7 "every AWS interaction verifiable against
+  # LocalStack with ZERO live dependencies"): the image now DEFAULTS to the license-free
+  # COMMUNITY edition `localstack/localstack:3`. The s3/sqs/sns subset this migration uses
+  # (GDG→S3, CICS TDQ→SQS, notifications→SNS) is fully supported by community LocalStack,
+  # so `docker compose up -d` starts cleanly from a clean environment with ONLY the
+  # documented required variables and WITHOUT a `LOCALSTACK_AUTH_TOKEN`. A Pro image is
+  # opt-in: set `LOCALSTACK_IMAGE=localstack/localstack-pro:2026.5.3` (and supply
+  # `LOCALSTACK_AUTH_TOKEN`) to re-enable Pro. Pinning a concrete tag (the default `:3`
+  # is a stable major-version stream; `LOCALSTACK_IMAGE` may pin an exact tag) keeps the
+  # AWS-emulator provisioning behaviour reproducible and avoids `:latest` version/CVE drift.
   localstack:
-    image: localstack/localstack-pro:2026.5.3
+    image: ${LOCALSTACK_IMAGE:-localstack/localstack:3}
     container_name: carddemo-localstack
     environment:
       # Only the three services the migration uses are enabled.
       SERVICES: s3,sqs,sns
-      # Pro activation token — genuine secret, NO default; supply via env/.env.
+      # Pro activation token — a genuine secret, used ONLY when LOCALSTACK_IMAGE is
+      # overridden to a Pro image. The empty default keeps `docker compose config`
+      # clean and is harmlessly ignored by the default community image.
       LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
       # Optional verbose logging (0 = off). Override with LOCALSTACK_DEBUG=1.
       DEBUG: ${LOCALSTACK_DEBUG:-0}
@@ -135,7 +143,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-      # LocalStack Pro needs extra time to activate and start the services.
+      # Generous warm-up ceiling that covers both editions: the default community
+      # image is typically ready in a few seconds; a Pro image (opt-in) needs the
+      # extra time to activate its license and start the services.
       start_period: 40s
     networks:
       - carddemo-net

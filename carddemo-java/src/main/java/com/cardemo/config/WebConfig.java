@@ -167,9 +167,22 @@ public class WebConfig implements WebMvcConfigurer {
      *       contracts.</li>
      *   <li>{@code SerializationFeature.WRITE_DATES_AS_TIMESTAMPS} <strong>disabled</strong> so
      *       {@code java.time} values serialize as ISO-8601 strings rather than numeric timestamps.</li>
+     *   <li>A {@link StrictLocalDateDeserializer} <strong>registered</strong> so every
+     *       {@link java.time.LocalDate} request field is parsed with <em>strict</em> resolution and a
+     *       calendar-impossible date (e.g. {@code 2024-02-30}, or {@code 2023-02-29} in a non-leap
+     *       year) is <em>rejected</em> instead of being silently normalized. This restores the COBOL
+     *       {@code CEEDAYS}/{@code CSUTLDTC} "reject, never normalize" contract at the JSON binding
+     *       boundary (100% behavioral parity, &sect;0.7.2; date validation, &sect;0.1.2). The strict
+     *       parse failure surfaces as {@code InvalidFormatException} &rarr;
+     *       {@link org.springframework.http.converter.HttpMessageNotReadableException} &rarr; the
+     *       HTTP&nbsp;400 ({@code MALFORMED_REQUEST}) handler below. Note this governs
+     *       <em>deserialization</em> only; the {@code @JsonFormat(pattern = "yyyy-MM-dd")} on the DTO
+     *       fields continues to drive serialization, and the wire format is unchanged because
+     *       {@code "yyyy-MM-dd"} is exactly {@code ISO_LOCAL_DATE}.</li>
      * </ul>
      *
-     * @return a customizer that enforces plain-decimal and ISO-8601 serialization
+     * @return a customizer that enforces plain-decimal serialization, ISO-8601 dates, and strict
+     *         (non-normalizing) {@link java.time.LocalDate} request parsing
      */
     @Bean
     public Jackson2ObjectMapperBuilderCustomizer jacksonCustomizer() {
@@ -179,7 +192,14 @@ public class WebConfig implements WebMvcConfigurer {
                 // Date fidelity: java.time as ISO-8601 strings, never epoch numbers. JavaTimeModule
                 // is auto-registered by Boot (jackson-datatype-jsr310 on the classpath), so only the
                 // feature flag is needed here.
-                .featuresToDisable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+                .featuresToDisable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+                // Date VALIDITY (§0.7.2 parity, §0.1.2 CEEDAYS->java.time): parse LocalDate request
+                // fields strictly so impossible dates (Feb 30, non-leap Feb 29, month 13, ...) are
+                // REJECTED (HTTP 400) rather than silently clamped by Jackson's default SMART
+                // resolver. Registered globally so it governs every LocalDate field uniformly; it
+                // overrides the per-field @JsonFormat(pattern) SMART formatter (see
+                // StrictLocalDateDeserializer). Serialization is unaffected.
+                .deserializers(new StrictLocalDateDeserializer());
     }
 
     /**
