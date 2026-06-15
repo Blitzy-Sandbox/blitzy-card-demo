@@ -969,12 +969,21 @@ public class AccountUpdateService {
     }
 
     /**
-     * Normalizes a money amount to scale&nbsp;2 (AAP&nbsp;&sect;0.7.3). The DTO {@code @Digits} constraint
-     * already limits the input to two fraction digits, so this only fixes the stored scale and does not
-     * change the value; null stays null.
+     * Normalizes a money amount to scale&nbsp;2 (AAP&nbsp;&sect;0.7.3). The DTO {@code @Digits(fraction = 2)}
+     * constraint already limits the input to two fraction digits, so this only fixes the stored scale and
+     * does not change the value; null stays null.
+     *
+     * <p>The rounding mode is {@link RoundingMode#HALF_EVEN} (banker's rounding) to stay uniform with the
+     * project-wide decimal standard mandated by AAP&nbsp;&sect;0.7.3 (the interest formula and every other
+     * monetary {@code setScale}/{@code divide} site use {@code HALF_EVEN}). Because the validated input is
+     * already at most two fraction digits, {@code setScale(2)} never actually rounds here, so the mode is a
+     * no-op for the real input space &mdash; the choice carries zero behavioral effect and preserves 100%
+     * COBOL parity (COACTUPC {@code 1250-EDIT-SIGNED-9V2} performs a non-arithmetic MOVE at scale&nbsp;2).
      */
     private static BigDecimal scale2(BigDecimal value) {
-        return value == null ? null : value.setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+        // Banker's rounding (HALF_EVEN) for cross-site consistency (AAP §0.7.3); a no-op for the
+        // @Digits(fraction = 2)-constrained input, so behavior/parity is unchanged.
+        return value == null ? null : value.setScale(MONEY_SCALE, RoundingMode.HALF_EVEN);
     }
 
     /** Zero-pads a numeric id to the given COBOL picture width (for example {@code ACCT-ID PIC 9(11)}). */

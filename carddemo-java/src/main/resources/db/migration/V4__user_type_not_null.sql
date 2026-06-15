@@ -1,0 +1,73 @@
+-- =====================================================================================
+-- Flyway Migration V4 -- CardDemo user_security.user_type NOT NULL enforcement (PostgreSQL 16)
+-- =====================================================================================
+-- Purpose : Fourth versioned migration. A single, surgical schema-enforcement fix that
+--           makes the user_security.user_type column NOT NULL at the DATABASE level so the
+--           physical schema matches the authoritative JPA entity contract. The entity
+--           com.cardemo.model.entity.UserSecurity declares the field
+--               @Column(name = "user_type", length = 1, nullable = false) ... secUsrType
+--           (a NOT NULL contract), but V1__create_schema.sql created the column as plain
+--           `user_type VARCHAR(1)` WITHOUT a NOT NULL constraint. This migration closes
+--           that one divergence so the database itself enforces the contract the entity
+--           already declares -- defense-in-depth, not a behavioral change.
+--
+-- Why a NEW migration (NOT an edit to V1) : V1__create_schema.sql is IMMUTABLE once
+--           shipped -- Flyway records its checksum on first apply, and editing V1 in place
+--           would break Flyway validation on every already-migrated database (the live
+--           `carddemo` DB and any developer/CI database). The correct, only-safe remedy is
+--           therefore a FORWARD migration (this file). It runs exactly once, in strict
+--           version order, AFTER V3__seed_data.sql (so all seeded rows already exist) and
+--           BEFORE any @Service or Spring Batch job executes -- consistent with the V1-V3
+--           startup-ordering contract (AAP 0.4.4).
+--
+-- Flyway  : The file name encodes version "4" and description "user_type_not_null"
+--           (V<version>__<description>.sql -- single underscore after the version, double
+--           underscore before the description). It is auto-discovered through
+--           spring.flyway.locations=classpath:db/migration and executed exactly once, in
+--           strict version order. Once shipped this file is IMMUTABLE: Flyway records its
+--           checksum and a later edit would break validation on already-migrated databases.
+--
+-- ddl-auto=validate context : Hibernate runs with spring.jpa.hibernate.ddl-auto=validate,
+--           so Flyway is the SOLE schema authority and Hibernate creates/alters NOTHING.
+--           Critically, Hibernate `validate` checks table/column NAME, SQL TYPE, LENGTH,
+--           PRECISION and SCALE but does NOT verify column NULLABILITY -- which is exactly
+--           why the V1 omission passed startup validation undetected even though the entity
+--           declares nullable=false. This migration restores the missing database-level
+--           guarantee; the JPA write path was already protected (Hibernate raises
+--           PropertyValueException for a null nullable=false property before INSERT), so no
+--           application behavior changes -- the DATABASE now enforces the same rule.
+--
+-- COBOL fidelity : the column maps from CSUSR01Y SEC-USR-TYPE PIC X(01) ('A' = admin,
+--           'U' = regular user) -- a FIXED, always-present field in the 80-byte USRSEC
+--           VSAM record (AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS). A fixed COBOL field is never
+--           absent, so NOT NULL is the faithful relational translation of the record
+--           contract (external-interface preservation, AAP 0.7.2).
+--
+-- Data-safety : this ALTER requires that NO existing user_security row holds a NULL
+--           user_type. The ONLY INSERT into user_security in the migration set is
+--           V3__seed_data.sql, which populates user_type for all ten seeded users
+--           (ADMIN001-005 -> 'A', USER0001-0005 -> 'U'); and the JPA path (nullable=false)
+--           cannot have written a NULL. The constraint therefore validates cleanly with no
+--           data remediation required. SET NOT NULL performs a single full-table validating
+--           scan (the table is tiny) and takes a brief ACCESS EXCLUSIVE lock -- negligible
+--           here and acceptable at startup.
+--
+-- Minimal Change Clause (AAP 0.7.1) : this migration changes exactly ONE column's
+--           nullability and nothing else -- no data, no other columns, no other tables. It
+--           aligns the database to the existing entity contract without altering behavior.
+--
+-- Traceability : Source = AWS CardDemo COBOL baseline, commit 27d6c6f. No COBOL / JCL
+--           source text is copied here. Source artifacts consulted: app/cpy/CSUSR01Y.cpy
+--           (SEC-USER-DATA record, SEC-USR-TYPE PIC X(01)); app/jcl/DUSRSECJ.jcl
+--           (USRSEC KSDS DEFINE CLUSTER, KEYS(8,0) RECORDSIZE 80).
+-- =====================================================================================
+
+
+-- -------------------------------------------------------------------------------------
+-- user_security.user_type -> NOT NULL
+--   Aligns the physical column with UserSecurity.@Column(nullable = false) and the COBOL
+--   SEC-USR-TYPE PIC X(01) fixed-field semantics. Pre-validated: no NULL values exist
+--   (V3 seeds 'A'/'U' for all rows; the JPA nullable=false path cannot insert NULL).
+-- -------------------------------------------------------------------------------------
+ALTER TABLE user_security
+    ALTER COLUMN user_type SET NOT NULL;
