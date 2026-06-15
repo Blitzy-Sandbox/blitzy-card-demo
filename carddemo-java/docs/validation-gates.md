@@ -92,7 +92,7 @@ drives — is delivered and passing at FINAL.
 the batch boundary and compare the result against the COBOL-baseline-derived expected output.
 
 - **Input artifact:** `app/data/ASCII/dailytran.txt` — the production-representative daily transaction
-  file (**20 records**, fixed-width `RECLN = 350`, layout `CVTRA06Y` / `DALYTRAN-RECORD`).
+  file (**300 records**, fixed-width `RECLN = 350`, layout `CVTRA06Y` / `DALYTRAN-RECORD`).
 - **Processing path:** `DailyTransactionPostingJob` → `DailyTransactionReader` (fixed-width
   parse) → `TransactionPostingProcessor` (4-stage validation cascade, reject codes **100–109**, derived
   from `CBTRN02C.cbl` paragraph `2000-VALIDATE-TXN`) → valid rows posted to **PostgreSQL** (`transaction`
@@ -128,8 +128,8 @@ end-to-end suite against a Testcontainers PostgreSQL + LocalStack S3 boundary.
 
 | # | Verification dimension | Expected (COBOL baseline @ `27d6c6f`) | Java (`DailyTransactionPostingJob`) |
 |---|---|---|---|
-| 1 | Records read from `dailytran.txt` | 20 | ✅ 20 (test-asserted) |
-| 2 | Fixed-width decode (350-byte `RECLN`, `CVTRA06Y`) | 20 / 20 records, all fields decoded | ✅ 20 / 20 decoded field-for-field |
+| 1 | Records read from `dailytran.txt` | 300 | ✅ 300 (test-asserted) |
+| 2 | Fixed-width decode (350-byte `RECLN`, `CVTRA06Y`) | 300 / 300 records, all fields decoded | ✅ 300 / 300 decoded field-for-field |
 | 3 | 4-stage validation cascade applied | per `CBTRN02C` `2000-VALIDATE-TXN` | per `TransactionPostingProcessor.validate()` |
 | 4 | Valid → posted to PostgreSQL `transaction` | = COBOL valid count | ✅ = baseline (test-asserted) |
 | 5 | Invalid → rejected to S3 (reason trailer, codes 100–109) | = COBOL reject count | ✅ = baseline (test-asserted) |
@@ -140,7 +140,7 @@ end-to-end suite against a Testcontainers PostgreSQL + LocalStack S3 boundary.
 **FINAL status:** ✅ **Verified.** `DailyTransactionPostingJob`, its reader/processor/writers, and
 `GateVerificationTest` are implemented and passing. The `DailyTransaction` entity maps `CVTRA06Y`
 field-for-field with `BigDecimal` amount (scale 2, `HALF_EVEN`) and `LocalDateTime` timestamps, and the
-end-to-end boundary run is asserted by `BatchPipelineE2ETest` and `GateVerificationTest`: 20 records read,
+end-to-end boundary run is asserted by `BatchPipelineE2ETest` and `GateVerificationTest`: 300 records read,
 valid rows posted to PostgreSQL, invalid rows rejected to S3 with reason trailers (codes 100–109).
 
 ---
@@ -201,7 +201,7 @@ Testcontainers-backed batch run (PostgreSQL 16 + LocalStack):
 | Metric | `DailyTransactionPostingJob` (Java reference) | COBOL baseline |
 |---|---|---|
 | Input file | `dailytran.txt` (`RECLN = 350`) | — |
-| Records read | 20 (fixture size) | n/a (no SLA docs) |
+| Records read | 300 (fixture size) | n/a (no SLA docs) |
 | Elapsed time (chunk-oriented step) | established by reference run | **unavailable** |
 | Peak heap (JMX `MemoryMXBean`) | established by reference run | **unavailable** |
 | Throughput (records/second) | established by reference run | **unavailable** |
@@ -234,7 +234,7 @@ The 13 EBCDIC binaries under `app/data/EBCDIC/` are **byte-level reference only 
 
 | # | Fixture (`app/data/ASCII/`) | Domain content | Seeded entity (Flyway `V3`) | Exercised by |
 |---|---|---|---|---|
-| 1 | `acctdata.txt` | **9 account records** | `Account` (`ACCTDAT`) | `AccountViewService`, `CBACT01C`/`CBACT04C` flows, interest job |
+| 1 | `acctdata.txt` | **50 account records** | `Account` (`ACCTDAT`) | `AccountViewService`, `CBACT01C`/`CBACT04C` flows, interest job |
 | 2 | `carddata.txt` | card records | `Card` (`CARDDAT`) | card list/detail/update services, `CBACT02C` flow |
 | 3 | `custdata.txt` | customer records | `Customer` (`CUSTDAT`) | account view, statement generation |
 | 4 | `cardxref.txt` | cross-reference records | `CardCrossReference` (`CARDXREF` + `CXACAIX`) | xref-keyed account/card resolution |
@@ -245,11 +245,13 @@ The 13 EBCDIC binaries under `app/data/EBCDIC/` are **byte-level reference only 
 | 9 | `trantype.txt` | transaction types | `TransactionType` (`TRANTYPE`) | reference-data lookups |
 
 The application loads all nine files deterministically on startup (Flyway runs `V1` schema → `V2`
-indexes → `V3` seed before any service or batch job executes); repository integration tests assert the
-seeded row counts against the fixtures.
+indexes → `V3` seed → `V4` `user_type` NOT NULL constraint → `V5` Spring Batch metadata before any
+service or batch job executes); repository integration tests assert the seeded row counts against the
+fixtures.
 
-**FINAL status:** ✅ **Verified.** `V1__create_schema.sql`, `V2__create_indexes.sql`, and
-`V3__seed_data.sql` are present; `V3` seeds all nine ASCII fixtures, and the repository integration tests
+**FINAL status:** ✅ **Verified.** `V1__create_schema.sql`, `V2__create_indexes.sql`,
+`V3__seed_data.sql`, `V4__user_type_not_null.sql`, and `V5__batch_metadata.sql` are present; `V3` seeds
+all nine ASCII fixtures, and the repository integration tests
 (run under Testcontainers PostgreSQL 16) assert the seeded row counts and field values against the
 fixtures. The fixture-to-entity mapping above is realized field-for-field.
 
@@ -362,18 +364,18 @@ is the **final** gate.
 | 2 | Interface contract verification | [Gate 5](#gate-5) | File/SQS/S3/REST contracts honored | ✅ Verified |
 | 3 | Performance baseline | [Gate 3](#gate-3) | Java reference baseline established | 🟡 Established (no COBOL timing to compare) |
 | 4 | Unsafe-code audit | [Gate 6](#gate-6) | Production zero; test-tree justified | ✅ Verified |
-| 5 | **Line coverage (JaCoCo)** | `jacoco-maven-plugin` rule `<minimum>0.80</minimum>` | ≥ 80 % | ✅ 83.75 % (3,782 / 4,516 lines) |
+| 5 | **Line coverage (JaCoCo)** | `jacoco-maven-plugin` rule `<minimum>0.80</minimum>` | ≥ 80 % | ✅ 83.59 % (3,845 / 4,600 lines) |
 | 6 | **OWASP dependency-check** | `dependency-check-maven` (`failBuildOnCVSS` = 7) | Zero critical/high CVEs | ✅ 0 critical/high (report in `docs/evidence/owasp/`) |
 | 7 | **Traceability matrix** | `TRACEABILITY_MATRIX.md` (repository root) | 100 % COBOL-paragraph coverage | ✅ Verified (527 paragraphs / 28 programs) |
-| 8 | Test suite | `mvn verify` (Surefire + Failsafe) | 100 % pass | ✅ 783 unit + 149 integration/E2E, 0 failures |
+| 8 | Test suite | `mvn verify` (Surefire + Failsafe) | 100 % pass | ✅ 807 unit + 151 integration/E2E, 0 failures |
 
 **Configuration note.** The thresholds above are pinned in the build configuration: JaCoCo
 `<minimum>0.80</minimum>`; OWASP `failBuildOnCVSS` of **7** (CVSS ≥ 7.0 = high/critical). The **measured**
 values that satisfy these thresholds are produced by the gated build and recorded above.
 
 **FINAL status:** ✅ **Verified.** Every constituent gate and quality bar has produced its evidence from an
-actual run: 783 Surefire unit tests and 149 Failsafe integration/E2E tests pass (1 documented skip),
-JaCoCo line coverage is 83.75 %, the OWASP scan reports zero critical/high CVEs with a persisted report,
+actual run: 807 Surefire unit tests and 151 Failsafe integration/E2E tests pass (1 documented skip),
+JaCoCo line coverage is 83.59 %, the OWASP scan reports zero critical/high CVEs with a persisted report,
 and the traceability matrix covers 100 % of COBOL paragraphs. Gate 3 is recorded as a by-design partial
 (no COBOL timing exists to compare against).
 
@@ -388,7 +390,7 @@ project-wide bars. These are summarized here with their **target** and **measure
 | # | Quality bar | Mechanism | Target | FINAL status |
 |---|---|---|---|:---:|
 | 1 | **Zero-warning build** | `mvn clean verify`, `-Xlint:all` (`-Werror` intent) | 0 warnings (framework suppressions only) | ✅ Full `verify` compiles warning-free |
-| 2 | **Line coverage** | JaCoCo `jacoco-maven-plugin` 0.8.14, rule `<minimum>0.80</minimum>` | ≥ 80 % | ✅ 83.75 % (3,782 / 4,516 lines) |
+| 2 | **Line coverage** | JaCoCo `jacoco-maven-plugin` 0.8.14, rule `<minimum>0.80</minimum>` | ≥ 80 % | ✅ 83.59 % (3,845 / 4,600 lines) |
 | 3 | **OWASP — zero critical/high CVEs** | `dependency-check-maven` 12.1.0, `failBuildOnCVSS` = 7 | 0 critical/high | ✅ 0 critical/high (engine 12.1.0; report persisted) |
 | 4 | **Unsafe-code audit** | Static audit (see [Gate 6](#gate-6)) | Production zero; test-tree justified | ✅ Production all-zero; test-tree documented |
 
@@ -396,12 +398,13 @@ project-wide bars. These are summarized here with their **target** and **measure
 
 The verification suite (Maven Surefire for unit tests, Failsafe for integration/E2E, with **Testcontainers**
 PostgreSQL 16 and **LocalStack** for S3/SQS/SNS, plus the end-to-end `GateVerificationTest`) is delivered
-and passing. The measured FINAL figures are:
+and passing. The measured FINAL figures (captured from the gated `./mvnw -Pintegration verify` run on the
+current tree) are:
 
-- **Surefire (unit):** **783 tests**, 0 failures, 0 errors, 0 skipped.
-- **Failsafe (integration/E2E):** **149 tests**, 0 failures, 0 errors, **1 skipped** (a documented
+- **Surefire (unit):** **807 tests**, 0 failures, 0 errors, 0 skipped.
+- **Failsafe (integration/E2E):** **151 tests**, 0 failures, 0 errors, **1 skipped** (a documented
   assumption for the FK-consistent reject-101 scenario).
-- **JaCoCo line coverage:** **83.75 %** — 3,782 of 4,516 lines covered (gate `<minimum>0.80</minimum>`).
+- **JaCoCo line coverage:** **83.59 %** — 3,845 of 4,600 lines covered (gate `<minimum>0.80</minimum>`).
 
 Coverage is **gated on the line dimension** (`<minimum>0.80</minimum>`) and the gated `verify` build passes
 that rule. Every figure above traces to a real Surefire/Failsafe/JaCoCo run.
@@ -452,7 +455,7 @@ This section states what is **present and verified** at FINAL, so the report's a
 | Item | Status | Note |
 |---|:---:|---|
 | Full project compiles | ✅ Verified | `mvn -B -ntp clean compile` → `BUILD SUCCESS`, zero warnings across 109 main source files (142 compiled classes) |
-| Flyway `V1`/`V2`/`V3` | ✅ Present | 11 tables, alternate indexes (`CXACAIX`, `TRANSACT` AIX), and seed of all 9 ASCII fixtures |
+| Flyway `V1`–`V5` | ✅ Present | 11 tables, alternate indexes (`CXACAIX`, `TRANSACT` AIX), seed of all 9 ASCII fixtures, the `user_type` NOT NULL constraint (`V4`), and the Spring Batch metadata tables (`V5`) |
 | 11 JPA entities + 3 embedded keys | ✅ Verified | Mapped field-for-field to `V1`; `BigDecimal` for all decimals; `@Version` on `Account`/`Card` |
 | Services / controllers / batch | ✅ Verified | 20 services, 8 controllers, 6 batch jobs + processors/readers/writers; all F-001–F-022 features |
 | Gate 1 — batch boundary | ✅ Verified | `BatchPipelineE2ETest`, `GateVerificationTest` |
@@ -460,8 +463,8 @@ This section states what is **present and verified** at FINAL, so the report's a
 | Gate 5 — file/SQS/S3/REST contracts | ✅ Verified | REST E2E + LocalStack ITs |
 | Gate 7 — full subsystem scope | ✅ Verified | All 5 subsystems with tests |
 | Gate 8 — master integration sign-off | ✅ Verified | All constituent gates + bars pass |
-| Line coverage ≥ 80 % (JaCoCo) | ✅ Verified | 83.75 % (3,782 / 4,516 lines) |
-| Full test suite (Surefire + Failsafe) | ✅ Verified | 783 unit + 149 integration/E2E, 0 failures (1 documented skip) |
+| Line coverage ≥ 80 % (JaCoCo) | ✅ Verified | 83.59 % (3,845 / 4,600 lines) |
+| Full test suite (Surefire + Failsafe) | ✅ Verified | 807 unit + 151 integration/E2E, 0 failures (1 documented skip) |
 | OWASP zero critical/high CVE scan | ✅ Verified | Engine 12.1.0; 0 critical/high; report in `docs/evidence/owasp/` |
 | Traceability-matrix verification | ✅ Verified | `TRACEABILITY_MATRIX.md` — 527 paragraphs / 28 programs |
 | LocalStack AWS verification | ✅ Verified | S3/SQS/SNS ITs pass; zero live AWS |

@@ -371,7 +371,7 @@ data field is protected/display (output only); the sole input is the `ACCTSID` k
 | `eftAccountId` | `ACSEFTC` | `String` | 10 | |
 | `primaryCardHolderIndicator` | `ACSPFLG` | `String` | 1 | |
 
-**Status codes:** `200 OK`; `400 Bad Request` (`id` not 11 digits); `404 Not Found`
+**Status codes:** `200 OK`; `400 Bad Request` (`id` non-numeric or more than 11 digits — `@Digits(integer=11, fraction=0)`; note a shorter all-digit id such as `1` is accepted and resolves normally); `404 Not Found`
 (account or cross-reference not found — COBOL `FILE STATUS 23`).
 
 #### `PUT /api/accounts/{id}` — update account
@@ -492,8 +492,12 @@ other fields are display.
 
 **Path parameter:** `cardNumber` ← `CARDSID` (`String`, 16, `@Size(max=16)`).
 
-**Query parameter (optional):** `accountId` ← `ACCTSID` (`String`, 11 digits) — the screen
-accepts the account id alongside the card number as a combined key.
+**Query parameter (required):** `accountId` ← `ACCTSID` (`String`, 11 digits) — supplied alongside
+the card-number path key. It is bound as `@RequestParam(required = false)` (so the framework itself
+does not reject its absence), but `CardDetailService` enforces it exactly as the `COCRDSLC` edit does:
+a missing or blank `accountId` raises the verbatim COBOL message **"Account number not provided"** and
+returns `400 Bad Request`. A successful read therefore **requires** the account id alongside the card
+number (the combined `COCRDSL` key).
 
 **Response — `CardDto`** (`200 OK`):
 
@@ -799,6 +803,29 @@ renders **10 rows per page** (`SEL0001`–`SEL0010`, `USRID01`–`USRID10`, `FNA
 | `users[].lastName` | `LNAMEnn` | `String` | 20 | |
 | `users[].userType` | `UTYPEnn` → `UserType` | enum | 1 | `ADMIN` (`'A'`) / `USER` (`'U'`) |
 | `pageNumber` | `PAGENUM` | `String` | — | current **1-based** page |
+
+#### `GET /api/admin/users/{id}` — get user by id
+
+Single keyed read of one user — the canonical `UserUpdateService.loadUser` used by the update/delete
+load step (`COUSR02C`/`COUSR03C` `PROCESS-ENTER-KEY`). The `{id}` path variable is the user id; the
+credential is never returned.
+
+**Path parameter:** `id` ← `USRIDIN` (`String`, 8) — the user id to read. A blank `id` raises the
+verbatim COBOL edit **"User ID can NOT be empty..."** (`400`).
+
+**Response — `UserSecurityDto`** (`200 OK`): the single-user projection (`userId`, `firstName`,
+`lastName`, `userType`), populated field-for-field from the keyed read (`MOVE SEC-USR-* TO` map
+fields). The `password` field is **write-only** (`@JsonProperty(access = WRITE_ONLY)`) and is **never**
+present in the response (a documented C-003 consequence — the stored value is a one-way BCrypt hash).
+
+| Field | BMS field | Type | Length | Notes |
+|---|---|---|---|---|
+| `userId` | `USRIDIN` → `SEC-USR-ID` | `String` | 8 | the keyed user id |
+| `firstName` | `FNAME` → `SEC-USR-FNAME` | `String` | 20 | |
+| `lastName` | `LNAME` → `SEC-USR-LNAME` | `String` | 20 | |
+| `userType` | `USRTYPE` → `UserType` | enum | 1 | `ADMIN` (`'A'`) / `USER` (`'U'`) |
+
+**Status codes:** `200 OK`; `400 Bad Request` (blank `id`); `403 Forbidden` (non-admin); `404 Not Found` (no such user — "User ID NOT found...", `FILE STATUS 23`).
 
 #### `POST /api/admin/users` — add user
 

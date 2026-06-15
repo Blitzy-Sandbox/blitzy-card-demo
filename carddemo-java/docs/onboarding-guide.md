@@ -122,6 +122,7 @@ LocalStack accepts any value, so the conventional `test` / `test` pair is fine.
 |---|---|---|---|
 | `JAVA_HOME` | If JDK 25 is not the default | Path to JDK 25 | Selects the JDK used by `./mvnw`. |
 | `LOCALSTACK_AUTH_TOKEN` | Yes (local dev) | *your LocalStack Pro token* | Activates LocalStack Pro (S3/SQS/SNS). **Secret — never commit.** |
+| `CARDDEMO_SECURITY_TOKEN_SECRET` | Yes (for `docker compose`) | *random ≥256-bit value* | JWT signing secret. **Required by `docker compose`** — declared `${CARDDEMO_SECURITY_TOKEN_SECRET:?…}` with no default, so any `docker compose` command fails fast without it. The `local`/`test` Spring profiles carry a non-secret dev default, so it is only mandatory on the Compose path. **Secret — never commit.** |
 | `AWS_ACCESS_KEY_ID` | No | `test` | AWS SDK credential id (LocalStack ignores the value). Non-secret. |
 | `AWS_SECRET_ACCESS_KEY` | No | `test` | AWS SDK secret. **Secret — never commit** (placeholder only for LocalStack). |
 | `AWS_DEFAULT_REGION` | No | `us-east-1` | Region for the S3/SQS/SNS clients. Non-secret. |
@@ -136,6 +137,11 @@ Export the minimum set for a local run:
 ```bash
 # Required for LocalStack Pro — keep this out of source control.
 export LOCALSTACK_AUTH_TOKEN=<your-localstack-pro-token>
+
+# Required by `docker compose` (the JWT signing secret; no default in compose).
+# The local/test Spring profiles have a dev default, so this is only needed for
+# the `docker compose` path in §2.2.
+export CARDDEMO_SECURITY_TOKEN_SECRET=$(openssl rand -base64 48)
 
 # Fake AWS credentials accepted by LocalStack (do NOT use real keys here).
 export AWS_ACCESS_KEY_ID=test
@@ -160,24 +166,36 @@ Each command is copy-paste runnable and matches [`../pom.xml`](../pom.xml),
 ```bash
 git clone <repository-url>
 cd carddemo-java
-./mvnw clean verify
+./mvnw clean test
 ```
 
-`./mvnw clean verify` compiles every source file, runs the **unit** test suite, and produces the
-JaCoCo coverage report (the build enforces **≥ 80 % line coverage** at the bundle level). It does
-**not** run the Docker-dependent integration tests by default — those are gated behind the
-`integration` profile (see [§2.5](#25-step-5--run-the-full-integration--e2e-suite)), so this first
-build succeeds **without** Docker.
+`./mvnw clean test` compiles every source file and runs the **unit** test suite — **no Docker
+required**. It deliberately stops short of the `verify` phase, so it does **not** run the
+Docker-dependent integration tests and does **not** enforce the **≥ 80 % line-coverage gate** or
+generate the JaCoCo report — both the gate (`jacoco:check`) and the report (`jacoco:report`) are
+bound to `verify` and run in the full build of
+[§2.5](#25-step-5--run-the-full-integration--e2e-suite) (`./mvnw verify -Pintegration`). The 80 %
+gate is satisfied only once the integration/E2E tests contribute their coverage, which is why a
+bare `./mvnw clean verify` (unit coverage only) would **fail** the gate — so the no-Docker first
+build uses `./mvnw clean test`. This first build therefore succeeds **without** Docker.
 
 > **JDK 25 reminder.** If your default JDK is not 25, prefix the command (or export `JAVA_HOME`
 > first, per [§1.1](#11-required-tooling)):
 > ```bash
-> JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw clean verify
+> JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw clean test
 > ```
 
-The repackaged executable JAR is written to `target/carddemo-java.jar`.
+To produce the repackaged executable JAR (`target/carddemo-java.jar`) without Docker, run
+`./mvnw clean package` (it likewise stops short of the coverage gate); the JAR is also produced by
+the full `verify` build in §2.5.
 
 ### 2.2 Step 2 — Start the local stack
+
+> **Export the two required variables first** (see [§1.3](#13-environment-variables)):
+> `LOCALSTACK_AUTH_TOKEN` and `CARDDEMO_SECURITY_TOKEN_SECRET`. Both are declared in
+> `docker-compose.yml` with **no default**, so *any* `docker compose` command — including
+> `docker compose config` and a partial `up` — fails fast with
+> `required variable … is missing a value` until they are set.
 
 ```bash
 docker compose up -d
@@ -238,9 +256,9 @@ at LocalStack (`http://localhost:4566`).
 > Do **not** pass `-Dspring.profiles.active=local` to `spring-boot:run` expecting it to forward to
 > the app — the plugin needs `-Dspring-boot.run.profiles=local`.
 
-On startup, **Flyway** runs the schema migrations (`V1` → `V2` → `V3`) against PostgreSQL before any
-service or batch job is reachable (see [§4.4](#44-flyway-migration-ordering)). The application
-listens on port **8080**.
+On startup, **Flyway** runs the schema migrations (`V1` → `V2` → `V3` → `V4` → `V5`) against
+PostgreSQL before any service or batch job is reachable (see
+[§4.4](#44-flyway-migration-ordering)). The application listens on port **8080**.
 
 ### 2.4 Step 4 — Verify health
 
@@ -248,8 +266,17 @@ listens on port **8080**.
 curl -s http://localhost:8080/actuator/health | python3 -m json.tool
 ```
 
-A healthy system returns `"status": "UP"` with a **composite** of indicators for the database, S3,
-and SQS:
+A healthy system returns `"status": "UP"`. The **unauthenticated** `curl` above returns only the
+loose top-level form — the actuator endpoint is configured `show-details: when_authorized`
+(`application.yml`), so per-component detail is withheld from anonymous callers:
+
+```json
+{ "status": "UP", "groups": ["liveness", "readiness"] }
+```
+
+The full **composite** of per-indicator detail (database, S3, SQS) is returned only to an
+**authorized** principal — repeat the call with a valid `Authorization: Bearer <token>` header
+(obtain a token as shown in [§2.7](#27-smoke-test-the-api)):
 
 ```json
 {
@@ -358,7 +385,7 @@ pseudo-conversational 3270 terminal screens, now stateless REST endpoints) and *
 ### 3.2 Functional inventory
 
 The legacy online and batch inventories — the CICS transaction IDs, BMS maps, and COBOL program
-names — are catalogued in the root [`README.md`](../README.md). In the Java target the 18 online
+names — are catalogued in the root [`README.md`](../README.md). In the Java target the 17 online
 transactions are consolidated by domain into **8 REST controllers**:
 
 | Controller | Domain | Legacy transactions (examples) |
@@ -526,19 +553,23 @@ These tests manage their own containers — you do **not** need `docker compose 
 ### 4.4 Flyway migration ordering
 
 Flyway runs the schema migrations **on application startup, in version order, before any service or
-batch job executes**. The three scripts under `src/main/resources/db/migration/` must run in
+batch job executes**. The five scripts under `src/main/resources/db/migration/` must run in
 sequence:
 
 1. **`V1__create_schema.sql`** — creates the 11 tables (from the VSAM `DEFINE CLUSTER` specs).
 2. **`V2__create_indexes.sql`** — creates the alternate indexes (e.g. `CXACAIX`, the transaction AIX).
 3. **`V3__seed_data.sql`** — seeds the rows from the nine ASCII fixtures.
+4. **`V4__user_type_not_null.sql`** — enforces the `user_security.user_type` `NOT NULL` constraint at
+   the database level (defense-in-depth matching the JPA entity contract; not a behavioral change).
+5. **`V5__batch_metadata.sql`** — provisions the Spring Batch JDBC metadata schema (the `BATCH_*`
+   tables and sequences the `JobRepository` needs to launch, track, and restart batch jobs).
 
 Rules that keep this safe:
 
 - **Never reorder or renumber an already-applied migration.** Flyway records a checksum per applied
   version; editing an applied script makes startup fail with a checksum/validation error.
-- **Add changes as new, higher-numbered scripts** (`V4__...`, `V5__...`) — never edit `V1`–`V3` once
-  they have run anywhere.
+- **Add changes as new, higher-numbered scripts** (the next would be `V6__...`) — never edit
+  `V1`–`V5` once they have run anywhere.
 - If a migration fails mid-way during local development, fix the script and reset the **local**
   database (`docker compose down -v` to drop the volume, then `docker compose up -d`) so Flyway
   re-applies from a clean state.

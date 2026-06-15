@@ -147,7 +147,7 @@ graph LR
     subgraph SRC["Source: z/OS Mainframe"]
         direction TB
         A1["BMS 3270 maps&lt;br/&gt;17 mapsets"]
-        A2["COBOL online&lt;br/&gt;18 CICS programs"]
+        A2["COBOL online&lt;br/&gt;17 CICS programs"]
         A3["COBOL batch&lt;br/&gt;10 programs"]
         A4["VSAM KSDS&lt;br/&gt;11 datasets + AIX/PATH"]
         A5["JCL jobs&lt;br/&gt;29 jobs"]
@@ -185,7 +185,7 @@ graph LR
               <li><b>Run cost &amp; lock-in:</b> MIPS-based licensing and proprietary hardware give way to commodity cloud compute.</li>
               <li><b>Agility:</b> rigid batch windows become elastic, observable, CI/CD-ready Spring services.</li>
               <li><b>Maintainability:</b> a 19,254-line opaque COBOL estate becomes a layered, tested codebase.</li>
-              <li><b>Low risk:</b> 100% behavioral parity is the migration's design goal &mdash; verified by the passing characterization-test suite (783 unit + 149 integration/E2E tests); the only intentional behavior change is BCrypt password hashing.</li>
+              <li><b>Low risk:</b> 100% behavioral parity is the migration's design goal &mdash; verified by the passing characterization-test suite (807 unit + 151 integration/E2E tests); the only intentional behavior change is BCrypt password hashing.</li>
             </ul>
           </div>
           <div>
@@ -210,7 +210,7 @@ pie showData
 graph TB
     TERM["3270 Terminal&lt;br/&gt;17 BMS 24x80 mapsets"]
 
-    subgraph CICSRGN["CICS Region — pseudo-conversational online (18 programs)"]
+    subgraph CICSRGN["CICS Region — pseudo-conversational online (17 programs)"]
         direction TB
         ONL_AUTH["Auth&lt;br/&gt;COSGN00C"]
         ONL_MENU["Menu&lt;br/&gt;COMEN01C / COADM01C"]
@@ -454,7 +454,9 @@ graph LR
         FV1["V1__create_schema.sql&lt;br/&gt;11 tables from DEFINE CLUSTER"]
         FV2["V2__create_indexes.sql&lt;br/&gt;CXACAIX + TRANSACT AIX"]
         FV3["V3__seed_data.sql&lt;br/&gt;9 ASCII fixtures"]
-        FV1 --> FV2 --> FV3
+        FV4["V4__user_type_not_null.sql&lt;br/&gt;user_type NOT NULL constraint"]
+        FV5["V5__batch_metadata.sql&lt;br/&gt;Spring Batch metadata tables"]
+        FV1 --> FV2 --> FV3 --> FV4 --> FV5
     end
 
     subgraph AFTER["AFTER — PostgreSQL 16 + Spring Data JPA"]
@@ -479,9 +481,9 @@ graph LR
     classDef mig fill:#d6e4ff,stroke:#2b59c3,color:#0b2447;
     class D1,D2,D3,D4,D5,D6,D7,D8,D9,D10,D11 data;
     class T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11 data;
-    class FV1,FV2,FV3 mig;
+    class FV1,FV2,FV3,FV4,FV5 mig;
         </div>
-        <p class="caption">VSAM <code>DEFINE CLUSTER</code> specs become DDL. Flyway <code>V1</code>/<code>V2</code>/<code>V3</code> create the schema, indexes (incl. alternate indexes) and seed the 9 ASCII fixtures &mdash; the canonical parity data &mdash; on startup.</p>
+        <p class="caption">VSAM <code>DEFINE CLUSTER</code> specs become DDL. Flyway <code>V1</code>&ndash;<code>V5</code> create the schema, indexes (incl. alternate indexes), seed the 9 ASCII fixtures &mdash; the canonical parity data &mdash; enforce the <code>user_type</code> NOT NULL constraint, and provision the Spring Batch metadata tables on startup.</p>
       </section>
 
 
@@ -563,8 +565,8 @@ flowchart LR
         <h2>Validation gates &mdash; 8-gate model &amp; FINAL status</h2>
         <!-- Visual #1: headline KPI strip — measured FINAL figures from the gated build/test runs. -->
         <div class="kpi">
-          <div class="k"><b>83.75%</b>line coverage<br/>(JaCoCo &middot; &ge;80% gate)</div>
-          <div class="k"><b>783 + 149</b>tests pass<br/>(Surefire + Failsafe)</div>
+          <div class="k"><b>83.59%</b>line coverage<br/>(JaCoCo &middot; &ge;80% gate)</div>
+          <div class="k"><b>807 + 151</b>tests pass<br/>(Surefire + Failsafe)</div>
           <div class="k"><b>100%</b>paragraph<br/>traceability (527 paras)</div>
           <div class="k"><b>0</b>warnings &middot; 0 critical/high CVEs</div>
         </div>
@@ -583,7 +585,7 @@ flowchart LR
           </tbody>
         </table>
         <p class="caption">All eight gates report a measured FINAL result from actual build/test runs:
-          783 unit + 149 integration/E2E tests pass, line coverage is 83.75%, the OWASP scan reports zero
+          807 unit + 151 integration/E2E tests pass, line coverage is 83.59%, the OWASP scan reports zero
           critical/high CVEs, and the production unsafe-code audit is all-zero. Gate 3 is a by-design
           partial (no COBOL timing artifact exists to compare against). Full detail in
           <code>validation-gates.md</code>.</p>

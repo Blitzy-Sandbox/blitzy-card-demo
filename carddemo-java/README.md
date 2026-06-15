@@ -121,6 +121,7 @@ A clean machine needs only the following to build, run, and test the application
 | Docker | 28.x+ | Container runtime for PostgreSQL, LocalStack, and the observability stack. |
 | Docker Compose | v2 plugin | Invoked as `docker compose` (not the legacy `docker-compose`). |
 | AWS CLI | optional | Only for manually inspecting LocalStack S3/SQS/SNS resources. |
+| `jq` | optional | Only for the sign-in token-capture snippet in [Sample credentials](#sample-credentials) (which pipes the JSON response through `jq -r '.token'`); any JSON tool works. |
 
 > Integration and end-to-end tests use **Testcontainers**, which requires a running Docker
 > daemon and access to the Docker socket.
@@ -141,26 +142,39 @@ cd carddemo-java
 **2. Build and run the unit tests (no Docker required):**
 
 ```bash
-./mvnw clean verify
+./mvnw clean test
 ```
 
-This compiles the project, runs the unit-test suite, and produces a JaCoCo coverage report at
-`target/site/jacoco/index.html`. Integration/E2E tests are **skipped by default** (they need
-Docker); enable them with the `integration` profile in step 5.
+This compiles the project and runs the **unit**-test suite (no Docker required). It does **not**
+run the Docker-dependent integration/E2E tests, and it does **not** enforce the **≥ 80 % JaCoCo
+line-coverage gate** or generate the coverage report — both the gate and the report are bound to
+the `verify` phase and are exercised by the full build in **step 5** (`./mvnw verify -Pintegration`,
+which needs Docker). To produce the runnable executable JAR without Docker, run `./mvnw clean
+package` (it also stops short of the coverage gate).
+
+> **Why not `./mvnw clean verify` here?** `verify` runs the JaCoCo coverage **check**, and
+> unit-only coverage is below the 80 % gate (the gate is met only once the integration/E2E tests
+> contribute their coverage under `-Pintegration`). So the canonical no-Docker command is
+> `./mvnw clean test`; the canonical full, coverage-gated verification is
+> `./mvnw verify -Pintegration` (step 5).
 
 Then run the application using **one** of the two modes below.
 
-> **Prerequisite for both modes — set your LocalStack Pro token.** Both modes start the
-> `localstack` service, which runs LocalStack **Pro** (`localstack/localstack-pro`) and has **no
-> default activation token**. Export a valid token **before** running `docker compose up`, or the
-> `localstack` container will fail to start:
+> **Prerequisite for both modes — set the two required `docker compose` variables.** Both modes
+> start the `localstack` service, which runs LocalStack **Pro** (`localstack/localstack-pro`) and
+> has **no default activation token**; in addition, the Compose file requires
+> `CARDDEMO_SECURITY_TOKEN_SECRET` (the JWT signing secret, **≥ 256-bit / 32 bytes**) which also
+> has **no default**. Export **both before** any `docker compose` command — without them
+> `docker compose config`/`up` fails fast with `required variable … is missing a value`:
 >
 > ```bash
 > export LOCALSTACK_AUTH_TOKEN=<your-localstack-pro-token>
+> export CARDDEMO_SECURITY_TOKEN_SECRET=$(openssl rand -base64 48)   # any random ≥256-bit value
 > ```
 >
-> See the [Environment variables](#environment-variables) section for the full list. Building and
-> unit-testing in step 2 (`./mvnw clean verify`) needs no environment variables.
+> See the [Environment variables](#environment-variables) section and
+> [`.env.example`](.env.example) for the complete required set. Building and unit-testing in
+> step 2 (`./mvnw clean test`) needs no environment variables.
 
 **3a. Mode A — Fully containerized (simplest first run):**
 
@@ -236,15 +250,20 @@ scrape `GET /actuator/prometheus`. Grafana's default local credentials are `admi
 ## Environment variables
 
 No environment variables are required to **build and unit-test** the project
-(`./mvnw clean verify`) or to run the integration + E2E suite (`./mvnw verify -Pintegration`) —
+(`./mvnw clean test`) or to run the integration + E2E suite (`./mvnw verify -Pintegration`) —
 Testcontainers provisions its own throwaway PostgreSQL and LocalStack containers for the latter.
 
-**One exception applies to `docker compose`.** The Compose data plane runs LocalStack **Pro**
-(`localstack/localstack-pro`), which has **no default activation token**, so you must export a
-valid `LOCALSTACK_AUTH_TOKEN` **before** any `docker compose up` that starts the `localstack`
-service — that is, both Mode A (the full stack) and Mode B (`postgres localstack jaeger`). Every
-other Compose value has a clearly non-secret local-dev default. Secrets are supplied at runtime
-via the shell or an **uncommitted** `.env` file and are **never** committed to the repository.
+**Two `docker compose` values are required and have no default.** First, the Compose data plane
+runs LocalStack **Pro** (`localstack/localstack-pro`), which has **no default activation token**,
+so you must export a valid `LOCALSTACK_AUTH_TOKEN`. Second, the application service requires
+`CARDDEMO_SECURITY_TOKEN_SECRET` (the JWT signing secret, **≥ 256-bit**), declared in
+`docker-compose.yml` with **no default** (`${CARDDEMO_SECURITY_TOKEN_SECRET:?…}`). Export **both
+before** any `docker compose` command — `config`, `up`, or even a partial `up` such as Mode B's
+`postgres localstack jaeger` — because Compose interpolates the whole file, so a missing value
+fails fast with `required variable … is missing a value`. See [`.env.example`](.env.example) for
+the complete required set. Every other Compose value has a clearly non-secret local-dev default.
+Secrets are supplied at runtime via the shell or an **uncommitted** `.env` file and are **never**
+committed to the repository.
 
 | Variable | Secret? | Default | Purpose |
 |---|---|---|---|
@@ -252,6 +271,7 @@ via the shell or an **uncommitted** `.env` file and are **never** committed to t
 | `AWS_DEFAULT_REGION` | No | `us-east-1` | AWS region for the S3 / SQS / SNS clients. |
 | `AWS_SECRET_ACCESS_KEY` | **Yes** | `test` (local only) | AWS SDK secret key. Supply a real value only against real AWS. |
 | `LOCALSTACK_AUTH_TOKEN` | **Yes** | _(none)_ | LocalStack **Pro** activation token. Required for the LocalStack container; has no default. |
+| `CARDDEMO_SECURITY_TOKEN_SECRET` | **Yes** | _(none)_ | JWT signing secret (**≥ 256-bit / 32 bytes**). **Required by `docker compose`** (declared `${…:?}`, no default); any `docker compose` command fails fast without it. The app's `local` profile has an inline dev default, so it is only mandatory on the Compose path. |
 | `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | No | `carddemo` | PostgreSQL database name and credentials (Compose + app share these). |
 | `SPRING_PROFILES_ACTIVE` | No | _(unset)_ | Active Spring profile; the containerized app sets `local`. |
 | `SERVER_PORT` | No | `8080` | Application HTTP port. |
@@ -335,8 +355,9 @@ route table below. All paths are prefixed with `/api` and exchange `application/
 
 The legacy data-load JCL (account/card/customer/cross-reference/transaction loads) is replaced by
 **Flyway** migrations that create and seed PostgreSQL on startup (`V1` schema → `V2` indexes →
-`V3` seed). GDG provisioning becomes S3 buckets and the `USRSEC` load becomes the seeded
-`user_security` table. This data-load replacement is implemented in the current build.
+`V3` seed → `V4` `user_type` NOT-NULL enforcement → `V5` Spring Batch metadata). GDG provisioning
+becomes S3 buckets and the `USRSEC` load becomes the seeded `user_security` table. This data-load
+replacement is implemented in the current build.
 
 > **Implementation status.** The business batch pipeline described below is **implemented and
 > covered by tests** in the current build — all five Spring Batch jobs and the
@@ -375,7 +396,7 @@ carddemo-java/
 └── src/
     ├── main/java/com/cardemo/  # CardDemoApplication + config, model, repository, service,
     │                           #   controller, batch, exception, observability, security
-    ├── main/resources/         # application*.yml, db/migration (Flyway V1–V3), validation/, logback
+    ├── main/resources/         # application*.yml, db/migration (Flyway V1–V5), validation/, logback
     └── test/java/com/cardemo/  # unit / integration / e2e tests (Testcontainers + LocalStack)
 ```
 
@@ -391,7 +412,7 @@ carddemo-java/
 | [`docs/validation-gates.md`](docs/validation-gates.md) | Quality-gate evidence (build, coverage, OWASP, parity). |
 | [`docs/executive-presentation.html`](docs/executive-presentation.html) | reveal.js executive summary of the migration. |
 | [`DECISION_LOG.md`](DECISION_LOG.md) | The single source of truth for non-trivial decisions. |
-| [`TRACEABILITY_MATRIX.md`](TRACEABILITY_MATRIX.md) | 100% COBOL-paragraph → Java-method coverage. |
+| [`TRACEABILITY_MATRIX.md`](TRACEABILITY_MATRIX.md) | 100% COBOL-paragraph coverage, mapped to the Java class that reproduces it (with a representative method label per paragraph). |
 
 ---
 
@@ -409,8 +430,8 @@ or API endpoint. A few traps that catch newcomers:
   virtual-host style.
 - **Testcontainers Docker socket.** Integration tests need a running Docker daemon and permission
   to access the Docker socket, or they fail with "connection refused".
-- **Flyway migration ordering.** Migrations apply in version order (`V1` → `V2` → `V3`) on
-  startup; never edit an already-applied migration — add a new versioned script instead.
+- **Flyway migration ordering.** Migrations apply in version order (`V1` → `V2` → `V3` → `V4` →
+  `V5`) on startup; never edit an already-applied migration — add a new versioned script instead.
 
 ---
 
@@ -436,8 +457,9 @@ migration requirements. Concretely:
 ## Contributing
 
 Contributions are welcome. Please open an issue to discuss a change, keep pull requests focused
-and aligned with the Minimal Change Clause above, and ensure `./mvnw clean verify` (and
-`./mvnw verify -Pintegration` where Docker is available) passes before submitting. See
+and aligned with the Minimal Change Clause above, and ensure `./mvnw clean test` (unit tests, no
+Docker) and `./mvnw verify -Pintegration` (the full, coverage-gated build; Docker required) pass
+before submitting. See
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) and [`CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) in the
 repository root.
 

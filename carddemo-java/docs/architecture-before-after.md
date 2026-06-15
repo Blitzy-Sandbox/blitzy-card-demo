@@ -113,7 +113,7 @@ mainframe tier in Diagram 1 has a corresponding blue/green/orange tier in Diagra
 graph TB
     TERM["3270 Terminal<br/>17 BMS 24x80 mapsets"]
 
-    subgraph CICSRGN["CICS Region — pseudo-conversational online (18 programs)"]
+    subgraph CICSRGN["CICS Region — pseudo-conversational online (17 programs)"]
         direction TB
         ONL_AUTH["Auth<br/>COSGN00C"]
         ONL_MENU["Menu<br/>COMEN01C / COADM01C"]
@@ -165,7 +165,7 @@ graph TB
 
 **Legend.**
 
-- **Amber nodes** — z/OS mainframe constructs: the 3270/BMS presentation tier, the 18 pseudo-conversational
+- **Amber nodes** — z/OS mainframe constructs: the 3270/BMS presentation tier, the 17 pseudo-conversational
   CICS online programs (grouped by business domain), the 10 batch COBOL programs, and the CICS TDQ bridge.
 - **Green nodes** — the VSAM KSDS data layer (11 datasets), including the `CXACAIX` alternate index on
   `CARDXREF` and the alternate index on `TRANSACT`, plus the `DALYTRAN` physical-sequential staging file.
@@ -369,7 +369,9 @@ graph LR
         FV1["V1__create_schema.sql<br/>11 tables from DEFINE CLUSTER"]
         FV2["V2__create_indexes.sql<br/>CXACAIX + TRANSACT AIX"]
         FV3["V3__seed_data.sql<br/>9 ASCII fixtures"]
-        FV1 --> FV2 --> FV3
+        FV4["V4__user_type_not_null.sql<br/>user_type NOT NULL constraint"]
+        FV5["V5__batch_metadata.sql<br/>Spring Batch metadata tables"]
+        FV1 --> FV2 --> FV3 --> FV4 --> FV5
     end
 
     subgraph AFTER["AFTER — PostgreSQL 16 + Spring Data JPA"]
@@ -394,7 +396,7 @@ graph LR
     classDef mig fill:#d6e4ff,stroke:#2b59c3,color:#0b2447;
     class D1,D2,D3,D4,D5,D6,D7,D8,D9,D10,D11 data;
     class T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11 data;
-    class FV1,FV2,FV3 mig;
+    class FV1,FV2,FV3,FV4,FV5 mig;
 ```
 
 **Legend.**
@@ -403,15 +405,16 @@ graph LR
   datasets map 1:1 to 11 tables.
 - **Blue nodes** — the Flyway migration scripts that perform the move, applied in order on application
   startup: `V1` creates the schema (from the VSAM `DEFINE CLUSTER` specs), `V2` creates the indexes that
-  replace the alternate indexes, and `V3` seeds the 9 ASCII fixtures as `INSERT` rows.
+  replace the alternate indexes, `V3` seeds the 9 ASCII fixtures as `INSERT` rows, `V4` enforces the
+  `user_type` NOT NULL constraint, and `V5` provisions the Spring Batch metadata tables.
 - **Alternate-index note** — VSAM `AIX`/`PATH` access (e.g. `CXACAIX` on `CARDXREF`, the `TRANSACT` AIX) is
   reproduced as PostgreSQL secondary indexes plus JPA derived queries or `@Query` methods, annotated on the
   relevant tables.
 
 *Caption.* All 11 VSAM/PS data entities migrate to PostgreSQL 16 tables with identical key semantics:
 primary keys, the three composite keys (`@EmbeddedId`), and the alternate-index access paths are all
-preserved. Flyway `V1`/`V2`/`V3` provision schema, indexes, and seed data before any service or batch job
-runs.
+preserved. Flyway `V1`–`V5` provision schema, indexes, seed data, the `user_type` NOT NULL constraint, and
+the Spring Batch metadata tables before any service or batch job runs.
 
 ---
 

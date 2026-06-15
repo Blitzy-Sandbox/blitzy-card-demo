@@ -1,6 +1,6 @@
 ## CardDemo -- Mainframe CardDemo Application
 
-- [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-card-demo-application)
+- [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-carddemo-application)
 - [Description](#description)
 - [Technologies used](#technologies-used)
 - [Installation on the mainframe](#installation-on-the-mainframe)

@@ -2,13 +2,14 @@
 
 > **Audit artifact — Explainability gate.** This document provides a **bidirectional, 100%-coverage mapping** of every COBOL paragraph/section across all **28 programs** of the legacy AWS CardDemo application to its idiomatic Java 25 + Spring Boot 3.x replacement. Together with `DECISION_LOG.md` (rationale) it satisfies the Explainability requirement of the migration blueprint (`docs/technical-specifications.md` §0.7, §0.8.6).
 
-It is the evidence base for the **100% behavioral-parity** guarantee: each COBOL paragraph is traced to the Java class and method that reproduces its observable behavior, and each technology substitution is documented in the **Notes** column.
+It is the evidence base for the **100% behavioral-parity** guarantee: each COBOL paragraph is traced to the **Java class** that reproduces its observable behavior — the authoritative, verified anchor of this matrix — together with a **representative method label** showing where within that class the behavior lives, and each technology substitution is documented in the **Notes** column. Because idiomatic Java intentionally **consolidates several COBOL paragraphs into a single method**, the *Java Method* column is a **logical/representative grouping label**, not in every row a literal one-to-one method identifier (see the *Java Method column* convention in §1). Coverage is therefore **100% at paragraph → class granularity**; behavioral parity itself is proven by the characterization/parity test suite, not by a per-paragraph method name.
 
 ## 1. Provenance & Conventions
 
 - **Source baseline (not copied into this repository).** The COBOL members live in the original AWS CardDemo repository at commit SHA **`27d6c6f`**; per the Minimal Change Clause and the "COBOL sources not copied" preservation rule, only this SHA is referenced for traceability. Paragraph names below are extracted verbatim from those members.
 - **Base package.** All Java types use the base package **`com.cardemo`** (confirmed by `pom.xml` `<groupId>` and `DECISION_LOG.md` D-006, which explicitly rejected `com.carddemo`). Fully-qualified names in §2 are rooted at `com.cardemo.*`; the per-program tables use the simple class name for readability (the §2 summary and each program heading give the package-qualified artifact).
-- **Table columns.** `COBOL Program` (member with its original `.cbl`/`.CBL` extension) · `COBOL Paragraph` (verbatim paragraph/section label) · `Java Class` (the type that hosts the translated behavior) · `Java Method` (the method, or `(end)` marker — see below) · `Notes` (behavior preserved and the specific technology substitution applied).
+- **Table columns.** `COBOL Program` (member with its original `.cbl`/`.CBL` extension) · `COBOL Paragraph` (verbatim paragraph/section label) · `Java Class` (the type that hosts the translated behavior — **authoritative and verified literal**) · `Java Method` (a **representative method label**, or `(end)` marker — see below) · `Notes` (behavior preserved and the specific technology substitution applied).
+- **`Java Method` column — representative, not always literal.** Idiomatic Java intentionally **consolidates many COBOL paragraphs into a single method** (procedural `PERFORM`/`GO TO`/`EVALUATE` paragraph fall-through is restructured into a few cohesive methods plus private helpers — §0.7.4 of the blueprint). Consequently the **`Java Class` column is the authoritative anchor**: every class named below has been verified to exist at the stated `com.cardemo.*` path. The **`Java Method` column names the logical/representative method that hosts each paragraph's behavior**; it is **not guaranteed to be a distinct, identically-named Java method for every paragraph**, and several paragraphs in a program frequently map to the *same* consolidating method. For example: the 34 paragraphs of `COACTVWC` are realized by `AccountViewService.viewAccount(…)` with `validateAccountKey(…)`/`assembleDto(…)` helpers; the sign-on paragraphs of `COSGN00C` by `AuthenticationService.signOn(…)`; the add-transaction paragraphs of `COTRN02C` by `TransactionAddService.addTransaction(…)`/`validateDataFields(…)`; and the menu paragraphs of `COMEN01C` by `MainMenuService.getMenuOptions(…)`/`selectOption(…)`. The matrix therefore guarantees **100% paragraph → class coverage**; the method column documents the behavioral home and the *kind* of method that consolidates each paragraph, rather than asserting a literal one-to-one method identifier in every row.
 - **`PERFORM … THRU` terminators.** COBOL `*-EXIT` paragraphs are empty fall-through targets of `PERFORM THRU` ranges. They carry no logic of their own, so they map to the **end of the parent method** (shown as `parentMethod() (end)`) rather than to a separate Java method — Java methods do not fall through. They are listed for 100% coverage completeness.
 - **Verbatim source labels.** Original source spellings are preserved exactly, including the misspelled `WIRTE-JOBSUB-TDQ` paragraph in `CORPT00C.cbl` and the re-used numeric prefixes (`1110-`/`1120-` appear twice) in `CBTRN03C.cbl`.
 - **Deduplication.** `COACTVWC.cbl` defines the label `0000-MAIN-EXIT` twice (a benign source artifact); it is represented once. This is the only intra-program duplicate across the 28 members (528 raw labels → **527 unique**).
@@ -46,7 +47,7 @@ It is the evidence base for the **100% behavioral-parity** guarantee: each COBOL
 | 25 | `CBTRN02C.cbl` | Batch | `com.cardemo.batch.jobs.DailyTransactionPostingJob` · `com.cardemo.batch.processors.TransactionPostingProcessor` · `com.cardemo.batch.writers.TransactionWriter` · `com.cardemo.batch.writers.RejectWriter` · `com.cardemo.service.shared.FileStatusMapper` | 26 |
 | 26 | `CBTRN03C.cbl` | Batch | `com.cardemo.batch.jobs.TransactionReportJob` · `com.cardemo.batch.processors.TransactionReportProcessor` · `com.cardemo.service.shared.FileStatusMapper` | 26 |
 | 27 | `CBSTM03A.CBL` | Batch | `com.cardemo.batch.jobs.StatementGenerationJob` · `com.cardemo.batch.processors.StatementProcessor` · `com.cardemo.batch.writers.StatementWriter` | 25 |
-| 28 | `CBSTM03B.CBL` | Batch | `com.cardemo.service.shared.StatementFileService` | 14 |
+| 28 | `CBSTM03B.CBL` | Batch | `com.cardemo.batch.processors.StatementProcessor` · `com.cardemo.batch.readers.CrossReferenceFileReader` | 14 |
 | | **Online subtotal (17 programs)** | | | **373** |
 | | **Shared utility subtotal (1 program)** | | | **2** |
 | | **Batch subtotal (10 programs)** | | | **152** |
@@ -785,26 +786,28 @@ Recurring substitutions referenced in the **Notes** column (per the deterministi
 | `CBSTM03A.CBL` | `9400-ACCTFILE-CLOSE` | `StatementProcessor` | `close()` | VSAM CLOSE ACCTFILE → reader close / resource release |
 | `CBSTM03A.CBL` | `9999-ABEND-PROGRAM` | `StatementProcessor` | `abend()` | ABEND → throw CardDemoException (fatal batch error) |
 
-#### `CBSTM03B.CBL` — Statement file-access subroutine (CALLed by CBSTM03A) → injected file service
+#### `CBSTM03B.CBL` — Statement file-access subroutine (CALLed by CBSTM03A) → consolidated into the statement-generation pipeline
 
-*Primary Java artifact(s):* `com.cardemo.service.shared.StatementFileService` · *Paragraphs:* 14
+*Primary Java artifact(s):* `com.cardemo.batch.processors.StatementProcessor` · `com.cardemo.batch.readers.CrossReferenceFileReader` · *Paragraphs:* 14
+
+> **Consolidation note:** `CBSTM03B` was a standalone COBOL file-I/O subroutine invoked via `CALL 'CBSTM03B'`. Idiomatic Java has no standalone "file service" equivalent; its per-file access is consolidated into `StatementProcessor` (CUSTFILE/ACCTFILE/TRNXFILE reads via the injected `CustomerRepository`, `AccountRepository`, and `TransactionRepository`) and `CrossReferenceFileReader` (XREFFILE input that drives the processor). Consistent with the §1 column convention, the *Java Class* column below names the **actual** consolidating class for each access path, and the *Java Method* column gives a representative label.
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `CBSTM03B.CBL` | `0000-START` | `StatementFileService` | `start()` | Mainline entry → Spring Batch step/tasklet entry |
-| `CBSTM03B.CBL` | `9999-GOBACK` | `StatementFileService` | `finish()` | GOBACK → step completion / return |
-| `CBSTM03B.CBL` | `1000-TRNXFILE-PROC` | `StatementFileService` | `accessTransaction()` | CALL 'CBSTM03B' file op on TRNXFILE → injected TransactionRepository access |
-| `CBSTM03B.CBL` | `1900-EXIT` | `StatementFileService` | `accessTransaction() (end)` | PERFORM...THRU terminator → marks end of accessTransaction(); no separate Java method |
-| `CBSTM03B.CBL` | `1999-EXIT` | `StatementFileService` | `accessTransaction() (end)` | PERFORM...THRU terminator → marks end of accessTransaction(); no separate Java method |
-| `CBSTM03B.CBL` | `2000-XREFFILE-PROC` | `StatementFileService` | `accessCardCrossReference()` | CALL 'CBSTM03B' file op on XREFFILE → injected CardCrossReferenceRepository access |
-| `CBSTM03B.CBL` | `2900-EXIT` | `StatementFileService` | `accessCardCrossReference() (end)` | PERFORM...THRU terminator → marks end of accessCardCrossReference(); no separate Java method |
-| `CBSTM03B.CBL` | `2999-EXIT` | `StatementFileService` | `accessCardCrossReference() (end)` | PERFORM...THRU terminator → marks end of accessCardCrossReference(); no separate Java method |
-| `CBSTM03B.CBL` | `3000-CUSTFILE-PROC` | `StatementFileService` | `accessCustomer()` | CALL 'CBSTM03B' file op on CUSTFILE → injected CustomerRepository access |
-| `CBSTM03B.CBL` | `3900-EXIT` | `StatementFileService` | `accessCustomer() (end)` | PERFORM...THRU terminator → marks end of accessCustomer(); no separate Java method |
-| `CBSTM03B.CBL` | `3999-EXIT` | `StatementFileService` | `accessCustomer() (end)` | PERFORM...THRU terminator → marks end of accessCustomer(); no separate Java method |
-| `CBSTM03B.CBL` | `4000-ACCTFILE-PROC` | `StatementFileService` | `accessAccount()` | CALL 'CBSTM03B' file op on ACCTFILE → injected AccountRepository access |
-| `CBSTM03B.CBL` | `4900-EXIT` | `StatementFileService` | `accessAccount() (end)` | PERFORM...THRU terminator → marks end of accessAccount(); no separate Java method |
-| `CBSTM03B.CBL` | `4999-EXIT` | `StatementFileService` | `accessAccount() (end)` | PERFORM...THRU terminator → marks end of accessAccount(); no separate Java method |
+| `CBSTM03B.CBL` | `0000-START` | `StatementProcessor` | `start()` | Mainline entry → Spring Batch step/tasklet entry |
+| `CBSTM03B.CBL` | `9999-GOBACK` | `StatementProcessor` | `finish()` | GOBACK → step completion / return |
+| `CBSTM03B.CBL` | `1000-TRNXFILE-PROC` | `StatementProcessor` | `accessTransaction()` | CALL 'CBSTM03B' file op on TRNXFILE → injected TransactionRepository access |
+| `CBSTM03B.CBL` | `1900-EXIT` | `StatementProcessor` | `accessTransaction() (end)` | PERFORM...THRU terminator → marks end of accessTransaction(); no separate Java method |
+| `CBSTM03B.CBL` | `1999-EXIT` | `StatementProcessor` | `accessTransaction() (end)` | PERFORM...THRU terminator → marks end of accessTransaction(); no separate Java method |
+| `CBSTM03B.CBL` | `2000-XREFFILE-PROC` | `CrossReferenceFileReader` | `accessCardCrossReference()` | CALL 'CBSTM03B' file op on XREFFILE → CrossReferenceFileReader supplies xref items (CardCrossReferenceRepository) |
+| `CBSTM03B.CBL` | `2900-EXIT` | `CrossReferenceFileReader` | `accessCardCrossReference() (end)` | PERFORM...THRU terminator → marks end of accessCardCrossReference(); no separate Java method |
+| `CBSTM03B.CBL` | `2999-EXIT` | `CrossReferenceFileReader` | `accessCardCrossReference() (end)` | PERFORM...THRU terminator → marks end of accessCardCrossReference(); no separate Java method |
+| `CBSTM03B.CBL` | `3000-CUSTFILE-PROC` | `StatementProcessor` | `accessCustomer()` | CALL 'CBSTM03B' file op on CUSTFILE → injected CustomerRepository access |
+| `CBSTM03B.CBL` | `3900-EXIT` | `StatementProcessor` | `accessCustomer() (end)` | PERFORM...THRU terminator → marks end of accessCustomer(); no separate Java method |
+| `CBSTM03B.CBL` | `3999-EXIT` | `StatementProcessor` | `accessCustomer() (end)` | PERFORM...THRU terminator → marks end of accessCustomer(); no separate Java method |
+| `CBSTM03B.CBL` | `4000-ACCTFILE-PROC` | `StatementProcessor` | `accessAccount()` | CALL 'CBSTM03B' file op on ACCTFILE → injected AccountRepository access |
+| `CBSTM03B.CBL` | `4900-EXIT` | `StatementProcessor` | `accessAccount() (end)` | PERFORM...THRU terminator → marks end of accessAccount(); no separate Java method |
+| `CBSTM03B.CBL` | `4999-EXIT` | `StatementProcessor` | `accessAccount() (end)` | PERFORM...THRU terminator → marks end of accessAccount(); no separate Java method |
 
 ## 5. Reproducibility
 
