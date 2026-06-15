@@ -1,0 +1,195 @@
+# =============================================================================
+# CardDemo (Java) — "test" Spring Profile  (application-test.yml)
+# =============================================================================
+# Integration-test overlay for the AWS CardDemo mainframe-to-cloud migration.
+# Activated automatically when the "test" profile is selected (the file name
+# scopes the profile — there is intentionally NO spring.config.activate.on-profile
+# and NO `---` document marker). It is consumed by the Testcontainers-backed
+# integration / end-to-end suite under src/test/java/com/carddemo/integration/**
+# and e2e/**, run via:  ./mvnw verify -Pintegration   (AAP §0.6.1, §0.7.7).
+#
+# This overlay inherits EVERYTHING from application.yml and overrides only the
+# values that must differ for a hermetic, container-driven test run. The guiding
+# principle is "dynamic over static":
+#
+#   * The PostgreSQL JDBC URL/credentials are NOT hardcoded here. A PostgreSQL
+#     Testcontainer (image postgres:16) supplies them at runtime via Spring Boot
+#     3.x `@ServiceConnection` (preferred) or `@DynamicPropertySource`, both of
+#     which take precedence over the (empty) placeholders below. This keeps the
+#     suite free of fixed hostnames and avoids any conflicting hardcoded
+#     datasource (Testcontainers 2.0.3 + Spring Boot 3.5.15 — AAP §0.6.1).
+#   * The AWS endpoint is NOT hardcoded here. A LocalStack Testcontainer maps a
+#     random host port, so its endpoint is injected at runtime via
+#     `@DynamicPropertySource` (localStackContainer.getEndpoint()) into the
+#     dynamic placeholder `spring.cloud.aws.endpoint`. Zero live AWS is ever
+#     contacted (LocalStack Verification rule — AAP §0.7.7, §0.3.2).
+#
+# Security posture (AAP §0.8.1 — MANDATORY):
+#   * No hardcoded production credentials or real secrets. Datasource creds come
+#     from the container; AWS creds default to the well-known LocalStack dummies
+#     (test/test); the JWT signing key defaults to an OBVIOUSLY non-production,
+#     env-overridable test-only literal (required because HS256 signing needs a
+#     deterministic ≥32-char key for the test context — see config/SecurityConfig).
+#
+# Scope note: the second attached cloud environment (Environment 2) is out of
+# scope and intentionally absent from this configuration (AAP §0.3.2, §0.7.8).
+#
+# Traceability: original COBOL source repository commit SHA 27d6c6f
+#   ("CardDemo_v1.0-15-g27d6c6f-68"). No COBOL/JCL is copied; this file has no
+#   COBOL equivalent (cross-cutting test configuration). The AWS resource names
+#   trace conceptually to app/jcl/DEFGDGB.jcl (GDG bases -> S3 buckets) and the
+#   user-security data to app/jcl/DUSRSECJ.jcl (USRSEC -> UserSecurity entity).
+# =============================================================================
+
+spring:
+
+  # ---------------------------------------------------------------------------
+  # Datasource — Testcontainers-provided (PostgreSQL 16)
+  # The base file carries a localhost default suitable for a developer machine.
+  # The test profile DELIBERATELY blanks it: the integration tests start a
+  # PostgreSQL Testcontainer and wire its JDBC URL/username/password at runtime
+  # through `@ServiceConnection` (Spring Boot auto-provides a JdbcConnectionDetails
+  # bean that wins over these properties) or `@DynamicPropertySource`. Empty
+  # placeholders guarantee a test without a container fails fast rather than
+  # silently connecting to a real/dev database, and ensure there is NO hardcoded
+  # host:port and NO hardcoded credential (AAP §0.8.1, §0.7.7).
+  # ---------------------------------------------------------------------------
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:}
+    username: ${SPRING_DATASOURCE_USERNAME:}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate — VALIDATE only (never create/update)
+  # Flyway provisions the schema inside the fresh test container (below); Hibernate
+  # only validates that the JPA entities match that Flyway-provisioned schema,
+  # preserving VSAM->PostgreSQL layout fidelity. SQL echo is off to keep the test
+  # logs clean and assertions deterministic.
+  # ---------------------------------------------------------------------------
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+
+  # ---------------------------------------------------------------------------
+  # Flyway — provisions + seeds the schema into the fresh test container
+  # The migrations run on startup before the EntityManagerFactory initializes, so
+  # the schema and seed data exist before any online or batch flow under test.
+  # STRICT discovery order in classpath:db/migration is:
+  #   V1__create_schema.sql -> V2__create_indexes.sql -> V3__seed_data.sql.
+  # This is precisely how Gate 4 loads the 9 ASCII fixtures and how the Gate 1
+  # boundary test runs against REAL PostgreSQL (not mocks) — AAP §0.7.2.
+  # ---------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch — explicit launch in tests
+  # Jobs must NOT auto-run at context start: the integration suite launches the
+  # 5-stage pipeline explicitly via JobLauncherTestUtils so each stage can be
+  # asserted in isolation. Batch metadata tables stay under Flyway/schema control
+  # (consistent with the base), so Boot must not auto-create them.
+  # ---------------------------------------------------------------------------
+  batch:
+    jdbc:
+      initialize-schema: never
+    job:
+      enabled: false
+
+  # ---------------------------------------------------------------------------
+  # Spring Cloud AWS (io.awspring.cloud 3.3.0) -> LocalStack Testcontainer
+  # Region + credentials are the LocalStack dummies (test/test); LocalStack
+  # ignores credential values but the SDK still requires them present.
+  #
+  # The endpoint is the GLOBAL override key `spring.cloud.aws.endpoint`, which is
+  # the single key consumed by config/AwsConfig.java for the S3, SQS, and SNS
+  # clients. It is left EMPTY here on purpose: the LocalStack Testcontainer maps a
+  # random host port, so the integration test's `@DynamicPropertySource` sets the
+  # real value from localStackContainer.getEndpoint(). An empty value resolves to
+  # "no override" (AwsConfig guards with StringUtils.hasText), so the file is also
+  # valid for an env-supplied endpoint (the AWS_ENDPOINT environment variable).
+  # No host:port is ever hardcoded (AAP §0.7.7). Path-style access is MANDATORY
+  # for LocalStack bucket addressing.
+  # ---------------------------------------------------------------------------
+  cloud:
+    aws:
+      region:
+        static: ${AWS_REGION:us-east-1}
+      credentials:
+        access-key: ${AWS_ACCESS_KEY_ID:test}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+      endpoint: ${AWS_ENDPOINT:}
+      s3:
+        path-style-access-enabled: true
+
+# -----------------------------------------------------------------------------
+# HTTP server — random port for the test context
+# `@SpringBootTest(webEnvironment = RANDOM_PORT)` overrides this anyway; setting
+# 0 additionally guarantees that any test which does bind the web server never
+# clashes with a developer instance already holding 8080.
+# -----------------------------------------------------------------------------
+server:
+  port: 0
+
+# -----------------------------------------------------------------------------
+# Observability — minimized for tests (Observability rule, AAP §0.7.1)
+# Trace SAMPLING is disabled (probability 0.0) so the suite needs no Jaeger/OTLP
+# collector: with nothing sampled, the inherited OTLP exporter never emits a span
+# and never opens a connection. Override TRACING_SAMPLE only if a tracing
+# assertion requires it. Actuator exposes the minimal surface needed by the
+# contract/metrics tests (health for readiness probes, info, and prometheus for
+# the Gate 5 / observability metric assertions).
+# -----------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLE:0.0}
+
+# -----------------------------------------------------------------------------
+# Application-scoped (carddemo.*) configuration
+# -----------------------------------------------------------------------------
+carddemo:
+
+  # ---------------------------------------------------------------------------
+  # Security / JWT — deterministic TEST-ONLY signing key
+  # config/SecurityConfig builds an HS256 HMAC key from this value and REQUIRES a
+  # non-blank secret of at least 32 characters. The base profile has no default
+  # (it must come from JWT_SECRET); the test profile provides an obviously
+  # non-production, env-overridable literal so the suite can mint/verify tokens
+  # deterministically without external secret injection. This is NOT a real
+  # credential (AAP §0.8.1); CI may still override it via the JWT_SECRET env var.
+  # ---------------------------------------------------------------------------
+  security:
+    jwt:
+      secret: ${JWT_SECRET:carddemo-test-only-jwt-signing-secret-not-for-production-use}
+
+  # ---------------------------------------------------------------------------
+  # AWS resource names — binding contract shared VERBATIM with
+  # localstack-init/init-aws.sh, docker-compose.yml, config/AwsConfig.java and
+  # application-local.yml. The integration tests create these resources in
+  # @BeforeAll and tear them down in @AfterAll against the LocalStack container
+  # (self-provisioning tests — AAP §0.7.7). Names are env-overridable so a test
+  # run can isolate resources if needed; defaults match the canonical contract.
+  #   * S3 buckets re-host the GDG / batch-staging datasets (app/jcl/DEFGDGB.jcl).
+  #   * The SQS FIFO queue replaces the CICS TDQ "WRITEQ TD" report bridge
+  #     (app/cbl/CORPT00C.cbl).
+  #   * The SNS topic carries notification fan-out.
+  # ---------------------------------------------------------------------------
+  aws:
+    s3:
+      bucket-input: ${S3_BUCKET_INPUT:carddemo-batch-input}
+      bucket-output: ${S3_BUCKET_OUTPUT:carddemo-batch-output}
+      bucket-statements: ${S3_BUCKET_STATEMENTS:carddemo-statements}
+    sqs:
+      report-queue: ${SQS_REPORT_QUEUE:carddemo-report-jobs.fifo}
+    sns:
+      notifications-topic: ${SNS_NOTIFICATIONS_TOPIC:carddemo-notifications}
