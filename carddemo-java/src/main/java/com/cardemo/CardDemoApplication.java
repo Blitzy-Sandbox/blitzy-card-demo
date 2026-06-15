@@ -2,6 +2,7 @@ package com.cardemo;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration;
 
 /**
  * Spring Boot bootstrap entry point for the greenfield <strong>Java 25 LTS + Spring Boot 3.5.15</strong>
@@ -62,6 +63,21 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *       online&rarr;batch report bridge is publish-only (see {@code DECISION_LOG.md} D-012); the Spring
  *       Security filter chain and the BCrypt {@code PasswordEncoder} are defined in
  *       {@code config/SecurityConfig}.</dd>
+ *   <dt>{@code UserDetailsServiceAutoConfiguration} &mdash; explicitly EXCLUDED</dt>
+ *   <dd>Because {@code config/SecurityConfig} deliberately defines no {@code UserDetailsService},
+ *       {@code AuthenticationManager} or {@code AuthenticationProvider} bean (it stays decoupled from
+ *       the repository/entity layers), Spring Boot would otherwise auto-configure an
+ *       {@code InMemoryUserDetailsManager} with a random default user and print
+ *       &quot;Using generated security password: &hellip;&quot; to the logs on <em>every</em> boot.
+ *       That default user is never consulted &mdash; HTTP Basic and form login are disabled in
+ *       {@code SecurityConfig} and authentication is the custom token flow in
+ *       {@code service/auth/AuthenticationService} &mdash; so its only observable effect is a
+ *       credential string written to the logs, a log-hygiene / production-readiness defect that
+ *       conflicts with the &quot;no credentials in logs&quot; posture of AAP &sect;0.7.2. Excluding
+ *       {@link UserDetailsServiceAutoConfiguration} suppresses the default user (and therefore the
+ *       logged password) at the single most isolated point, honouring the Minimal Change Clause
+ *       (AAP &sect;0.7.1); no behaviour changes because the in-memory user was already unused.
+ *       (Resolves QA checkpoint FINAL&nbsp;5 finding&nbsp;F-1.)</dd>
  * </dl>
  *
  * <h2>Startup ordering</h2>
@@ -73,8 +89,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *
  * @see SpringApplication
  * @see SpringBootApplication
+ * @see UserDetailsServiceAutoConfiguration
  */
-@SpringBootApplication
+@SpringBootApplication(exclude = { UserDetailsServiceAutoConfiguration.class })
 public class CardDemoApplication {
 
     /**
