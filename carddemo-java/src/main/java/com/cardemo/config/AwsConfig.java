@@ -1,12 +1,24 @@
 package com.cardemo.config;
 
+import java.time.Duration;
+
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+
+import io.awspring.cloud.autoconfigure.AwsAsyncClientCustomizer;
+import io.awspring.cloud.autoconfigure.AwsSyncClientCustomizer;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.validation.annotation.Validated;
+
+import software.amazon.awssdk.awscore.client.builder.AwsAsyncClientBuilder;
+import software.amazon.awssdk.awscore.client.builder.AwsSyncClientBuilder;
+import software.amazon.awssdk.core.client.builder.SdkClientBuilder;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 
 /**
  * AWS infrastructure {@code @Configuration} for the greenfield Java 25 LTS + Spring Boot 3.5.15
@@ -105,22 +117,132 @@ import org.springframework.validation.annotation.Validated;
 public class AwsConfig {
 
     /*
-     * Intentionally NO client @Bean definitions.
+     * Client construction is delegated to auto-configuration; this class hand-builds NO client bean
+     * and contributes ONLY the two property-driven timeout customizers below.
      *
      * Spring Cloud AWS 3.3.0 (spring-cloud-aws-starter-s3 / -sqs / -sns, tech-spec L734-L736)
      * auto-configures every client and template the application needs:
      *   - S3Client + S3Template
-     *   - SqsTemplate + SqsAsyncClient (the SQS listener container is also auto-configured)
+     *   - SqsTemplate + SqsAsyncClient (the SQS listener-CONTAINER infrastructure is auto-configured
+     *     by the starter, but NO application @SqsListener is defined anywhere in this repository: the
+     *     sole online->batch report bridge is PUBLISH-ONLY, faithful to CORPT00C's WRITEQ('JOBS')
+     *     followed by out-of-band JES pickup; see DECISION_LOG.md D-012 and ReportSubmissionService)
      *   - SnsTemplate + SnsClient
      * All of them are built from the spring.cloud.aws.* properties (endpoint / region.static /
      * credentials.* / s3.path-style-access-enabled) declared in application-local.yml and
-     * application-test.yml. Per the Minimal Change Clause (AAP S0.7.1) no client bean is hand-built
+     * application-test.yml. Per the Minimal Change Clause (AAP S0.7.1) NO client bean is hand-built
      * here: doing so would duplicate the auto-configuration and would force an endpoint/region
      * literal into Java, violating the zero-hardcoded-endpoint / zero-live-AWS mandates
-     * (AAP S0.7.2 / S0.7.7). If a future consumer ever needs a customizer (for example FIFO
-     * message-group defaults), it must read its inputs from properties below or from
-     * spring.cloud.aws.* - never from literals.
+     * (AAP S0.7.2 / S0.7.7).
+     *
+     * The ONLY beans this class contributes are the two AWS SDK v2 client customizers below. They
+     * pin EXPLICIT, AUDITABLE api-call timeout bounds (apiCallTimeout / apiCallAttemptTimeout) onto
+     * every auto-configured client so an outbound AWS call fast-fails within a known ceiling instead
+     * of depending on implicit SDK defaults (resilience hardening; technology-substitution
+     * documented at the point of change per AAP S0.7.1, decision D-013). They are exactly the
+     * property-driven customizer this design always anticipated: every input is read from
+     * carddemo.aws.timeout.* (bound by AwsResourceProperties below) - never from literals - and they
+     * ADD the timeouts onto the EXISTING auto-configured override (preserving Spring Cloud AWS's
+     * user-agent and any other defaults via toBuilder()), never replacing a client.
      */
+
+    /**
+     * Customizer applied to every auto-configured AWS <strong>synchronous</strong> SDK client
+     * builder ({@code S3Client}, {@code SnsClient}).
+     *
+     * <p>Spring Cloud AWS collects all {@link AwsSyncClientCustomizer} beans and runs them via
+     * {@code AwsClientBuilderConfigurer.configureSyncClient(...)} <em>after</em> it has installed its
+     * own {@link ClientOverrideConfiguration} (which carries the framework user-agent). This bean
+     * therefore reads that existing override and ADDS the explicit api-call timeout bounds on top,
+     * preserving the user-agent rather than clobbering it (decision <strong>D-013</strong>; AAP
+     * &sect;0.7.1 Minimal Change Clause &mdash; resilience hardening with no behavioural change to
+     * the migrated business logic).</p>
+     *
+     * <p>The customizer callback hands back an {@link AwsSyncClientBuilder} reference, whose static
+     * type only exposes the synchronous HTTP-client setters &mdash; the {@code overrideConfiguration}
+     * getter/setter live on {@link SdkClientBuilder}, which the <em>concrete</em> runtime builder
+     * ({@code S3ClientBuilder}, {@code SnsClientBuilder}) implements via {@code AwsClientBuilder} but
+     * {@code AwsSyncClientBuilder} itself does not extend. A narrowing interface cast to
+     * {@link SdkClientBuilder} therefore exposes the override accessors; it is always safe because
+     * Spring Cloud AWS only ever passes real AWS service builders here.</p>
+     *
+     * @param properties the bound {@link AwsResourceProperties}; supplies the
+     *                   {@code carddemo.aws.timeout.*} bounds (never {@code null})
+     * @return a customizer that pins {@code apiCallTimeout}/{@code apiCallAttemptTimeout} on sync
+     *         client builders
+     */
+    @Bean
+    AwsSyncClientCustomizer cardDemoAwsSyncClientTimeoutCustomizer(final AwsResourceProperties properties) {
+        final AwsResourceProperties.Timeout timeout = properties.getTimeout();
+        return builder -> {
+            final SdkClientBuilder<?, ?> clientBuilder = (SdkClientBuilder<?, ?>) builder;
+            clientBuilder.overrideConfiguration(
+                    withApiCallTimeouts(clientBuilder.overrideConfiguration(), timeout));
+        };
+    }
+
+    /**
+     * Customizer applied to every auto-configured AWS <strong>asynchronous</strong> SDK client
+     * builder ({@code SqsAsyncClient} &mdash; the client backing the online&rarr;batch report
+     * bridge's FIFO publish).
+     *
+     * <p>Spring Cloud AWS collects all {@link AwsAsyncClientCustomizer} beans and runs them via
+     * {@code AwsClientBuilderConfigurer.configureAsyncClient(...)}, mirroring the sync path above.
+     * The same additive, user-agent-preserving strategy applies (decision <strong>D-013</strong>;
+     * AAP &sect;0.7.1). The same narrowing cast to {@link SdkClientBuilder} is required because
+     * {@link AwsAsyncClientBuilder} exposes only the asynchronous HTTP-client setters statically,
+     * while the {@code overrideConfiguration} accessors are declared on {@link SdkClientBuilder} and
+     * implemented by the concrete runtime builder ({@code SqsAsyncClientBuilder}).</p>
+     *
+     * @param properties the bound {@link AwsResourceProperties}; supplies the
+     *                   {@code carddemo.aws.timeout.*} bounds (never {@code null})
+     * @return a customizer that pins {@code apiCallTimeout}/{@code apiCallAttemptTimeout} on async
+     *         client builders
+     */
+    @Bean
+    AwsAsyncClientCustomizer cardDemoAwsAsyncClientTimeoutCustomizer(final AwsResourceProperties properties) {
+        final AwsResourceProperties.Timeout timeout = properties.getTimeout();
+        return builder -> {
+            final SdkClientBuilder<?, ?> clientBuilder = (SdkClientBuilder<?, ?>) builder;
+            clientBuilder.overrideConfiguration(
+                    withApiCallTimeouts(clientBuilder.overrideConfiguration(), timeout));
+        };
+    }
+
+    /**
+     * Additively layers the configured api-call timeout bounds onto an existing
+     * {@link ClientOverrideConfiguration}, returning the merged configuration.
+     *
+     * <p>This helper is deliberately <em>generics-free</em>: it operates purely on the concrete
+     * {@link ClientOverrideConfiguration} value rather than on the AWS builder type, so a single
+     * implementation serves both the synchronous and asynchronous customizer beans above. Each bean
+     * narrows its builder to {@link SdkClientBuilder} (the type that declares the
+     * {@code overrideConfiguration()} getter and {@code overrideConfiguration(ClientOverrideConfiguration)}
+     * setter &mdash; both non-generic in their signatures), reads the existing override, hands it here,
+     * and writes the merged result back. Factoring the merge at the override-configuration level keeps
+     * the shared logic free of the F-bounded builder type parameters
+     * ({@code B extends SdkClientBuilder<B,C>}) that would otherwise force per-builder generics.</p>
+     *
+     * <p>Any pre-existing override installed by Spring Cloud AWS (e.g. the framework user-agent) is
+     * copied via {@link ClientOverrideConfiguration#toBuilder()} before the two explicit timeouts are
+     * applied &mdash; so the timeouts are <em>added</em>, never substituted for the framework defaults
+     * (decision <strong>D-013</strong>; AAP &sect;0.7.1).</p>
+     *
+     * @param existing the override already present on the builder (may be {@code null} if none)
+     * @param timeout  the bound {@code carddemo.aws.timeout.*} values (never {@code null})
+     * @return a new {@link ClientOverrideConfiguration} carrying the prior settings plus the two
+     *         explicit api-call timeout bounds
+     */
+    private static ClientOverrideConfiguration withApiCallTimeouts(
+            final ClientOverrideConfiguration existing,
+            final AwsResourceProperties.Timeout timeout) {
+        final ClientOverrideConfiguration.Builder overrideBuilder =
+                (existing != null) ? existing.toBuilder() : ClientOverrideConfiguration.builder();
+        return overrideBuilder
+                .apiCallTimeout(timeout.getApiCall())
+                .apiCallAttemptTimeout(timeout.getApiCallAttempt())
+                .build();
+    }
 
     /**
      * Strongly-typed binder for the application-owned AWS resource <em>names</em> &mdash; the S3
@@ -175,6 +297,14 @@ public class AwsConfig {
         private final Sns sns = new Sns();
 
         /**
+         * Explicit AWS SDK api-call timeout bounds (resilience hardening, decision
+         * <strong>D-013</strong>) applied to every auto-configured client by the customizers in
+         * {@link AwsConfig}.
+         */
+        @Valid
+        private final Timeout timeout = new Timeout();
+
+        /**
          * Returns the S3 resource-name group.
          *
          * @return the immutable {@link S3} holder (never {@code null}); Spring binds individual
@@ -202,6 +332,16 @@ public class AwsConfig {
          */
         public Sns getSns() {
             return sns;
+        }
+
+        /**
+         * Returns the AWS api-call timeout group.
+         *
+         * @return the immutable {@link Timeout} holder (never {@code null}); Spring binds the
+         *         {@code carddemo.aws.timeout.*} durations into it via the leaf setters
+         */
+        public Timeout getTimeout() {
+            return timeout;
         }
 
         /**
@@ -351,6 +491,75 @@ public class AwsConfig {
              */
             public void setNotificationsTopic(final String notificationsTopic) {
                 this.notificationsTopic = notificationsTopic;
+            }
+        }
+
+        /**
+         * Explicit AWS SDK v2 api-call timeout bounds (decision <strong>D-013</strong>) that the
+         * {@link AwsConfig} customizers pin onto every auto-configured client.
+         *
+         * <p>These give the integration tier an <em>auditable</em> upper bound on outbound AWS calls
+         * rather than depending on the SDK's implicit HTTP-client defaults. A connection-refused
+         * endpoint (e.g. LocalStack down) still fails fast immediately; these bounds additionally cap
+         * the worst case where an endpoint accepts the socket but never responds, so no call can hang
+         * indefinitely (AAP &sect;0.7.1 &mdash; resilience hardening, behaviour-preserving). Both
+         * values bind from {@code carddemo.aws.timeout.*} in {@code application-local.yml} and
+         * {@code application-test.yml}; the in-code defaults below are deliberately generous so the
+         * LocalStack-backed integration tests' small-object S3/SQS/SNS operations never trip them.</p>
+         *
+         * <p>Spring's relaxed {@link Duration} binding accepts unit suffixes ({@code 60s}, {@code
+         * 20s}, {@code 500ms}) directly from YAML.</p>
+         */
+        public static class Timeout {
+
+            /**
+             * Overall per-call ceiling spanning all retry attempts &rarr; AWS SDK
+             * {@code apiCallTimeout}. Binds {@code carddemo.aws.timeout.api-call}.
+             */
+            @NotNull
+            private Duration apiCall = Duration.ofSeconds(60);
+
+            /**
+             * Ceiling for a single attempt within a call (before a retry) &rarr; AWS SDK
+             * {@code apiCallAttemptTimeout}. Binds {@code carddemo.aws.timeout.api-call-attempt}.
+             */
+            @NotNull
+            private Duration apiCallAttempt = Duration.ofSeconds(20);
+
+            /**
+             * Returns the overall api-call timeout.
+             *
+             * @return the per-call timeout across all attempts (default 60s)
+             */
+            public Duration getApiCall() {
+                return apiCall;
+            }
+
+            /**
+             * Sets the overall api-call timeout (invoked by Spring's configuration binder).
+             *
+             * @param apiCall the per-call timeout across all attempts; must not be {@code null}
+             */
+            public void setApiCall(final Duration apiCall) {
+                this.apiCall = apiCall;
+            }
+
+            /**
+             * Returns the per-attempt api-call timeout.
+             *
+             * @return the single-attempt timeout (default 20s)
+             */
+            public Duration getApiCallAttempt() {
+                return apiCallAttempt;
+            }
+
+            /**
+             * Sets the per-attempt api-call timeout (invoked by Spring's configuration binder).
+             *
+             * @param apiCallAttempt the single-attempt timeout; must not be {@code null}
+             */
+            public void setApiCallAttempt(final Duration apiCallAttempt) {
+                this.apiCallAttempt = apiCallAttempt;
             }
         }
     }

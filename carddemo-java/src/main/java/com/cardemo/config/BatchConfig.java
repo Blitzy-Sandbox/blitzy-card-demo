@@ -161,10 +161,13 @@ public class BatchConfig {
      *
      *   - Custom JobLauncher : NOT declared. The auto-configured launcher (a synchronous
      *     TaskExecutorJobLauncher wrapping the auto-configured JobRepository) is sufficient: the
-     *     BatchPipelineOrchestrator wants synchronous, sequential stage execution, and the
-     *     SQS-triggered ReportSubmissionService launches on the listener thread. Both simply @Autowire
-     *     the auto-configured JobLauncher. Declaring an async launcher here would be speculative and
-     *     would change global launch semantics (Minimal Change Clause).
+     *     BatchPipelineOrchestrator (and the integration tests) want synchronous, sequential stage
+     *     execution and simply @Autowire that launcher. The sole online->batch report bridge does NOT
+     *     launch this (or any) job in-process: ReportSubmissionService is PUBLISH-ONLY -- it @Autowires
+     *     SqsTemplate (not JobLauncher) and emits a single SQS FIFO message, faithful to CORPT00C's
+     *     WRITEQ('JOBS') followed by out-of-band JES pickup (no in-repo @SqsListener; see
+     *     DECISION_LOG.md D-012). Declaring an async launcher here would be speculative and would
+     *     change global launch semantics (Minimal Change Clause).
      *
      *   - Startup ApplicationRunner / CommandLineRunner that launches jobs : NOT declared. Jobs must
      *     not auto-run on startup; the no-auto-run policy is realized declaratively by

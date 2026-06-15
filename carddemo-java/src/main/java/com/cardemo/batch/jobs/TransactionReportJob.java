@@ -100,21 +100,29 @@ import org.springframework.transaction.PlatformTransactionManager;
  *       the COBOL sequential {@code WRITE} ({@code 1111-WRITE-REPORT-REC}).</li>
  * </ul>
  *
- * <h2>Dual role &mdash; pipeline stage and on-demand report bridge</h2>
- * <p>The {@link #transactionReportJob(JobRepository, Step) transactionReportJob} bean has two callers:</p>
+ * <h2>Two launch paths &mdash; pipeline stage&nbsp;4b and out-of-band report submission</h2>
+ * <p>The {@link #transactionReportJob(JobRepository, Step) transactionReportJob} bean is launched on
+ * two paths:</p>
  * <ol>
  *   <li><strong>Stage&nbsp;4b of the batch pipeline.</strong> After {@code COMBTRAN} completes,
  *       {@code BatchPipelineOrchestrator} may run statement generation (4a) and this transaction report
  *       (4b) concurrently via {@code FlowBuilder.split(...)} (AAP &sect;0.7.6).</li>
- *   <li><strong>On-demand, SQS-triggered execution.</strong> The sole online&rarr;batch bridge
- *       {@code CORPT00C} (which on the mainframe issued {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} to submit
- *       a report job to JES) becomes an SQS message on {@code carddemo-report-jobs.fifo}. The
- *       {@code @SqsListener} that consumes that message and calls
- *       {@code JobLauncher.run(transactionReportJob, params)} with the requested {@code startDate}/
- *       {@code endDate} is the <strong>service-layer report bridge</strong> ({@code ReportSubmissionService}
- *       in {@code com.cardemo.service.report}). That listener is intentionally <strong>NOT</strong> defined
- *       in this file (it is a service-layer concern, AAP &sect;0.6.3); this class exposes only the
- *       launchable {@link Job} bean and documents the integration point.</li>
+ *   <li><strong>On-demand report submission &mdash; a PUBLISH-ONLY bridge.</strong> The sole
+ *       online&rarr;batch bridge {@code CORPT00C} (which on the mainframe issued
+ *       {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} to enqueue a report job) is migrated by
+ *       {@code ReportSubmissionService} ({@code com.cardemo.service.report}) to a single SQS publish
+ *       onto {@code carddemo-report-jobs.fifo} (AAP &sect;0.6.3 / &sect;0.4.1; decision
+ *       <strong>D-004</strong>). That publish is the migrated deliverable and the full extent of the
+ *       bridge in this repository: there is deliberately <strong>NO</strong> in-repo
+ *       {@code @SqsListener} that consumes the queue and calls
+ *       {@code JobLauncher.run(transactionReportJob, params)}. This faithfully reproduces the legacy
+ *       behaviour &mdash; {@code CORPT00C} performed only the {@code WRITEQ}, and the actual job pickup
+ *       happened OUT-OF-BAND in JES, never inside the COBOL program. Adding a consumer that launches
+ *       this job would introduce behaviour beyond the technology transition (feature expansion barred
+ *       by AAP &sect;0.7.2 / &sect;0.7.1); the rationale and the explicit out-of-band-trigger boundary
+ *       are recorded in {@code DECISION_LOG.md} (decision <strong>D-012</strong>). This class therefore
+ *       exposes only the launchable {@link Job} bean; it is invoked by the orchestrator (path&nbsp;1)
+ *       or by an out-of-band / JES-equivalent trigger, exactly as on the mainframe.</li>
  * </ol>
  *
  * <h2>Job-parameter contract</h2>

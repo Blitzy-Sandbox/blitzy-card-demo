@@ -164,6 +164,16 @@ carddemo:
     sns:
       # Notification fan-out (replaces CICS notification messaging).
       notifications-topic: ${CARDDEMO_SNS_NOTIFICATIONS_TOPIC:carddemo-notifications}
+    timeout:
+      # Explicit, auditable AWS SDK api-call timeout bounds (decision D-013; AAP S0.7.1 resilience
+      # hardening). Bound into AwsConfig.AwsResourceProperties.Timeout and applied to every
+      # auto-configured client by the AwsConfig sync/async client customizers so an outbound AWS
+      # call fast-fails within a known ceiling instead of relying on implicit SDK defaults. Spring
+      # accepts Duration unit suffixes (e.g. 60s, 20s) directly.
+      # Overall per-call ceiling spanning all retry attempts -> apiCallTimeout.
+      api-call: ${CARDDEMO_AWS_API_CALL_TIMEOUT:60s}
+      # Per single-attempt ceiling (before a retry) -> apiCallAttemptTimeout.
+      api-call-attempt: ${CARDDEMO_AWS_API_CALL_ATTEMPT_TIMEOUT:20s}
 
 # =============================================================================
 # Phase 4 — Observability: tracing -> Jaeger (ENABLED for local)

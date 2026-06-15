@@ -56,8 +56,10 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *   <dd>The meta-annotation's default scan (rooted at this class's package) already covers every
  *       subpackage; a narrower or different value would orphan beans.</dd>
  *   <dt>{@code @EnableScheduling} / {@code @EnableAsync} &mdash; intentionally ABSENT</dt>
- *   <dd>No speculative enablement (Minimal Change Clause). Spring Cloud AWS S3/SQS/SNS clients and SQS
- *       listeners are auto-configured via the AWS starters and {@code config/AwsConfig}; the Spring
+ *   <dd>No speculative enablement (Minimal Change Clause). Spring Cloud AWS S3/SQS/SNS clients and the
+ *       SQS listener-container infrastructure are auto-configured via the AWS starters and
+ *       {@code config/AwsConfig} &mdash; no application {@code @SqsListener} is defined, because the sole
+ *       online&rarr;batch report bridge is publish-only (see {@code DECISION_LOG.md} D-012); the Spring
  *       Security filter chain and the BCrypt {@code PasswordEncoder} are defined in
  *       {@code config/SecurityConfig}.</dd>
  * </dl>

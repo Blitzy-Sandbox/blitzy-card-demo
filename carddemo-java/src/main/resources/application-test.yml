@@ -140,6 +140,13 @@ carddemo:
     sns:
       # Notification fan-out (replaces CICS notification messaging).
       notifications-topic: ${CARDDEMO_SNS_NOTIFICATIONS_TOPIC:carddemo-notifications}
+    timeout:
+      # Explicit, auditable AWS SDK api-call timeout bounds (decision D-013; AAP S0.7.1). Applied to
+      # every auto-configured client by the AwsConfig sync/async client customizers. Kept identical
+      # to the local profile and deliberately generous so the LocalStack-backed Testcontainers ITs'
+      # small-object S3/SQS/SNS operations never trip them (connection-refused still fails fast).
+      api-call: ${CARDDEMO_AWS_API_CALL_TIMEOUT:60s}
+      api-call-attempt: ${CARDDEMO_AWS_API_CALL_ATTEMPT_TIMEOUT:20s}
   # ---------------------------------------------------------------------------
   # Stateless auth token (carddemo.security.token.*) — test-only signing secret
   # ---------------------------------------------------------------------------
