@@ -13,6 +13,7 @@ import org.junit.jupiter.api.extension.BeforeAllCallback;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.extension.ExtensionContext;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -39,6 +40,7 @@ import org.testcontainers.utility.DockerImageName;
  * of callback ordering.</p>
  */
 @SpringBootTest
+@Import(SqsListenerAutoStartupDisabledConfig.class)
 @ActiveProfiles("test")
 @Testcontainers(disabledWithoutDocker = true)
 @ExtendWith(AbstractAwsLocalStackIT.SharedAwsResourcesExtension.class)
