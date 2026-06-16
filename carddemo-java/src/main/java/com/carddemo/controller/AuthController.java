@@ -10,6 +10,8 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
+import org.springframework.security.oauth2.jwt.JwsHeader;
 import org.springframework.security.oauth2.jwt.JwtClaimsSet;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
@@ -54,7 +56,10 @@ public class AuthController {
                 .claim("userType", userType.name())
                 .claim("roles", List.of("ROLE_" + userType.name()))
                 .build();
-        String token = jwtEncoder.encode(JwtEncoderParameters.from(claims)).getTokenValue();
+        // Sign with HS256 to match the symmetric (HMAC) key configured in SecurityConfig; the
+        // encoder's default header would request RS256 and fail to select the configured JWK.
+        JwsHeader jwsHeader = JwsHeader.with(MacAlgorithm.HS256).build();
+        String token = jwtEncoder.encode(JwtEncoderParameters.from(jwsHeader, claims)).getTokenValue();
         return new SignOnResponse(token, user.getSecUsrId(), userType, null);
     }
 }
