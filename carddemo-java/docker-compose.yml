@@ -27,19 +27,27 @@
 # -----------------------------------------------------------------------------
 # Security posture (AAP section 0.8.1 - MANDATORY)
 # -----------------------------------------------------------------------------
-# NO credential or token is hardcoded. Every secret resolves from a ${ENV_VAR}
-# with a clearly non-secret, local-only default (or no default, when a real
-# secret is required). Override any of them by exporting the variable or placing
-# it in a local .env file (NEVER commit real secrets):
+# NO credential or token is hardcoded. Every REAL secret resolves from a
+# REQUIRED ${ENV_VAR:?...} substitution with NO literal default, so the stack
+# refuses to start - with a clear error naming the missing variable - rather
+# than fall back to a committed secret. Only clearly NON-secret values (database
+# name/user, region, host ports, image tags) and LocalStack's well-known dummy
+# AWS access keys carry convenience defaults. Supply the required secrets by
+# exporting them or placing them in a local .env file (NEVER commit real
+# secrets):
 #
-#   Postgres : POSTGRES_DB (carddemo) POSTGRES_USER (carddemo)
-#              POSTGRES_PASSWORD (carddemo - LOCAL-ONLY default)
-#   Grafana  : GRAFANA_ADMIN_USER (admin) GRAFANA_ADMIN_PASSWORD (admin)
-#   AWS/LS   : AWS_ACCESS_KEY_ID (test) AWS_SECRET_ACCESS_KEY (test)
-#              AWS_DEFAULT_REGION (us-east-1)
-#              LOCALSTACK_AUTH_TOKEN (empty - only needed for the Pro image)
-#   App auth : JWT_SECRET (a long, obvious LOCAL-ONLY default; override in any
-#              shared/CI environment) - the app will not start without one.
+#   REQUIRED (no default - the stack will not start until supplied):
+#     POSTGRES_PASSWORD       Postgres password (also the app datasource password).
+#     GRAFANA_ADMIN_PASSWORD  Grafana admin password.
+#     JWT_SECRET              App HMAC signing secret (>= 32 characters).
+#     LOCALSTACK_AUTH_TOKEN   LocalStack Pro token (see the localstack service).
+#
+#   NON-secret values with convenience defaults (overridable):
+#     Postgres : POSTGRES_DB (carddemo) POSTGRES_USER (carddemo)
+#     Grafana  : GRAFANA_ADMIN_USER (admin)
+#     AWS/LS   : AWS_ACCESS_KEY_ID (test) AWS_SECRET_ACCESS_KEY (test) -
+#                LocalStack's documented emulator-only dummies, NOT real secrets
+#                (the emulator ignores their value); AWS_DEFAULT_REGION (us-east-1)
 #
 # Overridable image tags (pin/override without editing this file):
 #   POSTGRES_IMAGE LOCALSTACK_IMAGE JAEGER_IMAGE PROMETHEUS_IMAGE GRAFANA_IMAGE
@@ -87,8 +95,9 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-carddemo}
       POSTGRES_USER: ${POSTGRES_USER:-carddemo}
-      # LOCAL-ONLY default; override via POSTGRES_PASSWORD in real environments.
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+      # REQUIRED secret - no literal default (AAP 0.8.1). The stack refuses to
+      # start until POSTGRES_PASSWORD is supplied via the environment / .env.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (no committed default)}
     ports:
       # host:container - host side overridable to avoid local collisions.
       - "${CARDDEMO_DB_PORT:-5432}:5432"
@@ -109,24 +118,28 @@ services:
   # ===========================================================================
   # LocalStack  -  AWS emulator (S3 + SQS + SNS), ZERO live AWS
   # ===========================================================================
-  # Image selection (IMPORTANT):
-  #   The AAP/agent prompt nominate `localstack/localstack-pro:latest` driven by
-  #   LOCALSTACK_AUTH_TOKEN. However S3, SQS and SNS - the only AWS services
-  #   CardDemo uses - are all COMMUNITY-edition features and need no Pro token.
-  #   The default below is therefore the token-free community image, which keeps
-  #   the stack startable on a clean machine even when no (or an expired) Pro
-  #   token is present. To run Pro, supply a valid token and override the image:
-  #       LOCALSTACK_IMAGE=localstack/localstack-pro:latest \
-  #       LOCALSTACK_AUTH_TOKEN=<valid-token> docker compose up -d
-  #   LOCALSTACK_AUTH_TOKEN is always passed through (empty by default) so the
-  #   Pro image activates automatically when a valid token is provided.
+  # Image selection (IMPORTANT - AAP 0.7.7 / LocalStack Verification rule):
+  #   The AAP mandates `localstack/localstack-pro:latest` driven by a
+  #   LOCALSTACK_AUTH_TOKEN, so that is the committed default and the token is
+  #   REQUIRED (the service will not resolve without it). The Pro image is a
+  #   superset of community S3/SQS/SNS, so every CardDemo AWS flow runs on it.
+  #
+  #   Operational escape hatch (recorded in DECISION_LOG.md, D-025): in an
+  #   environment that lacks a valid Pro token (e.g. the known expired-token
+  #   case), override BOTH variables to fall back to the token-free community
+  #   image, which still serves every CardDemo S3/SQS/SNS need:
+  #       LOCALSTACK_IMAGE=localstack/localstack:3.8.1 \
+  #       LOCALSTACK_AUTH_TOKEN=none docker compose up -d
+  #   That override is a local runtime accommodation only; the committed contract
+  #   honours the AAP-mandated Pro image.
   localstack:
-    image: ${LOCALSTACK_IMAGE:-localstack/localstack:3.8.1}
+    image: ${LOCALSTACK_IMAGE:-localstack/localstack-pro:latest}
     environment:
       # Only the services CardDemo actually exercises are enabled.
       SERVICES: s3,sqs,sns
-      # Pro token passthrough (no-op / ignored by the community image).
-      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
+      # REQUIRED for the Pro image (AAP 0.7.7); a non-empty value must be
+      # supplied. Ignored by the community image when the documented override is used.
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:?LOCALSTACK_AUTH_TOKEN is required for localstack-pro (see the image-selection note for the community-image override)}
       DEBUG: ${LOCALSTACK_DEBUG:-0}
       # LocalStack ignores credential VALUES but the AWS SDK/CLI still require
       # them to be present; these are LocalStack's well-known dummies, not real
@@ -213,8 +226,9 @@ services:
     image: ${GRAFANA_IMAGE:-grafana/grafana:11.3.1}
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      # LOCAL-ONLY default; override GRAFANA_ADMIN_PASSWORD in real environments.
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # REQUIRED secret - no literal default (AAP 0.8.1). The stack refuses to
+      # start until GRAFANA_ADMIN_PASSWORD is supplied via the environment / .env.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required (no committed default)}
       # Lock down the local instance: no self sign-up, no anonymous access.
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
@@ -267,10 +281,10 @@ services:
 
       # --- Datasource (-> postgres service) ----------------------------------
       # Host is the Compose service name; the password mirrors the postgres
-      # service's local-only default and is overridable via the same variable.
+      # service's REQUIRED POSTGRES_PASSWORD (same variable, no literal default).
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-carddemo}
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-carddemo}
-      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (no committed default)}
 
       # --- AWS / LocalStack (-> localstack service) --------------------------
       # `spring.cloud.aws.endpoint` is the single global override consumed by
@@ -302,13 +316,14 @@ services:
 
       # --- Application security (JWT) ----------------------------------------
       # config/SecurityConfig requires a non-blank HMAC signing secret of at
-      # least 32 characters; the base profile has NO default, so one MUST be
-      # supplied or the app will not start. This is an OBVIOUS, LOCAL-ONLY value
-      # (not a real secret - AAP 0.8.1); override JWT_SECRET in any shared/CI run.
-      JWT_SECRET: ${JWT_SECRET:-carddemo-local-dev-jwt-signing-secret-change-me-0123456789}
+      # least 32 characters. REQUIRED secret - no literal default (AAP 0.8.1):
+      # the app will not start until JWT_SECRET is supplied via the environment.
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required (>= 32 characters, no committed default)}
 
-      # --- LocalStack Pro token passthrough (empty unless explicitly set) ----
-      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
+      # --- LocalStack token passthrough --------------------------------------
+      # Required by the localstack service (above); mirrored here for parity so
+      # the whole stack shares one source of truth for the token.
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:?LOCALSTACK_AUTH_TOKEN is required (see the localstack service image-selection note)}
 
       # --- Optional JVM tuning (consumed by the Dockerfile ENTRYPOINT) -------
       JAVA_OPTS: ${JAVA_OPTS:-}

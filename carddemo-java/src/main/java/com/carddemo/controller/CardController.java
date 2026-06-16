@@ -1,5 +1,6 @@
 package com.carddemo.controller;
 
+import com.carddemo.exception.ValidationException;
 import com.carddemo.model.dto.CardDetailResponse;
 import com.carddemo.model.dto.CardListResponse;
 import com.carddemo.model.dto.CardUpdateRequest;
@@ -52,7 +53,15 @@ public class CardController {
     }
 
     @PutMapping("/{cardNumber}")
-    public CardUpdateResponse updateCard(@Valid @RequestBody CardUpdateRequest request) {
+    public CardUpdateResponse updateCard(@PathVariable String cardNumber,
+                                         @Valid @RequestBody CardUpdateRequest request) {
+        // The path identifies the resource being updated; reject a body that targets a
+        // different card to remove the ambiguous write semantics flagged in review and
+        // honour the documented PUT /api/cards/{cardNumber} contract.
+        if (!cardNumber.equals(request.cardNumber())) {
+            throw new ValidationException(
+                    "Card number in path does not match request body", "cardNumber");
+        }
         return cardUpdateService.updateCard(request);
     }
 }

@@ -1,6 +1,7 @@
 package com.carddemo.model.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
@@ -29,25 +30,37 @@ import jakarta.validation.constraints.Size;
  * key components require a non-blank, all-numeric value. This screen carries no
  * monetary values, so no {@code BigDecimal} field is present.</p>
  *
- * <p>{@code expirationDay} intentionally carries only a length constraint:
+ * <p>{@code expiryDay} intentionally carries only a length constraint:
  * {@code COCRDUPC} has <em>no</em> day edit routine (no {@code 1270-EDIT-DAY}); the
  * input {@code EXPDAY} is moved through unvalidated. Adding a non-blank or pattern
  * constraint here would reject input the COBOL program accepts, breaking the
  * 100% behavioral-parity mandate (AAP §0.8.1).</p>
  *
+ * <p>{@code version} is the optimistic-concurrency token the client must echo from
+ * the most recent card read. {@code CardUpdateService} compares it against the
+ * persisted {@code Card.version} ({@code @Version}) before mutating, reproducing the
+ * {@code COCRDUPC} before/after-image check (read the record, hold its image, and
+ * reject the update if the stored image changed underneath the user). A mismatch
+ * raises {@code ConcurrencyException}, surfaced as HTTP {@code 409 Conflict} by the
+ * global exception handler (AAP §0.8.4; {@code docs/api-contracts.md} §1.8).</p>
+ *
  * <p>Lineage (reference only — the COBOL source is not copied): original
  * repository commit {@code 27d6c6f}; primary symbolic map
  * {@code app/cpy-bms/COCRDUP.CPY}; field-edit semantics {@code app/cbl/COCRDUPC.cbl}.</p>
  *
- * @param accountId       account identifier (BMS {@code ACCTSID}, {@code PIC X(11)}); required, 1–11 digits.
- * @param cardNumber      card number (BMS {@code CARDSID}, {@code PIC X(16)}); required, 1–16 digits.
- * @param nameOnCard      embossed cardholder name (BMS {@code CRDNAME}, {@code PIC X(50)}); required, letters and spaces only.
- * @param cardStatus      card status code (BMS {@code CRDSTCD}, {@code PIC X(1)}); required, {@code Y} or {@code N}.
- * @param expirationMonth expiration month (BMS {@code EXPMON}, {@code PIC X(2)}); required, {@code 01}–{@code 12}.
- * @param expirationYear  expiration year (BMS {@code EXPYEAR}, {@code PIC X(4)}); required, {@code 1950}–{@code 2099}.
- * @param expirationDay   expiration day (BMS {@code EXPDAY}, {@code PIC X(2)}); unvalidated in {@code COCRDUPC} (length only).
+ * @param version        optimistic-concurrency token echoed from the last read (maps to {@code Card.version}); required.
+ * @param accountId      account identifier (BMS {@code ACCTSID}, {@code PIC X(11)}); required, 1–11 digits.
+ * @param cardNumber     card number (BMS {@code CARDSID}, {@code PIC X(16)}); required, 1–16 digits.
+ * @param cardholderName embossed cardholder name (BMS {@code CRDNAME}, {@code PIC X(50)}); required, letters and spaces only.
+ * @param cardStatus     card status code (BMS {@code CRDSTCD}, {@code PIC X(1)}); required, {@code Y} or {@code N}.
+ * @param expiryMonth    expiration month (BMS {@code EXPMON}, {@code PIC X(2)}); required, {@code 01}–{@code 12}.
+ * @param expiryYear     expiration year (BMS {@code EXPYEAR}, {@code PIC X(4)}); required, {@code 1950}–{@code 2099}.
+ * @param expiryDay      expiration day (BMS {@code EXPDAY}, {@code PIC X(2)}); unvalidated in {@code COCRDUPC} (length only).
  */
 public record CardUpdateRequest(
+
+        @NotNull
+        Long version,
 
         @NotBlank
         @Pattern(regexp = "\\d{1,11}")
@@ -62,7 +75,7 @@ public record CardUpdateRequest(
         @NotBlank
         @Pattern(regexp = "[A-Za-z ]+")
         @Size(max = 50)
-        String nameOnCard,
+        String cardholderName,
 
         @NotBlank
         @Pattern(regexp = "[YN]")
@@ -72,13 +85,13 @@ public record CardUpdateRequest(
         @NotBlank
         @Pattern(regexp = "0[1-9]|1[0-2]")
         @Size(max = 2)
-        String expirationMonth,
+        String expiryMonth,
 
         @NotBlank
         @Pattern(regexp = "19[5-9][0-9]|20[0-9]{2}")
         @Size(max = 4)
-        String expirationYear,
+        String expiryYear,
 
         @Size(max = 2)
-        String expirationDay) {
+        String expiryDay) {
 }

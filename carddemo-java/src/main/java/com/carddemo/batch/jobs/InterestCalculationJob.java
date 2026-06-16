@@ -436,8 +436,11 @@ public class InterestCalculationJob {
             account.setAcctCurrCycCredit(BigDecimal.ZERO);
             account.setAcctCurrCycDebit(BigDecimal.ZERO);
             accountRepository.save(account);
-            LOGGER.debug("Applied interest {} to account {} and zeroed cycle totals",
-                    accumulatedInterest, accountId);
+            // Observability (R1): emit only a non-identifying trace marker. The accumulated interest
+            // amount and the account id are sensitive financial/operational data and must never reach
+            // application logs; per-account financial detail belongs in the controlled batch outputs,
+            // and run-level volume is exposed via metrics, not logs.
+            LOGGER.debug("Applied accumulated interest roll-up and zeroed cycle totals for one account");
         }
 
         /**

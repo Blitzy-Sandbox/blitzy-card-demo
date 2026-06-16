@@ -127,7 +127,13 @@ git clone <repository-url> && cd carddemo-java
 # 2. Build the application and run unit tests (zero-warning build — Gate 2)
 ./mvnw clean verify
 
-# 3. Start local infrastructure: PostgreSQL + LocalStack + Jaeger + Prometheus + Grafana
+# 3. Start local infrastructure: PostgreSQL + LocalStack + Jaeger + Prometheus + Grafana.
+#    docker-compose.yml has NO committed secret defaults, so export the required secrets first
+#    (or place them in a local, git-ignored .env); the stack fails fast naming any missing one.
+export POSTGRES_PASSWORD=<choose-a-local-password> \
+       GRAFANA_ADMIN_PASSWORD=<choose-a-local-password> \
+       JWT_SECRET=<a-random-string-of-at-least-32-characters> \
+       LOCALSTACK_AUTH_TOKEN=<your-localstack-token>
 docker compose up -d
 
 # 4. Run the application with the local profile
@@ -143,7 +149,10 @@ curl http://localhost:8080/actuator/health
 > **Notes**
 > - Steps 1–2 require only the JDK; no running services are needed for the unit build.
 > - Step 3 must complete before the local run (step 4) so the datasource and AWS endpoints are
->   reachable. The integration suite (step 6) provisions its own ephemeral containers via
+>   reachable. `docker-compose.yml` requires `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_PASSWORD`,
+>   `JWT_SECRET` (at least 32 characters), and `LOCALSTACK_AUTH_TOKEN` to be set — it carries no
+>   committed secret defaults; the AWS keys default to LocalStack's documented `test` emulator
+>   dummies. The integration suite (step 6) provisions its own ephemeral containers via
 >   Testcontainers and only requires a running Docker daemon.
 > - On systems that still use the standalone Compose v1 binary, substitute `docker-compose up -d`.
 

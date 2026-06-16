@@ -6,6 +6,7 @@ import com.carddemo.model.dto.UserAddRequest;
 import com.carddemo.model.dto.UserResponse;
 import com.carddemo.model.entity.UserSecurity;
 import com.carddemo.repository.UserSecurityRepository;
+import java.util.Locale;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
@@ -92,11 +93,17 @@ public class UserAddService {
             throw new DuplicateRecordException("User ID already exist...");
         }
 
+        // Upper-case the password (Locale.ROOT) before BCrypt encoding so the stored hash
+        // matches AuthenticationService, which upper-cases the entered password before BCrypt
+        // verification — reproducing the COSGN00C/COUSR01C FUNCTION UPPER-CASE(PASSWDI) behavior.
+        // Without this, a user created with lower/mixed-case input could never authenticate.
+        String normalizedPassword = request.password().toUpperCase(Locale.ROOT);
+
         UserSecurity entity = new UserSecurity();
         entity.setSecUsrId(request.userId());
         entity.setSecUsrFname(request.firstName());
         entity.setSecUsrLname(request.lastName());
-        entity.setSecUsrPwd(passwordEncoder.encode(request.password()));
+        entity.setSecUsrPwd(passwordEncoder.encode(normalizedPassword));
         entity.setSecUsrType(request.userType());
         userSecurityRepository.save(entity);
 

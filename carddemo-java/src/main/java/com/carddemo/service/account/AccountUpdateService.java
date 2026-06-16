@@ -18,6 +18,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
@@ -147,6 +148,14 @@ public class AccountUpdateService {
                 .orElseThrow(() -> RecordNotFoundException.forKey("Account", acctId));
         Customer customer = customerRepository.findById(custId)
                 .orElseThrow(() -> RecordNotFoundException.forKey("Customer", custId));
+
+        // Optimistic-concurrency guard reproducing the COACTUPC before/after-image
+        // check that fronts the sole SYNCPOINT ROLLBACK: the client must echo the
+        // account version it last read. A stale client image is rejected before any
+        // mutation, surfaced as HTTP 409 by GlobalExceptionHandler (AAP §0.8.4).
+        if (!Objects.equals(account.getVersion(), request.version())) {
+            throw new ConcurrencyException(MSG_CONCURRENCY, "Account", null);
+        }
 
         applyValidatedChanges(request, account, customer);
 

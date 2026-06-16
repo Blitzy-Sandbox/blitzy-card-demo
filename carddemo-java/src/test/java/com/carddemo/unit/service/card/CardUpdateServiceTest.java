@@ -55,11 +55,15 @@ class CardUpdateServiceTest {
     card.setCardEmbossedName("JOHN DOE");
     card.setCardActiveStatus("Y");
     card.setCardExpiraionDate("2020-05-15");
+    card.setVersion(0L);
     return card;
   }
 
   private static CardUpdateRequest request(String name, String status, String month, String year, String day) {
-    return new CardUpdateRequest(VALID_ACCOUNT, VALID_CARD, name, status, month, year, day);
+    // version 0L matches the existingCard() fixture, so the optimistic-concurrency
+    // guard is transparent for these behavior tests; the stale-version case is
+    // exercised separately by staleClientVersionRejected().
+    return new CardUpdateRequest(0L, VALID_ACCOUNT, VALID_CARD, name, status, month, year, day);
   }
 
   private static DateValidationService.DateValidationResult acceptable() {
@@ -75,7 +79,7 @@ class CardUpdateServiceTest {
   @Test
   @DisplayName("both keys blank -> 'No input received'")
   void bothKeysBlank() {
-    CardUpdateRequest req = new CardUpdateRequest("", "", "JANE DOE", "Y", "06", "2025", "15");
+    CardUpdateRequest req = new CardUpdateRequest(0L, "", "", "JANE DOE", "Y", "06", "2025", "15");
     assertThatThrownBy(() -> cardUpdateService.updateCard(req))
         .isInstanceOf(ValidationException.class)
         .hasMessage("No input received");
@@ -85,7 +89,7 @@ class CardUpdateServiceTest {
   @Test
   @DisplayName("account blank, card present -> 'Account number not provided'")
   void accountBlank() {
-    CardUpdateRequest req = new CardUpdateRequest("", VALID_CARD, "JANE DOE", "N", "06", "2025", "15");
+    CardUpdateRequest req = new CardUpdateRequest(0L, "", VALID_CARD, "JANE DOE", "N", "06", "2025", "15");
     assertThatThrownBy(() -> cardUpdateService.updateCard(req))
         .isInstanceOf(ValidationException.class)
         .hasMessage("Account number not provided");
@@ -95,7 +99,7 @@ class CardUpdateServiceTest {
   @Test
   @DisplayName("account not 11 digits -> account filter message")
   void accountWrongLength() {
-    CardUpdateRequest req = new CardUpdateRequest("123", VALID_CARD, "JANE DOE", "N", "06", "2025", "15");
+    CardUpdateRequest req = new CardUpdateRequest(0L, "123", VALID_CARD, "JANE DOE", "N", "06", "2025", "15");
     assertThatThrownBy(() -> cardUpdateService.updateCard(req))
         .isInstanceOf(ValidationException.class)
         .hasMessage("ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER");
@@ -105,7 +109,7 @@ class CardUpdateServiceTest {
   @Test
   @DisplayName("card blank -> 'Card number not provided'")
   void cardBlank() {
-    CardUpdateRequest req = new CardUpdateRequest(VALID_ACCOUNT, "", "JANE DOE", "N", "06", "2025", "15");
+    CardUpdateRequest req = new CardUpdateRequest(0L, VALID_ACCOUNT, "", "JANE DOE", "N", "06", "2025", "15");
     assertThatThrownBy(() -> cardUpdateService.updateCard(req))
         .isInstanceOf(ValidationException.class)
         .hasMessage("Card number not provided");
@@ -115,7 +119,7 @@ class CardUpdateServiceTest {
   @Test
   @DisplayName("card not 16 digits -> card filter message")
   void cardWrongLength() {
-    CardUpdateRequest req = new CardUpdateRequest(VALID_ACCOUNT, "123", "JANE DOE", "N", "06", "2025", "15");
+    CardUpdateRequest req = new CardUpdateRequest(0L, VALID_ACCOUNT, "123", "JANE DOE", "N", "06", "2025", "15");
     assertThatThrownBy(() -> cardUpdateService.updateCard(req))
         .isInstanceOf(ValidationException.class)
         .hasMessage("CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER");
@@ -236,6 +240,28 @@ class CardUpdateServiceTest {
     assertThat(thrown.getMessage()).isEqualTo(CONCURRENCY_MSG);
     assertThat(thrown.getEntity()).isEqualTo("Card");
     assertThat(thrown.getCause()).isSameAs(lockEx);
+  }
+
+  // ----- client-supplied stale version (before/after-image check; COCRDUPC parity) -----
+
+  @Test
+  @DisplayName("stale client version (echoed != persisted) -> ConcurrencyException('Card'), no save, no date validation")
+  void staleClientVersionRejected() {
+    when(cardRepository.findById(VALID_CARD)).thenReturn(Optional.of(existingCard()));
+    // Persisted card is version 0L; the client echoes a stale 5L, modelling an edit
+    // made against an out-of-date read. The guard must reject before any mutation.
+    CardUpdateRequest req =
+        new CardUpdateRequest(5L, VALID_ACCOUNT, VALID_CARD, "JANE ROE", "N", "06", "2025", "01");
+
+    ConcurrencyException thrown =
+        assertThrows(ConcurrencyException.class, () -> cardUpdateService.updateCard(req));
+    assertThat(thrown.getMessage()).isEqualTo(CONCURRENCY_MSG);
+    assertThat(thrown.getEntity()).isEqualTo("Card");
+    assertThat(thrown.getCause()).isNull();
+
+    verify(cardRepository).findById(VALID_CARD);
+    verify(cardRepository, never()).saveAndFlush(any(Card.class));
+    verifyNoInteractions(dateValidationService);
   }
 
   // ----- ordered field validation (first-error-wins; reached only when record changed) -----

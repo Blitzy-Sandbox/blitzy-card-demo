@@ -9,6 +9,7 @@ import com.carddemo.model.entity.Card;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.service.shared.DateValidationService;
 import jakarta.persistence.OptimisticLockException;
+import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
@@ -79,6 +80,14 @@ public class CardUpdateService {
         Card entity = cardRepository.findById(card)
                 .orElseThrow(() -> new RecordNotFoundException(MSG_NOT_FOUND));
 
+        // Optimistic-concurrency guard reproducing the COCRDUPC before/after-image
+        // check: the client must echo the version it last read. If the stored record
+        // changed underneath the user (stale client image), reject before mutating.
+        // Surfaced as HTTP 409 by GlobalExceptionHandler (AAP §0.8.4).
+        if (!Objects.equals(entity.getVersion(), request.version())) {
+            throw new ConcurrencyException(MSG_CONCURRENCY, ENTITY_NAME, null);
+        }
+
         String oldExpiry = trimToEmpty(entity.getCardExpiraionDate());
         String oldName = trimToEmpty(entity.getCardEmbossedName());
         String oldStatus = trimToEmpty(entity.getCardActiveStatus());
@@ -86,10 +95,10 @@ public class CardUpdateService {
         String oldMonth = expiryMonth(oldExpiry);
         String oldDay = expiryDay(oldExpiry);
 
-        String newName = normalize(request.nameOnCard());
+        String newName = normalize(request.cardholderName());
         String newStatus = normalize(request.cardStatus());
-        String newMonth = normalize(request.expirationMonth());
-        String newYear = normalize(request.expirationYear());
+        String newMonth = normalize(request.expiryMonth());
+        String newYear = normalize(request.expiryYear());
 
         if (isUnchanged(newName, newStatus, newMonth, newYear, oldName, oldStatus, oldMonth, oldYear)) {
             return new CardUpdateResponse(acct, card, oldName, oldStatus,

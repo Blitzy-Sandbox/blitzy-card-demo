@@ -40,8 +40,15 @@ class UserAddServiceTest {
     /** Eight-character user id (SEC-USR-ID PIC X(08)) reused across the add tests. */
     private static final String USER_ID = "USER0001";
 
-    /** Plaintext credential entered on the add-user screen (COBOL SEC-USR-PWD PIC X(08)); test fixture only. */
+    /** Plaintext credential entered on the add-user screen (COBOL SEC-USR-PWD PIC X(08)); test fixture only. Lower-case on purpose. */
     private static final String PLAINTEXT_PWD = "pass1234";
+
+    /**
+     * Upper-cased form of {@link #PLAINTEXT_PWD}. The service must hash THIS value (not the raw input) so that
+     * {@code AuthenticationService}, which upper-cases the entered password before BCrypt verification
+     * (COSGN00C {@code FUNCTION UPPER-CASE(PASSWDI)}), can match a user created through the admin API.
+     */
+    private static final String NORMALIZED_PWD = "PASS1234";
 
     /** Clearly-fake stand-in for the BCrypt hash returned by the encoder; never a real credential. */
     private static final String ENCODED_HASH = "$2a$10$ENCODEDHASHVALUE...";
@@ -74,7 +81,8 @@ class UserAddServiceTest {
         assertThat(resp.errorMessage()).isNull();
 
         // C-003: the password is BCrypt-encoded; the stored value is the hash, never the plaintext.
-        verify(passwordEncoder).encode(PLAINTEXT_PWD);
+        // The encoder receives the UPPER-CASED password (input was lower-case "pass1234"), proving normalization.
+        verify(passwordEncoder).encode(NORMALIZED_PWD);
         verify(userSecurityRepository).save(entityCaptor.capture());
         UserSecurity saved = entityCaptor.getValue();
         assertThat(saved.getSecUsrPwd()).isEqualTo(ENCODED_HASH);
@@ -87,8 +95,26 @@ class UserAddServiceTest {
         // The duplicate guard (findBySecUsrId) runs BEFORE encoding and persistence.
         InOrder inOrder = inOrder(userSecurityRepository, passwordEncoder);
         inOrder.verify(userSecurityRepository).findBySecUsrId(USER_ID);
-        inOrder.verify(passwordEncoder).encode(PLAINTEXT_PWD);
+        inOrder.verify(passwordEncoder).encode(NORMALIZED_PWD);
         inOrder.verify(userSecurityRepository).save(any(UserSecurity.class));
+    }
+
+    @Test
+    @DisplayName("lower-case password is upper-cased before BCrypt encoding (admin-created user can log in)")
+    void addUser_lowerCasePassword_isUpperCasedBeforeEncoding() {
+        when(userSecurityRepository.findBySecUsrId(USER_ID)).thenReturn(Optional.empty());
+        when(passwordEncoder.encode("ABCD1234")).thenReturn(ENCODED_HASH);
+        when(userSecurityRepository.save(any(UserSecurity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        // Admin submits a mixed/lower-case password; the service must normalize it to upper case so the
+        // stored hash matches the upper-casing login path (regression guard for the CP4 finding).
+        userAddService.addUser(request("Ann", "Adams", USER_ID, "abcd1234", UserType.ADMIN));
+
+        verify(passwordEncoder).encode("ABCD1234");
+        verify(passwordEncoder, never()).encode("abcd1234");
+        verify(userSecurityRepository).save(entityCaptor.capture());
+        assertThat(entityCaptor.getValue().getSecUsrPwd()).isEqualTo(ENCODED_HASH);
     }
 
     @Test
@@ -205,7 +231,7 @@ class UserAddServiceTest {
      */
     private void stubAddSucceeds() {
         when(userSecurityRepository.findBySecUsrId(USER_ID)).thenReturn(Optional.empty());
-        when(passwordEncoder.encode(PLAINTEXT_PWD)).thenReturn(ENCODED_HASH);
+        when(passwordEncoder.encode(NORMALIZED_PWD)).thenReturn(ENCODED_HASH);
         when(userSecurityRepository.save(any(UserSecurity.class))).thenAnswer(invocation -> invocation.getArgument(0));
     }
 

@@ -2,6 +2,7 @@ package com.carddemo.model.dto;
 
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
@@ -30,6 +31,13 @@ import java.math.BigDecimal;
  *   <li>All remaining fields are {@link String} values whose {@link Size} maximum
  *       length matches the corresponding BMS field length exactly.</li>
  *   <li>{@code accountId} is required and must be a 1–11 digit numeric identifier.</li>
+ *   <li>{@code version} is the optimistic-concurrency token the client must echo
+ *       from the most recent account read. {@code AccountUpdateService} compares it
+ *       against the persisted {@code Account.version} ({@code @Version}) before the
+ *       transactional dual ACCTDAT + CUSTDAT update, reproducing the {@code COACTUPC}
+ *       before/after-image check that guards the sole {@code SYNCPOINT ROLLBACK}. A
+ *       mismatch raises {@code ConcurrencyException}, surfaced as HTTP
+ *       {@code 409 Conflict} (AAP §0.8.4; {@code docs/api-contracts.md} §1.8).</li>
  * </ul>
  *
  * <p>Screen chrome (transaction name, titles, current date/time, program name),
@@ -41,8 +49,11 @@ import java.math.BigDecimal;
  * {@code 27d6c6f} — {@code app/cpy-bms/COACTUP.CPY} (field layout) and
  * {@code app/cpy/CSSETATY.cpy} (field-edit/attribute semantics that motivate the
  * Jakarta Bean Validation constraints below).</p>
+ *
+ * @param version optimistic-concurrency token echoed from the last read (maps to {@code Account.version}); required.
  */
 public record AccountUpdateRequest(
+        @NotNull Long version,
         @NotBlank @Pattern(regexp = "\\d{1,11}") @Size(max = 11) String accountId,
         @Size(max = 1) String accountStatus,
         @Size(max = 4) String openYear,

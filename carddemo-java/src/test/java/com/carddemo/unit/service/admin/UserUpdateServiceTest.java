@@ -244,8 +244,10 @@ class UserUpdateServiceTest {
     void updateUser_passwordChanged_reEncodesViaMatchesNotEquals() {
         UserSecurity entity = existing("USER0001", "Ann", "Adams", "$2a$oldHash", UserType.ADMIN);
         when(userSecurityRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(entity));
-        when(passwordEncoder.matches("newpass1", "$2a$oldHash")).thenReturn(false);
-        when(passwordEncoder.encode("newpass1")).thenReturn("$2a$newHash");
+        // Login upper-cases before matching, so the service must upper-case "newpass1" -> "NEWPASS1"
+        // before both matches() and encode(); the lower-case request input below proves normalization.
+        when(passwordEncoder.matches("NEWPASS1", "$2a$oldHash")).thenReturn(false);
+        when(passwordEncoder.encode("NEWPASS1")).thenReturn("$2a$newHash");
         when(userSecurityRepository.save(any(UserSecurity.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -255,8 +257,10 @@ class UserUpdateServiceTest {
         assertThat(response.message()).isEqualTo("User USER0001 has been updated ...");
         verify(userSecurityRepository).save(entityCaptor.capture());
         assertThat(entityCaptor.getValue().getSecUsrPwd()).isEqualTo("$2a$newHash");
-        verify(passwordEncoder).matches("newpass1", "$2a$oldHash");
-        verify(passwordEncoder).encode("newpass1");
+        verify(passwordEncoder).matches("NEWPASS1", "$2a$oldHash");
+        verify(passwordEncoder).encode("NEWPASS1");
+        // The raw lower-case form is never used, confirming normalization to upper case.
+        verify(passwordEncoder, never()).encode("newpass1");
     }
 
     @Test
@@ -264,13 +268,14 @@ class UserUpdateServiceTest {
     void updateUser_passwordSameAsCurrent_notModifiedByPassword() {
         UserSecurity entity = existing("USER0001", "Ann", "Adams", "$2a$hash", UserType.ADMIN);
         when(userSecurityRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(entity));
-        when(passwordEncoder.matches("samepass", "$2a$hash")).thenReturn(true);
+        // Service upper-cases "samepass" -> "SAMEPASS" before the BCrypt compare.
+        when(passwordEncoder.matches("SAMEPASS", "$2a$hash")).thenReturn(true);
 
         UserResponse response =
                 userUpdateService.updateUser(req("USER0001", "Ann", "Adams", "samepass", UserType.ADMIN));
 
         assertThat(response.message()).isEqualTo("Please modify to update ...");
-        verify(passwordEncoder).matches("samepass", "$2a$hash");
+        verify(passwordEncoder).matches("SAMEPASS", "$2a$hash");
         verify(passwordEncoder, never()).encode(any());
         verify(userSecurityRepository, never()).save(any(UserSecurity.class));
     }

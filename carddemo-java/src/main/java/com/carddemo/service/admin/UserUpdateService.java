@@ -6,6 +6,7 @@ import com.carddemo.model.dto.UserResponse;
 import com.carddemo.model.dto.UserUpdateRequest;
 import com.carddemo.model.entity.UserSecurity;
 import com.carddemo.repository.UserSecurityRepository;
+import java.util.Locale;
 import java.util.Objects;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -122,10 +123,16 @@ public class UserUpdateService {
             entity.setSecUsrLname(request.lastName());
             modified = true;
         }
-        if (!isBlank(request.password())
-                && !passwordEncoder.matches(request.password(), entity.getSecUsrPwd())) {
-            entity.setSecUsrPwd(passwordEncoder.encode(request.password()));
-            modified = true;
+        if (!isBlank(request.password())) {
+            // Upper-case the supplied password (Locale.ROOT) before BCrypt compare/encode so the
+            // stored hash matches AuthenticationService, which upper-cases the entered password
+            // before BCrypt verification (COSGN00C/COUSR02C FUNCTION UPPER-CASE(PASSWDI)). Without
+            // this, updating to lower/mixed-case input would persist a hash login could never match.
+            String normalizedPassword = request.password().toUpperCase(Locale.ROOT);
+            if (!passwordEncoder.matches(normalizedPassword, entity.getSecUsrPwd())) {
+                entity.setSecUsrPwd(passwordEncoder.encode(normalizedPassword));
+                modified = true;
+            }
         }
         if (request.userType() != entity.getSecUsrType()) {
             entity.setSecUsrType(request.userType());

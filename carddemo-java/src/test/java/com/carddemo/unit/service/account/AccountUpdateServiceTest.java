@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -70,7 +71,15 @@ class AccountUpdateServiceTest {
     }
 
     private AccountUpdateRequest validRequest(String accountId) {
+        // version 0L matches the anAccount() fixture, so the optimistic-concurrency
+        // guard is transparent for these tests; the stale-version case is exercised
+        // separately by updateAccount_throwsConcurrency_whenClientVersionStale().
+        return validRequest(accountId, 0L);
+    }
+
+    private AccountUpdateRequest validRequest(String accountId, Long version) {
         return new AccountUpdateRequest(
+                version,
                 accountId,
                 "Y",
                 "2020", "01", "15",
@@ -183,6 +192,28 @@ class AccountUpdateServiceTest {
         ConcurrencyException ex = (ConcurrencyException) thrown;
         assertThat(ex.getEntity()).isEqualTo("Account");
         assertThat(ex.getCause()).isInstanceOf(ObjectOptimisticLockingFailureException.class);
+    }
+
+    @Test
+    @DisplayName("stale client version (echoed != persisted) -> ConcurrencyException(entity=Account), no save")
+    void updateAccount_throwsConcurrency_whenClientVersionStale() {
+        // All three reads (xref, account, customer) succeed; the persisted account is
+        // version 0L while the client echoes a stale 99L, modelling an edit submitted
+        // against an out-of-date read. The before/after-image guard must reject before
+        // any ACCTDAT/CUSTDAT mutation (COACTUPC parity).
+        stubReadChain();
+
+        Throwable thrown = catchThrowable(() -> service.updateAccount(validRequest(ACCT_ID_STR, 99L)));
+
+        assertThat(thrown)
+                .isInstanceOf(ConcurrencyException.class)
+                .hasMessageContaining("Record changed by some one else");
+        ConcurrencyException ex = (ConcurrencyException) thrown;
+        assertThat(ex.getEntity()).isEqualTo("Account");
+        assertThat(ex.getCause()).isNull();
+
+        verify(accountRepository, never()).saveAndFlush(any(Account.class));
+        verify(customerRepository, never()).saveAndFlush(any(Customer.class));
     }
 
     /**

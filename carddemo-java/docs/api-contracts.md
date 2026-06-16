@@ -564,12 +564,24 @@ Posts a bill payment against an account balance.
 
 | JSON field | COBOL field | Type | Scale | Notes |
 | :-- | :-- | :-- | :-- | :-- |
-| `accountId` | `ACTIDINI` | string(11) | — | |
-| `amountPaid` | `CURBALI` | BigDecimal | 2 | Balance settled. |
-| `newBalance` | (computed) | BigDecimal | 2 | Post-payment balance. |
-| `transactionId` | (generated) | string(16) | — | Payment transaction reference. |
+| `accountId` | `ACTIDIN` | string(11) | — | Entered/echoed account identifier; `null` on cancel. |
+| `currentBalance` | `CURBAL` | BigDecimal | 2 | Balance redisplayed on the screen: the read balance on a preview, the post-payment balance on a confirmed payment; `null` on cancel. |
+| `confirm` | `CONFIRM` | string(1) | — | Confirmation flag echoed back (`Y`/`N`/empty); `null` on cancel. |
+| `errorMessage` | `ERRMSG` | string | — | Operator-message line: the confirmation prompt on a preview, the success message (including the generated transaction id) on a confirmed payment; `null` on cancel. |
 
-**Errors:** `400` validation; `404` `RECORD_NOT_FOUND`; `401`/`403`.
+> This response is the JSON projection of the `COBIL00` output map's four operator-facing fields,
+> faithfully preserving the `COBIL00C` pseudo-conversational flow rather than a creation-style
+> payload. The single endpoint returns one of three redisplays of the same map: **(1) cancel**
+> (`confirm = N`) clears the screen and returns all-`null` fields; **(2) preview** (`confirm`
+> empty) reads the account and returns the current balance with a confirmation prompt in
+> `errorMessage`; **(3) payment** (`confirm = Y`) posts the balance-clearing transaction and
+> returns the post-payment balance with a success message (carrying the generated transaction id)
+> in `errorMessage`. The generated transaction id is therefore surfaced inside the `errorMessage`
+> text exactly as the COBOL program renders it, not as a discrete field. See `DECISION_LOG.md`
+> (**D-024**) for the contract-parity rationale.
+
+**Errors:** `400` validation (`accountId` empty, invalid `confirm`, or non-positive balance);
+`404` `RECORD_NOT_FOUND`; `401`/`403`.
 
 ---
 

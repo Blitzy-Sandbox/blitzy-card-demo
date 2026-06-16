@@ -131,7 +131,11 @@ Notes for the commands available now:
 > workflow is clear, but they **cannot be run at the current checkpoint**.
 
 ```bash
-# (forthcoming) Provide the LocalStack token used by the AWS emulator (never hardcode it)
+# (forthcoming) Provide the required secrets the stack needs (never hardcode them).
+# docker-compose.yml has NO committed secret defaults, so these must be set first:
+export POSTGRES_PASSWORD=<choose-a-local-password>
+export GRAFANA_ADMIN_PASSWORD=<choose-a-local-password>
+export JWT_SECRET=<a-random-string-of-at-least-32-characters>
 export LOCALSTACK_AUTH_TOKEN=<your-localstack-token>
 
 # (forthcoming) Start local infrastructure: PostgreSQL + LocalStack + Jaeger + Prometheus + Grafana
@@ -146,9 +150,12 @@ curl http://localhost:8080/actuator/health
 
 Notes for the forthcoming workflow:
 
-1. **`export LOCALSTACK_AUTH_TOKEN=…`** — supplied via environment variable and consumed by the
-   LocalStack container; it is **never** committed or hardcoded. Set it in your shell (or a local,
-   git-ignored `.env`) before bringing up Compose.
+1. **`export …` (required secrets)** — `docker-compose.yml` carries **no committed secret defaults**.
+   `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_PASSWORD`, `JWT_SECRET` (at least 32 characters), and
+   `LOCALSTACK_AUTH_TOKEN` must be supplied via the environment (or a local, git-ignored `.env`) before
+   bringing up Compose, or the stack fails fast with an error naming the missing variable. They are
+   **never** committed or hardcoded. (The AWS access keys default to LocalStack's documented `test`
+   emulator dummies, which are not real secrets.)
 2. **`docker compose up -d`** — will bring up the datasource and AWS endpoints once `docker-compose.yml`
    exists. On systems that still use the standalone Compose v1 binary, substitute `docker-compose up -d`.
 3. **`./mvnw spring-boot:run -Dspring.profiles.active=local`** — will start the app on the `local`

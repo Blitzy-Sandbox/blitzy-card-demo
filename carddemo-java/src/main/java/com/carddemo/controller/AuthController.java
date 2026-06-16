@@ -10,6 +10,8 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
+import org.springframework.security.oauth2.jwt.JwsHeader;
 import org.springframework.security.oauth2.jwt.JwtClaimsSet;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
@@ -34,7 +36,7 @@ public class AuthController {
 
     public AuthController(AuthenticationService authenticationService,
                           JwtEncoder jwtEncoder,
-                          @Value("${carddemo.security.jwt.ttl-seconds:3600}") long jwtTtlSeconds) {
+                          @Value("${carddemo.security.jwt.expiration-seconds:3600}") long jwtTtlSeconds) {
         this.authenticationService = authenticationService;
         this.jwtEncoder = jwtEncoder;
         this.jwtTtlSeconds = jwtTtlSeconds;
@@ -54,7 +56,12 @@ public class AuthController {
                 .claim("userType", userType.name())
                 .claim("roles", List.of("ROLE_" + userType.name()))
                 .build();
-        String token = jwtEncoder.encode(JwtEncoderParameters.from(claims)).getTokenValue();
+        // Explicitly select HS256 to match the symmetric HMAC signing key configured in
+        // SecurityConfig. Without an explicit JWS header, NimbusJwtEncoder defaults to RS256 and
+        // fails to select the HMAC key ("Failed to select a JWK signing key"), which would 500 the
+        // sign-in endpoint at runtime. (Additional fix surfaced while adding F2 controller tests.)
+        JwsHeader jwsHeader = JwsHeader.with(MacAlgorithm.HS256).build();
+        String token = jwtEncoder.encode(JwtEncoderParameters.from(jwsHeader, claims)).getTokenValue();
         return new SignOnResponse(token, user.getSecUsrId(), userType, null);
     }
 }
