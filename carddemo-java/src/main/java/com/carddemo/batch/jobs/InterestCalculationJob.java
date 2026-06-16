@@ -85,7 +85,7 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
  * run date that forms the first ten characters of each interest transaction id. Jobs are not
  * auto-run ({@code spring.batch.job.enabled=false}); a pipeline orchestrator launches this job.</p>
  */
-@Configuration
+@Configuration(value = "interestCalculationJobConfig", proxyBeanMethods = false)
 public class InterestCalculationJob {
 
     /** Canonical job name; referenced by the pipeline orchestrator to launch this job. */
