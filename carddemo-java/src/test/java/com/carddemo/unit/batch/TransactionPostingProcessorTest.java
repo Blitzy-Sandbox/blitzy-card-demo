@@ -21,7 +21,6 @@ import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.service.shared.FileStatusMapper;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -69,8 +68,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
  * and never calls a repository {@code save}/{@code saveAndFlush} (persistence is the writer's job, and
  * reject {@code 109} is the writer's {@code REWRITE INVALID KEY} path, out of scope here).</p>
  *
- * <p>Mockito mocks the three repositories and the {@link FileStatusMapper}; a real
- * {@link SimpleMeterRegistry} verifies the reason-tagged Micrometer counters. No Spring context,
+ * <p>Mockito mocks the three repositories and the {@link FileStatusMapper}. No Spring context,
  * Testcontainers, or LocalStack is started. Monetary values are always asserted by value with
  * {@code compareTo} semantics and never with scale-sensitive {@code BigDecimal.equals}
  * (AAP &sect;0.8.2). Reject descriptions are sourced from {@link RejectCode}, never hardcoded.</p>
@@ -78,15 +76,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 @ExtendWith(MockitoExtension.class)
 @DisplayName("TransactionPostingProcessor - CBTRN02C 4-stage cascade + 103-precedence parity")
 class TransactionPostingProcessorTest {
-
-    /** Untagged success counter; mirrors {@code MetricsConfig.BATCH_RECORDS_PROCESSED}. */
-    private static final String RECORDS_PROCESSED_METRIC = "carddemo.batch.records.processed";
-
-    /** Reason-tagged reject counter; mirrors {@code MetricsConfig.BATCH_RECORDS_REJECTED}. */
-    private static final String RECORDS_REJECTED_METRIC = "carddemo.batch.records.rejected";
-
-    /** Tag key carrying the {@link RejectCode} name on the rejected-records counter. */
-    private static final String REJECT_REASON_TAG = "reason";
 
     /** 26-character {@code DALYTRAN-ORIG-TS} whose first ten characters are the origination date. */
     private static final String ORIG_TS = "2022-07-18-00.00.00.000000";
@@ -113,17 +102,16 @@ class TransactionPostingProcessorTest {
     @Mock
     private FileStatusMapper fileStatusMapper;
 
-    private SimpleMeterRegistry registry;
     private TransactionPostingProcessor processor;
 
     @BeforeEach
     void setUp() {
-        // Real registry (component-under-test owns a single MeterRegistry collaborator); the fixed
-        // clock is supplied through the production six-argument constructor.
-        registry = new SimpleMeterRegistry();
+        // The fixed clock is supplied through the production five-argument constructor so the
+        // DB2-format processing timestamp is deterministic. Metrics are recorded by the writer
+        // (TransactionWriter), not the processor, so no MeterRegistry collaborator is required.
         processor = new TransactionPostingProcessor(
                 xrefRepository, accountRepository, tcatbalRepository,
-                fileStatusMapper, registry, FIXED_CLOCK);
+                fileStatusMapper, FIXED_CLOCK);
     }
 
     @Test
@@ -383,35 +371,6 @@ class TransactionPostingProcessorTest {
         verify(accountRepository, never()).saveAndFlush(any());
         verify(tcatbalRepository, never()).save(any());
         verify(xrefRepository, never()).save(any());
-    }
-
-    @Test
-    @DisplayName("Metrics: a posted record increments carddemo.batch.records.processed exactly once")
-    void incrementsProcessed_onPostedResult() {
-        when(xrefRepository.findById("1234567890123456"))
-                .thenReturn(Optional.of(xref("1234567890123456", 12345L)));
-        when(accountRepository.findById(12345L))
-                .thenReturn(Optional.of(acct(12345L, "0.00", "1000.00", "0.00", "0.00", "2099-12-31")));
-        when(tcatbalRepository.findById(new TransactionCategoryBalanceId(12345L, "01", 5)))
-                .thenReturn(Optional.empty());
-        when(fileStatusMapper.isRecordNotFound(anyString())).thenReturn(true);
-
-        processor.process(daily("1234567890123456", "01", 5, "150.00", ORIG_TS));
-
-        assertThat(registry.get(RECORDS_PROCESSED_METRIC).counter().count()).isEqualTo(1.0);
-    }
-
-    @Test
-    @DisplayName("Metrics: a stage-A reject increments carddemo.batch.records.rejected tagged reason=INVALID_CARD_NUMBER")
-    void incrementsRejected_reasonTagged_onStageAReject() {
-        when(xrefRepository.findById("9999999999999999")).thenReturn(Optional.empty());
-
-        processor.process(daily("9999999999999999", "01", 5, "10.00", ORIG_TS));
-
-        // The reason tag value is the RejectCode NAME (sourced from the enum, not hardcoded).
-        assertThat(registry.get(RECORDS_REJECTED_METRIC)
-                .tag(REJECT_REASON_TAG, RejectCode.INVALID_CARD_NUMBER.name())
-                .counter().count()).isEqualTo(1.0);
     }
 
     /**

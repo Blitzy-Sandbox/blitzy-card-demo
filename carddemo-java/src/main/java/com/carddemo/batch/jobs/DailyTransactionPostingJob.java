@@ -132,8 +132,8 @@ public class DailyTransactionPostingJob {
 
     /**
      * The step's composite writer. It routes each {@link PostingResult} on
-     * {@link PostingResult#rejected()}: posted results go to an adapter that maps them onto
-     * {@link TransactionWriter.PostedTransaction} and delegates to {@link TransactionWriter};
+     * {@link PostingResult#rejected()}: posted results go to an adapter that forwards them
+     * directly to {@link TransactionWriter} (which consumes {@link PostingResult});
      * rejected results go to the supplied {@link RejectRoutingWriter}. A lambda classifier is
      * used deliberately because {@link Classifier} extends {@link java.io.Serializable} and a
      * named implementation would require explicit serialization handling.
@@ -202,22 +202,17 @@ public class DailyTransactionPostingJob {
     }
 
     /**
-     * Builds the posted-branch adapter: an {@link ItemWriter} over {@link PostingResult} that maps
-     * each accepted result onto a {@link TransactionWriter.PostedTransaction} (the posted
-     * transaction plus its owning account id) and delegates the whole chunk to the injected
-     * {@link TransactionWriter}. The amount and all monetary state stay {@link BigDecimal}.
+     * Builds the posted-branch adapter: an {@link ItemWriter} over {@link PostingResult} that
+     * forwards each accepted result's chunk directly to the injected {@link TransactionWriter},
+     * which consumes {@link PostingResult} and persists the processor's precomputed posted
+     * transaction, versioned account, and category balance exactly once. The amount and all
+     * monetary state stay {@link BigDecimal}. The classifier routes only accepted results onto
+     * this delegate, so the writer's own reject branch is never exercised on this path.
      *
      * @return the posted-branch item writer delegating to {@link TransactionWriter}
      */
     private ItemWriter<PostingResult> postedTransactionDelegate() {
-        return chunk -> {
-            List<TransactionWriter.PostedTransaction> mapped = new ArrayList<>(chunk.size());
-            for (PostingResult result : chunk) {
-                mapped.add(new TransactionWriter.PostedTransaction(
-                        result.postedTransaction(), result.updatedAccount().getAcctId()));
-            }
-            transactionWriter.write(new Chunk<>(mapped));
-        };
+        return transactionWriter::write;
     }
 
     /**
