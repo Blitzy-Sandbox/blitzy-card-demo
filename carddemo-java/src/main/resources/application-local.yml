@@ -1,0 +1,188 @@
+# =============================================================================
+# CardDemo (Java) — "local" Spring Profile  (application-local.yml)
+# =============================================================================
+# Developer / Docker-Compose overlay for the AWS CardDemo mainframe-to-cloud
+# migration (Java 25 + Spring Boot 3.5.x). This profile is activated either by:
+#   * docker-compose.yml  -> the `app` service sets SPRING_PROFILES_ACTIVE=local, or
+#   * the host command     -> ./mvnw spring-boot:run -Dspring.profiles.active=local
+# (AAP §0.7.6).
+#
+# Exactly like application-test.yml, the FILE NAME scopes the profile: there is
+# intentionally NO explicit profile-activation key and NO multi-document
+# marker. This overlay INHERITS everything from application.yml and overrides /
+# concretizes only the values that differ for the local Docker-Compose stack
+# (PostgreSQL 16, LocalStack, Jaeger).
+#
+# =============================================================================
+# Hostnames: in-network vs host-run  (READ THIS)
+# =============================================================================
+# The defaults below use the Docker-Compose SERVICE NAMES (postgres, localstack,
+# jaeger) because the local profile's primary activation path is
+# `docker compose up` — and the compose `app` service additionally injects these
+# same service-name URLs as environment variables (Spring env > yml), so both
+# always agree. Every value is ${ENV_VAR:in-network-default}, so to run the app
+# on the HOST JVM against the published Compose ports, export the localhost
+# equivalents (each is documented again at its property below):
+#   SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/carddemo
+#   AWS_ENDPOINT=http://localhost:4566
+#   OTLP_ENDPOINT=http://localhost:4317
+#
+# =============================================================================
+# Security & scope (AAP §0.8.1, §0.3.2, §0.7.7, §0.7.8 — MANDATORY)
+# =============================================================================
+# * Zero live AWS: every AWS endpoint targets LocalStack :4566 (never real AWS).
+# * No hardcoded secrets: only env-driven values and OBVIOUS non-secret local
+#   defaults (the LocalStack dummies test/test and the local-only `carddemo` DB
+#   password). The JWT signing key has NO literal default here — it MUST resolve
+#   from the JWT_SECRET environment variable. The LocalStack container auth
+#   token is consumed by the LocalStack CONTAINER (docker-compose), never by
+#   the app, and is intentionally absent from this file.
+# * The second attached emulator stack (the non-AWS cloud provider) is OUT OF
+#   SCOPE and intentionally absent from this configuration (AAP §0.3.2, §0.7.8).
+#
+# Traceability: original COBOL source repository commit SHA 27d6c6f
+#   ("CardDemo_v1.0-15-g27d6c6f-68"). No COBOL/JCL is copied; this cross-cutting
+#   runtime config has no COBOL equivalent. The AWS resource names trace
+#   conceptually to app/jcl/DEFGDGB.jcl (GDG bases -> S3 buckets) and the
+#   user-security data to app/jcl/DUSRSECJ.jcl (USRSEC -> UserSecurity entity).
+# =============================================================================
+
+spring:
+
+  # ===========================================================================
+  # Phase 1 — Datasource (PostgreSQL 16, the `postgres` Compose service)
+  # Concretizes the base template with the in-network host. The password carries
+  # a LOCAL-ONLY, non-secret default (`carddemo`) that mirrors the docker-compose
+  # POSTGRES_PASSWORD default for developer convenience; it stays env-overridable
+  # (real/shared environments inject SPRING_DATASOURCE_PASSWORD). This is an
+  # explicitly permitted non-secret local default (AAP §0.8.1).
+  # Host-run alternative:
+  #   export SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/carddemo
+  # ===========================================================================
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres:5432/carddemo}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    password: ${SPRING_DATASOURCE_PASSWORD:carddemo}
+    driver-class-name: org.postgresql.Driver
+
+  # ===========================================================================
+  # Phase 2 — JPA / Flyway
+  # Flyway owns the schema; Hibernate must only VALIDATE that the JPA entities
+  # match the Flyway-provisioned schema — never create/alter it (preserving
+  # VSAM->PostgreSQL layout fidelity). SQL echo stays OFF locally: structured SQL
+  # logging is the job of logback-spring.xml, and keeping show-sql false
+  # preserves the clean-log, zero-warning posture (Gate 2). Flyway applies
+  # V1__create_schema -> V2__create_indexes -> V3__seed_data on startup, before
+  # the EntityManagerFactory initializes, so the schema + the 9 ASCII fixtures +
+  # the 10 USRSEC users exist before any online or batch flow runs.
+  # ===========================================================================
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  # ===========================================================================
+  # Phase 3 — Spring Cloud AWS (io.awspring.cloud 3.3.0) -> LocalStack
+  # Region + credentials are the well-known LocalStack dummies (test/test):
+  # LocalStack ignores the credential VALUES, but the AWS SDK still requires them
+  # to be present (these are NOT real secrets).
+  #
+  # `spring.cloud.aws.endpoint` is the SINGLE GLOBAL override consumed by
+  # config/AwsConfig.java for ALL THREE clients (S3Client, SqsAsyncClient and
+  # SnsClient): AwsConfig applies endpointOverride from this one key whenever it
+  # is non-blank, so there is deliberately NO need for separate per-service
+  # s3/sqs/sns `endpoint` keys (AwsConfig does not read them, and the proven
+  # application-test.yml uses the same global-only form). Path-style S3 access is
+  # MANDATORY for LocalStack bucket addressing (it avoids virtual-host-style DNS).
+  # Host-run alternative:
+  #   export AWS_ENDPOINT=http://localhost:4566
+  # ===========================================================================
+  cloud:
+    aws:
+      region:
+        static: ${AWS_REGION:us-east-1}
+      credentials:
+        access-key: ${AWS_ACCESS_KEY_ID:test}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+      endpoint: ${AWS_ENDPOINT:http://localstack:4566}
+      s3:
+        path-style-access-enabled: true
+
+# =============================================================================
+# Phase 4 — Observability (tracing -> Jaeger; metrics)  (Observability rule, AAP §0.7.1)
+# Full trace sampling locally (probability 1.0) so every request and batch-step
+# span is exported to the Compose Jaeger instance over OTLP gRPC (:4317).
+# Actuator health DETAILS are shown unconditionally for developer visibility (the
+# base profile keeps the more conservative `when_authorized`). The actuator
+# exposure surface (health,info,prometheus), the liveness/readiness probe groups,
+# and the metrics/histogram configuration are all inherited from the base file
+# unchanged (profile-specific properties merge per-key, not per-block).
+# Host-run alternative:
+#   export OTLP_ENDPOINT=http://localhost:4317
+# =============================================================================
+management:
+  endpoint:
+    health:
+      show-details: always
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLE:1.0}
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://jaeger:4317}
+
+# =============================================================================
+# Phase 6 — Logging
+# Richer application logging locally (DEBUG for com.carddemo) while the root
+# logger stays INFO to keep framework noise down. The structured JSON encoder /
+# console appender selection lives in logback-spring.xml (profile-aware), NOT
+# here; only log LEVELS are set in this file.
+# =============================================================================
+logging:
+  level:
+    root: INFO
+    com.carddemo: ${LOG_LEVEL_APP:DEBUG}
+
+# =============================================================================
+# Application-scoped (carddemo.*) configuration
+# =============================================================================
+carddemo:
+
+  # ===========================================================================
+  # Phase 5 — Security / JWT (stateless authentication)
+  # config/SecurityConfig builds an HS256 HMAC key from this value and REQUIRES a
+  # non-blank secret of at least 32 characters. There is intentionally NO literal
+  # default (AAP §0.8.1): the signing key MUST arrive from the JWT_SECRET
+  # environment variable. The docker-compose `app` service injects an OBVIOUS,
+  # local-only JWT_SECRET so `docker compose up` works out of the box; for
+  # host-run mode export your own non-production value before starting, e.g.:
+  #   export JWT_SECRET=carddemo-local-dev-jwt-signing-secret-change-me-0123456789
+  # Token lifetime stays env-overridable via JWT_EXPIRATION.
+  # ===========================================================================
+  security:
+    jwt:
+      secret: ${JWT_SECRET:}
+      expiration-seconds: ${JWT_EXPIRATION:3600}
+
+  # ===========================================================================
+  # Phase 3 (cont.) — AWS resource names consumed by config/AwsConfig
+  # (@ConfigurationProperties "carddemo.aws") and the batch / online services.
+  # These defaults MUST match localstack-init/init-aws.sh and docker-compose.yml
+  # VERBATIM:
+  #   * The 3 S3 buckets re-host the GDG / batch-staging datasets (DEFGDGB.jcl).
+  #   * The SQS FIFO queue replaces the CICS TDQ "WRITEQ TD" report-submission
+  #     bridge (app/cbl/CORPT00C.cbl); the ".fifo" suffix is mandatory for FIFO.
+  #   * The SNS topic carries alert / notification fan-out.
+  # ===========================================================================
+  aws:
+    s3:
+      bucket-input: ${S3_BUCKET_INPUT:carddemo-batch-input}
+      bucket-output: ${S3_BUCKET_OUTPUT:carddemo-batch-output}
+      bucket-statements: ${S3_BUCKET_STATEMENTS:carddemo-statements}
+    sqs:
+      report-queue: ${SQS_REPORT_QUEUE:carddemo-report-jobs.fifo}
+    sns:
+      notifications-topic: ${SNS_NOTIFICATIONS_TOPIC:carddemo-notifications}
