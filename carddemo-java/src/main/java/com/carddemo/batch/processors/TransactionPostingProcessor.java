@@ -12,7 +12,6 @@ import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.service.shared.FileStatusMapper;
-import io.micrometer.core.instrument.MeterRegistry;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -60,23 +59,17 @@ import org.springframework.stereotype.Component;
  * ({@link RejectCode#ACCOUNT_UPDATE_NOT_FOUND}) belong to the downstream writer.</p>
  *
  * <p>All monetary values are {@link BigDecimal} and all numeric comparisons use
- * {@link BigDecimal#compareTo(BigDecimal)}. Two reason-tagged Micrometer counters are emitted:
- * {@code carddemo.batch.records.processed} and {@code carddemo.batch.records.rejected}.</p>
+ * {@link BigDecimal#compareTo(BigDecimal)}. This processor is pure compute: it performs reads and
+ * arithmetic only and emits no metrics. The posted-record and rejected-record counters are owned
+ * by the downstream writers ({@code TransactionWriter} for {@code carddemo.batch.records.processed}
+ * and {@code RejectWriter} for {@code carddemo.batch.records.rejected}), so each metric series is
+ * emitted exactly once with a single, consistent tag scheme.</p>
  */
 @Component
 public class TransactionPostingProcessor
         implements ItemProcessor<DailyTransaction, TransactionPostingProcessor.PostingResult> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(TransactionPostingProcessor.class);
-
-    /** Counter incremented once per successfully posted record. */
-    private static final String RECORDS_PROCESSED_METRIC = "carddemo.batch.records.processed";
-
-    /** Counter incremented once per rejected record, tagged with the reject reason. */
-    private static final String RECORDS_REJECTED_METRIC = "carddemo.batch.records.rejected";
-
-    /** Tag key carrying the {@link RejectCode} name on the rejected-records counter. */
-    private static final String REJECT_REASON_TAG = "reason";
 
     /**
      * DB2 timestamp format ({@code yyyy-MM-dd-HH.mm.ss.SSSSSS}, 26 characters) reproducing the
@@ -92,7 +85,6 @@ public class TransactionPostingProcessor
     private final AccountRepository accountRepository;
     private final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
     private final FileStatusMapper fileStatusMapper;
-    private final MeterRegistry meterRegistry;
     private final Clock clock;
 
     /**
@@ -103,17 +95,15 @@ public class TransactionPostingProcessor
      * @param accountRepository                     account lookup repository
      * @param transactionCategoryBalanceRepository  transaction-category-balance repository
      * @param fileStatusMapper                      COBOL {@code FILE STATUS} mapper
-     * @param meterRegistry                         Micrometer registry for the batch counters
      */
     @Autowired
     public TransactionPostingProcessor(
             CardCrossReferenceRepository cardCrossReferenceRepository,
             AccountRepository accountRepository,
             TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
-            FileStatusMapper fileStatusMapper,
-            MeterRegistry meterRegistry) {
+            FileStatusMapper fileStatusMapper) {
         this(cardCrossReferenceRepository, accountRepository, transactionCategoryBalanceRepository,
-                fileStatusMapper, meterRegistry, Clock.systemDefaultZone());
+                fileStatusMapper, Clock.systemDefaultZone());
     }
 
     /**
@@ -124,7 +114,6 @@ public class TransactionPostingProcessor
      * @param accountRepository                     account lookup repository
      * @param transactionCategoryBalanceRepository  transaction-category-balance repository
      * @param fileStatusMapper                      COBOL {@code FILE STATUS} mapper
-     * @param meterRegistry                         Micrometer registry for the batch counters
      * @param clock                                 clock used to stamp the processing timestamp
      */
     public TransactionPostingProcessor(
@@ -132,13 +121,11 @@ public class TransactionPostingProcessor
             AccountRepository accountRepository,
             TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
             FileStatusMapper fileStatusMapper,
-            MeterRegistry meterRegistry,
             Clock clock) {
         this.cardCrossReferenceRepository = cardCrossReferenceRepository;
         this.accountRepository = accountRepository;
         this.transactionCategoryBalanceRepository = transactionCategoryBalanceRepository;
         this.fileStatusMapper = fileStatusMapper;
-        this.meterRegistry = meterRegistry;
         this.clock = clock;
     }
 
@@ -186,7 +173,6 @@ public class TransactionPostingProcessor
         Transaction postedTransaction = buildTransaction(dalytran);
         TransactionCategoryBalance categoryBalance = computeCategoryBalance(dalytran, accountId);
         Account updatedAccount = applyAccountBalances(account, dalytran);
-        meterRegistry.counter(RECORDS_PROCESSED_METRIC).increment();
         LOGGER.debug("Posted daily transaction {} to account {}",
                 dalytran.getDalytranId(), accountId);
         return PostingResult.posted(postedTransaction, updatedAccount, categoryBalance);
@@ -311,15 +297,15 @@ public class TransactionPostingProcessor
     }
 
     /**
-     * Records the reason-tagged reject metric and builds the typed reject outcome
-     * ({@code 2500-WRITE-REJECT-REC} supplies the trailer; the writer performs the file write).
+     * Builds the typed reject outcome ({@code 2500-WRITE-REJECT-REC} supplies the trailer; the
+     * downstream {@code RejectWriter} performs the file write and emits the reason-tagged
+     * {@code carddemo.batch.records.rejected} counter, so no metric is recorded here).
      *
      * @param rejectCode the reject reason
      * @param dalytran   the rejected daily transaction (source of the 350-byte reject data)
      * @return the reject posting result
      */
     private PostingResult reject(RejectCode rejectCode, DailyTransaction dalytran) {
-        meterRegistry.counter(RECORDS_REJECTED_METRIC, REJECT_REASON_TAG, rejectCode.name()).increment();
         LOGGER.debug("Rejected daily transaction {} with reason {} ({})",
                 dalytran.getDalytranId(), rejectCode.getCode(), rejectCode.name());
         return PostingResult.rejected(rejectCode, dalytran);

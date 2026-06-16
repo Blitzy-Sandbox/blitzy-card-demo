@@ -49,7 +49,7 @@ so the mapping is auditable end-to-end (both forms are indexed below and in §4)
 |---|---|---|---|
 | `COSGN00C.PROCESS-ENTER-KEY` → `AuthenticationService.authenticate()` | `COSGN00C.PROCESS-ENTER-KEY` (verified — exists) + `READ-USER-SEC-FILE` | `AuthenticationService.authenticate()` | USRSEC lookup → BCrypt verify → JWT issuance |
 | `COACTUPC.PROCESS-UPDATE-ACCT` → `AccountUpdateService.updateAccount()` | `COACTUPC.9600-WRITE-PROCESSING` (dual ACCTDAT+CUSTDAT `REWRITE`; `SYNCPOINT ROLLBACK` at L4100) + `2000-DECIDE-ACTION` | `AccountUpdateService.updateAccount()` | `@Transactional` + rollback-on-exception + `@Version` |
-| `CBTRN02C.2000-VALIDATE-TXN` → `TransactionPostingProcessor.validate()` | `CBTRN02C.1500-VALIDATE-TRAN` (+ `1500-A-LOOKUP-XREF`, `1500-B-LOOKUP-ACCT`); reject codes 100–109 | `TransactionPostingProcessor.validate()` | 4-stage validation cascade → `RejectCode` enum |
+| `CBTRN02C.2000-VALIDATE-TXN` → `TransactionPostingProcessor.validate()` | `CBTRN02C.1500-VALIDATE-TRAN` (+ `1500-A-LOOKUP-XREF`, `1500-B-LOOKUP-ACCT`); reject codes 100–109 | `TransactionPostingProcessor.process()` (as-built; the AAP's conceptual `validate()` label) | 4-stage validation cascade → `RejectCode` enum; pure compute, persisted once by `TransactionWriter` (D-018) |
 
 > **Note on labels.** `PROCESS-UPDATE-ACCT` and `2000-VALIDATE-TXN` are the AAP's *conceptual* labels;
 > the verified source paragraphs are `9600-WRITE-PROCESSING` and `1500-VALIDATE-TRAN` respectively. Both
@@ -378,20 +378,20 @@ _783 lines · 18 paragraphs/sections · 100% mapped_
 |---|---|---|---|---|
 | `COTRN02C` | `MAIN-PARA` | `TransactionAddService` | `addTransaction()` | Program entry; CICS pseudo-conversational dispatch → TransactionController delegates to TransactionAddService.addTransaction() |
 | `COTRN02C` | `PROCESS-ENTER-KEY` | `TransactionAddService` | `addTransaction()` | ENTER-key business action → primary service method (PF-key/AID routing → REST endpoint) |
-| `COTRN02C` | `VALIDATE-INPUT-KEY-FIELDS` | `TransactionAddService` | `validateInputKeyFields()` | Field edit/validation → @Valid + service validation; EVALUATE/IF order preserved (AAP §0.8.3) |
-| `COTRN02C` | `VALIDATE-INPUT-DATA-FIELDS` | `TransactionAddService` | `validateInputDataFields()` | Field edit/validation → @Valid + service validation; EVALUATE/IF order preserved (AAP §0.8.3) |
+| `COTRN02C` | `VALIDATE-INPUT-KEY-FIELDS` | `TransactionAddService` | `validateAndResolveKeyFields()` | Key-field edit + cross-reference resolution, run **before** data-field validation; `EVALUATE TRUE` account-id-first precedence; resolves account→card (`findByXrefAcctId`) or card→account (`findById`) and persists the resolved pairing; not-found → `RecordNotFoundException` (DECISION_LOG **D-020**) |
+| `COTRN02C` | `VALIDATE-INPUT-DATA-FIELDS` | `TransactionAddService` | `validateDataFields()` | Field edit/validation → @Valid + service validation, run after key resolution; EVALUATE/IF order preserved (AAP §0.8.3) |
 | `COTRN02C` | `ADD-TRANSACTION` | `TransactionAddService` | `addTransaction()` | Add transaction with auto-generated ID → Factory ID sequence (browse-to-end + increment, AAP §0.4.3) |
 | `COTRN02C` | `COPY-LAST-TRAN-DATA` | `TransactionAddService` | `copyLastTransaction()` | Pre-fill from last transaction → service helper |
 | `COTRN02C` | `RETURN-TO-PREV-SCREEN` | `TransactionController` | `navigate()` | CICS XCTL/RETURN screen navigation → REST routing (caller selects next endpoint); stateless |
 | `COTRN02C` | `SEND-TRNADD-SCREEN` | `TransactionController` | `buildResponse()` | SEND MAP (BMS 3270 output) → response DTO assembly returned by controller (DTO pattern) |
 | `COTRN02C` | `RECEIVE-TRNADD-SCREEN` | `TransactionController` | `bindRequest()` | RECEIVE MAP (BMS 3270 input) → request DTO binding (@RequestBody / @Valid) |
 | `COTRN02C` | `POPULATE-HEADER-INFO` | `TransactionController` | `populateHeader()` | Standard screen header (title/date/time) → common response header DTO (COTTL01Y/CSDAT01Y) |
-| `COTRN02C` | `READ-CXACAIX-FILE` | `CardCrossReferenceRepository` | `findById()` | Keyed read (VSAM READ) → CardCrossReferenceRepository.findById() (Spring Data) |
-| `COTRN02C` | `READ-CCXREF-FILE` | `CardCrossReferenceRepository` | `findById()` | Keyed read (VSAM READ) → CardCrossReferenceRepository.findById() (Spring Data) |
+| `COTRN02C` | `READ-CXACAIX-FILE` | `CardCrossReferenceRepository` | `findByXrefAcctId()` | Account-keyed read via the `CXACAIX` alternate index → CardCrossReferenceRepository.findByXrefAcctId() (account→card resolution, D-020) |
+| `COTRN02C` | `READ-CCXREF-FILE` | `CardCrossReferenceRepository` | `findById()` | Card-keyed read (VSAM READ) → CardCrossReferenceRepository.findById() (card→account resolution, D-020) |
 | `COTRN02C` | `STARTBR-TRANSACT-FILE` | `TransactionRepository` | `openCursor()` | STARTBR → open keyed cursor / Pageable start (Spring Data) |
 | `COTRN02C` | `READPREV-TRANSACT-FILE` | `TransactionAddService` | `pagePrevious()` | Backward browse (PF7/READPREV) → Pageable previous page / reverse cursor |
 | `COTRN02C` | `ENDBR-TRANSACT-FILE` | `TransactionRepository` | `closeCursor()` | ENDBR → release cursor (no-op under Spring Data pagination) |
-| `COTRN02C` | `WRITE-TRANSACT-FILE` | `StatementWriter` | `write()` | Statement text/HTML emit → StatementWriter (S3 objects), Template Method (AAP §0.4.3) |
+| `COTRN02C` | `WRITE-TRANSACT-FILE` | `TransactionRepository` | `save()` | Persist the new transaction → TransactionAddService.addTransaction() persists the **resolved** card/account pairing via TransactionRepository.save() (D-020) |
 | `COTRN02C` | `CLEAR-CURRENT-SCREEN` | `TransactionAddService` | `resetState()` | INITIALIZE / clear screen → reset request/response DTO to defaults (stateless) |
 | `COTRN02C` | `INITIALIZE-ALL-FIELDS` | `TransactionAddService` | `resetState()` | INITIALIZE / clear screen → reset request/response DTO to defaults (stateless) |
 
@@ -624,16 +624,16 @@ _731 lines · 26 paragraphs/sections · 100% mapped_
 | `CBTRN02C` | `0400-ACCTFILE-OPEN` | `DailyTransactionPostingJob` | `openStep()` | OPEN (0400-ACCTFILE-OPEN) → Spring Batch step ItemStream lifecycle (BatchConfig); dataset via AccountRepository |
 | `CBTRN02C` | `0500-TCATBALF-OPEN` | `DailyTransactionPostingJob` | `openStep()` | OPEN (0500-TCATBALF-OPEN) → Spring Batch step ItemStream lifecycle (BatchConfig); dataset via TransactionCategoryBalanceRepository |
 | `CBTRN02C` | `1000-DALYTRAN-GET-NEXT` | `DailyTransactionReader` | `read()` | Daily-transaction sequential read → DailyTransactionReader.read() |
-| `CBTRN02C` | `1500-VALIDATE-TRAN` | `TransactionPostingProcessor` | `validate()` | 4-stage validation cascade; reject codes 100-109 → RejectCode enum (Strategy, AAP §0.4.3) |
+| `CBTRN02C` | `1500-VALIDATE-TRAN` | `TransactionPostingProcessor` | `process()` | 4-stage validation cascade in the pure processor; reject codes `{100,101,102,103,109}` → RejectCode enum; `103` overwrites `102` when both fail (Strategy, AAP §0.4.3; DECISION_LOG **D-016**) |
 | `CBTRN02C` | `1500-A-LOOKUP-XREF` | `CardCrossReferenceRepository` | `findById()` | Keyed read (VSAM READ) → CardCrossReferenceRepository.findById() (Spring Data) |
 | `CBTRN02C` | `1500-B-LOOKUP-ACCT` | `AccountRepository` | `findById()` | Keyed read (VSAM READ) → AccountRepository.findById() (Spring Data) |
-| `CBTRN02C` | `2000-POST-TRANSACTION` | `TransactionPostingProcessor` | `post()` | Post transaction → processor posting step (updates balances), Strategy (AAP §0.4.3) |
+| `CBTRN02C` | `2000-POST-TRANSACTION` | `TransactionPostingProcessor` / `TransactionWriter` | `process()` / `post()` | Posted state (transaction + balances) is **computed** by the pure processor `process()` and **persisted exactly once** by `TransactionWriter.post()` — no re-read/recompute (single posting contract, DECISION_LOG **D-018**) |
 | `CBTRN02C` | `2500-WRITE-REJECT-REC` | `RejectWriter` | `write()` | Write rejected record → RejectWriter (S3 rejection file), reject codes 100-109 |
-| `CBTRN02C` | `2700-UPDATE-TCATBAL` | `TransactionCategoryBalanceRepository` | `save()` | Create/update category balance → TransactionCategoryBalanceRepository.save() (composite key) |
+| `CBTRN02C` | `2700-UPDATE-TCATBAL` | `TransactionCategoryBalanceRepository` | `save()` | Create/update category balance → TransactionCategoryBalanceRepository.save() (composite key), invoked once by `TransactionWriter.post()` (D-018) |
 | `CBTRN02C` | `2700-A-CREATE-TCATBAL-REC` | `TransactionCategoryBalanceRepository` | `save()` | Create/update category balance → TransactionCategoryBalanceRepository.save() (composite key) |
 | `CBTRN02C` | `2700-B-UPDATE-TCATBAL-REC` | `TransactionCategoryBalanceRepository` | `save()` | Create/update category balance → TransactionCategoryBalanceRepository.save() (composite key) |
-| `CBTRN02C` | `2800-UPDATE-ACCOUNT-REC` | `AccountRepository` | `save()` | Update account balance → AccountRepository.save() |
-| `CBTRN02C` | `2900-WRITE-TRANSACTION-FILE` | `StatementWriter` | `write()` | Statement text/HTML emit → StatementWriter (S3 objects), Template Method (AAP §0.4.3) |
+| `CBTRN02C` | `2800-UPDATE-ACCOUNT-REC` | `AccountRepository` | `saveAndFlush()` | Update account balance → AccountRepository.saveAndFlush() once via `TransactionWriter.post()`; optimistic-lock conflict → canonical concurrency message (REWRITE invalid-key path = reject `109`; D-018) |
+| `CBTRN02C` | `2900-WRITE-TRANSACTION-FILE` | `TransactionWriter` | `post()` | Persist the posted transaction record → TransactionWriter.post() saves the precomputed `Transaction` exactly once (optional byte-exact 350-byte S3 staging) (D-018) |
 | `CBTRN02C` | `9000-DALYTRAN-CLOSE` | `DailyTransactionReader` | `close()` | CLOSE daily-transaction input → ItemReader ItemStream lifecycle |
 | `CBTRN02C` | `9100-TRANFILE-CLOSE` | `DailyTransactionPostingJob` | `closeStep()` | CLOSE (9100-TRANFILE-CLOSE) → Spring Batch step ItemStream lifecycle (BatchConfig); dataset via TransactionRepository |
 | `CBTRN02C` | `9200-XREFFILE-CLOSE` | `DailyTransactionPostingJob` | `closeStep()` | CLOSE (9200-XREFFILE-CLOSE) → Spring Batch step ItemStream lifecycle (BatchConfig); dataset via CardCrossReferenceRepository |
@@ -692,9 +692,9 @@ _649 lines · 26 paragraphs/sections · 100% mapped_
 | `CBTRN03C` | `0300-TRANTYPE-OPEN` | `TransactionReportJob` | `openStep()` | OPEN (0300-TRANTYPE-OPEN) → Spring Batch step ItemStream lifecycle (BatchConfig); dataset via TransactionTypeRepository |
 | `CBTRN03C` | `0400-TRANCATG-OPEN` | `TransactionReportJob` | `openStep()` | OPEN (0400-TRANCATG-OPEN) → Spring Batch step ItemStream lifecycle (BatchConfig); dataset via TransactionCategoryRepository |
 | `CBTRN03C` | `0500-DATEPARM-OPEN` | `TransactionReportProcessor` | `readDateParams()` | Date-range parameter file → Spring Batch JobParameters (report date filter) |
-| `CBTRN03C` | `1500-A-LOOKUP-XREF` | `CardCrossReferenceRepository` | `findById()` | Keyed read (VSAM READ) → CardCrossReferenceRepository.findById() (Spring Data) |
-| `CBTRN03C` | `1500-B-LOOKUP-TRANTYPE` | `TransactionTypeRepository` | `findById()` | Keyed read (VSAM READ) → TransactionTypeRepository.findById() (Spring Data) |
-| `CBTRN03C` | `1500-C-LOOKUP-TRANCATG` | `TransactionCategoryRepository` | `findById()` | Keyed read (VSAM READ) → TransactionCategoryRepository.findById() (Spring Data) |
+| `CBTRN03C` | `1500-A-LOOKUP-XREF` | `CardCrossReferenceRepository` / `TransactionReportProcessor` | `findById()` / `lookupAccountId()` | Keyed read → CardCrossReferenceRepository.findById(); `INVALID KEY` → `9999-ABEND-PROGRAM` reproduced as a **fatal** `RecordNotFoundException` (FILE STATUS `23`) with the card number **masked to last 4** (DECISION_LOG **D-019**) |
+| `CBTRN03C` | `1500-B-LOOKUP-TRANTYPE` | `TransactionTypeRepository` / `TransactionReportProcessor` | `findById()` / `lookupTypeDescription()` | Keyed read → TransactionTypeRepository.findById(); `INVALID KEY` → fatal `RecordNotFoundException` (type code shown verbatim, non-sensitive) (D-019) |
+| `CBTRN03C` | `1500-C-LOOKUP-TRANCATG` | `TransactionCategoryRepository` / `TransactionReportProcessor` | `findById()` / `lookupCategoryDescription()` | Keyed read → TransactionCategoryRepository.findById(); `INVALID KEY` → fatal `RecordNotFoundException` (type/category codes shown verbatim) (D-019) |
 | `CBTRN03C` | `9000-TRANFILE-CLOSE` | `TransactionReportJob` | `closeStep()` | CLOSE (9000-TRANFILE-CLOSE) → Spring Batch step ItemStream lifecycle (BatchConfig); dataset via TransactionRepository |
 | `CBTRN03C` | `9100-REPTFILE-CLOSE` | `TransactionReportProcessor` | `closeOutput()` | CLOSE report output → S3 report object (TransactionReportJob) |
 | `CBTRN03C` | `9200-CARDXREF-CLOSE` | `TransactionReportJob` | `closeStep()` | CLOSE (9200-CARDXREF-CLOSE) → Spring Batch step ItemStream lifecycle (BatchConfig); dataset via CardCrossReferenceRepository |
@@ -886,7 +886,7 @@ For each major Java component, the originating COBOL program/paragraph(s). This 
 
 | Java Class.Method | Originating COBOL | Notes |
 |---|---|---|
-| `AuthenticationService.authenticate()` | `COSGN00C.PROCESS-ENTER-KEY / READ-USER-SEC-FILE` | USRSEC lookup + BCrypt + JWT |
+| `AuthenticationService.authenticate()` | `COSGN00C.PROCESS-ENTER-KEY / READ-USER-SEC-FILE` | USRSEC lookup + BCrypt + JWT; upper-cases both id and password (seed-hash dependency, D-017); records `carddemo.auth.attempts` |
 | `AccountViewService.viewAccount()` | `COACTVWC.9000-READ-ACCT / 9300-GETACCTDATA-BYACCT / 9400-GETCUSTDATA-BYCUST` | ACCTDAT+CUSTDAT+CXACAIX join |
 | `AccountUpdateService.updateAccount()` | `COACTUPC.9600-WRITE-PROCESSING / 2000-DECIDE-ACTION / 9700-CHECK-CHANGE-IN-REC` | `@Transactional` + rollback + `@Version` |
 | `CardListService.listCards()` | `COCRDLIC.9000-READ-FORWARD / 9100-READ-BACKWARDS / 9500-FILTER-RECORDS` | 7 rows/page browse |
@@ -925,7 +925,7 @@ For each major Java component, the originating COBOL program/paragraph(s). This 
 | Java Class | Originating COBOL / JCL | Notes |
 |---|---|---|
 | `DailyTransactionPostingJob` | `POSTTRAN.jcl + CBTRN02C` | 4-stage validation + condition codes |
-| `TransactionPostingProcessor.validate()/post()` | `CBTRN02C.1500-VALIDATE-TRAN / 2000-POST-TRANSACTION` | Reject codes 100–109 (Strategy) |
+| `TransactionPostingProcessor.process()` | `CBTRN02C.1500-VALIDATE-TRAN / 2000-POST-TRANSACTION (compute)` | Pure compute → `PostingResult`; reject set `{100,101,102,103,109}`; `103` overwrites `102` (Strategy; D-016, D-018) |
 | `InterestCalculationJob` | `INTCALC.jcl + CBACT04C` | Interest formula + DEFAULT group fallback |
 | `InterestCalculationProcessor.computeInterest()` | `CBACT04C.1300-COMPUTE-INTEREST` | `BigDecimal.divide(…,HALF_EVEN)`; (TRAN-CAT-BAL×rate)/1200 |
 | `CombineTransactionsJob / CombineTransactionsProcessor` | `COMBTRAN.jcl (+ CBACT01–03C, CBCUS01C readers)` | DFSORT+REPRO → `Comparator` + bulk insert |
@@ -934,7 +934,7 @@ For each major Java component, the originating COBOL program/paragraph(s). This 
 | `BatchPipelineOrchestrator` | `POSTTRAN→INTCALC→COMBTRAN→{CREASTMT‖TRANREPT}` | 5-stage flow + condition-code deciders (`FlowBuilder.split()`) |
 | `DailyTransactionReader` | `CBTRN01C` | Daily-transaction ItemReader |
 | `AccountItemReader / CardItemReader / CardCrossReferenceItemReader / CustomerItemReader` | `CBACT01C / CBACT02C / CBACT03C / CBCUS01C` | Sequential file readers → ItemReader |
-| `TransactionWriter / RejectWriter / StatementWriter` | `CBTRN02C (2900 / 2500) / CBSTM03A` | DB+S3 / S3 rejects / S3 statements |
+| `TransactionWriter / RejectWriter / StatementWriter` | `CBTRN02C (2900 / 2500) / CBSTM03A` | `TransactionWriter` consumes `PostingResult` and persists posted state **exactly once** (no recompute) + routes rejects to `RejectWriter`; DB+S3 / S3 rejects / S3 statements (D-018) |
 
 ### 7.4 Entities & repositories
 

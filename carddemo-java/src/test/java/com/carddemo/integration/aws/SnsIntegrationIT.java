@@ -7,7 +7,6 @@ import java.util.HashMap;
 import java.util.Map;
 
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -96,9 +95,9 @@ class SnsIntegrationIT extends AbstractAwsLocalStackIT {
                 .build());
 
         Message received = pollForMessage(subscriberQueueUrl, Duration.ofSeconds(30));
-        if (received == null) {
-            Assumptions.abort("SNS->SQS fan-out not observed within timeout on LocalStack");
-        }
+        assertThat(received)
+                .as("SNS->SQS fan-out message should be received within the timeout on LocalStack")
+                .isNotNull();
         assertThat(received.body()).isEqualTo(payload);
     }
 

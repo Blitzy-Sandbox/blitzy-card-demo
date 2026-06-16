@@ -3,7 +3,9 @@ package com.carddemo.service.auth;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.model.entity.UserSecurity;
+import com.carddemo.observability.MetricsConfig;
 import com.carddemo.repository.UserSecurityRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.util.Locale;
 import java.util.Optional;
 import org.slf4j.Logger;
@@ -62,15 +64,26 @@ public class AuthenticationService {
     private final PasswordEncoder passwordEncoder;
 
     /**
+     * Meter registry used to record the {@code carddemo.auth.attempts} counter
+     * (Observability rule). Only the bounded, low-cardinality {@code outcome} tag
+     * is recorded; the user id, plaintext password, and stored hash are never used
+     * as tags or otherwise exposed through telemetry.
+     */
+    private final MeterRegistry meterRegistry;
+
+    /**
      * Creates the service with its collaborators.
      *
      * @param userSecurityRepository keyed access to the {@code USRSEC} user-security store
      * @param passwordEncoder        BCrypt encoder used to verify the entered password against the stored hash
+     * @param meterRegistry          registry for the {@code carddemo.auth.attempts} outcome counter
      */
     public AuthenticationService(UserSecurityRepository userSecurityRepository,
-                                 PasswordEncoder passwordEncoder) {
+                                 PasswordEncoder passwordEncoder,
+                                 MeterRegistry meterRegistry) {
         this.userSecurityRepository = userSecurityRepository;
         this.passwordEncoder = passwordEncoder;
+        this.meterRegistry = meterRegistry;
     }
 
     /**
@@ -107,6 +120,7 @@ public class AuthenticationService {
         Optional<UserSecurity> found = userSecurityRepository.findBySecUsrId(normalizedUserId);
         if (found.isEmpty()) {
             // WHEN 13 (NOTFND)
+            MetricsConfig.authAttempts(meterRegistry, MetricsConfig.OUTCOME_NOT_FOUND).increment();
             log.warn("Authentication failed: user not found for id={}", normalizedUserId);
             throw new RecordNotFoundException(MSG_USER_NOT_FOUND);
         }
@@ -115,11 +129,13 @@ public class AuthenticationService {
 
         // WHEN 0: IF SEC-USR-PWD = WS-USER-PWD -> BCrypt verification (never plaintext)
         if (!passwordEncoder.matches(normalizedPassword, user.getSecUsrPwd())) {
+            MetricsConfig.authAttempts(meterRegistry, MetricsConfig.OUTCOME_WRONG_PASSWORD).increment();
             log.warn("Authentication failed: wrong password for id={}", normalizedUserId);
             throw new ValidationException(MSG_WRONG_PASSWORD);
         }
 
         // Success: MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE; type drives downstream routing/JWT claims
+        MetricsConfig.authAttempts(meterRegistry, MetricsConfig.OUTCOME_SUCCESS).increment();
         log.info("Authentication succeeded for id={} type={}", normalizedUserId, user.getSecUsrType());
         return user;
     }

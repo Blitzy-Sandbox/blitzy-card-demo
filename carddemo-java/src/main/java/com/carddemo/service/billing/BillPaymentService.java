@@ -7,9 +7,11 @@ import com.carddemo.model.dto.BillPaymentResponse;
 import com.carddemo.model.entity.Account;
 import com.carddemo.model.entity.CardCrossReference;
 import com.carddemo.model.entity.Transaction;
+import com.carddemo.observability.MetricsConfig;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -69,12 +71,21 @@ public class BillPaymentService {
     private final TransactionRepository transactionRepository;
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
 
+    /**
+     * Meter registry for the {@code carddemo.transaction.amount.total} counter
+     * (Observability rule). Only the aggregate amount is recorded as telemetry;
+     * no account id, card number, or transaction id is used as a tag.
+     */
+    private final MeterRegistry meterRegistry;
+
     public BillPaymentService(AccountRepository accountRepository,
                               TransactionRepository transactionRepository,
-                              CardCrossReferenceRepository cardCrossReferenceRepository) {
+                              CardCrossReferenceRepository cardCrossReferenceRepository,
+                              MeterRegistry meterRegistry) {
         this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
         this.cardCrossReferenceRepository = cardCrossReferenceRepository;
+        this.meterRegistry = meterRegistry;
     }
 
     /**
@@ -146,8 +157,13 @@ public class BillPaymentService {
         account.setAcctCurrBal(newBalance);
         accountRepository.save(account);
 
-        LOG.info("Bill payment posted: accountId={}, tranId={}, amount={}",
-                accountId, tranId, paymentAmount);
+        // Observability: running total of posted amounts (telemetry only; see MetricsConfig).
+        MetricsConfig.transactionAmountTotal(meterRegistry).increment(paymentAmount.doubleValue());
+
+        // Non-sensitive outcome log only: the account id, transaction id, and exact payment amount
+        // are sensitive account/financial data and must not appear in routine logs. Correlation is
+        // carried by the structured-logging correlation id (CorrelationIdFilter / MDC).
+        LOG.info("Bill payment posted successfully");
 
         // WRITE-TRANSACT-FILE success message (NOTE: two spaces after the first period).
         final String successMessage = "Payment successful.  Your Transaction ID is " + tranId + ".";

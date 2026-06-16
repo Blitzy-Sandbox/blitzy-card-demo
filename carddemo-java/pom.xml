@@ -172,18 +172,49 @@
         <dependency>
             <groupId>io.awspring.cloud</groupId>
             <artifactId>spring-cloud-aws-starter-s3</artifactId>
+            <exclusions>
+                <!--
+                  Drop legacy commons-logging pulled in transitively via the AWS SDK
+                  Apache HTTP client (apache-client -> httpclient -> commons-logging:1.2).
+                  spring-jcl already bridges Jakarta Commons Logging to SLF4J, so the
+                  duplicate JCL implementation only produces the "Standard Commons Logging
+                  discovery in action with spring-jcl" warning, violating the Gate 2
+                  zero-warning build. Excluding it removes the warning with no loss of
+                  logging output. Applied to all three AWS starters defensively.
+                -->
+                <exclusion>
+                    <groupId>commons-logging</groupId>
+                    <artifactId>commons-logging</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- AWS SQS (CICS TDQ WRITEQ replacement - online-to-batch bridge). -->
         <dependency>
             <groupId>io.awspring.cloud</groupId>
             <artifactId>spring-cloud-aws-starter-sqs</artifactId>
+            <exclusions>
+                <!-- See the S3 starter above: remove transitive commons-logging so the
+                     spring-jcl JCL->SLF4J bridge is the only one on the classpath. -->
+                <exclusion>
+                    <groupId>commons-logging</groupId>
+                    <artifactId>commons-logging</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- AWS SNS (alert/notification publishing). -->
         <dependency>
             <groupId>io.awspring.cloud</groupId>
             <artifactId>spring-cloud-aws-starter-sns</artifactId>
+            <exclusions>
+                <!-- See the S3 starter above: remove transitive commons-logging so the
+                     spring-jcl JCL->SLF4J bridge is the only one on the classpath. -->
+                <exclusion>
+                    <groupId>commons-logging</groupId>
+                    <artifactId>commons-logging</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- PostgreSQL JDBC driver (runtime only; the relational target). -->

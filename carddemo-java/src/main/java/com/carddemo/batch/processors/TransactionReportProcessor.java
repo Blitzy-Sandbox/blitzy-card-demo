@@ -1,5 +1,6 @@
 package com.carddemo.batch.processors;
 
+import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.model.entity.CardCrossReference;
 import com.carddemo.model.entity.Transaction;
 import com.carddemo.model.entity.TransactionCategory;
@@ -44,10 +45,15 @@ import org.springframework.stereotype.Component;
  *       emitted {@link ReportLine}.</li>
  * </ol>
  *
- * <p>A reference lookup that finds no row yields a lenient result rather than an
- * abend: a missing cross-reference produces a {@code null} account id and a missing
- * type or category produces a blank description, so a single missing reference row
- * does not stop the report. The processor performs reads only and never persists.</p>
+ * <p>A reference lookup that finds no row is <strong>fatal</strong>, mirroring the
+ * {@code CBTRN03C} {@code INVALID KEY} paths in {@code 1500-A}/{@code 1500-B}/
+ * {@code 1500-C}, each of which {@code DISPLAY}s a diagnostic and performs
+ * {@code 9999-ABEND-PROGRAM} (a {@code CEE3ABD} abend). The Java equivalent throws a
+ * {@link RecordNotFoundException} (COBOL {@code FILE STATUS '23'}) so the report step
+ * fails rather than emitting an incomplete detail row. The card number in the
+ * cross-reference diagnostic is masked to its last four digits; the non-sensitive
+ * transaction-type and category codes are shown verbatim as the COBOL {@code DISPLAY}
+ * does. The processor performs reads only and never persists.</p>
  *
  * <p>This per-item processor cannot own the cross-item accumulations that
  * {@code CBTRN03C} also performs &mdash; page totals, per-account totals on the card
@@ -84,10 +90,17 @@ public class TransactionReportProcessor
     private static final int PROC_DATE_LENGTH = 10;
 
     /**
-     * Value emitted for a description when its reference lookup finds no row,
-     * mirroring the spaces {@code CBTRN03C} leaves in the report description fields.
+     * Number of trailing card-number digits preserved when masking the card number
+     * in a cross-reference diagnostic, so the full PAN is never logged or surfaced.
      */
-    private static final String BLANK_DESCRIPTION = "";
+    private static final int MASK_VISIBLE_DIGITS = 4;
+
+    /**
+     * Fixed prefix prepended to the {@value #MASK_VISIBLE_DIGITS} visible digits when
+     * masking a card number for diagnostics; also used alone when the value is too
+     * short to safely reveal a suffix.
+     */
+    private static final String MASK_PREFIX = "****";
 
     /** Counter incremented once for every report line this processor emits. */
     private static final String RECORDS_PROCESSED_METRIC = "carddemo.batch.records.processed";
@@ -238,58 +251,98 @@ public class TransactionReportProcessor
 
     /**
      * {@code 1500-A-LOOKUP-XREF}: resolves the account id from the card
-     * cross-reference. A missing cross-reference yields {@code null} so the line is
-     * still emitted.
+     * cross-reference. A missing cross-reference (COBOL {@code INVALID KEY}) is fatal:
+     * the masked card-number diagnostic is logged and a {@link RecordNotFoundException}
+     * is thrown, mirroring {@code DISPLAY 'INVALID CARD NUMBER : '} followed by
+     * {@code 9999-ABEND-PROGRAM}. The card number is masked to its last
+     * {@value #MASK_VISIBLE_DIGITS} digits so the full PAN is never logged or surfaced.
      *
      * @param cardNumber the transaction card number key
-     * @return the cross-referenced account id, or {@code null} when unresolved
+     * @return the cross-referenced account id
+     * @throws RecordNotFoundException when the card number is absent or no
+     *                                 cross-reference row exists for it
      */
     private Long lookupAccountId(String cardNumber) {
-        if (cardNumber == null) {
-            return null;
+        if (cardNumber != null) {
+            CardCrossReference xref = cardCrossReferenceRepository.findById(cardNumber).orElse(null);
+            if (xref != null) {
+                return xref.getXrefAcctId();
+            }
         }
-        return cardCrossReferenceRepository.findById(cardNumber)
-                .map(CardCrossReference::getXrefAcctId)
-                .orElseGet(() -> {
-                    LOGGER.debug(
-                            "No card cross-reference for card number {}; account id left null",
-                            cardNumber);
-                    return null;
-                });
+        String message = "INVALID CARD NUMBER : " + maskCardNumber(cardNumber);
+        LOGGER.error(message);
+        throw new RecordNotFoundException(message);
     }
 
     /**
      * {@code 1500-B-LOOKUP-TRANTYPE}: resolves the transaction-type description.
-     * A missing type yields {@value #BLANK_DESCRIPTION}.
+     * A missing type (COBOL {@code INVALID KEY}) is fatal: the diagnostic is logged
+     * and a {@link RecordNotFoundException} is thrown, mirroring
+     * {@code DISPLAY 'INVALID TRANSACTION TYPE : '} followed by
+     * {@code 9999-ABEND-PROGRAM}. The transaction-type code is a non-sensitive
+     * reference code and is shown verbatim, exactly as the COBOL {@code DISPLAY} does.
      *
      * @param typeCode the two-character transaction-type code
-     * @return the type description, or a blank description when unresolved
+     * @return the type description
+     * @throws RecordNotFoundException when the type code is absent or no
+     *                                 transaction-type row exists for it
      */
     private String lookupTypeDescription(String typeCode) {
-        if (typeCode == null) {
-            return BLANK_DESCRIPTION;
+        if (typeCode != null) {
+            TransactionType type = transactionTypeRepository.findById(typeCode).orElse(null);
+            if (type != null) {
+                return type.getTranTypeDesc();
+            }
         }
-        return transactionTypeRepository.findById(typeCode)
-                .map(TransactionType::getTranTypeDesc)
-                .orElse(BLANK_DESCRIPTION);
+        String message = "INVALID TRANSACTION TYPE : " + typeCode;
+        LOGGER.error(message);
+        throw new RecordNotFoundException(message);
     }
 
     /**
      * {@code 1500-C-LOOKUP-TRANCATG}: resolves the transaction-category description
      * using the two-component {@link TransactionCategoryId} (type code + category
-     * code, no account id). A missing category yields {@value #BLANK_DESCRIPTION}.
+     * code, no account id). A missing category (COBOL {@code INVALID KEY}) is fatal:
+     * the diagnostic is logged and a {@link RecordNotFoundException} is thrown,
+     * mirroring {@code DISPLAY 'INVALID TRAN CATG KEY : '} followed by
+     * {@code 9999-ABEND-PROGRAM}. The type and category codes are non-sensitive
+     * reference codes and are shown verbatim, exactly as the COBOL {@code DISPLAY} does.
      *
      * @param typeCode     the two-character transaction-type code
      * @param categoryCode the numeric category code
-     * @return the category description, or a blank description when unresolved
+     * @return the category description
+     * @throws RecordNotFoundException when either key component is absent or no
+     *                                 transaction-category row exists for the key
      */
     private String lookupCategoryDescription(String typeCode, Integer categoryCode) {
-        if (typeCode == null || categoryCode == null) {
-            return BLANK_DESCRIPTION;
+        if (typeCode != null && categoryCode != null) {
+            TransactionCategory category = transactionCategoryRepository
+                    .findById(new TransactionCategoryId(typeCode, categoryCode))
+                    .orElse(null);
+            if (category != null) {
+                return category.getTranCatTypeDesc();
+            }
         }
-        return transactionCategoryRepository.findById(new TransactionCategoryId(typeCode, categoryCode))
-                .map(TransactionCategory::getTranCatTypeDesc)
-                .orElse(BLANK_DESCRIPTION);
+        String message = "INVALID TRAN CATG KEY : " + typeCode + "/" + categoryCode;
+        LOGGER.error(message);
+        throw new RecordNotFoundException(message);
+    }
+
+    /**
+     * Masks a card number to its last {@value #MASK_VISIBLE_DIGITS} digits for use in
+     * the cross-reference diagnostic, so the full PAN is never logged or surfaced
+     * through an exception message. A {@code null} value or one no longer than
+     * {@value #MASK_VISIBLE_DIGITS} characters is fully masked to {@value #MASK_PREFIX}.
+     *
+     * @param cardNumber the raw card number, possibly {@code null}
+     * @return {@value #MASK_PREFIX} followed by the last {@value #MASK_VISIBLE_DIGITS}
+     *         digits, or {@value #MASK_PREFIX} alone when the value is absent or too short
+     */
+    private static String maskCardNumber(String cardNumber) {
+        if (cardNumber == null || cardNumber.length() <= MASK_VISIBLE_DIGITS) {
+            return MASK_PREFIX;
+        }
+        return MASK_PREFIX + cardNumber.substring(cardNumber.length() - MASK_VISIBLE_DIGITS);
     }
 
     /**
@@ -309,14 +362,14 @@ public class TransactionReportProcessor
      *
      * @param tranId              transaction id ({@code TRAN-REPORT-TRANS-ID})
      * @param cardNumber          card number control-break key ({@code TRAN-CARD-NUM})
-     * @param accountId           cross-referenced account id ({@code TRAN-REPORT-ACCOUNT-ID}),
-     *                            or {@code null} when the cross-reference was not found
+     * @param accountId           cross-referenced account id ({@code TRAN-REPORT-ACCOUNT-ID});
+     *                            always resolved because a missing cross-reference is fatal
      * @param typeCode            transaction-type code ({@code TRAN-REPORT-TYPE-CD})
-     * @param typeDescription     transaction-type description ({@code TRAN-REPORT-TYPE-DESC}),
-     *                            blank when not found
+     * @param typeDescription     transaction-type description ({@code TRAN-REPORT-TYPE-DESC});
+     *                            always resolved because a missing type is fatal
      * @param categoryCode        transaction-category code ({@code TRAN-REPORT-CAT-CD})
-     * @param categoryDescription transaction-category description ({@code TRAN-REPORT-CAT-DESC}),
-     *                            blank when not found
+     * @param categoryDescription transaction-category description ({@code TRAN-REPORT-CAT-DESC});
+     *                            always resolved because a missing category is fatal
      * @param source              transaction source ({@code TRAN-REPORT-SOURCE})
      * @param amount              transaction amount ({@code TRAN-REPORT-AMT}), an
      *                            unscaled-preserving {@link BigDecimal}

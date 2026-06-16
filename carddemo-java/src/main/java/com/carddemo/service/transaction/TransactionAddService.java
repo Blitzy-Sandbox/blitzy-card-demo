@@ -1,18 +1,24 @@
 package com.carddemo.service.transaction;
 
 import com.carddemo.exception.DuplicateRecordException;
+import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.model.dto.TransactionAddRequest;
 import com.carddemo.model.dto.TransactionAddResponse;
+import com.carddemo.model.entity.CardCrossReference;
 import com.carddemo.model.entity.Transaction;
+import com.carddemo.observability.MetricsConfig;
+import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.shared.DateValidationService;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.List;
 
 /**
  * Application service that adds a new financial transaction.
@@ -43,38 +49,78 @@ public class TransactionAddService {
     /** COBOL picture string passed to the date-validation service for both transaction dates. */
     private static final String DATE_FORMAT = "YYYY-MM-DD";
 
+    /** Key-edit message: the account id was supplied but is not numeric ({@code COTRN02C}). */
+    private static final String MSG_ACCT_ID_NOT_NUMERIC = "Account ID must be Numeric...";
+
+    /** Key-edit message: the card number was supplied but is not numeric ({@code COTRN02C}). */
+    private static final String MSG_CARD_NUM_NOT_NUMERIC = "Card Number must be Numeric...";
+
+    /** Key-edit message: neither an account id nor a card number was supplied ({@code COTRN02C}). */
+    private static final String MSG_KEY_REQUIRED = "Account or Card Number must be entered...";
+
+    /** Not-found message for an account id with no cross-reference ({@code COTRN02C} {@code READ-CXACAIX-FILE} NOTFND). */
+    private static final String MSG_ACCT_ID_NOT_FOUND = "Account ID NOT found...";
+
+    /** Not-found message for a card number with no cross-reference ({@code COTRN02C} {@code READ-CCXREF-FILE} NOTFND). */
+    private static final String MSG_CARD_NUM_NOT_FOUND = "Card Number NOT found...";
+
     private final TransactionRepository transactionRepository;
+    private final CardCrossReferenceRepository cardCrossReferenceRepository;
     private final DateValidationService dateValidationService;
+    private final MeterRegistry meterRegistry;
 
     /**
      * Creates the service with its collaborators supplied by the Spring container.
      *
-     * @param transactionRepository repository used for identifier lookup and persistence
-     * @param dateValidationService service that validates the origination and processing dates
+     * @param transactionRepository        repository used for identifier lookup and persistence
+     * @param cardCrossReferenceRepository  CARDXREF / CXACAIX access used to validate and resolve
+     *                                      the account/card key pairing ({@code COTRN02C}
+     *                                      {@code READ-CXACAIX-FILE} / {@code READ-CCXREF-FILE})
+     * @param dateValidationService         service that validates the origination and processing dates
+     * @param meterRegistry                 registry for the {@code carddemo.transaction.amount.total} counter
      */
     public TransactionAddService(TransactionRepository transactionRepository,
-                                 DateValidationService dateValidationService) {
+                                 CardCrossReferenceRepository cardCrossReferenceRepository,
+                                 DateValidationService dateValidationService,
+                                 MeterRegistry meterRegistry) {
         this.transactionRepository = transactionRepository;
+        this.cardCrossReferenceRepository = cardCrossReferenceRepository;
         this.dateValidationService = dateValidationService;
+        this.meterRegistry = meterRegistry;
     }
 
     /**
      * Validates, confirms, and persists a new transaction.
      *
-     * <p>Processing proceeds in three ordered stages: the data-field validation cascade, the
-     * confirmation gate, and finally identifier generation plus persistence. The first failing
-     * check short-circuits the operation with the corresponding exception.</p>
+     * <p>Processing reproduces the {@code COTRN02C.PROCESS-ENTER-KEY} ordering exactly: the
+     * <em>key-field</em> validation/resolution stage runs first, then the data-field validation
+     * cascade, then the confirmation gate, and finally identifier generation plus persistence. The
+     * first failing check short-circuits the operation with the corresponding exception.</p>
+     *
+     * <p>The key stage ({@code VALIDATE-INPUT-KEY-FIELDS}) accepts <em>either</em> an account id or
+     * a card number with account-id-first precedence: a supplied account id is validated numeric and
+     * resolved against the cross-reference ({@code READ-CXACAIX-FILE}) to obtain the authoritative
+     * card number; otherwise a supplied card number is validated numeric and resolved
+     * ({@code READ-CCXREF-FILE}) to obtain its account id. The transaction is therefore always
+     * persisted with the resolved, mutually consistent account/card pairing &mdash; never an
+     * arbitrary client-supplied card &mdash; and a key that does not exist in the cross-reference is
+     * rejected before any data-field validation.</p>
      *
      * @param request the transaction-add request payload
-     * @return the persisted transaction, including its service-generated identifier, with no error
-     *         message on the success path
-     * @throws ValidationException      if any field fails the validation cascade, or the
-     *                                  confirmation flag is absent, {@code N}/{@code n}, or any
-     *                                  value other than {@code Y}/{@code y}
+     * @return the persisted transaction, including its service-generated identifier and the resolved
+     *         account id / card number, with no error message on the success path
+     * @throws ValidationException      if neither key is supplied, a supplied key is non-numeric, any
+     *                                  field fails the validation cascade, or the confirmation flag is
+     *                                  absent, {@code N}/{@code n}, or any value other than {@code Y}/{@code y}
+     * @throws RecordNotFoundException  if the supplied account id or card number has no cross-reference
      * @throws DuplicateRecordException if the generated identifier collides with an existing record
      */
     @Transactional
     public TransactionAddResponse addTransaction(TransactionAddRequest request) {
+        // VALIDATE-INPUT-KEY-FIELDS: resolve the account/card pairing before any data-field edits.
+        ResolvedKey resolvedKey = validateAndResolveKeyFields(request);
+
+        // VALIDATE-INPUT-DATA-FIELDS: the data-field cascade (runs only after the key is resolved).
         validateDataFields(request);
         requireConfirmation(request.confirm());
 
@@ -88,7 +134,8 @@ public class TransactionAddService {
         transaction.setTranSource(request.source());
         transaction.setTranDesc(request.description());
         transaction.setTranAmt(normalizedAmount);
-        transaction.setTranCardNum(request.cardNumber());
+        // MOVE CARDNINI TO TRAN-CARD-NUM: the resolved (cross-reference-backed) card number.
+        transaction.setTranCardNum(resolvedKey.cardNumber());
         transaction.setTranMerchantId(Long.parseLong(request.merchantId()));
         transaction.setTranMerchantName(request.merchantName());
         transaction.setTranMerchantCity(request.merchantCity());
@@ -103,9 +150,12 @@ public class TransactionAddService {
             throw new DuplicateRecordException("Tran ID already exist...", ex);
         }
 
+        // Observability: running total of posted transaction amounts (telemetry only; see MetricsConfig).
+        MetricsConfig.transactionAmountTotal(meterRegistry).increment(normalizedAmount.doubleValue());
+
         return new TransactionAddResponse(
                 saved.getTranId(),
-                request.accountId(),
+                resolvedKey.accountId(),
                 saved.getTranCardNum(),
                 saved.getTranTypeCd(),
                 String.format(CATEGORY_CODE_FORMAT, saved.getTranCatCd()),
@@ -120,6 +170,72 @@ public class TransactionAddService {
                 saved.getTranMerchantZip(),
                 request.confirm(),
                 null);
+    }
+
+    /**
+     * Resolves and validates the account/card key fields, reproducing
+     * {@code COTRN02C.VALIDATE-INPUT-KEY-FIELDS} ({@code EVALUATE TRUE} with account-id-first
+     * precedence).
+     *
+     * <ul>
+     *   <li>If an account id is supplied, it must be numeric ({@link #MSG_ACCT_ID_NOT_NUMERIC}); it
+     *       is then resolved through {@link CardCrossReferenceRepository#findByXrefAcctId(Long)}
+     *       ({@code READ-CXACAIX-FILE}) and the cross-reference card number becomes the
+     *       authoritative card. A missing cross-reference yields {@link #MSG_ACCT_ID_NOT_FOUND}.</li>
+     *   <li>Otherwise, if a card number is supplied, it must be numeric
+     *       ({@link #MSG_CARD_NUM_NOT_NUMERIC}); it is resolved through the keyed
+     *       {@code findById} read ({@code READ-CCXREF-FILE}) and the cross-reference account id is
+     *       adopted. A missing cross-reference yields {@link #MSG_CARD_NUM_NOT_FOUND}.</li>
+     *   <li>If neither is supplied, {@link #MSG_KEY_REQUIRED} is raised.</li>
+     * </ul>
+     *
+     * @param request the request whose {@code accountId} / {@code cardNumber} keys are resolved
+     * @return the resolved, mutually consistent account id and card number
+     * @throws ValidationException     if neither key is supplied or a supplied key is non-numeric
+     * @throws RecordNotFoundException if a supplied key has no cross-reference record
+     */
+    private ResolvedKey validateAndResolveKeyFields(TransactionAddRequest request) {
+        String accountId = request.accountId();
+        String cardNumber = request.cardNumber();
+
+        // WHEN ACTIDINI NOT = SPACES: account id supplied -> resolve the complementary card number.
+        if (!isBlank(accountId)) {
+            if (!isDigits(accountId)) {
+                throw new ValidationException(MSG_ACCT_ID_NOT_NUMERIC);
+            }
+            Long accountKey = Long.parseLong(accountId);
+            List<CardCrossReference> matches =
+                    cardCrossReferenceRepository.findByXrefAcctId(accountKey);
+            if (matches == null || matches.isEmpty()) {
+                throw new RecordNotFoundException(MSG_ACCT_ID_NOT_FOUND);
+            }
+            // MOVE XREF-CARD-NUM TO CARDNINI: the cross-reference card is authoritative.
+            return new ResolvedKey(accountId, matches.get(0).getXrefCardNum());
+        }
+
+        // WHEN CARDNINI NOT = SPACES: only a card number supplied -> resolve the complementary acct id.
+        if (!isBlank(cardNumber)) {
+            if (!isDigits(cardNumber)) {
+                throw new ValidationException(MSG_CARD_NUM_NOT_NUMERIC);
+            }
+            CardCrossReference xref = cardCrossReferenceRepository.findById(cardNumber)
+                    .orElseThrow(() -> new RecordNotFoundException(MSG_CARD_NUM_NOT_FOUND));
+            // MOVE XREF-ACCT-ID TO ACTIDINI: adopt the cross-reference account id.
+            return new ResolvedKey(String.valueOf(xref.getXrefAcctId()), cardNumber);
+        }
+
+        // WHEN OTHER: neither key entered.
+        throw new ValidationException(MSG_KEY_REQUIRED);
+    }
+
+    /**
+     * The resolved, mutually consistent account/card key pairing produced by
+     * {@link #validateAndResolveKeyFields(TransactionAddRequest)}.
+     *
+     * @param accountId  the resolved account id (supplied, or adopted from the cross-reference)
+     * @param cardNumber the resolved card number (supplied, or adopted from the cross-reference)
+     */
+    private record ResolvedKey(String accountId, String cardNumber) {
     }
 
     /**

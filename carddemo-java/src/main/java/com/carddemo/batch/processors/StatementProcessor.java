@@ -13,7 +13,6 @@ import com.carddemo.repository.TransactionRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -162,17 +161,19 @@ public class StatementProcessor implements ItemProcessor<Account, StatementProce
                 .orElse(account);
 
         // 8500-READTRNX-READ / 4000-TRNXFILE-GET: gather the transactions for the resolved cards.
+        // Fetch only the rows for the resolved card numbers through the idx_tran_card_num
+        // alternate index (ordered by card number then id at the database) instead of scanning
+        // the entire TRANSACT table in memory once per account.
         Set<String> cardNumbers = crossReferences.stream()
                 .map(CardCrossReference::getXrefCardNum)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toSet());
-        List<TransactionSummaryLine> summaryLines = transactionRepository.findAll().stream()
-                .filter(transaction -> transaction.getTranCardNum() != null
-                        && cardNumbers.contains(transaction.getTranCardNum()))
-                .sorted(Comparator.comparing(Transaction::getTranCardNum)
-                        .thenComparing(Transaction::getTranId))
-                .map(StatementProcessor::toSummaryLine)
-                .toList();
+        List<TransactionSummaryLine> summaryLines = cardNumbers.isEmpty()
+                ? List.of()
+                : transactionRepository
+                        .findByTranCardNumInOrderByTranCardNumAscTranIdAsc(cardNumbers).stream()
+                        .map(StatementProcessor::toSummaryLine)
+                        .toList();
 
         BigDecimal total = summaryLines.stream()
                 .map(TransactionSummaryLine::tranAmt)

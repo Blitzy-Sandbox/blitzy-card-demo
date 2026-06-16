@@ -5,7 +5,9 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.batch.item.Chunk;
@@ -19,45 +21,59 @@ import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
+import com.carddemo.batch.processors.TransactionPostingProcessor;
 import com.carddemo.exception.ConcurrencyException;
 import com.carddemo.exception.FileAccessException;
-import com.carddemo.exception.TransactionPostingException;
 import com.carddemo.model.entity.Account;
+import com.carddemo.model.entity.DailyTransaction;
 import com.carddemo.model.entity.Transaction;
 import com.carddemo.model.entity.TransactionCategoryBalance;
-import com.carddemo.model.key.TransactionCategoryBalanceId;
 import com.carddemo.observability.MetricsConfig;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.repository.TransactionRepository;
 
 /**
- * Spring Batch {@link ItemStreamWriter} that posts each accepted daily transaction to
- * PostgreSQL (and optionally stages the posted record to AWS S3), reproducing the database
+ * Spring Batch {@link ItemStreamWriter} that persists the outcome of the daily transaction posting
+ * step to PostgreSQL (and optionally stages posted records to AWS S3), reproducing the database
  * write side of COBOL program {@code CBTRN02C} (source commit {@code 27d6c6f}).
  *
- * <p>For every {@link PostedTransaction} item the writer executes the COBOL posting sequence,
- * mapping three paragraphs onto Spring Data JPA operations:</p>
+ * <p>This writer is the single authoritative sink of the posting step: it consumes the
+ * {@link TransactionPostingProcessor.PostingResult} emitted upstream and routes each item by
+ * outcome, so the account and category balances are applied <em>exactly once</em> &mdash; there is
+ * no separate adapter and no risk of double application.</p>
+ *
+ * <p>For an accepted (non-rejected) result the writer persists the state the processor already
+ * computed in memory &mdash; it never re-reads the account or re-applies the amount &mdash; mapping
+ * three COBOL paragraphs onto Spring Data JPA {@code save} operations:</p>
  * <ul>
- *   <li>{@code 2900-WRITE-TRANSACTION-FILE} &rarr; persist the {@link Transaction}
+ *   <li>{@code 2900-WRITE-TRANSACTION-FILE} &rarr; persist the posted {@link Transaction}
  *       ({@code TRAN-RECORD}, copybook {@code CVTRA05Y}).</li>
- *   <li>{@code 2700-UPDATE-TCATBAL} &rarr; upsert the {@link TransactionCategoryBalance}
- *       keyed by account id, transaction type code, and transaction category code
- *       (copybook {@code CVTRA01Y}): a missing balance is created with the transaction
- *       amount, an existing balance is incremented by the amount.</li>
- *   <li>{@code 2800-UPDATE-ACCOUNT-REC} &rarr; add the amount to the {@link Account} current
- *       balance and to either the current-cycle credit (amount &ge; 0) or current-cycle debit
- *       (amount &lt; 0) total (copybook {@code CVACT01Y}); a missing account surfaces as
- *       reject code {@code 109}.</li>
+ *   <li>{@code 2700-UPDATE-TCATBAL} &rarr; persist the already created-or-incremented
+ *       {@link TransactionCategoryBalance} ({@code TRAN-CAT-BAL}, copybook {@code CVTRA01Y})
+ *       exactly as the processor produced it.</li>
+ *   <li>{@code 2800-UPDATE-ACCOUNT-REC} &rarr; persist the already-recomputed {@link Account}
+ *       balances ({@code ACCT-RECORD}, copybook {@code CVACT01Y}) on the versioned account.</li>
  * </ul>
  *
- * <p>The three database writes run inside the chunk-oriented step transaction owned by the
- * step's {@code PlatformTransactionManager}; any exception thrown here rolls back the whole
- * chunk, the faithful replacement for the CICS {@code SYNCPOINT}/batch-commit boundary. The
- * writer therefore declares no transaction boundary of its own. The {@link Account} entity
- * carries a JPA {@code @Version}; {@code saveAndFlush} forces the version check to surface as
- * an {@link OptimisticLockingFailureException}, which is rethrown as a
- * {@link ConcurrencyException}.</p>
+ * <p>Because the processor already looked the account up in stage {@code 1500-B} (rejecting with
+ * code {@code 101} when absent) and carries the mutated entity forward, the writer performs no
+ * account re-read; the {@code REWRITE INVALID KEY} reject {@code 109} cannot arise on this path and
+ * is therefore not re-derived here.</p>
+ *
+ * <p>A rejected result is routed to the injected {@link RejectWriter}: the writer renders the
+ * original {@link DailyTransaction} back to its byte-exact 350-byte record and forwards it with the
+ * numeric reject code and 76-character reason description, so the 430-byte reject file is produced
+ * by the same component that owns the {@code carddemo.batch.records.rejected} metric. The reject
+ * delegate's stream lifecycle ({@code open}/{@code update}/{@code close}) is driven by this writer.</p>
+ *
+ * <p>All database writes run inside the chunk-oriented step transaction owned by the step's
+ * {@code PlatformTransactionManager}; any exception thrown here rolls back the whole chunk, the
+ * faithful replacement for the CICS {@code SYNCPOINT}/batch-commit boundary. The writer declares no
+ * transaction boundary of its own. The {@link Account} entity carries a JPA {@code @Version};
+ * {@code saveAndFlush} forces the version check to surface as an
+ * {@link OptimisticLockingFailureException}, which is rethrown as a {@link ConcurrencyException}
+ * carrying the COBOL-equivalent, account-id-free message.</p>
  *
  * <p>When {@code carddemo.batch.posting.stage-to-s3} is enabled, each posted transaction is
  * additionally appended to an in-memory buffer as a byte-exact 350-byte {@code TRAN-RECORD}
@@ -73,7 +89,7 @@ import com.carddemo.repository.TransactionRepository;
  * {@link #close()}.</p>
  */
 @Component
-public class TransactionWriter implements ItemStreamWriter<TransactionWriter.PostedTransaction> {
+public class TransactionWriter implements ItemStreamWriter<TransactionPostingProcessor.PostingResult> {
 
     /** S3 object key for the staged posted-transaction file, the GDG base {@code SYSTRAN} (D-003). */
     private static final String STAGE_OBJECT_KEY = "SYSTRAN";
@@ -83,6 +99,13 @@ public class TransactionWriter implements ItemStreamWriter<TransactionWriter.Pos
 
     /** Content type used for the binary, fixed-width staged object. */
     private static final String CONTENT_TYPE = "application/octet-stream";
+
+    /**
+     * User-facing optimistic-lock message, identical to {@code AccountUpdateService} and
+     * {@code CardUpdateService} (COBOL {@code COACTUPC}/{@code COCRDUPC}). It carries no account id,
+     * so a surfaced {@link ConcurrencyException} never leaks an identifier across an API boundary.
+     */
+    private static final String MSG_CONCURRENCY = "Record changed by some one else. Please review";
 
     /** Scale of monetary {@code S9(09)V99} fields. */
     private static final int AMOUNT_SCALE = 2;
@@ -108,6 +131,7 @@ public class TransactionWriter implements ItemStreamWriter<TransactionWriter.Pos
     private final TransactionRepository transactionRepository;
     private final TransactionCategoryBalanceRepository categoryBalanceRepository;
     private final AccountRepository accountRepository;
+    private final RejectWriter rejectWriter;
     private final S3Client s3Client;
     private final MeterRegistry meterRegistry;
     private final String outputBucket;
@@ -120,8 +144,11 @@ public class TransactionWriter implements ItemStreamWriter<TransactionWriter.Pos
      * Creates the transaction writer.
      *
      * @param transactionRepository     repository for persisting posted transactions
-     * @param categoryBalanceRepository repository for the transaction-category-balance upsert
+     * @param categoryBalanceRepository repository for persisting the transaction-category balance
      * @param accountRepository         repository for the versioned account update
+     * @param rejectWriter              delegate writer that emits the 430-byte reject records and
+     *                                  owns the {@code carddemo.batch.records.rejected} metric; its
+     *                                  stream lifecycle is driven by this writer
      * @param s3Client                  the synchronous S3 client; endpoint, region, and credentials
      *                                  are resolved from configuration (for example LocalStack)
      * @param meterRegistry             the Micrometer registry used to record posting metrics
@@ -131,6 +158,7 @@ public class TransactionWriter implements ItemStreamWriter<TransactionWriter.Pos
     public TransactionWriter(TransactionRepository transactionRepository,
                              TransactionCategoryBalanceRepository categoryBalanceRepository,
                              AccountRepository accountRepository,
+                             RejectWriter rejectWriter,
                              S3Client s3Client,
                              MeterRegistry meterRegistry,
                              @Value("${carddemo.aws.s3.bucket-output:carddemo-batch-output}") String outputBucket,
@@ -138,6 +166,7 @@ public class TransactionWriter implements ItemStreamWriter<TransactionWriter.Pos
         this.transactionRepository = transactionRepository;
         this.categoryBalanceRepository = categoryBalanceRepository;
         this.accountRepository = accountRepository;
+        this.rejectWriter = rejectWriter;
         this.s3Client = s3Client;
         this.meterRegistry = meterRegistry;
         this.outputBucket = outputBucket;
@@ -156,73 +185,74 @@ public class TransactionWriter implements ItemStreamWriter<TransactionWriter.Pos
         if (stageToS3) {
             this.stageBuffer = new ByteArrayOutputStream();
         }
+        // Drive the delegate's stream lifecycle so its reject buffer is initialised for this step.
+        rejectWriter.open(executionContext);
     }
 
     /**
-     * No-op: this writer persists no incremental state to the execution context.
+     * Persists no incremental state of its own; forwards to the {@link RejectWriter} delegate to
+     * honour its {@link ItemStreamWriter} contract.
      *
-     * @param executionContext the step execution context (unused)
+     * @param executionContext the step execution context
      */
     @Override
     public void update(ExecutionContext executionContext) {
-        // no incremental state persisted to the execution context
+        rejectWriter.update(executionContext);
     }
 
     /**
-     * Posts every item in the chunk. Each item runs the full posting sequence; any exception
-     * propagates and rolls back the surrounding chunk transaction.
+     * Writes every item in the chunk by outcome: an accepted result is persisted exactly once, a
+     * rejected result is routed to the {@link RejectWriter} delegate. Rejects are collected and
+     * handed to the delegate in a single sub-chunk so its per-chunk logging and buffering stay
+     * faithful. Any exception propagates and rolls back the surrounding chunk transaction.
      *
-     * @param chunk the chunk of posted transactions to write
+     * @param chunk the chunk of posting results to write
      */
     @Override
-    public void write(Chunk<? extends PostedTransaction> chunk) {
-        for (PostedTransaction item : chunk) {
-            post(item);
+    public void write(Chunk<? extends TransactionPostingProcessor.PostingResult> chunk) {
+        List<RejectWriter.RejectedTransaction> rejects = new ArrayList<>();
+        for (TransactionPostingProcessor.PostingResult result : chunk) {
+            if (result.rejected()) {
+                // 2500-WRITE-REJECT-REC: route to the reject sink (original record + reason).
+                rejects.add(toRejectedTransaction(result));
+            } else {
+                // 2000-POST-TRANSACTION: persist the processor's precomputed state exactly once.
+                post(result);
+            }
+        }
+        if (!rejects.isEmpty()) {
+            rejectWriter.write(new Chunk<>(rejects));
         }
     }
 
     /**
-     * Executes the COBOL posting sequence for a single accepted transaction: persist the
-     * transaction, upsert its category balance, update the owning account (versioned), record
-     * metrics, and optionally append the posted record to the S3 staging buffer.
+     * Persists a single accepted posting result. The processor already mapped the transaction,
+     * created-or-incremented the category balance, and recomputed the account balances in memory;
+     * this method simply persists those three precomputed entities so the amount is applied
+     * <em>exactly once</em> (no re-read, no re-add), records the posted-record metrics, and
+     * optionally appends the byte-exact 350-byte record to the S3 staging buffer.
      *
-     * @param item the posted transaction together with its resolved owning account id
+     * @param result the accepted posting result carrying the posted transaction, the updated
+     *               account, and the updated category balance
      */
-    private void post(PostedTransaction item) {
-        Transaction transaction = item.transaction();
-        Long accountId = item.accountId();
+    private void post(TransactionPostingProcessor.PostingResult result) {
+        Transaction transaction = result.postedTransaction();
+        TransactionCategoryBalance categoryBalance = result.updatedCategoryBalance();
+        Account account = result.updatedAccount();
         BigDecimal amount = transaction.getTranAmt();
 
         // 2900-WRITE-TRANSACTION-FILE: persist the posted transaction record.
         transactionRepository.save(transaction);
 
-        // 2700-UPDATE-TCATBAL: upsert the category balance by its three-part key.
-        TransactionCategoryBalanceId balanceId = new TransactionCategoryBalanceId(
-                accountId, transaction.getTranTypeCd(), transaction.getTranCatCd());
-        TransactionCategoryBalance balance = categoryBalanceRepository.findById(balanceId).orElse(null);
-        if (balance == null) {
-            balance = new TransactionCategoryBalance();
-            balance.setId(balanceId);
-            balance.setTranCatBal(amount);
-        } else {
-            balance.setTranCatBal(balance.getTranCatBal().add(amount));
-        }
-        categoryBalanceRepository.save(balance);
+        // 2700-UPDATE-TCATBAL: persist the category balance exactly as computed upstream.
+        categoryBalanceRepository.save(categoryBalance);
 
-        // 2800-UPDATE-ACCOUNT-REC: update balance and cycle totals on the versioned account.
-        Account account = accountRepository.findById(accountId)
-                .orElseThrow(() -> new TransactionPostingException(109, "ACCOUNT RECORD NOT FOUND"));
-        account.setAcctCurrBal(account.getAcctCurrBal().add(amount));
-        if (amount.signum() >= 0) {
-            account.setAcctCurrCycCredit(account.getAcctCurrCycCredit().add(amount));
-        } else {
-            account.setAcctCurrCycDebit(account.getAcctCurrCycDebit().add(amount));
-        }
+        // 2800-UPDATE-ACCOUNT-REC: persist the precomputed, versioned account exactly once.
         try {
             accountRepository.saveAndFlush(account);
         } catch (OptimisticLockingFailureException e) {
-            throw new ConcurrencyException(
-                    "Optimistic lock conflict updating account " + accountId, "Account", e);
+            // COBOL-equivalent, account-id-free message (matches COACTUPC/COCRDUPC).
+            throw new ConcurrencyException(MSG_CONCURRENCY, "Account", e);
         }
 
         // Telemetry: amount.doubleValue() is used only for the monotonic volume counter.
@@ -236,33 +266,77 @@ public class TransactionWriter implements ItemStreamWriter<TransactionWriter.Pos
     }
 
     /**
-     * Flushes the accumulated posted-transaction records to a single {@code SYSTRAN} S3 object.
-     * When staging is disabled, or nothing was staged, no object is written. The staging buffer is
-     * always released afterwards.
+     * Maps a rejected posting result onto the {@link RejectWriter.RejectedTransaction} contract:
+     * it renders the original {@link DailyTransaction} back to its byte-exact 350-byte record and
+     * carries the numeric reject code and the 76-character reason description produced upstream, so
+     * the delegate can emit the 430-byte reject record without recomputing anything.
      *
-     * @throws FileAccessException if the S3 put fails
+     * @param result the rejected posting result
+     * @return the reject-writer input item
+     */
+    private RejectWriter.RejectedTransaction toRejectedTransaction(
+            TransactionPostingProcessor.PostingResult result) {
+        String dailyRecord = new String(
+                buildDalytranRecord(result.originalDailyTransaction()), StandardCharsets.ISO_8859_1);
+        return new RejectWriter.RejectedTransaction(
+                dailyRecord, result.rejectCode(), result.rejectReasonDescription());
+    }
+
+    /**
+     * Closes the writer at the end of the step: flushes the accumulated posted-transaction records
+     * to a single {@code SYSTRAN} S3 object, then closes the delegate {@link RejectWriter} so its
+     * 430-byte reject object is flushed. Both close paths always run; if both fail, the reject-flush
+     * failure is attached as a suppressed exception to the staging failure so neither is lost.
+     *
+     * @throws FileAccessException if either S3 put fails
      */
     @Override
     public void close() {
+        RuntimeException pending = null;
         try {
-            if (!stageToS3 || stageBuffer == null || stageBuffer.size() == 0) {
-                return;
-            }
-            byte[] payload = stageBuffer.toByteArray();
-            try {
-                s3Client.putObject(
-                        PutObjectRequest.builder()
-                                .bucket(outputBucket)
-                                .key(STAGE_OBJECT_KEY)
-                                .contentType(CONTENT_TYPE)
-                                .build(),
-                        RequestBody.fromBytes(payload));
-            } catch (SdkException e) {
-                throw new FileAccessException(
-                        "Failed to stage posted transactions to S3 " + outputBucket + "/" + STAGE_OBJECT_KEY, e);
-            }
+            flushStagedRecords();
+        } catch (RuntimeException e) {
+            pending = e;
         } finally {
             this.stageBuffer = null;
+        }
+        try {
+            // Always flush the reject delegate, even if staging failed, so rejects are never lost.
+            rejectWriter.close();
+        } catch (RuntimeException e) {
+            if (pending == null) {
+                pending = e;
+            } else {
+                pending.addSuppressed(e);
+            }
+        }
+        if (pending != null) {
+            throw pending;
+        }
+    }
+
+    /**
+     * Flushes the accumulated posted-transaction records to a single {@code SYSTRAN} S3 object. When
+     * staging is disabled, or nothing was staged, no object is written.
+     *
+     * @throws FileAccessException if the S3 put fails
+     */
+    private void flushStagedRecords() {
+        if (!stageToS3 || stageBuffer == null || stageBuffer.size() == 0) {
+            return;
+        }
+        byte[] payload = stageBuffer.toByteArray();
+        try {
+            s3Client.putObject(
+                    PutObjectRequest.builder()
+                            .bucket(outputBucket)
+                            .key(STAGE_OBJECT_KEY)
+                            .contentType(CONTENT_TYPE)
+                            .build(),
+                    RequestBody.fromBytes(payload));
+        } catch (SdkException e) {
+            throw new FileAccessException(
+                    "Failed to stage posted transactions to S3 " + outputBucket + "/" + STAGE_OBJECT_KEY, e);
         }
     }
 
@@ -312,6 +386,38 @@ public class TransactionWriter implements ItemStreamWriter<TransactionWriter.Pos
         putAlpha(out, 262, 16, t.getTranCardNum());
         putAlpha(out, 278, 26, t.getTranOrigTs());
         putAlpha(out, 304, 26, t.getTranProcTs());
+        // FILLER (offset 330, length 20) remains spaces.
+
+        return out;
+    }
+
+    /**
+     * Builds one byte-exact 350-byte daily-transaction record ({@code DALYTRAN-RECORD}, copybook
+     * {@code CVTRA06Y}) from the original {@link DailyTransaction} for the reject file. The layout is
+     * identical to {@link #buildTranRecord(Transaction)} (CVTRA06Y mirrors CVTRA05Y field-for-field);
+     * the original processing timestamp is preserved (never restamped), so the reject record
+     * reproduces the input record, matching COBOL {@code MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA}.
+     *
+     * @param d the original daily transaction that was rejected
+     * @return a new array of exactly 350 bytes
+     */
+    private byte[] buildDalytranRecord(DailyTransaction d) {
+        byte[] out = new byte[TRAN_RECORD_LENGTH];
+        Arrays.fill(out, (byte) ' ');
+
+        putAlpha(out, 0, 16, d.getDalytranId());
+        putAlpha(out, 16, 2, d.getDalytranTypeCd());
+        putNum(out, 18, 4, d.getDalytranCatCd() == null ? 0L : d.getDalytranCatCd().longValue());
+        putAlpha(out, 22, 10, d.getDalytranSource());
+        putAlpha(out, 32, 100, d.getDalytranDesc());
+        putSignedZoned(out, 132, d.getDalytranAmt());
+        putNum(out, 143, 9, d.getDalytranMerchantId() == null ? 0L : d.getDalytranMerchantId());
+        putAlpha(out, 152, 50, d.getDalytranMerchantName());
+        putAlpha(out, 202, 50, d.getDalytranMerchantCity());
+        putAlpha(out, 252, 10, d.getDalytranMerchantZip());
+        putAlpha(out, 262, 16, d.getDalytranCardNum());
+        putAlpha(out, 278, 26, d.getDalytranOrigTs());
+        putAlpha(out, 304, 26, d.getDalytranProcTs());
         // FILLER (offset 330, length 20) remains spaces.
 
         return out;
@@ -376,16 +482,5 @@ public class TransactionWriter implements ItemStreamWriter<TransactionWriter.Pos
                 : POSITIVE_OVERPUNCH[unitsDigit];
         byte[] bytes = (head + overpunched).getBytes(StandardCharsets.ISO_8859_1);
         System.arraycopy(bytes, 0, out, offset, bytes.length);
-    }
-
-    /**
-     * Input contract produced upstream by the posting processor.
-     *
-     * @param transaction the fully populated transaction to persist (COBOL {@code TRAN-RECORD})
-     * @param accountId   the owning account id resolved upstream (COBOL {@code XREF-ACCT-ID}); kept
-     *                    separate because {@link Transaction} carries no account-id column, yet the
-     *                    category-balance key and the account update both require it
-     */
-    public record PostedTransaction(Transaction transaction, Long accountId) {
     }
 }

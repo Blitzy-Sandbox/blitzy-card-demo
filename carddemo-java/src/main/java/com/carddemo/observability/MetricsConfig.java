@@ -98,8 +98,24 @@ public final class MetricsConfig {
     /** Value of the {@link #TAG_OUTCOME} tag for a successful authentication. */
     public static final String OUTCOME_SUCCESS = "success";
 
-    /** Value of the {@link #TAG_OUTCOME} tag for a failed authentication. */
+    /** Value of the {@link #TAG_OUTCOME} tag for a generic failed authentication. */
     public static final String OUTCOME_FAILURE = "failure";
+
+    /**
+     * Value of the {@link #TAG_OUTCOME} tag when authentication fails because the
+     * supplied user id does not exist (COSGN00C {@code USRSEC} read returns
+     * record-not-found). A bounded, low-cardinality outcome label; it never
+     * carries the actual user id.
+     */
+    public static final String OUTCOME_NOT_FOUND = "not_found";
+
+    /**
+     * Value of the {@link #TAG_OUTCOME} tag when authentication fails because the
+     * supplied password does not match the stored credential (COSGN00C password
+     * compare fails). A bounded, low-cardinality outcome label; it never carries
+     * the plaintext password or the stored hash.
+     */
+    public static final String OUTCOME_WRONG_PASSWORD = "wrong_password";
 
     /**
      * Pre-registers the two untagged core counters so their time series exist at
@@ -155,8 +171,9 @@ public final class MetricsConfig {
      * creating it on first use.
      *
      * @param registry the active meter registry; must not be {@code null}
-     * @param outcome  the attempt outcome, typically {@link #OUTCOME_SUCCESS} or
-     *                 {@link #OUTCOME_FAILURE}
+     * @param outcome  the attempt outcome &mdash; one of {@link #OUTCOME_SUCCESS},
+     *                 {@link #OUTCOME_NOT_FOUND}, {@link #OUTCOME_WRONG_PASSWORD},
+     *                 or the generic {@link #OUTCOME_FAILURE}
      * @return the {@link #AUTH_ATTEMPTS} counter tagged with {@link #TAG_OUTCOME}
      *         set to {@code outcome}
      */

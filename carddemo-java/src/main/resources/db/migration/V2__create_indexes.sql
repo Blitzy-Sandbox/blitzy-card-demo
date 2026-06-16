@@ -27,5 +27,14 @@ CREATE INDEX idx_xref_acct_id ON card_xref (xref_acct_id);
 
 -- Mirrors the transaction (non-unique) alternate index over the processing
 -- timestamp. Backs TransactionRepository.findByProcessingDateRange(...) and the
--- paginated transaction-list browse.
+-- paginated transaction-list browse. The repository compares the whole
+-- tran_proc_ts value with asymmetric full-timestamp bounds (never a substring),
+-- so this plain btree index supports the date-range range scan.
 CREATE INDEX idx_tran_proc_ts ON transaction (tran_proc_ts);
+
+-- Mirrors the card-number access path of the statement-generation transaction
+-- grouping (CBSTM03A 8500-READTRNX-READ / 4000-TRNXFILE-GET). Backs
+-- TransactionRepository.findByTranCardNumInOrderByTranCardNumAscTranIdAsc(...)
+-- so per-account statement assembly fetches only the rows for the resolved
+-- cards instead of scanning the full TRANSACT table.
+CREATE INDEX idx_tran_card_num ON transaction (tran_card_num);
