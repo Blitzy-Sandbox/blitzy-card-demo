@@ -15,7 +15,9 @@ import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.repository.TransactionTypeRepository;
 import com.carddemo.repository.UserSecurityRepository;
+import com.carddemo.service.report.ReportSubmissionService.ReportJobMessage;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -25,6 +27,7 @@ import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -71,7 +74,16 @@ import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.sns.SnsClient;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
+import software.amazon.awssdk.services.sqs.model.CreateQueueRequest;
+import software.amazon.awssdk.services.sqs.model.DeleteQueueRequest;
+import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueUrlRequest;
+import software.amazon.awssdk.services.sqs.model.Message;
+import software.amazon.awssdk.services.sqs.model.MessageSystemAttributeName;
+import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
+import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
+import software.amazon.awssdk.services.sqs.model.ReceiveMessageResponse;
+import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
 
 /** Capstone end-to-end suite emitting programmatic evidence for Validation Gates 1-8 (AWS CardDemo commit 27d6c6f, REFERENCE ONLY). */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -115,8 +127,8 @@ public class GateVerificationTest {
 
     // -------------------------------------------------------------------------
     // Gate-4 named real-world artifacts: the 9 ASCII fixtures plus the expected
-    // Flyway V3 reference-table seed counts. The ">0" assertion is the binding
-    // gate; the exact counts are documented evidence (owned by V3__seed_data.sql).
+    // Flyway V3 reference-table seed counts. Each count is hard-asserted EXACTLY
+    // (==), so a materially-wrong seed (owned by V3__seed_data.sql) fails Gate 4.
     // -------------------------------------------------------------------------
     private static final List<String> FIXTURE_NAMES = List.of(
             "acctdata.txt", "carddata.txt", "custdata.txt", "cardxref.txt", "dailytran.txt",
@@ -255,6 +267,9 @@ public class GateVerificationTest {
 
     @Autowired
     SnsClient snsClient;
+
+    @Autowired
+    ObjectMapper objectMapper;
 
     @Autowired
     UserSecurityRepository userSecurityRepository;
@@ -479,18 +494,38 @@ public class GateVerificationTest {
     }
 
     /**
-     * Hard-asserts a reference table is seeded ({@code > 0}) and records the actual-vs-expected count
-     * as documented evidence (a divergence is logged, never failed — exact counts are owned by
-     * {@code V3__seed_data.sql}).
+     * Hard-asserts a fixture-backed reference table is seeded to its EXACT documented count
+     * ({@code actual == expected}) and then records the count as documented evidence. The exact
+     * counts are owned by {@code V3__seed_data.sql}; a materially-wrong seed fails Gate 4 here
+     * rather than passing on a permissive {@code > 0} check.
      *
      * @param table    the logical table name
      * @param actual   the observed row count
      * @param expected the documented expected seed count
      */
     private void recordSeedCount(String table, long actual, long expected) {
-        assertThat(actual).as("Gate 4: reference table %s must be seeded (count > 0)", table).isGreaterThan(0L);
+        assertThat(actual)
+                .as("Gate 4: reference table %s must be seeded to its exact fixture-backed count", table)
+                .isEqualTo(expected);
         finding("Gate4 " + table + ": actual=" + actual + " expected=" + expected
                 + " " + (actual == expected ? "MATCH" : "DIFF"));
+    }
+
+    /**
+     * Best-effort teardown of a self-provisioned test queue (LocalStack Verification rule). A teardown
+     * failure is recorded as evidence and never masks a primary assertion failure.
+     *
+     * @param queueUrl the URL of the queue to delete
+     */
+    private void deleteQueueQuietly(String queueUrl) {
+        try {
+            sqsAsyncClient.deleteQueue(DeleteQueueRequest.builder().queueUrl(queueUrl).build())
+                    .get(15, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (ExecutionException | TimeoutException e) {
+            finding("Gate5 SQS teardown: failed to delete " + queueUrl + " (" + e.getMessage() + ")");
+        }
     }
 
     /**
@@ -569,11 +604,12 @@ public class GateVerificationTest {
 
     /**
      * Gate 5 (contract verification) — exercises each external contract directly: the fixed-width
-     * 350-byte record with a scale-2 overpunch-decoded amount, the resolvable {@code .fifo} report
-     * queue (TDQ replacement), the three headable S3 buckets, and the {@code POST /api/auth/signin}
-     * REST contract.
+     * 350-byte record with a scale-2 overpunch-decoded amount; the SQS FIFO report-message contract
+     * (TDQ replacement) by publishing a representative {@link ReportJobMessage} and receiving it back
+     * from LocalStack to validate its JSON schema fields/types and the FIFO message-group/sequence
+     * attributes; the three headable S3 buckets; and the {@code POST /api/auth/signin} REST contract.
      *
-     * @throws IOException if the reachable fixture cannot be read
+     * @throws IOException if the reachable fixture cannot be read or the message JSON cannot be parsed
      */
     @Test
     @Order(3)
@@ -604,6 +640,95 @@ public class GateVerificationTest {
         assertThat(queueUrl).as("report FIFO queue is resolvable").isNotBlank();
         assertThat(REPORT_QUEUE).as("TDQ replacement is a FIFO queue").endsWith(".fifo");
         finding("Gate5 SQS: " + queueUrl);
+
+        // --- SQS FIFO report-message contract ---------------------------------
+        // Exercise the actual ReportJobMessage JSON contract end-to-end on a
+        // DEDICATED FIFO queue, so the receive does not race the live report
+        // @SqsListener bound to the production REPORT_QUEUE. The queue is
+        // self-provisioned here and torn down in the finally (LocalStack rule).
+        String contractQueue = "gate5-report-contract.fifo";
+        String contractQueueUrl = null;
+        try {
+            contractQueueUrl = sqsAsyncClient.createQueue(CreateQueueRequest.builder()
+                    .queueName(contractQueue)
+                    .attributes(Map.of(
+                            QueueAttributeName.FIFO_QUEUE, "true",
+                            QueueAttributeName.CONTENT_BASED_DEDUPLICATION, "false"))
+                    .build())
+                    .get(15, TimeUnit.SECONDS).queueUrl();
+
+            // Queue-attribute contract: the report queue really is FIFO.
+            String fifoAttr = sqsAsyncClient.getQueueAttributes(GetQueueAttributesRequest.builder()
+                    .queueUrl(contractQueueUrl)
+                    .attributeNames(QueueAttributeName.FIFO_QUEUE)
+                    .build())
+                    .get(15, TimeUnit.SECONDS)
+                    .attributes().get(QueueAttributeName.FIFO_QUEUE);
+            assertThat(fifoAttr).as("Gate 5: report queue advertises FifoQueue=true").isEqualTo("true");
+
+            // Publish a representative message using the REAL ReportJobMessage contract type,
+            // serialized exactly as ReportSubmissionService does, with a constant message-group id
+            // and a unique deduplication id (the D-015 FIFO contract).
+            ReportJobMessage message = new ReportJobMessage("Monthly", "2024-01-01", "2024-01-31");
+            String body = objectMapper.writeValueAsString(message);
+            String groupId = "carddemo-reports";
+            String dedupId = UUID.randomUUID().toString();
+            sqsAsyncClient.sendMessage(SendMessageRequest.builder()
+                    .queueUrl(contractQueueUrl)
+                    .messageBody(body)
+                    .messageGroupId(groupId)
+                    .messageDeduplicationId(dedupId)
+                    .build())
+                    .get(15, TimeUnit.SECONDS);
+
+            // Receive it back, requesting the FIFO system attributes.
+            ReceiveMessageResponse received = sqsAsyncClient.receiveMessage(ReceiveMessageRequest.builder()
+                    .queueUrl(contractQueueUrl)
+                    .maxNumberOfMessages(1)
+                    .waitTimeSeconds(10)
+                    .messageSystemAttributeNames(
+                            MessageSystemAttributeName.MESSAGE_GROUP_ID,
+                            MessageSystemAttributeName.SEQUENCE_NUMBER)
+                    .build())
+                    .get(20, TimeUnit.SECONDS);
+            assertThat(received.messages())
+                    .as("Gate 5: the published report message is received from the FIFO queue")
+                    .hasSize(1);
+            Message rx = received.messages().get(0);
+
+            // Schema contract: required fields present with the correct JSON types/format.
+            JsonNode json = objectMapper.readTree(rx.body());
+            assertThat(json.hasNonNull("reportType")).as("Gate 5: schema field reportType present").isTrue();
+            assertThat(json.hasNonNull("startDate")).as("Gate 5: schema field startDate present").isTrue();
+            assertThat(json.hasNonNull("endDate")).as("Gate 5: schema field endDate present").isTrue();
+            assertThat(json.get("reportType").isTextual())
+                    .as("Gate 5: reportType is a JSON string").isTrue();
+            assertThat(json.get("reportType").asText()).isEqualTo("Monthly");
+            assertThat(json.get("startDate").asText())
+                    .as("Gate 5: startDate is yyyy-MM-dd").matches("\\d{4}-\\d{2}-\\d{2}");
+            assertThat(json.get("endDate").asText())
+                    .as("Gate 5: endDate is yyyy-MM-dd").matches("\\d{4}-\\d{2}-\\d{2}");
+
+            // FIFO system-attribute contract: the group id round-trips and a sequence number is assigned.
+            assertThat(rx.attributes().get(MessageSystemAttributeName.MESSAGE_GROUP_ID))
+                    .as("Gate 5: FIFO MessageGroupId round-trips").isEqualTo(groupId);
+            assertThat(rx.attributes().get(MessageSystemAttributeName.SEQUENCE_NUMBER))
+                    .as("Gate 5: FIFO assigns a sequence number").isNotBlank();
+
+            finding("Gate5 SQS FIFO message: groupId=" + groupId
+                    + " reportType=" + json.get("reportType").asText()
+                    + " window=" + json.get("startDate").asText() + ".." + json.get("endDate").asText()
+                    + " seq=" + rx.attributes().get(MessageSystemAttributeName.SEQUENCE_NUMBER));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted exercising the SQS FIFO report-message contract", e);
+        } catch (ExecutionException | TimeoutException e) {
+            throw new IllegalStateException("Failed exercising the SQS FIFO report-message contract", e);
+        } finally {
+            if (contractQueueUrl != null) {
+                deleteQueueQuietly(contractQueueUrl);
+            }
+        }
 
         for (String bucket : List.of(BUCKET_INPUT, BUCKET_OUTPUT, BUCKET_STATEMENTS)) {
             s3Client.headBucket(HeadBucketRequest.builder().bucket(bucket).build());

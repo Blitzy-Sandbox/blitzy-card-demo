@@ -13,7 +13,6 @@ import java.util.UUID;
 import org.awaitility.Awaitility;
 import org.awaitility.core.ConditionTimeoutException;
 
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
@@ -139,7 +138,11 @@ class TransactionReportJobIT extends AbstractBatchIntegrationTest {
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
         byte[] report = locateReportObject();
-        Assumptions.assumeTrue(report != null && report.length > 0, "Report object not located — skipping");
+        assertThat(report)
+                .as("A completed report job over an in-window seeded row must produce a report object in %s",
+                        BUCKET_OUTPUT)
+                .isNotNull();
+        assertThat(report.length).as("report object must be non-empty").isGreaterThan(0);
 
         // 133-byte fidelity (robust disjunction): the writer emits newline-delimited 133-char records,
         // so the newline branch asserts every record is within the fixed LRECL; the blocked branch is
@@ -179,7 +182,10 @@ class TransactionReportJobIT extends AbstractBatchIntegrationTest {
         // the fixed report object key.
         launchReport(WINDOW_START, WINDOW_END);
         byte[] populated = locateReportObject();
-        Assumptions.assumeTrue(populated != null, "No report produced for populated window — skipping");
+        assertThat(populated)
+                .as("A populated (2022-07) window must produce a report object in %s", BUCKET_OUTPUT)
+                .isNotNull();
+        assertThat(populated.length).as("populated-window report must be non-empty").isGreaterThan(0);
 
         // Empty window (1999) — same fixed report key, overwritten with a titles/totals-only report.
         launchReport(EMPTY_START, EMPTY_END);
@@ -234,15 +240,19 @@ class TransactionReportJobIT extends AbstractBatchIntegrationTest {
                         assertThat(report.length).isGreaterThan(0);
                     });
         } catch (ConditionTimeoutException timeout) {
-            Assumptions.assumeTrue(false,
-                    "SQS-triggered report not observed within timeout — soft skip (async listener / LocalStack timing)");
+            throw new AssertionError(String.format(
+                    "SQS-triggered report not observed within 30s. Bucket %s keys=%s; report queue url=%s",
+                    BUCKET_OUTPUT, listObjectKeys(BUCKET_OUTPUT), queueUrl), timeout);
         }
 
         // The bridge launched the real report job end-to-end: the produced object is the byte-faithful
         // CVTRA07Y report (133-aligned, carrying a COTTL01Y title token).
         byte[] triggered = locateReportObject();
-        Assumptions.assumeTrue(triggered != null && triggered.length > 0,
-                "SQS-triggered report vanished after detection — soft skip");
+        assertThat(triggered)
+                .as("SQS-triggered report must remain present after detection; bucket %s keys=%s",
+                        BUCKET_OUTPUT, listObjectKeys(BUCKET_OUTPUT))
+                .isNotNull();
+        assertThat(triggered.length).as("SQS-triggered report must be non-empty").isGreaterThan(0);
         String content = new String(triggered, StandardCharsets.ISO_8859_1);
         if (content.indexOf('\n') >= 0) {
             content.lines().forEach(line ->

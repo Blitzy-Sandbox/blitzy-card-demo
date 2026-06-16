@@ -14,18 +14,20 @@
 # (PostgreSQL 16, LocalStack, Jaeger).
 #
 # =============================================================================
-# Hostnames: in-network vs host-run  (READ THIS)
+# Hostnames: host-run vs in-network  (READ THIS)
 # =============================================================================
-# The defaults below use the Docker-Compose SERVICE NAMES (postgres, localstack,
-# jaeger) because the local profile's primary activation path is
-# `docker compose up` — and the compose `app` service additionally injects these
-# same service-name URLs as environment variables (Spring env > yml), so both
-# always agree. Every value is ${ENV_VAR:in-network-default}, so to run the app
-# on the HOST JVM against the published Compose ports, export the localhost
-# equivalents (each is documented again at its property below):
-#   SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/carddemo
-#   AWS_ENDPOINT=http://localhost:4566
-#   OTLP_ENDPOINT=http://localhost:4317
+# The defaults below use LOCALHOST so a HOST-JVM run works out of the box with no
+# exported overrides:
+#   mvn spring-boot:run -Dspring.profiles.active=local
+# (PostgreSQL on localhost:5432, LocalStack on localhost:4566, Jaeger OTLP on
+# localhost:4317 — the published Compose ports). Every value is
+# ${ENV_VAR:localhost-default}, and under `docker compose up` the compose `app`
+# service injects the in-network SERVICE-NAME URLs as environment variables
+# (Spring env > yml) so the containerized app reaches its sibling services:
+#   SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/carddemo
+#   AWS_ENDPOINT / SPRING_CLOUD_AWS_ENDPOINT=http://localstack:4566
+#   OTLP_ENDPOINT=http://jaeger:4317
+# Neither path requires a manual export.
 #
 # =============================================================================
 # Security & scope (AAP §0.8.1, §0.3.2, §0.7.7, §0.7.8 — MANDATORY)
@@ -50,17 +52,19 @@
 spring:
 
   # ===========================================================================
-  # Phase 1 — Datasource (PostgreSQL 16, the `postgres` Compose service)
-  # Concretizes the base template with the in-network host. The password carries
-  # a LOCAL-ONLY, non-secret default (`carddemo`) that mirrors the docker-compose
-  # POSTGRES_PASSWORD default for developer convenience; it stays env-overridable
-  # (real/shared environments inject SPRING_DATASOURCE_PASSWORD). This is an
-  # explicitly permitted non-secret local default (AAP §0.8.1).
-  # Host-run alternative:
-  #   export SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/carddemo
+  # Phase 1 — Datasource (PostgreSQL 16)
+  # The default targets a HOST-RUN developer (mvn spring-boot:run
+  # -Dspring.profiles.active=local): localhost:5432 works out of the box with no
+  # exported overrides. Under docker-compose the `app` service injects
+  # SPRING_DATASOURCE_URL pointing at the in-network `postgres` service
+  # (jdbc:postgresql://postgres:5432/...), which overrides this default
+  # (Spring env > yml). The password carries a LOCAL-ONLY, non-secret default
+  # (`carddemo`) mirroring the docker-compose POSTGRES_PASSWORD default; it stays
+  # env-overridable (real/shared environments inject SPRING_DATASOURCE_PASSWORD).
+  # This is an explicitly permitted non-secret local default (AAP §0.8.1).
   # ===========================================================================
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres:5432/carddemo}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
     username: ${SPRING_DATASOURCE_USERNAME:carddemo}
     password: ${SPRING_DATASOURCE_PASSWORD:carddemo}
     driver-class-name: org.postgresql.Driver
@@ -97,8 +101,10 @@ spring:
   # s3/sqs/sns `endpoint` keys (AwsConfig does not read them, and the proven
   # application-test.yml uses the same global-only form). Path-style S3 access is
   # MANDATORY for LocalStack bucket addressing (it avoids virtual-host-style DNS).
-  # Host-run alternative:
-  #   export AWS_ENDPOINT=http://localhost:4566
+  # The endpoint default targets a HOST-RUN developer (localhost:4566, works out
+  # of the box). Under docker-compose the `app` service injects AWS_ENDPOINT (and
+  # SPRING_CLOUD_AWS_ENDPOINT) pointing at the in-network `localstack` service,
+  # which overrides this default (Spring env > yml).
   # ===========================================================================
   cloud:
     aws:
@@ -107,7 +113,7 @@ spring:
       credentials:
         access-key: ${AWS_ACCESS_KEY_ID:test}
         secret-key: ${AWS_SECRET_ACCESS_KEY:test}
-      endpoint: ${AWS_ENDPOINT:http://localstack:4566}
+      endpoint: ${AWS_ENDPOINT:http://localhost:4566}
       s3:
         path-style-access-enabled: true
 
@@ -120,8 +126,9 @@ spring:
 # exposure surface (health,info,prometheus), the liveness/readiness probe groups,
 # and the metrics/histogram configuration are all inherited from the base file
 # unchanged (profile-specific properties merge per-key, not per-block).
-# Host-run alternative:
-#   export OTLP_ENDPOINT=http://localhost:4317
+# The OTLP endpoint default targets a HOST-RUN developer (localhost:4317, works
+# out of the box). Under docker-compose the `app` service injects OTLP_ENDPOINT
+# pointing at the in-network `jaeger` service, which overrides this default.
 # =============================================================================
 management:
   endpoint:
@@ -132,7 +139,7 @@ management:
       probability: ${TRACING_SAMPLE:1.0}
   otlp:
     tracing:
-      endpoint: ${OTLP_ENDPOINT:http://jaeger:4317}
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4317}
 
 # =============================================================================
 # Phase 6 — Logging

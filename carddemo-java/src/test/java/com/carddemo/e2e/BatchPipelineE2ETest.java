@@ -462,4 +462,3 @@ public class BatchPipelineE2ETest {
                 .contents().size();
     }
 }
-

@@ -209,7 +209,8 @@ public class OnlineTransactionE2ETest {
     /**
      * BCrypt sign-on (constraint C-003) with JWT issuance and path-based authorization
      * ({@code COSGN00C}): an unauthenticated request is rejected, valid credentials mint a token, a
-     * wrong password yields no token, and only an admin token may reach {@code /api/admin/**}.
+     * wrong password yields no token, only an admin token may reach {@code /api/admin/**}, and both
+     * malformed and tampered (broken-signature) bearer tokens are rejected with 401.
      */
     @Test
     void bcryptSignOnAndRoleBasedAuthorization() {
@@ -236,6 +237,25 @@ public class OnlineTransactionE2ETest {
         ResponseEntity<JsonNode> adminOnAdmin = restTemplate.exchange(url("/api/admin/users"),
                 HttpMethod.GET, new HttpEntity<>(jsonHeaders(adminToken)), JsonNode.class);
         assertThat(adminOnAdmin.getStatusCode().is2xxSuccessful()).isTrue();
+
+        // Invalid-JWT rejection: a syntactically malformed bearer token cannot be parsed as a JWT,
+        // so authentication fails at the resource-server layer and the request is rejected with 401.
+        ResponseEntity<JsonNode> malformedOnMenu = restTemplate.exchange(url("/api/menu/main"),
+                HttpMethod.GET, new HttpEntity<>(jsonHeaders("not-a-valid-jwt")), JsonNode.class);
+        assertThat(malformedOnMenu.getStatusCode().value()).isEqualTo(HttpStatus.UNAUTHORIZED.value());
+
+        // Tampered-JWT rejection: a structurally valid token whose signature has been corrupted fails
+        // signature verification, so authentication fails with 401 before any role check on
+        // /api/admin/** can run (i.e. 401, not 403).
+        String[] jwtParts = adminToken.split("\\.");
+        String tamperedSignature = new StringBuilder(jwtParts[jwtParts.length - 1]).reverse().toString();
+        if (tamperedSignature.equals(jwtParts[jwtParts.length - 1])) {
+            tamperedSignature = jwtParts[jwtParts.length - 1] + "AB";
+        }
+        String tamperedToken = jwtParts[0] + "." + jwtParts[1] + "." + tamperedSignature;
+        ResponseEntity<JsonNode> tamperedOnAdmin = restTemplate.exchange(url("/api/admin/users"),
+                HttpMethod.GET, new HttpEntity<>(jsonHeaders(tamperedToken)), JsonNode.class);
+        assertThat(tamperedOnAdmin.getStatusCode().value()).isEqualTo(HttpStatus.UNAUTHORIZED.value());
     }
 
     /**

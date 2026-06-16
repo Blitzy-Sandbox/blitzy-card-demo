@@ -122,8 +122,11 @@ class InterestCalculationJobIT extends AbstractBatchIntegrationTest {
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
         byte[] systran = getS3ObjectOrNull(BUCKET_OUTPUT, SYSTRAN_OBJECT_KEY);
-        Assumptions.assumeTrue(systran != null && systran.length > 0,
-                "No SYSTRAN interest records staged — skipping layout assertion");
+        assertThat(systran)
+                .as("A completed interest job must stage the SYSTRAN object %s in bucket %s",
+                        SYSTRAN_OBJECT_KEY, BUCKET_OUTPUT)
+                .isNotNull();
+        assertThat(systran.length).as("SYSTRAN must be non-empty").isGreaterThan(0);
 
         // 350-byte CVTRA05Y record boundary (DAILY_TRAN_RECORD_LENGTH is the inherited 350 constant
         // and equals the CVTRA05Y/CVTRA06Y record length).

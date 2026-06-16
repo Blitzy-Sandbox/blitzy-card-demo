@@ -482,6 +482,17 @@
                         <format>HTML</format>
                         <format>JSON</format>
                     </formats>
+                    <!--
+                      Narrowly-scoped, per-CVE documented suppressions for
+                      HIGH/CRITICAL findings on BOM-managed transitives that are
+                      proven non-exploitable in the CardDemo runtime. The gate
+                      threshold (failBuildOnCVSS=7) is unchanged; see
+                      owasp-suppressions.xml and DECISION_LOG.md D-027 for the
+                      per-finding justification.
+                    -->
+                    <suppressionFiles>
+                        <suppressionFile>${project.basedir}/owasp-suppressions.xml</suppressionFile>
+                    </suppressionFiles>
                 </configuration>
                 <executions>
                     <execution>

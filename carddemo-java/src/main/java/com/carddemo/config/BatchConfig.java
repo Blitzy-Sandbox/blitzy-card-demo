@@ -1,5 +1,6 @@
 package com.carddemo.config;
 
+import com.carddemo.observability.ContextPropagatingTaskDecorator;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.task.TaskExecutor;
@@ -40,8 +41,15 @@ public class BatchConfig {
      * ({@code @ConditionalOnMissingBean(Executor.class)}). This is acceptable because CardDemo uses
      * no {@code @Async} or async-MVC; this executor is dedicated to the batch pipeline split.
      *
-     * @return a graceful-shutdown-aware, bounded {@link ThreadPoolTaskExecutor} registered under the
-     *         bean name {@code "batchTaskExecutor"}
+     * <p>A {@link ContextPropagatingTaskDecorator} is attached so the parallel stage-4 worker
+     * threads inherit the launching thread's SLF4J {@code MDC} (including the {@code correlationId})
+     * and Micrometer tracing context; without it the CREASTMT/TRANREPT split logs and spans would
+     * lose the pipeline's correlation context across the thread-pool boundary (Observability rule,
+     * AAP &sect;0.7.1). Rationale is recorded in {@code DECISION_LOG.md}.
+     *
+     * @return a graceful-shutdown-aware, bounded {@link ThreadPoolTaskExecutor} that propagates the
+     *         observability context to its workers, registered under the bean name
+     *         {@code "batchTaskExecutor"}
      */
     @Bean("batchTaskExecutor")
     public TaskExecutor batchTaskExecutor() {
@@ -50,6 +58,7 @@ public class BatchConfig {
         executor.setMaxPoolSize(4);
         executor.setQueueCapacity(16);
         executor.setThreadNamePrefix("carddemo-batch-");
+        executor.setTaskDecorator(new ContextPropagatingTaskDecorator());
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(30);
         return executor;

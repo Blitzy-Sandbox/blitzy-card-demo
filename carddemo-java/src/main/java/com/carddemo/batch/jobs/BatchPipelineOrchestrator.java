@@ -74,8 +74,13 @@ import org.springframework.core.task.TaskExecutor;
  * <p><b>Observability (AAP &sect;0.7.1).</b> A {@code correlationId} MDC entry (the same key the
  * {@code CorrelationIdFilter} publishes and {@code logback-spring.xml} renders) is ensured for the
  * duration of a launch so every log line emitted by the orchestration and the synchronously
- * launched stages is correlated. Batch throughput/reject metrics are owned by the child
- * jobs/writers; this orchestrator deliberately adds none of its own.
+ * launched stages is correlated. The parallel stage-4 split (CREASTMT alongside TRANREPT) runs on
+ * the {@code batchTaskExecutor}, which carries a
+ * {@link com.carddemo.observability.ContextPropagatingTaskDecorator}; that decorator copies the
+ * launching thread's MDC (including the {@code correlationId}) and Micrometer tracing context onto
+ * each split worker thread, so the split-stage logs and spans stay correlated with the pipeline
+ * rather than losing the context across the thread-pool boundary. Batch throughput/reject metrics
+ * are owned by the child jobs/writers; this orchestrator deliberately adds none of its own.
  */
 @Configuration(proxyBeanMethods = false)
 public class BatchPipelineOrchestrator {
