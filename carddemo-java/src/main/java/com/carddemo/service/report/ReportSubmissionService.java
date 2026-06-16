@@ -44,7 +44,7 @@ public class ReportSubmissionService {
     /** Report-type literal published on the message contract and echoed in user messages. */
     private static final String REPORT_TYPE_CUSTOM = "Custom";
 
-    /** Constant FIFO message group id, preserving the single-queue ordering of the source TDQ. */
+    /** Constant FIFO message group id (rationale: DECISION_LOG D-015). */
     private static final String REPORT_MESSAGE_GROUP_ID = "carddemo-reports";
 
     /** COBOL date picture ({@code WS-DATE-FORMAT}, CORPT00C:L72) passed to the date validator. */
@@ -260,8 +260,9 @@ public class ReportSubmissionService {
 
     /**
      * Publishes a single report-request message to the SQS FIFO queue (the {@code WRITEQ TD}
-     * bridge) and returns the success acknowledgement. A constant message group id preserves total
-     * ordering and a random deduplication id keeps each submission distinct.
+     * bridge) and returns the success acknowledgement. Sends with the constant message group id
+     * and a random deduplication id; see DECISION_LOG D-004 and D-015 for the message-contract
+     * rationale.
      *
      * @param reportType the resolved report type
      * @param startDate  inclusive range start, {@code yyyy-MM-dd}

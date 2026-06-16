@@ -8,6 +8,8 @@ import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.TransactionPostingException;
 import com.carddemo.exception.ValidationException;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
@@ -28,6 +30,25 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 @RestControllerAdvice
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public class GlobalExceptionHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    /**
+     * Client-safe detail for {@link FileAccessException} (HTTP 500). The raw exception message can
+     * carry internal implementation diagnostics (S3 bucket/object keys, FILE STATUS codes), so it
+     * is logged server-side only and never returned to the client (CWE-209). The correlation id
+     * returned in the {@code X-Correlation-Id} response header lets support correlate the request
+     * with the full server-side log entry.
+     */
+    private static final String FILE_ACCESS_SANITIZED_DETAIL =
+            "A backend file or queue operation failed; please retry or contact support with your correlation ID.";
+
+    /**
+     * Client-safe detail for an unmapped {@link CardDemoException} (HTTP 500). Same rationale as
+     * {@link #FILE_ACCESS_SANITIZED_DETAIL}: internal detail is logged server-side, not returned.
+     */
+    private static final String PROCESSING_SANITIZED_DETAIL =
+            "An unexpected processing error occurred; please retry or contact support with your correlation ID.";
 
     @ExceptionHandler(RecordNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleRecordNotFound(RecordNotFoundException ex) {
@@ -56,12 +77,19 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(FileAccessException.class)
     public ResponseEntity<ProblemDetail> handleFileAccess(FileAccessException ex) {
-        return build(HttpStatus.INTERNAL_SERVER_ERROR, "File Access Error", ex.getMessage());
+        // Log full diagnostics (message + stack trace) server-side; the correlation id is attached
+        // automatically via MDC. Return a sanitized, stable detail so internal file/queue
+        // identifiers (S3 bucket/object keys, FILE STATUS codes) are never exposed (CWE-209).
+        log.error("File access failure handled at API boundary", ex);
+        return build(HttpStatus.INTERNAL_SERVER_ERROR, "File Access Error", FILE_ACCESS_SANITIZED_DETAIL);
     }
 
     @ExceptionHandler(CardDemoException.class)
     public ResponseEntity<ProblemDetail> handleCardDemo(CardDemoException ex) {
-        return build(HttpStatus.INTERNAL_SERVER_ERROR, "Processing Error", ex.getMessage());
+        // Fallback for unmapped CardDemoException subclasses. Log full diagnostics server-side and
+        // return a sanitized 500 detail so raw entity/status diagnostics are not leaked (CWE-209).
+        log.error("Unhandled CardDemo processing failure at API boundary", ex);
+        return build(HttpStatus.INTERNAL_SERVER_ERROR, "Processing Error", PROCESSING_SANITIZED_DETAIL);
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

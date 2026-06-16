@@ -4,6 +4,8 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamWriter;
@@ -53,6 +55,13 @@ import com.carddemo.observability.MetricsConfig;
 @Component
 public class StatementWriter implements ItemStreamWriter<StatementWriter.StatementDocument> {
 
+    /**
+     * Structured logger for statement-writer lifecycle and S3 emission diagnostics. Logs only
+     * counts, byte sizes, and destination identifiers (bucket/key) &mdash; never statement
+     * content, customer data, PII, or secrets.
+     */
+    private static final Logger log = LoggerFactory.getLogger(StatementWriter.class);
+
     /** S3 object key for the plain-text statement variant (COBOL {@code STMTFILE}). */
     private static final String TEXT_OBJECT_KEY = "STATEMNT.PS";
 
@@ -101,6 +110,8 @@ public class StatementWriter implements ItemStreamWriter<StatementWriter.Stateme
     public void open(ExecutionContext executionContext) {
         this.textBuffer = new ByteArrayOutputStream();
         this.htmlBuffer = new ByteArrayOutputStream();
+        log.debug("Opened statement writer; buffering text/HTML statements for bucket {}",
+                statementsBucket);
     }
 
     /**
@@ -131,6 +142,7 @@ public class StatementWriter implements ItemStreamWriter<StatementWriter.Stateme
             htmlBuffer.writeBytes(html.getBytes(StandardCharsets.ISO_8859_1));
             MetricsConfig.recordsProcessed(meterRegistry).increment();
         }
+        log.debug("Appended {} statement document(s) in this chunk", chunk.size());
     }
 
     /**
@@ -142,10 +154,22 @@ public class StatementWriter implements ItemStreamWriter<StatementWriter.Stateme
     public void close() {
         try {
             if (textBuffer != null && textBuffer.size() > 0) {
-                putObject(TEXT_OBJECT_KEY, textBuffer.toByteArray(), "text/plain");
+                byte[] payload = textBuffer.toByteArray();
+                putObject(TEXT_OBJECT_KEY, payload, "text/plain");
+                log.info("Wrote text statement object ({} bytes) to s3://{}/{}",
+                        payload.length, statementsBucket, TEXT_OBJECT_KEY);
+            } else {
+                log.debug("No text statement content buffered; skipping s3://{}/{}",
+                        statementsBucket, TEXT_OBJECT_KEY);
             }
             if (htmlBuffer != null && htmlBuffer.size() > 0) {
-                putObject(HTML_OBJECT_KEY, htmlBuffer.toByteArray(), "text/html");
+                byte[] payload = htmlBuffer.toByteArray();
+                putObject(HTML_OBJECT_KEY, payload, "text/html");
+                log.info("Wrote HTML statement object ({} bytes) to s3://{}/{}",
+                        payload.length, statementsBucket, HTML_OBJECT_KEY);
+            } else {
+                log.debug("No HTML statement content buffered; skipping s3://{}/{}",
+                        statementsBucket, HTML_OBJECT_KEY);
             }
         } finally {
             textBuffer = null;
@@ -173,6 +197,8 @@ public class StatementWriter implements ItemStreamWriter<StatementWriter.Stateme
                             .build(),
                     RequestBody.fromBytes(payload));
         } catch (SdkException e) {
+            log.error("Failed to write statement object to s3://{}/{} ({} bytes)",
+                    statementsBucket, key, payload.length, e);
             throw new FileAccessException(
                     "Failed to write statement object to S3 " + statementsBucket + "/" + key, e);
         }

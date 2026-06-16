@@ -5,6 +5,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamWriter;
@@ -54,6 +56,13 @@ import com.carddemo.observability.MetricsConfig;
  */
 @Component
 public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTransaction> {
+
+    /**
+     * Structured logger for writer lifecycle and S3 emission diagnostics. Logs only counts and
+     * destination identifiers (bucket/key) &mdash; never the raw rejected transaction record
+     * content, reject descriptions, PII, or secrets.
+     */
+    private static final Logger log = LoggerFactory.getLogger(RejectWriter.class);
 
     /** Length of the raw daily-transaction data segment (COBOL {@code REJECT-TRAN-DATA PIC X(350)}). */
     private static final int DATA_LENGTH = 350;
@@ -105,6 +114,8 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
     @Override
     public void open(ExecutionContext executionContext) {
         this.buffer = new ByteArrayOutputStream();
+        log.debug("Opened reject writer; buffering 430-byte reject records for s3://{}/{}",
+                outputBucket, OBJECT_KEY);
     }
 
     /**
@@ -130,6 +141,7 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
             buffer.writeBytes(buildRecord(item));
             MetricsConfig.recordsRejected(meterRegistry, String.valueOf(item.reasonCode())).increment();
         }
+        log.debug("Buffered {} rejected transaction record(s) in this chunk", chunk.size());
     }
 
     /**
@@ -142,9 +154,12 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
     public void close() {
         try {
             if (buffer == null || buffer.size() == 0) {
+                log.debug("No rejected transactions buffered; no reject object written to bucket {}",
+                        outputBucket);
                 return;
             }
             byte[] payload = buffer.toByteArray();
+            int recordCount = payload.length / RECORD_LENGTH;
             try {
                 s3Client.putObject(
                         PutObjectRequest.builder()
@@ -153,7 +168,11 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
                                 .contentType(CONTENT_TYPE)
                                 .build(),
                         RequestBody.fromBytes(payload));
+                log.info("Wrote {} reject record(s) ({} bytes) to s3://{}/{}",
+                        recordCount, payload.length, outputBucket, OBJECT_KEY);
             } catch (SdkException e) {
+                log.error("Failed to write reject file to s3://{}/{} ({} record(s), {} bytes)",
+                        outputBucket, OBJECT_KEY, recordCount, payload.length, e);
                 throw new FileAccessException(
                         "Failed to write reject file to S3 " + outputBucket + "/" + OBJECT_KEY, e);
             }

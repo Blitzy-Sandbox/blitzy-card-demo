@@ -49,6 +49,8 @@ abstract class AbstractAwsLocalStackIT {
             POSTGRES.start();
             LOCALSTACK.start();
             provisionAwsResources();
+            Runtime.getRuntime().addShutdownHook(
+                    new Thread(AbstractAwsLocalStackIT::tearDownSharedResources, "localstack-aws-it-teardown"));
         }
     }
 
@@ -77,6 +79,71 @@ abstract class AbstractAwsLocalStackIT {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Interrupted while provisioning LocalStack AWS resources", e);
+        }
+    }
+
+    /**
+     * Tears down the shared test infrastructure at JVM exit: a best-effort deletion of every
+     * provisioned AWS resource (the three S3 buckets and their objects, the SQS FIFO queue, and the
+     * SNS topic) followed by stopping both containers. This satisfies the LocalStack Verification
+     * rule that integration tests provision <em>and</em> tear down their own resources.
+     *
+     * <p>Teardown is registered as a JVM shutdown hook rather than an {@code @AfterAll} method
+     * because {@link #POSTGRES} and {@link #LOCALSTACK} are shared static singletons reused across
+     * every integration subclass in the JVM: an {@code @AfterAll} would stop them after the first
+     * subclass and break the remaining ones. The hook runs exactly once, after the last test in the
+     * JVM. Every step is isolated in its own best-effort guard so a cleanup failure can never fail
+     * the build or mask a test result.</p>
+     */
+    private static void tearDownSharedResources() {
+        deleteBucketQuietly(BUCKET_INPUT);
+        deleteBucketQuietly(BUCKET_OUTPUT);
+        deleteBucketQuietly(BUCKET_STATEMENTS);
+        execQuietly("sh", "-c",
+                "awslocal sqs delete-queue --queue-url "
+                        + "$(awslocal sqs get-queue-url --queue-name " + REPORT_QUEUE
+                        + " --query QueueUrl --output text)");
+        execQuietly("sh", "-c",
+                "awslocal sns delete-topic --topic-arn "
+                        + "$(awslocal sns list-topics --output text | grep " + NOTIFICATIONS_TOPIC
+                        + " | awk '{print $2}')");
+        stopQuietly();
+    }
+
+    /** Best-effort removal of an S3 bucket and all of its objects (recursive {@code rb --force}). */
+    private static void deleteBucketQuietly(String bucket) {
+        execQuietly("awslocal", "s3", "rb", "s3://" + bucket, "--force");
+    }
+
+    /**
+     * Runs a command inside the LocalStack container, swallowing failures so shutdown teardown stays
+     * best-effort (the container is stopped immediately afterwards, reclaiming any residual state).
+     */
+    private static void execQuietly(String... command) {
+        try {
+            LOCALSTACK.execInContainer(command);
+        } catch (IOException | RuntimeException e) {
+            // Best-effort cleanup: the container stop below reclaims any residual state.
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** Best-effort stop of both shared containers; Testcontainers/Ryuk reaps anything left behind. */
+    private static void stopQuietly() {
+        try {
+            if (LOCALSTACK.isRunning()) {
+                LOCALSTACK.stop();
+            }
+        } catch (RuntimeException e) {
+            // Best-effort: Testcontainers/Ryuk reaps the container at JVM exit.
+        }
+        try {
+            if (POSTGRES.isRunning()) {
+                POSTGRES.stop();
+            }
+        } catch (RuntimeException e) {
+            // Best-effort: Testcontainers/Ryuk reaps the container at JVM exit.
         }
     }
 

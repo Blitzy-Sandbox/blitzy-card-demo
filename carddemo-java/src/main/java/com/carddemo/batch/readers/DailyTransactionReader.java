@@ -4,6 +4,8 @@ import com.carddemo.exception.FileAccessException;
 import com.carddemo.model.entity.DailyTransaction;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamException;
@@ -33,6 +35,13 @@ import org.springframework.stereotype.Component;
 @Component
 @StepScope
 public class DailyTransactionReader extends FlatFileItemReader<DailyTransaction> {
+
+    /**
+     * Structured logger for reader lifecycle and parse-failure diagnostics. Logs only the
+     * resource identity ({@code s3://} URI), record line numbers, and counts &mdash; never the
+     * raw transaction record content, PII, or secrets.
+     */
+    private static final Logger log = LoggerFactory.getLogger(DailyTransactionReader.class);
 
     /** Loader that resolves the {@code s3://} location to an S3-backed {@link org.springframework.core.io.Resource}. */
     private final ResourceLoader resourceLoader;
@@ -74,6 +83,7 @@ public class DailyTransactionReader extends FlatFileItemReader<DailyTransaction>
         setStrict(true);
         setLineMapper(buildLineMapper());
         super.afterPropertiesSet();
+        log.debug("Configured dailyTransactionReader for 350-byte fixed-width input at {}", inputLocation);
     }
 
     /**
@@ -84,7 +94,9 @@ public class DailyTransactionReader extends FlatFileItemReader<DailyTransaction>
     public void open(ExecutionContext executionContext) {
         try {
             super.open(executionContext);
+            log.info("Opened daily transaction file {}", inputLocation);
         } catch (ItemStreamException ex) {
+            log.error("Failed to open daily transaction file {}", inputLocation, ex);
             throw new FileAccessException("Error opening daily transaction file", ex);
         }
     }
@@ -99,6 +111,12 @@ public class DailyTransactionReader extends FlatFileItemReader<DailyTransaction>
         try {
             return super.read();
         } catch (FlatFileParseException ex) {
+            // Log the line number, resource identity, and cause type only. The exception
+            // message and getInput() carry the raw record bytes, so neither is logged here,
+            // preserving the "do not log raw transaction records" constraint.
+            log.error("Failed to parse daily transaction record at line {} in {} (cause: {})",
+                    ex.getLineNumber(), inputLocation,
+                    ex.getCause() == null ? "parse failure" : ex.getCause().getClass().getSimpleName());
             throw new FileAccessException(
                     "Error reading daily transaction record at line " + ex.getLineNumber(), ex);
         }

@@ -74,6 +74,7 @@
         <jacoco-maven-plugin.version>0.8.14</jacoco-maven-plugin.version>
         <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
         <maven-failsafe-plugin.version>3.5.2</maven-failsafe-plugin.version>
+        <maven-dependency-plugin.version>3.8.1</maven-dependency-plugin.version>
         <testcontainers.version>2.0.3</testcontainers.version>
 
         <!-- Gate 8: minimum JaCoCo line coverage enforced by the check rule. -->
@@ -327,15 +328,57 @@
             </plugin>
 
             <!--
+              Maven Dependency plugin. The "properties" goal (bound by default to
+              the "initialize" phase) exports each resolved dependency's local
+              repository path as a build property named
+              "${groupId:artifactId:type}". We use it to expose
+              "${org.mockito:mockito-core:jar}" so Surefire/Failsafe can load
+              Mockito as an explicit JVM -javaagent (see the argLine below).
+              Mockito 5.x self-attaches its inline mock maker by default, which
+              emits a self-attach warning and triggers a Byte Buddy "dynamic agent
+              loading" warning that a future JDK will disallow (Gate 2 zero-warning
+              build). Loading Mockito as a -javaagent up front removes both
+              warnings under Java 25+. Version pinned (3.8.1) for offline
+              determinism since the Spring Boot parent does not manage it.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>${maven-dependency-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>resolve-mockito-agent-path</id>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
               Surefire runs UNIT tests only (*Test.java). Integration tests
               (*IT.java) are explicitly excluded here and handled by Failsafe in
-              the "integration" profile.
+              the "integration" profile. The argLine preserves JaCoCo's
+              instrumentation arguments via the late-evaluated "@{argLine}"
+              placeholder (set by jacoco:prepare-agent) and appends Mockito as an
+              explicit -javaagent so tests run warning-free under Java 25+.
             -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${maven-surefire-plugin.version}</version>
                 <configuration>
+                    <!--
+                      @{argLine} carries JaCoCo's prepare-agent instrumentation
+                      argument; the appended -javaagent loads Mockito explicitly
+                      so it does not self-attach (removes the Byte Buddy dynamic
+                      agent warning under Java 25+). -Xshare:off disables Class
+                      Data Sharing, which otherwise emits a "Sharing is only
+                      supported for boot loader classes" warning because the
+                      Mockito agent appends Byte Buddy to the bootstrap classpath
+                      (keeps the test run warning-free for Gate 2).
+                    -->
+                    <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
                     <includes>
                         <include>**/*Test.java</include>
                     </includes>
@@ -441,6 +484,16 @@
                         <artifactId>maven-failsafe-plugin</artifactId>
                         <version>${maven-failsafe-plugin.version}</version>
                         <configuration>
+                            <!--
+                              Mirror the Surefire agent wiring for integration
+                              tests: preserve JaCoCo's @{argLine}, load Mockito as
+                              an explicit -javaagent, and disable Class Data
+                              Sharing (-Xshare:off) so the run stays warning-free
+                              under Java 25+. Requires the maven-dependency-plugin
+                              "properties" goal that exports
+                              ${org.mockito:mockito-core:jar}.
+                            -->
+                            <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
                             <includes>
                                 <include>**/*IT.java</include>
                             </includes>

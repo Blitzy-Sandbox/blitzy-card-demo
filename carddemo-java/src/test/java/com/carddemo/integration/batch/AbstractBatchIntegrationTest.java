@@ -53,9 +53,11 @@ import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 public abstract class AbstractBatchIntegrationTest {
 
     // ------------------------------------------------------------------------
-    // Singleton containers (D-shared-containers): started once, never stopped;
-    // Ryuk reaps them at JVM exit. NOT annotated @Container (that would impose
-    // per-class start/stop and break the cached-context endpoints).
+    // Singleton containers (D-shared-containers): started once in the static
+    // initializer and torn down exactly once via a JVM shutdown hook (see
+    // tearDownSharedResources). NOT annotated @Container (that would impose
+    // per-class start/stop and break the cached-context endpoints); the shutdown
+    // hook is the correct teardown point for singletons shared across subclasses.
     // ------------------------------------------------------------------------
 
     // The relocated, non-deprecated org.testcontainers.postgresql.PostgreSQLContainer (D3) is a
@@ -96,6 +98,8 @@ public abstract class AbstractBatchIntegrationTest {
         if (DockerClientFactory.instance().isDockerAvailable()) {
             POSTGRES.start();
             LOCALSTACK.start();
+            Runtime.getRuntime().addShutdownHook(
+                    new Thread(AbstractBatchIntegrationTest::tearDownSharedResources, "batch-it-teardown"));
         }
     }
 
@@ -165,6 +169,70 @@ public abstract class AbstractBatchIntegrationTest {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Interrupted while provisioning LocalStack AWS resources", e);
+        }
+    }
+
+    /**
+     * Tears down the shared batch test infrastructure at JVM exit: a best-effort deletion of every
+     * self-provisioned AWS resource (the three S3 buckets and their objects, the SQS FIFO queue, and
+     * the SNS topic) followed by stopping both shared containers. This makes the batch suite satisfy
+     * the LocalStack Verification rule that tests provision <em>and</em> tear down their own resources.
+     *
+     * <p>The teardown is a JVM shutdown hook rather than an {@code @AfterAll} because {@link #POSTGRES}
+     * and {@link #LOCALSTACK} are shared static singletons reused across every batch subclass; an
+     * {@code @AfterAll} would stop them after the first subclass and break the rest. The hook runs
+     * exactly once, after the last test in the JVM, and every step is a best-effort guard so a cleanup
+     * failure can neither fail the build nor mask a test result.</p>
+     */
+    private static void tearDownSharedResources() {
+        deleteBucketQuietly(BUCKET_INPUT);
+        deleteBucketQuietly(BUCKET_OUTPUT);
+        deleteBucketQuietly(BUCKET_STATEMENTS);
+        execQuietly("sh", "-c",
+                "awslocal sqs delete-queue --queue-url "
+                        + "$(awslocal sqs get-queue-url --queue-name " + REPORT_QUEUE
+                        + " --query QueueUrl --output text)");
+        execQuietly("sh", "-c",
+                "awslocal sns delete-topic --topic-arn "
+                        + "$(awslocal sns list-topics --output text | grep " + NOTIFICATIONS_TOPIC
+                        + " | awk '{print $2}')");
+        stopQuietly();
+    }
+
+    /** Best-effort removal of an S3 bucket and all of its objects (recursive {@code rb --force}). */
+    private static void deleteBucketQuietly(String bucket) {
+        execQuietly("awslocal", "s3", "rb", "s3://" + bucket, "--force");
+    }
+
+    /**
+     * Runs a command inside the LocalStack container, swallowing failures so shutdown teardown stays
+     * best-effort (the container is stopped immediately afterwards, reclaiming any residual state).
+     */
+    private static void execQuietly(String... command) {
+        try {
+            LOCALSTACK.execInContainer(command);
+        } catch (IOException | RuntimeException e) {
+            // Best-effort cleanup: the container stop below reclaims any residual state.
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** Best-effort stop of both shared containers; Testcontainers/Ryuk reaps anything left behind. */
+    private static void stopQuietly() {
+        try {
+            if (LOCALSTACK.isRunning()) {
+                LOCALSTACK.stop();
+            }
+        } catch (RuntimeException e) {
+            // Best-effort: Testcontainers/Ryuk reaps the container at JVM exit.
+        }
+        try {
+            if (POSTGRES.isRunning()) {
+                POSTGRES.stop();
+            }
+        } catch (RuntimeException e) {
+            // Best-effort: Testcontainers/Ryuk reaps the container at JVM exit.
         }
     }
 
