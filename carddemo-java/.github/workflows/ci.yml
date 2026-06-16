@@ -1,0 +1,147 @@
+# =============================================================================
+# CardDemo Java - Continuous Integration (CI) Pipeline
+# =============================================================================
+# GitHub Actions workflow for the carddemo-java migration of the AWS CardDemo
+# COBOL mainframe application onto Java 25 LTS + Spring Boot 3.x.
+#
+# This is the modern analog of the legacy z/OS build JCL in samples/jcl/
+# (BATCMP.jcl -> EXEC BUILDBAT, BMSCMP.jcl -> EXEC BUILDBMS,
+# CICCMP.jcl -> EXEC BUILDONL). Where those cataloged-procedure compile steps
+# pinned the mainframe compile environment through a proc library
+# (JCLLIB ORDER=&HLQ..CARDDEMO.PRC.UTIL), this pipeline pins the build
+# toolchain through the Maven wrapper (./mvnw). It builds, tests, and
+# security-scans the Java application on every push and pull request.
+#
+# Condition-code gating lineage: CICCMP.jcl ran its downstream step only when
+# the prior return code was acceptable
+# (//NEWCOPY EXEC PGM=SDSF,COND=(4,LT) -> "run when RC < 4"). That discipline
+# is expressed here with `needs:` (plus `if: success()`), so the integration
+# job runs only after the build job succeeds.
+#
+# Scope: build -> test -> scan ONLY. The legacy post-build SDSF/NEWCOPY step
+# (CEMT SET PROG(...) NEWCOPY) is a deployment/promote into a running CICS
+# region; deployment / CD is out of scope and is intentionally NOT translated.
+# No deploy steps, no image push, no cloud provisioning, no GCP. No credentials
+# are hardcoded: the only secret (LOCALSTACK_AUTH_TOKEN) is read from GitHub
+# Actions Secrets.
+# =============================================================================
+name: CI
+
+# Triggers: validate every pull request (from any branch) and every push to the
+# default branch. GitHub Actions parses the `on` key correctly as the trigger
+# map; it is intentionally left unquoted per GitHub convention.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+# Least-privilege token: the build/test/scan pipeline only needs to read the
+# repository contents. No write scopes are granted.
+permissions:
+  contents: read
+
+# Cancel superseded in-flight runs for the same ref so only the latest commit
+# on a branch/PR consumes runner time.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # build: Gate 2 (zero-warning build) + unit tests + Gate 8 (coverage + OWASP)
+  # ---------------------------------------------------------------------------
+  # A single `./mvnw -B clean verify` runs the full verify lifecycle. The
+  # project pom.xml binds, to that lifecycle: the Java 25 compile with
+  # -Xlint:all/-Werror (Gate 2 zero warnings), Surefire unit tests (*Test.java),
+  # the JaCoCo `check` rule (>= 80% line coverage -> Gate 8), and the OWASP
+  # dependency-check (fail on HIGH/CRITICAL CVE -> Gate 8). The OWASP NVD scan
+  # is slow, so it runs exactly once here and is intentionally not duplicated.
+  build:
+    name: Build, Unit Tests, Coverage & OWASP (Gates 2 & 8)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Make Maven wrapper executable
+        run: chmod +x ./mvnw
+
+      - name: Build, test, coverage, dependency-check
+        run: ./mvnw -B clean verify
+
+      # Reports are uploaded with `if: always()` so they are available for
+      # diagnosis even when the build fails (a coverage or CVE gate violation
+      # fails the build via a non-zero Maven exit code).
+      - name: Upload JaCoCo coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: target/site/jacoco/
+
+      - name: Upload Surefire unit-test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+
+      - name: Upload OWASP dependency-check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: |
+            target/dependency-check-report.html
+            target/dependency-check-report.json
+
+  # ---------------------------------------------------------------------------
+  # integration-test: Testcontainers (PostgreSQL) + LocalStack (S3/SQS/SNS)
+  # ---------------------------------------------------------------------------
+  # Gated behind the build job (the COND=(4,LT) analog): it runs only after the
+  # build succeeds. ubuntu-latest provides a working Docker daemon that
+  # Testcontainers auto-detects, so no extra Docker setup is required. The
+  # `integration` Maven profile activates Failsafe to run the *IT.java tests.
+  integration-test:
+    name: Integration Tests (Testcontainers + LocalStack)
+    needs: build
+    if: success()
+    runs-on: ubuntu-latest
+    # The LocalStack auth token is injected from GitHub Actions Secrets and is
+    # never hardcoded. It is consumed by the LocalStack container used in the
+    # integration tests.
+    env:
+      LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Make Maven wrapper executable
+        run: chmod +x ./mvnw
+
+      # Failsafe runs the integration tests against Testcontainers PostgreSQL +
+      # LocalStack. The OWASP scan already ran authoritatively in the build job,
+      # so it is skipped here to avoid a slow, redundant NVD download.
+      - name: Run integration tests (Failsafe + Docker)
+        run: ./mvnw -B verify -Pintegration -Ddependency-check.skip=true
+
+      - name: Upload Failsafe integration-test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failsafe-reports
+          path: target/failsafe-reports/
