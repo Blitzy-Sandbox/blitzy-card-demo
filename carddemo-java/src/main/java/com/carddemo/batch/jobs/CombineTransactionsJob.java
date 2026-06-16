@@ -75,7 +75,7 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
  * contains the daily posts plus the interest transactions, keyed by {@code tranId}. The rationale
  * for this idempotency choice is recorded in {@code DECISION_LOG.md}.</p>
  */
-@Configuration(proxyBeanMethods = false)
+@Configuration(value = "combineTransactionsJobConfig", proxyBeanMethods = false)
 public class CombineTransactionsJob {
 
     /** Canonical job name; referenced by the pipeline orchestrator to launch this job. */
