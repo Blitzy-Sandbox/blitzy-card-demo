@@ -105,6 +105,14 @@ spring:
   batch:
     jdbc:
       initialize-schema: never
+      # Spring Batch's JobRepository defaults createJobExecution to ISOLATION_SERIALIZABLE. The master
+      # pipeline's stage-4 split (BatchPipelineOrchestrator) launches the statement and report sub-jobs
+      # CONCURRENTLY via FlowBuilder.split(batchTaskExecutor); under SERIALIZABLE, PostgreSQL's SSI aborts
+      # one concurrent BATCH_JOB_EXECUTION insert with SQLState 40001 ("could not serialize access due to
+      # read/write dependencies"). READ_COMMITTED removes that metadata-only contention while business
+      # transactions (financial integrity, @Version optimistic locking) keep the datasource default,
+      # preserving the AAP §0.8.5 parallel-split design with zero business-data regression.
+      isolation-level-for-create: READ_COMMITTED
     job:
       enabled: false
 
