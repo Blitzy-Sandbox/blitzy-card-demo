@@ -22,10 +22,14 @@ import org.springframework.stereotype.Service;
  * {@code CDEMO-CU00-PAGE-NUM} tracked the one-based page number.</p>
  *
  * <p>Per the Repository pattern adopted for this migration (VSAM browse &rarr; pagination),
- * the browse is expressed as page-number pagination over
- * {@link UserSecurityRepository#findAll(Pageable)} sorted ascending by the entity's key
+ * the browse is expressed as page-number pagination sorted ascending by the entity's key
  * field {@code secUsrId}, which reproduces the VSAM key order of the {@code SEC-USR-ID}
- * primary key. Exactly ten rows are returned per page, mirroring the COBOL row group.</p>
+ * primary key. When a {@code userId} start key is supplied it positions the browse at the
+ * first user whose id is greater than or equal to the key (the COBOL {@code STARTBR} GTEQ
+ * positioning) via {@link UserSecurityRepository#findBySecUsrIdGreaterThanEqual(String, Pageable)};
+ * otherwise the browse starts at the lowest key via
+ * {@link UserSecurityRepository#findAll(Pageable)}. Exactly ten rows are returned per page,
+ * mirroring the COBOL row group.</p>
  *
  * <p>Boundary state was conveyed in the COBOL program through the on-screen message line
  * rather than through dedicated indicators; that behavior is preserved here by populating
@@ -72,13 +76,15 @@ public class UserListService {
      *
      * <p>The {@code pageNumber} is one-based to match the COBOL page numbering: page 1 is the
      * first page. Values below one are clamped to the first page for the query and additionally
-     * flagged as an already-at-top boundary. The {@code userIdFilter} is echoed back unchanged;
-     * the re-platformed repository exposes no key-positioned or range query, so it is not used to
-     * filter the result set.</p>
+     * flagged as an already-at-top boundary. When non-blank, the {@code userIdFilter} positions
+     * the browse at the first user whose id is greater than or equal to the key (mirroring the
+     * COBOL keyed {@code STARTBR}/{@code READNEXT} forward browse); when blank, the browse begins
+     * at the lowest key. The value is echoed back unchanged.</p>
      *
      * @param pageNumber   the one-based page number requested by the caller
-     * @param userIdFilter the user-id filter value supplied by the caller, echoed back unchanged;
-     *                     may be {@code null}
+     * @param userIdFilter the optional user-id start key supplied by the caller; when non-blank it
+     *                     positions the browse at the first user whose id is greater than or equal
+     *                     to the key. Echoed back unchanged; may be {@code null}
      * @return a {@link UserListResponse} containing up to {@value #PAGE_SIZE} rows for the page,
      *         the echoed page number and filter, and a boundary message (or {@code null} when the
      *         page is normally populated)
@@ -86,7 +92,13 @@ public class UserListService {
     public UserListResponse listUsers(int pageNumber, String userIdFilter) {
         int pageIndex = Math.max(0, pageNumber - 1);
         Pageable pageable = PageRequest.of(pageIndex, PAGE_SIZE, Sort.by("secUsrId").ascending());
-        Page<UserSecurity> page = userSecurityRepository.findAll(pageable);
+
+        // COUSR00C PROCESS-ENTER-KEY: a supplied user id is the browse start key
+        // (STARTBR GTEQ + READNEXT forward); a blank key browses from the lowest id.
+        boolean hasStartKey = userIdFilter != null && !userIdFilter.isBlank();
+        Page<UserSecurity> page = hasStartKey
+                ? userSecurityRepository.findBySecUsrIdGreaterThanEqual(userIdFilter, pageable)
+                : userSecurityRepository.findAll(pageable);
 
         List<UserListResponse.UserListItem> users = page.getContent().stream()
                 .map(user -> new UserListResponse.UserListItem(

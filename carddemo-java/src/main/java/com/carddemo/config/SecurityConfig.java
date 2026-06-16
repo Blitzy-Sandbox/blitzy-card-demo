@@ -131,6 +131,10 @@ public class SecurityConfig {
                         .requestMatchers("/api/auth/signin").permitAll()
                         .requestMatchers("/actuator/health/**", "/actuator/info", "/actuator/prometheus")
                         .permitAll()
+                        // Permit the Spring error dispatcher so a body/parse failure on a public
+                        // endpoint (e.g. /api/auth/signin) surfaces its intended 400 ProblemDetail
+                        // instead of an unauthenticated /error re-dispatch returning an empty 401.
+                        .requestMatchers("/error").permitAll()
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().authenticated())

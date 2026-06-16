@@ -3,6 +3,8 @@ package com.carddemo.repository;
 import com.carddemo.model.entity.Transaction;
 import java.util.Collection;
 import java.util.List;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
@@ -25,6 +27,23 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      */
     @Query("SELECT MAX(t.tranId) FROM Transaction t")
     String findMaxTranId();
+
+    /**
+     * Returns a single page of transactions whose id is greater than or equal to
+     * the supplied start key, ordered as requested by the {@link Pageable}.
+     *
+     * <p>Re-platforms the keyed forward browse of {@code COTRN00C} (transaction
+     * list, transaction {@code CT00}): the CICS {@code STARTBR} on the TRANSACT
+     * dataset with {@code RIDFLD = TRAN-ID} positions at the first record whose
+     * key is greater than or equal to the entered transaction id (GTEQ), and the
+     * subsequent {@code READNEXT} loop reads forward from that position. Because
+     * {@code tranId} is a fixed-width, zero-padded numeric string, the
+     * lexicographic {@code >=} comparison preserves the VSAM key-ascending browse
+     * order. The caller supplies an ascending {@code tranId} sort and the
+     * ten-rows-per-page size; when no start key is supplied the caller uses the
+     * inherited {@code findAll(Pageable)} to browse from the lowest key.</p>
+     */
+    Page<Transaction> findByTranIdGreaterThanEqual(String tranId, Pageable pageable);
 
     /**
      * Returns the transactions for the supplied set of card numbers, ordered by

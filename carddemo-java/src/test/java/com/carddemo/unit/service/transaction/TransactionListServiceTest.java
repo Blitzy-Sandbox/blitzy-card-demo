@@ -3,8 +3,10 @@ package com.carddemo.unit.service.transaction;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.exception.ValidationException;
@@ -156,25 +158,40 @@ class TransactionListServiceTest {
     }
 
     @Test
-    @DisplayName("An all-numeric filter passes validation, queries the store, and is echoed back")
-    void filterNumeric_passesThroughAndEchoed() {
-        when(transactionRepository.findAll(any(Pageable.class))).thenReturn(emptyPage());
+    @DisplayName("An all-numeric start key positions the browse via the GTEQ finder (10 rows, tranId ASC) and is echoed back")
+    void filterNumeric_positionsBrowseViaGteqFinder() {
+        Transaction tx2 = newTransaction("0000000000000002", ORIG_TS, "REFUND TWO", new BigDecimal("-5.50"));
+        when(transactionRepository.findByTranIdGreaterThanEqual(eq("0000000000000002"), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(tx2)));
 
-        TransactionListResponse response = service.listTransactions(0, "123");
+        TransactionListResponse response = service.listTransactions(0, "0000000000000002");
 
-        verify(transactionRepository).findAll(any(Pageable.class));
-        assertThat(response.transactionIdFilter()).isEqualTo("123");
+        // COTRN00C PROCESS-ENTER-KEY + STARTBR GTEQ: the browse is positioned at the
+        // supplied key via the GTEQ finder, NOT browsed from the start via findAll.
+        ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
+        verify(transactionRepository).findByTranIdGreaterThanEqual(eq("0000000000000002"), captor.capture());
+        verify(transactionRepository, never()).findAll(any(Pageable.class));
+
+        Pageable pageable = captor.getValue();
+        assertThat(pageable.getPageSize()).isEqualTo(10);
+        Sort.Order order = pageable.getSort().getOrderFor("tranId");
+        assertThat(order).isNotNull();
+        assertThat(order.getDirection()).isEqualTo(Sort.Direction.ASC);
+
+        assertThat(response.transactions()).hasSize(1);
+        assertThat(response.transactions().get(0).transactionId()).isEqualTo("0000000000000002");
+        assertThat(response.transactionIdFilter()).isEqualTo("0000000000000002");
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"12A", "abc"})
-    @DisplayName("A non-numeric filter is rejected before the store is queried")
+    @DisplayName("A non-numeric start key is rejected before the store is queried")
     void filterNonNumeric_throwsValidationException(String input) {
         assertThatThrownBy(() -> service.listTransactions(0, input))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage("Tran ID must be Numeric ...");
 
-        verify(transactionRepository, never()).findAll(any(Pageable.class));
+        verifyNoInteractions(transactionRepository);
     }
 
     @ParameterizedTest

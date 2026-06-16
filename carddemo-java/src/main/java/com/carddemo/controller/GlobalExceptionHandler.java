@@ -15,6 +15,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -49,6 +50,17 @@ public class GlobalExceptionHandler {
      */
     private static final String PROCESSING_SANITIZED_DETAIL =
             "An unexpected processing error occurred; please retry or contact support with your correlation ID.";
+
+    /**
+     * Client-safe detail for a request body that cannot be deserialized (HTTP 400). The raw
+     * {@link HttpMessageNotReadableException} message can echo the offending JSON fragment, parser
+     * line/column positions, and target type internals, so it is logged at debug server-side only
+     * and a stable, non-leaking detail is returned to the client (CWE-209). This keeps the
+     * malformed-body response shape identical to every other handled error (populated 400
+     * ProblemDetail) regardless of whether the target endpoint is public or protected.
+     */
+    private static final String MALFORMED_BODY_DETAIL =
+            "The request body could not be read or is not valid JSON.";
 
     @ExceptionHandler(RecordNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleRecordNotFound(RecordNotFoundException ex) {
@@ -107,6 +119,24 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ProblemDetail> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
         String detail = "Parameter '" + ex.getName() + "' has an invalid value";
         return build(HttpStatus.BAD_REQUEST, "Invalid Request Parameter", detail);
+    }
+
+    /**
+     * Translates a body that the message converter cannot deserialize (malformed/syntactically
+     * invalid JSON, wrong content type, empty required body) into a populated RFC 7807 400 response.
+     * Without this mapping the framework default yields a 400 with a {@code null} title/detail on
+     * protected endpoints, and on the public sign-in endpoint the unauthenticated {@code /error}
+     * re-dispatch surfaces a misleading empty 401 — an inconsistent contract for adversarial input.
+     * The raw exception detail is logged at debug only and never returned, keeping the response free
+     * of parser internals and offending-fragment echoes (CWE-209).
+     *
+     * @param ex the converter failure raised while reading the request body
+     * @return a 400 {@link ProblemDetail} with a stable, client-safe detail
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ProblemDetail> handleMessageNotReadable(HttpMessageNotReadableException ex) {
+        log.debug("Malformed request body rejected at API boundary: {}", ex.getMessage());
+        return build(HttpStatus.BAD_REQUEST, "Malformed Request Body", MALFORMED_BODY_DETAIL);
     }
 
     private ResponseEntity<ProblemDetail> build(HttpStatus status, String title, String detail) {

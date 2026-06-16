@@ -19,12 +19,15 @@ import java.util.List;
  * keyed-ascending browse order of the underlying store.
  *
  * <p>Callers supply a zero-based {@code page} index and an optional
- * transaction-id filter. When present, the filter must be all-numeric; it is
- * validated and then echoed back on the response. Navigation between pages is
- * driven by the {@code page} argument supplied by the caller. The result is an
- * immutable {@link TransactionListResponse} whose rows expose the transaction
- * id, an {@code MM/DD/YY} display date, the description, and the monetary amount
- * as a fixed-point {@link java.math.BigDecimal}.</p>
+ * transaction-id start key. When present, the start key must be all-numeric; it
+ * positions the browse at the first transaction whose id is greater than or equal
+ * to the key (mirroring the COBOL keyed {@code STARTBR}/{@code READNEXT} forward
+ * browse) and is echoed back on the response. When absent, the browse begins at
+ * the lowest transaction id. Navigation between pages is driven by the
+ * {@code page} argument supplied by the caller. The result is an immutable
+ * {@link TransactionListResponse} whose rows expose the transaction id, an
+ * {@code MM/DD/YY} display date, the description, and the monetary amount as a
+ * fixed-point {@link java.math.BigDecimal}.</p>
  *
  * <p>Row selection (drilling into a single transaction) is not handled here; the
  * caller invokes the transaction-detail endpoint directly, so every row is
@@ -52,9 +55,11 @@ public class TransactionListService {
      *
      * @param page                the zero-based page index; negative values are
      *                            clamped to the first page
-     * @param transactionIdFilter an optional transaction-id filter; when non-blank
-     *                            it must contain only digits. The value is echoed
-     *                            back unchanged on the response
+     * @param transactionIdFilter an optional transaction-id start key; when non-blank
+     *                            it must contain only digits and positions the browse
+     *                            at the first transaction whose id is greater than or
+     *                            equal to the key. The value is echoed back unchanged
+     *                            on the response
      * @return an immutable response carrying the one-based page number, the echoed
      *         filter, up to {@value #PAGE_SIZE} rows, and a {@code null} error message
      * @throws ValidationException if {@code transactionIdFilter} is non-blank and
@@ -68,9 +73,16 @@ public class TransactionListService {
         }
 
         int safePage = Math.max(page, 0);
+        PageRequest pageRequest =
+                PageRequest.of(safePage, PAGE_SIZE, Sort.by(Sort.Direction.ASC, "tranId"));
 
-        Page<Transaction> result = transactionRepository.findAll(
-                PageRequest.of(safePage, PAGE_SIZE, Sort.by(Sort.Direction.ASC, "tranId")));
+        // COTRN00C PROCESS-ENTER-KEY: a supplied (numeric) tran id is the browse
+        // start key (STARTBR GTEQ + READNEXT forward); a blank key browses from the
+        // lowest id. The filter is therefore applied, not merely echoed.
+        boolean hasStartKey = transactionIdFilter != null && !transactionIdFilter.isBlank();
+        Page<Transaction> result = hasStartKey
+                ? transactionRepository.findByTranIdGreaterThanEqual(transactionIdFilter, pageRequest)
+                : transactionRepository.findAll(pageRequest);
 
         List<TransactionListResponse.TransactionListItem> items = result.getContent().stream()
                 .map(tx -> new TransactionListResponse.TransactionListItem(

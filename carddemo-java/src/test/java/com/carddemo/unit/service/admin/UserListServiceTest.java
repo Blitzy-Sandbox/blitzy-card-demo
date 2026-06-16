@@ -2,6 +2,8 @@ package com.carddemo.unit.service.admin;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
@@ -137,16 +139,43 @@ class UserListServiceTest {
     }
 
     @Test
-    void listUsers_echoesUserIdFilterWithoutFiltering() {
-        List<UserSecurity> rows = List.of(user("USER0001", "Ann", "Adams", UserType.ADMIN));
+    void listUsers_withStartKey_positionsBrowseViaGteqFinder() {
+        List<UserSecurity> rows = List.of(user("USER0005", "Eve", "Evans", UserType.USER));
+        when(userSecurityRepository.findBySecUsrIdGreaterThanEqual(eq("USER0005"), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(rows, PageRequest.of(0, PAGE_SIZE), 1L));
+
+        UserListResponse response = userListService.listUsers(1, "USER0005");
+
+        // COUSR00C STARTBR GTEQ: the supplied user id positions the browse via the GTEQ
+        // finder (first id >= the key, read forward), NOT a full findAll browse.
+        assertThat(response.userIdFilter()).isEqualTo("USER0005");
+        assertThat(response.users()).hasSize(1);
+        assertThat(response.users().get(0).userId()).isEqualTo("USER0005");
+
+        verify(userSecurityRepository).findBySecUsrIdGreaterThanEqual(eq("USER0005"), pageableCaptor.capture());
+        verify(userSecurityRepository, never()).findAll(any(Pageable.class));
+        verifyNoMoreInteractions(userSecurityRepository);
+
+        Pageable captured = pageableCaptor.getValue();
+        assertThat(captured.getPageNumber()).isEqualTo(0);
+        assertThat(captured.getPageSize()).isEqualTo(PAGE_SIZE);
+        Sort.Order order = captured.getSort().getOrderFor("secUsrId");
+        assertThat(order).isNotNull();
+        assertThat(order.isAscending()).isTrue();
+    }
+
+    @Test
+    void listUsers_blankStartKey_browsesFromStartViaFindAll() {
+        List<UserSecurity> rows = List.of(user("ADMIN001", "Ann", "Adams", UserType.ADMIN));
         when(userSecurityRepository.findAll(any(Pageable.class)))
                 .thenReturn(new PageImpl<>(rows, PageRequest.of(0, PAGE_SIZE), 1L));
 
-        UserListResponse response = userListService.listUsers(1, "USER0001");
+        UserListResponse response = userListService.listUsers(1, "   ");
 
-        assertThat(response.userIdFilter()).isEqualTo("USER0001");
-
+        // A blank start key (COBOL SPACES/LOW-VALUES) browses from the lowest key via findAll.
+        assertThat(response.userIdFilter()).isEqualTo("   ");
         verify(userSecurityRepository).findAll(any(Pageable.class));
+        verify(userSecurityRepository, never()).findBySecUsrIdGreaterThanEqual(any(), any(Pageable.class));
         verifyNoMoreInteractions(userSecurityRepository);
     }
 
