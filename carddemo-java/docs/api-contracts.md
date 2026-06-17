@@ -325,12 +325,22 @@ the client navigating to the corresponding REST endpoint.
 
 | JSON field | COBOL field | Type | Notes |
 | :-- | :-- | :-- | :-- |
-| `menuType` | program | string | `MAIN` (10 options) or `ADMIN` (4 options). |
-| `options` | `OPTN001O`–`OPTN012O` | array of `MenuOption` | Active options only. |
-| `options[].optionNumber` | line index | string(2) | Two-digit option key (`OPTIONI` selector). |
-| `options[].label` | `OPTNnnnO` | string(40) | Display text. |
-| `options[].targetTransaction` | menu table | string(4) | Originating CICS tran (e.g. `CAVW`). |
-| `options[].targetPath` | derived | string | REST path the option routes to. |
+| `options` | `OPTN001O`–`OPTN012O` | array of `MenuOption` | Active options only — 10 for the main menu, 4 for the admin menu. |
+| `selectedOption` | `OPTIONI` | string \| null | Echoed selection; `null` on a plain `GET` (no option was submitted). |
+| `errorMessage` | message line | string \| null | Validation/error text; `null` on success. |
+
+Each element of `options` is a `MenuOption`:
+
+| JSON field | COBOL field | Type | Notes |
+| :-- | :-- | :-- | :-- |
+| `optionNumber` | line index | integer | One-based option number (`1`–`10` for main, `1`–`4` for admin). |
+| `optionName` | `OPTNnnnO` | string(40) | Display text (e.g. `Account View`). |
+| `programName` | menu table | string(8) | Originating COBOL program for the option (e.g. `COACTVWC`). |
+| `userType` | menu table | string (`ADMIN`/`USER`) \| null | Per-option role gate. The main-menu options carry `USER`; the admin-menu options are `null` because the `COADM02Y` table has no per-option user-type column. |
+
+> There is **no** top-level `menuType` field, and `MenuOption` has **no** `label`, `targetTransaction`,
+> or `targetPath` fields. The client derives navigation from `programName` (the option's originating
+> program); the admin route is gated as a whole by `ADMIN` role rather than per option.
 
 **Errors:** `401` / `403` per role.
 
@@ -404,7 +414,7 @@ the BMS field length exactly. Component order below matches the JSON wire order.
 | :-- | :-- | :-- | :-: | :-: | :-- |
 | `version` | (record image) | integer (`Long`) | — | **yes** (`@NotNull`) | Optimistic-lock token echoed from the last read; compared to `Account.version`. |
 | `accountId` | `ACCTSID` | string | 11 | **yes** (`@NotBlank`, `\d{1,11}`) | Must equal the path `{id}` numerically (see above). |
-| `accountStatus` | `ACSTTUS` | string | 1 | no | |
+| `accountStatus` | `ACSTTUS` | string | 1 | **yes** (business rule) | Enforced by `COACTUPC`'s `1200-EDIT-MAP-INPUTS` edit, not by a bean-validation `@NotBlank`. Omitting it yields `400 "Account Status must be supplied."` |
 | `openYear` | `OPNYEAR` | string | 4 | no | Account open-date year part. |
 | `openMonth` | `OPNMON` | string | 2 | no | Account open-date month part. |
 | `openDay` | `OPNDAY` | string | 2 | no | Account open-date day part. |
@@ -488,6 +498,10 @@ Pagination envelope per [§1.5](#15-pagination); `pageNumber` corresponds to `PA
 #### `GET /api/cards/{cardNum}` — Card detail (`COCRDSL`)
 
 - **Auth:** USER. **Path var:** `cardNum` = `CARDSIDI`, `PIC X(16)`.
+- **Query (required):** `accountId` — the 11-digit owning account number (`ACCTSIDI`). Although it is
+  bound as an optional Spring `@RequestParam`, `COCRDSLC`'s input edit requires it: omitting it returns
+  `400 "Account number not provided"`, and a non-numeric/zero value returns `400` with the COBOL
+  filter-edit message. Example: `GET /api/cards/0500024453765740?accountId=00000000050`.
 
 **Response `200` — `CardDetailResponse`**
 
@@ -495,36 +509,57 @@ Pagination envelope per [§1.5](#15-pagination); `pageNumber` corresponds to `PA
 | :-- | :-- | :-- | :-: | :-- |
 | `accountId` | `ACCTSIDI` | string | 11 | Owning account. |
 | `cardNumber` | `CARDSIDI` | string | 16 | |
-| `cardholderName` | `CRDNAMEI` | string | 50 | Embossed name. |
+| `nameOnCard` | `CRDNAMEI` | string | 50 | Embossed name. |
 | `cardStatus` | `CRDSTCDI` | string | 1 | |
-| `expiryMonth` | `EXPMONI` | string | 2 | |
-| `expiryYear` | `EXPYEARI` | string | 4 | |
+| `expirationMonth` | `EXPMONI` | string | 2 | |
+| `expirationYear` | `EXPYEARI` | string | 4 | |
+| `infoMessage` | message line | string \| null | Operator confirmation text; `null` on a successful read. |
+| `errorMessage` | message line | string \| null | Validation/error text; `null` on success. |
 | `version` | (record image) | integer (`Long`) | — | Optimistic-lock token echoed from this read (the Java equivalent of the CICS `READ UPDATE` before-image). Supply it on `PUT` and re-fetch it to recover from a `409` ([§1.8](#18-optimistic-concurrency)). Carried on this read only; the update response (`CardUpdateResponse`) does not echo it. |
 
-**Errors:** `404` `RECORD_NOT_FOUND`; `401`/`403`.
+**Errors:** `400` (missing/invalid `accountId` — e.g. `"Account number not provided"`);
+`404` `RECORD_NOT_FOUND`; `401`/`403`.
 
 #### `PUT /api/cards/{cardNum}` — Card update (`COCRDUP`)
 
 - **Auth:** USER. **Semantics:** **`@Version`** optimistic locking
   (see [§1.8](#18-optimistic-concurrency)).
 
-**Request — `CardUpdateRequest`** (detail fields as inputs; `COCRDUP` adds expiry day)
+**Request — `CardUpdateRequest`** (detail fields as inputs; `COCRDUP` adds expiry day). The request
+identifies the card by **both** the path variable and a matching `cardNumber` body field; the body
+must also supply the owning `accountId`. A `cardNumber` that does not match the path `{cardNum}` is
+rejected with `400`.
 
 | JSON field | COBOL field | Type | Length | Required | Notes |
 | :-- | :-- | :-- | :-: | :-: | :-- |
 | `version` | (record image) | integer | — | yes | Optimistic-lock token. |
+| `accountId` | `ACCTSIDI` | string | 11 | yes | Owning account number (`\d{1,11}`). |
+| `cardNumber` | `CARDSIDI` | string | 16 | yes | Must equal the path `{cardNum}` (`\d{1,16}`). |
 | `cardholderName` | `CRDNAMEI` | string | 50 | yes | |
-| `cardStatus` | `CRDSTCDI` | string | 1 | yes | |
-| `expiryMonth` | `EXPMONI` | string | 2 | yes | |
+| `cardStatus` | `CRDSTCDI` | string | 1 | yes | `Y` or `N`. |
+| `expiryMonth` | `EXPMONI` | string | 2 | yes | `01`–`12`. |
 | `expiryYear` | `EXPYEARI` | string | 4 | yes | |
-| `expiryDay` | `EXPDAYI` | string | 2 | yes | Present only on the update screen. |
+| `expiryDay` | `EXPDAYI` | string | 2 | no | Optional (present only on the update screen). |
 
-**Response `200`** — `CardUpdateResponse` (the updated card detail). Per
-[§1.8](#18-optimistic-concurrency) this update response does **not** echo the `version`
+**Response `200` — `CardUpdateResponse`.** Carries the updated card detail plus the operator-message
+fields. Per [§1.8](#18-optimistic-concurrency) this update response does **not** echo the `version`
 field; clients re-fetch the current version via `GET /api/cards/{cardNum}`.
 
-**Errors:** `400` validation; `404` `RECORD_NOT_FOUND`; `409` `CONCURRENT_MODIFICATION`;
-`401`/`403`.
+| JSON field | COBOL field | Type | Length | Notes |
+| :-- | :-- | :-- | :-: | :-- |
+| `accountId` | `ACCTSIDI` | string | 11 | |
+| `cardNumber` | `CARDSIDI` | string | 16 | |
+| `nameOnCard` | `CRDNAMEI` | string | 50 | |
+| `cardStatus` | `CRDSTCDI` | string | 1 | |
+| `expirationMonth` | `EXPMONI` | string | 2 | |
+| `expirationYear` | `EXPYEARI` | string | 4 | |
+| `expirationDay` | `EXPDAYI` | string | 2 | |
+| `infoMessage` | message line | string \| null | Confirmation text (e.g. `"No change detected with respect to values fetched."`). |
+| `errorMessage` | message line | string \| null | Validation/error text; `null` on success. |
+
+**Errors:** `400` validation (includes a body that omits the required `accountId`/`cardNumber`, or a
+`cardNumber` that does not match the path); `404` `RECORD_NOT_FOUND`; `409`
+`CONCURRENT_MODIFICATION` (stale `version`); `401`/`403`.
 
 ---
 
@@ -721,7 +756,7 @@ Administrative user CRUD. **All endpoints require role `ADMIN`.** The `userId` p
 
 #### `POST /api/admin/users` — Add user (`COUSR01`)
 
-**Request — `UserCreateRequest`**
+**Request — `UserAddRequest`**
 
 | JSON field | COBOL field | Type | Length | Required | Notes |
 | :-- | :-- | :-- | :-: | :-: | :-- |
@@ -731,20 +766,33 @@ Administrative user CRUD. **All endpoints require role `ADMIN`.** The `userId` p
 | `password` | `PASSWDI` | string | 8 | yes | BCrypt-hashed at rest; never returned. |
 | `userType` | `USRTYPEI` | string | 1 | yes | `A` or `U`. |
 
-**Response `201` — `UserResponse`** (`userId`, `firstName`, `lastName`, `userType` — no password).
+**Response `201` — `UserResponse`** (shape defined below; no password is ever returned).
 
 #### `PUT /api/admin/users/{id}` — Update user (`COUSR02`)
 
-**Request — `UserUpdateRequest`** (keyed by path `id` = `USRIDINI`)
+**Request — `UserUpdateRequest`** (the user is identified by the path `id` = `USRIDINI`; the body also
+carries a required `userId` field that names the same user)
 
 | JSON field | COBOL field | Type | Length | Required | Notes |
 | :-- | :-- | :-- | :-: | :-: | :-- |
+| `userId` | `USRIDINI` | string | 8 | yes | Target user id; mirrors the path `{id}`. |
 | `firstName` | `FNAMEI` | string | 20 | yes | |
 | `lastName` | `LNAMEI` | string | 20 | yes | |
-| `password` | `PASSWDI` | string | 8 | no | Re-hashed if supplied. |
+| `password` | `PASSWDI` | string | 8 | no | Re-hashed if supplied; leave blank to keep the existing password. |
 | `userType` | `USRTYPEI` | string | 1 | yes | |
 
-**Response `200` — `UserResponse`.**
+**Response `200` — `UserResponse`** (shape defined below).
+
+**`UserResponse` shape** — returned by both `POST` and `PUT`; the password is **never** included:
+
+| JSON field | COBOL field | Type | Length | Notes |
+| :-- | :-- | :-- | :-: | :-- |
+| `userId` | `USERIDI` | string | 8 | |
+| `firstName` | `FNAMEI` | string | 20 | |
+| `lastName` | `LNAMEI` | string | 20 | |
+| `userType` | `USRTYPEI` | string (`ADMIN`/`USER`) | — | Serialized as the enum name. |
+| `message` | message line | string \| null | Operator confirmation (e.g. `"User … has been added ..."` / `"… has been updated ..."`). |
+| `errorMessage` | message line | string \| null | Validation/error text; `null` on success. |
 
 #### `DELETE /api/admin/users/{id}` — Delete user (`COUSR03`)
 

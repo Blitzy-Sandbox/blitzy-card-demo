@@ -146,8 +146,8 @@ _4,236 lines · 85 paragraphs/sections · 100% mapped_
 | `COACTUPC` | `1260-EDIT-US-PHONE-NUM-EXIT` | `ValidationLookupService` | `isValidAreaCode() [return]` | PERFORM THRU exit target for 1260-EDIT-US-PHONE-NUM → structured method return (no fall-through), AAP §0.8.3 |
 | `COACTUPC` | `1265-EDIT-US-SSN` | `AccountUpdateService` | `validateSsn()` | US SSN edit → service field validation (@Valid / Bean Validation) |
 | `COACTUPC` | `1265-EDIT-US-SSN-EXIT` | `AccountUpdateService` | `validateSsn() [return]` | PERFORM THRU exit target for 1265-EDIT-US-SSN → structured method return (no fall-through), AAP §0.8.3 |
-| `COACTUPC` | `1270-EDIT-US-STATE-CD` | `ValidationLookupService` | `isValidState()` | US state-code edit → ValidationLookupService (us-state-codes.json) |
-| `COACTUPC` | `1270-EDIT-US-STATE-CD-EXIT` | `ValidationLookupService` | `isValidState() [return]` | PERFORM THRU exit target for 1270-EDIT-US-STATE-CD → structured method return (no fall-through), AAP §0.8.3 |
+| `COACTUPC` | `1270-EDIT-US-STATE-CD` | `ValidationLookupService` | `isValidStateCode()` | US state-code edit → ValidationLookupService (us-state-codes.json) |
+| `COACTUPC` | `1270-EDIT-US-STATE-CD-EXIT` | `ValidationLookupService` | `isValidStateCode() [return]` | PERFORM THRU exit target for 1270-EDIT-US-STATE-CD → structured method return (no fall-through), AAP §0.8.3 |
 | `COACTUPC` | `1275-EDIT-FICO-SCORE` | `AccountUpdateService` | `validateFicoScore()` | FICO range edit (300-850) → service field validation |
 | `COACTUPC` | `1275-EDIT-FICO-SCORE-EXIT` | `AccountUpdateService` | `validateFicoScore() [return]` | PERFORM THRU exit target for 1275-EDIT-FICO-SCORE → structured method return (no fall-through), AAP §0.8.3 |
 | `COACTUPC` | `1280-EDIT-US-STATE-ZIP-CD` | `ValidationLookupService` | `isValidStateZip()` | State+ZIP prefix edit → ValidationLookupService (state-zip-prefixes.json) |
@@ -251,9 +251,9 @@ _1,459 lines · 39 paragraphs/sections · 100% mapped_
 
 | COBOL Program | Paragraph/Section | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `COCRDLIC` | `0000-MAIN` | `CardListService` | `listCards()` | Program entry; CICS pseudo-conversational dispatch → CardController delegates to CardListService.listCards() |
+| `COCRDLIC` | `0000-MAIN` | `CardListService` | `getCardList()` | Program entry; CICS pseudo-conversational dispatch → CardController delegates to CardListService.getCardList() |
 | `COCRDLIC` | `COMMON-RETURN` | `CardListService` | `(common return)` | EXEC CICS RETURN / common exit → HTTP response return (stateless); no fall-through (AAP §0.8.3) |
-| `COCRDLIC` | `0000-MAIN-EXIT` | `CardListService` | `listCards() [return]` | PERFORM THRU exit target for 0000-MAIN → structured method return (no fall-through), AAP §0.8.3 |
+| `COCRDLIC` | `0000-MAIN-EXIT` | `CardListService` | `getCardList() [return]` | PERFORM THRU exit target for 0000-MAIN → structured method return (no fall-through), AAP §0.8.3 |
 | `COCRDLIC` | `1000-SEND-MAP` | `CardController` | `buildResponse()` | SEND MAP (BMS 3270 output) → response DTO assembly returned by controller (DTO pattern) |
 | `COCRDLIC` | `1000-SEND-MAP-EXIT` | `CardController` | `buildResponse() [return]` | PERFORM THRU exit target for 1000-SEND-MAP → structured method return (no fall-through), AAP §0.8.3 |
 | `COCRDLIC` | `1100-SCREEN-INIT` | `CardListService` | `prepareView()` | Screen field/attribute init (BMS attrs) → response DTO field defaults + display flags |
@@ -296,9 +296,9 @@ _941 lines · 34 paragraphs/sections · 100% mapped_
 
 | COBOL Program | Paragraph/Section | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `COACTVWC` | `0000-MAIN` | `AccountViewService` | `viewAccount()` | Program entry; CICS pseudo-conversational dispatch → AccountController delegates to AccountViewService.viewAccount() |
+| `COACTVWC` | `0000-MAIN` | `AccountViewService` | `getAccountView()` | Program entry; CICS pseudo-conversational dispatch → AccountController delegates to AccountViewService.getAccountView() |
 | `COACTVWC` | `COMMON-RETURN` | `AccountViewService` | `(common return)` | EXEC CICS RETURN / common exit → HTTP response return (stateless); no fall-through (AAP §0.8.3) |
-| `COACTVWC` | `0000-MAIN-EXIT` | `AccountViewService` | `viewAccount() [return]` | PERFORM THRU exit target for 0000-MAIN → structured method return (no fall-through), AAP §0.8.3 |
+| `COACTVWC` | `0000-MAIN-EXIT` | `AccountViewService` | `getAccountView() [return]` | PERFORM THRU exit target for 0000-MAIN → structured method return (no fall-through), AAP §0.8.3 |
 | `COACTVWC` | `1000-SEND-MAP` | `AccountController` | `buildResponse()` | SEND MAP (BMS 3270 output) → response DTO assembly returned by controller (DTO pattern) |
 | `COACTVWC` | `1000-SEND-MAP-EXIT` | `AccountController` | `buildResponse() [return]` | PERFORM THRU exit target for 1000-SEND-MAP → structured method return (no fall-through), AAP §0.8.3 |
 | `COACTVWC` | `1100-SCREEN-INIT` | `AccountViewService` | `prepareView()` | Screen field/attribute init (BMS attrs) → response DTO field defaults + display flags |
@@ -460,8 +460,8 @@ _572 lines · 16 paragraphs/sections · 100% mapped_
 
 | COBOL Program | Paragraph/Section | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `COBIL00C` | `MAIN-PARA` | `BillPaymentService` | `payBill()` | Program entry; CICS pseudo-conversational dispatch → BillingController delegates to BillPaymentService.payBill() |
-| `COBIL00C` | `PROCESS-ENTER-KEY` | `BillPaymentService` | `payBill()` | ENTER-key business action → primary service method (PF-key/AID routing → REST endpoint) |
+| `COBIL00C` | `MAIN-PARA` | `BillPaymentService` | `pay()` | Program entry; CICS pseudo-conversational dispatch → BillingController delegates to BillPaymentService.pay() |
+| `COBIL00C` | `PROCESS-ENTER-KEY` | `BillPaymentService` | `pay()` | ENTER-key business action → primary service method (PF-key/AID routing → REST endpoint) |
 | `COBIL00C` | `GET-CURRENT-TIMESTAMP` | `BillPaymentService` | `currentTimestamp()` | Timestamp fetch → java.time.LocalDateTime / Instant |
 | `COBIL00C` | `RETURN-TO-PREV-SCREEN` | `BillingController` | `navigate()` | CICS XCTL/RETURN screen navigation → REST routing (caller selects next endpoint); stateless |
 | `COBIL00C` | `SEND-BILLPAY-SCREEN` | `BillingController` | `buildResponse()` | SEND MAP (BMS 3270 output) → response DTO assembly returned by controller (DTO pattern) |
@@ -516,8 +516,8 @@ _330 lines · 9 paragraphs/sections · 100% mapped_
 
 | COBOL Program | Paragraph/Section | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `COTRN01C` | `MAIN-PARA` | `TransactionDetailService` | `getTransactionDetail()` | Program entry; CICS pseudo-conversational dispatch → TransactionController delegates to TransactionDetailService.getTransactionDetail() |
-| `COTRN01C` | `PROCESS-ENTER-KEY` | `TransactionDetailService` | `getTransactionDetail()` | ENTER-key business action → primary service method (PF-key/AID routing → REST endpoint) |
+| `COTRN01C` | `MAIN-PARA` | `TransactionDetailService` | `getTransaction()` | Program entry; CICS pseudo-conversational dispatch → TransactionController delegates to TransactionDetailService.getTransaction() |
+| `COTRN01C` | `PROCESS-ENTER-KEY` | `TransactionDetailService` | `getTransaction()` | ENTER-key business action → primary service method (PF-key/AID routing → REST endpoint) |
 | `COTRN01C` | `RETURN-TO-PREV-SCREEN` | `TransactionController` | `navigate()` | CICS XCTL/RETURN screen navigation → REST routing (caller selects next endpoint); stateless |
 | `COTRN01C` | `SEND-TRNVIEW-SCREEN` | `TransactionController` | `buildResponse()` | SEND MAP (BMS 3270 output) → response DTO assembly returned by controller (DTO pattern) |
 | `COTRN01C` | `RECEIVE-TRNVIEW-SCREEN` | `TransactionController` | `bindRequest()` | RECEIVE MAP (BMS 3270 input) → request DTO binding (@RequestBody / @Valid) |
@@ -546,26 +546,26 @@ _282 lines · 7 paragraphs/sections · 100% mapped_
 
 | COBOL Program | Paragraph/Section | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `COMEN01C` | `MAIN-PARA` | `MainMenuService` | `getMainMenu()` | Program entry; CICS pseudo-conversational dispatch → MenuController delegates to MainMenuService.getMainMenu() |
-| `COMEN01C` | `PROCESS-ENTER-KEY` | `MainMenuService` | `getMainMenu()` | ENTER-key business action → primary service method (PF-key/AID routing → REST endpoint) |
+| `COMEN01C` | `MAIN-PARA` | `MainMenuService` | `getMenuOptions()` | Program entry; CICS pseudo-conversational dispatch → MenuController delegates to MainMenuService.getMenuOptions() |
+| `COMEN01C` | `PROCESS-ENTER-KEY` | `MainMenuService` | `getMenuOptions()` | ENTER-key business action → primary service method (PF-key/AID routing → REST endpoint) |
 | `COMEN01C` | `RETURN-TO-SIGNON-SCREEN` | `MenuController` | `navigate()` | CICS XCTL/RETURN screen navigation → REST routing (caller selects next endpoint); stateless |
 | `COMEN01C` | `SEND-MENU-SCREEN` | `MenuController` | `buildResponse()` | SEND MAP (BMS 3270 output) → response DTO assembly returned by controller (DTO pattern) |
 | `COMEN01C` | `RECEIVE-MENU-SCREEN` | `MenuController` | `bindRequest()` | RECEIVE MAP (BMS 3270 input) → request DTO binding (@RequestBody / @Valid) |
 | `COMEN01C` | `POPULATE-HEADER-INFO` | `MenuController` | `populateHeader()` | Standard screen header (title/date/time) → common response header DTO (COTTL01Y/CSDAT01Y) |
-| `COMEN01C` | `BUILD-MENU-OPTIONS` | `MainMenuService` | `buildMenuOptions()` | Build menu option table (COMEN02Y/COADM02Y) → List<MenuOption> DTO |
+| `COMEN01C` | `BUILD-MENU-OPTIONS` | `MainMenuService` | `getMenuOptions()` | Build menu option table (COMEN02Y/COADM02Y) → List<MenuOption> DTO |
 
 #### `COADM01C` — Admin menu - 4-option routing  
 _268 lines · 7 paragraphs/sections · 100% mapped_
 
 | COBOL Program | Paragraph/Section | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `COADM01C` | `MAIN-PARA` | `AdminMenuService` | `getAdminMenu()` | Program entry; CICS pseudo-conversational dispatch → MenuController delegates to AdminMenuService.getAdminMenu() |
-| `COADM01C` | `PROCESS-ENTER-KEY` | `AdminMenuService` | `getAdminMenu()` | ENTER-key business action → primary service method (PF-key/AID routing → REST endpoint) |
+| `COADM01C` | `MAIN-PARA` | `AdminMenuService` | `getMenuOptions()` | Program entry; CICS pseudo-conversational dispatch → MenuController delegates to AdminMenuService.getMenuOptions() |
+| `COADM01C` | `PROCESS-ENTER-KEY` | `AdminMenuService` | `getMenuOptions()` | ENTER-key business action → primary service method (PF-key/AID routing → REST endpoint) |
 | `COADM01C` | `RETURN-TO-SIGNON-SCREEN` | `MenuController` | `navigate()` | CICS XCTL/RETURN screen navigation → REST routing (caller selects next endpoint); stateless |
 | `COADM01C` | `SEND-MENU-SCREEN` | `MenuController` | `buildResponse()` | SEND MAP (BMS 3270 output) → response DTO assembly returned by controller (DTO pattern) |
 | `COADM01C` | `RECEIVE-MENU-SCREEN` | `MenuController` | `bindRequest()` | RECEIVE MAP (BMS 3270 input) → request DTO binding (@RequestBody / @Valid) |
 | `COADM01C` | `POPULATE-HEADER-INFO` | `MenuController` | `populateHeader()` | Standard screen header (title/date/time) → common response header DTO (COTTL01Y/CSDAT01Y) |
-| `COADM01C` | `BUILD-MENU-OPTIONS` | `AdminMenuService` | `buildMenuOptions()` | Build menu option table (COMEN02Y/COADM02Y) → List<MenuOption> DTO |
+| `COADM01C` | `BUILD-MENU-OPTIONS` | `AdminMenuService` | `getMenuOptions()` | Build menu option table (COMEN02Y/COADM02Y) → List<MenuOption> DTO |
 
 #### `COSGN00C` — Sign-on / authentication entry point  
 _260 lines · 6 paragraphs/sections · 100% mapped_
@@ -660,7 +660,7 @@ _652 lines · 22 paragraphs/sections · 100% mapped_
 | `CBACT04C` | `1110-GET-XREF-DATA` | `CardCrossReferenceRepository` | `findById()` | Account/XREF keyed lookup → repository read |
 | `CBACT04C` | `1200-GET-INTEREST-RATE` | `DisclosureGroupRepository` | `findById()` | Disclosure-group rate lookup with DEFAULT fallback → DisclosureGroupRepository (composite key) |
 | `CBACT04C` | `1200-A-GET-DEFAULT-INT-RATE` | `DisclosureGroupRepository` | `findById()` | Disclosure-group rate lookup with DEFAULT fallback → DisclosureGroupRepository (composite key) |
-| `CBACT04C` | `1300-COMPUTE-INTEREST` | `InterestCalculationProcessor` | `computeInterest()` | COMPUTE WS-MONTHLY-INT=(TRAN-CAT-BAL*DIS-INT-RATE)/1200 → BigDecimal.divide(HALF_EVEN) (AAP §0.8.2) |
+| `CBACT04C` | `1300-COMPUTE-INTEREST` | `InterestCalculationProcessor` | `process()` | COMPUTE WS-MONTHLY-INT=(TRAN-CAT-BAL*DIS-INT-RATE)/1200 → BigDecimal.divide(HALF_EVEN) (AAP §0.8.2) |
 | `CBACT04C` | `1300-B-WRITE-TX` | `TransactionWriter` | `write()` | Write interest transaction → TransactionWriter |
 | `CBACT04C` | `1400-COMPUTE-FEES` | `InterestCalculationProcessor` | `computeFees()` | Fee computation → BigDecimal arithmetic (scale preserved) |
 | `CBACT04C` | `9000-TCATBALF-CLOSE` | `InterestCalculationJob` | `closeStep()` | CLOSE (9000-TCATBALF-CLOSE) → Spring Batch step ItemStream lifecycle (BatchConfig); dataset via TransactionCategoryBalanceRepository |
@@ -822,8 +822,8 @@ Record layouts, the COMMAREA, lookup tables and helper structures from `app/cpy/
 | `CVCRD01Y.cpy` | Card record descriptor | `Card` | `model.entity` | Descriptor folded into `Card` entity |
 | `COCOM01Y.cpy` | `CARDDEMO-COMMAREA` central session state | `CommArea` | `model.dto` | Stateless request/response DTO + JWT claims (AAP §0.1.1) |
 | `CSUSR01Y.cpy` | User security record (80B); `SEC-USR-PWD X(08)` plaintext | `UserSecurity` | `model.entity` | Plaintext password → **BCrypt** (constraint C-003, AAP §0.8.1) |
-| `COMEN02Y.cpy` | Main menu option table (10 entries) | `MenuOption` | `model.dto` | Consumed by `MainMenuService.buildMenuOptions()` |
-| `COADM02Y.cpy` | Admin menu option table (4 entries) | `MenuOption` | `model.dto` | Consumed by `AdminMenuService.buildMenuOptions()` |
+| `COMEN02Y.cpy` | Main menu option table (10 entries) | `MenuOption` | `model.dto` | Consumed by `MainMenuService.getMenuOptions()` |
+| `COADM02Y.cpy` | Admin menu option table (4 entries) | `MenuOption` | `model.dto` | Consumed by `AdminMenuService.getMenuOptions()` |
 | `CSLKPCDY.cpy` | Validation lookup: NANPA area codes, state codes, ZIP prefixes | `ValidationLookupService` | `service.shared` | Backed by `validation/*.json` reference data |
 | `CSUTLDPY.cpy` | Date validation parameters | `DateValidationService` | `service.shared` | Parameter structure for date validation |
 | `CSUTLDWY.cpy` | Date validation work area | `DateValidationService` | `service.shared` | Work area → method-local state |
@@ -887,24 +887,24 @@ For each major Java component, the originating COBOL program/paragraph(s). This 
 | Java Class.Method | Originating COBOL | Notes |
 |---|---|---|
 | `AuthenticationService.authenticate()` | `COSGN00C.PROCESS-ENTER-KEY / READ-USER-SEC-FILE` | USRSEC lookup + BCrypt + JWT; upper-cases both id and password (seed-hash dependency, D-017); records `carddemo.auth.attempts` |
-| `AccountViewService.viewAccount()` | `COACTVWC.9000-READ-ACCT / 9300-GETACCTDATA-BYACCT / 9400-GETCUSTDATA-BYCUST` | ACCTDAT+CUSTDAT+CXACAIX join |
+| `AccountViewService.getAccountView()` | `COACTVWC.9000-READ-ACCT / 9300-GETACCTDATA-BYACCT / 9400-GETCUSTDATA-BYCUST` | ACCTDAT+CUSTDAT+CXACAIX join |
 | `AccountUpdateService.updateAccount()` | `COACTUPC.9600-WRITE-PROCESSING / 2000-DECIDE-ACTION / 9700-CHECK-CHANGE-IN-REC` | `@Transactional` + rollback + `@Version` |
-| `CardListService.listCards()` | `COCRDLIC.9000-READ-FORWARD / 9100-READ-BACKWARDS / 9500-FILTER-RECORDS` | 7 rows/page browse |
+| `CardListService.getCardList()` | `COCRDLIC.9000-READ-FORWARD / 9100-READ-BACKWARDS / 9500-FILTER-RECORDS` | 7 rows/page browse |
 | `CardDetailService.getCardDetail()` | `COCRDSLC.9000-READ-DATA / 9100-GETCARD-BYACCTCARD` | Single keyed read |
 | `CardUpdateService.updateCard()` | `COCRDUPC.9200-WRITE-PROCESSING / 9300-CHECK-CHANGE-IN-REC` | `@Version` optimistic update |
 | `TransactionListService.listTransactions()` | `COTRN00C.PROCESS-PAGE-FORWARD / PROCESS-PAGE-BACKWARD` | 10 rows/page browse |
-| `TransactionDetailService.getTransactionDetail()` | `COTRN01C.READ-TRANSACT-FILE` | Keyed detail read |
+| `TransactionDetailService.getTransaction()` | `COTRN01C.READ-TRANSACT-FILE` | Keyed detail read |
 | `TransactionAddService.addTransaction()` | `COTRN02C.ADD-TRANSACTION / WRITE-TRANSACT-FILE` | Auto-ID generation (Factory) |
-| `BillPaymentService.payBill()` | `COBIL00C.PROCESS-ENTER-KEY / UPDATE-ACCTDAT-FILE / WRITE-TRANSACT-FILE` | Balance payment posting |
+| `BillPaymentService.pay()` | `COBIL00C.PROCESS-ENTER-KEY / UPDATE-ACCTDAT-FILE / WRITE-TRANSACT-FILE` | Balance payment posting |
 | `ReportSubmissionService.submitReport()` | `CORPT00C.SUBMIT-JOB-TO-INTRDR / WIRTE-JOBSUB-TDQ` | SQS FIFO publish (TDQ bridge) |
 | `UserListService.listUsers()` | `COUSR00C.PROCESS-PAGE-FORWARD / READNEXT-USER-SEC-FILE` | User browse |
 | `UserAddService.addUser()` | `COUSR01C.WRITE-USER-SEC-FILE` | User create |
 | `UserUpdateService.updateUser()` | `COUSR02C.UPDATE-USER-INFO / UPDATE-USER-SEC-FILE` | User update |
 | `UserDeleteService.deleteUser()` | `COUSR03C.DELETE-USER-INFO / DELETE-USER-SEC-FILE` | User delete |
-| `MainMenuService.getMainMenu()` | `COMEN01C.PROCESS-ENTER-KEY / BUILD-MENU-OPTIONS (COMEN02Y)` | 10-option routing |
-| `AdminMenuService.getAdminMenu()` | `COADM01C.PROCESS-ENTER-KEY / BUILD-MENU-OPTIONS (COADM02Y)` | 4-option routing |
+| `MainMenuService.getMenuOptions()` | `COMEN01C.PROCESS-ENTER-KEY / BUILD-MENU-OPTIONS (COMEN02Y)` | 10-option routing |
+| `AdminMenuService.getMenuOptions()` | `COADM01C.PROCESS-ENTER-KEY / BUILD-MENU-OPTIONS (COADM02Y)` | 4-option routing |
 | `DateValidationService.validateDate()` | `CSUTLDTC.A000-MAIN (CEEDAYS)` | `java.time.LocalDate` validation |
-| `ValidationLookupService.isValidState()/isValidAreaCode()/isValidStateZip()` | `CSLKPCDY copybook + COACTUPC 1260/1270/1280 edits` | NANPA / state / ZIP JSON lookups |
+| `ValidationLookupService.isValidStateCode()/isValidAreaCode()/isValidStateZip()` | `CSLKPCDY copybook + COACTUPC 1260/1270/1280 edits` | NANPA / state / ZIP JSON lookups |
 | `FileStatusMapper.toException()` | `CBTRN02C FILE STATUS clauses + 9910-DISPLAY-IO-STATUS` | FILE STATUS → exception |
 
 ### 7.2 Controllers (← BMS mapsets)
@@ -927,7 +927,7 @@ For each major Java component, the originating COBOL program/paragraph(s). This 
 | `DailyTransactionPostingJob` | `POSTTRAN.jcl + CBTRN02C` | 4-stage validation + condition codes |
 | `TransactionPostingProcessor.process()` | `CBTRN02C.1500-VALIDATE-TRAN / 2000-POST-TRANSACTION (compute)` | Pure compute → `PostingResult`; reject set `{100,101,102,103,109}`; `103` overwrites `102` (Strategy; D-016, D-018) |
 | `InterestCalculationJob` | `INTCALC.jcl + CBACT04C` | Interest formula + DEFAULT group fallback |
-| `InterestCalculationProcessor.computeInterest()` | `CBACT04C.1300-COMPUTE-INTEREST` | `BigDecimal.divide(…,HALF_EVEN)`; (TRAN-CAT-BAL×rate)/1200 |
+| `InterestCalculationProcessor.process()` | `CBACT04C.1300-COMPUTE-INTEREST` | `BigDecimal.divide(…,HALF_EVEN)`; (TRAN-CAT-BAL×rate)/1200 |
 | `CombineTransactionsJob / CombineTransactionsProcessor` | `COMBTRAN.jcl (+ CBACT01–03C, CBCUS01C readers)` | DFSORT+REPRO → `Comparator` + bulk insert |
 | `StatementGenerationJob / StatementGenerationProcessor` | `CREASTMT.JCL + CBSTM03A + CBSTM03B` | Template Method; text+HTML → S3 |
 | `TransactionReportJob / TransactionReportProcessor` | `TRANREPT.jcl + CBTRN03C` | Date-filtered report → S3 |

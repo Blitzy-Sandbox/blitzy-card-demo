@@ -129,7 +129,7 @@ export LOCALSTACK_AUTH_TOKEN=<your-localstack-token>
 docker compose up -d
 
 # 3. Run the application with the local profile
-./mvnw spring-boot:run -Dspring.profiles.active=local
+./mvnw spring-boot:run -Plocal
 
 # 4. Verify the application is healthy (expect "status":"UP")
 curl http://localhost:8080/actuator/health
@@ -146,9 +146,15 @@ curl http://localhost:8080/actuator/health
    `docker-compose up -d`. (If your `LOCALSTACK_AUTH_TOKEN` does not unlock LocalStack Pro, override the
    image with `LOCALSTACK_IMAGE=localstack/localstack:4.5.0` and `ACTIVATE_PRO=0`; the Community image
    fully covers S3/SQS/SNS.)
-3. **`./mvnw spring-boot:run -Dspring.profiles.active=local`** — starts the app on the `local` profile
+3. **`./mvnw spring-boot:run -Plocal`** — starts the app on the `local` profile
    (`application-local.yml`), pointing the datasource at the Compose PostgreSQL and the AWS clients at
-   the LocalStack endpoint (`http://localhost:4566`). Equivalent to `./mvnw spring-boot:run -Plocal`.
+   the LocalStack endpoint (`http://localhost:4566`). The `-Plocal` Maven profile sets the
+   `spring-boot.run.profiles=local` property, which the `spring-boot:run` goal passes to the forked
+   application JVM. Equivalent runtime activations are
+   `./mvnw spring-boot:run -Dspring-boot.run.profiles=local` or exporting `SPRING_PROFILES_ACTIVE=local`
+   before the run. Do **not** use `-Dspring.profiles.active=local` on the Maven CLI: because
+   `spring-boot:run` forks a separate JVM, that system property is not propagated to it, so the app
+   would start on the `default` profile (no `application-local.yml`, no datasource password) and fail.
    On startup, Flyway applies `V1`→`V2`→`V3` to provision and seed the schema before any flow runs.
 4. **`curl http://localhost:8080/actuator/health`** — a healthy response is `UP` with composite
    indicators for **PostgreSQL**, **S3** bucket accessibility, and **SQS** availability.

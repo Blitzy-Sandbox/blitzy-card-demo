@@ -615,7 +615,11 @@
           "local" profile: convenience for local runs. Activating it
           (mvn spring-boot:run -Plocal) selects the Spring "local" profile that
           maps to application-local.yml (PostgreSQL + LocalStack endpoints).
-          Runtime activation via -Dspring.profiles.active=local is equivalent.
+          Equivalent runtime activations are -Dspring-boot.run.profiles=local or
+          the SPRING_PROFILES_ACTIVE=local environment variable. A plain
+          -Dspring.profiles.active=local on the Maven CLI is NOT equivalent:
+          spring-boot:run forks a separate JVM that does not receive that
+          system property, so the app would start on the "default" profile.
         -->
         <profile>
             <id>local</id>

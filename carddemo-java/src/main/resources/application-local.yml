@@ -4,7 +4,7 @@
 # Developer / Docker-Compose overlay for the AWS CardDemo mainframe-to-cloud
 # migration (Java 25 + Spring Boot 3.5.x). This profile is activated either by:
 #   * docker-compose.yml  -> the `app` service sets SPRING_PROFILES_ACTIVE=local, or
-#   * the host command     -> ./mvnw spring-boot:run -Dspring.profiles.active=local
+#   * the host command     -> ./mvnw spring-boot:run -Plocal
 # (AAP §0.7.6).
 #
 # Exactly like application-test.yml, the FILE NAME scopes the profile: there is
@@ -18,7 +18,7 @@
 # =============================================================================
 # The defaults below use LOCALHOST so a HOST-JVM run works out of the box with no
 # exported overrides:
-#   mvn spring-boot:run -Dspring.profiles.active=local
+#   mvn spring-boot:run -Plocal
 # (PostgreSQL on localhost:5432, LocalStack on localhost:4566, Jaeger OTLP on
 # localhost:4317 — the published Compose ports). Every value is
 # ${ENV_VAR:localhost-default}, and under `docker compose up` the compose `app`
@@ -54,7 +54,7 @@ spring:
   # ===========================================================================
   # Phase 1 — Datasource (PostgreSQL 16)
   # The default targets a HOST-RUN developer (mvn spring-boot:run
-  # -Dspring.profiles.active=local): localhost:5432 works out of the box with no
+  # -Plocal): localhost:5432 works out of the box with no
   # exported overrides. Under docker-compose the `app` service injects
   # SPRING_DATASOURCE_URL pointing at the in-network `postgres` service
   # (jdbc:postgresql://postgres:5432/...), which overrides this default

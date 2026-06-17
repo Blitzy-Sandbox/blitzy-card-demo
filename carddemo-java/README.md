@@ -137,7 +137,7 @@ export POSTGRES_PASSWORD=<choose-a-local-password> \
 docker compose up -d
 
 # 4. Run the application with the local profile
-./mvnw spring-boot:run -Dspring.profiles.active=local
+./mvnw spring-boot:run -Plocal
 
 # 5. Verify the application is healthy
 curl http://localhost:8080/actuator/health
