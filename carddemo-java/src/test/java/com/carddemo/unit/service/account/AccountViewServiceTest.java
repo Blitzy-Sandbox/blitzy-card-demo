@@ -33,6 +33,7 @@ class AccountViewServiceTest {
 
   private static final Long ACCT_ID = 12345678901L;
   private static final Long CUST_ID = 123456789L;
+  private static final Long VERSION = 3L;
 
   private static final BigDecimal CREDIT_LIMIT = new BigDecimal("5000.00");
   private static final BigDecimal CASH_CREDIT_LIMIT = new BigDecimal("1000.00");
@@ -64,6 +65,7 @@ class AccountViewServiceTest {
     account.setAcctCurrCycDebit(CURRENT_CYCLE_DEBIT);
     account.setAcctAddrZip("62704");
     account.setAcctGroupId("DEFAULT");
+    account.setVersion(VERSION);
     return account;
   }
 
@@ -120,12 +122,41 @@ class AccountViewServiceTest {
     assertThat(response.currentCycleDebit()).isEqualByComparingTo(CURRENT_CYCLE_DEBIT);
     assertThat(response.currentCycleDebit().scale()).isEqualTo(2);
 
-    assertThat(response.accountId()).isEqualTo(String.valueOf(ACCT_ID));
-    assertThat(response.customerId()).isEqualTo(String.valueOf(CUST_ID));
+    // F1: accountId zero-padded to 11 digits (ACCT-ID PIC 9(11)); customerId to 9 (CUST-ID PIC 9(09)).
+    assertThat(response.accountId()).isEqualTo("12345678901");
+    assertThat(response.accountId()).hasSize(11);
+    assertThat(response.customerId()).isEqualTo("123456789");
+    assertThat(response.customerId()).hasSize(9);
     assertThat(response.ssn()).isEqualTo(SSN_FORMATTED);
     assertThat(response.city()).isEqualTo(CITY);
     assertThat(response.infoMessage()).isNull();
     assertThat(response.errorMessage()).isNull();
+    // F5: optimistic-lock version echoed from the read so the read->modify->write/retry cycle works.
+    assertThat(response.version()).isEqualTo(VERSION);
+  }
+
+  @Test
+  @DisplayName("F1: short account/customer ids are zero-padded to COBOL widths (11 / 9)")
+  void getAccountView_zeroPadsShortIds() {
+    Long shortAcct = 50L;
+    Long shortCust = 50L;
+
+    Account account = anAccount();
+    account.setAcctId(shortAcct);
+    Customer customer = aCustomer();
+    customer.setCustId(shortCust);
+    CardCrossReference xref = aXref();
+    xref.setXrefAcctId(shortAcct);
+    xref.setXrefCustId(shortCust);
+
+    when(cardCrossReferenceRepository.findByXrefAcctId(shortAcct)).thenReturn(List.of(xref));
+    when(accountRepository.findById(shortAcct)).thenReturn(Optional.of(account));
+    when(customerRepository.findById(shortCust)).thenReturn(Optional.of(customer));
+
+    AccountViewResponse response = service.getAccountView(shortAcct);
+
+    assertThat(response.accountId()).isEqualTo("00000000050");
+    assertThat(response.customerId()).isEqualTo("000000050");
   }
 
   @Test

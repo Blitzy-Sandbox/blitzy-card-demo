@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
+import org.springframework.dao.InvalidDataAccessApiUsageException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -62,6 +63,19 @@ public class GlobalExceptionHandler {
      */
     private static final String MALFORMED_BODY_DETAIL =
             "The request body could not be read or is not valid JSON.";
+
+    /**
+     * Client-safe detail for an {@link InvalidDataAccessApiUsageException} (HTTP 400). The only
+     * client-reachable trigger is an out-of-range pagination request: the Spring Data
+     * {@code PageableUtils} offset calculation ({@code page * size}) overflows
+     * {@link Integer#MAX_VALUE} on the paginated browse endpoints (cards, transactions, admin
+     * users). A client-supplied {@code page} index that large is invalid input, so it is mapped to a
+     * stable 400 rather than surfacing as an unhandled framework 500. The raw exception message is
+     * logged server-side only and never returned, keeping the response free of persistence-layer
+     * internals (CWE-209) and identical in shape to every other handled error.
+     */
+    private static final String INVALID_PARAMETER_RANGE_DETAIL =
+            "A request parameter is outside its supported range; reduce the page index and retry.";
 
     @ExceptionHandler(RecordNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleRecordNotFound(RecordNotFoundException ex) {
@@ -130,6 +144,25 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ProblemDetail> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
         String detail = "Parameter '" + ex.getName() + "' has an invalid value";
         return build(HttpStatus.BAD_REQUEST, "Invalid Request Parameter", detail);
+    }
+
+    /**
+     * Translates an {@link InvalidDataAccessApiUsageException} into a populated RFC 7807 400
+     * response. The client-reachable trigger is an out-of-range pagination request: when a
+     * client-supplied {@code page} index is large enough that {@code page * size} overflows
+     * {@link Integer#MAX_VALUE}, Spring Data's {@code PageableUtils.getOffsetAsInteger} raises this
+     * exception, which would otherwise fall through to an unhandled framework 500. Because the
+     * offending value is client-controlled input, it is mapped to a stable 400 (consistent with the
+     * other invalid-parameter responses). The raw message is logged at debug only and never
+     * returned, so no persistence-layer internals leak (CWE-209).
+     *
+     * @param ex the data-access misuse raised while building the page request
+     * @return a 400 {@link ProblemDetail} with a stable, client-safe detail
+     */
+    @ExceptionHandler(InvalidDataAccessApiUsageException.class)
+    public ResponseEntity<ProblemDetail> handleInvalidDataAccessApiUsage(InvalidDataAccessApiUsageException ex) {
+        log.debug("Invalid data-access API usage rejected at API boundary: {}", ex.getMessage());
+        return build(HttpStatus.BAD_REQUEST, "Invalid Request Parameter", INVALID_PARAMETER_RANGE_DETAIL);
     }
 
     /**

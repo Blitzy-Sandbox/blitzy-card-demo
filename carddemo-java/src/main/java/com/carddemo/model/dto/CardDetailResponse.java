@@ -27,6 +27,13 @@ package com.carddemo.model.dto;
  * @param expirationYear  four-digit expiration year ({@code COCRDSL} field {@code EXPYEAR}, {@code PIC X(4)})
  * @param infoMessage     informational message line ({@code COCRDSL} field {@code INFOMSG}, {@code PIC X(40)})
  * @param errorMessage    error message line ({@code COCRDSL} field {@code ERRMSG}, {@code PIC X(80)})
+ * @param version         JPA {@code @Version} optimistic-lock token of the card record,
+ *                        echoed from the last read (the Java equivalent of the CICS
+ *                        {@code READ UPDATE} before-image). Enables the documented
+ *                        read&rarr;modify&rarr;write cycle and {@code 409 Conflict}
+ *                        recovery via re-fetch (see {@code api-contracts.md} &sect;1.8).
+ *                        Carried only on this read response; per &sect;452 the card-update
+ *                        response intentionally does not echo {@code version}.
  */
 public record CardDetailResponse(
         String accountId,
@@ -36,5 +43,6 @@ public record CardDetailResponse(
         String expirationMonth,
         String expirationYear,
         String infoMessage,
-        String errorMessage) {
+        String errorMessage,
+        Long version) {
 }

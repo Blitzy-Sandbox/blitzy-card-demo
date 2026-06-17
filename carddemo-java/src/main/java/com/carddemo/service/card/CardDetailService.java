@@ -86,7 +86,8 @@ public class CardDetailService {
                 expiryMonth(cardRecord.getCardExpiraionDate()),
                 expiryYear(cardRecord.getCardExpiraionDate()),
                 null,
-                null);
+                null,
+                cardRecord.getVersion());
 
         LOG.info("Card detail retrieved for account {}", response.accountId());
         return response;

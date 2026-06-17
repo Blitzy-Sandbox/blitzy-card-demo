@@ -155,7 +155,7 @@ public class AccountViewService {
      */
     private static AccountViewResponse assembleResponse(Account account, Customer customer) {
         return new AccountViewResponse(
-                String.valueOf(account.getAcctId()),
+                formatAccountId(account.getAcctId()),
                 account.getAcctActiveStatus(),
                 account.getAcctOpenDate(),
                 account.getAcctCreditLimit(),
@@ -166,7 +166,7 @@ public class AccountViewService {
                 account.getAcctCurrCycCredit(),
                 account.getAcctGroupId(),
                 account.getAcctCurrCycDebit(),
-                String.valueOf(customer.getCustId()),
+                formatCustomerId(customer.getCustId()),
                 formatSsn(customer.getCustSsn()),
                 customer.getCustDobYyyyMmDd(),
                 formatFicoScore(customer.getCustFicoCreditScore()),
@@ -185,7 +185,8 @@ public class AccountViewService {
                 customer.getCustEftAccountId(),
                 customer.getCustPriCardHolderInd(),
                 null,
-                null);
+                null,
+                account.getVersion());
     }
 
     /**
@@ -213,5 +214,31 @@ public class AccountViewService {
      */
     private static String formatFicoScore(Integer ficoScore) {
         return ficoScore == null ? EMPTY : String.valueOf(ficoScore);
+    }
+
+    /**
+     * Formats the account identifier as the COBOL {@code ACCT-ID PIC 9(11)} 11-digit
+     * zero-padded display value, matching {@code COACTVWC} {@code MOVE CC-ACCT-ID TO
+     * ACCTSIDO} into the symbolic field {@code ACCTSIDO PIC X(11)}. Mirrors the account-id
+     * rendering used by the card endpoints ({@code CardService.formatAccountId}) so the same
+     * logical key is represented identically across endpoints (cross-endpoint consistency).
+     *
+     * @param accountId the account identifier, or null
+     * @return the 11-digit zero-padded id, or an empty string when {@code accountId} is null
+     */
+    private static String formatAccountId(Long accountId) {
+        return accountId == null ? EMPTY : String.format("%011d", accountId);
+    }
+
+    /**
+     * Formats the customer identifier as the COBOL {@code CUST-ID PIC 9(09)} 9-digit
+     * zero-padded display value, matching {@code COACTVWC} {@code MOVE CUST-ID TO ACSTNUMO}
+     * into the symbolic field {@code ACSTNUMO PIC X(9)}.
+     *
+     * @param customerId the customer identifier, or null
+     * @return the 9-digit zero-padded id, or an empty string when {@code customerId} is null
+     */
+    private static String formatCustomerId(Long customerId) {
+        return customerId == null ? EMPTY : String.format("%09d", customerId);
     }
 }

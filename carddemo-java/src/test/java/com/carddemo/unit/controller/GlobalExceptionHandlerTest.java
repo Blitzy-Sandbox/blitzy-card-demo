@@ -16,6 +16,7 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.InvalidDataAccessApiUsageException;
 import org.springframework.http.HttpInputMessage;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -224,6 +225,26 @@ class GlobalExceptionHandlerTest {
             // CWE-209: the populated detail must not echo the offending fragment or parser internals.
             assertThat(response.getBody().getDetail())
                     .doesNotContain("ADMIN001", "JSON parse error", "line: 1", "column");
+        }
+
+        @Test
+        @DisplayName("InvalidDataAccessApiUsageException -> populated 400, persistence internals not leaked")
+        void invalidDataAccessApiUsageMappedToBadRequest() {
+            // F7: an out-of-range pagination request (page * size > Integer.MAX_VALUE) raises this
+            // from Spring Data PageableUtils; it must map to a stable 400 rather than an unhandled 500.
+            InvalidDataAccessApiUsageException ex = new InvalidDataAccessApiUsageException(
+                    "Page offset exceeds Integer.MAX_VALUE (2147483647)");
+
+            ResponseEntity<ProblemDetail> response = handler.handleInvalidDataAccessApiUsage(ex);
+
+            assertThat(response.getStatusCode().value()).isEqualTo(HttpStatus.BAD_REQUEST.value());
+            assertThat(response.getBody()).isNotNull();
+            assertThat(response.getBody().getTitle()).isEqualTo("Invalid Request Parameter");
+            assertThat(response.getBody().getDetail())
+                    .isEqualTo("A request parameter is outside its supported range; reduce the page index and retry.");
+            // CWE-209: the populated detail must not echo the raw persistence-layer message.
+            assertThat(response.getBody().getDetail())
+                    .doesNotContain("Integer.MAX_VALUE", "Page offset", "2147483647");
         }
     }
 }

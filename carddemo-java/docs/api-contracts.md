@@ -375,6 +375,7 @@ cross-reference. The five balance/limit fields are `PIC S9(10)V99` → **`BigDec
 | `eftAccountId` | `ACSEFTC` | string | 10 | |
 | `primaryCardHolderIndicator` | `ACSPFLG` | string | 1 | |
 | `infoMessage` / `errorMessage` | `INFOMSG` / `ERRMSG` | string | — | Operator-message fields (output-only). |
+| `version` | (record image) | integer (`Long`) | — | Optimistic-lock token echoed from this read (the Java equivalent of the CICS `READ UPDATE` before-image). Supply it back on `PUT` and re-fetch it to recover from a `409` ([§1.8](#18-optimistic-concurrency)). Carried on this read only; the update response does not echo it (see [§2.3 update](#put-apiaccountsid--account-update-coactup)). |
 
 > Note: the account-**view** response (`AccountViewResponse`) aggregates dates, SSN, and phone
 > numbers into single fields (`openDate`, `ssn`, `phoneNumber1`), whereas the account-**update**
@@ -498,6 +499,7 @@ Pagination envelope per [§1.5](#15-pagination); `pageNumber` corresponds to `PA
 | `cardStatus` | `CRDSTCDI` | string | 1 | |
 | `expiryMonth` | `EXPMONI` | string | 2 | |
 | `expiryYear` | `EXPYEARI` | string | 4 | |
+| `version` | (record image) | integer (`Long`) | — | Optimistic-lock token echoed from this read (the Java equivalent of the CICS `READ UPDATE` before-image). Supply it on `PUT` and re-fetch it to recover from a `409` ([§1.8](#18-optimistic-concurrency)). Carried on this read only; the update response (`CardUpdateResponse`) does not echo it. |
 
 **Errors:** `404` `RECORD_NOT_FOUND`; `401`/`403`.
 
@@ -517,7 +519,9 @@ Pagination envelope per [§1.5](#15-pagination); `pageNumber` corresponds to `PA
 | `expiryYear` | `EXPYEARI` | string | 4 | yes | |
 | `expiryDay` | `EXPDAYI` | string | 2 | yes | Present only on the update screen. |
 
-**Response `200`** — updated `CardDetailResponse`.
+**Response `200`** — `CardUpdateResponse` (the updated card detail). Per
+[§1.8](#18-optimistic-concurrency) this update response does **not** echo the `version`
+field; clients re-fetch the current version via `GET /api/cards/{cardNum}`.
 
 **Errors:** `400` validation; `404` `RECORD_NOT_FOUND`; `409` `CONCURRENT_MODIFICATION`;
 `401`/`403`.

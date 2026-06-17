@@ -15,6 +15,14 @@ import java.math.BigDecimal;
  * every remaining field is a {@link String} to preserve the exact display
  * contract of the symbolic map. Screen-chrome fields (transaction name, titles,
  * date, time, program name) are intentionally excluded. Source commit 27d6c6f.</p>
+ *
+ * <p>The trailing {@code version} component exposes the JPA {@code @Version}
+ * optimistic-lock token of the underlying account record (the Java equivalent of the
+ * CICS {@code READ UPDATE} before-image). It is echoed from the last read so a client
+ * can complete the documented read&rarr;modify&rarr;write cycle and recover from a
+ * {@code 409 Conflict} by re-fetching the current version (see {@code api-contracts.md}
+ * &sect;1.8 / &sect;404). Only read responses carry it; per &sect;452 the update
+ * response intentionally does not echo {@code version}.</p>
  */
 public record AccountViewResponse(
         String accountId,
@@ -47,5 +55,6 @@ public record AccountViewResponse(
         String eftAccountId,
         String primaryCardHolderIndicator,
         String infoMessage,
-        String errorMessage) {
+        String errorMessage,
+        Long version) {
 }

@@ -42,6 +42,23 @@ spring:
     name: carddemo
 
   # ---------------------------------------------------------------------------
+  # Spring MVC — uniform error envelope
+  # Enable Boot's RFC 7807 ProblemDetail handling for framework-raised
+  # exceptions (405 method-not-allowed, 415 unsupported-media-type, unmapped
+  # 404, etc.) so EVERY error — framework or domain — returns the same
+  # {type,title,status,detail,instance} shape as the @RestControllerAdvice
+  # (GlobalExceptionHandler) already produces for domain/binding errors. Without
+  # this, framework exceptions fall through to Spring's default
+  # {timestamp,status,error,path} body, yielding two inconsistent envelope
+  # shapes across endpoints. The highest-precedence advice still wins for
+  # domain/binding types; this only upgrades the otherwise-default framework
+  # responses.
+  # ---------------------------------------------------------------------------
+  mvc:
+    problemdetails:
+      enabled: true
+
+  # ---------------------------------------------------------------------------
   # Phase 2 — Datasource (template)
   # Concrete endpoints are supplied by the active profile overlay. The base file
   # carries safe localhost defaults for the PostgreSQL target that re-platforms

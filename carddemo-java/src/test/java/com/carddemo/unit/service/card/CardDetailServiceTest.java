@@ -34,6 +34,8 @@ class CardDetailServiceTest {
 
   @InjectMocks private CardDetailService cardDetailService;
 
+  private static final Long CARD_VERSION = 7L;
+
   private static Card card(String cardNum, Long acctId, String name, String status, String expiry) {
     Card card = new Card();
     card.setCardNum(cardNum);
@@ -41,6 +43,7 @@ class CardDetailServiceTest {
     card.setCardEmbossedName(name);
     card.setCardActiveStatus(status);
     card.setCardExpiraionDate(expiry);
+    card.setVersion(CARD_VERSION);
     return card;
   }
 
@@ -135,6 +138,8 @@ class CardDetailServiceTest {
     assertThat(response.expirationYear()).isEqualTo("2024");
     assertThat(response.infoMessage()).isNull();
     assertThat(response.errorMessage()).isNull();
+    // F5: optimistic-lock version echoed from the card read for the read->modify->write/retry cycle.
+    assertThat(response.version()).isEqualTo(CARD_VERSION);
 
     verify(cardRepository).findById(VALID_CARD);
   }
