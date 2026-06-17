@@ -288,15 +288,21 @@ issues a JWT whose claims carry the user identity and role.
 
 | JSON field | Origin | Type | Notes |
 | :-- | :-- | :-- | :-- |
-| `token` | issued JWT | string | Bearer token for subsequent requests. |
-| `tokenType` | constant | string | `"Bearer"`. |
-| `userId` | `CDEMO-USER-ID` | string(8) | Authenticated user. |
-| `userType` | `CDEMO-USER-TYPE` | string(1) | `A` (admin) or `U` (user). |
-| `role` | derived | string | `ADMIN` or `USER`. |
-| `expiresIn` | token TTL | integer | Seconds until expiry. |
+| `token` | issued JWT | string | Bearer token for subsequent requests; `null` on failure. |
+| `userId` | `COSGN00` `USERID` / `CDEMO-USER-ID` | string(8) | Echoed authenticated user; `null` on failure. |
+| `userType` | `SEC-USR-TYPE` / `CDEMO-USER-TYPE` | enum | `"ADMIN"` or `"USER"` (serialized enum name); `null` on failure. |
+| `errorMessage` | `COSGN00` `ERRMSG` (`PIC X(78)`) | string | Generalized failure text; `null` on success. |
 
-**Errors:** `400` validation (missing user/password); `401` `UNAUTHORIZED` (unknown user or bad
-password — message generalized via `ERRMSG`).
+> The response carries exactly these four fields (`SignOnResponse`). There is no
+> `tokenType`, `role`, or `expiresIn` field; the JWT expiry is encoded inside the token's
+> `exp` claim. The `Authorization: Bearer <token>` scheme for subsequent requests is
+> described in §1.2.
+
+**Errors:** `400` `BAD_REQUEST` validation only when `userId` or `password` is blank/too long
+(bean-validation on `SignOnRequest`, both `@NotBlank @Size(max = 8)`). **All** authentication
+failures after that point — unknown user *and* wrong password alike — return a single generalized
+`401` `UNAUTHORIZED` with an identical client-safe message (no user-enumeration signal); the
+specific outcome is recorded only in server metrics/logs.
 
 ---
 
@@ -354,20 +360,26 @@ cross-reference. The five balance/limit fields are `PIC S9(10)V99` → **`BigDec
 | `currentCycleCredit` | `ACRCYCRI` | BigDecimal | scale 2 | |
 | `currentCycleDebit` | `ACRCYDBI` | BigDecimal | scale 2 | |
 | `accountGroupId` | `AADDGRPI` | string | 10 | Disclosure / add-on group. |
-| `customerId` | `ACSTNUMI` | string | 9 | `PIC 9(09)`. |
-| `customerSsn` | `ACSTSSNI` | string | 12 | Returned masked. |
-| `dateOfBirth` | `ACSTDOBI` | string (date) | 10 | |
-| `ficoScore` | `ACSTFCOI` | string | 3 | |
-| `firstName` / `middleName` / `lastName` | `ACSFNAMI` / `ACSMNAMI` / `ACSLNAMI` | string | 25 each | |
-| `addressLine1` / `addressLine2` | `ACSADL1I` / `ACSADL2I` | string | 50 each | |
-| `city` | `ACSCITYI` | string | 50 | |
-| `state` | `ACSSTTEI` | string | 2 | |
-| `zipCode` | `ACSZIPCI` | string | 5 | |
-| `country` | `ACSCTRYI` | string | 3 | |
-| `phone1` / `phone2` | `ACSPHN1I` / `ACSPHN2I` | string | 13 each | |
-| `governmentId` | `ACSGOVTI` | string | 20 | |
-| `eftAccountId` | `ACSEFTCI` | string | 10 | |
-| `primaryCardholderFlag` | `ACSPFLGI` | string | 1 | |
+| `customerId` | `ACSTNUM` | string | 9 | `PIC 9(09)`. |
+| `ssn` | `ACSTSSN` | string | — | Social-Security number (aggregate). |
+| `dateOfBirth` | `ACSTDOB` | string (date) | 10 | |
+| `ficoScore` | `ACSTFCO` | string | 3 | |
+| `firstName` / `middleName` / `lastName` | `ACSFNAM` / `ACSMNAM` / `ACSLNAM` | string | 25 each | |
+| `addressLine1` / `addressLine2` | `ACSADL1` / `ACSADL2` | string | 50 each | |
+| `city` | `ACSCITY` | string | 50 | |
+| `stateCode` | `ACSSTTE` | string | 2 | |
+| `zipCode` | `ACSZIPC` | string | 5 | |
+| `countryCode` | `ACSCTRY` | string | 3 | |
+| `phoneNumber1` / `phoneNumber2` | `ACSPHN1` / `ACSPHN2` | string | — | Aggregate phone numbers. |
+| `governmentIssuedId` | `ACSGOVT` | string | 20 | |
+| `eftAccountId` | `ACSEFTC` | string | 10 | |
+| `primaryCardHolderIndicator` | `ACSPFLG` | string | 1 | |
+| `infoMessage` / `errorMessage` | `INFOMSG` / `ERRMSG` | string | — | Operator-message fields (output-only). |
+
+> Note: the account-**view** response (`AccountViewResponse`) aggregates dates, SSN, and phone
+> numbers into single fields (`openDate`, `ssn`, `phoneNumber1`), whereas the account-**update**
+> contract below (`AccountUpdateRequest`/`AccountUpdateResponse`) keeps them as split part fields,
+> matching the distinct `COACTVW` vs `COACTUP` BMS map layouts.
 
 **Errors:** `404` `RECORD_NOT_FOUND` (account or cross-reference missing); `401`/`403`.
 
@@ -376,37 +388,79 @@ cross-reference. The five balance/limit fields are `PIC S9(10)V99` → **`BigDec
 - **Auth:** USER. **Semantics:** runs in a single **`@Transactional`** boundary that updates
   `ACCTDAT` + `CUSTDAT` atomically (the sole `SYNCPOINT ROLLBACK`); **`@Version`** optimistic
   locking applies (see [§1.8](#18-optimistic-concurrency)).
+- **Path/body consistency:** the path variable `{id}` is bound as `Long accountId` and compared
+  numerically to the body `accountId`. A mismatch (e.g. `PUT /api/accounts/111` with body
+  `accountId = "222"`) is rejected with `400` `BAD_REQUEST` before any update is attempted, so a
+  request can never update a record other than the one named in the route.
 
-**Request — `AccountUpdateRequest`** mirrors the view fields above as **inputs** and additionally
-exposes the segmented entry fields that the COBOL update screen splits out:
+**Request — `AccountUpdateRequest`.** The COBOL update map presents dates, the SSN, and phone
+numbers as **split part fields** (year/month/day; SSN area/group/serial; phone area/prefix/line);
+this contract preserves that split layout verbatim. The five monetary fields are `BigDecimal`
+(`@Digits(integer = 10, fraction = 2)`); every other field is a string whose maximum length matches
+the BMS field length exactly. Component order below matches the JSON wire order.
 
-| JSON field | COBOL field(s) | Type | Notes |
-| :-- | :-- | :-- | :-- |
-| `version` | (record image) | integer | Optimistic-lock token; required. |
-| `accountStatus` | `ACSTTUSI` | string(1) | |
-| `openDate` | `OPNYEARI`+`OPNMONI`+`OPNDAYI` | string (date) | Split `YYYY`/`MM`/`DD` → ISO date. |
-| `expirationDate` | `EXPYEARI`+`EXPMONI`+`EXPDAYI` | string (date) | |
-| `reissueDate` | `RISYEARI`+`RISMONI`+`RISDAYI` | string (date) | |
-| `creditLimit` | `ACRDLIMI` | BigDecimal scale 2 | |
-| `cashCreditLimit` | `ACSHLIMI` | BigDecimal scale 2 | |
-| `currentBalance` | `ACURBALI` | BigDecimal scale 2 | |
-| `currentCycleCredit` | `ACRCYCRI` | BigDecimal scale 2 | |
-| `currentCycleDebit` | `ACRCYDBI` | BigDecimal scale 2 | |
-| `accountGroupId` | `AADDGRPI` | string(10) | |
-| `customerId` | `ACSTNUMI` | string(9) | |
-| `ssn` | `ACTSSN1I`+`ACTSSN2I`+`ACTSSN3I` | string | Split `3`/`2`/`4` → 9-digit SSN. |
-| `dateOfBirth` | `DOBYEARI`+`DOBMONI`+`DOBDAYI` | string (date) | |
-| `ficoScore` | `ACSTFCOI` | string(3) | |
-| `firstName`/`middleName`/`lastName` | `ACSFNAMI`/`ACSMNAMI`/`ACSLNAMI` | string(25) | |
-| `addressLine1`/`addressLine2` | `ACSADL1I`/`ACSADL2I` | string(50) | |
-| `city`/`state`/`zipCode`/`country` | `ACSCITYI`/`ACSSTTEI`/`ACSZIPCI`/`ACSCTRYI` | string | 50/2/5/3 |
-| `phone1` | `ACSPH1AI`+`ACSPH1BI`+`ACSPH1CI` | string | Split area/prefix/line. |
-| `phone2` | `ACSPH2AI`+`ACSPH2BI`+`ACSPH2CI` | string | |
-| `governmentId` | `ACSGOVTI` | string(20) | |
-| `eftAccountId` | `ACSEFTCI` | string(10) | |
-| `primaryCardholderFlag` | `ACSPFLGI` | string(1) | |
+| JSON field | COBOL field | Type | Max len | Required | Notes |
+| :-- | :-- | :-- | :-: | :-: | :-- |
+| `version` | (record image) | integer (`Long`) | — | **yes** (`@NotNull`) | Optimistic-lock token echoed from the last read; compared to `Account.version`. |
+| `accountId` | `ACCTSID` | string | 11 | **yes** (`@NotBlank`, `\d{1,11}`) | Must equal the path `{id}` numerically (see above). |
+| `accountStatus` | `ACSTTUS` | string | 1 | no | |
+| `openYear` | `OPNYEAR` | string | 4 | no | Account open-date year part. |
+| `openMonth` | `OPNMON` | string | 2 | no | Account open-date month part. |
+| `openDay` | `OPNDAY` | string | 2 | no | Account open-date day part. |
+| `creditLimit` | `ACRDLIM` | BigDecimal | 10,2 | no | Scale 2. |
+| `expirationYear` | `EXPYEAR` | string | 4 | no | Card expiration-date year part. |
+| `expirationMonth` | `EXPMON` | string | 2 | no | Card expiration-date month part. |
+| `expirationDay` | `EXPDAY` | string | 2 | no | Card expiration-date day part. |
+| `cashCreditLimit` | `ACSHLIM` | BigDecimal | 10,2 | no | Scale 2. |
+| `reissueYear` | `RISYEAR` | string | 4 | no | Card reissue-date year part. |
+| `reissueMonth` | `RISMON` | string | 2 | no | Card reissue-date month part. |
+| `reissueDay` | `RISDAY` | string | 2 | no | Card reissue-date day part. |
+| `currentBalance` | `ACURBAL` | BigDecimal | 10,2 | no | Scale 2. |
+| `currentCycleCredit` | `ACRCYCR` | BigDecimal | 10,2 | no | Scale 2. |
+| `accountGroupId` | `AADDGRP` | string | 10 | no | |
+| `currentCycleDebit` | `ACRCYDB` | BigDecimal | 10,2 | no | Scale 2. |
+| `customerId` | `ACSTNUM` | string | 9 | no | |
+| `ssnPart1` | `ACTSSN1` | string | 3 | no | SSN area part. |
+| `ssnPart2` | `ACTSSN2` | string | 2 | no | SSN group part. |
+| `ssnPart3` | `ACTSSN3` | string | 4 | no | SSN serial part. |
+| `dobYear` | `DOBYEAR` | string | 4 | no | Date-of-birth year part. |
+| `dobMonth` | `DOBMON` | string | 2 | no | Date-of-birth month part. |
+| `dobDay` | `DOBDAY` | string | 2 | no | Date-of-birth day part. |
+| `ficoScore` | `ACSTFCO` | string | 3 | no | |
+| `firstName` | `ACSFNAM` | string | 25 | no | |
+| `middleName` | `ACSMNAM` | string | 25 | no | |
+| `lastName` | `ACSLNAM` | string | 25 | no | |
+| `addressLine1` | `ACSADL1` | string | 50 | no | |
+| `stateCode` | `ACSSTTE` | string | 2 | no | |
+| `addressLine2` | `ACSADL2` | string | 50 | no | |
+| `zipCode` | `ACSZIPC` | string | 5 | no | |
+| `city` | `ACSCITY` | string | 50 | no | |
+| `countryCode` | `ACSCTRY` | string | 3 | no | |
+| `phone1Area` | `ACSPH1A` | string | 3 | no | Primary phone area-code part. |
+| `phone1Prefix` | `ACSPH1B` | string | 3 | no | Primary phone prefix part. |
+| `phone1Line` | `ACSPH1C` | string | 4 | no | Primary phone line-number part. |
+| `governmentIssuedId` | `ACSGOVT` | string | 20 | no | |
+| `phone2Area` | `ACSPH2A` | string | 3 | no | Secondary phone area-code part. |
+| `phone2Prefix` | `ACSPH2B` | string | 3 | no | Secondary phone prefix part. |
+| `phone2Line` | `ACSPH2C` | string | 4 | no | Secondary phone line-number part. |
+| `eftAccountId` | `ACSEFTC` | string | 10 | no | |
+| `primaryCardHolderIndicator` | `ACSPFLG` | string | 1 | no | |
 
-**Response `200`** — updated `AccountViewResponse` (incl. incremented `version`).
+**Response `200` — `AccountUpdateResponse`.** Carries the same split account/customer field layout
+as the request (dates, SSN, and phone numbers kept as discrete parts) and additionally exposes the
+two operator-message fields `infoMessage` (confirmation) and `errorMessage` (validation feedback).
+The five monetary components are `BigDecimal` (scale 2). It does **not** echo the `version` field.
+
+| JSON field group | Fields |
+| :-- | :-- |
+| Account | `accountId`, `accountStatus`, `openYear`/`openMonth`/`openDay`, `creditLimit`, `expirationYear`/`expirationMonth`/`expirationDay`, `cashCreditLimit`, `reissueYear`/`reissueMonth`/`reissueDay`, `currentBalance`, `currentCycleCredit`, `accountGroupId`, `currentCycleDebit` |
+| Customer | `customerId`, `ssnPart1`/`ssnPart2`/`ssnPart3`, `dobYear`/`dobMonth`/`dobDay`, `ficoScore`, `firstName`/`middleName`/`lastName`, `addressLine1`/`stateCode`/`addressLine2`/`zipCode`/`city`/`countryCode`, `phone1Area`/`phone1Prefix`/`phone1Line`, `governmentIssuedId`, `phone2Area`/`phone2Prefix`/`phone2Line`, `eftAccountId`, `primaryCardHolderIndicator` |
+| Messages | `infoMessage`, `errorMessage` |
+
+**Errors:** `400` `BAD_REQUEST` (bean-validation failure, or path/body `accountId` mismatch);
+`404` `RECORD_NOT_FOUND` (account or customer missing); `409` `CONFLICT` (`version` does not match
+the persisted `Account.version` — optimistic-lock failure, see [§1.8](#18-optimistic-concurrency));
+`401`/`403` per auth.
 
 **Errors:** `400` validation; `404` `RECORD_NOT_FOUND`; `409` `CONCURRENT_MODIFICATION`
 (stale `version`); `401`/`403`.
@@ -494,19 +548,21 @@ Pagination envelope per [§1.5](#15-pagination); `pageNumber` corresponds to `PA
 
 | JSON field | COBOL field | Type | Length / scale | Notes |
 | :-- | :-- | :-- | :-- | :-- |
-| `transactionId` | `TRNIDI` | string | 16 | |
-| `cardNumber` | `CARDNUMI` | string | 16 | |
-| `transactionType` | `TTYPCDI` | string | 2 | |
-| `transactionCategory` | `TCATCDI` | string | 4 | |
-| `transactionSource` | `TRNSRCI` | string | 10 | |
-| `description` | `TDESCI` | string | 60 | Full description. |
-| `amount` | `TRNAMTI` | BigDecimal | scale 2 | `TRAN-AMT`. |
-| `originalDate` | `TORIGDTI` | string (date) | 10 | |
-| `processedDate` | `TPROCDTI` | string (date) | 10 | |
-| `merchantId` | `MIDI` | string | 9 | |
-| `merchantName` | `MNAMEI` | string | 30 | |
-| `merchantCity` | `MCITYI` | string | 25 | |
-| `merchantZip` | `MZIPI` | string | 10 | |
+| `transactionIdInput` | `TRNIDIN` | string | 16 | Echoed lookup key from the request. |
+| `transactionId` | `TRNID` | string | 16 | Resolved transaction id. |
+| `cardNumber` | `CARDNUM` | string | 16 | |
+| `typeCode` | `TTYPCD` | string | 2 | |
+| `categoryCode` | `TCATCD` | string | 4 | |
+| `source` | `TRNSRC` | string | 10 | |
+| `description` | `TDESC` | string | 60 | Full description. |
+| `amount` | `TRNAMT` | BigDecimal | scale 2 | `TRAN-AMT`. |
+| `originDate` | `TORIGDT` | string (date) | 10 | |
+| `processDate` | `TPROCDT` | string (date) | 10 | |
+| `merchantId` | `MID` | string | 9 | |
+| `merchantName` | `MNAME` | string | 30 | |
+| `merchantCity` | `MCITY` | string | 25 | |
+| `merchantZip` | `MZIP` | string | 10 | |
+| `errorMessage` | `ERRMSG` | string | 78 | User-facing error text. |
 
 **Errors:** `404` `RECORD_NOT_FOUND`; `401`/`403`.
 
@@ -516,28 +572,36 @@ Pagination envelope per [§1.5](#15-pagination); `pageNumber` corresponds to `PA
   increment), reproducing `COTRN02C`; the COBOL confirmation field (`CONFIRMI`) maps to a request
   flag rather than a second screen round-trip.
 
-**Request — `TransactionAddRequest`**
+**Request — `TransactionAddRequest`.** Component order below matches the JSON wire order. The new
+transaction id is **not** a request field — it is auto-generated by the service. The monetary
+`amount` is `BigDecimal` constrained to nine integer and two fractional digits (`TRAN-AMT`,
+`PIC S9(9)V99`); no floating-point type is used.
 
 | JSON field | COBOL field | Type | Length / scale | Required | Notes |
 | :-- | :-- | :-- | :-- | :-: | :-- |
-| `accountId` | `ACTIDINI` | string | 11 | yes | Target account. |
-| `cardNumber` | `CARDNINI` | string | 16 | yes | Target card. |
-| `transactionType` | `TTYPCDI` | string | 2 | yes | |
-| `transactionCategory` | `TCATCDI` | string | 4 | yes | |
-| `transactionSource` | `TRNSRCI` | string | 10 | yes | |
-| `description` | `TDESCI` | string | 60 | yes | |
-| `amount` | `TRNAMTI` | BigDecimal | scale 2 | yes | `TRAN-AMT`, `PIC S9(10)V99`. |
-| `originalDate` | `TORIGDTI` | string (date) | 10 | yes | |
-| `processedDate` | `TPROCDTI` | string (date) | 10 | yes | |
-| `merchantId` | `MIDI` | string | 9 | yes | |
-| `merchantName` | `MNAMEI` | string | 30 | yes | |
-| `merchantCity` | `MCITYI` | string | 25 | yes | |
-| `merchantZip` | `MZIPI` | string | 10 | yes | |
-| `confirm` | `CONFIRMI` | boolean | 1 | yes | `Y`/`N` confirmation. |
+| `accountId` | `ACTIDIN` | string | 11 | **yes** | `@NotBlank`, `\d{1,11}`. Target account. |
+| `cardNumber` | `CARDNIN` | string | 16 | **yes** | `@NotBlank`, `\d{1,16}`. Target card. |
+| `typeCode` | `TTYPCD` | string | 2 | **yes** | `@NotBlank`, exactly `\d{2}`. |
+| `categoryCode` | `TCATCD` | string | 4 | **yes** | `@NotBlank`, exactly `\d{4}`. |
+| `source` | `TRNSRC` | string | 10 | **yes** | `@NotBlank`. |
+| `description` | `TDESC` | string | 60 | **yes** | `@NotBlank`. |
+| `amount` | `TRNAMT` | BigDecimal | 9,2 | **yes** | `@NotNull` `@Digits(integer = 9, fraction = 2)`; `TRAN-AMT PIC S9(9)V99`. |
+| `originDate` | `TORIGDT` | string (date) | 10 | **yes** | `@NotBlank`, `YYYY-MM-DD`. |
+| `processDate` | `TPROCDT` | string (date) | 10 | **yes** | `@NotBlank`, `YYYY-MM-DD`. |
+| `merchantId` | `MID` | string | 9 | **yes** | `@NotBlank`, `\d{1,9}`. |
+| `merchantName` | `MNAME` | string | 30 | **yes** | `@NotBlank`. |
+| `merchantCity` | `MCITY` | string | 25 | **yes** | `@NotBlank`. |
+| `merchantZip` | `MZIP` | string | 10 | **yes** | `@NotBlank`. |
+| `confirm` | `CONFIRM` | string | 1 | no | Optional; one of `Y`/`y`/`N`/`n` when present (`[YyNn]?`). |
 
-**Response `201` — `TransactionDetailResponse`** (incl. the generated `transactionId`).
+**Response `201` `CREATED` — `TransactionAddResponse`.** Carries the service-generated
+`transactionId` plus the echoed submitted fields so the client can re-render the confirmed
+transaction: `transactionId`, `accountId`, `cardNumber`, `typeCode`, `categoryCode`, `source`,
+`description`, `amount` (BigDecimal, scale 2), `originDate`, `processDate`, `merchantId`,
+`merchantName`, `merchantCity`, `merchantZip`, `confirm`, `errorMessage`.
 
-**Errors:** `400` validation; `404` `RECORD_NOT_FOUND` (account/card); `401`/`403`.
+**Errors:** `400` `BAD_REQUEST` (bean-validation failure); `404` `RECORD_NOT_FOUND`
+(account/card cross-reference missing); `401`/`403` per auth.
 
 ---
 
@@ -553,8 +617,8 @@ Posts a bill payment against an account balance.
 
 | JSON field | COBOL field | Type | Length / scale | Required | Notes |
 | :-- | :-- | :-- | :-- | :-: | :-- |
-| `accountId` | `ACTIDINI` | string | 11 | yes | Account to pay. |
-| `confirm` | `CONFIRMI` | boolean | 1 | yes | `Y`/`N` confirmation. |
+| `accountId` | `ACTIDIN` | string | 11 | yes | `@NotBlank`, `\d{1,11}`. Account to pay. |
+| `confirm` | `CONFIRM` | string | 1 | no | Optional single-char flag: empty = preview, `Y`/`y` = confirm payment, `N`/`n` = cancel. |
 
 > The current balance (`CURBALI`, display width 14 → `BigDecimal` scale 2) is read by the server
 > from the account and returned in the response; it is **not** a client-supplied amount, matching
@@ -596,25 +660,40 @@ transient-data queue (`EXEC CICS WRITEQ TD QUEUE('JOBS')`). In the migration thi
 
 - **Auth:** USER. **Source:** `CORPT00.bms` / `CORPT00.CPY` / `CORPT00C`.
 
-**Request — `ReportSubmissionRequest`**
+**Request — `ReportRequest`.** The BMS `CORPT00` selection layout is preserved verbatim: report
+type is **three mutually-exclusive single-character flags** (not collapsed to an enum), and the
+custom window is carried as **split month/day/year part fields** (not merged ISO dates). Every
+field is a string whose maximum length matches the BMS field length exactly.
 
 | JSON field | COBOL field | Type | Length | Required | Notes |
 | :-- | :-- | :-- | :-: | :-: | :-- |
-| `reportType` | `MONTHLYI` / `YEARLYI` / `CUSTOMI` | enum | 1 each | yes | One of `MONTHLY`, `YEARLY`, `CUSTOM` (the three mutually exclusive screen flags collapse to one enum). |
-| `startDate` | `SDTYYYYI`+`SDTMMI`+`SDTDDI` | string (date) | 4/2/2 | conditional | Required for `CUSTOM`; split `YYYY`/`MM`/`DD` → ISO date. |
-| `endDate` | `EDTYYYYI`+`EDTMMI`+`EDTDDI` | string (date) | 4/2/2 | conditional | Required for `CUSTOM`. |
-| `confirm` | `CONFIRMI` | boolean | 1 | yes | `Y`/`N` confirmation. |
+| `monthly` | `MONTHLY` | string | 1 | no | Set (e.g. `"Y"`) to select the monthly report. |
+| `yearly` | `YEARLY` | string | 1 | no | Set to select the yearly report. |
+| `custom` | `CUSTOM` | string | 1 | no | Set to select a custom date-range report. |
+| `startMonth` | `SDTMM` | string | 2 | conditional | Custom-range start month part. |
+| `startDay` | `SDTDD` | string | 2 | conditional | Custom-range start day part. |
+| `startYear` | `SDTYYYY` | string | 4 | conditional | Custom-range start year part. |
+| `endMonth` | `EDTMM` | string | 2 | conditional | Custom-range end month part. |
+| `endDay` | `EDTDD` | string | 2 | conditional | Custom-range end day part. |
+| `endYear` | `EDTYYYY` | string | 4 | conditional | Custom-range end year part. |
+| `confirm` | `CONFIRM` | string | 1 | yes | `Y`/`y` confirms; `N`/`n` cancels. The service requires confirmation before publishing. |
 
-**Response `202 Accepted` — `ReportSubmissionResponse`**
+> The three report-type flags are mutually exclusive; the custom date parts are required only when
+> `custom` is selected and are validated through `DateValidationService`. The service resolves the
+> selection to a `reportType` of `"Monthly"`, `"Yearly"`, or `"Custom"` and a concrete
+> `startDate`/`endDate` (`yyyy-MM-dd`) for the SQS payload (see §3).
+
+**Response `200` — `ReportResponse`**
 
 | JSON field | Origin | Type | Notes |
 | :-- | :-- | :-- | :-- |
-| `accepted` | — | boolean | `true` when enqueued. |
-| `correlationId` | request | string | Correlates to the SQS message and resulting report. |
-| `queue` | constant | string | `carddemo-report-jobs.fifo`. |
+| `confirmationMessage` | service | string | Acknowledgement that the report job was queued (e.g. `"Monthly report submitted for printing ..."`); `null` on failure. |
+| `errorMessage` | `CORPT00` `ERRMSG` (`PIC X(78)`) | string | Failure text; `null` on success. |
 
-**Errors:** `400` validation (missing custom date range); `401`/`403`; `503`
-`STORAGE_UNAVAILABLE` if the queue is unreachable.
+**Errors:** `400` `BAD_REQUEST` (`ValidationException` — missing confirmation, invalid `confirm`
+value, or an invalid/incomplete custom date range); `500` `INTERNAL_SERVER_ERROR`
+(`FileAccessException` — the SQS publish failed, mirroring a `WRITEQ TD` failure); `401`/`403`
+per auth.
 
 ---
 
@@ -710,29 +789,32 @@ the point-to-point, ordered, exactly-once delivery semantics of the TDQ (decisio
 | **Endpoint (local)** | LocalStack `http://localhost:4566` |
 | **Provisioning** | `localstack-init/init-aws.sh` (and `docker-compose.yml`); tests self-provision and tear down |
 
-**Message body (JSON)** — one message per accepted report request:
+**Message body (JSON) — `ReportSubmissionService.ReportJobMessage`** — one message per accepted
+report request. The payload carries exactly three fields; the report-type flags and split date
+parts from `ReportRequest` are resolved by the service into a single `reportType` value and a
+concrete `startDate`/`endDate` range before publishing.
 
 | Field | Type | Origin | Notes |
 | :-- | :-- | :-- | :-- |
-| `reportType` | string enum | `CORPT00` flags | `MONTHLY` \| `YEARLY` \| `CUSTOM`. |
-| `startDate` | string (date) | `SDTYYYY`/`SDTMM`/`SDTDD` | ISO `yyyy-MM-dd`; required for `CUSTOM`. |
-| `endDate` | string (date) | `EDTYYYY`/`EDTMM`/`EDTDD` | ISO `yyyy-MM-dd`; required for `CUSTOM`. |
-| `requestedBy` | string(8) | JWT `userId` | Submitting user. |
-| `correlationId` | string (UUID) | request | Ties message → REST response → generated report. |
+| `reportType` | string | resolved from `CORPT00` flags | One of `Monthly` \| `Yearly` \| `Custom` (mixed case, as emitted). |
+| `startDate` | string (date) | resolved range start | ISO `yyyy-MM-dd`. For `Monthly`/`Yearly` the service derives the period; for `Custom` it is built from `SDTYYYY`/`SDTMM`/`SDTDD`. |
+| `endDate` | string (date) | resolved range end | ISO `yyyy-MM-dd`. Derived for `Monthly`/`Yearly`; from `EDTYYYY`/`EDTMM`/`EDTDD` for `Custom`. |
+
+> There is **no** `requestedBy` or `correlationId` field in the message body; the payload is exactly
+> the three fields above.
 
 **FIFO attributes**
 
-- `MessageGroupId` = `report-jobs` (single ordered group → strict TDQ-equivalent ordering).
-- `MessageDeduplicationId` = `correlationId` (content-stable de-dup; rejects accidental
-  re-submission within the dedup window).
+- `MessageGroupId` = `carddemo-reports` (single ordered group → strict TDQ-equivalent ordering).
+- `MessageDeduplicationId` = a fresh `UUID.randomUUID()` per publish (every accepted submission is a
+  distinct job; identical selections are intentionally not de-duplicated, matching the COBOL
+  `WRITEQ TD` semantics where each submission enqueues a job).
 
 ```json
 {
-  "reportType": "CUSTOM",
+  "reportType": "Custom",
   "startDate": "2022-01-01",
-  "endDate": "2022-01-31",
-  "requestedBy": "ADMIN001",
-  "correlationId": "b3f1c2a4-5d6e-4f70-8a91-0c2d4e6f8a1b"
+  "endDate": "2022-01-31"
 }
 ```
 

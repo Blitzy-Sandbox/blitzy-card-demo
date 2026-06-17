@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.carddemo.config.SecurityConfig;
 import com.carddemo.controller.AuthController;
+import com.carddemo.exception.AuthenticationFailedException;
 import com.carddemo.model.entity.UserSecurity;
 import com.carddemo.model.enums.UserType;
 import com.carddemo.service.auth.AuthenticationService;
@@ -93,5 +94,27 @@ class AuthControllerWebMvcTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void signin_authenticationFailure_isUnauthorizedAndGeneralized() throws Exception {
+        // F13/F14: a failed credential check (unknown user OR wrong password) reaches the controller
+        // as a single AuthenticationFailedException and must surface as a generalized 401 via
+        // GlobalExceptionHandler — never a 404/400 that would let a caller enumerate valid user ids.
+        // Password length stays within the SignOnRequest @Size(max=8) contract so the request passes
+        // @Valid and actually reaches the (mocked) service, exercising the auth-failure → 401 path.
+        when(authenticationService.authenticate("USER0001", "WRONGPWD"))
+                .thenThrow(new AuthenticationFailedException(
+                        "Authentication failed. Please check your credentials and try again."));
+
+        String body = "{\"userId\":\"USER0001\",\"password\":\"WRONGPWD\"}";
+
+        mockMvc.perform(post("/api/auth/signin")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Authentication Failed"))
+                .andExpect(jsonPath("$.detail").value(
+                        "Authentication failed. Please check your credentials and try again."));
     }
 }

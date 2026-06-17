@@ -325,6 +325,44 @@ public class StatementProcessor implements ItemProcessor<Account, StatementProce
     }
 
     /**
+     * HTML-escapes the reserved characters of a dynamic statement field so that user- or
+     * data-controlled text (the customer name, the address lines, and each transaction id and
+     * description) cannot inject active markup into the generated HTML statement. Without this,
+     * a transaction description such as {@code <script>...</script>} stored via the online
+     * transaction-add flow would be emitted verbatim into {@code STATEMNT.HTML} on S3 and execute
+     * when the statement is viewed (stored cross-site scripting, CWE-79).
+     *
+     * <p>{@code '&'} is converted first (handled implicitly by the per-character switch) so the
+     * ampersands introduced for the other entities are never double-escaped. The method is applied
+     * <em>after</em> the fixed-width {@link #htmlText(String)}/{@link #padRight(String, int)}
+     * normalization so the rendered (entity-decoded) column alignment is preserved: escaping never
+     * shortens the visible text, and although the raw byte length of a line may grow, no raw
+     * {@code '<'} or {@code '>'} can survive, so the output is XSS-safe even if the surrounding
+     * fixed-width line is later truncated to its column budget.</p>
+     *
+     * @param value the already width-normalized field text (callers pass non-null htmlText/padRight output)
+     * @return the text with {@code &}, {@code <}, {@code >}, {@code "}, and {@code '} replaced by HTML entities
+     */
+    private static String escapeHtml(String value) {
+        if (value == null) {
+            return "";
+        }
+        StringBuilder escaped = new StringBuilder(value.length() + 16);
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '&' -> escaped.append("&amp;");
+                case '<' -> escaped.append("&lt;");
+                case '>' -> escaped.append("&gt;");
+                case '"' -> escaped.append("&quot;");
+                case '\'' -> escaped.append("&#39;");
+                default -> escaped.append(c);
+            }
+        }
+        return escaped.toString();
+    }
+
+    /**
      * Renders a {@code Long} account id as the COBOL {@code PIC 9(11)} display value
      * (zero-filled to 11 digits), as moved into {@code ST-ACCT-ID} / {@code L11-ACCT}.
      *
@@ -623,10 +661,10 @@ public class StatementProcessor implements ItemProcessor<Account, StatementProce
             appendLine(builder, TD_GREY, HTML_WIDTH);
 
             // 5200-WRITE-HTML-NMADBS: name, address, and basic-details paragraphs.
-            appendLine(builder, "<p style=\"font-size:16px\">" + htmlText(data.customerName()) + "  </p>", HTML_WIDTH);
-            appendLine(builder, "<p>" + htmlText(data.addressLine1()) + "  </p>", HTML_WIDTH);
-            appendLine(builder, "<p>" + htmlText(data.addressLine2()) + "  </p>", HTML_WIDTH);
-            appendLine(builder, "<p>" + htmlText(data.addressLine3()) + "  </p>", HTML_WIDTH);
+            appendLine(builder, "<p style=\"font-size:16px\">" + escapeHtml(htmlText(data.customerName())) + "  </p>", HTML_WIDTH);
+            appendLine(builder, "<p>" + escapeHtml(htmlText(data.addressLine1())) + "  </p>", HTML_WIDTH);
+            appendLine(builder, "<p>" + escapeHtml(htmlText(data.addressLine2())) + "  </p>", HTML_WIDTH);
+            appendLine(builder, "<p>" + escapeHtml(htmlText(data.addressLine3())) + "  </p>", HTML_WIDTH);
             appendLine(builder, TD_CLOSE, HTML_WIDTH);
             appendLine(builder, TR_CLOSE, HTML_WIDTH);
             appendLine(builder, TR_OPEN, HTML_WIDTH);
@@ -664,10 +702,10 @@ public class StatementProcessor implements ItemProcessor<Account, StatementProce
             for (TransactionSummaryLine line : data.transactions()) {
                 appendLine(builder, TR_OPEN, HTML_WIDTH);
                 appendLine(builder, TD_ROW_ID, HTML_WIDTH);
-                appendLine(builder, "<p>" + padRight(line.tranId(), 16) + "</p>", HTML_WIDTH);
+                appendLine(builder, "<p>" + escapeHtml(padRight(line.tranId(), 16)) + "</p>", HTML_WIDTH);
                 appendLine(builder, TD_CLOSE, HTML_WIDTH);
                 appendLine(builder, TD_ROW_DETAILS, HTML_WIDTH);
-                appendLine(builder, "<p>" + padRight(line.tranDesc(), 49) + "</p>", HTML_WIDTH);
+                appendLine(builder, "<p>" + escapeHtml(padRight(line.tranDesc(), 49)) + "</p>", HTML_WIDTH);
                 appendLine(builder, TD_CLOSE, HTML_WIDTH);
                 appendLine(builder, TD_ROW_AMOUNT, HTML_WIDTH);
                 appendLine(builder, "<p>" + formatCurrencySuppressed(line.tranAmt()) + "</p>", HTML_WIDTH);

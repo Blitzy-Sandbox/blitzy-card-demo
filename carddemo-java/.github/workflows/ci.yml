@@ -56,6 +56,9 @@ jobs:
   # the JaCoCo `check` rule (>= 80% line coverage -> Gate 8), and the OWASP
   # dependency-check (fail on HIGH/CRITICAL CVE -> Gate 8). The OWASP NVD scan
   # is slow, so it runs exactly once here and is intentionally not duplicated.
+  # The NVD data feed is downloaded with an authenticated API key (sourced from
+  # the NVD_API_KEY secret and passed via -Dnvd.api.key) to avoid anonymous
+  # rate-limit throttling; this is the authoritative Gate 8 CVE evidence run.
   build:
     name: Build, Unit Tests, Coverage & OWASP (Gates 2 & 8)
     runs-on: ubuntu-latest
@@ -73,8 +76,15 @@ jobs:
       - name: Make Maven wrapper executable
         run: chmod +x ./mvnw
 
+      # The NVD API key is injected from GitHub Actions Secrets and is never
+      # hardcoded. It raises the NVD rate limit so the OWASP dependency-check
+      # data feed downloads reliably; the POM defaults `nvd.api.key` to empty so
+      # local/offline builds are unaffected. This step produces the
+      # authoritative zero-critical/high CVE evidence for Gate 8.
       - name: Build, test, coverage, dependency-check
-        run: ./mvnw -B clean verify
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: ./mvnw -B clean verify -Dnvd.api.key="${NVD_API_KEY}"
 
       # Reports are uploaded with `if: always()` so they are available for
       # diagnosis even when the build fails (a coverage or CVE gate violation

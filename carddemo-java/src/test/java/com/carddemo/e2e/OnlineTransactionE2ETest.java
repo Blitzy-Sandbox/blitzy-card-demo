@@ -5,9 +5,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.carddemo.model.entity.Account;
 import com.carddemo.model.entity.Card;
+import com.carddemo.model.entity.CardCrossReference;
 import com.carddemo.model.entity.UserSecurity;
 import com.carddemo.model.enums.UserType;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.UserSecurityRepository;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -19,7 +21,6 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
 import org.awaitility.Awaitility;
-import org.awaitility.core.ConditionTimeoutException;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -49,6 +50,7 @@ import org.testcontainers.utility.DockerImageName;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
+import software.amazon.awssdk.services.s3.model.S3Object;
 
 /** Full-stack REST online-flow e2e test validating the Java translation of COSGN00C/COACTUPC/COTRN02C/CORPT00C/COMEN01C/COBIL00C (AWS CardDemo commit 27d6c6f, REFERENCE ONLY). */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -67,6 +69,11 @@ public class OnlineTransactionE2ETest {
     private static final String BUCKET_STATEMENTS = "carddemo-statements";
     private static final String REPORT_QUEUE = "carddemo-report-jobs.fifo";
     private static final String NOTIFICATIONS_TOPIC = "carddemo-notifications";
+
+    // Object key the transaction-report job always writes to BUCKET_OUTPUT (TransactionReportJob
+    // default carddemo.batch.report.object-key); the writer uploads a title/header/footer block even
+    // for an empty window, so the bridge produces this object deterministically.
+    private static final String REPORT_OBJECT_KEY = "TRANREPT";
 
     // Test users: ids are EXACTLY 8 chars (@Size(max=8)); passwords are EXACTLY 8 chars and ALL
     // UPPERCASE so they survive the COBOL-style upper-casing AuthenticationService applies before the
@@ -150,6 +157,9 @@ public class OnlineTransactionE2ETest {
     CardRepository cardRepository;
 
     @Autowired
+    CardCrossReferenceRepository cardCrossReferenceRepository;
+
+    @Autowired
     PasswordEncoder passwordEncoder;
 
     @Autowired
@@ -204,6 +214,44 @@ public class OnlineTransactionE2ETest {
         user.setSecUsrPwd(passwordEncoder.encode(rawPwd));
         user.setSecUsrType(type);
         userSecurityRepository.save(user);
+    }
+
+    /**
+     * Idempotently seeds a card cross-reference (CARDXREF / CXACAIX) so the transaction-add and
+     * bill-payment key-resolution reads ({@code READ-CXACAIX-FILE}) deterministically resolve the
+     * account id to its authoritative card number. No domain foreign keys exist, so the row stands
+     * alone.
+     */
+    private void seedCrossReference(String cardNumber, long custId, long acctId) {
+        CardCrossReference xref =
+                cardCrossReferenceRepository.findById(cardNumber).orElseGet(CardCrossReference::new);
+        xref.setXrefCardNum(cardNumber);
+        xref.setXrefCustId(custId);
+        xref.setXrefAcctId(acctId);
+        cardCrossReferenceRepository.saveAndFlush(xref);
+    }
+
+    /**
+     * Idempotently seeds a fully-populated account with the given positive balance so the bill-payment
+     * success path ({@code COBIL00C}: balance &gt; 0, confirm = Y) posts a full-balance payment. All
+     * NOT NULL columns are set; the account is dedicated to the billing test and is not shared with
+     * the seeded Flyway V3 accounts.
+     */
+    private void seedPayableAccount(long acctId, BigDecimal balance) {
+        Account account = accountRepository.findById(acctId).orElseGet(Account::new);
+        account.setAcctId(acctId);
+        account.setAcctActiveStatus("Y");
+        account.setAcctCurrBal(balance);
+        account.setAcctCreditLimit(new BigDecimal("5000.00"));
+        account.setAcctCashCreditLimit(new BigDecimal("1000.00"));
+        account.setAcctOpenDate("2020-01-01");
+        account.setAcctExpiraionDate("2030-01-01");
+        account.setAcctReissueDate("2025-01-01");
+        account.setAcctCurrCycCredit(new BigDecimal("0.00"));
+        account.setAcctCurrCycDebit(new BigDecimal("0.00"));
+        account.setAcctAddrZip("90210");
+        account.setAcctGroupId("GROUP00001");
+        accountRepository.saveAndFlush(account);
     }
 
     /**
@@ -308,7 +356,8 @@ public class OnlineTransactionE2ETest {
     /**
      * Card and transaction browse plus the auto-ID transaction add ({@code COTRN02C}). Browse
      * endpoints are asserted strongly on HTTP 200 with tolerant page-size checks; the add is asserted
-     * tolerantly (reachable + secured) with an auto-ID check on the success branch.
+     * deterministically (201 CREATED, service-generated 16-digit id, cross-reference-resolved
+     * account/card) using a seeded card cross-reference.
      */
     @Test
     void cardAndTransactionFlows() {
@@ -358,13 +407,17 @@ public class OnlineTransactionE2ETest {
             assertThat(txnBody.path("transactions").size()).isLessThanOrEqualTo(10);
         }
 
-        // Transaction add - auto-ID (COTRN02C). No transaction id is supplied; it is auto-generated.
-        Account acct = accountRepository.findAll().stream().findFirst().orElse(null);
-        String acctIdStr = (acct != null) ? String.valueOf(acct.getAcctId()) : "11111111111";
-        String cardNum = (card != null) ? card.getCardNum() : "4111111111111111";
+        // Transaction add - auto-ID (COTRN02C), deterministic SUCCESS path. A dedicated card
+        // cross-reference is seeded so VALIDATE-INPUT-KEY-FIELDS resolves the supplied account id to
+        // its authoritative card (READ-CXACAIX-FILE). With every data field valid and confirm=Y, the
+        // service generates the next 16-digit id (browse-to-end + increment), persists the record,
+        // and the controller returns 201 CREATED. No transaction id is supplied by the client.
+        final String addAcctId = "70000000007";
+        final String addXrefCard = "4000000000000007";
+        seedCrossReference(addXrefCard, 70_000_007L, Long.parseLong(addAcctId));
         Map<String, Object> addBody = Map.ofEntries(
-                Map.entry("accountId", acctIdStr),
-                Map.entry("cardNumber", cardNum),
+                Map.entry("accountId", addAcctId),
+                Map.entry("cardNumber", "4111111111111111"),
                 Map.entry("typeCode", "01"),
                 Map.entry("categoryCode", "0001"),
                 Map.entry("source", "POS"),
@@ -379,47 +432,54 @@ public class OnlineTransactionE2ETest {
                 Map.entry("confirm", "Y"));
         ResponseEntity<JsonNode> add = restTemplate.exchange(url("/api/transactions"),
                 HttpMethod.POST, new HttpEntity<>(addBody, jsonHeaders(adminToken)), JsonNode.class);
-        int addStatus = add.getStatusCode().value();
-        // Reachable + secured: never an auth rejection, never a server fault.
-        assertThat(addStatus).isNotEqualTo(HttpStatus.UNAUTHORIZED.value());
-        assertThat(addStatus).isNotEqualTo(HttpStatus.FORBIDDEN.value());
-        assertThat(add.getStatusCode().is5xxServerError()).isFalse();
-        String addBranch;
-        if (addStatus == HttpStatus.OK.value()) {
-            // Success branch proves the COTRN02C auto-ID factory issued an identifier.
-            assertThat(add.getBody()).isNotNull();
-            assertThat(add.getBody().path("transactionId").asText(null)).isNotBlank();
-            addBranch = "200-auto-id";
-        } else {
-            // A 4xx validation/not-found outcome still proves the endpoint + validation are working.
-            addBranch = "validation-" + addStatus;
-        }
+        // Deterministic success: 201 CREATED with a service-generated 16-digit identifier and the
+        // resolved, cross-reference-backed account/card pairing (never an auth rejection or 4xx/5xx).
+        assertThat(add.getStatusCode().value()).isEqualTo(HttpStatus.CREATED.value());
+        assertThat(add.getBody()).isNotNull();
+        String newTranId = add.getBody().path("transactionId").asText(null);
+        assertThat(newTranId).isNotBlank();
+        assertThat(newTranId).matches("\\d{16}");
+        assertThat(add.getBody().path("accountId").asText()).isEqualTo(addAcctId);
+        assertThat(add.getBody().path("cardNumber").asText()).isEqualTo(addXrefCard);
         writeEvidence("transaction-add-evidence.txt",
-                Map.of("status", addStatus, "branch", addBranch));
+                Map.of("status", add.getStatusCode().value(),
+                        "transactionId", newTranId,
+                        "branch", "201-auto-id"));
     }
 
     /**
      * Bill payment ({@code COBIL00C}) and menu routing ({@code COMEN01C} / {@code COADM01C}). Billing
-     * is asserted tolerantly (reachable + secured); the menus are asserted strongly on their option
-     * arrays (main = up to 10 options, admin = 4 options).
+     * is asserted deterministically (200 OK, full balance paid to zero, "Payment successful" message)
+     * using a seeded payable account + cross-reference; the menus are asserted strongly on their
+     * option arrays (main = up to 10 options, admin = 4 options).
      */
     @Test
     void billingAndMenuFlows() {
         String adminToken = signIn(ADMIN_ID, ADMIN_PWD);
         assertThat(adminToken).isNotBlank();
 
-        Account acct = accountRepository.findAll().stream().findFirst().orElse(null);
-        Assumptions.assumeTrue(acct != null, "no seeded accounts (Flyway V3) - skipping");
-        String acctIdStr = String.valueOf(acct.getAcctId());
+        // Bill pay (COBIL00C), deterministic SUCCESS path. A dedicated account with a positive balance
+        // plus a cross-reference (READ-CXACAIX-FILE) is seeded so the confirmed (confirm=Y) payment
+        // posts the full balance: a payment transaction is written, the balance is decremented to
+        // zero (ACCT-CURR-BAL - TRAN-AMT), and the service returns the "Payment successful" message.
+        final long payAcctId = 70_000_000_008L;
+        seedPayableAccount(payAcctId, new BigDecimal("250.00"));
+        seedCrossReference("4000000000000008", 70_000_008L, payAcctId);
 
-        // Bill pay (tolerant): reachable + secured (2xx or 4xx acceptable, never 401/403/5xx).
-        Map<String, Object> payBody = Map.of("accountId", acctIdStr, "confirm", "Y");
+        Map<String, Object> payBody = Map.of("accountId", String.valueOf(payAcctId), "confirm", "Y");
         ResponseEntity<JsonNode> pay = restTemplate.exchange(url("/api/billing/pay"),
                 HttpMethod.POST, new HttpEntity<>(payBody, jsonHeaders(adminToken)), JsonNode.class);
-        int payStatus = pay.getStatusCode().value();
-        assertThat(payStatus).isNotEqualTo(HttpStatus.UNAUTHORIZED.value());
-        assertThat(payStatus).isNotEqualTo(HttpStatus.FORBIDDEN.value());
-        assertThat(pay.getStatusCode().is5xxServerError()).isFalse();
+        // Deterministic success: 200 OK; the full balance is paid (new balance == 0, compared with
+        // compareTo never equals), and the response carries the COBIL00C "Payment successful" message.
+        assertThat(pay.getStatusCode().value()).isEqualTo(HttpStatus.OK.value());
+        assertThat(pay.getBody()).isNotNull();
+        assertThat(pay.getBody().path("accountId").asText()).isEqualTo(String.valueOf(payAcctId));
+        assertThat(new BigDecimal(pay.getBody().path("currentBalance").asText())
+                .compareTo(BigDecimal.ZERO)).isZero();
+        assertThat(pay.getBody().path("errorMessage").asText()).contains("Payment successful");
+        // The balance-clearing payment is persisted (COBIL00C UPDATE-ACCTDAT-FILE).
+        assertThat(accountRepository.findById(payAcctId).orElseThrow().getAcctCurrBal()
+                .compareTo(BigDecimal.ZERO)).isZero();
 
         // Main menu (strong): 200 with a non-empty options array (<- COMEN02Y).
         ResponseEntity<JsonNode> main = restTemplate.exchange(url("/api/menu/main"),
@@ -440,7 +500,9 @@ public class OnlineTransactionE2ETest {
     /**
      * Report-submission SQS FIFO bridge ({@code CORPT00C} {@code WRITEQ TD}): the submit endpoint
      * publishes to the FIFO queue (hard assertion on 200 + confirmation), and the async
-     * {@code @SqsListener} -> report job -> S3 object is verified tolerantly (soft-skip on timeout).
+     * {@code @SqsListener} -> report job -> S3 object is verified deterministically by asserting the
+     * {@code TRANREPT} object lands in {@code carddemo-batch-output} (the report writer always uploads
+     * it, even for a 0-row date range), with no soft-skip.
      */
     @Test
     void reportSubmissionSqsBridge() {
@@ -465,28 +527,26 @@ public class OnlineTransactionE2ETest {
         assertThat(submit.getBody()).isNotNull();
         assertThat(submit.getBody().path("confirmationMessage").asText(null)).isNotBlank();
 
-        // Verify the async bridge end-to-end (tolerant): the @SqsListener consumes the FIFO message,
-        // launches the report job, and writes an object to carddemo-batch-output (empty here at start).
-        boolean reportObserved = false;
-        try {
-            Awaitility.await()
-                    .atMost(Duration.ofSeconds(30))
-                    .pollInterval(Duration.ofSeconds(2))
-                    .untilAsserted(() -> {
-                        ListObjectsV2Response listing = s3Client.listObjectsV2(
-                                ListObjectsV2Request.builder().bucket(BUCKET_OUTPUT).build());
-                        assertThat(listing.contents()).isNotEmpty();
-                    });
-            reportObserved = true;
-        } catch (ConditionTimeoutException timeout) {
-            writeEvidence("report-bridge-evidence.txt",
-                    Map.of("submitted", true, "s3ObjectObserved", false));
-            Assumptions.assumeTrue(false,
-                    "Report object not observed in " + BUCKET_OUTPUT + " within timeout; "
-                    + "the SQS bridge is async and an empty-range report may not materialize - soft-skip");
-        }
+        // Verify the async bridge end-to-end (DETERMINISTIC): the @SqsListener consumes the FIFO
+        // message, launches the report job, and ReportItemWriter.close() ALWAYS uploads the TRANREPT
+        // object to carddemo-batch-output (the title/header/footer block is written even for a 0-row
+        // date range), so the object materializes reliably and no soft-skip is required.
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(60))
+                .pollInterval(Duration.ofSeconds(2))
+                .untilAsserted(() -> {
+                    ListObjectsV2Response listing = s3Client.listObjectsV2(
+                            ListObjectsV2Request.builder()
+                                    .bucket(BUCKET_OUTPUT)
+                                    .prefix(REPORT_OBJECT_KEY)
+                                    .build());
+                    assertThat(listing.contents())
+                            .as("TRANREPT report object uploaded by the async SQS->batch bridge")
+                            .extracting(S3Object::key)
+                            .contains(REPORT_OBJECT_KEY);
+                });
         writeEvidence("report-bridge-evidence.txt",
-                Map.of("submitted", true, "s3ObjectObserved", reportObserved));
+                Map.of("submitted", true, "s3ObjectObserved", true, "objectKey", REPORT_OBJECT_KEY));
     }
 
     /**

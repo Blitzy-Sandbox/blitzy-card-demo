@@ -84,22 +84,13 @@ aws-cli/2.x Python/3.x ...
 
 ## Build and Run
 
-> **Milestone status (read first).** This guide documents the **complete target architecture**. At the
-> current checkpoint the **build, unit-test, and Testcontainers integration-test workflow is present and
-> runnable today**; the **local application runtime is forthcoming**. The following artifacts are
-> **planned for a later milestone and are not yet in the repository**: `docker-compose.yml`, `Dockerfile`,
-> `application-local.yml`, and the `V2__create_indexes.sql` / `V3__seed_data.sql` Flyway migrations.
-> Steps, links, and tree entries that depend on them are explicitly labeled **(forthcoming)** below and
-> cannot be run until that milestone lands. The migrations present today are `V1__create_schema.sql`; the
-> profiles present today are `application.yml` and `application-test.yml`.
+This section takes you from a freshly cloned repository to a running, healthy application. Every
+artifact referenced here — `docker-compose.yml`, `Dockerfile`, `application-local.yml`,
+`application-test.yml`, and the Flyway migrations `V1__create_schema.sql`, `V2__create_indexes.sql`,
+and `V3__seed_data.sql` — is present in the repository, so all commands below are copy-paste accurate.
+The bundled Maven Wrapper (`./mvnw`) is used throughout, so a system Maven install is not required.
 
-This section takes you from a freshly cloned repository toward a running, healthy application. The
-commands under **Available now** are **copy-paste accurate against the current repository** and use the
-bundled Maven Wrapper (`./mvnw`), so a system Maven install is not required. The commands under
-**Forthcoming (later milestone)** describe the intended local-runtime workflow and will become runnable
-once the artifacts named in the milestone notice above are added.
-
-### Available now
+### 1. Build and test (no running services required)
 
 ```bash
 # 1. Clone the repository and enter the project
@@ -113,42 +104,36 @@ git clone <repository-url> && cd carddemo-java
 ./mvnw verify -Pintegration
 ```
 
-Notes for the commands available now:
-
 1. **Clone** — only the JDK is needed; no running services are required for the unit build.
 2. **`./mvnw clean verify`** — compiles, runs unit tests, and enforces the zero-warning build (Gate 2),
    ≥80% **JaCoCo** (`0.8.14`) line coverage, and the **OWASP dependency-check** (`12.1.0`, zero
-   critical/high CVEs). A green run means the codebase is sound.
+   critical/high CVEs). The OWASP NVD feed requires network access; in an offline environment append
+   `-Ddependency-check.skip=true` (the authoritative CVE scan runs in CI — see
+   [`validation-gates.md`](validation-gates.md) Gate 8). A green run means the codebase is sound.
 3. **`./mvnw verify -Pintegration`** — runs the Failsafe integration/E2E suite (`**/*IT.java`) on the
    `test` profile (`application-test.yml`). These tests provision and tear down their own ephemeral
    PostgreSQL and LocalStack containers via **Testcontainers**, so they require only a running Docker
    daemon — no manually started services and no live AWS.
 
-### Forthcoming (later milestone)
-
-> The steps below require `docker-compose.yml`, `application-local.yml`, and the `V2`/`V3` migrations,
-> which are **not yet present** in the repository. They are documented here so the intended local-runtime
-> workflow is clear, but they **cannot be run at the current checkpoint**.
+### 2. Run the full local stack
 
 ```bash
-# (forthcoming) Provide the required secrets the stack needs (never hardcode them).
-# docker-compose.yml has NO committed secret defaults, so these must be set first:
+# 1. Provide the required secrets the stack needs (never hardcode them).
+#    docker-compose.yml has NO committed secret defaults, so these must be set first:
 export POSTGRES_PASSWORD=<choose-a-local-password>
 export GRAFANA_ADMIN_PASSWORD=<choose-a-local-password>
 export JWT_SECRET=<a-random-string-of-at-least-32-characters>
 export LOCALSTACK_AUTH_TOKEN=<your-localstack-token>
 
-# (forthcoming) Start local infrastructure: PostgreSQL + LocalStack + Jaeger + Prometheus + Grafana
+# 2. Start local infrastructure: PostgreSQL + LocalStack + Jaeger + Prometheus + Grafana
 docker compose up -d
 
-# (forthcoming) Run the application with the local profile
+# 3. Run the application with the local profile
 ./mvnw spring-boot:run -Dspring.profiles.active=local
 
-# (forthcoming) Verify the application is healthy (expect "status":"UP")
+# 4. Verify the application is healthy (expect "status":"UP")
 curl http://localhost:8080/actuator/health
 ```
-
-Notes for the forthcoming workflow:
 
 1. **`export …` (required secrets)** — `docker-compose.yml` carries **no committed secret defaults**.
    `POSTGRES_PASSWORD`, `GRAFANA_ADMIN_PASSWORD`, `JWT_SECRET` (at least 32 characters), and
@@ -156,24 +141,23 @@ Notes for the forthcoming workflow:
    bringing up Compose, or the stack fails fast with an error naming the missing variable. They are
    **never** committed or hardcoded. (The AWS access keys default to LocalStack's documented `test`
    emulator dummies, which are not real secrets.)
-2. **`docker compose up -d`** — will bring up the datasource and AWS endpoints once `docker-compose.yml`
-   exists. On systems that still use the standalone Compose v1 binary, substitute `docker-compose up -d`.
-3. **`./mvnw spring-boot:run -Dspring.profiles.active=local`** — will start the app on the `local`
-   profile (once `application-local.yml` exists), pointing the datasource at the Compose PostgreSQL and
-   the AWS clients at the LocalStack endpoint (`http://localhost:4566`). Equivalent to
-   `./mvnw spring-boot:run -Plocal`.
+2. **`docker compose up -d`** — brings up the datasource and AWS endpoints defined in
+   `docker-compose.yml`. On systems that still use the standalone Compose v1 binary, substitute
+   `docker-compose up -d`. (If your `LOCALSTACK_AUTH_TOKEN` does not unlock LocalStack Pro, override the
+   image with `LOCALSTACK_IMAGE=localstack/localstack:4.5.0` and `ACTIVATE_PRO=0`; the Community image
+   fully covers S3/SQS/SNS.)
+3. **`./mvnw spring-boot:run -Dspring.profiles.active=local`** — starts the app on the `local` profile
+   (`application-local.yml`), pointing the datasource at the Compose PostgreSQL and the AWS clients at
+   the LocalStack endpoint (`http://localhost:4566`). Equivalent to `./mvnw spring-boot:run -Plocal`.
+   On startup, Flyway applies `V1`→`V2`→`V3` to provision and seed the schema before any flow runs.
 4. **`curl http://localhost:8080/actuator/health`** — a healthy response is `UP` with composite
    indicators for **PostgreSQL**, **S3** bucket accessibility, and **SQS** availability.
 
 ### Local service quick links
 
-> **(Forthcoming — later milestone.)** These endpoints become available once the forthcoming
-> `docker-compose.yml` stack and the `local` application profile are in place (see the milestone notice
-> under [Build and Run](#build-and-run)). They are listed here to describe the intended local topology.
-
-Once the (forthcoming) `docker compose up -d` and the application are running, the following endpoints
-and UIs will be available locally. Ports reflect the services that will be defined in
-`docker-compose.yml`; adjust there if they collide with other local processes.
+With `docker compose up -d` and the application running, the following endpoints and UIs are available
+locally. Ports reflect the services defined in `docker-compose.yml`; adjust there if they collide with
+other local processes.
 
 | Service / endpoint        | URL                                            | Provided by                  |
 | :------------------------ | :--------------------------------------------- | :--------------------------- |
@@ -208,8 +192,8 @@ of component lives makes the [extension guides](#extension-guides) below quick t
 carddemo-java/
 ├── pom.xml                       # Maven build (Java 25, Spring Boot 3.x BOM)
 ├── mvnw, mvnw.cmd, .mvn/         # Maven Wrapper
-├── Dockerfile                    # (forthcoming) Application container image
-├── docker-compose.yml            # (forthcoming) PostgreSQL + LocalStack + Jaeger + Prometheus + Grafana + app
+├── Dockerfile                    # Application container image
+├── docker-compose.yml            # PostgreSQL + LocalStack + Jaeger + Prometheus + Grafana + app
 ├── localstack-init/init-aws.sh   # Creates S3 buckets + SQS FIFO queue on LocalStack startup
 ├── README.md                     # Project entry point
 ├── DECISION_LOG.md               # Rationale for every non-trivial decision
@@ -228,16 +212,12 @@ carddemo-java/
     │   └── observability/             # Correlation-ID filter, metrics, health indicators
     └── main/resources/
         ├── application.yml            # Base configuration
-        ├── application-local.yml      # (forthcoming) Local profile (Docker Compose infra)
+        ├── application-local.yml      # Local profile (Docker Compose infra)
         ├── application-test.yml       # Test profile (Testcontainers)
-        ├── db/migration/              # Flyway V1 schema (present); V2 indexes + V3 seed data (forthcoming)
+        ├── db/migration/              # Flyway V1 schema, V2 indexes, V3 seed data
         ├── validation/                # NANPA / state / ZIP reference data (JSON)
         └── logback-spring.xml         # Structured JSON logging
 ```
-
-> Entries marked **(forthcoming)** above describe the complete target layout but are **not yet present**
-> at the current checkpoint; they are delivered in a later milestone (see the milestone notice under
-> [Build and Run](#build-and-run)).
 
 The request path follows a strict layering — **Controller → Service → Repository → Database** — with
 cross-cutting concerns (security, observability, transactions) applied as Spring infrastructure. The
@@ -318,24 +298,29 @@ Composite-keyed reference entities (`TransactionCategoryBalance`, `DisclosureGro
 
 ### Seed users and credentials
 
-> **(Forthcoming — later milestone.)** Seed data is loaded by the `V3__seed_data.sql` migration, which is
-> **not yet present** at the current checkpoint (only `V1__create_schema.sql` ships today). The seed
-> users below describe the intended sign-in fixtures once `V3` lands.
+The `V3__seed_data.sql` migration provisions **ten** application users (five admins and five regular
+users) so you can sign in immediately. The two canonical accounts for day-to-day development are:
 
-The (forthcoming) `V3__seed_data.sql` migration provisions two application users so you can sign in
-immediately:
-
-| User ID    | Role    | Use for                          |
-| :--------- | :------ | :------------------------------- |
+| User ID    | Role    | Use for                           |
+| :--------- | :------ | :-------------------------------- |
 | `ADMIN001` | `ADMIN` | Admin / user-administration flows |
 | `USER0001` | `USER`  | Back-office user flows            |
 
-Passwords are stored **BCrypt-hashed** — never in plaintext. The **initial login password is supplied
-through environment configuration** (for example a `${SEED_USER_PASSWORD}` placeholder consumed when the
-seed data is applied) and is **never hardcoded** in this repository. Set the value in your shell or a
-git-ignored local environment file before first run, and authenticate via `POST /api/auth/signin`, which
-returns a JWT used as a bearer token on subsequent requests. The JWT signing secret likewise resolves
-from `${JWT_SECRET}` and is never committed.
+> The full set is `ADMIN001`–`ADMIN005` (role `ADMIN`) and `USER0001`–`USER0005` (role `USER`).
+
+**Password:** every seed user signs in with `PASSWORD`. Passwords are stored **only as BCrypt hashes**
+(cost 10) in `V3__seed_data.sql` — never in plaintext, and there is no `SEED_USER_PASSWORD` (or similar)
+environment placeholder. The fixed seed hashes exist solely to provide a working local/demo login;
+production deployments rotate them through the user-administration endpoints.
+
+Sign-on is **case-insensitive**: `AuthenticationService` upper-cases (and trims) the user id and
+upper-cases the password before the BCrypt check, faithfully reproducing the COBOL
+`FUNCTION UPPER-CASE` normalization in `COSGN00C` (see `DECISION_LOG.md` D-017). So `admin001` /
+`password` is equivalent to `ADMIN001` / `PASSWORD`.
+
+Authenticate via `POST /api/auth/signin`; the response carries a JWT used as a bearer token on
+subsequent requests (see [`api-contracts.md`](api-contracts.md) §2.1). The JWT signing secret resolves
+from the `${JWT_SECRET}` environment variable and is never committed.
 
 ---
 
@@ -361,11 +346,10 @@ succeeds, stages 4a and 4b may run **concurrently** via a Spring Batch `FlowBuil
 flow is coordinated by `BatchPipelineOrchestrator`. See *Diagram 3 — Batch Pipeline (Before/After)* in
 [`architecture-before-after.md`](architecture-before-after.md).
 
-**Triggering jobs locally (forthcoming).** Once the (forthcoming) infrastructure is up
-(`docker compose up -d`) and the app is running on the `local` profile, the pipeline can be exercised
-end-to-end. Spring Batch jobs are registered in `config/BatchConfig.java` and run within the application
-context; the `dailytran.txt` fixture (loaded by the forthcoming `V3` seed migration) is the canonical
-end-to-end input for the posting job. The online-to-batch
+**Triggering jobs locally.** With the infrastructure up (`docker compose up -d`) and the app running on
+the `local` profile, the pipeline can be exercised end-to-end. Spring Batch jobs are registered in
+`config/BatchConfig.java` and run within the application context; the `dailytran.txt` fixture (loaded by
+the `V3` seed migration) is the canonical end-to-end input for the posting job. The online-to-batch
 bridge — the report-submission step (`CORPT00C` → SQS) — is triggered by `POST /api/reports/submit`,
 which publishes a message to the `carddemo-report-jobs.fifo` queue that the report job consumes. Batch
 progress is observable through the metrics `carddemo.batch.records.processed` and
@@ -405,8 +389,8 @@ dependencies**. The most common failure is the S3 client defaulting to *virtual-
 
 - **Enable path-style access** on the S3 client so URLs are formed as
   `http://localhost:4566/<bucket>/<key>`. With Spring Cloud AWS this is the
-  `spring.cloud.aws.s3.path-style-access-enabled: true` property (set in `application-test.yml` today,
-  and in the forthcoming `application-local.yml`).
+  `spring.cloud.aws.s3.path-style-access-enabled: true` property (set in both `application-test.yml`
+  and `application-local.yml`).
 - **Use the LocalStack endpoint** `http://localhost:4566`, not a real AWS region endpoint.
 - **Use the exact bucket / queue names**: buckets `carddemo-batch-input`, `carddemo-batch-output`,
   `carddemo-statements`; FIFO queue `carddemo-report-jobs.fifo`. These are provisioned by
@@ -440,13 +424,9 @@ application startup, **before** any online or batch flow executes. The intended 
 V1__create_schema.sql   →   V2__create_indexes.sql   →   V3__seed_data.sql
 ```
 
-> **(Forthcoming — later milestone.)** Only `V1__create_schema.sql` is present at the current checkpoint;
-> `V2__create_indexes.sql` and `V3__seed_data.sql` are delivered in a later milestone. The ordering rule
-> below applies to all migrations as they are added.
-
-- `V1` creates the 11 tables (from the VSAM `DEFINE CLUSTER` layouts), the (forthcoming) `V2` adds the
-  primary and alternate indexes (e.g., the `CXACAIX` cross-reference index and the transaction AIX), and
-  the (forthcoming) `V3` loads the 9 ASCII fixtures as seed/reference rows.
+- `V1` creates the 11 tables (from the VSAM `DEFINE CLUSTER` layouts), `V2` adds the primary and
+  alternate indexes (e.g., the `CXACAIX` cross-reference index and the transaction AIX), and `V3` loads
+  the 9 ASCII fixtures as seed/reference rows (including the 10 BCrypt-hashed seed users).
 - **Never edit a migration that has already been applied.** Flyway records a checksum per migration; a
   changed checksum on an applied version causes a validation failure on the next startup. To change the
   schema, **add a new** `V4__…`-and-higher migration rather than modifying `V1`–`V3`.

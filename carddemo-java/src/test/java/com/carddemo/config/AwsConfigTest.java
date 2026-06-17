@@ -3,9 +3,15 @@ package com.carddemo.config;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.carddemo.config.AwsConfig.CardDemoAwsProperties;
+import java.time.Duration;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.retries.AdaptiveRetryStrategy;
+import software.amazon.awssdk.retries.LegacyRetryStrategy;
+import software.amazon.awssdk.retries.StandardRetryStrategy;
+import software.amazon.awssdk.retries.api.RetryStrategy;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.sns.SnsClient;
 
@@ -24,7 +30,13 @@ import software.amazon.awssdk.services.sns.SnsClient;
  * integration tests rather than here: constructing it eagerly initializes the Netty NIO transport,
  * which emits a {@code sun.misc.Unsafe} deprecation warning on Java 25 that would violate the
  * zero-warning build gate. Its body is structurally identical to {@code snsClient} (region,
- * credentials, and the same {@code hasEndpoint} override branch), which is covered above.</p>
+ * credentials, the same {@code hasEndpoint} override branch, and the same bounded
+ * {@code buildOverrideConfiguration}), which is covered above.</p>
+ *
+ * <p>The bounded timeout/retry resilience (R6 / AAP AWS resilience) is verified directly against
+ * the package-private static {@code buildOverrideConfiguration}/{@code buildRetryStrategy} helpers
+ * so the {@link software.amazon.awssdk.core.client.config.ClientOverrideConfiguration} can be
+ * asserted without constructing any network client (avoiding the Netty/Unsafe warning above).</p>
  */
 @DisplayName("AwsConfig - S3/SQS/SNS client beans and properties")
 class AwsConfigTest {
@@ -33,6 +45,13 @@ class AwsConfigTest {
     private static final String ACCESS_KEY = "test";
     private static final String SECRET_KEY = "test";
     private static final String ENDPOINT = "http://localhost:4566";
+
+    // Bounded resilience settings supplied to the client factory beans (mirrors the
+    // carddemo.aws.client.* defaults in application.yml).
+    private static final long API_CALL_TIMEOUT_MILLIS = 30_000L;
+    private static final long API_CALL_ATTEMPT_TIMEOUT_MILLIS = 10_000L;
+    private static final String RETRY_MODE = "STANDARD";
+    private static final int MAX_ATTEMPTS = 3;
 
     private final AwsConfig awsConfig = new AwsConfig();
 
@@ -43,8 +62,9 @@ class AwsConfigTest {
         @Test
         @DisplayName("Builds with a LocalStack endpoint and path-style access")
         void buildsWithEndpoint() {
-            try (S3Client client =
-                    awsConfig.s3Client(REGION, ACCESS_KEY, SECRET_KEY, ENDPOINT, true)) {
+            try (S3Client client = awsConfig.s3Client(
+                    REGION, ACCESS_KEY, SECRET_KEY, ENDPOINT, true,
+                    API_CALL_TIMEOUT_MILLIS, API_CALL_ATTEMPT_TIMEOUT_MILLIS, RETRY_MODE, MAX_ATTEMPTS)) {
                 assertThat(client).isNotNull();
             }
         }
@@ -52,8 +72,9 @@ class AwsConfigTest {
         @Test
         @DisplayName("Builds without an endpoint override")
         void buildsWithoutEndpoint() {
-            try (S3Client client =
-                    awsConfig.s3Client(REGION, ACCESS_KEY, SECRET_KEY, "", false)) {
+            try (S3Client client = awsConfig.s3Client(
+                    REGION, ACCESS_KEY, SECRET_KEY, "", false,
+                    API_CALL_TIMEOUT_MILLIS, API_CALL_ATTEMPT_TIMEOUT_MILLIS, RETRY_MODE, MAX_ATTEMPTS)) {
                 assertThat(client).isNotNull();
             }
         }
@@ -66,8 +87,9 @@ class AwsConfigTest {
         @Test
         @DisplayName("Builds with a LocalStack endpoint")
         void buildsWithEndpoint() {
-            try (SnsClient client =
-                    awsConfig.snsClient(REGION, ACCESS_KEY, SECRET_KEY, ENDPOINT)) {
+            try (SnsClient client = awsConfig.snsClient(
+                    REGION, ACCESS_KEY, SECRET_KEY, ENDPOINT,
+                    API_CALL_TIMEOUT_MILLIS, API_CALL_ATTEMPT_TIMEOUT_MILLIS, RETRY_MODE, MAX_ATTEMPTS)) {
                 assertThat(client).isNotNull();
             }
         }
@@ -75,10 +97,68 @@ class AwsConfigTest {
         @Test
         @DisplayName("Builds without an endpoint override")
         void buildsWithoutEndpoint() {
-            try (SnsClient client =
-                    awsConfig.snsClient(REGION, ACCESS_KEY, SECRET_KEY, "")) {
+            try (SnsClient client = awsConfig.snsClient(
+                    REGION, ACCESS_KEY, SECRET_KEY, "",
+                    API_CALL_TIMEOUT_MILLIS, API_CALL_ATTEMPT_TIMEOUT_MILLIS, RETRY_MODE, MAX_ATTEMPTS)) {
                 assertThat(client).isNotNull();
             }
+        }
+    }
+
+    @Nested
+    @DisplayName("Client override configuration (timeout + retry resilience)")
+    class OverrideConfiguration {
+
+        @Test
+        @DisplayName("Carries bounded API call + attempt timeouts and a bounded retry strategy")
+        void carriesBoundedTimeoutsAndRetry() {
+            ClientOverrideConfiguration cfg = AwsConfig.buildOverrideConfiguration(
+                    API_CALL_TIMEOUT_MILLIS, API_CALL_ATTEMPT_TIMEOUT_MILLIS, RETRY_MODE, MAX_ATTEMPTS);
+
+            // Both timeouts are present (bounded) and equal to the configured millis.
+            assertThat(cfg.apiCallTimeout()).contains(Duration.ofMillis(API_CALL_TIMEOUT_MILLIS));
+            assertThat(cfg.apiCallAttemptTimeout())
+                    .contains(Duration.ofMillis(API_CALL_ATTEMPT_TIMEOUT_MILLIS));
+            // A non-deprecated retry strategy is present and bounded to maxAttempts.
+            assertThat(cfg.retryStrategy()).isPresent();
+            assertThat(cfg.retryStrategy().get().maxAttempts()).isEqualTo(MAX_ATTEMPTS);
+            // The deprecated retry-policy slot is intentionally unused.
+            assertThat(cfg.retryPolicy()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("STANDARD mode yields a bounded standard retry strategy")
+        void standardModeIsBoundedStandardStrategy() {
+            RetryStrategy strategy = AwsConfig.buildRetryStrategy("STANDARD", 4);
+            assertThat(strategy).isInstanceOf(StandardRetryStrategy.class);
+            assertThat(strategy.maxAttempts()).isEqualTo(4);
+        }
+
+        @Test
+        @DisplayName("LEGACY mode (case-insensitive) yields a bounded legacy retry strategy")
+        void legacyModeIsBoundedLegacyStrategy() {
+            RetryStrategy strategy = AwsConfig.buildRetryStrategy("legacy", 5);
+            assertThat(strategy).isInstanceOf(LegacyRetryStrategy.class);
+            assertThat(strategy.maxAttempts()).isEqualTo(5);
+        }
+
+        @Test
+        @DisplayName("ADAPTIVE mode yields a bounded adaptive retry strategy")
+        void adaptiveModeIsBoundedAdaptiveStrategy() {
+            RetryStrategy strategy = AwsConfig.buildRetryStrategy("ADAPTIVE", 6);
+            assertThat(strategy).isInstanceOf(AdaptiveRetryStrategy.class);
+            assertThat(strategy.maxAttempts()).isEqualTo(6);
+        }
+
+        @Test
+        @DisplayName("Unknown / blank / null mode fails safe to a bounded standard strategy")
+        void unknownModeFailsSafeToStandard() {
+            assertThat(AwsConfig.buildRetryStrategy("UNRECOGNIZED", 7))
+                    .isInstanceOf(StandardRetryStrategy.class);
+            assertThat(AwsConfig.buildRetryStrategy("UNRECOGNIZED", 7).maxAttempts()).isEqualTo(7);
+            assertThat(AwsConfig.buildRetryStrategy("", 2)).isInstanceOf(StandardRetryStrategy.class);
+            assertThat(AwsConfig.buildRetryStrategy(null, 2)).isInstanceOf(StandardRetryStrategy.class);
+            assertThat(AwsConfig.buildRetryStrategy(null, 2).maxAttempts()).isEqualTo(2);
         }
     }
 

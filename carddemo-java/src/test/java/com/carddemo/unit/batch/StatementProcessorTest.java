@@ -112,6 +112,48 @@ class StatementProcessorTest {
         verify(transactionRepository, never()).findAll();
     }
 
+    @Test
+    @DisplayName("HTML statement escapes user-supplied markup so stored XSS cannot execute (CWE-79)")
+    void process_escapesUserSuppliedMarkupInHtmlStatement() {
+        Account account = account(300L, new BigDecimal("100.00"));
+
+        // Customer fields carry active markup. The first name has no embedded space so the COBOL
+        // name composition (token-before-first-space) keeps the payload intact; the address line
+        // uses single spaces only so htmlText (which cuts at a DOUBLE space) keeps the whole value.
+        Customer customer = customer(11L);
+        customer.setCustFirstName("<script>alert(1)</script>");
+        customer.setCustLastName("DOE");
+        customer.setCustAddrLine1("<img src=x onerror=alert(1)>");
+
+        when(xrefRepository.findByXrefAcctId(300L))
+                .thenReturn(List.of(xref("4444333322221111", 11L, 300L)));
+        when(customerRepository.findById(11L)).thenReturn(Optional.of(customer));
+        when(accountRepository.findById(300L)).thenReturn(Optional.of(account));
+        // A transaction description is the stored-XSS vector: it is user-supplied via the online
+        // transaction-add flow and is emitted into the HTML statement that lands on S3.
+        when(transactionRepository.findByTranCardNumInOrderByTranCardNumAscTranIdAsc(
+                Set.of("4444333322221111")))
+                .thenReturn(List.of(
+                        txn("00000000000000009", "4444333322221111",
+                                "<script>steal()</script>", new BigDecimal("5.00"))));
+
+        StatementResult result = processor.process(account);
+
+        String html = result.htmlStatement();
+        // No raw active markup survives anywhere in the generated HTML statement.
+        assertThat(html).doesNotContain("<script>");
+        assertThat(html).doesNotContain("</script>");
+        assertThat(html).doesNotContain("<img src=x onerror=alert(1)>");
+        // The dangerous characters are present only in their HTML-encoded (inert) form.
+        assertThat(html).contains("&lt;script&gt;alert(1)&lt;/script&gt;");
+        assertThat(html).contains("&lt;script&gt;steal()&lt;/script&gt;");
+        assertThat(html).contains("&lt;img src=x onerror=alert(1)&gt;");
+
+        // The plain-text statement is NOT interpreted as HTML, so it is intentionally left
+        // unescaped; the fix is scoped to the HTML renderer and does not corrupt the text output.
+        assertThat(result.textStatement()).contains("<script>steal()</script>");
+    }
+
     // ---------------------------------------------------------------------
     // Builders
     // ---------------------------------------------------------------------

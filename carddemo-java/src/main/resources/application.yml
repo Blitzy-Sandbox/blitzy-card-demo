@@ -253,6 +253,18 @@ carddemo:
       report-queue: ${SQS_REPORT_QUEUE:carddemo-report-jobs.fifo}
     sns:
       notifications-topic: ${SNS_NOTIFICATIONS_TOPIC:carddemo-notifications}
+    # -------------------------------------------------------------------------
+    # AWS SDK v2 client resilience (consumed by config/AwsConfig). Every S3/SQS/
+    # SNS client is built with a bounded ClientOverrideConfiguration so no
+    # outbound AWS call can block indefinitely and transient failures retry
+    # within a fixed envelope (R6 / AAP AWS resilience). The retry strategy uses
+    # the SDK's non-deprecated RetryStrategy API. Override per environment.
+    # -------------------------------------------------------------------------
+    client:
+      api-call-timeout-millis: ${AWS_API_CALL_TIMEOUT_MILLIS:30000}
+      api-call-attempt-timeout-millis: ${AWS_API_CALL_ATTEMPT_TIMEOUT_MILLIS:10000}
+      retry-mode: ${AWS_RETRY_MODE:STANDARD}
+      max-attempts: ${AWS_MAX_ATTEMPTS:3}
 
   # ---------------------------------------------------------------------------
   # Web / CORS  (consumed by config/WebConfig.corsConfigurationSource)

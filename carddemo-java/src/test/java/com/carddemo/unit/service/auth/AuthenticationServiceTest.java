@@ -2,10 +2,11 @@ package com.carddemo.unit.service.auth;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-import com.carddemo.exception.RecordNotFoundException;
+import com.carddemo.exception.AuthenticationFailedException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.model.entity.UserSecurity;
 import com.carddemo.model.enums.UserType;
@@ -65,28 +66,78 @@ class AuthenticationServiceTest {
     }
 
     @Test
-    @DisplayName("unknown user increments outcome=not_found")
+    @DisplayName("unknown user raises generalized auth failure and increments outcome=not_found")
     void notFound_incrementsNotFoundOutcome() {
         when(userSecurityRepository.findBySecUsrId("GHOST")).thenReturn(Optional.empty());
 
+        // F13: an unknown user must raise the generalized authentication failure (HTTP 401), not a
+        // RecordNotFoundException (HTTP 404), so the response cannot reveal that the id is unknown.
         assertThatThrownBy(() -> service.authenticate("ghost", "password"))
-                .isInstanceOf(RecordNotFoundException.class);
+                .isInstanceOf(AuthenticationFailedException.class);
 
+        // The specific outcome is still recorded server-side via the metric.
         assertThat(outcomeCount(MetricsConfig.OUTCOME_NOT_FOUND)).isEqualTo(1.0);
         assertThat(outcomeCount(MetricsConfig.OUTCOME_SUCCESS)).isZero();
     }
 
     @Test
-    @DisplayName("wrong password increments outcome=wrong_password")
+    @DisplayName("wrong password raises generalized auth failure and increments outcome=wrong_password")
     void wrongPassword_incrementsWrongPasswordOutcome() {
         UserSecurity user = user("ADMIN", STORED_HASH, UserType.ADMIN);
         when(userSecurityRepository.findBySecUsrId("ADMIN")).thenReturn(Optional.of(user));
         when(passwordEncoder.matches("WRONG", STORED_HASH)).thenReturn(false);
 
+        // F13: a wrong password must also raise the generalized authentication failure (HTTP 401), not
+        // a ValidationException (HTTP 400), so it is indistinguishable from the unknown-user case.
         assertThatThrownBy(() -> service.authenticate("admin", "wrong"))
-                .isInstanceOf(ValidationException.class);
+                .isInstanceOf(AuthenticationFailedException.class);
 
         assertThat(outcomeCount(MetricsConfig.OUTCOME_WRONG_PASSWORD)).isEqualTo(1.0);
+        assertThat(outcomeCount(MetricsConfig.OUTCOME_SUCCESS)).isZero();
+    }
+
+    @Test
+    @DisplayName("unknown-user and wrong-password failures are indistinguishable (anti-enumeration)")
+    void failures_areIndistinguishable_preventUserEnumeration() {
+        // Unknown user.
+        when(userSecurityRepository.findBySecUsrId("GHOST")).thenReturn(Optional.empty());
+        Throwable unknownUser = catchThrowable(() -> service.authenticate("ghost", "secret"));
+
+        // Known user, wrong password.
+        UserSecurity user = user("ADMIN", STORED_HASH, UserType.ADMIN);
+        when(userSecurityRepository.findBySecUsrId("ADMIN")).thenReturn(Optional.of(user));
+        when(passwordEncoder.matches("SECRET", STORED_HASH)).thenReturn(false);
+        Throwable wrongPassword = catchThrowable(() -> service.authenticate("admin", "secret"));
+
+        // Same exception type AND identical client-facing message; neither reveals which check failed.
+        assertThat(unknownUser).isInstanceOf(AuthenticationFailedException.class);
+        assertThat(wrongPassword).isInstanceOf(AuthenticationFailedException.class);
+        assertThat(wrongPassword.getMessage()).isEqualTo(unknownUser.getMessage());
+        assertThat(unknownUser.getMessage())
+                .doesNotContain("not found", "Wrong Password", "ghost", "admin", "ADMIN", "GHOST");
+    }
+
+    @Test
+    @DisplayName("blank user id still fails fast as a 400 ValidationException (no auth metric)")
+    void blankUserId_throwsValidationException() {
+        // F13 scope guard: blank-field edits run BEFORE the credential check and remain a 400
+        // ValidationException (not the 401 auth failure), and no auth-attempt outcome is recorded.
+        assertThatThrownBy(() -> service.authenticate("   ", "password"))
+                .isInstanceOf(ValidationException.class);
+
+        assertThat(outcomeCount(MetricsConfig.OUTCOME_NOT_FOUND)).isZero();
+        assertThat(outcomeCount(MetricsConfig.OUTCOME_WRONG_PASSWORD)).isZero();
+        assertThat(outcomeCount(MetricsConfig.OUTCOME_SUCCESS)).isZero();
+    }
+
+    @Test
+    @DisplayName("blank password still fails fast as a 400 ValidationException (no auth metric)")
+    void blankPassword_throwsValidationException() {
+        assertThatThrownBy(() -> service.authenticate("admin", "  "))
+                .isInstanceOf(ValidationException.class);
+
+        assertThat(outcomeCount(MetricsConfig.OUTCOME_NOT_FOUND)).isZero();
+        assertThat(outcomeCount(MetricsConfig.OUTCOME_WRONG_PASSWORD)).isZero();
         assertThat(outcomeCount(MetricsConfig.OUTCOME_SUCCESS)).isZero();
     }
 

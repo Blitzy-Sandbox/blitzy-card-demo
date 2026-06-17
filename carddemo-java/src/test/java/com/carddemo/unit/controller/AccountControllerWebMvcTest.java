@@ -54,6 +54,7 @@ class AccountControllerWebMvcTest {
 
     @Test
     void updateAccount_validVersionedBody_isOk() throws Exception {
+        // F3: the path account id (12345) matches the body accountId (12345); the update proceeds.
         when(accountUpdateService.updateAccount(any())).thenReturn(sampleResponse());
 
         mockMvc.perform(put("/api/accounts/12345")
@@ -62,6 +63,32 @@ class AccountControllerWebMvcTest {
                         .content(VALID_BODY))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accountId").value("12345"));
+    }
+
+    @Test
+    void updateAccount_zeroPaddedBodyMatchesPath_isOk() throws Exception {
+        // F3: the path/body consistency check is numeric and zero-padding tolerant, so a body
+        // accountId of "0000012345" still matches path 12345 and the update is allowed to proceed.
+        when(accountUpdateService.updateAccount(any())).thenReturn(sampleResponse());
+
+        mockMvc.perform(put("/api/accounts/12345")
+                        .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_USER")))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0,\"accountId\":\"0000012345\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accountId").value("12345"));
+    }
+
+    @Test
+    void updateAccount_pathBodyMismatch_isBadRequest() throws Exception {
+        // F3: the path identifies a different account (99999) than the body (12345). The ambiguous
+        // write must be rejected with 400 by the controller guard before the service is invoked,
+        // preventing a request to one account from updating a different record.
+        mockMvc.perform(put("/api/accounts/99999")
+                        .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_USER")))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(VALID_BODY))
+                .andExpect(status().isBadRequest());
     }
 
     @Test

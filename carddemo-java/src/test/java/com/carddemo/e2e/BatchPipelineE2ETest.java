@@ -6,6 +6,9 @@ import com.carddemo.model.entity.Transaction;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.TransactionRepository;
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryPoolMXBean;
+import java.lang.management.MemoryType;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -13,6 +16,7 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -75,6 +79,14 @@ public class BatchPipelineE2ETest {
     private static final int DAILY_TRAN_RECORD_LENGTH = 350;
     private static final int REJECT_RECORD_LENGTH = 430;
     private static final int EXPECTED_DAILY_RECORDS = 300;
+    // Deterministic CBTRN02C 4-stage cascade split over dailytran.txt (AAP F-018): 262 posted, 38
+    // rejected. Hardcoded so any drift in the validation cascade fails Gate 1.
+    private static final int EXPECTED_VALID_RECORDS = 262;
+    private static final int EXPECTED_REJECT_RECORDS = 38;
+    // Reject-record trailer geometry: 4-byte zero-padded numeric reason (RejectWriter offset 350).
+    private static final int REJECT_REASON_LENGTH = 4;
+    // The complete source reject-reason set (RejectCode @ 27d6c6f): 100,101,102,103,109.
+    private static final Set<Integer> VALID_REJECT_CODES = Set.of(100, 101, 102, 103, 109);
 
     // CVTRA06Y field offsets (Java half-open substring bounds) used for the decimal-fidelity proof.
     private static final int TRAN_ID_BEGIN = 0;
@@ -178,10 +190,16 @@ public class BatchPipelineE2ETest {
     /**
      * Gate 1 end-to-end boundary: the real {@code dailytran.txt} fixture flows from S3 through the
      * posting job into PostgreSQL (valid) and an S3 {@code DALYREJS} object (rejected), against real
-     * infrastructure (no mocked I/O). Asserts {@code COMPLETED}, the {@code valid + reject == 300}
-     * conservation, 430-byte reject-record alignment, the {@code COMPLETED_WITH_REJECTS} exit code
-     * when rejects exist, and {@code BigDecimal} decimal fidelity via {@code compareTo}; finally
-     * writes the byte-equivalence evidence report under {@code target/}.
+     * infrastructure (no mocked I/O). Asserts {@code COMPLETED}, the exact deterministic split
+     * ({@code 262} posted / {@code 38} rejected) and {@code valid + reject == 300} conservation,
+     * 430-byte reject-record alignment, the always-present {@code COMPLETED_WITH_REJECTS} exit code,
+     * and {@code BigDecimal} decimal fidelity via {@code compareTo}. The Gate-1 byte-equivalence
+     * proof is <strong>non-circular</strong>: because the COBOL {@code CBTRN02C} baseline cannot run
+     * here, the authoritative baseline is the committed source fixture {@code dailytran.txt}; every
+     * reject record's embedded 350-byte segment is compared BYTE-FOR-BYTE against the matching source
+     * line (keyed by transaction id) and every reject reason is checked to be one of the five source
+     * codes, failing the test on any difference. Finally writes the evidence report under
+     * {@code target/}.
      *
      * @throws Exception if the fixture cannot be read or the job launch fails
      */
@@ -215,33 +233,48 @@ public class BatchPipelineE2ETest {
                 .addString("inputLocation", "s3://" + BUCKET_INPUT + "/" + DAILY_TRAN_KEY)
                 .addLong("run.id", System.currentTimeMillis())
                 .toJobParameters();
+
+        // Gate-3 performance baseline capture (the COBOL source has no published SLA, so this run
+        // ESTABLISHES the reference baseline — recorded, not a pass/fail threshold). Reset the
+        // per-pool heap peak immediately before the job so getPeakUsage() reflects the job window,
+        // and measure wall-clock duration around the launch.
+        resetHeapPeak();
+        long startNanos = System.nanoTime();
         JobExecution execution = jobLauncher.run(dailyTransactionPostingJob, params);
+        long elapsedNanos = System.nanoTime() - startNanos;
+        long peakHeapBytes = peakHeapUsedBytes();
 
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
         long validCount = transactionRepository.count() - preCount;
 
-        // Read the EXACT DALYREJS object by key: the same bucket also holds the SYSTRAN staging
-        // object written by TransactionWriter, so listing/summing the bucket would over-count.
-        long rejectBytes;
+        // Read the EXACT DALYREJS object by key (full bytes): the same bucket also holds the SYSTRAN
+        // staging object written by TransactionWriter, so listing/summing the bucket would over-count.
+        // An absent object means zero rejects.
+        byte[] rejectFileBytes;
         try {
             ResponseBytes<GetObjectResponse> rejectObject = s3Client.getObjectAsBytes(
                     GetObjectRequest.builder().bucket(BUCKET_OUTPUT).key(REJECT_OBJECT_KEY).build());
-            rejectBytes = rejectObject.asByteArray().length;
+            rejectFileBytes = rejectObject.asByteArray();
         } catch (NoSuchKeyException noRejects) {
-            rejectBytes = 0L;
+            rejectFileBytes = new byte[0];
         }
+        long rejectBytes = rejectFileBytes.length;
         assertThat(rejectBytes % REJECT_RECORD_LENGTH).isZero();
         long rejectCount = rejectBytes / REJECT_RECORD_LENGTH;
 
         // Gate-1 conservation: every input record is either posted or rejected, never both/neither.
         assertThat(validCount + rejectCount).isEqualTo((long) EXPECTED_DAILY_RECORDS);
 
-        // CBTRN02C "IF WS-REJECT-COUNT > 0 MOVE 4 TO RETURN-CODE": the warning exit code surfaces
-        // when any record was rejected, while the batch status itself stays COMPLETED.
-        if (rejectCount > 0) {
-            assertThat(execution.getExitStatus().getExitCode()).contains("COMPLETED_WITH_REJECTS");
-        }
+        // Gate-1 parity counts: the deterministic 262-posted / 38-rejected split produced by the
+        // CBTRN02C 4-stage validation cascade over dailytran.txt (AAP F-018). Hardcoded so any drift
+        // in the cascade fails the gate rather than silently passing conservation.
+        assertThat(validCount).as("valid posted transactions").isEqualTo((long) EXPECTED_VALID_RECORDS);
+        assertThat(rejectCount).as("rejected transactions").isEqualTo((long) EXPECTED_REJECT_RECORDS);
+
+        // CBTRN02C "IF WS-REJECT-COUNT > 0 MOVE 4 TO RETURN-CODE": with 38 rejects the warning exit
+        // code is always surfaced, while the batch status itself stays COMPLETED.
+        assertThat(execution.getExitStatus().getExitCode()).contains("COMPLETED_WITH_REJECTS");
 
         // Decimal fidelity (AAP §0.8.2): zoned-decimal trailing-overpunch decode -> BigDecimal scale
         // 2 -> compareTo. The two verified vectors are the non-negotiable core of the proof.
@@ -251,9 +284,11 @@ public class BatchPipelineE2ETest {
         // Decode every input amount keyed by transaction id (the processor copies dalytranId ->
         // tranId), then prove a persisted transaction's amount round-tripped with exact precision.
         Map<String, BigDecimal> amountByTranId = new HashMap<>();
+        Map<String, String> sourceRecordByTranId = new HashMap<>();
         for (String record : records) {
             String inputId = record.substring(TRAN_ID_BEGIN, TRAN_ID_END).trim();
             amountByTranId.put(inputId, decodeOverpunch(record.substring(AMOUNT_BEGIN, AMOUNT_END)));
+            sourceRecordByTranId.put(inputId, record);
         }
         List<Transaction> persisted = transactionRepository.findAll();
         Transaction sample = persisted.stream()
@@ -271,21 +306,61 @@ public class BatchPipelineE2ETest {
             assertThat(matchExists).isTrue();
         }
 
-        // Gate 1 deliverable: byte-equivalence evidence. The COBOL baseline (CBTRN02C @ 27d6c6f) is
-        // not executed here, so the Java run IS the reference baseline; the report records the
-        // counts, byte alignment, exit status, and decimal-fidelity outcome.
+        // Gate-1 TRUE byte-equivalence (NON-CIRCULAR). The COBOL CBTRN02C program cannot run in this
+        // environment, so the authoritative baseline is the committed real-world source fixture
+        // app/data/ASCII/dailytran.txt (a Gate-4 named artifact) — NOT the Java run. Each 430-byte
+        // DALYREJS record embeds its original 350-byte daily-transaction segment at offset 0
+        // (RejectWriter), re-serialized by TransactionWriter.buildDalytranRecord from the parsed
+        // DailyTransaction. For every rejected record we (a) assert the reject reason is one of the
+        // five source codes and (b) compare its embedded 350-byte segment BYTE-FOR-BYTE against the
+        // source fixture line keyed by transaction id, failing on ANY difference. This proves the
+        // Java parse->serialize round-trip reproduces the source bytes exactly, against an external
+        // baseline, breaking the previous circular "Java run is the baseline" framing.
+        int byteEquivalentRejects = 0;
+        for (int i = 0; i < rejectCount; i++) {
+            int base = i * REJECT_RECORD_LENGTH;
+            String embeddedOriginal = new String(
+                    rejectFileBytes, base, DAILY_TRAN_RECORD_LENGTH, StandardCharsets.ISO_8859_1);
+            int reasonCode = Integer.parseInt(new String(
+                    rejectFileBytes, base + DAILY_TRAN_RECORD_LENGTH, REJECT_REASON_LENGTH,
+                    StandardCharsets.ISO_8859_1).trim());
+            assertThat(VALID_REJECT_CODES)
+                    .as("reject reason code on reject record %d", i)
+                    .contains(reasonCode);
+
+            String rejectTranId = embeddedOriginal.substring(TRAN_ID_BEGIN, TRAN_ID_END).trim();
+            String sourceRecord = sourceRecordByTranId.get(rejectTranId);
+            assertThat(sourceRecord)
+                    .as("source fixture line for rejected tran id %s", rejectTranId)
+                    .isNotNull();
+            // ISO-8859-1 String equality is exactly raw byte equality for these fixed-width records.
+            assertThat(embeddedOriginal)
+                    .as("byte-equivalence of embedded reject segment vs source fixture for tran %s",
+                            rejectTranId)
+                    .isEqualTo(sourceRecord);
+            byteEquivalentRejects++;
+        }
+        assertThat(byteEquivalentRejects)
+                .as("every rejected record byte-matched against the source fixture baseline")
+                .isEqualTo(EXPECTED_REJECT_RECORDS);
+
+        // Gate 1 deliverable: byte-equivalence evidence with an EXTERNAL baseline (the committed
+        // source fixture) — the circular "Java run is the baseline" framing has been removed.
         Path reportDir = Path.of("target");
         Files.createDirectories(reportDir);
         String report = """
                 CardDemo Gate 1 - Daily Transaction Posting Byte-Equivalence Report
-                Source baseline: COBOL CBTRN02C @ commit 27d6c6f (REFERENCE ONLY; not executed)
-                Fixture: app/data/ASCII/dailytran.txt
+                Baseline (authoritative): real-world source fixture app/data/ASCII/dailytran.txt \
+                (committed; external to the Java run)
+                COBOL reference: CBTRN02C @ commit 27d6c6f (not executable in this environment)
                 Fixture layout: newline-delimited, %d records x %d data bytes + LF = %d total bytes
                 Input records (350-byte fixed-width CVTRA06Y): %d
-                Valid posted (PostgreSQL Transaction rows, delta): %d
-                Rejected (S3 carddemo-batch-output/DALYREJS, 430-byte records): %d
+                Valid posted (PostgreSQL Transaction rows, delta): %d (expected %d)
+                Rejected (S3 carddemo-batch-output/DALYREJS, 430-byte records): %d (expected %d)
                 Conservation: valid + rejected = %d (expected %d)
-                Reject object byte length: %d (multiple of 430: %s)
+                Reject reason codes: every observed code is within {100,101,102,103,109}
+                Byte-equivalence: %d of %d reject records embed a 350-byte segment BYTE-FOR-BYTE \
+                identical to the source fixture line (keyed by transaction id); any diff fails the test
                 Seeded accounts (Flyway V3): %d
                 Job exit status: %s
                 Decimal fidelity: overpunch decode verified (504.77, -919.00) and matched against \
@@ -293,11 +368,63 @@ public class BatchPipelineE2ETest {
                 Result: PASS
                 """.formatted(
                 EXPECTED_DAILY_RECORDS, DAILY_TRAN_RECORD_LENGTH, fixtureBytes.length,
-                EXPECTED_DAILY_RECORDS, validCount, rejectCount,
+                EXPECTED_DAILY_RECORDS, validCount, EXPECTED_VALID_RECORDS,
+                rejectCount, EXPECTED_REJECT_RECORDS,
                 validCount + rejectCount, EXPECTED_DAILY_RECORDS,
-                rejectBytes, rejectBytes % REJECT_RECORD_LENGTH == 0,
+                byteEquivalentRejects, rejectCount,
                 accountRepository.count(), execution.getExitStatus().getExitCode());
         Files.writeString(reportDir.resolve("gate1-byte-equivalence-report.txt"), report);
+
+        // Gate-3 deliverable: concrete performance baseline of record for the 300-record posting job.
+        double wallClockMillis = elapsedNanos / 1_000_000.0;
+        double wallClockSeconds = elapsedNanos / 1_000_000_000.0;
+        long processed = validCount + rejectCount;
+        double recordsPerSecond = wallClockSeconds > 0 ? processed / wallClockSeconds : 0.0;
+        double peakHeapMb = peakHeapBytes / (1024.0 * 1024.0);
+        String perfReport = """
+                CardDemo Gate 3 - Daily Transaction Posting Performance Baseline (baseline of record)
+                Framing: the COBOL source has no published SLA; this Java run ESTABLISHES the baseline
+                (recorded, not a pass/fail regression target). Captured on real PostgreSQL 16 +
+                LocalStack via Testcontainers.
+                Input records: %d (valid posted %d + rejected %d)
+                Wall-clock duration: %.1f ms (%.3f s) for the 300-record input
+                Records/second (end-to-end): %.1f rec/s
+                Throughput (posted + rejected per wall-clock second): %.1f rec/s
+                Peak heap during job (sum of HEAP MemoryPool peak-used after resetPeakUsage): %.1f MiB
+                """.formatted(
+                EXPECTED_DAILY_RECORDS, validCount, rejectCount,
+                wallClockMillis, wallClockSeconds,
+                recordsPerSecond, recordsPerSecond, peakHeapMb);
+        Files.writeString(reportDir.resolve("gate3-performance-baseline.txt"), perfReport);
+    }
+
+    /**
+     * Resets the peak-usage counter of every HEAP memory pool so a subsequent
+     * {@link #peakHeapUsedBytes()} reflects only the work performed after this call (the Gate-3
+     * job window).
+     */
+    private static void resetHeapPeak() {
+        for (MemoryPoolMXBean pool : ManagementFactory.getMemoryPoolMXBeans()) {
+            if (pool.getType() == MemoryType.HEAP) {
+                pool.resetPeakUsage();
+            }
+        }
+    }
+
+    /**
+     * Sums the peak used bytes across all HEAP memory pools since the last
+     * {@link #resetHeapPeak()}, giving an upper-bound peak-heap figure for the job window.
+     *
+     * @return the aggregate peak heap used, in bytes
+     */
+    private static long peakHeapUsedBytes() {
+        long peak = 0L;
+        for (MemoryPoolMXBean pool : ManagementFactory.getMemoryPoolMXBeans()) {
+            if (pool.getType() == MemoryType.HEAP && pool.getPeakUsage() != null) {
+                peak += pool.getPeakUsage().getUsed();
+            }
+        }
+        return peak;
     }
 
 

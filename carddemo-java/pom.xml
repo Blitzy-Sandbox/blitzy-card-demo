@@ -71,6 +71,14 @@
         <spring-cloud-aws.version>3.3.0</spring-cloud-aws.version>
         <logstash-logback-encoder.version>8.0</logstash-logback-encoder.version>
         <dependency-check-maven.version>12.1.0</dependency-check-maven.version>
+        <!--
+          NVD API key for OWASP Dependency-Check (Gate 8). Empty by default so
+          offline POM validation and local builds work unchanged; CI supplies a
+          real key via `-Dnvd.api.key=...` (sourced from the NVD_API_KEY secret)
+          so the NVD data feed downloads reliably without rate-limit throttling.
+          See .github/workflows/ci.yml and docs/validation-gates.md (Gate 8).
+        -->
+        <nvd.api.key></nvd.api.key>
         <jacoco-maven-plugin.version>0.8.14</jacoco-maven-plugin.version>
         <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
         <maven-failsafe-plugin.version>3.5.2</maven-failsafe-plugin.version>
@@ -478,6 +486,16 @@
                 <version>${dependency-check-maven.version}</version>
                 <configuration>
                     <failBuildOnCVSS>7</failBuildOnCVSS>
+                    <!--
+                      NVD API key (empty by default; supplied in CI via
+                      -Dnvd.api.key=${{ secrets.NVD_API_KEY }}). An authenticated
+                      key raises the NVD rate limit so the data feed downloads
+                      reliably; when empty the plugin falls back to anonymous
+                      access. This wiring lets CI produce the authoritative
+                      zero-critical/high evidence for Gate 8 without hardcoding
+                      any secret in the POM.
+                    -->
+                    <nvdApiKey>${nvd.api.key}</nvdApiKey>
                     <formats>
                         <format>HTML</format>
                         <format>JSON</format>

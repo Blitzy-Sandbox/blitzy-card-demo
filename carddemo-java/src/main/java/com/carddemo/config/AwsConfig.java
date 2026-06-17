@@ -1,6 +1,8 @@
 package com.carddemo.config;
 
 import java.net.URI;
+import java.time.Duration;
+import java.util.Locale;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -11,7 +13,10 @@ import org.springframework.util.StringUtils;
 
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.retries.DefaultRetryStrategy;
+import software.amazon.awssdk.retries.api.RetryStrategy;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.services.s3.S3Configuration;
@@ -27,6 +32,12 @@ import software.amazon.awssdk.services.sqs.SqsAsyncClientBuilder;
  * typed {@link CardDemoAwsProperties} holder for the CardDemo resource names. Clients target
  * LocalStack for the {@code local}/{@code test} profiles (path-style S3, {@code :4566} endpoint)
  * and real AWS regional endpoints in the base profile via environment-supplied settings.
+ *
+ * <p>Every client is built with a shared, bounded {@link ClientOverrideConfiguration}
+ * (see {@link #buildOverrideConfiguration}) carrying an API call timeout, a per-attempt timeout, and
+ * a retry strategy, so no outbound AWS call can block indefinitely and transient failures retry
+ * within a fixed envelope. These settings are tunable via {@code carddemo.aws.client.*} in
+ * {@code application*.yml} and are exercisable against LocalStack.</p>
  *
  * <p>Lineage (reference only): derived from {@code app/jcl/DEFGDGB.jcl} at source commit
  * {@code 27d6c6f}; no COBOL/JCL is copied. Rationale is recorded in {@code DECISION_LOG.md}.</p>
@@ -47,11 +58,17 @@ public class AwsConfig {
             @Value("${spring.cloud.aws.credentials.access-key:test}") String accessKey,
             @Value("${spring.cloud.aws.credentials.secret-key:test}") String secretKey,
             @Value("${spring.cloud.aws.endpoint:}") String endpoint,
-            @Value("${spring.cloud.aws.s3.path-style-access-enabled:false}") boolean pathStyleAccess) {
+            @Value("${spring.cloud.aws.s3.path-style-access-enabled:false}") boolean pathStyleAccess,
+            @Value("${carddemo.aws.client.api-call-timeout-millis:30000}") long apiCallTimeoutMillis,
+            @Value("${carddemo.aws.client.api-call-attempt-timeout-millis:10000}") long apiCallAttemptTimeoutMillis,
+            @Value("${carddemo.aws.client.retry-mode:STANDARD}") String retryMode,
+            @Value("${carddemo.aws.client.max-attempts:3}") int maxAttempts) {
         S3ClientBuilder builder = S3Client.builder()
                 .region(Region.of(region))
                 .credentialsProvider(
                         StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
+                .overrideConfiguration(buildOverrideConfiguration(
+                        apiCallTimeoutMillis, apiCallAttemptTimeoutMillis, retryMode, maxAttempts))
                 .serviceConfiguration(S3Configuration.builder()
                         .pathStyleAccessEnabled(pathStyleAccess)
                         .build());
@@ -71,11 +88,17 @@ public class AwsConfig {
             @Value("${spring.cloud.aws.region.static:us-east-1}") String region,
             @Value("${spring.cloud.aws.credentials.access-key:test}") String accessKey,
             @Value("${spring.cloud.aws.credentials.secret-key:test}") String secretKey,
-            @Value("${spring.cloud.aws.endpoint:}") String endpoint) {
+            @Value("${spring.cloud.aws.endpoint:}") String endpoint,
+            @Value("${carddemo.aws.client.api-call-timeout-millis:30000}") long apiCallTimeoutMillis,
+            @Value("${carddemo.aws.client.api-call-attempt-timeout-millis:10000}") long apiCallAttemptTimeoutMillis,
+            @Value("${carddemo.aws.client.retry-mode:STANDARD}") String retryMode,
+            @Value("${carddemo.aws.client.max-attempts:3}") int maxAttempts) {
         SqsAsyncClientBuilder builder = SqsAsyncClient.builder()
                 .region(Region.of(region))
                 .credentialsProvider(
-                        StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)));
+                        StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
+                .overrideConfiguration(buildOverrideConfiguration(
+                        apiCallTimeoutMillis, apiCallAttemptTimeoutMillis, retryMode, maxAttempts));
         if (hasEndpoint(endpoint)) {
             builder.endpointOverride(URI.create(endpoint));
         }
@@ -92,11 +115,17 @@ public class AwsConfig {
             @Value("${spring.cloud.aws.region.static:us-east-1}") String region,
             @Value("${spring.cloud.aws.credentials.access-key:test}") String accessKey,
             @Value("${spring.cloud.aws.credentials.secret-key:test}") String secretKey,
-            @Value("${spring.cloud.aws.endpoint:}") String endpoint) {
+            @Value("${spring.cloud.aws.endpoint:}") String endpoint,
+            @Value("${carddemo.aws.client.api-call-timeout-millis:30000}") long apiCallTimeoutMillis,
+            @Value("${carddemo.aws.client.api-call-attempt-timeout-millis:10000}") long apiCallAttemptTimeoutMillis,
+            @Value("${carddemo.aws.client.retry-mode:STANDARD}") String retryMode,
+            @Value("${carddemo.aws.client.max-attempts:3}") int maxAttempts) {
         SnsClientBuilder builder = SnsClient.builder()
                 .region(Region.of(region))
                 .credentialsProvider(
-                        StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)));
+                        StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
+                .overrideConfiguration(buildOverrideConfiguration(
+                        apiCallTimeoutMillis, apiCallAttemptTimeoutMillis, retryMode, maxAttempts));
         if (hasEndpoint(endpoint)) {
             builder.endpointOverride(URI.create(endpoint));
         }
@@ -109,6 +138,65 @@ public class AwsConfig {
      */
     private boolean hasEndpoint(String endpoint) {
         return StringUtils.hasText(endpoint);
+    }
+
+    /**
+     * Builds the shared, bounded {@link ClientOverrideConfiguration} applied to every CardDemo AWS
+     * SDK v2 client (S3, SQS, SNS) so that no outbound call can block indefinitely and transient
+     * failures retry within a fixed envelope. This gives every AWS interaction explicit
+     * timeout/retry/resilience semantics and bounded behavior that is verifiable against LocalStack.
+     *
+     * <ul>
+     *   <li>{@code apiCallTimeout} caps the total wall-clock time for a single logical API call
+     *       across all internal attempts.</li>
+     *   <li>{@code apiCallAttemptTimeout} caps each individual HTTP attempt within that call.</li>
+     *   <li>The {@link RetryStrategy} bounds the number of attempts (initial + retries) using the
+     *       SDK's non-deprecated retry-strategy API.</li>
+     * </ul>
+     *
+     * <p>Package-private and {@code static} so it is unit-testable without constructing a network
+     * client (which would eagerly initialize the async HTTP layer).</p>
+     *
+     * @param apiCallTimeoutMillis        total per-call timeout in milliseconds
+     * @param apiCallAttemptTimeoutMillis per-attempt timeout in milliseconds
+     * @param retryMode                   retry strategy selector ({@code STANDARD}, {@code LEGACY},
+     *                                    or {@code ADAPTIVE}; case-insensitive, defaults to
+     *                                    {@code STANDARD})
+     * @param maxAttempts                 maximum number of attempts (initial call plus retries)
+     * @return a bounded client override configuration shared across all AWS clients
+     */
+    static ClientOverrideConfiguration buildOverrideConfiguration(
+            long apiCallTimeoutMillis,
+            long apiCallAttemptTimeoutMillis,
+            String retryMode,
+            int maxAttempts) {
+        return ClientOverrideConfiguration.builder()
+                .apiCallTimeout(Duration.ofMillis(apiCallTimeoutMillis))
+                .apiCallAttemptTimeout(Duration.ofMillis(apiCallAttemptTimeoutMillis))
+                .retryStrategy(buildRetryStrategy(retryMode, maxAttempts))
+                .build();
+    }
+
+    /**
+     * Constructs a bounded {@link RetryStrategy} for the requested mode using the SDK's
+     * non-deprecated {@link DefaultRetryStrategy} builders (the legacy {@code RetryPolicy} API is
+     * deprecated in this SDK line and would break the zero-warning build). The {@code STANDARD}
+     * strategy is used for any unrecognized mode so misconfiguration fails safe rather than
+     * disabling retries.
+     *
+     * @param retryMode   retry strategy selector (case-insensitive)
+     * @param maxAttempts maximum number of attempts (initial call plus retries)
+     * @return a retry strategy bounded to {@code maxAttempts}
+     */
+    static RetryStrategy buildRetryStrategy(String retryMode, int maxAttempts) {
+        String mode = StringUtils.hasText(retryMode)
+                ? retryMode.trim().toUpperCase(Locale.ROOT)
+                : "STANDARD";
+        return switch (mode) {
+            case "LEGACY" -> DefaultRetryStrategy.legacyStrategyBuilder().maxAttempts(maxAttempts).build();
+            case "ADAPTIVE" -> DefaultRetryStrategy.adaptiveStrategyBuilder().maxAttempts(maxAttempts).build();
+            default -> DefaultRetryStrategy.standardStrategyBuilder().maxAttempts(maxAttempts).build();
+        };
     }
 
     /**

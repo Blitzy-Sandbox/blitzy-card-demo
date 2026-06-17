@@ -1,6 +1,6 @@
 package com.carddemo.service.auth;
 
-import com.carddemo.exception.RecordNotFoundException;
+import com.carddemo.exception.AuthenticationFailedException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.model.entity.UserSecurity;
 import com.carddemo.observability.MetricsConfig;
@@ -57,6 +57,15 @@ public class AuthenticationService {
     /** Mismatch message for a failed password check ({@code COSGN00C} "Wrong Password. Try again ..."). */
     private static final String MSG_WRONG_PASSWORD = "Wrong Password. Try again ...";
 
+    /**
+     * Generalized, client-safe authentication-failure message returned to the caller for BOTH the
+     * unknown-user and the wrong-password outcomes. Using one indistinguishable message (surfaced as
+     * {@code 401 UNAUTHORIZED}) prevents user-id enumeration (CWE-204): the specific outcome is kept
+     * only in {@link #MSG_USER_NOT_FOUND}/{@link #MSG_WRONG_PASSWORD} server-side logs and the
+     * {@code carddemo.auth.attempts} metric, never in the response.
+     */
+    private static final String MSG_AUTH_FAILED = "Authentication failed. Please check your credentials and try again.";
+
     /** USRSEC keyed store (re-platforms the VSAM {@code USRSEC} KSDS). */
     private final UserSecurityRepository userSecurityRepository;
 
@@ -99,8 +108,10 @@ public class AuthenticationService {
      * @param rawPassword the entered plaintext password ({@code COSGN00} {@code PASSWDI})
      * @return the authenticated {@link UserSecurity} principal, whose
      *         {@link UserSecurity#getSecUsrType()} drives downstream role-based routing
-     * @throws ValidationException     if the user id or password is blank, or the password is wrong
-     * @throws RecordNotFoundException if no {@code USRSEC} record exists for the user id
+     * @throws ValidationException           if the user id or password is blank (HTTP 400)
+     * @throws AuthenticationFailedException if the user id is unknown or the password is wrong;
+     *                                       a single generalized failure (HTTP 401) is raised for
+     *                                       both so the response cannot be used to enumerate user ids
      */
     @Transactional(readOnly = true)
     public UserSecurity authenticate(String userId, String rawPassword) {
@@ -119,19 +130,23 @@ public class AuthenticationService {
         // READ-USER-SEC-FILE: EXEC CICS READ DATASET(USRSEC) RIDFLD(WS-USER-ID)
         Optional<UserSecurity> found = userSecurityRepository.findBySecUsrId(normalizedUserId);
         if (found.isEmpty()) {
-            // WHEN 13 (NOTFND)
+            // WHEN 13 (NOTFND). The specific outcome (COBOL "User not found") is recorded only in the
+            // metric and the server-side log; the caller receives the generalized MSG_AUTH_FAILED (401)
+            // so the unknown-user case is indistinguishable from a wrong password (anti-enumeration).
             MetricsConfig.authAttempts(meterRegistry, MetricsConfig.OUTCOME_NOT_FOUND).increment();
-            log.warn("Authentication failed: user not found for id={}", normalizedUserId);
-            throw new RecordNotFoundException(MSG_USER_NOT_FOUND);
+            log.warn("Authentication failed for id={}: {}", normalizedUserId, MSG_USER_NOT_FOUND);
+            throw new AuthenticationFailedException(MSG_AUTH_FAILED);
         }
 
         UserSecurity user = found.get();
 
-        // WHEN 0: IF SEC-USR-PWD = WS-USER-PWD -> BCrypt verification (never plaintext)
+        // WHEN 0: IF SEC-USR-PWD = WS-USER-PWD -> BCrypt verification (never plaintext). As with the
+        // not-found branch, the COBOL "Wrong Password" detail stays in the metric/log only; the client
+        // receives the same generalized MSG_AUTH_FAILED (401) returned for an unknown user.
         if (!passwordEncoder.matches(normalizedPassword, user.getSecUsrPwd())) {
             MetricsConfig.authAttempts(meterRegistry, MetricsConfig.OUTCOME_WRONG_PASSWORD).increment();
-            log.warn("Authentication failed: wrong password for id={}", normalizedUserId);
-            throw new ValidationException(MSG_WRONG_PASSWORD);
+            log.warn("Authentication failed for id={}: {}", normalizedUserId, MSG_WRONG_PASSWORD);
+            throw new AuthenticationFailedException(MSG_AUTH_FAILED);
         }
 
         // Success: MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE; type drives downstream routing/JWT claims

@@ -1,5 +1,6 @@
 package com.carddemo.controller;
 
+import com.carddemo.exception.AuthenticationFailedException;
 import com.carddemo.exception.CardDemoException;
 import com.carddemo.exception.ConcurrencyException;
 import com.carddemo.exception.DuplicateRecordException;
@@ -94,6 +95,16 @@ public class GlobalExceptionHandler {
         // identifiers (S3 bucket/object keys, FILE STATUS codes) are never exposed (CWE-209).
         log.error("File access failure handled at API boundary", ex);
         return build(HttpStatus.INTERNAL_SERVER_ERROR, "File Access Error", FILE_ACCESS_SANITIZED_DETAIL);
+    }
+
+    @ExceptionHandler(AuthenticationFailedException.class)
+    public ResponseEntity<ProblemDetail> handleAuthenticationFailed(AuthenticationFailedException ex) {
+        // Sign-on failure (unknown user OR wrong password). The service has already generalized the
+        // outcome to a single client-safe message and recorded the specific reason in metrics/logs, so
+        // every authentication failure returns an identical 401 and cannot be used to enumerate user
+        // ids (CWE-204). This dedicated handler wins over the CardDemoException fallback (more specific
+        // type) and keeps the failure at 401 rather than the fallback's sanitized 500.
+        return build(HttpStatus.UNAUTHORIZED, "Authentication Failed", ex.getMessage());
     }
 
     @ExceptionHandler(CardDemoException.class)

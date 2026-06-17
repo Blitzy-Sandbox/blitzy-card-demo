@@ -43,6 +43,14 @@ class DailyTransactionRepositoryIT extends AbstractRepositoryIT {
     }
 
     @Test
+    void findByUnknownIdReturnsEmpty() {
+        // Negative path: a key that cannot exist among the seeded 16-digit numeric staging ids
+        // must yield an empty Optional (the JPA equivalent of FILE STATUS '23' / INVALID KEY),
+        // proving keyed reads do not match on an absent daily-transaction id.
+        assertThat(dailyTransactionRepository.findById("NO_SUCH_TXN")).isEmpty();
+    }
+
+    @Test
     void saveStagesNewDailyTransaction() {
         List<DailyTransaction> seed = dailyTransactionRepository.findAll();
         DailyTransaction staged = seed.get(0);
