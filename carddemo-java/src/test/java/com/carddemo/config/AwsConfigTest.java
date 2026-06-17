@@ -1,13 +1,21 @@
 package com.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.carddemo.config.AwsConfig.CardDemoAwsProperties;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.instrumentation.awssdk.v2_2.AwsSdkTelemetry;
 import java.time.Duration;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
 import software.amazon.awssdk.retries.AdaptiveRetryStrategy;
 import software.amazon.awssdk.retries.LegacyRetryStrategy;
 import software.amazon.awssdk.retries.StandardRetryStrategy;
@@ -53,6 +61,11 @@ class AwsConfigTest {
     private static final String RETRY_MODE = "STANDARD";
     private static final int MAX_ATTEMPTS = 3;
 
+    // No-op AWS SDK OpenTelemetry execution interceptor supplied to the client factory beans so
+    // the S3/SNS builds exercise the new tracing-aware override path without any real telemetry.
+    private static final ExecutionInterceptor TRACING_INTERCEPTOR =
+            AwsSdkTelemetry.create(OpenTelemetry.noop()).newExecutionInterceptor();
+
     private final AwsConfig awsConfig = new AwsConfig();
 
     @Nested
@@ -64,7 +77,8 @@ class AwsConfigTest {
         void buildsWithEndpoint() {
             try (S3Client client = awsConfig.s3Client(
                     REGION, ACCESS_KEY, SECRET_KEY, ENDPOINT, true,
-                    API_CALL_TIMEOUT_MILLIS, API_CALL_ATTEMPT_TIMEOUT_MILLIS, RETRY_MODE, MAX_ATTEMPTS)) {
+                    API_CALL_TIMEOUT_MILLIS, API_CALL_ATTEMPT_TIMEOUT_MILLIS, RETRY_MODE, MAX_ATTEMPTS,
+                    TRACING_INTERCEPTOR)) {
                 assertThat(client).isNotNull();
             }
         }
@@ -74,7 +88,8 @@ class AwsConfigTest {
         void buildsWithoutEndpoint() {
             try (S3Client client = awsConfig.s3Client(
                     REGION, ACCESS_KEY, SECRET_KEY, "", false,
-                    API_CALL_TIMEOUT_MILLIS, API_CALL_ATTEMPT_TIMEOUT_MILLIS, RETRY_MODE, MAX_ATTEMPTS)) {
+                    API_CALL_TIMEOUT_MILLIS, API_CALL_ATTEMPT_TIMEOUT_MILLIS, RETRY_MODE, MAX_ATTEMPTS,
+                    TRACING_INTERCEPTOR)) {
                 assertThat(client).isNotNull();
             }
         }
@@ -89,7 +104,8 @@ class AwsConfigTest {
         void buildsWithEndpoint() {
             try (SnsClient client = awsConfig.snsClient(
                     REGION, ACCESS_KEY, SECRET_KEY, ENDPOINT,
-                    API_CALL_TIMEOUT_MILLIS, API_CALL_ATTEMPT_TIMEOUT_MILLIS, RETRY_MODE, MAX_ATTEMPTS)) {
+                    API_CALL_TIMEOUT_MILLIS, API_CALL_ATTEMPT_TIMEOUT_MILLIS, RETRY_MODE, MAX_ATTEMPTS,
+                    TRACING_INTERCEPTOR)) {
                 assertThat(client).isNotNull();
             }
         }
@@ -99,7 +115,8 @@ class AwsConfigTest {
         void buildsWithoutEndpoint() {
             try (SnsClient client = awsConfig.snsClient(
                     REGION, ACCESS_KEY, SECRET_KEY, "",
-                    API_CALL_TIMEOUT_MILLIS, API_CALL_ATTEMPT_TIMEOUT_MILLIS, RETRY_MODE, MAX_ATTEMPTS)) {
+                    API_CALL_TIMEOUT_MILLIS, API_CALL_ATTEMPT_TIMEOUT_MILLIS, RETRY_MODE, MAX_ATTEMPTS,
+                    TRACING_INTERCEPTOR)) {
                 assertThat(client).isNotNull();
             }
         }
@@ -159,6 +176,39 @@ class AwsConfigTest {
             assertThat(AwsConfig.buildRetryStrategy("", 2)).isInstanceOf(StandardRetryStrategy.class);
             assertThat(AwsConfig.buildRetryStrategy(null, 2)).isInstanceOf(StandardRetryStrategy.class);
             assertThat(AwsConfig.buildRetryStrategy(null, 2).maxAttempts()).isEqualTo(2);
+        }
+    }
+
+    @Nested
+    @DisplayName("AWS SDK tracing interceptor")
+    @SuppressWarnings("unchecked") // mock(ObjectProvider.class) is a raw type; localized to this test.
+    class TracingInterceptor {
+
+        @Test
+        @DisplayName("Builds from the application OpenTelemetry bean when one is available")
+        void buildsFromAvailableOpenTelemetry() {
+            ObjectProvider<OpenTelemetry> provider = mock(ObjectProvider.class);
+            when(provider.getIfAvailable(any())).thenReturn(OpenTelemetry.noop());
+
+            ExecutionInterceptor interceptor = awsConfig.awsSdkTracingInterceptor(provider);
+
+            assertThat(interceptor).isNotNull();
+        }
+
+        @Test
+        @DisplayName("Falls back to a no-op OpenTelemetry when no bean is present")
+        void fallsBackToNoopOpenTelemetryWhenNoBean() {
+            // An empty provider drives getIfAvailable(Supplier) to invoke the OpenTelemetry::noop
+            // fallback supplied by the production code; the interceptor must still build.
+            ObjectProvider<OpenTelemetry> provider = mock(ObjectProvider.class);
+            when(provider.getIfAvailable(any())).thenAnswer(invocation -> {
+                Supplier<OpenTelemetry> fallback = invocation.getArgument(0);
+                return fallback.get();
+            });
+
+            ExecutionInterceptor interceptor = awsConfig.awsSdkTracingInterceptor(provider);
+
+            assertThat(interceptor).isNotNull();
         }
     }
 

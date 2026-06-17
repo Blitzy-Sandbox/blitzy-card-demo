@@ -4,6 +4,10 @@ import java.net.URI;
 import java.time.Duration;
 import java.util.Locale;
 
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.instrumentation.awssdk.v2_2.AwsSdkTelemetry;
+
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -14,6 +18,7 @@ import org.springframework.util.StringUtils;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.retries.DefaultRetryStrategy;
 import software.amazon.awssdk.retries.api.RetryStrategy;
@@ -62,13 +67,15 @@ public class AwsConfig {
             @Value("${carddemo.aws.client.api-call-timeout-millis:30000}") long apiCallTimeoutMillis,
             @Value("${carddemo.aws.client.api-call-attempt-timeout-millis:10000}") long apiCallAttemptTimeoutMillis,
             @Value("${carddemo.aws.client.retry-mode:STANDARD}") String retryMode,
-            @Value("${carddemo.aws.client.max-attempts:3}") int maxAttempts) {
+            @Value("${carddemo.aws.client.max-attempts:3}") int maxAttempts,
+            ExecutionInterceptor awsSdkTracingInterceptor) {
         S3ClientBuilder builder = S3Client.builder()
                 .region(Region.of(region))
                 .credentialsProvider(
                         StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
-                .overrideConfiguration(buildOverrideConfiguration(
-                        apiCallTimeoutMillis, apiCallAttemptTimeoutMillis, retryMode, maxAttempts))
+                .overrideConfiguration(withTracing(buildOverrideConfiguration(
+                        apiCallTimeoutMillis, apiCallAttemptTimeoutMillis, retryMode, maxAttempts),
+                        awsSdkTracingInterceptor))
                 .serviceConfiguration(S3Configuration.builder()
                         .pathStyleAccessEnabled(pathStyleAccess)
                         .build());
@@ -97,13 +104,15 @@ public class AwsConfig {
             @Value("${carddemo.aws.sqs-client.api-call-timeout-millis:60000}") long apiCallTimeoutMillis,
             @Value("${carddemo.aws.sqs-client.api-call-attempt-timeout-millis:20000}") long apiCallAttemptTimeoutMillis,
             @Value("${carddemo.aws.sqs-client.retry-mode:STANDARD}") String retryMode,
-            @Value("${carddemo.aws.sqs-client.max-attempts:3}") int maxAttempts) {
+            @Value("${carddemo.aws.sqs-client.max-attempts:3}") int maxAttempts,
+            ExecutionInterceptor awsSdkTracingInterceptor) {
         SqsAsyncClientBuilder builder = SqsAsyncClient.builder()
                 .region(Region.of(region))
                 .credentialsProvider(
                         StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
-                .overrideConfiguration(buildOverrideConfiguration(
-                        apiCallTimeoutMillis, apiCallAttemptTimeoutMillis, retryMode, maxAttempts));
+                .overrideConfiguration(withTracing(buildOverrideConfiguration(
+                        apiCallTimeoutMillis, apiCallAttemptTimeoutMillis, retryMode, maxAttempts),
+                        awsSdkTracingInterceptor));
         if (hasEndpoint(endpoint)) {
             builder.endpointOverride(URI.create(endpoint));
         }
@@ -124,17 +133,42 @@ public class AwsConfig {
             @Value("${carddemo.aws.client.api-call-timeout-millis:30000}") long apiCallTimeoutMillis,
             @Value("${carddemo.aws.client.api-call-attempt-timeout-millis:10000}") long apiCallAttemptTimeoutMillis,
             @Value("${carddemo.aws.client.retry-mode:STANDARD}") String retryMode,
-            @Value("${carddemo.aws.client.max-attempts:3}") int maxAttempts) {
+            @Value("${carddemo.aws.client.max-attempts:3}") int maxAttempts,
+            ExecutionInterceptor awsSdkTracingInterceptor) {
         SnsClientBuilder builder = SnsClient.builder()
                 .region(Region.of(region))
                 .credentialsProvider(
                         StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
-                .overrideConfiguration(buildOverrideConfiguration(
-                        apiCallTimeoutMillis, apiCallAttemptTimeoutMillis, retryMode, maxAttempts));
+                .overrideConfiguration(withTracing(buildOverrideConfiguration(
+                        apiCallTimeoutMillis, apiCallAttemptTimeoutMillis, retryMode, maxAttempts),
+                        awsSdkTracingInterceptor));
         if (hasEndpoint(endpoint)) {
             builder.endpointOverride(URI.create(endpoint));
         }
         return builder.build();
+    }
+
+    /**
+     * AWS SDK v2 execution interceptor that emits an OpenTelemetry span for every S3, SQS, and SNS
+     * call, so AWS operations appear as nested spans within each request / batch-step trace
+     * (Observability rule, AAP §0.7.1: spans for "S3/SQS operations"). It is built from the
+     * Spring-managed {@link OpenTelemetry} bean supplied by the Micrometer Tracing → OpenTelemetry
+     * bridge (which carries the OTLP exporter and sampler), so AWS spans flow through the same
+     * pipeline as controller, repository, and batch spans. When no {@link OpenTelemetry} bean is
+     * present (for example a slice test that does not activate tracing) it falls back to
+     * {@link OpenTelemetry#noop()} so client construction never fails. Experimental span attributes
+     * are disabled to keep span cardinality bounded. Registered on each client through
+     * {@link #withTracing(ClientOverrideConfiguration, ExecutionInterceptor)}.
+     *
+     * @param openTelemetry provider for the application {@link OpenTelemetry} (may be empty)
+     * @return an execution interceptor that records a span per AWS SDK call via the configured tracer
+     */
+    @Bean
+    ExecutionInterceptor awsSdkTracingInterceptor(ObjectProvider<OpenTelemetry> openTelemetry) {
+        return AwsSdkTelemetry.builder(openTelemetry.getIfAvailable(OpenTelemetry::noop))
+                .setCaptureExperimentalSpanAttributes(false)
+                .build()
+                .newExecutionInterceptor();
     }
 
     /**
@@ -143,6 +177,22 @@ public class AwsConfig {
      */
     private boolean hasEndpoint(String endpoint) {
         return StringUtils.hasText(endpoint);
+    }
+
+    /**
+     * Returns a copy of the supplied bounded {@link ClientOverrideConfiguration} with the AWS SDK
+     * OpenTelemetry {@code tracingInterceptor} appended, so every CardDemo AWS client keeps its
+     * timeout/retry envelope (from {@link #buildOverrideConfiguration}) <em>and</em> emits a span per
+     * call. Kept separate from {@code buildOverrideConfiguration} so that helper stays trivially
+     * unit-testable without constructing any OpenTelemetry instrumentation.
+     *
+     * @param base               the bounded timeout/retry override configuration
+     * @param tracingInterceptor the AWS SDK v2 OpenTelemetry execution interceptor
+     * @return a new override configuration carrying the resilience settings plus tracing
+     */
+    private static ClientOverrideConfiguration withTracing(
+            ClientOverrideConfiguration base, ExecutionInterceptor tracingInterceptor) {
+        return base.toBuilder().addExecutionInterceptor(tracingInterceptor).build();
     }
 
     /**

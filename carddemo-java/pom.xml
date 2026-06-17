@@ -84,6 +84,20 @@
         <maven-failsafe-plugin.version>3.5.2</maven-failsafe-plugin.version>
         <maven-dependency-plugin.version>3.8.1</maven-dependency-plugin.version>
         <testcontainers.version>2.0.3</testcontainers.version>
+        <!--
+          JDBC/JPA span instrumentation (Observability rule, AAP section 0.7.1:
+          spans for "JPA repositories"). datasource-micrometer 1.x targets Spring
+          Boot 3.x: 1.4.1 is built against Spring Boot 3.5.x / Micrometer 1.15.x.
+          The 2.x line targets Spring Boot 4 and MUST NOT be used here.
+        -->
+        <datasource-micrometer.version>1.4.1</datasource-micrometer.version>
+        <!--
+          OpenTelemetry AWS SDK v2 instrumentation (Observability rule, AAP section
+          0.7.1: spans for "S3/SQS operations"). 2.15.0-alpha pins opentelemetry-api
+          to 1.49.0, matching the version the Spring Boot BOM resolves via
+          micrometer-tracing-bridge-otel 1.5.12 (2.16.0-alpha pulls 1.50.0 -> skew).
+        -->
+        <opentelemetry-instrumentation.version>2.15.0-alpha</opentelemetry-instrumentation.version>
 
         <!-- Gate 8: minimum JaCoCo line coverage enforced by the check rule. -->
         <jacoco.line.coverage.minimum>0.80</jacoco.line.coverage.minimum>
@@ -254,6 +268,31 @@
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+
+        <!--
+          JDBC/JPA repository spans: proxies the auto-configured DataSource to emit a
+          Micrometer Observation for every query, which the Micrometer -> OpenTelemetry
+          bridge above turns into a span nested under each request / batch-step trace.
+          Auto-configuration only (no code); transparent over the pooled DataSource so
+          Flyway and JPA validate are unaffected. Non-BOM; pinned (see properties).
+        -->
+        <dependency>
+            <groupId>net.ttddyy.observation</groupId>
+            <artifactId>datasource-micrometer-spring-boot</artifactId>
+            <version>${datasource-micrometer.version}</version>
+        </dependency>
+
+        <!--
+          AWS S3/SQS/SNS spans: supplies an AWS SDK v2 ExecutionInterceptor (registered
+          on the S3/SQS/SNS clients in AwsConfig) so every AWS call emits a span through
+          the OpenTelemetry bridge above. Non-BOM; pinned so opentelemetry-api stays at
+          the BOM-resolved 1.49.0 (see properties).
+        -->
+        <dependency>
+            <groupId>io.opentelemetry.instrumentation</groupId>
+            <artifactId>opentelemetry-aws-sdk-2.2</artifactId>
+            <version>${opentelemetry-instrumentation.version}</version>
         </dependency>
 
         <!-- Prometheus metrics registry (/actuator/prometheus). -->

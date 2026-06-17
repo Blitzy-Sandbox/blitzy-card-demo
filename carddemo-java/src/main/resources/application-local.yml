@@ -140,6 +140,10 @@ management:
   otlp:
     tracing:
       endpoint: ${OTLP_ENDPOINT:http://localhost:4317}
+      # gRPC transport matches the :4317 OTLP gRPC endpoint above (the exporter
+      # otherwise defaults to HTTP/protobuf and fails against the gRPC port). See
+      # the base application.yml for the full rationale.
+      transport: grpc
 
 # =============================================================================
 # Phase 6 — Logging

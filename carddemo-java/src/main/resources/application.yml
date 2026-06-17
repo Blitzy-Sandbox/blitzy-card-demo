@@ -225,6 +225,13 @@ management:
       # Micrometer Tracing + OpenTelemetry bridge -> Jaeger (OTLP gRPC :4317).
       # Profiles override the host (e.g. http://jaeger:4317 inside Compose).
       endpoint: ${OTLP_ENDPOINT:http://localhost:4317}
+      # The endpoint targets Jaeger's OTLP *gRPC* receiver (:4317). Spring Boot's
+      # OTLP exporter auto-configures HTTP/protobuf by default, which would send an
+      # HTTP/1.1 request to the gRPC listener and fail ("unexpected end of stream"),
+      # so spans never reach Jaeger. Selecting the gRPC transport aligns the wire
+      # protocol with the :4317 port. (Override host via OTLP_ENDPOINT only; keep
+      # the gRPC port, or set transport to match if pointing at an HTTP :4318 path.)
+      transport: grpc
 
 # -----------------------------------------------------------------------------
 # Phase 9 — Logging hand-off
