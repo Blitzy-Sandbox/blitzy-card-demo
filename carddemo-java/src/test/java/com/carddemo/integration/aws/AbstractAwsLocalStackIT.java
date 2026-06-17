@@ -52,6 +52,10 @@ abstract class AbstractAwsLocalStackIT {
     protected static final String BUCKET_OUTPUT = "carddemo-batch-output";
     protected static final String BUCKET_STATEMENTS = "carddemo-statements";
     protected static final String REPORT_QUEUE = "carddemo-report-jobs.fifo";
+    /** Companion FIFO dead-letter queue paired with {@link #REPORT_QUEUE} (DECISION_LOG D-029). */
+    protected static final String REPORT_DLQ = "carddemo-report-jobs-dlq.fifo";
+    /** Receives a message may incur on the main queue before SQS moves it to the DLQ. */
+    protected static final int MAX_RECEIVE_COUNT = 5;
     protected static final String NOTIFICATIONS_TOPIC = "carddemo-notifications";
 
     static final PostgreSQLContainer POSTGRES =
@@ -103,9 +107,33 @@ abstract class AbstractAwsLocalStackIT {
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_INPUT);
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_OUTPUT);
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_STATEMENTS);
+            // Main report queue plus its companion FIFO dead-letter queue, then a RedrivePolicy on
+            // the main queue targeting the DLQ so poison/failed messages are isolated after
+            // MAX_RECEIVE_COUNT receives rather than looping or being dropped (DECISION_LOG D-029).
+            // This mirrors localstack-init/init-aws.sh so the test stack matches the runtime stack.
             LOCALSTACK.execInContainer("awslocal", "sqs", "create-queue",
                     "--queue-name", REPORT_QUEUE,
                     "--attributes", "FifoQueue=true,ContentBasedDeduplication=true");
+            LOCALSTACK.execInContainer("awslocal", "sqs", "create-queue",
+                    "--queue-name", REPORT_DLQ,
+                    "--attributes", "FifoQueue=true,ContentBasedDeduplication=true");
+            String dlqUrl = LOCALSTACK.execInContainer("awslocal", "sqs", "get-queue-url",
+                    "--queue-name", REPORT_DLQ,
+                    "--query", "QueueUrl", "--output", "text").getStdout().trim();
+            String dlqArn = LOCALSTACK.execInContainer("awslocal", "sqs", "get-queue-attributes",
+                    "--queue-url", dlqUrl,
+                    "--attribute-names", "QueueArn",
+                    "--query", "Attributes.QueueArn", "--output", "text").getStdout().trim();
+            String mainUrl = LOCALSTACK.execInContainer("awslocal", "sqs", "get-queue-url",
+                    "--queue-name", REPORT_QUEUE,
+                    "--query", "QueueUrl", "--output", "text").getStdout().trim();
+            // The RedrivePolicy attribute value is itself a JSON-encoded string; passed as a single
+            // argv element (no shell), so embedded quotes are escaped rather than file:// indirected.
+            String redrivePolicy = "{\"RedrivePolicy\":\"{\\\"deadLetterTargetArn\\\":\\\""
+                    + dlqArn + "\\\",\\\"maxReceiveCount\\\":\\\"" + MAX_RECEIVE_COUNT + "\\\"}\"}";
+            LOCALSTACK.execInContainer("awslocal", "sqs", "set-queue-attributes",
+                    "--queue-url", mainUrl,
+                    "--attributes", redrivePolicy);
             LOCALSTACK.execInContainer("awslocal", "sns", "create-topic", "--name", NOTIFICATIONS_TOPIC);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to provision LocalStack AWS resources", e);
@@ -117,9 +145,9 @@ abstract class AbstractAwsLocalStackIT {
 
     /**
      * Tears down the shared test infrastructure once, at the end of the whole suite: deletes every
-     * provisioned AWS resource (the three S3 buckets and their objects, the SQS FIFO queue, and the
-     * SNS topic) <em>before</em> stopping both containers, then re-throws an aggregated failure if
-     * any step failed. This satisfies the LocalStack Verification rule that integration tests
+     * provisioned AWS resource (the three S3 buckets and their objects, the SQS FIFO queue and its
+     * companion dead-letter queue, and the SNS topic) <em>before</em> stopping both containers, then
+     * re-throws an aggregated failure if any step failed. This satisfies the LocalStack Verification rule that integration tests
      * provision <em>and</em> tear down their own resources, and — unlike the former JVM shutdown
      * hook — makes a cleanup failure fail the build.
      *
@@ -140,6 +168,10 @@ abstract class AbstractAwsLocalStackIT {
             exec(failures, "sh", "-c",
                     "awslocal sqs delete-queue --queue-url "
                             + "$(awslocal sqs get-queue-url --queue-name " + REPORT_QUEUE
+                            + " --query QueueUrl --output text)");
+            exec(failures, "sh", "-c",
+                    "awslocal sqs delete-queue --queue-url "
+                            + "$(awslocal sqs get-queue-url --queue-name " + REPORT_DLQ
                             + " --query QueueUrl --output text)");
             exec(failures, "sh", "-c",
                     "awslocal sns delete-topic --topic-arn "

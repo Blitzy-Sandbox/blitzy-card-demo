@@ -82,6 +82,11 @@ public class AwsConfig {
      * Asynchronous Amazon SQS client backing the report-submission FIFO queue (the CICS TDQ
      * replacement) that {@code @SqsListener} consumers read from and the report service publishes
      * to. By design this is the only SQS bean; no synchronous {@code SqsClient} is defined.
+     *
+     * <p>This client reads its timeouts from the dedicated {@code carddemo.aws.sqs-client.*}
+     * properties (not the shared {@code carddemo.aws.client.*} used by S3/SNS): the per-attempt
+     * timeout must exceed the SQS long-poll wait so an idle {@code ReceiveMessage} returning empty
+     * is normal operation rather than a timeout. See DECISION_LOG D-028.
      */
     @Bean
     SqsAsyncClient sqsAsyncClient(
@@ -89,10 +94,10 @@ public class AwsConfig {
             @Value("${spring.cloud.aws.credentials.access-key:test}") String accessKey,
             @Value("${spring.cloud.aws.credentials.secret-key:test}") String secretKey,
             @Value("${spring.cloud.aws.endpoint:}") String endpoint,
-            @Value("${carddemo.aws.client.api-call-timeout-millis:30000}") long apiCallTimeoutMillis,
-            @Value("${carddemo.aws.client.api-call-attempt-timeout-millis:10000}") long apiCallAttemptTimeoutMillis,
-            @Value("${carddemo.aws.client.retry-mode:STANDARD}") String retryMode,
-            @Value("${carddemo.aws.client.max-attempts:3}") int maxAttempts) {
+            @Value("${carddemo.aws.sqs-client.api-call-timeout-millis:60000}") long apiCallTimeoutMillis,
+            @Value("${carddemo.aws.sqs-client.api-call-attempt-timeout-millis:20000}") long apiCallAttemptTimeoutMillis,
+            @Value("${carddemo.aws.sqs-client.retry-mode:STANDARD}") String retryMode,
+            @Value("${carddemo.aws.sqs-client.max-attempts:3}") int maxAttempts) {
         SqsAsyncClientBuilder builder = SqsAsyncClient.builder()
                 .region(Region.of(region))
                 .credentialsProvider(

@@ -116,6 +116,10 @@ public abstract class AbstractBatchIntegrationTest {
     protected static final String BUCKET_STATEMENTS = "carddemo-statements";
     /** SQS FIFO queue for the report-submission bridge (CICS TDQ replacement). */
     protected static final String REPORT_QUEUE = "carddemo-report-jobs.fifo";
+    /** Companion FIFO dead-letter queue paired with {@link #REPORT_QUEUE} (DECISION_LOG D-029). */
+    protected static final String REPORT_DLQ = "carddemo-report-jobs-dlq.fifo";
+    /** Receives a message may incur on the main queue before SQS moves it to the DLQ. */
+    protected static final int MAX_RECEIVE_COUNT = 5;
     /** SNS topic for notification fan-out. */
     protected static final String NOTIFICATIONS_TOPIC = "carddemo-notifications";
     /** Conventional S3 key for the daily transaction input fixture. */
@@ -138,9 +142,9 @@ public abstract class AbstractBatchIntegrationTest {
 
     /**
      * Registers the PostgreSQL datasource and AWS (LocalStack) properties, then self-provisions the
-     * three S3 buckets, the FIFO report queue, and the notifications topic inside the LocalStack
-     * container. Provisioning runs here (before context refresh) so an {@code @SqsListener} can bind
-     * to an already-existing queue.
+     * three S3 buckets, the FIFO report queue and its companion dead-letter queue, and the
+     * notifications topic inside the LocalStack container. Provisioning runs here (before context
+     * refresh) so an {@code @SqsListener} can bind to an already-existing queue.
      *
      * @param registry the registry the Spring TestContext framework supplies for dynamic properties
      */
@@ -160,9 +164,33 @@ public abstract class AbstractBatchIntegrationTest {
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_INPUT);
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_OUTPUT);
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_STATEMENTS);
+            // Main report queue plus its companion FIFO dead-letter queue, then a RedrivePolicy on
+            // the main queue targeting the DLQ so poison/failed messages are isolated after
+            // MAX_RECEIVE_COUNT receives rather than looping or being dropped (DECISION_LOG D-029).
+            // This mirrors localstack-init/init-aws.sh so the test stack matches the runtime stack.
             LOCALSTACK.execInContainer("awslocal", "sqs", "create-queue",
                     "--queue-name", REPORT_QUEUE,
                     "--attributes", "FifoQueue=true,ContentBasedDeduplication=true");
+            LOCALSTACK.execInContainer("awslocal", "sqs", "create-queue",
+                    "--queue-name", REPORT_DLQ,
+                    "--attributes", "FifoQueue=true,ContentBasedDeduplication=true");
+            String dlqUrl = LOCALSTACK.execInContainer("awslocal", "sqs", "get-queue-url",
+                    "--queue-name", REPORT_DLQ,
+                    "--query", "QueueUrl", "--output", "text").getStdout().trim();
+            String dlqArn = LOCALSTACK.execInContainer("awslocal", "sqs", "get-queue-attributes",
+                    "--queue-url", dlqUrl,
+                    "--attribute-names", "QueueArn",
+                    "--query", "Attributes.QueueArn", "--output", "text").getStdout().trim();
+            String mainUrl = LOCALSTACK.execInContainer("awslocal", "sqs", "get-queue-url",
+                    "--queue-name", REPORT_QUEUE,
+                    "--query", "QueueUrl", "--output", "text").getStdout().trim();
+            // The RedrivePolicy attribute value is itself a JSON-encoded string; passed as a single
+            // argv element (no shell), so embedded quotes are escaped rather than file:// indirected.
+            String redrivePolicy = "{\"RedrivePolicy\":\"{\\\"deadLetterTargetArn\\\":\\\""
+                    + dlqArn + "\\\",\\\"maxReceiveCount\\\":\\\"" + MAX_RECEIVE_COUNT + "\\\"}\"}";
+            LOCALSTACK.execInContainer("awslocal", "sqs", "set-queue-attributes",
+                    "--queue-url", mainUrl,
+                    "--attributes", redrivePolicy);
             LOCALSTACK.execInContainer("awslocal", "sns", "create-topic", "--name", NOTIFICATIONS_TOPIC);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to provision LocalStack AWS resources", e);
@@ -174,9 +202,10 @@ public abstract class AbstractBatchIntegrationTest {
 
     /**
      * Tears down the shared batch test infrastructure at JVM exit: a best-effort deletion of every
-     * self-provisioned AWS resource (the three S3 buckets and their objects, the SQS FIFO queue, and
-     * the SNS topic) followed by stopping both shared containers. This makes the batch suite satisfy
-     * the LocalStack Verification rule that tests provision <em>and</em> tear down their own resources.
+     * self-provisioned AWS resource (the three S3 buckets and their objects, the SQS FIFO queue and
+     * its companion dead-letter queue, and the SNS topic) followed by stopping both shared
+     * containers. This makes the batch suite satisfy the LocalStack Verification rule that tests
+     * provision <em>and</em> tear down their own resources.
      *
      * <p>The teardown is a JVM shutdown hook rather than an {@code @AfterAll} because {@link #POSTGRES}
      * and {@link #LOCALSTACK} are shared static singletons reused across every batch subclass; an
@@ -191,6 +220,10 @@ public abstract class AbstractBatchIntegrationTest {
         execQuietly("sh", "-c",
                 "awslocal sqs delete-queue --queue-url "
                         + "$(awslocal sqs get-queue-url --queue-name " + REPORT_QUEUE
+                        + " --query QueueUrl --output text)");
+        execQuietly("sh", "-c",
+                "awslocal sqs delete-queue --queue-url "
+                        + "$(awslocal sqs get-queue-url --queue-name " + REPORT_DLQ
                         + " --query QueueUrl --output text)");
         execQuietly("sh", "-c",
                 "awslocal sns delete-topic --topic-arn "

@@ -26,6 +26,7 @@ import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.CreateQueueRequest;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
 import software.amazon.awssdk.services.sqs.model.DeleteQueueRequest;
+import software.amazon.awssdk.services.sqs.model.GetQueueAttributesRequest;
 import software.amazon.awssdk.services.sqs.model.GetQueueUrlRequest;
 import software.amazon.awssdk.services.sqs.model.Message;
 import software.amazon.awssdk.services.sqs.model.MessageSystemAttributeName;
@@ -143,6 +144,31 @@ class SqsIntegrationIT extends AbstractAwsLocalStackIT {
         assertThat(payload.get("reportType").asText()).isEqualTo("Monthly");
         assertThat(payload.get("startDate").asText()).isEqualTo("2022-07-01");
         assertThat(payload.get("endDate").asText()).isEqualTo("2022-07-31");
+    }
+
+    @Test
+    void reportQueueHasRedrivePolicyTargetingDeadLetterQueue() throws Exception {
+        // Proves QA Issue 2 is resolved: the real report FIFO queue carries a RedrivePolicy so that
+        // a poison message (or a repeatedly-failing launch) is isolated to the companion DLQ after
+        // MAX_RECEIVE_COUNT receives, instead of looping indefinitely or being silently dropped.
+        String redrivePolicy = await(sqsAsyncClient.getQueueAttributes(GetQueueAttributesRequest.builder()
+                .queueUrl(reportQueueUrl())
+                .attributeNames(QueueAttributeName.REDRIVE_POLICY)
+                .build()))
+                .attributes()
+                .get(QueueAttributeName.REDRIVE_POLICY);
+
+        assertThat(redrivePolicy)
+                .as("the report FIFO queue %s must carry a RedrivePolicy (D-029)", REPORT_QUEUE)
+                .isNotNull();
+
+        JsonNode policy = objectMapper.readTree(redrivePolicy);
+        assertThat(policy.path("maxReceiveCount").asInt())
+                .as("RedrivePolicy maxReceiveCount")
+                .isEqualTo(MAX_RECEIVE_COUNT);
+        assertThat(policy.path("deadLetterTargetArn").asText())
+                .as("RedrivePolicy must target the companion DLQ %s", REPORT_DLQ)
+                .endsWith(":" + REPORT_DLQ);
     }
 
     private Message receiveOne(String queueUrl) {

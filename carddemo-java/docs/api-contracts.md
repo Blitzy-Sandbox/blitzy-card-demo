@@ -832,25 +832,32 @@ concrete `startDate`/`endDate` range before publishing.
 
 The mainframe generation-data-group (GDG) datasets and batch sequential files are re-hosted on
 **AWS S3**. GDG generations map to **S3 object versioning**; each GDG base declared in
-`DEFGDGB.jcl` carries `LIMIT(5)`, so the buckets retain the **last 5 versions** of an object
-(lifecycle-enforced), exactly matching the GDG retention.
+`DEFGDGB.jcl` carries `LIMIT(5)`, so an **S3 lifecycle policy** (noncurrent-version expiration with
+`NewerNoncurrentVersions=4`) retains each object's current version plus the 4 most-recent
+noncurrent versions — the **last 5 generations** — matching the GDG retention. Older noncurrent
+versions expire after a one-day minimum (the S3 lifecycle floor). Versioning and the lifecycle
+policy are provisioned on all three buckets by `localstack-init/init-aws.sh`.
 
 | Bucket | Replaces (GDG / DD) | Contents |
 | :-- | :-- | :-- |
 | `carddemo-batch-input` | `DALYTRAN` PS input, `AWS.M2.CARDDEMO.TRANSACT.DALY` | Daily transaction input files staged for posting. |
-| `carddemo-batch-output` | `AWS.M2.CARDDEMO.TRANSACT.BKUP`, `AWS.M2.CARDDEMO.TRANREPT`, `DALYREJS(+1)` | Combined/backup transaction files, transaction reports, rejection files. |
+| `carddemo-batch-output` | `AWS.M2.CARDDEMO.SYSTRAN`, `AWS.M2.CARDDEMO.TRANSACT.BKUP`/`.COMBINED`, `AWS.M2.CARDDEMO.TRANREPT`, `DALYREJS(+1)` | Posted-transaction staging, combined/backup transaction files, transaction reports, rejection files. |
 | `carddemo-statements` | statement output (`CBSTM03A`/`CBSTM03B`) | Generated account statements (text + HTML). |
 
-**Object key layout** (date-partitioned prefixes; `{yyyyMMdd}` is the business run date):
+**Object key layout.** Objects use **flat keys** named after the source JCL GDG-base / DD names
+(no date partitioning); S3 object versioning — not a key prefix — provides the generation history.
+Each key is fixed per stage, so a re-run overwrites the same key and adds a new S3 version.
 
-| Purpose | Key prefix / pattern | Format |
-| :-- | :-- | :-- |
-| Daily transaction input | `daily/{yyyyMMdd}/dailytran.txt` | Fixed-width, 350-byte records |
-| Combined transactions / backup | `combined/{yyyyMMdd}/transact.bkup` | Fixed-width, 350-byte records |
-| Rejections | `rejects/{yyyyMMdd}/dalyrejs.txt` | Fixed-width: 350-byte data + reason code `9(04)` + desc `X(76)` |
-| Transaction report | `reports/{yyyyMMdd}/tranrept.txt` | Report print-line layout |
-| Statement (text) | `statements/{yyyyMMdd}/{accountId}.txt` | Plain-text statement |
-| Statement (HTML) | `statements/{yyyyMMdd}/{accountId}.html` | HTML statement |
+| Purpose | Bucket | Object key | Format |
+| :-- | :-- | :-- | :-- |
+| Daily transaction input | `carddemo-batch-input` | `dailytran.txt` | Fixed-width, 350-byte records |
+| Posted-transaction staging (interest input) | `carddemo-batch-output` | `SYSTRAN` | Fixed-width, 350-byte records |
+| Combined transactions — backup input | `carddemo-batch-output` | `TRANSACT.BKUP` | Fixed-width, 350-byte records |
+| Combined transactions — output | `carddemo-batch-output` | `TRANSACT.COMBINED` | Fixed-width, 350-byte records |
+| Rejections | `carddemo-batch-output` | `DALYREJS` | Fixed-width: 350-byte data + reason code `9(04)` + desc `X(76)` = 430 bytes |
+| Transaction report | `carddemo-batch-output` | `TRANREPT` | 133-byte report print-lines |
+| Statement (text) | `carddemo-statements` | `STATEMNT.PS` | Plain-text statement |
+| Statement (HTML) | `carddemo-statements` | `STATEMNT.HTML` | HTML statement |
 
 **Contract preservation (Gate 5).** All staged/produced records keep their original
 **fixed-width layouts byte-for-byte** — record lengths, field offsets, and decimal scales are

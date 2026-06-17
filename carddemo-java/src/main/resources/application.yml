@@ -149,6 +149,13 @@ spring:
       credentials:
         access-key: ${AWS_ACCESS_KEY_ID:test}
         secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+      # SQS listener long-poll wait. Held below the SqsAsyncClient per-attempt
+      # timeout (carddemo.aws.sqs-client.api-call-attempt-timeout-millis) so an
+      # idle long-poll that returns empty is normal operation, not a timeout
+      # (DECISION_LOG D-028).
+      sqs:
+        listener:
+          poll-timeout: 10s
 
 # -----------------------------------------------------------------------------
 # Phase 1 — HTTP server
@@ -267,6 +274,11 @@ carddemo:
       bucket-output: ${S3_BUCKET_OUTPUT:carddemo-batch-output}
       bucket-statements: ${S3_BUCKET_STATEMENTS:carddemo-statements}
     sqs:
+      # The report queue is paired with a companion dead-letter queue
+      # (carddemo-report-jobs-dlq.fifo) and a RedrivePolicy (maxReceiveCount=5)
+      # provisioned by localstack-init/init-aws.sh and the integration-test
+      # bases, so poison or repeatedly-failing messages are isolated rather than
+      # looping or being silently dropped (DECISION_LOG D-029).
       report-queue: ${SQS_REPORT_QUEUE:carddemo-report-jobs.fifo}
     sns:
       notifications-topic: ${SNS_NOTIFICATIONS_TOPIC:carddemo-notifications}
@@ -276,12 +288,27 @@ carddemo:
     # outbound AWS call can block indefinitely and transient failures retry
     # within a fixed envelope (R6 / AAP AWS resilience). The retry strategy uses
     # the SDK's non-deprecated RetryStrategy API. Override per environment.
+    # This client envelope applies to the S3 and SNS clients (request/response
+    # style calls); the SQS client uses the dedicated sqs-client block below.
     # -------------------------------------------------------------------------
     client:
       api-call-timeout-millis: ${AWS_API_CALL_TIMEOUT_MILLIS:30000}
       api-call-attempt-timeout-millis: ${AWS_API_CALL_ATTEMPT_TIMEOUT_MILLIS:10000}
       retry-mode: ${AWS_RETRY_MODE:STANDARD}
       max-attempts: ${AWS_MAX_ATTEMPTS:3}
+    # -------------------------------------------------------------------------
+    # Dedicated SqsAsyncClient resilience envelope (consumed by
+    # config/AwsConfig.sqsAsyncClient). The SQS listener long-polls
+    # (spring.cloud.aws.sqs.listener.poll-timeout=10s), so the per-attempt
+    # timeout MUST exceed the long-poll wait; otherwise every idle receive
+    # times out, retries, and floods ERROR logs (QA Issue 1). These timeouts are
+    # therefore larger than the shared client envelope above (DECISION_LOG D-028).
+    # -------------------------------------------------------------------------
+    sqs-client:
+      api-call-timeout-millis: ${AWS_SQS_API_CALL_TIMEOUT_MILLIS:60000}
+      api-call-attempt-timeout-millis: ${AWS_SQS_API_CALL_ATTEMPT_TIMEOUT_MILLIS:20000}
+      retry-mode: ${AWS_SQS_RETRY_MODE:STANDARD}
+      max-attempts: ${AWS_SQS_MAX_ATTEMPTS:3}
 
   # ---------------------------------------------------------------------------
   # Web / CORS  (consumed by config/WebConfig.corsConfigurationSource)

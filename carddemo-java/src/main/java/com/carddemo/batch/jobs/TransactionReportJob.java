@@ -205,10 +205,13 @@ public class TransactionReportJob {
      * requested date window. A unique {@value #PARAM_RUN_ID} parameter makes every submission a
      * distinct {@code JobInstance}, so repeated requests for the same window each produce a report.
      *
-     * <p>Launch-level failures are logged and not rethrown: the queue is FIFO with a unique run id
-     * per message, so the benign duplicate cases cannot occur, and rethrowing would only trigger an
-     * unproductive redelivery. Step-level failures are captured in the returned {@code JobExecution}
-     * status (not thrown by {@link JobLauncher#run}).</p>
+     * <p>If the launch itself fails ({@link JobExecutionException}), it is rethrown as an unchecked
+     * {@link IllegalStateException} so the listener NACKs the message: SQS then redelivers it and,
+     * after the queue's {@code maxReceiveCount}, routes it to the dead-letter queue, so a failed
+     * launch is neither silently dropped nor looped indefinitely (DECISION_LOG D-029). The unique
+     * run id per message keeps each redelivery a distinct {@code JobInstance}. Step-level failures
+     * are captured in the returned {@code JobExecution} status (not thrown by
+     * {@link JobLauncher#run}).</p>
      *
      * @param message the report-submission message carrying the report type and date window
      */
@@ -229,8 +232,13 @@ public class TransactionReportJob {
                     JOB_NAME, message.startDate(), message.endDate(), message.reportType());
             jobLauncher.run(transactionReportJob, parameters);
         } catch (JobExecutionException ex) {
-            LOGGER.error("Failed to launch {} for report window [{} .. {}]",
-                    JOB_NAME, message.startDate(), message.endDate(), ex);
+            // Do not swallow the failure: rethrow as unchecked so the SQS listener NACKs the
+            // message. SQS redelivers it and, after the queue's maxReceiveCount, moves it to the
+            // dead-letter queue instead of dropping it silently (DECISION_LOG D-029).
+            throw new IllegalStateException(
+                    "Failed to launch " + JOB_NAME + " for report window ["
+                            + message.startDate() + " .. " + message.endDate() + "]",
+                    ex);
         }
     }
 

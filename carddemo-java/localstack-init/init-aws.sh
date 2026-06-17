@@ -17,8 +17,11 @@
 #   stack (LocalStack Verification rule).
 #
 #   Creates (idempotently):
-#     * 3 S3 buckets (versioning enabled)
-#     * 1 SQS FIFO queue (content-based deduplication)
+#     * 3 S3 buckets (versioning enabled + a GDG LIMIT(5) noncurrent-version
+#       retention lifecycle policy)
+#     * 1 SQS FIFO queue (content-based deduplication) plus a companion FIFO
+#       dead-letter queue, with a RedrivePolicy (maxReceiveCount=5) on the main
+#       queue so poison/failed messages are isolated rather than looping
 #     * 1 SNS topic
 #
 # Traceability (source reference only - COBOL/JCL is translated, NOT copied)
@@ -26,7 +29,10 @@
 #   DEFGDGB.jcl defines 6 generation-data-group (GDG) bases, each LIMIT(5) +
 #   SCRATCH. The mainframe GDG generation/retention model re-platforms to S3
 #   versioned objects (each GDG generation becomes an S3 object version - this
-#   is why bucket versioning is enabled below). GDG base -> S3 bucket mapping:
+#   is why bucket versioning is enabled below), and the LIMIT(5) retention is
+#   re-platformed to an S3 lifecycle policy that keeps the current version plus
+#   the 4 most-recent noncurrent versions (the last 5 generations). GDG base ->
+#   S3 bucket mapping:
 #
 #     AWS.M2.CARDDEMO.TRANSACT.DALY      -> carddemo-batch-input   (input staging)
 #     AWS.M2.CARDDEMO.TRANSACT.BKUP      -> carddemo-batch-output  (batch backup)
@@ -71,6 +77,10 @@ S3_BUCKETS=(
   "carddemo-statements"
 )
 SQS_FIFO_QUEUE="carddemo-report-jobs.fifo"
+# Companion FIFO dead-letter queue + the number of receives a message may incur
+# on the main queue before SQS moves it to the DLQ (RedrivePolicy).
+SQS_FIFO_DLQ="carddemo-report-jobs-dlq.fifo"
+SQS_MAX_RECEIVE_COUNT="5"
 SNS_TOPIC="carddemo-notifications"
 
 # ---------------------------------------------------------------------------
@@ -87,8 +97,22 @@ echo " Region   : $AWS_DEFAULT_REGION"
 echo "=============================================================="
 
 # ---------------------------------------------------------------------------
-# S3 buckets (with versioning) - GDG re-platform target.
+# S3 buckets (with versioning + GDG LIMIT(5) retention lifecycle) - GDG
+# re-platform target.
+#
+# The lifecycle policy expires noncurrent versions beyond the 4 most-recent
+# (NewerNoncurrentVersions=4), so each object retains its current version plus
+# 4 noncurrent versions = the last 5 generations, matching the DEFGDGB.jcl
+# LIMIT(5) retention. NoncurrentDays=1 is the S3 lifecycle minimum grace before
+# expiration (GDG rolls off by count alone; this is the closest faithful S3
+# equivalent). The rule body is identical for every bucket, so it is written
+# once to a temp file and applied in the loop.
 # ---------------------------------------------------------------------------
+LIFECYCLE_FILE="$(mktemp)"
+cat > "$LIFECYCLE_FILE" <<'EOF'
+{"Rules":[{"ID":"carddemo-gdg-retention","Filter":{"Prefix":""},"Status":"Enabled","NoncurrentVersionExpiration":{"NoncurrentDays":1,"NewerNoncurrentVersions":4}}]}
+EOF
+
 echo "[S3] Provisioning buckets..."
 for BUCKET in "${S3_BUCKETS[@]}"; do
   # Idempotent create: head-bucket succeeds only when the bucket already exists.
@@ -107,13 +131,44 @@ for BUCKET in "${S3_BUCKETS[@]}"; do
     --bucket "$BUCKET" \
     --versioning-configuration Status=Enabled >/dev/null
   echo "            versioning: Enabled"
+
+  # Apply (idempotently) the GDG LIMIT(5) noncurrent-version retention lifecycle.
+  # Re-applying the same configuration replaces it in place, so this is safe on
+  # re-runs.
+  aws_cmd s3api put-bucket-lifecycle-configuration \
+    --bucket "$BUCKET" \
+    --lifecycle-configuration "file://$LIFECYCLE_FILE" >/dev/null
+  echo "            lifecycle: last-5-generation retention (NewerNoncurrentVersions=4)"
 done
+rm -f "$LIFECYCLE_FILE"
 
 # ---------------------------------------------------------------------------
 # SQS FIFO queue - CICS TDQ (WRITEQ TD) report-submission bridge replacement.
 # FIFO + content-based deduplication preserves the queue's point-to-point
 # ordering guarantee. The ".fifo" suffix is mandatory for FIFO queues.
+#
+# A companion FIFO dead-letter queue is provisioned first so the main queue can
+# carry a RedrivePolicy that targets it: after $SQS_MAX_RECEIVE_COUNT failed
+# receives a message is moved to the DLQ instead of looping indefinitely (poison
+# message) or being silently dropped on a launch failure (DECISION_LOG D-029).
 # ---------------------------------------------------------------------------
+echo "[SQS] Provisioning FIFO dead-letter queue..."
+if aws_cmd sqs get-queue-url --queue-name "$SQS_FIFO_DLQ" >/dev/null 2>&1; then
+  echo "  [exists]  $SQS_FIFO_DLQ"
+else
+  aws_cmd sqs create-queue \
+    --queue-name "$SQS_FIFO_DLQ" \
+    --attributes FifoQueue=true,ContentBasedDeduplication=true >/dev/null
+  echo "  [created] $SQS_FIFO_DLQ (FifoQueue=true, ContentBasedDeduplication=true)"
+fi
+
+# Resolve the DLQ ARN so the main queue's RedrivePolicy can reference it.
+DLQ_URL="$(aws_cmd sqs get-queue-url --queue-name "$SQS_FIFO_DLQ" --output text --query 'QueueUrl')"
+DLQ_ARN="$(aws_cmd sqs get-queue-attributes \
+  --queue-url "$DLQ_URL" \
+  --attribute-names QueueArn \
+  --output text --query 'Attributes.QueueArn')"
+
 echo "[SQS] Provisioning FIFO queue..."
 if aws_cmd sqs get-queue-url --queue-name "$SQS_FIFO_QUEUE" >/dev/null 2>&1; then
   echo "  [exists]  $SQS_FIFO_QUEUE"
@@ -123,6 +178,21 @@ else
     --attributes FifoQueue=true,ContentBasedDeduplication=true >/dev/null
   echo "  [created] $SQS_FIFO_QUEUE (FifoQueue=true, ContentBasedDeduplication=true)"
 fi
+
+# Attach (or re-apply, idempotently) the RedrivePolicy targeting the DLQ. The
+# RedrivePolicy attribute value is itself a JSON-encoded string, so it is
+# written to a temp file and passed via file:// to avoid shell quoting and
+# comma-parsing pitfalls in the --attributes shorthand.
+REDRIVE_FILE="$(mktemp)"
+cat > "$REDRIVE_FILE" <<EOF
+{"RedrivePolicy":"{\"deadLetterTargetArn\":\"$DLQ_ARN\",\"maxReceiveCount\":\"$SQS_MAX_RECEIVE_COUNT\"}"}
+EOF
+MAIN_URL="$(aws_cmd sqs get-queue-url --queue-name "$SQS_FIFO_QUEUE" --output text --query 'QueueUrl')"
+aws_cmd sqs set-queue-attributes \
+  --queue-url "$MAIN_URL" \
+  --attributes "file://$REDRIVE_FILE" >/dev/null
+rm -f "$REDRIVE_FILE"
+echo "            RedrivePolicy -> $SQS_FIFO_DLQ (maxReceiveCount=$SQS_MAX_RECEIVE_COUNT)"
 
 # ---------------------------------------------------------------------------
 # SNS topic - notification fan-out. create-topic is naturally idempotent and
@@ -139,8 +209,17 @@ echo "            ARN: $TOPIC_ARN"
 echo "--------------------------------------------------------------"
 echo "[verify] S3 buckets:"
 aws_cmd s3 ls
+echo "[verify] S3 lifecycle (GDG LIMIT(5) retention) on ${S3_BUCKETS[0]}:"
+aws_cmd s3api get-bucket-lifecycle-configuration \
+  --bucket "${S3_BUCKETS[0]}" \
+  --query 'Rules[0].NoncurrentVersionExpiration' --output json
 echo "[verify] SQS queues:"
 aws_cmd sqs list-queues
+echo "[verify] SQS RedrivePolicy on $SQS_FIFO_QUEUE:"
+aws_cmd sqs get-queue-attributes \
+  --queue-url "$MAIN_URL" \
+  --attribute-names RedrivePolicy \
+  --output text --query 'Attributes.RedrivePolicy'
 echo "[verify] SNS topics:"
 aws_cmd sns list-topics
 
