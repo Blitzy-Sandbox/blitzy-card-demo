@@ -295,11 +295,11 @@ public class TransactionReportJob {
      *
      * @param startDate inclusive window start ({@code yyyy-MM-dd}) from the job parameters
      * @param endDate   inclusive window end ({@code yyyy-MM-dd}) from the job parameters
-     * @return a job-local {@link ItemStreamWriter} that renders and uploads the report
+     * @return a job-local {@link ReportItemWriter} that renders and uploads the report
      */
     @Bean(name = WRITER_BEAN)
     @StepScope
-    public ItemStreamWriter<ReportLine> transactionReportWriter(
+    public ReportItemWriter transactionReportWriter(
             @Value("#{jobParameters['startDate']}") String startDate,
             @Value("#{jobParameters['endDate']}") String endDate) {
         return new ReportItemWriter(
@@ -326,7 +326,7 @@ public class TransactionReportJob {
             PlatformTransactionManager transactionManager,
             @Qualifier(READER_BEAN) ItemReader<Transaction> reader,
             TransactionReportProcessor processor,
-            @Qualifier(WRITER_BEAN) ItemStreamWriter<ReportLine> reportWriter) {
+            @Qualifier(WRITER_BEAN) ReportItemWriter reportWriter) {
         return new StepBuilder(STEP_NAME, jobRepository)
                 .<Transaction, ReportLine>chunk(CHUNK_SIZE, transactionManager)
                 .reader(reader)
@@ -594,7 +594,11 @@ public class TransactionReportJob {
      * {@code runId} (each launch is a new {@code JobInstance}), a partial restart of the same instance
      * does not occur in normal operation, so the report is always assembled in full.</p>
      */
-    static final class ReportItemWriter implements ItemStreamWriter<ReportLine> {
+    // Not 'final': declared as the @Bean/injection type, so the @StepScope CGLIB proxy must be able
+    // to subclass it (a final class cannot be proxied by CGLIB). Declaring the concrete type — rather
+    // than the ItemStreamWriter interface — lets Spring Batch perform annotation-based listener and
+    // stream registration on the writer, eliminating the "ItemStreamWriter is an interface" warning.
+    static class ReportItemWriter implements ItemStreamWriter<ReportLine> {
 
         private static final Logger WRITER_LOG = LoggerFactory.getLogger(ReportItemWriter.class);
         private static final String CONTENT_TYPE = "text/plain";

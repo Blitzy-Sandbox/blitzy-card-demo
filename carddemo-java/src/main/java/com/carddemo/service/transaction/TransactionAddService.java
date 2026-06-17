@@ -14,7 +14,6 @@ import com.carddemo.service.shared.DateValidationService;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -28,17 +27,30 @@ import java.util.List;
  * sixteen-digit transaction identifier, persists the record, and returns the stored values to the
  * caller.</p>
  *
- * <p>Field-level rejections are reported as {@link ValidationException} and a colliding identifier
- * as {@link DuplicateRecordException}; both are unchecked and therefore roll back the surrounding
- * {@link Transactional} boundary. The monetary amount is handled exclusively as {@link BigDecimal}
- * at scale two so that the exact fixed-point precision of the stored money value is preserved; no
- * binary floating-point type is used.</p>
+ * <p>Field-level rejections are reported as {@link ValidationException}. The sixteen-digit
+ * identifier is allocated by browsing to the highest existing key and adding one; because that
+ * allocation is not atomic, a concurrent add that derives the same identifier is detected on the
+ * immediate flush and the write is transparently retried against the new maximum, so simultaneous
+ * adds each receive a distinct identifier instead of surfacing a persistence failure. A collision
+ * that cannot be resolved within the retry bound is reported as a {@link DuplicateRecordException}.
+ * The monetary amount is handled exclusively as {@link BigDecimal} at scale two so that the exact
+ * fixed-point precision of the stored money value is preserved; no binary floating-point type is
+ * used.</p>
  */
 @Service
 public class TransactionAddService {
 
     /** Fixed-format mask producing a sixteen-digit, zero-padded transaction identifier. */
     private static final String TRAN_ID_FORMAT = "%016d";
+
+    /**
+     * Upper bound on identifier-allocation attempts. The browse-to-end identifier allocation is not
+     * atomic, so a concurrent add can derive the same identifier; each collision re-derives the
+     * identifier from the new maximum and retries. The bound is generous relative to any realistic
+     * number of simultaneous adders and guards against an unbounded loop under pathological
+     * contention, after which the collision is reported as a duplicate.
+     */
+    private static final int MAX_ID_GENERATION_ATTEMPTS = 25;
 
     /** Fixed-format mask producing a four-digit, zero-padded category code for the response. */
     private static final String CATEGORY_CODE_FORMAT = "%04d";
@@ -113,9 +125,9 @@ public class TransactionAddService {
      *                                  field fails the validation cascade, or the confirmation flag is
      *                                  absent, {@code N}/{@code n}, or any value other than {@code Y}/{@code y}
      * @throws RecordNotFoundException  if the supplied account id or card number has no cross-reference
-     * @throws DuplicateRecordException if the generated identifier collides with an existing record
+     * @throws DuplicateRecordException if a unique identifier cannot be allocated within the retry
+     *                                  bound under sustained concurrent contention
      */
-    @Transactional
     public TransactionAddResponse addTransaction(TransactionAddRequest request) {
         // VALIDATE-INPUT-KEY-FIELDS: resolve the account/card pairing before any data-field edits.
         ResolvedKey resolvedKey = validateAndResolveKeyFields(request);
@@ -125,30 +137,9 @@ public class TransactionAddService {
         requireConfirmation(request.confirm());
 
         BigDecimal normalizedAmount = request.amount().setScale(2, RoundingMode.HALF_EVEN);
-        String newTranId = generateNextTransactionId();
 
-        Transaction transaction = new Transaction();
-        transaction.setTranId(newTranId);
-        transaction.setTranTypeCd(request.typeCode());
-        transaction.setTranCatCd(Integer.parseInt(request.categoryCode()));
-        transaction.setTranSource(request.source());
-        transaction.setTranDesc(request.description());
-        transaction.setTranAmt(normalizedAmount);
-        // MOVE CARDNINI TO TRAN-CARD-NUM: the resolved (cross-reference-backed) card number.
-        transaction.setTranCardNum(resolvedKey.cardNumber());
-        transaction.setTranMerchantId(Long.parseLong(request.merchantId()));
-        transaction.setTranMerchantName(request.merchantName());
-        transaction.setTranMerchantCity(request.merchantCity());
-        transaction.setTranMerchantZip(request.merchantZip());
-        transaction.setTranOrigTs(request.originDate());
-        transaction.setTranProcTs(request.processDate());
-
-        Transaction saved;
-        try {
-            saved = transactionRepository.save(transaction);
-        } catch (DataIntegrityViolationException ex) {
-            throw new DuplicateRecordException("Tran ID already exist...", ex);
-        }
+        // Allocate the next browse-to-end identifier and insert, retrying on a concurrent collision.
+        Transaction saved = persistWithGeneratedId(request, resolvedKey, normalizedAmount);
 
         // Observability: running total of posted transaction amounts (telemetry only; see MetricsConfig).
         MetricsConfig.transactionAmountTotal(meterRegistry).increment(normalizedAmount.doubleValue());
@@ -327,6 +318,81 @@ public class TransactionAddService {
             throw new ValidationException("Confirm to add this transaction...");
         }
         throw new ValidationException("Invalid value. Valid values are (Y/N)...");
+    }
+
+    /**
+     * Assigns the next browse-to-end identifier and inserts the transaction, retrying on a
+     * concurrent identifier collision.
+     *
+     * <p>Reproduces the {@code COTRN02C} {@code STARTBR}/{@code READPREV}/{@code ENDBR} "browse to
+     * the last key and add one" allocation ({@link #generateNextTransactionId()}). That allocation
+     * is not atomic, so two simultaneous adds can derive the same identifier. Each attempt builds a
+     * fresh transient entity and performs an explicit INSERT with an immediate flush (the repository
+     * {@code insertNew} operation), so a colliding identifier is rejected by the primary key and
+     * surfaces synchronously as a {@link DataIntegrityViolationException} &mdash; an INSERT, never a
+     * merge that could silently overwrite the winning row. The identifier is then re-derived from the
+     * now-higher maximum and the insert is retried. The operation runs outside any surrounding
+     * transaction, so each attempt executes in its own short transaction and a failed attempt never
+     * marks the caller's context rollback-only.</p>
+     *
+     * <p>If no free identifier is obtained within {@link #MAX_ID_GENERATION_ATTEMPTS} attempts the
+     * collision is reported as a {@link DuplicateRecordException} (COBOL {@code WRITE-TRANSACT-FILE}
+     * {@code DUPKEY}/{@code DUPREC} &rarr; {@code "Tran ID already exist..."}).</p>
+     *
+     * @param request          the originating add request supplying the data fields
+     * @param resolvedKey      the resolved, cross-reference-backed account/card pairing
+     * @param normalizedAmount the scale-two transaction amount
+     * @return the persisted transaction, including its assigned identifier
+     * @throws DuplicateRecordException if a unique identifier cannot be allocated within the bound
+     */
+    private Transaction persistWithGeneratedId(TransactionAddRequest request, ResolvedKey resolvedKey,
+                                               BigDecimal normalizedAmount) {
+        DataIntegrityViolationException lastCollision = null;
+        for (int attempt = 0; attempt < MAX_ID_GENERATION_ATTEMPTS; attempt++) {
+            // A fresh, transient entity per attempt guarantees an INSERT (never a merge-driven update)
+            // and avoids reusing an instance left detached by a prior failed attempt.
+            Transaction transaction =
+                    buildTransaction(request, resolvedKey, normalizedAmount, generateNextTransactionId());
+            try {
+                return transactionRepository.insertNew(transaction);
+            } catch (DataIntegrityViolationException ex) {
+                // A concurrent add committed this identifier first; re-browse to the new max and retry.
+                lastCollision = ex;
+            }
+        }
+        throw new DuplicateRecordException("Tran ID already exist...", lastCollision);
+    }
+
+    /**
+     * Builds a fully-populated, transient {@link Transaction} ready to be inserted. The resolved
+     * cross-reference card number is stored (COBOL {@code MOVE CARDNINI TO TRAN-CARD-NUM}); the
+     * account id is never written to the record. A new instance is produced on every call so each
+     * persistence attempt operates on a transient entity.
+     *
+     * @param request          the originating add request
+     * @param resolvedKey      the resolved account/card pairing
+     * @param normalizedAmount the scale-two transaction amount
+     * @param tranId           the generated sixteen-digit identifier to assign
+     * @return a new transient transaction entity
+     */
+    private static Transaction buildTransaction(TransactionAddRequest request, ResolvedKey resolvedKey,
+                                                BigDecimal normalizedAmount, String tranId) {
+        Transaction transaction = new Transaction();
+        transaction.setTranId(tranId);
+        transaction.setTranTypeCd(request.typeCode());
+        transaction.setTranCatCd(Integer.parseInt(request.categoryCode()));
+        transaction.setTranSource(request.source());
+        transaction.setTranDesc(request.description());
+        transaction.setTranAmt(normalizedAmount);
+        // MOVE CARDNINI TO TRAN-CARD-NUM: the resolved (cross-reference-backed) card number.
+        transaction.setTranCardNum(resolvedKey.cardNumber());
+        transaction.setTranMerchantId(Long.parseLong(request.merchantId()));
+        transaction.setTranMerchantName(request.merchantName());
+        transaction.setTranMerchantCity(request.merchantCity());
+        transaction.setTranMerchantZip(request.merchantZip());
+        transaction.setTranOrigTs(request.originDate());
+        transaction.setTranProcTs(request.processDate());
+        return transaction;
     }
 
     /**

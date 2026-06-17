@@ -75,7 +75,7 @@ class TransactionAddServiceTest {
         when(cardCrossReferenceRepository.findByXrefAcctId(100L))
                 .thenReturn(List.of(xref("1111222233334444", 7L, 100L)));
         when(transactionRepository.findMaxTranId()).thenReturn(null);
-        when(transactionRepository.save(any(Transaction.class))).then(returnsFirstArg());
+        when(transactionRepository.insertNew(any(Transaction.class))).then(returnsFirstArg());
 
         TransactionAddResponse response =
                 service.addTransaction(request("100", "9999888877776666", "Y"));
@@ -87,7 +87,7 @@ class TransactionAddServiceTest {
 
         // The persisted transaction carries the resolved card, not the client-supplied "9999...".
         ArgumentCaptor<Transaction> saved = ArgumentCaptor.forClass(Transaction.class);
-        verify(transactionRepository).save(saved.capture());
+        verify(transactionRepository).insertNew(saved.capture());
         assertThat(saved.getValue().getTranCardNum()).isEqualTo("1111222233334444");
 
         // The posted amount increments the running-total metric.
@@ -101,7 +101,7 @@ class TransactionAddServiceTest {
         when(cardCrossReferenceRepository.findById("1111222233334444"))
                 .thenReturn(Optional.of(xref("1111222233334444", 7L, 200L)));
         when(transactionRepository.findMaxTranId()).thenReturn("0000000000000005");
-        when(transactionRepository.save(any(Transaction.class))).then(returnsFirstArg());
+        when(transactionRepository.insertNew(any(Transaction.class))).then(returnsFirstArg());
 
         TransactionAddResponse response =
                 service.addTransaction(request(null, "1111222233334444", "Y"));
@@ -118,7 +118,7 @@ class TransactionAddServiceTest {
         assertThatThrownBy(() -> service.addTransaction(request(null, null, "Y")))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage("Account or Card Number must be entered...");
-        verify(transactionRepository, never()).save(any());
+        verify(transactionRepository, never()).insertNew(any());
     }
 
     @Test
@@ -143,7 +143,7 @@ class TransactionAddServiceTest {
         assertThatThrownBy(() -> service.addTransaction(request("999", null, "Y")))
                 .isInstanceOf(RecordNotFoundException.class)
                 .hasMessage("Account ID NOT found...");
-        verify(transactionRepository, never()).save(any());
+        verify(transactionRepository, never()).insertNew(any());
     }
 
     @Test
@@ -155,7 +155,7 @@ class TransactionAddServiceTest {
         assertThatThrownBy(() -> service.addTransaction(request(null, "1111222233334444", "Y")))
                 .isInstanceOf(RecordNotFoundException.class)
                 .hasMessage("Card Number NOT found...");
-        verify(transactionRepository, never()).save(any());
+        verify(transactionRepository, never()).insertNew(any());
     }
 
     @Test
@@ -164,7 +164,7 @@ class TransactionAddServiceTest {
         assertThatThrownBy(() -> service.addTransaction(request("ABC", null, "Y")))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage("Account ID must be Numeric...");
-        verify(transactionRepository, never()).save(any());
+        verify(transactionRepository, never()).insertNew(any());
     }
 
     // ---------------------------------------------------------------------

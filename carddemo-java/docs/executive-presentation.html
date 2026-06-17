@@ -7,6 +7,12 @@
   <meta name="author" content="Blitzy Platform" />
   <meta name="description" content="Executive briefing on the AWS CardDemo COBOL-to-Java migration: business value, risk, and operational readiness. Self-contained reveal.js deck. Source commit 27d6c6f; COBOL is not copied into the target." />
 
+  <!-- Inline (data-URI) favicon: keeps the deck fully self-contained and avoids
+       a browser-automatic GET /favicon.ico (which would 404 when served as a
+       single file). On-brand CardDemo credit-card glyph in the Blitzy palette
+       (primary #5B39F3, teal #94FAD5, dark stripe #2D1C77). -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzVCMzlGMyIvPjxyZWN0IHg9IjYiIHk9IjEwIiB3aWR0aD0iMjAiIGhlaWdodD0iMTMiIHJ4PSIyLjUiIGZpbGw9IiM5NEZBRDUiLz48cmVjdCB4PSI2IiB5PSIxMy41IiB3aWR0aD0iMjAiIGhlaWdodD0iMyIgZmlsbD0iIzJEMUM3NyIvPjwvc3ZnPg==" />
+
   <!--
     ============================================================================
     CardDemo Mainframe Modernization — Executive Presentation
@@ -235,7 +241,12 @@
     .styled-table code { font-family: var(--font-code); color: var(--blitzy-teal); font-size: 0.95em; }
     /* Check icons inside the validation-gates table read as a "styled checklist"
        while the surrounding table element keeps the slide bullet-free. */
-    .styled-table td i[data-lucide] { color: var(--blitzy-teal); vertical-align: middle; margin-right: 0.45em; }
+    /* Lucide replaces each <i data-lucide> placeholder with an <svg> (which keeps
+       the data-lucide attribute but is no longer an <i> tag). Match the attribute
+       directly (any tag) so the spacing applies to the RENDERED svg, not just the
+       pre-render placeholder — otherwise the gate icons sit flush against their
+       labels (zero gap). 0.6em gives comfortable icon-to-label separation. */
+    .styled-table td [data-lucide] { color: var(--blitzy-teal); vertical-align: middle; margin-right: 0.6em; }
 
     /* ---- Styled checklist (validation gates) ---- */
     /* Use .reveal ul.checklist (specificity beats reveal.css's
@@ -276,6 +287,23 @@
       font-size: 0.46em; text-align: center; line-height: 1.2;
     }
     .reveal pre.mermaid svg { max-width: 100%; height: auto; }
+    /* Slide 10 (AWS via LocalStack): its flowchart stacks five service nodes
+       vertically (3x S3 + SQS + SNS), giving a near-square SVG that, when
+       stretched to the full card width, grows taller than the 1080px slide
+       canvas. That overflow clips the source-ref caption at 1280px and pushes
+       the heading off-screen at 375px. Constrain THIS diagram by height
+       (width/height auto so the viewBox aspect ratio is preserved) so it scales
+       down to fit the vertical budget and re-centers, leaving room for the
+       heading and caption at every breakpoint. Scoped to .localstack-diagram so
+       the already-correct diagrams on slides 3/6/8 are untouched. */
+    .reveal .localstack-diagram pre.mermaid svg {
+      width: auto !important;
+      height: auto !important;
+      max-height: 560px;
+      max-width: 100%;
+      display: block;
+      margin: 0 auto;
+    }
     /* Force Mermaid subgraph/cluster titles onto the brand teal (base theme
        otherwise computes a pale off-brand color). */
     .reveal pre.mermaid .cluster-label text,
@@ -318,7 +346,53 @@
     /* ---- reveal progress + controls tint ---- */
     .reveal .progress { color: var(--blitzy-teal); height: 5px; }
     .reveal .controls { color: var(--blitzy-teal); }
-    .reveal .slide-number { background: rgba(45, 28, 119, 0.7); color: var(--blitzy-text); font-family: var(--font-code); }
+
+    /* ---- Accessible navigation controls (WCAG 2.5.5/2.5.8 >= 44x44px target) ---- */
+    /* Reveal renders each navigation arrow as a <button>; the default ~36px box is
+       below the 44px touch-target minimum, so enlarge the clickable area. The arrow
+       glyph stays centered within the larger hit area. */
+    .reveal .controls button {
+      width: 44px;
+      height: 44px;
+    }
+    /* The slide-number is a small link (~56x16px); give it a >= 44px centered target.
+       The clickable element is the inner <a>, so the >= 44x44 hit area and padding
+       must live on the <a> itself (WCAG 2.5.5/2.5.8), not just the wrapper div. */
+    .reveal .slide-number {
+      background: rgba(45, 28, 119, 0.7);
+      color: var(--blitzy-text);
+      font-family: var(--font-code);
+      box-sizing: border-box;
+      min-width: 44px;
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+    }
+    .reveal .slide-number a {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      min-width: 44px;
+      min-height: 44px;
+      padding: 6px 14px;
+    }
+    .reveal .slide-number,
+    .reveal .slide-number a { color: var(--blitzy-text); }
+
+    /* ---- Visible keyboard focus indicator in Blitzy teal ---- */
+    .reveal .controls button:focus,
+    .reveal .controls button:focus-visible,
+    .reveal .slide-number:focus,
+    .reveal .slide-number:focus-visible,
+    .reveal .slide-number a:focus,
+    .reveal .slide-number a:focus-visible {
+      outline: 3px solid var(--blitzy-teal);
+      outline-offset: 2px;
+      border-radius: 6px;
+    }
   </style>
 </head>
 <body>
@@ -365,10 +439,10 @@
           <div class="kpi-card">
             <div class="kpi-icon"><i data-lucide="database" width="34" height="34"></i></div>
             <div class="kpi-value">11</div>
-            <div class="kpi-label">VSAM Datasets to PostgreSQL</div>
+            <div class="kpi-label">VSAM Datasets</div>
           </div>
         </div>
-        <p class="source-ref">Verified from CardDemo source at commit <code>27d6c6f</code> — 17 online plus 11 batch programs; COBOL is not copied into the target.</p>
+        <p class="source-ref">Source commit <code>27d6c6f</code>; COBOL referenced, not copied.</p>
       </section>
 
       <!-- ===== Slide 3: BEFORE / AFTER ARCHITECTURE (Mermaid) ===== -->
@@ -379,25 +453,25 @@
         <div class="diagram-card">
           <pre class="mermaid">
 flowchart LR
-  subgraph Z["Before — z/OS Mainframe"]
+  subgraph Z["Before: z/OS"]
     direction TB
-    T["3270 Terminals + BMS"] --> CICS["CICS Online Region"]
+    T["3270 + BMS"] --> CICS["CICS Region"]
     CICS --> VSAM[("VSAM Datasets")]
-    JES["JES Batch / JCL"] --> VSAM
+    JES["JES Batch"] --> VSAM
     CICS --> TDQ["Transient Data Queue"]
   end
-  subgraph A["After — Java 25 / AWS Cloud"]
+  subgraph A["After: Java / AWS"]
     direction TB
-    API["REST / JSON Clients"] --> BOOT["Spring Boot Services"]
+    API["REST Clients"] --> BOOT["Spring Boot"]
     BOOT --> PG[("PostgreSQL 16")]
-    BATCH["Spring Batch Jobs"] --> PG
+    BATCH["Spring Batch"] --> PG
     BOOT --> SQS["AWS SQS"]
     BATCH --> S3["AWS S3"]
   end
   Z ==>|"Re-platform"| A
 </pre>
         </div>
-        <p class="source-ref">Legend: rectangles are compute, cylinders are persistent stores, the bold arrow marks the migration boundary.</p>
+        <p class="source-ref">Legend: rectangles compute, cylinders store.</p>
       </section>
 
       <!-- ===== Slide 4: DIVIDER — Migration Approach ===== -->
@@ -416,15 +490,15 @@ flowchart LR
         <div class="heading-accent"></div>
         <table class="styled-table">
           <thead>
-            <tr><th>Mainframe (z/OS)</th><th>Target (Java / AWS)</th></tr>
+            <tr><th>Mainframe</th><th>Java / AWS</th></tr>
           </thead>
           <tbody>
-            <tr><td>CICS pseudo-conversational + BMS</td><td>Spring MVC REST controllers + JSON DTOs</td></tr>
-            <tr><td>VSAM KSDS datasets</td><td><code>PostgreSQL</code> tables via Spring Data JPA</td></tr>
-            <tr><td>JCL job streams</td><td>Spring Batch jobs, steps, deciders</td></tr>
-            <tr><td>CICS TDQ (<code>WRITEQ TD</code>)</td><td>AWS <code>SQS</code> FIFO queue</td></tr>
-            <tr><td>GDG generation datasets</td><td>AWS <code>S3</code> versioned objects</td></tr>
-            <tr><td>RACF / plaintext USRSEC</td><td>Spring Security + BCrypt + JWT</td></tr>
+            <tr><td>CICS + BMS</td><td>REST controllers + DTOs</td></tr>
+            <tr><td>VSAM KSDS</td><td><code>PostgreSQL</code> via JPA</td></tr>
+            <tr><td>JCL job streams</td><td>Spring Batch + deciders</td></tr>
+            <tr><td>CICS TDQ (<code>WRITEQ TD</code>)</td><td>AWS <code>SQS</code> FIFO</td></tr>
+            <tr><td>GDG datasets</td><td>AWS <code>S3</code> objects</td></tr>
+            <tr><td>RACF / plaintext USRSEC</td><td>Spring Security + BCrypt</td></tr>
           </tbody>
         </table>
       </section>
@@ -444,16 +518,16 @@ flowchart LR
     D3["DISCGRP / TCATBAL / TRANCATG"]
     D4["TRANTYPE / DALYTRAN"]
   end
-  FLY{{"Flyway  V1 schema, V2 indexes, V3 seed"}}
+  FLY{{"Flyway V1/V2/V3"}}
   subgraph P["PostgreSQL 16"]
     direction TB
     PT["11 Tables + Indexes"]
-    SEED["Seeded from 9 ASCII fixtures"]
+    SEED["9 ASCII fixtures"]
   end
   V --> FLY --> P
 </pre>
         </div>
-        <p class="source-ref">Record layouts, lengths, and keys preserved exactly; fixed-point fields map to <code>BigDecimal</code>.</p>
+        <p class="source-ref">Layouts and keys preserved; fixed-point maps to <code>BigDecimal</code>.</p>
       </section>
 
       <!-- ===== Slide 7: DIVIDER — Batch Pipeline ===== -->
@@ -473,22 +547,22 @@ flowchart LR
         <div class="diagram-card">
           <pre class="mermaid">
 flowchart TB
-  subgraph B["Before — JCL Job Stream"]
+  subgraph B["Before: JCL"]
     direction LR
     P1["POSTTRAN"] --> P2["INTCALC"] --> P3["COMBTRAN"]
     P3 --> P4a["CREASTMT"]
     P3 --> P4b["TRANREPT"]
   end
-  subgraph AF["After — Spring Batch Flow"]
+  subgraph AF["After: Spring Batch"]
     direction LR
     S1["Posting Job"] --> S2["Interest Job"] --> S3["Combine Job"]
-    S3 --> S4a["Statement Job (4a)"]
-    S3 --> S4b["Report Job (4b)"]
+    S3 --> S4a["Statement Job"]
+    S3 --> S4b["Report Job"]
   end
-  B ==>|"COND codes to deciders, split 4a/4b"| AF
+  B ==>|"Condition codes, parallel split"| AF
 </pre>
         </div>
-        <p class="source-ref">Legend: stage 3 fans out to parallel stages 4a and 4b; sort and load (DFSORT + REPRO) become a Java comparator plus bulk insert.</p>
+        <p class="source-ref">Stage 3 fans out to parallel 4a and 4b.</p>
       </section>
 
       <!-- ===== Slide 9: DIVIDER — Cloud & Integration ===== -->
@@ -505,7 +579,7 @@ flowchart TB
         <span class="eyebrow">Cloud Services</span>
         <h2 class="slide-heading">AWS Integration via LocalStack</h2>
         <div class="heading-accent"></div>
-        <div class="diagram-card">
+        <div class="diagram-card localstack-diagram">
           <pre class="mermaid">
 flowchart LR
   APP["Spring Boot + Spring Batch"]
@@ -524,7 +598,7 @@ flowchart LR
   APP --> SNS
 </pre>
         </div>
-        <p class="source-ref">Every AWS interaction runs locally against LocalStack on endpoint :4566 — zero live cloud dependencies; tests self-provision and tear down.</p>
+        <p class="source-ref">All AWS runs on LocalStack (<code>:4566</code>) — zero live cloud dependencies.</p>
       </section>
 
       <!-- ===== Slide 11: OBSERVABILITY KPIs (KPI cards) ===== -->
@@ -580,14 +654,14 @@ flowchart LR
             <tr><th>Gate</th><th>Focus</th></tr>
           </thead>
           <tbody>
-            <tr><td><i data-lucide="circle-check" width="16" height="16"></i>Gate 1 &mdash; End-to-end boundary</td><td>Real file posted</td></tr>
+            <tr><td><i data-lucide="circle-check" width="16" height="16"></i>Gate 1 &mdash; End-to-end boundary</td><td>Real file</td></tr>
             <tr><td><i data-lucide="circle-check" width="16" height="16"></i>Gate 2 &mdash; Zero-warning build</td><td>Warnings as errors</td></tr>
             <tr><td><i data-lucide="circle-check" width="16" height="16"></i>Gate 3 &mdash; Performance baseline</td><td>Throughput captured</td></tr>
-            <tr><td><i data-lucide="circle-check" width="16" height="16"></i>Gate 4 &mdash; Named artifacts</td><td>Nine fixtures loaded</td></tr>
+            <tr><td><i data-lucide="circle-check" width="16" height="16"></i>Gate 4 &mdash; Named artifacts</td><td>Nine fixtures</td></tr>
             <tr><td><i data-lucide="circle-check" width="16" height="16"></i>Gate 5 &mdash; Contract verification</td><td>REST, SQS, S3</td></tr>
-            <tr><td><i data-lucide="circle-check" width="16" height="16"></i>Gate 6 &mdash; Unsafe-code audit</td><td>Reflection near zero</td></tr>
+            <tr><td><i data-lucide="circle-check" width="16" height="16"></i>Gate 6 &mdash; Unsafe-code audit</td><td>Near-zero unsafe</td></tr>
             <tr><td><i data-lucide="circle-check" width="16" height="16"></i>Gate 7 &mdash; Scope matching</td><td>Multi-subsystem batch</td></tr>
-            <tr><td><i data-lucide="circle-check" width="16" height="16"></i>Gate 8 &mdash; Integration sign-off</td><td>Coverage and CVE scan</td></tr>
+            <tr><td><i data-lucide="circle-check" width="16" height="16"></i>Gate 8 &mdash; Integration sign-off</td><td>Coverage, CVE scan</td></tr>
           </tbody>
         </table>
       </section>
@@ -607,20 +681,20 @@ flowchart LR
             <tr>
               <td>Spring Boot 3.5 end-of-support</td>
               <td><span class="risk-badge low">Low</span></td>
-              <td>Out of scope; path tracked</td>
+              <td>Out of scope</td>
             </tr>
             <tr>
-              <td>AWS via LocalStack only</td>
+              <td>LocalStack only</td>
               <td><span class="risk-badge low">Low</span></td>
-              <td>Verified locally; config swap</td>
+              <td>Config swap to AWS</td>
             </tr>
             <tr>
               <td>BigDecimal overhead</td>
               <td><span class="risk-badge low">Low</span></td>
-              <td>Bounded to money fields</td>
+              <td>Money fields only</td>
             </tr>
             <tr>
-              <td>Password move to BCrypt</td>
+              <td>Password to BCrypt</td>
               <td><span class="risk-badge medium">Medium</span></td>
               <td>Hash on first login</td>
             </tr>
@@ -791,6 +865,14 @@ flowchart LR
       width: 1920,
       height: 1080,
       margin: 0.06,
+      // reveal.js clamps the auto-fit scale to [minScale, maxScale]. The default
+      // minScale of 0.2 is larger than the scale a 375px-wide phone needs to fit
+      // the 1920px canvas (375/1920 = 0.195), so on mobile reveal was forced to
+      // render the canvas at 1920x0.2 = 384px wide — 9px wider than the viewport,
+      // clipping the left edge of left-aligned headings/captions. Lowering
+      // minScale lets the canvas shrink to fit narrow viewports exactly. Desktop
+      // breakpoints scale well above this floor, so they are unaffected.
+      minScale: 0.1,
       controls: true,
       progress: true,
       slideNumber: 'c/t',

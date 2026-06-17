@@ -15,9 +15,17 @@ import org.springframework.stereotype.Repository;
  * read/save via inherited operations, paginated browse via inherited
  * {@code findAll(Pageable)} (ten rows per page), a maximum-id lookup for
  * transaction-id generation, and an inclusive processing-date-range query.
+ *
+ * <p>The {@link TransactionRepositoryCustom} fragment adds an explicit insert-only
+ * {@code insertNew(...)} operation. Because {@code Transaction} has an
+ * application-assigned id and no {@code @Version}, the inherited {@code save(...)}
+ * follows JPA's merge path (select-then-insert-or-update), which under concurrent
+ * same-id adds could silently overwrite the winning row; {@code insertNew(...)}
+ * forces a true {@code INSERT} so a collision is rejected and can be retried.</p>
  */
 @Repository
-public interface TransactionRepository extends JpaRepository<Transaction, String> {
+public interface TransactionRepository
+        extends JpaRepository<Transaction, String>, TransactionRepositoryCustom {
 
     /**
      * Returns the highest existing transaction id, or {@code null} when no

@@ -366,7 +366,7 @@ evidence for processing `dailytran.txt` is recorded in [`validation-gates.md`](v
 
 ## Common Pitfalls
 
-These four issues account for the overwhelming majority of onboarding friction. Read them before your
+These five issues account for the overwhelming majority of onboarding friction. Read them before your
 first change.
 
 ### 1. `BigDecimal` precision traps
@@ -438,6 +438,33 @@ V1__create_schema.sql   →   V2__create_indexes.sql   →   V3__seed_data.sql
   schema, **add a new** `V4__…`-and-higher migration rather than modifying `V1`–`V3`.
 - If you need a clean database during development, drop and recreate the `carddemo` schema (or recreate
   the PostgreSQL container) so Flyway re-applies from `V1`.
+
+### 5. OWASP dependency-check, the NVD feed, and offline builds
+
+`./mvnw clean verify` runs the **OWASP dependency-check** (`dependency-check-maven` `12.1.0`) as part of
+Gate 8, failing the build on any dependency with **CVSS ≥ 7** (`failBuildOnCVSS=7` in `pom.xml`). The
+scanner needs to download the **National Vulnerability Database (NVD)** data feed, so a first run on a
+clean machine is **network-bound and can be slow**; without an NVD API key the NVD endpoint also
+aggressively rate-limits, which can make the download stall or fail.
+
+- **Offline / no-key local build** — append `-Ddependency-check.skip=true` to skip the scan locally
+  (e.g. `./mvnw -B clean verify -Ddependency-check.skip=true`). This is safe for day-to-day development
+  because the **authoritative CVE scan runs in CI** on every push (see
+  [`validation-gates.md`](validation-gates.md) Gate 8); skipping locally does **not** weaken the gate.
+- **Running the scan locally with a key** — request a free NVD API key from
+  `https://nvd.nist.gov/developers/request-an-api-key` and pass it through the project's existing
+  property: `./mvnw -B clean verify -Dnvd.api.key="<your-key>"`. The `pom.xml` declares an empty
+  `nvd.api.key` default so local builds work without one; **CI** supplies the real key from the
+  `NVD_API_KEY` GitHub Actions secret via the same `-Dnvd.api.key` flag.
+- **OSS Index `401` is expected without credentials.** The bundled OSS Index analyzer returns an HTTP
+  `401` when no Sonatype OSS Index account is configured. This is **harmless** — it only disables that
+  one supplementary analyzer; the NVD-backed scan (the gate's source of truth) still runs. Configure OSS
+  Index credentials only if you want that extra source.
+- **Documented suppressions.** A small set of non-exploitable, framework-/BOM-managed findings are
+  suppressed in [`owasp-suppressions.xml`](../owasp-suppressions.xml), each **narrowly scoped to its
+  exact CVE list** with per-finding rationale recorded in [`DECISION_LOG.md`](../DECISION_LOG.md)
+  (decisions **D-027** and **D-034**). The current report carries **zero critical/high CVEs**; the gate
+  remains at `failBuildOnCVSS=7`, so any *new* critical/high finding still fails the build.
 
 ---
 

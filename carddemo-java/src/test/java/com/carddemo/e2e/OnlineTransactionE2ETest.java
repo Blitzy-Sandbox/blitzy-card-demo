@@ -19,7 +19,17 @@ import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
@@ -445,6 +455,86 @@ public class OnlineTransactionE2ETest {
                 Map.of("status", add.getStatusCode().value(),
                         "transactionId", newTranId,
                         "branch", "201-auto-id"));
+    }
+
+    /**
+     * Concurrency guard for the auto-ID transaction add ({@code COTRN02C}). The 16-digit identifier
+     * is allocated by browsing to the highest existing key and adding one, which is not atomic, so
+     * several simultaneous adds can derive the same identifier. This test fires a burst of fully
+     * simultaneous {@code POST /api/transactions} requests (released together by a start gate) for a
+     * single seeded account/card and asserts that EVERY request succeeds with {@code 201 CREATED}
+     * &mdash; never an HTTP 500 from a primary-key collision &mdash; and that each receives a
+     * distinct, well-formed 16-digit identifier. Before the concurrency-safe retry-on-collision fix,
+     * the colliding writes surfaced as {@code DataIntegrityViolationException} at transaction commit
+     * and escaped as 500s; this test reproduces that race deterministically and proves it is gone.
+     */
+    @Test
+    void concurrentTransactionAddsReceiveUniqueIds() throws Exception {
+        String adminToken = signIn(ADMIN_ID, ADMIN_PWD);
+        assertThat(adminToken).isNotBlank();
+
+        // Dedicated cross-reference so every concurrent add resolves the same account to the same
+        // authoritative card (READ-CXACAIX-FILE); the test exercises identifier allocation only.
+        final String concAcctId = "70000000099";
+        final String concXrefCard = "4000000000000099";
+        seedCrossReference(concXrefCard, 70_000_099L, Long.parseLong(concAcctId));
+
+        Map<String, Object> addBody = Map.ofEntries(
+                Map.entry("accountId", concAcctId),
+                Map.entry("cardNumber", "4111111111111111"),
+                Map.entry("typeCode", "01"),
+                Map.entry("categoryCode", "0001"),
+                Map.entry("source", "POS"),
+                Map.entry("description", "concurrent auto-id race"),
+                Map.entry("amount", "1.23"),
+                Map.entry("originDate", "2022-07-01"),
+                Map.entry("processDate", "2022-07-01"),
+                Map.entry("merchantId", "123456789"),
+                Map.entry("merchantName", "CONC MERCHANT"),
+                Map.entry("merchantCity", "CONC CITY"),
+                Map.entry("merchantZip", "12345"),
+                Map.entry("confirm", "Y"));
+        HttpEntity<Map<String, Object>> addRequest = new HttpEntity<>(addBody, jsonHeaders(adminToken));
+
+        final int concurrency = 8;
+        ExecutorService pool = Executors.newFixedThreadPool(concurrency);
+        CountDownLatch startGate = new CountDownLatch(1);
+        List<Future<ResponseEntity<JsonNode>>> futures = new ArrayList<>();
+        try {
+            for (int i = 0; i < concurrency; i++) {
+                Callable<ResponseEntity<JsonNode>> task = () -> {
+                    // Block until every worker is ready, then fire together to maximize the race.
+                    startGate.await();
+                    return restTemplate.exchange(url("/api/transactions"),
+                            HttpMethod.POST, addRequest, JsonNode.class);
+                };
+                futures.add(pool.submit(task));
+            }
+            startGate.countDown();
+
+            List<Integer> statuses = new ArrayList<>();
+            Set<String> ids = new HashSet<>();
+            for (Future<ResponseEntity<JsonNode>> future : futures) {
+                ResponseEntity<JsonNode> resp = future.get(60, TimeUnit.SECONDS);
+                statuses.add(resp.getStatusCode().value());
+                if (resp.getStatusCode().value() == HttpStatus.CREATED.value() && resp.getBody() != null) {
+                    ids.add(resp.getBody().path("transactionId").asText());
+                }
+            }
+
+            // Every concurrent add must succeed (no 500 from the auto-id duplicate-key race) ...
+            assertThat(statuses)
+                    .as("all %s concurrent adds return 201 (no 500 from the auto-id race)", concurrency)
+                    .containsOnly(HttpStatus.CREATED.value());
+            // ... and each must receive a distinct, well-formed 16-digit identifier.
+            assertThat(ids).as("each concurrent add receives a unique transaction id").hasSize(concurrency);
+            assertThat(ids).allMatch(id -> id.matches("\\d{16}"));
+
+            writeEvidence("transaction-add-concurrency-evidence.txt",
+                    Map.of("concurrency", concurrency, "statuses", statuses, "uniqueIds", ids.size()));
+        } finally {
+            pool.shutdownNow();
+        }
     }
 
     /**

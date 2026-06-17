@@ -93,7 +93,8 @@ spring:
     show-sql: false
     properties:
       hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
+        # The PostgreSQL dialect is auto-detected from the JDBC connection metadata;
+        # specifying it explicitly is redundant and emits Hibernate warning HHH90000025.
         jdbc:
           # Persist/read all timestamps in UTC for deterministic financial data.
           time_zone: UTC
