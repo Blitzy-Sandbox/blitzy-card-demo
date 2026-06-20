@@ -1,0 +1,128 @@
+# =====================================================================================
+# CardDemo (Java) - Local development infrastructure (Docker Compose v2)
+# =====================================================================================
+# Brings up the local infrastructure the application runs against during development:
+# PostgreSQL 16, LocalStack (S3/SQS/SNS), and the observability stack (Jaeger, Prometheus,
+# Grafana). Start it with `docker compose up -d`.
+#
+# The application itself is NOT a service here: there is no application image at this
+# checkpoint, so the app is run on the host with the `local` profile
+# (`./mvnw spring-boot:run -Dspring.profiles.active=local`) and reaches these services on
+# their published localhost ports. Those ports are the fixed contract referenced by
+# src/main/resources/application-local.yml and the onboarding guide's "Quick links" table:
+#   PostgreSQL 5432 | LocalStack 4566 | Jaeger UI 16686 (OTLP 4317/4318) |
+#   Prometheus 9090 | Grafana 3000 | (app on the host: 8080)
+#
+# LocalStack image: the Community image localstack/localstack:3.8 is used (DECISION_LOG
+# D-016 fallback). It covers S3/SQS/SNS with zero live-AWS dependency and needs no auth
+# token. LOCALSTACK_AUTH_TOKEN is passed through only if set, so a PRO image can be
+# substituted without editing this file; on the Community image it is simply ignored.
+#
+# Traceability: cross-cutting local infrastructure; no COBOL equivalent. The GDG->S3 and
+# TDQ->SQS mappings are documented in localstack-init/init-aws.sh (source app/jcl/DEFGDGB.jcl
+# and app/cbl/CORPT00C.cbl, commit 27d6c6f, REFERENCE ONLY).
+# =====================================================================================
+
+services:
+  # --- PostgreSQL 16 - relational target for the 11 VSAM datasets ----------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: carddemo-postgres
+    environment:
+      POSTGRES_DB: carddemo
+      POSTGRES_USER: carddemo
+      # Non-secret local-development default; override by exporting POSTGRES_PASSWORD.
+      # application-local.yml resolves the same value so the app connects out of the box.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carddemo -d carddemo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # --- LocalStack - AWS S3 / SQS / SNS emulator (zero live AWS) ------------------------
+  # init-aws.sh is mounted into the ready.d hook directory; LocalStack auto-runs it once
+  # the emulator is ready, provisioning the 3 S3 buckets, the SQS FIFO queue, and the SNS
+  # topic. The resource names are the binding contract shared with init-aws.sh,
+  # application-local.yml, application-test.yml, and config/AwsConfig.java.
+  localstack:
+    image: localstack/localstack:3.8
+    container_name: carddemo-localstack
+    environment:
+      SERVICES: s3,sqs,sns
+      DEBUG: ${LOCALSTACK_DEBUG:-0}
+      AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
+      # Passed through only when set; ignored by the Community image. Allows swapping in a
+      # PRO image without editing this file.
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
+    ports:
+      - "4566:4566"
+    volumes:
+      - ./localstack-init/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh:ro
+      - localstack_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal s3 ls && awslocal sqs list-queues || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # --- Jaeger - distributed tracing backend (OTLP ingest) -----------------------------
+  # COLLECTOR_OTLP_ENABLED exposes the OTLP receivers on 4317 (gRPC) and 4318 (HTTP); the
+  # application exports spans to localhost:4317 (see application-local.yml). UI on 16686.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: carddemo-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    restart: unless-stopped
+
+  # --- Prometheus - metrics store; scrapes the host-run app's /actuator/prometheus -----
+  # The app runs on the host, so Prometheus reaches it via host.docker.internal, which is
+  # mapped to the host gateway (works on Linux as well as Docker Desktop). The scrape
+  # configuration lives in docker/prometheus/prometheus.yml.
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: carddemo-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # --- Grafana - dashboards over Prometheus -------------------------------------------
+  # Import docs/grafana-dashboard.json after startup (Dashboards -> Import). Anonymous
+  # viewing is enabled for frictionless local use; the admin password is a non-secret
+  # local default overridable via GRAFANA_ADMIN_PASSWORD.
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: carddemo-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  localstack_data:
+  prometheus_data:
+  grafana_data:

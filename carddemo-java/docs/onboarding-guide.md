@@ -121,8 +121,15 @@ git clone <repository-url> && cd carddemo-java
 #    (>= 80% line — Gate 8), and the OWASP dependency-check 12.1.0 CVE scan (Gate 8).
 ./mvnw clean verify
 
-# 3. Supply the LocalStack auth token from your shell or secret store (never hardcoded)
-export LOCALSTACK_AUTH_TOKEN=<your-localstack-auth-token>
+# 3. Export the runtime secrets/credentials (never hardcoded - resolved from your shell).
+#    JWT_SECRET is REQUIRED: it signs the app's HMAC JWTs and must be >= 32 bytes (HS256),
+#    otherwise the app fails fast on startup. POSTGRES_PASSWORD must match the database
+#    password (docker-compose.yml defaults it to "carddemo" if you skip it).
+#    LOCALSTACK_AUTH_TOKEN is OPTIONAL - the bundled Community LocalStack image
+#    (localstack:3.8) needs no token; set it only if you swap in a LocalStack PRO image.
+export JWT_SECRET=<your-32-byte-or-longer-signing-secret>
+export POSTGRES_PASSWORD=carddemo
+export LOCALSTACK_AUTH_TOKEN=<optional-localstack-pro-token>
 
 # 4. Start the local infrastructure:
 #    PostgreSQL + LocalStack + Jaeger + Prometheus + Grafana

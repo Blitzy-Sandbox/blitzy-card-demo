@@ -228,6 +228,23 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Mockito core is already pulled in transitively by
+             spring-boot-starter-test; it is declared explicitly (version managed
+             by the Spring Boot BOM, never pinned here) for two reasons:
+             (1) it documents that Mockito is a first-class test tool, and
+             (2) it guarantees the maven-dependency-plugin 'properties' goal exposes
+                 the artifact-path property ${org.mockito:mockito-core:jar}, which the
+                 surefire/failsafe <argLine> uses to load Mockito as an explicit
+                 -javaagent. On Java 25, Mockito's default self-attaching Byte Buddy
+                 agent prints a "dynamic agent loading will be disallowed" warning;
+                 loading it explicitly as a JVM agent removes that warning and is
+                 future-proof against the JDK disabling dynamic agent attachment
+                 (preserves the Gate 2 zero-warning build, AAP 0.8.7). -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- Spring Batch test harness (JobLauncherTestUtils, step scope, etc.). -->
         <dependency>
             <groupId>org.springframework.batch</groupId>
@@ -293,14 +310,47 @@
                 </configuration>
             </plugin>
 
+            <!-- Resolves dependency artifacts to filesystem-path properties so the
+                 surefire/failsafe <argLine> can reference the Mockito jar by
+                 coordinates (${org.mockito:mockito-core:jar}) without hardcoding a
+                 version or repository path. The 'properties' goal is bound to the
+                 'initialize' phase (the same phase as jacoco:prepare-agent) so the
+                 property exists before the test JVM is launched. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>resolve-test-agent-paths</id>
+                        <phase>initialize</phase>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
             <!-- Unit tests: *Test.java / *Tests.java. Integration tests
                  (*IT.java) are explicitly excluded here and are executed by
-                 failsafe under the 'integration' profile instead. -->
+                 failsafe under the 'integration' profile instead.
+
+                 <argLine> loads Mockito as an explicit JVM agent. The leading
+                 @{argLine} is a late-replaced expression that injects the JaCoCo
+                 agent string (set by jacoco:prepare-agent into the 'argLine'
+                 property) so code coverage instrumentation is preserved; the
+                 -javaagent flag then attaches Mockito itself, eliminating the
+                 Java 25 self-attaching Byte Buddy "dynamic agent loading" warning
+                 (Gate 2 zero-warning build). -Xshare:off disables Class Data
+                 Sharing: because the Byte Buddy agent appends to the bootstrap
+                 classpath, leaving CDS enabled prints a benign JVM "Sharing is only
+                 supported..." notice; turning sharing off removes that notice so the
+                 test run is free of all JVM-level warnings. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${maven-surefire-plugin.version}</version>
                 <configuration>
+                    <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
                     <excludes>
                         <exclude>**/*IT.java</exclude>
                     </excludes>
@@ -411,6 +461,12 @@
                         <artifactId>maven-failsafe-plugin</artifactId>
                         <version>${maven-failsafe-plugin.version}</version>
                         <configuration>
+                            <!-- Mirrors the surefire <argLine>: preserve the JaCoCo
+                                 agent (@{argLine}), load Mockito as an explicit JVM
+                                 agent so integration tests are also free of the Java 25
+                                 dynamic-agent warning, and disable CDS (-Xshare:off) to
+                                 suppress the benign bootstrap-classpath "Sharing" notice. -->
+                            <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
                             <!-- Run only the integration-test class pattern (*IT.java);
                                  matches the surefire <excludes> above. -->
                             <includes>

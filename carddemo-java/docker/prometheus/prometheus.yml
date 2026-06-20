@@ -1,0 +1,37 @@
+# =====================================================================================
+# CardDemo (Java) - Prometheus scrape configuration (local development)
+# =====================================================================================
+# Mounted read-only into the Prometheus container by docker-compose.yml at
+# /etc/prometheus/prometheus.yml. Prometheus scrapes the Spring Boot Actuator Prometheus
+# endpoint that the application exposes (management.prometheus.metrics.export.enabled=true
+# and 'prometheus' in management.endpoints.web.exposure.include) and powers the Grafana
+# dashboard (docs/grafana-dashboard.json).
+#
+# The application runs ON THE HOST (./mvnw spring-boot:run), not in this compose network,
+# so the app target uses host.docker.internal:8080 - resolved via the host-gateway mapping
+# declared on the Prometheus service in docker-compose.yml (works on Linux and Docker
+# Desktop). If you containerise the app later, change the target to the service name.
+#
+# Traceability: cross-cutting observability infrastructure (Observability rule, AAP 0.7.1,
+# DECISION_LOG D-015); no COBOL equivalent.
+# =====================================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # The CardDemo Spring Boot application (run on the host) - Micrometer/Prometheus meters.
+  - job_name: carddemo-app
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - host.docker.internal:8080
+        labels:
+          application: carddemo
+
+  # Prometheus scraping itself - useful for verifying the stack is alive.
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090

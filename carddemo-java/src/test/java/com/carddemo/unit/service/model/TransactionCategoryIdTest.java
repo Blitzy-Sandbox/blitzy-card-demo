@@ -53,4 +53,26 @@ class TransactionCategoryIdTest {
         assertThat(base.equals("not-a-key")).isFalse();
         assertThat(base.equals(new TransactionCategoryBalanceId(1L, "01", 5))).isFalse();
     }
+
+    @Test
+    @DisplayName("no-arg constructor with setters round-trips both components")
+    void noArgConstructorAndSettersRoundTrip() {
+        TransactionCategoryId id = new TransactionCategoryId();
+        id.setTypeCode("02");
+        id.setCategoryCode(7);
+
+        assertThat(id.getTypeCode()).isEqualTo("02");
+        assertThat(id.getCategoryCode()).isEqualTo(7);
+        assertThat(id).isEqualTo(new TransactionCategoryId("02", 7));
+    }
+
+    @Test
+    @DisplayName("toString exposes both key components")
+    void toStringContainsComponents() {
+        String text = newKey().toString();
+        assertThat(text)
+                .contains("TransactionCategoryId")
+                .contains("01")
+                .contains("5");
+    }
 }

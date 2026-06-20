@@ -70,4 +70,20 @@ class CustomerTest {
         assertThat(customer.equals(null)).isFalse();
         assertThat(customer.equals("nope")).isFalse();
     }
+
+    @Test
+    @DisplayName("secondary address, phone, and EFT-account fields round-trip")
+    void secondaryFieldsRoundTrip() {
+        customer.setCustAddrLine2("APT 4B");
+        customer.setCustAddrLine3("BUILDING C");
+        customer.setCustPhoneNum1("(512)555-0100");
+        customer.setCustPhoneNum2("(512)555-0199");
+        customer.setCustEftAccountId("EFT0001234");
+
+        assertThat(customer.getCustAddrLine2()).isEqualTo("APT 4B");
+        assertThat(customer.getCustAddrLine3()).isEqualTo("BUILDING C");
+        assertThat(customer.getCustPhoneNum1()).isEqualTo("(512)555-0100");
+        assertThat(customer.getCustPhoneNum2()).isEqualTo("(512)555-0199");
+        assertThat(customer.getCustEftAccountId()).isEqualTo("EFT0001234");
+    }
 }

@@ -5,6 +5,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamWriter;
@@ -55,6 +57,13 @@ import com.carddemo.observability.MetricsConfig;
 @Component
 public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTransaction> {
 
+    /**
+     * Structured logger for writer lifecycle and S3 outcomes (Observability rule, AAP 0.7.1). Emits
+     * only non-sensitive context — the bucket/key, record counts, and reject reason codes — and
+     * NEVER the rejected record content (the daily-transaction image contains the card number / PAN).
+     */
+    private static final Logger log = LoggerFactory.getLogger(RejectWriter.class);
+
     /** Length of the raw daily-transaction image ({@code REJECT-TRAN-DATA}, DALYTRAN = 350 bytes). */
     private static final int DATA_LENGTH = 350;
 
@@ -85,6 +94,9 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
      */
     private ByteArrayOutputStream buffer;
 
+    /** Count of reject records appended this run, logged as a lifecycle summary in {@link #close()}. */
+    private long rejectsWritten;
+
     /**
      * Creates the reject writer with its collaborators injected by the Spring container.
      *
@@ -112,6 +124,9 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
     @Override
     public void open(ExecutionContext executionContext) {
         this.buffer = new ByteArrayOutputStream();
+        this.rejectsWritten = 0L;
+        log.debug("Reject writer opened; buffering reject records for run: bucket={}, key={}",
+                outputBucket, OBJECT_KEY);
     }
 
     /**
@@ -138,6 +153,9 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
             // RECFM=F: fixed-length records are concatenated contiguously, with no delimiters.
             buffer.writeBytes(recordBytes);
             MetricsConfig.recordsRejected(meterRegistry, String.valueOf(item.reasonCode())).increment();
+            rejectsWritten++;
+            // Reason code only (non-sensitive, values 100-109); never the rejected record content.
+            log.debug("Buffered reject record: reasonCode={}", item.reasonCode());
         }
     }
 
@@ -151,6 +169,9 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
     @Override
     public void close() {
         if (buffer == null || buffer.size() == 0) {
+            // Faithful to COBOL not creating an empty generation; record the no-op for traceability.
+            log.info("No rejected transactions for this run; no S3 object written: bucket={}, key={}",
+                    outputBucket, OBJECT_KEY);
             return;
         }
         byte[] payload = buffer.toByteArray();
@@ -162,7 +183,13 @@ public class RejectWriter implements ItemStreamWriter<RejectWriter.RejectedTrans
                             .contentType("application/octet-stream")
                             .build(),
                     RequestBody.fromBytes(payload));
+            log.info("Wrote reject file to S3: bucket={}, key={}, records={}, bytes={}",
+                    outputBucket, OBJECT_KEY, rejectsWritten, payload.length);
         } catch (SdkException e) {
+            // Server-side diagnostic carries the bucket/key (operational context) and cause; this
+            // detail is intentionally sanitized out of any API client response (see GlobalExceptionHandler).
+            log.error("Failed to write reject file to S3: bucket={}, key={}, records={}, cause={}",
+                    outputBucket, OBJECT_KEY, rejectsWritten, e.getMessage());
             throw new FileAccessException(
                     "Failed to write reject file to S3 " + outputBucket + "/" + OBJECT_KEY, e);
         } finally {

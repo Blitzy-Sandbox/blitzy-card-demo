@@ -4,6 +4,8 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamWriter;
@@ -55,6 +57,13 @@ import com.carddemo.observability.MetricsConfig;
 @Component
 public class StatementWriter implements ItemStreamWriter<StatementWriter.StatementDocument> {
 
+    /**
+     * Structured logger for writer lifecycle and S3 outcomes (Observability rule, AAP 0.7.1). Emits
+     * only non-sensitive context — the bucket/key, object byte sizes, and statement counts — and
+     * NEVER the statement body (customer financial content).
+     */
+    private static final Logger log = LoggerFactory.getLogger(StatementWriter.class);
+
     /** S3 object key for the accumulated plain-text statement output (from COBOL {@code STMTFILE}). */
     private static final String TEXT_OBJECT_KEY = "STATEMNT.PS";
 
@@ -82,6 +91,9 @@ public class StatementWriter implements ItemStreamWriter<StatementWriter.Stateme
     /** Accumulates the HTML statement bytes for the current run; allocated in {@link #open}. */
     private ByteArrayOutputStream htmlBuffer;
 
+    /** Count of statements appended this run, logged as a lifecycle summary in {@link #close()}. */
+    private long statementsProcessed;
+
     /**
      * Creates the writer with its collaborators injected by Spring.
      *
@@ -108,6 +120,8 @@ public class StatementWriter implements ItemStreamWriter<StatementWriter.Stateme
     public void open(final ExecutionContext executionContext) {
         this.textBuffer = new ByteArrayOutputStream();
         this.htmlBuffer = new ByteArrayOutputStream();
+        this.statementsProcessed = 0L;
+        log.debug("Statement writer opened; buffering statements for run: bucket={}", statementsBucket);
     }
 
     /**
@@ -138,6 +152,7 @@ public class StatementWriter implements ItemStreamWriter<StatementWriter.Stateme
             this.textBuffer.writeBytes(text.getBytes(StandardCharsets.ISO_8859_1));
             this.htmlBuffer.writeBytes(html.getBytes(StandardCharsets.ISO_8859_1));
             MetricsConfig.recordsProcessed(this.meterRegistry).increment();
+            this.statementsProcessed++;
         }
     }
 
@@ -156,6 +171,8 @@ public class StatementWriter implements ItemStreamWriter<StatementWriter.Stateme
             if (this.htmlBuffer != null && this.htmlBuffer.size() > 0) {
                 putObject(HTML_OBJECT_KEY, this.htmlBuffer.toByteArray(), HTML_CONTENT_TYPE);
             }
+            log.info("Statement writer flush complete: bucket={}, statements={}",
+                    statementsBucket, statementsProcessed);
         } finally {
             this.textBuffer = null;
             this.htmlBuffer = null;
@@ -181,7 +198,14 @@ public class StatementWriter implements ItemStreamWriter<StatementWriter.Stateme
                             .contentType(contentType)
                             .build(),
                     RequestBody.fromBytes(payload));
+            // Object size only (never the statement body, which is customer financial content).
+            log.info("Wrote statement object to S3: bucket={}, key={}, bytes={}",
+                    this.statementsBucket, key, payload.length);
         } catch (final SdkException e) {
+            // Server-side diagnostic with bucket/key (operational context) and cause; this detail is
+            // intentionally sanitized out of any API client response (see GlobalExceptionHandler).
+            log.error("Failed to write statement object to S3: bucket={}, key={}, cause={}",
+                    this.statementsBucket, key, e.getMessage());
             throw new FileAccessException(
                     "Failed to write statement object to S3 " + this.statementsBucket + "/" + key, e);
         }

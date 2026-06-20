@@ -1,0 +1,74 @@
+# =====================================================================================
+# CardDemo (Java) - 'local' Spring Profile (developer machine + Docker Compose stack)
+# =====================================================================================
+# Activated by `-Dspring.profiles.active=local` (or SPRING_PROFILES_ACTIVE=local) and
+# OVERLAYS application.yml. Spring Boot merges this file over the base at the PROPERTY
+# level, so only the keys that differ for local development are declared here; everything
+# else (application name, JPA/Hibernate dialect + UTC timestamps, HikariCP pool, Flyway
+# baseline/validate, Spring Batch settings, actuator exposure/metrics/percentiles, JWT
+# expiry, logging levels, the carddemo.aws.* resource names) is inherited from the base.
+#
+# RUN CONTEXT (AAP 0.7.6 onboarding): the application runs ON THE HOST via
+# `./mvnw spring-boot:run -Dspring.profiles.active=local`, talking to the infrastructure
+# started by `docker compose up -d` (see ../../docker-compose.yml at the project root):
+#   * PostgreSQL 16 on localhost:5432 (database/user `carddemo`);
+#   * LocalStack (S3/SQS/SNS) on localhost:4566;
+#   * Jaeger OTLP collector on localhost:4317 (gRPC).
+# Because the app is not containerised here, every endpoint is a fixed localhost:port that
+# matches the published Docker Compose port mappings (and the onboarding guide's
+# "Quick links" table).
+#
+# SECURITY (AAP 0.8.1 - no hardcoded credentials): the JWT signing key is NOT declared in
+# this file - it is inherited from application.yml as ${JWT_SECRET:} (empty default) and
+# MUST be supplied via the JWT_SECRET environment variable before startup (SecurityConfig
+# fails fast when the resolved key is shorter than the HS256 minimum of 32 bytes). The
+# AWS credentials remain the well-known non-secret LocalStack dummies (test/test) inherited
+# from the base. The only literal here is the local PostgreSQL password fallback
+# (`carddemo`), a non-secret local-development convenience that matches the Docker Compose
+# default and is overridden by SPRING_DATASOURCE_PASSWORD / POSTGRES_PASSWORD when set.
+#
+# SCOPE: AWS-only (Environment 1 / LocalStack). The second attached emulator environment
+# (GCP) is out of scope and none of its keys appear here (AAP 0.3.2, 0.7.8, D-019). No
+# COBOL equivalent - cross-cutting infrastructure config; traceability is via commit 27d6c6f.
+# =====================================================================================
+
+spring:
+  # --- Datasource: the PostgreSQL 16 container published by docker-compose.yml ---------
+  # Fixed localhost:5432 endpoint (the compose port mapping). The password prefers
+  # SPRING_DATASOURCE_PASSWORD, then POSTGRES_PASSWORD (the variable the postgres service
+  # reads), then a local-only `carddemo` default so a clean checkout runs without extra
+  # configuration. No production secret is embedded.
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    password: ${SPRING_DATASOURCE_PASSWORD:${POSTGRES_PASSWORD:carddemo}}
+
+  # --- Spring Cloud AWS -> LocalStack (S3 / SQS / SNS) --------------------------------
+  # Point every AWS client at the LocalStack container on localhost:4566. AwsConfig.java
+  # reads the GLOBAL spring.cloud.aws.endpoint for all three clients; the per-service keys
+  # are declared for Spring Cloud AWS autoconfig parity. Path-style S3 addressing is
+  # mandatory for LocalStack (virtual-host "bucket.<host>" DNS does not resolve against the
+  # emulator). Region and credentials (test/test) are inherited from the base profile.
+  cloud:
+    aws:
+      endpoint: ${AWS_ENDPOINT:http://localhost:4566}
+      s3:
+        endpoint: ${AWS_ENDPOINT:http://localhost:4566}
+        path-style-access-enabled: true
+      sqs:
+        endpoint: ${AWS_ENDPOINT:http://localhost:4566}
+      sns:
+        endpoint: ${AWS_ENDPOINT:http://localhost:4566}
+
+# --- Actuator & observability (local convenience) ------------------------------------
+# The base profile keeps health details guarded (when_authorized); for local development
+# show full component details so an unauthenticated `curl /actuator/health` returns the
+# composite db / postgres / s3 / sqs indicators documented in the onboarding guide. Point
+# the OTLP trace exporter at the Jaeger collector published by docker-compose.yml.
+management:
+  endpoint:
+    health:
+      show-details: always
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4317}

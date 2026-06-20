@@ -62,4 +62,29 @@ class DisclosureGroupIdTest {
         assertThat(base.equals(null)).isFalse();
         assertThat(base.equals("not-a-key")).isFalse();
     }
+
+    @Test
+    @DisplayName("no-arg constructor with setters round-trips all three components")
+    void noArgConstructorAndSettersRoundTrip() {
+        DisclosureGroupId id = new DisclosureGroupId();
+        id.setAccountGroupId("DEFAULT");
+        id.setTransactionTypeCode("02");
+        id.setTransactionCategoryCode(7);
+
+        assertThat(id.getAccountGroupId()).isEqualTo("DEFAULT");
+        assertThat(id.getTransactionTypeCode()).isEqualTo("02");
+        assertThat(id.getTransactionCategoryCode()).isEqualTo(7);
+        assertThat(id).isEqualTo(new DisclosureGroupId("DEFAULT", "02", 7));
+    }
+
+    @Test
+    @DisplayName("toString exposes all three key components")
+    void toStringContainsComponents() {
+        String text = newKey().toString();
+        assertThat(text)
+                .contains("DisclosureGroupId")
+                .contains("A000000000")
+                .contains("01")
+                .contains("5");
+    }
 }

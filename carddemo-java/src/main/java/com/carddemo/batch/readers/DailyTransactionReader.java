@@ -4,6 +4,8 @@ import com.carddemo.exception.FileAccessException;
 import com.carddemo.model.entity.DailyTransaction;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamException;
@@ -35,11 +37,22 @@ import org.springframework.stereotype.Component;
 @StepScope
 public class DailyTransactionReader extends FlatFileItemReader<DailyTransaction> {
 
+    /**
+     * Structured logger for reader lifecycle and error diagnostics (Observability rule, AAP 0.7.1).
+     * Logs only non-sensitive context — the input location, line numbers, and record counts — and
+     * NEVER the raw record line or any field (the layout includes the card number / PAN), so no
+     * full payloads or secrets are emitted.
+     */
+    private static final Logger log = LoggerFactory.getLogger(DailyTransactionReader.class);
+
     /** Resource loader (S3 protocol resolver supplied by {@code AwsConfig}) used to resolve the input. */
     private final ResourceLoader resourceLoader;
 
     /** Late-bound {@code s3://} location of the daily-transaction staging object. */
     private final String inputLocation;
+
+    /** Count of records successfully read this step, logged as a lifecycle summary on {@link #close()}. */
+    private long recordsRead;
 
     /**
      * Creates a step-scoped reader bound to the daily-transaction staging object. The input
@@ -92,7 +105,12 @@ public class DailyTransactionReader extends FlatFileItemReader<DailyTransaction>
     public void open(ExecutionContext executionContext) {
         try {
             super.open(executionContext);
+            log.info("Opened daily transaction input for reading: location={}", inputLocation);
         } catch (ItemStreamException ex) {
+            // Server-side diagnostic with the resource location and root cause; the location is
+            // operational context (not a secret) and is intentionally NOT surfaced to API clients.
+            log.error("Failed to open daily transaction input: location={}, cause={}",
+                    inputLocation, ex.getMessage());
             throw new FileAccessException("Error opening daily transaction file", ex);
         }
     }
@@ -109,11 +127,34 @@ public class DailyTransactionReader extends FlatFileItemReader<DailyTransaction>
     @Override
     public DailyTransaction read() throws Exception {
         try {
-            return super.read();
+            DailyTransaction tran = super.read();
+            if (tran == null) {
+                // COBOL FILE STATUS '10' (end of file): lifecycle marker, not an error.
+                log.debug("Reached end of daily transaction input: location={}, recordsRead={}",
+                        inputLocation, recordsRead);
+            } else {
+                recordsRead++;
+            }
+            return tran;
         } catch (FlatFileParseException ex) {
+            // Log only the line number — NEVER ex.getInput() (the raw record line, which contains
+            // the card number / PAN) — so no sensitive payload is emitted.
+            log.error("Failed to parse daily transaction record: location={}, line={}",
+                    inputLocation, ex.getLineNumber());
             throw new FileAccessException(
                     "Error reading daily transaction record at line " + ex.getLineNumber(), ex);
         }
+    }
+
+    /**
+     * Closes the underlying resource and emits a lifecycle summary (total records read this step).
+     * No record content is logged. Delegates to the superclass to release the file handle.
+     */
+    @Override
+    public void close() {
+        log.info("Closing daily transaction reader: location={}, recordsRead={}",
+                inputLocation, recordsRead);
+        super.close();
     }
 
     /**

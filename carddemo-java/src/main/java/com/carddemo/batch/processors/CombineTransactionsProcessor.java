@@ -4,6 +4,8 @@ import com.carddemo.model.entity.Transaction;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.Comparator;
 import java.util.Objects;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.stereotype.Component;
 
@@ -43,6 +45,13 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class CombineTransactionsProcessor implements ItemProcessor<Transaction, Transaction> {
+
+    /**
+     * Structured logger for combine-stage diagnostics (Observability rule, AAP 0.7.1), aligning this
+     * processor with the same SLF4J logging convention as the batch readers/writers. Emits only
+     * non-sensitive context — the transaction id — and never full record content.
+     */
+    private static final Logger log = LoggerFactory.getLogger(CombineTransactionsProcessor.class);
 
     /**
      * Canonical name of the counter incremented for every combined transaction
@@ -92,15 +101,18 @@ public class CombineTransactionsProcessor implements ItemProcessor<Transaction, 
     @Override
     public Transaction process(final Transaction tx) {
         if (tx == null) {
+            log.warn("Combine stage rejected an invalid record: record is null");
             throw new IllegalArgumentException(
                     "Combined transaction record must not be null");
         }
         final String tranId = tx.getTranId();
         if (tranId == null || tranId.isBlank()) {
+            log.warn("Combine stage rejected an invalid record: missing ordering key (tranId)");
             throw new IllegalArgumentException(
                     "Combined transaction record is missing its ordering key (tranId)");
         }
         meterRegistry.counter(METRIC_RECORDS_PROCESSED).increment();
+        log.trace("Combine stage passthrough: tranId={}", tranId);
         return tx;
     }
 }
