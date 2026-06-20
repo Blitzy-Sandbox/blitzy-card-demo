@@ -3,7 +3,11 @@ package com.carddemo.unit.service.card;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.exception.ValidationException;
@@ -11,162 +15,234 @@ import com.carddemo.model.dto.CardListResponse;
 import com.carddemo.model.entity.Card;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.service.card.CardListService;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 
 /**
- * Unit tests for {@link CardListService} (COBOL {@code COCRDLIC} parity): optional account/card
- * filters, the seven-rows-per-page browse, AND-narrowing card filter, and the
- * informational/empty-result messages. A real {@link PageImpl} drives faithful
- * {@code hasNext()} behavior.
+ * Unit tests for {@link CardListService} (paginated 7-rows/page card browse; behavioral parity with
+ * COBOL program COCRDLIC at source commit 27d6c6f). Pure Mockito/JVM test; rationale in DECISION_LOG.md.
  */
 @ExtendWith(MockitoExtension.class)
 class CardListServiceTest {
 
-    private static final String ACCT = "12345678901";
-    private static final String CARD = "4111111111111111";
+  private static final int PAGE_SIZE = 7;
+  private static final String VALID_ACCOUNT = "12345678901";
+  private static final String VALID_CARD = "1234567890123456";
+  private static final String INFO_HINT = "TYPE S FOR DETAIL, U TO UPDATE ANY RECORD";
+  private static final String NO_RECORDS = "NO RECORDS FOUND FOR THIS SEARCH CONDITION.";
+  private static final String NO_MORE = "NO MORE RECORDS TO SHOW";
 
-    @Mock
-    private CardRepository cardRepository;
+  @Mock private CardRepository cardRepository;
 
-    private CardListService service() {
-        return new CardListService(cardRepository);
+  @InjectMocks private CardListService cardListService;
+
+  private static Card card(String cardNum, Long acctId, String status) {
+    Card card = new Card();
+    card.setCardNum(cardNum);
+    card.setCardAcctId(acctId);
+    card.setCardActiveStatus(status);
+    return card;
+  }
+
+  private static List<Card> cards(int count) {
+    List<Card> list = new ArrayList<>();
+    for (int i = 1; i <= count; i++) {
+      list.add(card(String.format("%016d", i), (long) i, "Y"));
     }
+    return list;
+  }
 
-    private static Card card(String num, long acctId, String status) {
-        Card c = new Card();
-        c.setCardNum(num);
-        c.setCardAcctId(acctId);
-        c.setCardActiveStatus(status);
-        return c;
-    }
+  @Test
+  @DisplayName("list-all first page with more pages -> 7 rows, page '1', info hint")
+  void listAllFirstPageHasNext() {
+    Page<Card> page = new PageImpl<>(cards(PAGE_SIZE), PageRequest.of(0, PAGE_SIZE), 10);
+    when(cardRepository.findAll(any(Pageable.class))).thenReturn(page);
 
-    @Test
-    void invalidAccountFilterThrows() {
-        assertThatThrownBy(() -> service().getCardList("123", "", 0))
-                .isInstanceOf(ValidationException.class)
-                .hasMessage("ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER");
-    }
+    CardListResponse response = cardListService.getCardList(null, null, 0);
 
-    @Test
-    void invalidCardFilterThrows() {
-        assertThatThrownBy(() -> service().getCardList("", "4111", 0))
-                .isInstanceOf(ValidationException.class)
-                .hasMessage("CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER");
-    }
+    assertThat(response.pageNumber()).isEqualTo("1");
+    assertThat(response.cards()).hasSize(PAGE_SIZE);
+    assertThat(response.infoMessage()).isEqualTo(INFO_HINT);
+    assertThat(response.errorMessage()).isNull();
+    assertThat(response.accountIdFilter()).isEmpty();
+    assertThat(response.cardNumberFilter()).isEmpty();
+    assertThat(response.cards().get(0).selectionFlag()).isEmpty();
+    assertThat(response.cards().get(0).accountId()).isEqualTo("00000000001");
 
-    @Test
-    void noFiltersFirstPageWithMoreRecordsReturnsInfoMessageAndSevenRows() {
-        List<Card> content = List.of(
-                card("4000000000000001", 11111111111L, "Y"),
-                card("4000000000000002", 11111111111L, "Y"),
-                card("4000000000000003", 11111111111L, "N"),
-                card("4000000000000004", 11111111111L, "Y"),
-                card("4000000000000005", 11111111111L, "Y"),
-                card("4000000000000006", 11111111111L, "Y"),
-                card("4000000000000007", 11111111111L, "Y"));
-        // total 20 => hasNext() true on page 0 with size 7.
-        Pageable pageable = PageRequest.of(0, 7);
-        when(cardRepository.findAll(any(Pageable.class)))
-                .thenReturn(new PageImpl<>(content, pageable, 20));
+    verify(cardRepository).findAll(any(Pageable.class));
+    verify(cardRepository, never()).findByCardAcctId(anyLong(), any(Pageable.class));
+  }
 
-        CardListResponse response = service().getCardList(null, null, 0);
+  @Test
+  @DisplayName("list-all final page (items present, no next) -> 'NO MORE RECORDS TO SHOW'")
+  void listAllFinalPageNoMoreRecords() {
+    Page<Card> page = new PageImpl<>(cards(3), PageRequest.of(1, PAGE_SIZE), 10);
+    when(cardRepository.findAll(any(Pageable.class))).thenReturn(page);
 
-        assertThat(response.cards()).hasSize(7);
-        assertThat(response.pageNumber()).isEqualTo("1");
-        assertThat(response.infoMessage()).isEqualTo("TYPE S FOR DETAIL, U TO UPDATE ANY RECORD");
-        assertThat(response.errorMessage()).isNull();
-        assertThat(response.accountIdFilter()).isEmpty();
-        assertThat(response.cardNumberFilter()).isEmpty();
-    }
+    CardListResponse response = cardListService.getCardList(null, null, 1);
 
-    @Test
-    void noFiltersLastPageReturnsNoMoreRecords() {
-        List<Card> content = List.of(card("4000000000000008", 11111111111L, "Y"));
-        Pageable pageable = PageRequest.of(0, 7);
-        // total == content size => hasNext() false.
-        when(cardRepository.findAll(any(Pageable.class)))
-                .thenReturn(new PageImpl<>(content, pageable, 1));
+    assertThat(response.pageNumber()).isEqualTo("2");
+    assertThat(response.cards()).hasSize(3);
+    assertThat(response.infoMessage()).isNull();
+    assertThat(response.errorMessage()).isEqualTo(NO_MORE);
+  }
 
-        CardListResponse response = service().getCardList("", "", 0);
+  @Test
+  @DisplayName("empty first page -> 'NO RECORDS FOUND FOR THIS SEARCH CONDITION.'")
+  void emptyFirstPageNoRecordsFound() {
+    Page<Card> page = new PageImpl<>(Collections.<Card>emptyList(), PageRequest.of(0, PAGE_SIZE), 0);
+    when(cardRepository.findAll(any(Pageable.class))).thenReturn(page);
 
-        assertThat(response.cards()).hasSize(1);
-        assertThat(response.infoMessage()).isNull();
-        assertThat(response.errorMessage()).isEqualTo("NO MORE RECORDS TO SHOW");
-    }
+    CardListResponse response = cardListService.getCardList(null, null, 0);
 
-    @Test
-    void emptyFirstPageReturnsNoRecordsFound() {
-        Pageable pageable = PageRequest.of(0, 7);
-        when(cardRepository.findAll(any(Pageable.class)))
-                .thenReturn(new PageImpl<>(List.of(), pageable, 0));
+    assertThat(response.cards()).isEmpty();
+    assertThat(response.pageNumber()).isEqualTo("1");
+    assertThat(response.errorMessage()).isEqualTo(NO_RECORDS);
+    assertThat(response.infoMessage()).isNull();
+  }
 
-        CardListResponse response = service().getCardList("", "", 0);
+  @Test
+  @DisplayName("empty later page -> 'NO MORE RECORDS TO SHOW'")
+  void emptyLaterPageNoMoreRecords() {
+    Page<Card> page = new PageImpl<>(Collections.<Card>emptyList(), PageRequest.of(2, PAGE_SIZE), 10);
+    when(cardRepository.findAll(any(Pageable.class))).thenReturn(page);
 
-        assertThat(response.cards()).isEmpty();
-        assertThat(response.errorMessage()).isEqualTo("NO RECORDS FOUND FOR THIS SEARCH CONDITION.");
-    }
+    CardListResponse response = cardListService.getCardList(null, null, 2);
 
-    @Test
-    void emptyLaterPageReturnsNoMoreRecords() {
-        Pageable pageable = PageRequest.of(2, 7);
-        when(cardRepository.findAll(any(Pageable.class)))
-                .thenReturn(new PageImpl<>(List.of(), pageable, 5));
+    assertThat(response.cards()).isEmpty();
+    assertThat(response.pageNumber()).isEqualTo("3");
+    assertThat(response.errorMessage()).isEqualTo(NO_MORE);
+    assertThat(response.infoMessage()).isNull();
+  }
 
-        CardListResponse response = service().getCardList("", "", 2);
+  @Test
+  @DisplayName("valid account filter -> findByCardAcctId browse, account echoed")
+  void accountFilterUsesFindByCardAcctId() {
+    List<Card> content = new ArrayList<>();
+    content.add(card("1111111111111111", 12345678901L, "Y"));
+    Page<Card> page = new PageImpl<>(content, PageRequest.of(0, PAGE_SIZE), 1);
+    when(cardRepository.findByCardAcctId(eq(12345678901L), any(Pageable.class))).thenReturn(page);
 
-        assertThat(response.cards()).isEmpty();
-        assertThat(response.errorMessage()).isEqualTo("NO MORE RECORDS TO SHOW");
-    }
+    CardListResponse response = cardListService.getCardList(VALID_ACCOUNT, null, 0);
 
-    @Test
-    void accountFilterUsesFindByCardAcctId() {
-        List<Card> content = List.of(card("4000000000000009", 12345678901L, "Y"));
-        Pageable pageable = PageRequest.of(0, 7);
-        when(cardRepository.findByCardAcctId(eq(12345678901L), any(Pageable.class)))
-                .thenReturn(new PageImpl<>(content, pageable, 1));
+    assertThat(response.cards()).hasSize(1);
+    assertThat(response.accountIdFilter()).isEqualTo(VALID_ACCOUNT);
+    assertThat(response.cardNumberFilter()).isEmpty();
+    assertThat(response.errorMessage()).isEqualTo(NO_MORE);
 
-        CardListResponse response = service().getCardList(ACCT, "", 0);
+    verify(cardRepository).findByCardAcctId(eq(12345678901L), any(Pageable.class));
+    verify(cardRepository, never()).findAll(any(Pageable.class));
+  }
 
-        assertThat(response.accountIdFilter()).isEqualTo(ACCT);
-        assertThat(response.cards()).hasSize(1);
-        assertThat(response.cards().get(0).accountId()).isEqualTo("12345678901");
-    }
+  @Test
+  @DisplayName("account filter not 11 digits -> account filter message, no repository call")
+  void accountFilterInvalidFormatThrows() {
+    assertThatThrownBy(() -> cardListService.getCardList("123", null, 0))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER");
+    verifyNoInteractions(cardRepository);
+  }
 
-    @Test
-    void cardFilterNarrowsInMemoryAndForcesNoMoreRecords() {
-        List<Card> content = List.of(
-                card(CARD, 11111111111L, "Y"),
-                card("4999999999999999", 11111111111L, "N"));
-        Pageable pageable = PageRequest.of(0, 7);
-        // total 20 => page.hasNext() true, but cardFilterValid forces hasNext=false.
-        when(cardRepository.findAll(any(Pageable.class)))
-                .thenReturn(new PageImpl<>(content, pageable, 20));
+  @Test
+  @DisplayName("valid card filter narrows to single matching row, hasNext forced false")
+  void cardFilterNarrowsToSingleMatch() {
+    List<Card> content = new ArrayList<>();
+    content.add(card("1111111111111111", 11L, "Y"));
+    content.add(card(VALID_CARD, 22L, "N"));
+    content.add(card("3333333333333333", 33L, "Y"));
+    Page<Card> page = new PageImpl<>(content, PageRequest.of(0, PAGE_SIZE), 10);
+    when(cardRepository.findAll(any(Pageable.class))).thenReturn(page);
 
-        CardListResponse response = service().getCardList("", CARD, 0);
+    CardListResponse response = cardListService.getCardList(null, VALID_CARD, 0);
 
-        assertThat(response.cardNumberFilter()).isEqualTo(CARD);
-        assertThat(response.cards()).hasSize(1);
-        assertThat(response.cards().get(0).cardNumber()).isEqualTo(CARD);
-        assertThat(response.errorMessage()).isEqualTo("NO MORE RECORDS TO SHOW");
-        assertThat(response.infoMessage()).isNull();
-    }
+    assertThat(response.cards()).hasSize(1);
+    assertThat(response.cards().get(0).cardNumber()).isEqualTo(VALID_CARD);
+    assertThat(response.cards().get(0).accountId()).isEqualTo("00000000022");
+    assertThat(response.cards().get(0).cardStatus()).isEqualTo("N");
+    assertThat(response.cardNumberFilter()).isEqualTo(VALID_CARD);
+    assertThat(response.accountIdFilter()).isEmpty();
+    assertThat(response.infoMessage()).isNull();
+    assertThat(response.errorMessage()).isEqualTo(NO_MORE);
 
-    @Test
-    void negativePageNumberClampedToZero() {
-        Pageable pageable = PageRequest.of(0, 7);
-        when(cardRepository.findAll(any(Pageable.class)))
-                .thenReturn(new PageImpl<>(List.of(), pageable, 0));
+    verify(cardRepository).findAll(any(Pageable.class));
+    verify(cardRepository, never()).findByCardAcctId(anyLong(), any(Pageable.class));
+  }
 
-        CardListResponse response = service().getCardList("", "", -5);
+  @Test
+  @DisplayName("valid card filter with no match in page -> empty first page message")
+  void cardFilterNoMatchEmptyFirstPage() {
+    List<Card> content = new ArrayList<>();
+    content.add(card("1111111111111111", 11L, "Y"));
+    content.add(card("3333333333333333", 33L, "Y"));
+    Page<Card> page = new PageImpl<>(content, PageRequest.of(0, PAGE_SIZE), 2);
+    when(cardRepository.findAll(any(Pageable.class))).thenReturn(page);
 
-        assertThat(response.pageNumber()).isEqualTo("1");
-        assertThat(response.errorMessage()).isEqualTo("NO RECORDS FOUND FOR THIS SEARCH CONDITION.");
-    }
+    CardListResponse response = cardListService.getCardList(null, "9999999999999999", 0);
+
+    assertThat(response.cards()).isEmpty();
+    assertThat(response.errorMessage()).isEqualTo(NO_RECORDS);
+    assertThat(response.infoMessage()).isNull();
+  }
+
+  @Test
+  @DisplayName("card filter not 16 digits -> card filter message")
+  void cardFilterInvalidFormatThrows() {
+    assertThatThrownBy(() -> cardListService.getCardList(null, "123", 0))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER");
+    verifyNoInteractions(cardRepository);
+  }
+
+  @Test
+  @DisplayName("account format error has priority over card format error")
+  void accountFormatErrorHasPriorityOverCard() {
+    assertThatThrownBy(() -> cardListService.getCardList("123", "456", 0))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER");
+    verifyNoInteractions(cardRepository);
+  }
+
+  @Test
+  @DisplayName("negative page number clamped to 0")
+  void negativePageClampedToZero() {
+    Page<Card> page = new PageImpl<>(cards(PAGE_SIZE), PageRequest.of(0, PAGE_SIZE), 10);
+    when(cardRepository.findAll(any(Pageable.class))).thenReturn(page);
+
+    cardListService.getCardList(null, null, -5);
+
+    ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
+    verify(cardRepository).findAll(captor.capture());
+    assertThat(captor.getValue().getPageNumber()).isEqualTo(0);
+  }
+
+  @Test
+  @DisplayName("page size is always 7 and sorted by cardNum ascending (COCRDLIC parity)")
+  void pageSizeIsSevenSortedByCardNum() {
+    Page<Card> page = new PageImpl<>(cards(PAGE_SIZE), PageRequest.of(0, PAGE_SIZE), 7);
+    when(cardRepository.findAll(any(Pageable.class))).thenReturn(page);
+
+    cardListService.getCardList(null, null, 0);
+
+    ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
+    verify(cardRepository).findAll(captor.capture());
+    Pageable used = captor.getValue();
+    assertThat(used.getPageSize()).isEqualTo(7);
+    assertThat(used.getPageNumber()).isEqualTo(0);
+    Sort.Order order = used.getSort().getOrderFor("cardNum");
+    assertThat(order).isNotNull();
+    assertThat(order.getDirection()).isEqualTo(Sort.Direction.ASC);
+  }
 }

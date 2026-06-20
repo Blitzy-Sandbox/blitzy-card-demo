@@ -89,6 +89,19 @@ spring:
       # auto-created by Boot - keeps the schema authoritative and the build warning-free
       # (Gate 2).
       initialize-schema: never
+      # Spring Batch defaults the JobRepository create-transaction isolation to
+      # SERIALIZABLE to guard against two threads creating the SAME JobInstance at once.
+      # The 5-stage pipeline (AAP 0.8.5) runs its terminal stages 4a/4b -
+      # statementGenerationJob and transactionReportJob - CONCURRENTLY via
+      # BatchPipelineOrchestrator's FlowBuilder.split(...). Those two child jobs are
+      # DISTINCT instances, so the duplicate-instance race SERIALIZABLE protects against
+      # cannot occur here; under PostgreSQL's strict SSI the two concurrent metadata
+      # INSERTs (BATCH_JOB_EXECUTION_CONTEXT) are instead flagged as a false-positive
+      # pivot conflict ("could not serialize access due to read/write dependencies"),
+      # which would fail a parallel terminal stage. READ_COMMITTED is the documented,
+      # safe setting for parallel job launching on PostgreSQL and preserves the parallel
+      # 4a/4b semantics the migration requires.
+      isolation-level-for-create: read_committed
     job:
       # Do NOT auto-run jobs at startup. The 5-stage pipeline (POSTTRAN -> INTCALC ->
       # COMBTRAN -> CREASTMT/TRANREPT) is launched explicitly by BatchPipelineOrchestrator

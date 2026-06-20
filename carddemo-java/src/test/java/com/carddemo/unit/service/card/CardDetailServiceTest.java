@@ -2,6 +2,8 @@ package com.carddemo.unit.service.card;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.exception.RecordNotFoundException;
@@ -11,118 +13,129 @@ import com.carddemo.model.entity.Card;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.service.card.CardDetailService;
 import java.util.Optional;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 /**
- * Unit tests for {@link CardDetailService} (COBOL {@code COCRDSLC} parity). Verifies the
- * ordered input edits ({@code 2210-EDIT-ACCOUNT}/{@code 2220-EDIT-CARD}), the keyed read by
- * card number ({@code 9100-GETCARD-BYACCTCARD}), and the populated success response.
+ * Unit tests for {@link CardDetailService} (single keyed card read; behavioral parity with COBOL
+ * program COCRDSLC at source commit 27d6c6f). Pure Mockito/JVM test; rationale in DECISION_LOG.md.
  */
 @ExtendWith(MockitoExtension.class)
 class CardDetailServiceTest {
 
-    private static final String ACCT = "12345678901";
-    private static final String CARD = "4111111111111111";
+  private static final String VALID_ACCOUNT = "12345678901";
+  private static final String VALID_CARD = "1234567890123456";
 
-    @Mock
-    private CardRepository cardRepository;
+  @Mock private CardRepository cardRepository;
 
-    private CardDetailService service() {
-        return new CardDetailService(cardRepository);
-    }
+  @InjectMocks private CardDetailService cardDetailService;
 
-    @Test
-    void bothBlankThrowsNoInput() {
-        assertThatThrownBy(() -> service().getCardDetail("", ""))
-                .isInstanceOf(ValidationException.class)
-                .hasMessage("No input received");
-    }
+  private static Card card(String cardNum, Long acctId, String name, String status, String expiry) {
+    Card card = new Card();
+    card.setCardNum(cardNum);
+    card.setCardAcctId(acctId);
+    card.setCardEmbossedName(name);
+    card.setCardActiveStatus(status);
+    card.setCardExpiraionDate(expiry);
+    return card;
+  }
 
-    @Test
-    void wildcardAndAllZerosTreatedAsBlank() {
-        // "*" normalizes to empty and "000..." is all-zeros => both treated blank => No input.
-        assertThatThrownBy(() -> service().getCardDetail("*", "0000000000000000"))
-                .isInstanceOf(ValidationException.class)
-                .hasMessage("No input received");
-    }
+  @Test
+  @DisplayName("both filters blank -> 'No input received', no repository read")
+  void bothBlankThrowsNoInput() {
+    assertThatThrownBy(() -> cardDetailService.getCardDetail(null, null))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("No input received");
+    verifyNoInteractions(cardRepository);
+  }
 
-    @Test
-    void accountBlankButCardPresentThrowsAccountNotProvided() {
-        assertThatThrownBy(() -> service().getCardDetail("", CARD))
-                .isInstanceOf(ValidationException.class)
-                .hasMessage("Account number not provided");
-    }
+  @Test
+  @DisplayName("wildcard '*' both filters treated as blank -> 'No input received'")
+  void wildcardTreatedAsBlank() {
+    assertThatThrownBy(() -> cardDetailService.getCardDetail("*", "*"))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("No input received");
+    verifyNoInteractions(cardRepository);
+  }
 
-    @Test
-    void accountNotElevenDigitsThrowsAccountFilter() {
-        assertThatThrownBy(() -> service().getCardDetail("123", CARD))
-                .isInstanceOf(ValidationException.class)
-                .hasMessage("ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER");
-    }
+  @Test
+  @DisplayName("account blank but card supplied -> 'Account number not provided'")
+  void accountBlankThrows() {
+    assertThatThrownBy(() -> cardDetailService.getCardDetail("", VALID_CARD))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Account number not provided");
+    verifyNoInteractions(cardRepository);
+  }
 
-    @Test
-    void cardBlankButAccountValidThrowsCardNotProvided() {
-        assertThatThrownBy(() -> service().getCardDetail(ACCT, ""))
-                .isInstanceOf(ValidationException.class)
-                .hasMessage("Card number not provided");
-    }
+  @Test
+  @DisplayName("all-zero account treated as blank -> 'Account number not provided'")
+  void allZeroAccountTreatedAsBlank() {
+    assertThatThrownBy(() -> cardDetailService.getCardDetail("00000000000", VALID_CARD))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Account number not provided");
+    verifyNoInteractions(cardRepository);
+  }
 
-    @Test
-    void cardNotSixteenDigitsThrowsCardFilter() {
-        assertThatThrownBy(() -> service().getCardDetail(ACCT, "4111"))
-                .isInstanceOf(ValidationException.class)
-                .hasMessage("CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER");
-    }
+  @Test
+  @DisplayName("account not 11 digits -> account filter message")
+  void accountWrongLengthThrows() {
+    assertThatThrownBy(() -> cardDetailService.getCardDetail("123", VALID_CARD))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER");
+    verifyNoInteractions(cardRepository);
+  }
 
-    @Test
-    void cardNotFoundThrowsRecordNotFound() {
-        when(cardRepository.findById(CARD)).thenReturn(Optional.empty());
+  @Test
+  @DisplayName("card blank but account valid -> 'Card number not provided'")
+  void cardBlankThrows() {
+    assertThatThrownBy(() -> cardDetailService.getCardDetail(VALID_ACCOUNT, ""))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Card number not provided");
+    verifyNoInteractions(cardRepository);
+  }
 
-        assertThatThrownBy(() -> service().getCardDetail(ACCT, CARD))
-                .isInstanceOf(RecordNotFoundException.class)
-                .hasMessage("Did not find cards for this search condition");
-    }
+  @Test
+  @DisplayName("card not 16 digits -> card filter message")
+  void cardWrongLengthThrows() {
+    assertThatThrownBy(() -> cardDetailService.getCardDetail(VALID_ACCOUNT, "123"))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER");
+    verifyNoInteractions(cardRepository);
+  }
 
-    @Test
-    void successPopulatesResponseWithFormattedFields() {
-        Card card = new Card();
-        card.setCardNum(CARD);
-        card.setCardAcctId(12345678901L);
-        card.setCardEmbossedName("JOHN Q PUBLIC");
-        card.setCardActiveStatus("Y");
-        card.setCardExpiraionDate("2026-08-15");
-        card.setVersion(3L);
-        when(cardRepository.findById(CARD)).thenReturn(Optional.of(card));
+  @Test
+  @DisplayName("valid keys but no record -> RecordNotFoundException (FILE STATUS 23)")
+  void notFoundThrows() {
+    when(cardRepository.findById(VALID_CARD)).thenReturn(Optional.empty());
 
-        CardDetailResponse response = service().getCardDetail(ACCT, CARD);
+    assertThatThrownBy(() -> cardDetailService.getCardDetail(VALID_ACCOUNT, VALID_CARD))
+        .isInstanceOf(RecordNotFoundException.class)
+        .hasMessage("Did not find cards for this search condition");
 
-        assertThat(response.accountId()).isEqualTo("12345678901");
-        assertThat(response.cardNumber()).isEqualTo(CARD);
-        assertThat(response.nameOnCard()).isEqualTo("JOHN Q PUBLIC");
-        assertThat(response.cardStatus()).isEqualTo("Y");
-        assertThat(response.expirationMonth()).isEqualTo("08");
-        assertThat(response.expirationYear()).isEqualTo("2026");
-        assertThat(response.version()).isEqualTo(3L);
-        assertThat(response.errorMessage()).isNull();
-    }
+    verify(cardRepository).findById(VALID_CARD);
+  }
 
-    @Test
-    void successWithNullAccountIdAndShortExpiryYieldsBlankDerivedFields() {
-        Card card = new Card();
-        card.setCardNum(CARD);
-        card.setCardAcctId(null);
-        card.setCardEmbossedName("NAME");
-        card.setCardActiveStatus("N");
-        card.setCardExpiraionDate("20");
-        when(cardRepository.findById(CARD)).thenReturn(Optional.of(card));
+  @Test
+  @DisplayName("valid keys, record found -> populated response, %011d account, month/year split")
+  void foundReturnsPopulatedResponse() {
+    Card entity = card(VALID_CARD, 1L, "JOHN Q PUBLIC", "Y", "2024-06-15");
+    when(cardRepository.findById(VALID_CARD)).thenReturn(Optional.of(entity));
 
-        CardDetailResponse response = service().getCardDetail(ACCT, CARD);
+    CardDetailResponse response = cardDetailService.getCardDetail(VALID_ACCOUNT, VALID_CARD);
 
-        assertThat(response.accountId()).isEmpty();
-        assertThat(response.expirationMonth()).isEmpty();
-        assertThat(response.expirationYear()).isEmpty();
-    }
+    assertThat(response.accountId()).isEqualTo("00000000001");
+    assertThat(response.cardNumber()).isEqualTo(VALID_CARD);
+    assertThat(response.nameOnCard()).isEqualTo("JOHN Q PUBLIC");
+    assertThat(response.cardStatus()).isEqualTo("Y");
+    assertThat(response.expirationMonth()).isEqualTo("06");
+    assertThat(response.expirationYear()).isEqualTo("2024");
+    assertThat(response.infoMessage()).isNull();
+    assertThat(response.errorMessage()).isNull();
+
+    verify(cardRepository).findById(VALID_CARD);
+  }
 }
