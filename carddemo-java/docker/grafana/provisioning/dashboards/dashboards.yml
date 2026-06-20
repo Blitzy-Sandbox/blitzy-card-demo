@@ -1,0 +1,27 @@
+# =====================================================================================
+# CardDemo (Java) - Grafana dashboard provider provisioning
+# =====================================================================================
+# Mounted read-only into the Grafana container by docker-compose.yml at
+# /etc/grafana/provisioning/dashboards/. It registers a file-based dashboard provider that
+# loads every dashboard JSON found under /etc/grafana/dashboards - where docker-compose.yml
+# mounts docs/grafana-dashboard.json (uid: carddemo-observability). The dashboard is
+# therefore available immediately after `docker compose up`, with no manual import.
+#
+# Traceability: cross-cutting observability infrastructure (Observability rule, AAP 0.7.1,
+# DECISION_LOG D-015); no COBOL equivalent.
+# =====================================================================================
+apiVersion: 1
+
+providers:
+  - name: CardDemo
+    orgId: 1
+    # Empty folder => dashboards load into the General (root) folder.
+    folder: ''
+    type: file
+    disableDeletion: false
+    # Re-read the mounted files periodically so edits on disk are picked up locally.
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

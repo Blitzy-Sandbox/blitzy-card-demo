@@ -1,0 +1,30 @@
+# =====================================================================================
+# CardDemo (Java) - Grafana datasource provisioning
+# =====================================================================================
+# Mounted read-only into the Grafana container by docker-compose.yml at
+# /etc/grafana/provisioning/datasources/. Grafana applies this on startup, wiring the
+# Prometheus instance (the `prometheus` compose service) as the default datasource so the
+# bundled dashboard (docs/grafana-dashboard.json) renders with zero manual configuration.
+#
+# The fixed uid `prometheus` and isDefault: true let the dashboard's DS_PROMETHEUS
+# datasource template variable (type: datasource, query: prometheus) resolve automatically.
+#
+# Traceability: cross-cutting observability infrastructure (Observability rule, AAP 0.7.1,
+# DECISION_LOG D-015); no COBOL equivalent.
+# =====================================================================================
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    # In-network address of the Prometheus service defined in docker-compose.yml.
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      httpMethod: POST
+      # Match the Prometheus scrape_interval (docker/prometheus/prometheus.yml) so rate()
+      # windows in the dashboard align with the sample cadence.
+      timeInterval: 15s
