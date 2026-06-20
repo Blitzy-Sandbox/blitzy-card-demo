@@ -1,74 +1,166 @@
 # =====================================================================================
-# CardDemo (Java) - 'local' Spring Profile (developer machine + Docker Compose stack)
+# CardDemo (Java) - 'local' Spring Profile (Docker Compose stack + LocalStack)
 # =====================================================================================
-# Activated by `-Dspring.profiles.active=local` (or SPRING_PROFILES_ACTIVE=local) and
-# OVERLAYS application.yml. Spring Boot merges this file over the base at the PROPERTY
-# level, so only the keys that differ for local development are declared here; everything
-# else (application name, JPA/Hibernate dialect + UTC timestamps, HikariCP pool, Flyway
-# baseline/validate, Spring Batch settings, actuator exposure/metrics/percentiles, JWT
-# expiry, logging levels, the carddemo.aws.* resource names) is inherited from the base.
+# Activated by `SPRING_PROFILES_ACTIVE=local` (the docker-compose `app` service and the
+# Dockerfile default both set it) or `-Dspring.profiles.active=local` /
+# `./mvnw spring-boot:run -Plocal`. This file OVERLAYS application.yml: Spring Boot merges
+# it over the base at the PROPERTY level, so only the keys that concretize local
+# development are declared here. Everything else - application name, Hibernate dialect +
+# UTC timestamps, HikariCP pool, Flyway baseline/validate, Spring Batch settings, actuator
+# exposure (health,info,prometheus) + metric percentiles, CORS, JWT expiry, root log level
+# - is inherited from application.yml. No COBOL equivalent (cross-cutting runtime config);
+# traceability to the source workload is via commit SHA 27d6c6f.
 #
-# RUN CONTEXT (AAP 0.7.6 onboarding): the application runs ON THE HOST via
-# `./mvnw spring-boot:run -Dspring.profiles.active=local`, talking to the infrastructure
-# started by `docker compose up -d` (see ../../docker-compose.yml at the project root):
-#   * PostgreSQL 16 on localhost:5432 (database/user `carddemo`);
-#   * LocalStack (S3/SQS/SNS) on localhost:4566;
-#   * Jaeger OTLP collector on localhost:4317 (gRPC).
-# Because the app is not containerised here, every endpoint is a fixed localhost:port that
-# matches the published Docker Compose port mappings (and the onboarding guide's
-# "Quick links" table).
+# -------------------------------------------------------------------------------------
+# ENDPOINT DEFAULTS = IN-NETWORK SERVICE HOSTNAMES (postgres / localstack / jaeger)
+# -------------------------------------------------------------------------------------
+# The defaults below use the Docker Compose service hostnames so they line up verbatim
+# with ../../../docker-compose.yml (the `app` service injects the SAME service-name URLs:
+# SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/carddemo, AWS_ENDPOINT=
+# http://localstack:4566, OTLP_ENDPOINT=http://jaeger:4317) and with
+# ../../../localstack-init/init-aws.sh (S3 bucket / SQS FIFO / SNS topic names). Running
+# the app INSIDE the compose network therefore needs no extra configuration:
+#       docker compose --profile app up -d --build
 #
-# SECURITY (AAP 0.8.1 - no hardcoded credentials): the JWT signing key is NOT declared in
-# this file - it is inherited from application.yml as ${JWT_SECRET:} (empty default) and
-# MUST be supplied via the JWT_SECRET environment variable before startup (SecurityConfig
-# fails fast when the resolved key is shorter than the HS256 minimum of 32 bytes). The
-# AWS credentials remain the well-known non-secret LocalStack dummies (test/test) inherited
-# from the base. The only literal here is the local PostgreSQL password fallback
-# (`carddemo`), a non-secret local-development convenience that matches the Docker Compose
-# default and is overridden by SPRING_DATASOURCE_PASSWORD / POSTGRES_PASSWORD when set.
+# HOST-RUN ALTERNATIVE (infra in Docker, app on the host JVM): the compose service
+# hostnames are NOT resolvable from the host, so reach the published ports on localhost by
+# exporting the localhost equivalents before starting the app:
+#       docker compose up -d
+#       export SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/carddemo
+#       export AWS_ENDPOINT=http://localhost:4566
+#       export OTLP_ENDPOINT=http://localhost:4317
+#       ./mvnw spring-boot:run -Plocal
+# (Published compose port contract: PostgreSQL 5432 | LocalStack 4566 | Jaeger OTLP 4317.)
+# Every endpoint here is `${ENV_VAR:in-network-default}`, so a single env-var export per
+# service switches a value without editing this file.
+#
+# -------------------------------------------------------------------------------------
+# SECURITY (AAP 0.8.1 - no hardcoded credentials)
+# -------------------------------------------------------------------------------------
+# No secret is committed. The JWT signing key resolves solely from ${JWT_SECRET:} (empty
+# default) and MUST be supplied via the JWT_SECRET env var before startup - SecurityConfig
+# fails fast when the resolved key is shorter than the HS256 minimum (32 bytes). The AWS
+# credentials are the well-known NON-SECRET LocalStack dummies (test/test). The only other
+# literal is the local PostgreSQL password fallback (`carddemo`), a non-secret local-dev
+# convenience matching the docker-compose POSTGRES_PASSWORD default; real environments
+# inject SPRING_DATASOURCE_PASSWORD. The LocalStack PRO auth token (a container concern in
+# docker-compose.yml) is NOT read by the app and is intentionally absent from this file.
 #
 # SCOPE: AWS-only (Environment 1 / LocalStack). The second attached emulator environment
-# (GCP) is out of scope and none of its keys appear here (AAP 0.3.2, 0.7.8, D-019). No
-# COBOL equivalent - cross-cutting infrastructure config; traceability is via commit 27d6c6f.
+# (Environment 2) is out of scope (AAP 0.3.2, 0.7.8, D-019); none of its keys appear here.
+# Zero live AWS: every AWS endpoint targets LocalStack :4566.
 # =====================================================================================
 
 spring:
-  # --- Datasource: the PostgreSQL 16 container published by docker-compose.yml ---------
-  # Fixed localhost:5432 endpoint (the compose port mapping). The password prefers
-  # SPRING_DATASOURCE_PASSWORD, then POSTGRES_PASSWORD (the variable the postgres service
-  # reads), then a local-only `carddemo` default so a clean checkout runs without extra
-  # configuration. No production secret is embedded.
+  # --- Datasource: PostgreSQL 16 published by docker-compose.yml ----------------------
+  # In-network default targets the `postgres` service (matches the docker-compose `app`
+  # service's SPRING_DATASOURCE_URL). HOST-RUN: export
+  # SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/carddemo (see header). Replaces
+  # the VSAM KSDS datasets (ACCTDAT, CARDDAT, CUSTDAT, CARDXREF, TRANSACT, USRSEC, ...) the
+  # z/OS DEFINE CLUSTER JCL provisioned.
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres:5432/carddemo}
     username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    # Local-only, non-secret default. Prefers SPRING_DATASOURCE_PASSWORD, then the
+    # POSTGRES_PASSWORD the postgres service reads, then the `carddemo` docker-compose
+    # default - so a clean checkout connects out of the box. No production secret embedded.
     password: ${SPRING_DATASOURCE_PASSWORD:${POSTGRES_PASSWORD:carddemo}}
+    driver-class-name: org.postgresql.Driver
+
+  # --- JPA / Hibernate ----------------------------------------------------------------
+  # Flyway owns the schema (VSAM->PostgreSQL). Hibernate must NEVER create or alter it -
+  # only validate that the JPA entities match the Flyway-provisioned tables. SQL logging
+  # stays off; logback-spring.xml handles structured output (keeps Gate-2 build clean).
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+
+  # --- Flyway (VSAM->PostgreSQL provisioning) -----------------------------------------
+  # Runs on startup BEFORE the JPA EntityManagerFactory initializes, applying
+  # V1__create_schema.sql -> V2__create_indexes.sql -> V3__seed_data.sql in strict order so
+  # the schema (and the 9 ASCII seed fixtures) exist before any online or batch flow.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
 
   # --- Spring Cloud AWS -> LocalStack (S3 / SQS / SNS) --------------------------------
-  # Point every AWS client at the LocalStack container on localhost:4566. AwsConfig.java
-  # reads the GLOBAL spring.cloud.aws.endpoint for all three clients; the per-service keys
-  # are declared for Spring Cloud AWS autoconfig parity. Path-style S3 addressing is
-  # mandatory for LocalStack (virtual-host "bucket.<host>" DNS does not resolve against the
-  # emulator). Region and credentials (test/test) are inherited from the base profile.
+  # Point every AWS client at the LocalStack container. In-network default
+  # http://localstack:4566 (matches the docker-compose `app` service AWS_ENDPOINT);
+  # HOST-RUN: export AWS_ENDPOINT=http://localhost:4566 (see header). AwsConfig.java reads
+  # the GLOBAL spring.cloud.aws.endpoint for all three clients; the per-service keys are
+  # declared for Spring Cloud AWS 3.x autoconfig parity. Region and the non-secret
+  # LocalStack dummy credentials (test/test) are restated here for local explicitness.
   cloud:
     aws:
-      endpoint: ${AWS_ENDPOINT:http://localhost:4566}
+      region:
+        static: ${AWS_REGION:us-east-1}
+      credentials:
+        access-key: ${AWS_ACCESS_KEY_ID:test}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+      endpoint: ${AWS_ENDPOINT:http://localstack:4566}
       s3:
-        endpoint: ${AWS_ENDPOINT:http://localhost:4566}
+        endpoint: ${AWS_ENDPOINT:http://localstack:4566}
+        # Mandatory for LocalStack: path-style addressing avoids the virtual-host
+        # "bucket-name.<s3-host>" DNS form, which does not resolve against the emulator.
         path-style-access-enabled: true
       sqs:
-        endpoint: ${AWS_ENDPOINT:http://localhost:4566}
+        endpoint: ${AWS_ENDPOINT:http://localstack:4566}
       sns:
-        endpoint: ${AWS_ENDPOINT:http://localhost:4566}
+        endpoint: ${AWS_ENDPOINT:http://localstack:4566}
 
 # --- Actuator & observability (local convenience) ------------------------------------
-# The base profile keeps health details guarded (when_authorized); for local development
-# show full component details so an unauthenticated `curl /actuator/health` returns the
-# composite db / postgres / s3 / sqs indicators documented in the onboarding guide. Point
-# the OTLP trace exporter at the Jaeger collector published by docker-compose.yml.
+# The base profile guards health details (when_authorized); for local development show
+# full component details so an unauthenticated `curl /actuator/health` returns the
+# composite db / postgres / s3 / sqs indicators. Trace sampling is full (1.0) locally. The
+# OTLP exporter targets the in-network Jaeger collector (http://jaeger:4317); HOST-RUN:
+# export OTLP_ENDPOINT=http://localhost:4317 (see header). Actuator endpoint exposure
+# (health,info,prometheus) and metric percentiles are inherited from application.yml.
 management:
   endpoint:
     health:
       show-details: always
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLE:1.0}
   otlp:
     tracing:
-      endpoint: ${OTLP_ENDPOINT:http://localhost:4317}
+      endpoint: ${OTLP_ENDPOINT:http://jaeger:4317}
+
+# --- Logging (local) -----------------------------------------------------------------
+# Richer application-package output during local development; the root logger stays at INFO
+# (inherited from application.yml). The structured JSON encoder / console layout is defined
+# in logback-spring.xml (profile-aware), not here.
+logging:
+  level:
+    com.carddemo: ${LOG_LEVEL_APP:DEBUG}
+
+# =====================================================================================
+# Application-scoped (carddemo.*) properties - bound by @ConfigurationProperties in the
+# config/ layer (SecurityConfig, AwsConfig). These are NOT Spring framework keys. The AWS
+# resource names are restated here for local explicitness and MUST match
+# ../../../localstack-init/init-aws.sh and ../../../docker-compose.yml verbatim.
+# =====================================================================================
+carddemo:
+  # --- Security / JWT (stateless; consumed by config/SecurityConfig.java) -------------
+  # No signing key is committed (AAP 0.8.1 / CWE-798): the secret resolves solely from the
+  # JWT_SECRET env var (empty default). Export a key of at least 32 bytes (the HS256 minimum)
+  # before a local run. The token expiry (carddemo.security.jwt.expiration-seconds) is
+  # inherited from application.yml and remains env-overridable.
+  security:
+    jwt:
+      secret: ${JWT_SECRET:}
+
+  # --- AWS resource names (consumed by config/AwsConfig.java + services) --------------
+  # S3 replaces GDG/batch staging (DEFGDGB.jcl generation-data-groups -> versioned S3
+  # objects); the SQS FIFO queue replaces the CICS TDQ WRITEQ TD report-submission bridge
+  # (CORPT00C); SNS carries notification fan-out. Created by init-aws.sh on `docker compose up`.
+  aws:
+    s3:
+      bucket-input: ${S3_BUCKET_INPUT:carddemo-batch-input}
+      bucket-output: ${S3_BUCKET_OUTPUT:carddemo-batch-output}
+      bucket-statements: ${S3_BUCKET_STATEMENTS:carddemo-statements}
+    sqs:
+      report-queue: ${SQS_REPORT_QUEUE:carddemo-report-jobs.fifo}
+    sns:
+      notifications-topic: ${SNS_NOTIFICATIONS_TOPIC:carddemo-notifications}
