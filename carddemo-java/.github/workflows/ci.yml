@@ -1,0 +1,127 @@
+# ---------------------------------------------------------------------------
+# CardDemo Java - Continuous Integration (CI) pipeline
+# ---------------------------------------------------------------------------
+# Modern analog of the legacy z/OS build JCL under samples/jcl/:
+#   BATCMP.jcl -> EXEC BUILDBAT  (batch COBOL compile)
+#   BMSCMP.jcl -> EXEC BUILDBMS  (BMS map compile)
+#   CICCMP.jcl -> EXEC BUILDONL  (online CICS COBOL compile)
+# The cataloged-procedure compile steps (JCLLIB ORDER=..CARDDEMO.PRC.UTIL)
+# pinned the toolchain; here the Maven wrapper (./mvnw) plays that role and
+# replaces COBOL/BMS compilation with build + test + security scan of the
+# Java application on every push and pull request.
+#
+# CICCMP.jcl line 45 "//NEWCOPY EXEC PGM=SDSF,COND=(4,LT)" gated the next
+# step on a return code < 4; that condition-code discipline is expressed
+# below as job ordering via `needs:` (plus `if: success()`).
+#
+# The legacy SDSF/NEWCOPY "CEMT SET PROG(...) NEWCOPY" step promotes a
+# program into a running CICS region: that is a deployment action and is
+# intentionally OUT OF SCOPE. This pipeline stops at build -> test -> scan
+# (no deploy, no image push, no cloud provisioning).
+# ---------------------------------------------------------------------------
+name: CI
+
+# GitHub Actions parses the bare `on:` key correctly as the trigger map
+# (do not quote it). Push builds are limited to the default branch while
+# pull requests from any branch are validated.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least-privilege token: the pipeline only needs to read repository contents.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref so only the latest commit is built.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -------------------------------------------------------------------------
+  # build: the full Maven `verify` lifecycle in a single pass. Because the
+  # pom binds every gate to `verify`, one `./mvnw -B clean verify` runs:
+  #   - Gate 2: zero-warning compile (maven-compiler-plugin <release>25</>
+  #     with -Xlint:all -Werror)
+  #   - Surefire unit tests (*Test.java)
+  #   - Gate 8 coverage: jacoco-maven-plugin check (>= 80% line)
+  #   - Gate 8 CVEs: org.owasp:dependency-check-maven (fail on critical/high)
+  # The slow NVD download/analysis therefore runs exactly once, here.
+  # -------------------------------------------------------------------------
+  build:
+    name: Build, Unit Tests, Coverage & OWASP (Gates 2 & 8)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      # Guard against a lost executable bit on the wrapper after checkout.
+      - name: Make Maven wrapper executable
+        run: chmod +x ./mvnw
+      # Maven is invoked ONLY through the wrapper (-B = batch/non-interactive).
+      - name: Build, test, coverage, dependency-check
+        run: ./mvnw -B clean verify
+      # Reports are published even on failure (if: always()) for triage.
+      - name: Upload JaCoCo coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: target/site/jacoco/
+      - name: Upload Surefire unit-test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+      - name: Upload OWASP dependency-check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: |
+            target/dependency-check-report.html
+            target/dependency-check-report.json
+
+  # -------------------------------------------------------------------------
+  # integration-test: the COND=(4,LT) gating analog. It runs ONLY after the
+  # build job succeeds (`needs: build` + `if: success()`) and activates the
+  # `integration` Maven profile so maven-failsafe-plugin executes *IT.java
+  # against Testcontainers PostgreSQL + LocalStack (S3/SQS/SNS) on the
+  # runner's Docker daemon. The OWASP scan already ran authoritatively in the
+  # build job, so it is skipped here (-Ddependency-check.skip=true).
+  # -------------------------------------------------------------------------
+  integration-test:
+    name: Integration Tests (Testcontainers + LocalStack)
+    needs: build
+    if: success()
+    runs-on: ubuntu-latest
+    # The only secret is injected from GitHub Actions Secrets at run time -
+    # never a literal token (LocalStack / Testcontainers consume it).
+    env:
+      LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Make Maven wrapper executable
+        run: chmod +x ./mvnw
+      - name: Run integration tests (Failsafe + Docker)
+        run: ./mvnw -B verify -Pintegration -Ddependency-check.skip=true
+      - name: Upload Failsafe integration-test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failsafe-reports
+          path: target/failsafe-reports/

@@ -1,10 +1,17 @@
 package com.carddemo.unit.service.report;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.RETURNS_SELF;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.exception.FileAccessException;
@@ -12,432 +19,440 @@ import com.carddemo.exception.ValidationException;
 import com.carddemo.model.dto.ReportRequest;
 import com.carddemo.model.dto.ReportResponse;
 import com.carddemo.service.report.ReportSubmissionService;
-import com.carddemo.service.report.ReportSubmissionService.ReportJobMessage;
 import com.carddemo.service.shared.DateValidationService;
 import io.awspring.cloud.sqs.operations.SqsSendOptions;
 import io.awspring.cloud.sqs.operations.SqsTemplate;
 import java.time.LocalDate;
 import java.time.temporal.TemporalAdjusters;
-import java.util.Map;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 /**
- * Unit tests for {@link ReportSubmissionService}, the online-to-batch report-submission bridge
- * translated from {@code app/cbl/CORPT00C.cbl}.
+ * Isolated, JVM-only unit tests for {@link ReportSubmissionService}.
  *
- * <p>These tests exercise the full {@code PROCESS-ENTER-KEY} / {@code SUBMIT-JOB-TO-INTRDR} flow:
- * report-type selection (Monthly / Yearly / Custom / none), the fail-fast custom-range validation
- * cascade in its exact COBOL order, the confirmation gate, and the SQS FIFO publish contract. The
- * <strong>real</strong> {@link DateValidationService} is used (no mock) so the genuine calendar
- * validation runs, and a mocked {@link SqsTemplate} captures the publish lambda so the FIFO
- * message-group / deduplication strategy recorded in {@code DECISION_LOG.md} D-020 can be asserted
- * directly. No payloads or secrets are inspected beyond the byte-stable contract fields.
+ * <p>Traceability (REFERENCE-ONLY, COBOL not copied; source commit {@code 27d6c6f}): the online
+ * report-submission program {@code app/cbl/CORPT00C.cbl} selects a report type, validates the
+ * custom date range, gates on an explicit confirmation, and bridges the request to batch through
+ * {@code EXEC CICS WRITEQ TD QUEUE('JOBS')}. The service re-platforms that transient-data-queue
+ * write to a single SQS FIFO publish. These tests pin behavioral parity with {@code CORPT00C}'s
+ * {@code PROCESS-ENTER-KEY} report-type {@code EVALUATE}, the {@code WHEN CUSTOMI} validation
+ * cascade, the {@code SUBMIT-JOB-TO-INTRDR} confirmation gate, and the {@code WRITEQ TD} error
+ * mapping, using a Mockito-mocked {@link SqsTemplate} (no network, database, or LocalStack).</p>
  */
-@DisplayName("ReportSubmissionService — CORPT00C TDQ→SQS bridge")
+@DisplayName("ReportSubmissionService - CORPT00C report submission re-platformed to an SQS FIFO publish")
+@ExtendWith(MockitoExtension.class)
 class ReportSubmissionServiceTest {
 
-    private static final String QUEUE_NAME = "carddemo-report-jobs.fifo";
-    private static final String EXPECTED_GROUP_ID = "carddemo-reports";
-
+    /** Date-validation collaborator ({@code CSUTLDTC} replacement); only exercised on the Custom path. */
+    @Mock
     private DateValidationService dateValidationService;
+
+    /** SQS operations collaborator (the TDQ replacement); never touched on a non-publishing path. */
+    @Mock
     private SqsTemplate sqsTemplate;
+
+    /** Service under test, built manually because the FIFO queue name is a constructor {@code String}. */
     private ReportSubmissionService service;
+
+    /** Expected FIFO queue name supplied to the constructor (the {@code carddemo.aws.sqs.report-queue} default). */
+    private static final String EXPECTED_QUEUE = "carddemo-report-jobs.fifo";
+
+    /** Expected constant FIFO message group id preserving the single source-TDQ ordering guarantee. */
+    private static final String EXPECTED_GROUP = "carddemo-reports";
 
     @BeforeEach
     void setUp() {
-        // Use the real date-validation collaborator so the actual calendar logic (CSUTLDTC
-        // replacement) is exercised by the custom-range tests, not a stub.
-        dateValidationService = new DateValidationService();
-        sqsTemplate = mock(SqsTemplate.class);
-        service = new ReportSubmissionService(dateValidationService, sqsTemplate, QUEUE_NAME);
+        service = new ReportSubmissionService(dateValidationService, sqsTemplate, EXPECTED_QUEUE);
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Report-type selection
-    // ---------------------------------------------------------------------------------------------
+    // --- Request builders (positional 10-arg ReportRequest record) ---------------------------------
+
+    private static ReportRequest monthly(String confirm) {
+        return new ReportRequest("Y", null, null, null, null, null, null, null, null, confirm);
+    }
+
+    private static ReportRequest yearly(String confirm) {
+        return new ReportRequest(null, "Y", null, null, null, null, null, null, null, confirm);
+    }
+
+    private static ReportRequest custom(String startMonth, String startDay, String startYear,
+            String endMonth, String endDay, String endYear, String confirm) {
+        return new ReportRequest(null, null, "Y", startMonth, startDay, startYear, endMonth, endDay, endYear, confirm);
+    }
+
+    // --- DateValidationResult builders (only isAcceptable() is consulted by the service) -----------
+
+    private static DateValidationService.DateValidationResult acceptable() {
+        return new DateValidationService.DateValidationResult(true, 0, 0, "Date is valid", "2022-07-01", "YYYY-MM-DD");
+    }
+
+    private static DateValidationService.DateValidationResult unacceptable() {
+        return new DateValidationService.DateValidationResult(false, 3, 2508, "Datevalue error", "2022-07-01", "YYYY-MM-DD");
+    }
+
+    // --- SQS publish verification helpers ----------------------------------------------------------
+
+    /**
+     * Mockito mocks the generic {@link SqsSendOptions} interface as a raw type; narrowing the
+     * {@code mock(...)} result to the parameterized type is the sole unchecked operation in this
+     * file (one suppression, far below the Gate 6 audit threshold) and keeps the {@code -Xlint:all
+     * -Werror} (Gate 2) build warning-free.
+     *
+     * @return a self-returning {@link SqsSendOptions} mock for replaying the captured send lambda
+     */
+    @SuppressWarnings("unchecked")
+    private static SqsSendOptions<ReportSubmissionService.ReportJobMessage> selfReturningOptions() {
+        return mock(SqsSendOptions.class, RETURNS_SELF);
+    }
+
+    /**
+     * Verifies exactly one publish occurred, replays the captured fluent send lambda onto a
+     * self-returning options mock, asserts the queue, FIFO group, and a supplied deduplication id,
+     * and returns the captured payload for type/date assertions.
+     *
+     * @return the single {@link ReportSubmissionService.ReportJobMessage} that was published
+     */
+    private ReportSubmissionService.ReportJobMessage verifySinglePublish() {
+        ArgumentCaptor<Consumer<SqsSendOptions<ReportSubmissionService.ReportJobMessage>>> consumerCaptor =
+                ArgumentCaptor.captor();
+        verify(sqsTemplate, times(1)).send(consumerCaptor.capture());
+
+        SqsSendOptions<ReportSubmissionService.ReportJobMessage> options = selfReturningOptions();
+        consumerCaptor.getValue().accept(options);
+
+        verify(options).queue(EXPECTED_QUEUE);
+        verify(options).messageGroupId(EXPECTED_GROUP);
+        verify(options).messageDeduplicationId(anyString());
+
+        ArgumentCaptor<ReportSubmissionService.ReportJobMessage> payloadCaptor = ArgumentCaptor.captor();
+        verify(options).payload(payloadCaptor.capture());
+        return payloadCaptor.getValue();
+    }
+
+    // === A. Report-type paths (happy) ==============================================================
 
     @Test
-    @DisplayName("Monthly selection publishes a current-month range and acknowledges submission")
-    void monthlySelectionPublishesCurrentMonthRange() {
-        RecordingSendOptions captured = stubCapturingSend();
+    @DisplayName("Monthly report publishes exactly one job for the current month and returns a Monthly acknowledgement")
+    void monthlyReportPublishesOnceAndReturnsConfirmation() {
         LocalDate today = LocalDate.now();
         String expectedStart = today.withDayOfMonth(1).toString();
         String expectedEnd = today.with(TemporalAdjusters.lastDayOfMonth()).toString();
 
-        ReportResponse response = service.submitReport(monthlyRequest("Y"));
+        ReportResponse response = service.submitReport(monthly("Y"));
 
-        assertThat(response.confirmationMessage()).isEqualTo("Monthly report submitted for printing ...");
+        verifyNoInteractions(dateValidationService);
+        assertThat(response.confirmationMessage()).isNotBlank().contains("Monthly").contains("submitted");
         assertThat(response.errorMessage()).isNull();
-        assertThat(captured.queue).isEqualTo(QUEUE_NAME);
-        assertThat(captured.messageGroupId).isEqualTo(EXPECTED_GROUP_ID);
-        assertThat(captured.messageDeduplicationId).isNotBlank();
-        assertThat(captured.payload).isEqualTo(new ReportJobMessage("Monthly", expectedStart, expectedEnd));
+
+        ReportSubmissionService.ReportJobMessage message = verifySinglePublish();
+        assertThat(message.reportType()).isEqualTo("Monthly");
+        assertThat(message.startDate()).isEqualTo(expectedStart);
+        assertThat(message.endDate()).isEqualTo(expectedEnd);
     }
 
     @Test
-    @DisplayName("Yearly selection publishes a full-calendar-year range (lowercase 'y' confirms)")
-    void yearlySelectionPublishesCalendarYearRange() {
-        RecordingSendOptions captured = stubCapturingSend();
+    @DisplayName("Yearly report publishes exactly one job spanning Jan 1 to Dec 31 of the current year")
+    void yearlyReportPublishesOnceAndReturnsConfirmation() {
         int year = LocalDate.now().getYear();
         String expectedStart = LocalDate.of(year, 1, 1).toString();
         String expectedEnd = LocalDate.of(year, 12, 31).toString();
 
-        ReportResponse response = service.submitReport(yearlyRequest("y"));
+        ReportResponse response = service.submitReport(yearly("Y"));
 
-        assertThat(response.confirmationMessage()).isEqualTo("Yearly report submitted for printing ...");
-        assertThat(captured.payload).isEqualTo(new ReportJobMessage("Yearly", expectedStart, expectedEnd));
-        assertThat(captured.messageGroupId).isEqualTo(EXPECTED_GROUP_ID);
-    }
-
-    @Test
-    @DisplayName("Custom selection with a valid range publishes the assembled dates")
-    void customSelectionWithValidRangePublishes() {
-        RecordingSendOptions captured = stubCapturingSend();
-
-        ReportResponse response = service.submitReport(
-                customRequest("01", "15", "2024", "03", "20", "2024", "Y"));
-
-        assertThat(response.confirmationMessage()).isEqualTo("Custom report submitted for printing ...");
-        assertThat(captured.payload).isEqualTo(new ReportJobMessage("Custom", "2024-01-15", "2024-03-20"));
-        assertThat(captured.messageGroupId).isEqualTo(EXPECTED_GROUP_ID);
-        assertThat(captured.messageDeduplicationId).isNotBlank();
-    }
-
-    @Test
-    @DisplayName("No report type selected throws ValidationException and never publishes")
-    void noTypeSelectedThrowsAndDoesNotPublish() {
-        assertThatThrownBy(() -> service.submitReport(emptyRequest("Y")))
-                .isInstanceOf(ValidationException.class)
-                .hasMessage("Select a report type to print report...");
-        verifyNeverPublished();
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Custom-range validation cascade — six empty checks, in strict COBOL order
-    // ---------------------------------------------------------------------------------------------
-
-    @Test
-    @DisplayName("Empty start month fails first with its COBOL message")
-    void emptyStartMonthFails() {
-        assertCustomValidationFails(customRequest("", "15", "2024", "03", "20", "2024", "Y"),
-                "Start Date - Month can NOT be empty...");
-    }
-
-    @Test
-    @DisplayName("Empty start day fails after the month check")
-    void emptyStartDayFails() {
-        assertCustomValidationFails(customRequest("01", "", "2024", "03", "20", "2024", "Y"),
-                "Start Date - Day can NOT be empty...");
-    }
-
-    @Test
-    @DisplayName("Empty start year fails after the day check")
-    void emptyStartYearFails() {
-        assertCustomValidationFails(customRequest("01", "15", "", "03", "20", "2024", "Y"),
-                "Start Date - Year can NOT be empty...");
-    }
-
-    @Test
-    @DisplayName("Empty end month fails after the start fields")
-    void emptyEndMonthFails() {
-        assertCustomValidationFails(customRequest("01", "15", "2024", "", "20", "2024", "Y"),
-                "End Date - Month can NOT be empty...");
-    }
-
-    @Test
-    @DisplayName("Empty end day fails after the end month check")
-    void emptyEndDayFails() {
-        assertCustomValidationFails(customRequest("01", "15", "2024", "03", "", "2024", "Y"),
-                "End Date - Day can NOT be empty...");
-    }
-
-    @Test
-    @DisplayName("Empty end year fails after the end day check")
-    void emptyEndYearFails() {
-        assertCustomValidationFails(customRequest("01", "15", "2024", "03", "20", "", "Y"),
-                "End Date - Year can NOT be empty...");
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Custom-range validation cascade — numeric and bound checks
-    // ---------------------------------------------------------------------------------------------
-
-    @Test
-    @DisplayName("Start month above 12 is rejected")
-    void startMonthAboveBoundFails() {
-        assertCustomValidationFails(customRequest("13", "15", "2024", "03", "20", "2024", "Y"),
-                "Start Date - Not a valid Month...");
-    }
-
-    @Test
-    @DisplayName("Non-numeric start month is rejected")
-    void startMonthNonNumericFails() {
-        assertCustomValidationFails(customRequest("ab", "15", "2024", "03", "20", "2024", "Y"),
-                "Start Date - Not a valid Month...");
-    }
-
-    @Test
-    @DisplayName("Start day above 31 is rejected")
-    void startDayAboveBoundFails() {
-        assertCustomValidationFails(customRequest("01", "32", "2024", "03", "20", "2024", "Y"),
-                "Start Date - Not a valid Day...");
-    }
-
-    @Test
-    @DisplayName("Non-numeric start year is rejected")
-    void startYearNonNumericFails() {
-        assertCustomValidationFails(customRequest("01", "15", "20x4", "03", "20", "2024", "Y"),
-                "Start Date - Not a valid Year...");
-    }
-
-    @Test
-    @DisplayName("End month above 12 is rejected")
-    void endMonthAboveBoundFails() {
-        assertCustomValidationFails(customRequest("01", "15", "2024", "13", "20", "2024", "Y"),
-                "End Date - Not a valid Month...");
-    }
-
-    @Test
-    @DisplayName("End day above 31 is rejected")
-    void endDayAboveBoundFails() {
-        assertCustomValidationFails(customRequest("01", "15", "2024", "03", "32", "2024", "Y"),
-                "End Date - Not a valid Day...");
-    }
-
-    @Test
-    @DisplayName("Non-numeric end year is rejected")
-    void endYearNonNumericFails() {
-        assertCustomValidationFails(customRequest("01", "15", "2024", "03", "20", "abcd", "Y"),
-                "End Date - Not a valid Year...");
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Custom-range validation cascade — date-service (calendar) validation
-    // ---------------------------------------------------------------------------------------------
-
-    @Test
-    @DisplayName("In-bounds but non-calendar start date (Feb 31) is rejected by the date service")
-    void startDateInvalidCalendarFails() {
-        assertCustomValidationFails(customRequest("02", "31", "2024", "03", "20", "2024", "Y"),
-                "Start Date - Not a valid date...");
-    }
-
-    @Test
-    @DisplayName("In-bounds but non-calendar end date (Apr 31) is rejected by the date service")
-    void endDateInvalidCalendarFails() {
-        assertCustomValidationFails(customRequest("01", "10", "2024", "04", "31", "2024", "Y"),
-                "End Date - Not a valid date...");
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Confirmation gate
-    // ---------------------------------------------------------------------------------------------
-
-    @Test
-    @DisplayName("Blank confirmation raises the 'Please confirm' prompt and does not publish")
-    void blankConfirmationPrompts() {
-        assertThatThrownBy(() -> service.submitReport(monthlyRequest("")))
-                .isInstanceOf(ValidationException.class)
-                .hasMessage("Please confirm to print the Monthly report...");
-        verifyNeverPublished();
-    }
-
-    @Test
-    @DisplayName("Uppercase 'N' cancels the submission without publishing")
-    void upperCaseNoCancels() {
-        ReportResponse response = service.submitReport(monthlyRequest("N"));
-
-        assertThat(response.confirmationMessage()).isEqualTo("Report request cancelled.");
+        verifyNoInteractions(dateValidationService);
+        assertThat(response.confirmationMessage()).isNotBlank().contains("Yearly").contains("submitted");
         assertThat(response.errorMessage()).isNull();
-        verifyNeverPublished();
+
+        ReportSubmissionService.ReportJobMessage message = verifySinglePublish();
+        assertThat(message.reportType()).isEqualTo("Yearly");
+        assertThat(message.startDate()).isEqualTo(expectedStart);
+        assertThat(message.endDate()).isEqualTo(expectedEnd);
     }
 
     @Test
-    @DisplayName("Lowercase 'n' cancels the submission without publishing")
-    void lowerCaseNoCancels() {
-        ReportResponse response = service.submitReport(monthlyRequest("n"));
+    @DisplayName("Report-type precedence: Monthly wins over Yearly and Custom, mirroring the COBOL EVALUATE order")
+    void monthlyTakesPrecedenceOverYearlyAndCustom() {
+        ReportRequest request = new ReportRequest("Y", "Y", "Y", "13", "99", "abcd", "13", "99", "abcd", "Y");
 
-        assertThat(response.confirmationMessage()).isEqualTo("Report request cancelled.");
-        verifyNeverPublished();
+        ReportResponse response = service.submitReport(request);
+
+        verifyNoInteractions(dateValidationService);
+        assertThat(response.confirmationMessage())
+                .contains("Monthly")
+                .doesNotContain("Yearly")
+                .doesNotContain("Custom");
+
+        ReportSubmissionService.ReportJobMessage message = verifySinglePublish();
+        assertThat(message.reportType()).isEqualTo("Monthly");
     }
 
+    // === B. Custom happy path ======================================================================
+
     @Test
-    @DisplayName("Unrecognised confirmation value is rejected and does not publish")
-    void invalidConfirmationRejected() {
-        assertThatThrownBy(() -> service.submitReport(monthlyRequest("X")))
+    @DisplayName("Custom report with a valid range validates start then end and publishes exactly one Custom job")
+    void customReportWithValidRangePublishesOnce() {
+        when(dateValidationService.validateDate(eq("2022-07-01"), anyString())).thenReturn(acceptable());
+        when(dateValidationService.validateDate(eq("2022-07-31"), anyString())).thenReturn(acceptable());
+
+        ReportResponse response = service.submitReport(custom("07", "01", "2022", "07", "31", "2022", "Y"));
+
+        assertThat(response.confirmationMessage()).contains("Custom").contains("submitted");
+        assertThat(response.errorMessage()).isNull();
+        verify(dateValidationService).validateDate(eq("2022-07-01"), anyString());
+        verify(dateValidationService).validateDate(eq("2022-07-31"), anyString());
+
+        ReportSubmissionService.ReportJobMessage message = verifySinglePublish();
+        assertThat(message.reportType()).isEqualTo("Custom");
+        assertThat(message.startDate()).isEqualTo("2022-07-01");
+        assertThat(message.endDate()).isEqualTo("2022-07-31");
+    }
+
+    // === C. Custom empty-field cascade (first-error-wins; no publish, no date-service call) =========
+
+    @Test
+    @DisplayName("Custom validation rejects an empty start month first with 'Start Date - Month can NOT be empty'")
+    void customEmptyStartMonthRejected() {
+        assertThatThrownBy(() -> service.submitReport(custom("", "01", "2022", "07", "31", "2022", "Y")))
                 .isInstanceOf(ValidationException.class)
-                .hasMessage("\"X\" is not a valid value to confirm...");
-        verifyNeverPublished();
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Publish failure path and FIFO deduplication strategy (DECISION_LOG D-020)
-    // ---------------------------------------------------------------------------------------------
-
-    @Test
-    @DisplayName("SQS publish failure is wrapped as FileAccessException (WRITEQ TD error path)")
-    void publishFailureWrappedAsFileAccessException() {
-        RuntimeException cause = new RuntimeException("SQS unavailable");
-        when(sqsTemplate.<ReportJobMessage>send(anySendConsumer())).thenThrow(cause);
-
-        assertThatThrownBy(() -> service.submitReport(monthlyRequest("Y")))
-                .isInstanceOf(FileAccessException.class)
-                .hasMessage("Unable to Write TDQ (JOBS)...")
-                .hasCause(cause);
+                .hasMessage("Start Date - Month can NOT be empty...");
+        verifyNoInteractions(sqsTemplate);
+        verifyNoInteractions(dateValidationService);
     }
 
     @Test
-    @DisplayName("Repeated submissions reuse one group id but get distinct random dedup ids (D-020)")
-    void repeatedSubmissionsUseDistinctDeduplicationIds() {
-        RecordingSendOptions first = new RecordingSendOptions();
-        RecordingSendOptions second = new RecordingSendOptions();
-        // Hand each successive publish a fresh recorder so the two dedup ids can be compared.
-        when(sqsTemplate.<ReportJobMessage>send(anySendConsumer()))
-                .thenAnswer(invocation -> {
-                    Consumer<SqsSendOptions<ReportJobMessage>> consumer = invocation.getArgument(0);
-                    consumer.accept(first);
-                    return null;
-                })
-                .thenAnswer(invocation -> {
-                    Consumer<SqsSendOptions<ReportJobMessage>> consumer = invocation.getArgument(0);
-                    consumer.accept(second);
-                    return null;
-                });
-
-        service.submitReport(monthlyRequest("Y"));
-        service.submitReport(monthlyRequest("Y"));
-
-        assertThat(first.messageGroupId).isEqualTo(EXPECTED_GROUP_ID);
-        assertThat(second.messageGroupId).isEqualTo(EXPECTED_GROUP_ID);
-        assertThat(first.messageDeduplicationId)
-                .isNotBlank()
-                .isNotEqualTo(second.messageDeduplicationId);
+    @DisplayName("Custom validation rejects an empty start day with 'Start Date - Day can NOT be empty'")
+    void customEmptyStartDayRejected() {
+        assertThatThrownBy(() -> service.submitReport(custom("07", "", "2022", "07", "31", "2022", "Y")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("Start Date - Day can NOT be empty...");
+        verifyNoInteractions(sqsTemplate);
+        verifyNoInteractions(dateValidationService);
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Helpers
-    // ---------------------------------------------------------------------------------------------
-
-    /**
-     * Stubs {@link SqsTemplate#send(Consumer)} to apply the publish lambda to a fresh
-     * {@link RecordingSendOptions}, returning that recorder so the test can assert the resolved
-     * queue, message group id, deduplication id, and payload.
-     *
-     * @return the recorder the captured publish lambda was applied to
-     */
-    private RecordingSendOptions stubCapturingSend() {
-        RecordingSendOptions recorder = new RecordingSendOptions();
-        when(sqsTemplate.<ReportJobMessage>send(anySendConsumer()))
-                .thenAnswer(invocation -> {
-                    Consumer<SqsSendOptions<ReportJobMessage>> consumer = invocation.getArgument(0);
-                    consumer.accept(recorder);
-                    return null;
-                });
-        return recorder;
+    @Test
+    @DisplayName("Custom validation rejects an empty start year with 'Start Date - Year can NOT be empty'")
+    void customEmptyStartYearRejected() {
+        assertThatThrownBy(() -> service.submitReport(custom("07", "01", "", "07", "31", "2022", "Y")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("Start Date - Year can NOT be empty...");
+        verifyNoInteractions(sqsTemplate);
+        verifyNoInteractions(dateValidationService);
     }
 
-    /**
-     * Asserts that submitting a custom-range request fails validation with the supplied COBOL
-     * message and that nothing is published.
-     *
-     * @param request         the custom-range request under test
-     * @param expectedMessage the exact COBOL validation message expected
-     */
-    private void assertCustomValidationFails(ReportRequest request, String expectedMessage) {
+    @Test
+    @DisplayName("Custom validation rejects an empty end month with 'End Date - Month can NOT be empty'")
+    void customEmptyEndMonthRejected() {
+        assertThatThrownBy(() -> service.submitReport(custom("07", "01", "2022", "", "31", "2022", "Y")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("End Date - Month can NOT be empty...");
+        verifyNoInteractions(sqsTemplate);
+        verifyNoInteractions(dateValidationService);
+    }
+
+    @Test
+    @DisplayName("Custom validation rejects an empty end day with 'End Date - Day can NOT be empty'")
+    void customEmptyEndDayRejected() {
+        assertThatThrownBy(() -> service.submitReport(custom("07", "01", "2022", "07", "", "2022", "Y")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("End Date - Day can NOT be empty...");
+        verifyNoInteractions(sqsTemplate);
+        verifyNoInteractions(dateValidationService);
+    }
+
+    @Test
+    @DisplayName("Custom validation rejects an empty end year with 'End Date - Year can NOT be empty'")
+    void customEmptyEndYearRejected() {
+        assertThatThrownBy(() -> service.submitReport(custom("07", "01", "2022", "07", "31", "", "Y")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("End Date - Year can NOT be empty...");
+        verifyNoInteractions(sqsTemplate);
+        verifyNoInteractions(dateValidationService);
+    }
+
+    // === D. Custom numeric/range cascade (no publish, no date-service call) =========================
+
+    @Test
+    @DisplayName("Custom validation rejects a start month greater than 12 with 'Start Date - Not a valid Month'")
+    void customInvalidStartMonthRejected() {
+        assertThatThrownBy(() -> service.submitReport(custom("13", "01", "2022", "07", "31", "2022", "Y")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("Start Date - Not a valid Month...");
+        verifyNoInteractions(sqsTemplate);
+        verifyNoInteractions(dateValidationService);
+    }
+
+    @Test
+    @DisplayName("Custom validation rejects a start day greater than 31 with 'Start Date - Not a valid Day'")
+    void customInvalidStartDayRejected() {
+        assertThatThrownBy(() -> service.submitReport(custom("07", "32", "2022", "07", "31", "2022", "Y")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("Start Date - Not a valid Day...");
+        verifyNoInteractions(sqsTemplate);
+        verifyNoInteractions(dateValidationService);
+    }
+
+    @Test
+    @DisplayName("Custom validation rejects a non-numeric start year with 'Start Date - Not a valid Year'")
+    void customInvalidStartYearRejected() {
+        assertThatThrownBy(() -> service.submitReport(custom("07", "01", "abcd", "07", "31", "2022", "Y")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("Start Date - Not a valid Year...");
+        verifyNoInteractions(sqsTemplate);
+        verifyNoInteractions(dateValidationService);
+    }
+
+    @Test
+    @DisplayName("Custom validation rejects an end month greater than 12 with 'End Date - Not a valid Month'")
+    void customInvalidEndMonthRejected() {
+        assertThatThrownBy(() -> service.submitReport(custom("07", "01", "2022", "13", "31", "2022", "Y")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("End Date - Not a valid Month...");
+        verifyNoInteractions(sqsTemplate);
+        verifyNoInteractions(dateValidationService);
+    }
+
+    @Test
+    @DisplayName("Custom validation rejects an end day greater than 31 with 'End Date - Not a valid Day'")
+    void customInvalidEndDayRejected() {
+        assertThatThrownBy(() -> service.submitReport(custom("07", "01", "2022", "07", "32", "2022", "Y")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("End Date - Not a valid Day...");
+        verifyNoInteractions(sqsTemplate);
+        verifyNoInteractions(dateValidationService);
+    }
+
+    @Test
+    @DisplayName("Custom validation rejects a non-numeric end year with 'End Date - Not a valid Year'")
+    void customInvalidEndYearRejected() {
+        assertThatThrownBy(() -> service.submitReport(custom("07", "01", "2022", "07", "31", "abcd", "Y")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("End Date - Not a valid Year...");
+        verifyNoInteractions(sqsTemplate);
+        verifyNoInteractions(dateValidationService);
+    }
+
+    // === E. Custom date-validation branches ========================================================
+
+    @Test
+    @DisplayName("Custom validation: an unacceptable start date short-circuits before the end date or any publish")
+    void customUnacceptableStartDateRejected() {
+        when(dateValidationService.validateDate(eq("2022-07-01"), anyString())).thenReturn(unacceptable());
+
+        assertThatThrownBy(() -> service.submitReport(custom("07", "01", "2022", "07", "31", "2022", "Y")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("Start Date - Not a valid date...");
+
+        verify(dateValidationService).validateDate(eq("2022-07-01"), anyString());
+        verify(dateValidationService, never()).validateDate(eq("2022-07-31"), anyString());
+        verifyNoInteractions(sqsTemplate);
+    }
+
+    @Test
+    @DisplayName("Custom validation: an unacceptable end date is rejected after the start date passes, with no publish")
+    void customUnacceptableEndDateRejected() {
+        when(dateValidationService.validateDate(eq("2022-07-01"), anyString())).thenReturn(acceptable());
+        when(dateValidationService.validateDate(eq("2022-07-31"), anyString())).thenReturn(unacceptable());
+
+        assertThatThrownBy(() -> service.submitReport(custom("07", "01", "2022", "07", "31", "2022", "Y")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("End Date - Not a valid date...");
+
+        verify(dateValidationService).validateDate(eq("2022-07-01"), anyString());
+        verify(dateValidationService).validateDate(eq("2022-07-31"), anyString());
+        verifyNoInteractions(sqsTemplate);
+    }
+
+    // === F. No report type selected ================================================================
+
+    @Test
+    @DisplayName("No report type selected is rejected with 'Select a report type to print report' and nothing is published")
+    void noReportTypeSelectedRejected() {
+        ReportRequest request = new ReportRequest(null, null, null, null, null, null, null, null, null, "Y");
+
         assertThatThrownBy(() -> service.submitReport(request))
                 .isInstanceOf(ValidationException.class)
-                .hasMessage(expectedMessage);
-        verifyNeverPublished();
+                .hasMessage("Select a report type to print report...");
+        verifyNoInteractions(sqsTemplate);
+        verifyNoInteractions(dateValidationService);
     }
 
-    /** Verifies the SQS publish path was never invoked. */
-    private void verifyNeverPublished() {
-        verify(sqsTemplate, never()).<ReportJobMessage>send(anySendConsumer());
+    // === G. Confirmation gate (Monthly type, so the date service is never reached) =================
+
+    @Test
+    @DisplayName("Confirmation gate: a null or blank confirmation prompts 'Please confirm to print the Monthly report'")
+    void blankConfirmationPrompts() {
+        assertThatThrownBy(() -> service.submitReport(monthly("")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("Please confirm to print the Monthly report...");
+        assertThatThrownBy(() -> service.submitReport(monthly(null)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("Please confirm to print the Monthly report...");
+        verifyNoInteractions(sqsTemplate);
+        verifyNoInteractions(dateValidationService);
     }
 
-    /**
-     * Typed Mockito matcher for the {@code send(Consumer)} overload. The explicit type argument on
-     * {@link ArgumentMatchers#any()} keeps the call free of unchecked-conversion warnings under the
-     * project's {@code -Werror} policy.
-     *
-     * @return a matcher accepting any publish {@link Consumer}
-     */
-    private static Consumer<SqsSendOptions<ReportJobMessage>> anySendConsumer() {
-        return ArgumentMatchers.any();
+    @Test
+    @DisplayName("Confirmation gate: a lowercase 'y' confirms and publishes the Monthly report (case-insensitive parity)")
+    void lowercaseYConfirmationPublishes() {
+        ReportResponse response = service.submitReport(monthly("y"));
+
+        assertThat(response.confirmationMessage()).contains("Monthly").contains("submitted");
+        assertThat(response.errorMessage()).isNull();
+
+        ReportSubmissionService.ReportJobMessage message = verifySinglePublish();
+        assertThat(message.reportType()).isEqualTo("Monthly");
     }
 
-    private static ReportRequest monthlyRequest(String confirm) {
-        return new ReportRequest("Y", null, null, null, null, null, null, null, null, confirm);
+    @Test
+    @DisplayName("Confirmation gate: an uppercase 'N' cancels without throwing, returns the neutral acknowledgement, and never publishes")
+    void uppercaseNCancelsWithoutPublishing() {
+        assertThatCode(() -> service.submitReport(monthly("N"))).doesNotThrowAnyException();
+
+        ReportResponse response = service.submitReport(monthly("N"));
+        assertThat(response.confirmationMessage()).isEqualTo("Report request cancelled.");
+        assertThat(response.errorMessage()).isNull();
+        verifyNoInteractions(sqsTemplate);
     }
 
-    private static ReportRequest yearlyRequest(String confirm) {
-        return new ReportRequest(null, "Y", null, null, null, null, null, null, null, confirm);
+    @Test
+    @DisplayName("Confirmation gate: a lowercase 'n' cancels without throwing, returns the neutral acknowledgement, and never publishes")
+    void lowercaseNCancelsWithoutPublishing() {
+        assertThatCode(() -> service.submitReport(monthly("n"))).doesNotThrowAnyException();
+
+        ReportResponse response = service.submitReport(monthly("n"));
+        assertThat(response.confirmationMessage()).isEqualTo("Report request cancelled.");
+        assertThat(response.errorMessage()).isNull();
+        verifyNoInteractions(sqsTemplate);
     }
 
-    private static ReportRequest customRequest(
-            String startMonth, String startDay, String startYear,
-            String endMonth, String endDay, String endYear, String confirm) {
-        return new ReportRequest(null, null, "Y",
-                startMonth, startDay, startYear, endMonth, endDay, endYear, confirm);
+    @Test
+    @DisplayName("Confirmation gate: an unrecognised confirmation value 'X' is rejected with the COBOL invalid-confirm message")
+    void invalidConfirmationValueRejected() {
+        assertThatThrownBy(() -> service.submitReport(monthly("X")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("\"X\" is not a valid value to confirm...");
+        verifyNoInteractions(sqsTemplate);
     }
 
-    private static ReportRequest emptyRequest(String confirm) {
-        return new ReportRequest(null, null, null, null, null, null, null, null, null, confirm);
-    }
+    // === H. SQS send failure mapping ===============================================================
 
-    /**
-     * Fully-typed in-memory {@link SqsSendOptions} fake that records the values the production
-     * publish lambda sets. Using a concrete fake (rather than a generic Mockito mock) keeps the test
-     * free of unchecked-conversion warnings while still letting the lambda execute exactly as in
-     * production, which both verifies the FIFO contract and exercises the publish code path.
-     */
-    private static final class RecordingSendOptions implements SqsSendOptions<ReportJobMessage> {
-        private String queue;
-        private ReportJobMessage payload;
-        private String messageGroupId;
-        private String messageDeduplicationId;
+    @Test
+    @DisplayName("SQS publish failure is wrapped as FileAccessException, mirroring the COBOL non-NORMAL WRITEQ TD path")
+    void sqsSendFailureMapsToFileAccessException() {
+        RuntimeException sqsOutage = new RuntimeException("simulated SQS outage");
+        doThrow(sqsOutage).when(sqsTemplate)
+                .send(ArgumentMatchers.<Consumer<SqsSendOptions<ReportSubmissionService.ReportJobMessage>>>any());
 
-        @Override
-        public SqsSendOptions<ReportJobMessage> queue(String queue) {
-            this.queue = queue;
-            return this;
-        }
-
-        @Override
-        public SqsSendOptions<ReportJobMessage> payload(ReportJobMessage payload) {
-            this.payload = payload;
-            return this;
-        }
-
-        @Override
-        public SqsSendOptions<ReportJobMessage> header(String name, Object value) {
-            return this;
-        }
-
-        @Override
-        public SqsSendOptions<ReportJobMessage> headers(Map<String, Object> headers) {
-            return this;
-        }
-
-        @Override
-        public SqsSendOptions<ReportJobMessage> delaySeconds(Integer delaySeconds) {
-            return this;
-        }
-
-        @Override
-        public SqsSendOptions<ReportJobMessage> messageGroupId(String messageGroupId) {
-            this.messageGroupId = messageGroupId;
-            return this;
-        }
-
-        @Override
-        public SqsSendOptions<ReportJobMessage> messageDeduplicationId(String messageDeduplicationId) {
-            this.messageDeduplicationId = messageDeduplicationId;
-            return this;
-        }
+        assertThatThrownBy(() -> service.submitReport(monthly("Y")))
+                .isInstanceOf(FileAccessException.class)
+                .hasMessageContaining("Unable to Write TDQ (JOBS)")
+                .hasCause(sqsOutage);
     }
 }

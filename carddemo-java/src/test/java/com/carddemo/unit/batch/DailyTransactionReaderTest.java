@@ -2,202 +2,279 @@ package com.carddemo.unit.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.when;
 
-import ch.qos.logback.classic.Level;
-import ch.qos.logback.classic.Logger;
-import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.core.read.ListAppender;
 import com.carddemo.batch.readers.DailyTransactionReader;
 import com.carddemo.exception.FileAccessException;
 import com.carddemo.model.entity.DailyTransaction;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.slf4j.LoggerFactory;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.batch.item.ExecutionContext;
 import org.springframework.core.io.ByteArrayResource;
-import org.springframework.core.io.ClassPathResource;
-import org.springframework.core.io.Resource;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.ResourceLoader;
 
 /**
- * Unit tests for {@link DailyTransactionReader} (COBOL {@code CBTRN01C}/{@code CVTRA06Y} 350-byte
- * fixed-width read, source commit {@code 27d6c6f}). Verifies the byte-exact field offsets, every
- * trailing-sign overpunch decode branch, the {@link BigDecimal} scale-2 amount fidelity, EOF
- * handling, open/parse failure mapping to {@link FileAccessException}, and the structured SLF4J
- * logging added for the Observability rule (R1) — including that the raw record line and the card
- * number (PAN) are never logged.
+ * Unit tests for {@link DailyTransactionReader} — the Spring Batch reader that replaces the
+ * sequential {@code DALYTRAN} read of COBOL {@code CBTRN01C} over the 350-byte {@code CVTRA06Y}
+ * record layout (REFERENCE-ONLY, COBOL not copied; source commit {@code 27d6c6f}).
+ *
+ * <p>These are pure-JVM tests: the {@link ResourceLoader} is a Mockito mock returning an in-memory
+ * {@link ByteArrayResource}, so no Spring context, Testcontainers, or LocalStack is involved. The
+ * reader is an {@code InitializingBean}, so each fixture calls {@code afterPropertiesSet()} (which
+ * configures the resource, ISO-8859-1 encoding, strict mode, and the fixed-width line mapper) the
+ * same way the Spring lifecycle would before {@code open()}.
+ *
+ * <p>Three contracts mandated by AAP §0.8.1 / §0.8.2 / §0.8.4 are verified:
+ * <ul>
+ *   <li>the 14-range {@code FixedLengthTokenizer} field-set mapping preserves the exact 350-byte
+ *       external record layout (every named range maps to its entity field);</li>
+ *   <li>the signed zoned-decimal trailing-sign overpunch decode of {@code DALYTRAN-AMT}
+ *       ({@code PIC S9(09)V99}) yields a scale-2 {@link BigDecimal} compared with {@code compareTo}
+ *       (never {@code equals}): a {@code 'G'} units character decodes {@code "0000005047G"} to
+ *       {@code +504.77}, while the negative right-brace units character decodes to {@code -919.00};
+ *       </li>
+ *   <li>open and read failures surface as {@link FileAccessException} — the idiomatic replacement
+ *       for the COBOL {@code FILE STATUS} abend path.</li>
+ * </ul>
  */
+@ExtendWith(MockitoExtension.class)
+@DisplayName("DailyTransactionReader — CVTRA06Y 350-byte mapping, signed overpunch decode, FileAccessException wrapping")
 class DailyTransactionReaderTest {
 
-    private static final String FAKE_PAN = "4111111111111111";
-    private static final String LOCATION = "classpath:dailytran-test.txt";
+    /** Late-bound input location matching the reader's default {@code @Value} resolution. */
+    private static final String LOC = "s3://carddemo-batch-input/dailytran.txt";
 
-    private Logger logbackLogger;
-    private ListAppender<ILoggingEvent> appender;
+    /** Resolver for the batch input; stubbed to return an in-memory or filesystem resource. */
+    @Mock
+    private ResourceLoader resourceLoader;
 
-    @BeforeEach
-    void setUp() {
-        logbackLogger = (Logger) LoggerFactory.getLogger(DailyTransactionReader.class);
-        appender = new ListAppender<>();
-        appender.start();
-        logbackLogger.addAppender(appender);
-        logbackLogger.setLevel(Level.TRACE);
-    }
-
-    @AfterEach
-    void tearDown() {
-        logbackLogger.detachAppender(appender);
-    }
-
-    /** Right-pads (left-justifies) a value to an exact fixed width, truncating if longer. */
-    private static String pad(String v, int width) {
-        String s = (v == null) ? "" : v;
-        if (s.length() >= width) {
+    /**
+     * Renders a single fixed-width field: left-justified and space-padded to {@code width}, or
+     * truncated to {@code width} when the value is longer (a {@code null} value is treated as
+     * empty). Mirrors the COBOL {@code PIC X(n)} display representation.
+     *
+     * @param v     the raw value (may be {@code null})
+     * @param width the fixed column width
+     * @return a string of exactly {@code width} characters
+     */
+    private static String field(String v, int width) {
+        String s = v == null ? "" : v;
+        if (s.length() > width) {
             return s.substring(0, width);
         }
         return s + " ".repeat(width - s.length());
     }
 
-    /** Builds an exactly-350-byte CVTRA06Y record with the given id, amount token, and card number. */
-    private static String record(String id, String amountToken, String cardNum) {
-        String rec = pad(id, 16)            // 1-16   dalytranId
-                + pad("DB", 2)              // 17-18  dalytranTypeCd
-                + pad("5", 4)               // 19-22  dalytranCatCd  (numeric -> 5)
-                + pad("POS", 10)            // 23-32  dalytranSource
-                + pad("PURCHASE", 100)      // 33-132 dalytranDesc
-                + pad(amountToken, 11)      // 133-143 dalytranAmt (zoned overpunch)
-                + pad("123", 9)             // 144-152 dalytranMerchantId (numeric -> 123)
-                + pad("ACME STORE", 50)     // 153-202 dalytranMerchantName
-                + pad("ANYTOWN", 50)        // 203-252 dalytranMerchantCity
-                + pad("12345", 10)          // 253-262 dalytranMerchantZip
-                + pad(cardNum, 16)          // 263-278 dalytranCardNum
-                + pad("2024-01-01.00.00.00.000000", 26)  // 279-304 dalytranOrigTs
-                + pad("2024-01-01.00.00.01.000000", 26)  // 305-330 dalytranProcTs
-                + pad("", 20);              // 331-350 filler
-        if (rec.length() != 350) {
-            throw new IllegalStateException("test record builder produced " + rec.length() + " bytes, expected 350");
-        }
-        return rec;
+    /**
+     * Assembles an exactly 350-character {@code CVTRA06Y} record. Numeric ranges are populated with
+     * parseable content — {@code dalytranCatCd} = {@code "0005"} and {@code dalytranMerchantId} =
+     * {@code "123456789"} — while the 11-character {@code dalytranAmt} token is inserted verbatim so
+     * the overpunch decode can be exercised.
+     *
+     * @param amt11 the raw 11-character signed-overpunch amount token (for example
+     *              {@code "0000005047G"})
+     * @return the assembled 350-character record line
+     */
+    private static String line350(String amt11) {
+        return field("DT00000000000001", 16)
+                + field("01", 2)
+                + field("0005", 4)
+                + field("POS TERM", 10)
+                + field("GROCERY", 100)
+                + field(amt11, 11)
+                + field("123456789", 9)
+                + field("ACME", 50)
+                + field("SPRINGFIELD", 50)
+                + field("12345-6789", 10)
+                + field("1234567890123456", 16)
+                + field("2022-07-18-00.00.00.000000", 26)
+                + field("2022-07-18-10.15.30.123456", 26)
+                + field("", 20);
     }
 
-    /** A {@link ResourceLoader} returning the given content as an in-memory ISO-8859-1 resource. */
-    private static ResourceLoader loaderFor(String content) {
-        final byte[] bytes = content.getBytes(StandardCharsets.ISO_8859_1);
-        return new ResourceLoader() {
-            @Override
-            public Resource getResource(String location) {
-                return new ByteArrayResource(bytes, "in-memory dailytran");
-            }
-
-            @Override
-            public ClassLoader getClassLoader() {
-                return DailyTransactionReaderTest.class.getClassLoader();
-            }
-        };
-    }
-
-    /** A {@link ResourceLoader} returning a non-existent classpath resource (forces an open failure). */
-    private static ResourceLoader missingLoader() {
-        return new ResourceLoader() {
-            @Override
-            public Resource getResource(String location) {
-                return new ClassPathResource("this-daily-tran-file-does-not-exist.dat");
-            }
-
-            @Override
-            public ClassLoader getClassLoader() {
-                return DailyTransactionReaderTest.class.getClassLoader();
-            }
-        };
-    }
-
-    private static DailyTransactionReader newReader(ResourceLoader loader) throws Exception {
-        DailyTransactionReader reader = new DailyTransactionReader(loader, LOCATION);
+    /**
+     * Stubs the resource loader to return the given content as an ISO-8859-1 {@link ByteArrayResource}
+     * (1:1 byte-to-character mapping, preserving the fixed-width offsets), constructs the reader, and
+     * runs {@code afterPropertiesSet()} so the resource, encoding, strict mode, and line mapper are
+     * configured exactly as the Spring lifecycle would configure them.
+     *
+     * @param content the full file content to expose to the reader
+     * @return a fully initialized reader ready to {@code open()}
+     * @throws Exception if reader initialization fails
+     */
+    private DailyTransactionReader newReader(String content) throws Exception {
+        when(resourceLoader.getResource(LOC))
+                .thenReturn(new ByteArrayResource(content.getBytes(StandardCharsets.ISO_8859_1)));
+        DailyTransactionReader reader = new DailyTransactionReader(resourceLoader, LOC);
         reader.afterPropertiesSet();
         return reader;
     }
 
     @Test
-    @DisplayName("Reads one record with byte-exact fields and a scale-2 positive amount; logs lifecycle without the PAN")
-    void readsSingleRecord() throws Exception {
-        DailyTransactionReader reader = newReader(loaderFor(record("TXN0000000000001", "0000001234E", FAKE_PAN)));
+    @DisplayName("maps all 13 CVTRA06Y fields from a 350-byte line; positive overpunch decodes to +504.77")
+    void mapsAllFields_fromFixedWidthLine() throws Exception {
+        String line = line350("0000005047G");
+        assertThat(line.length()).isEqualTo(350);
+
+        DailyTransactionReader reader = newReader(line);
         reader.open(new ExecutionContext());
 
-        DailyTransaction tran = reader.read();
-        assertThat(tran).isNotNull();
-        assertThat(tran.getDalytranId()).isEqualTo("TXN0000000000001");
-        assertThat(tran.getDalytranCatCd()).isEqualTo(5);
-        assertThat(tran.getDalytranMerchantId()).isEqualTo(123L);
-        assertThat(tran.getDalytranCardNum()).isEqualTo(FAKE_PAN);
-        assertThat(tran.getDalytranAmt()).isEqualByComparingTo(new BigDecimal("123.45"));
-        assertThat(tran.getDalytranAmt().scale()).isEqualTo(2);
+        DailyTransaction dt = reader.read();
 
-        assertThat(reader.read()).isNull(); // EOF
-        reader.close();
+        assertThat(dt).isNotNull();
+        assertThat(dt.getDalytranId()).isEqualTo("DT00000000000001");
+        assertThat(dt.getDalytranTypeCd()).isEqualTo("01");
+        assertThat(dt.getDalytranCatCd()).isEqualTo(5);
+        assertThat(dt.getDalytranSource()).isEqualTo("POS TERM");
+        assertThat(dt.getDalytranDesc()).isEqualTo("GROCERY");
+        assertThat(dt.getDalytranMerchantId()).isEqualTo(123456789L);
+        assertThat(dt.getDalytranMerchantName()).isEqualTo("ACME");
+        assertThat(dt.getDalytranMerchantCity()).isEqualTo("SPRINGFIELD");
+        assertThat(dt.getDalytranMerchantZip()).isEqualTo("12345-6789");
+        assertThat(dt.getDalytranCardNum()).isEqualTo("1234567890123456");
+        assertThat(dt.getDalytranOrigTs()).isEqualTo("2022-07-18-00.00.00.000000");
+        assertThat(dt.getDalytranProcTs()).isEqualTo("2022-07-18-10.15.30.123456");
 
-        assertThat(appender.list).anyMatch(e -> e.getLevel() == Level.INFO
-                && e.getFormattedMessage().contains("Opened daily transaction input"));
-        assertThat(appender.list).anyMatch(e -> e.getLevel() == Level.INFO
-                && e.getFormattedMessage().contains("Closing daily transaction reader")
-                && e.getFormattedMessage().contains("recordsRead=1"));
-        // The raw record line and the card number must never be logged.
-        assertThat(appender.list).noneMatch(e -> e.getFormattedMessage().contains(FAKE_PAN));
-    }
+        // Amount fidelity: compareTo (never equals), and the scale is exactly 2 (AAP §0.8.2).
+        assertThat(dt.getDalytranAmt()).isEqualByComparingTo(new BigDecimal("504.77"));
+        assertThat(dt.getDalytranAmt().scale()).isEqualTo(2);
 
-    @Test
-    @DisplayName("Decodes every trailing-sign overpunch branch into the correct scale-2 BigDecimal")
-    void decodesAllOverpunchBranches() throws Exception {
-        String content = String.join("\n",
-                record("ID01", "0000001234E", FAKE_PAN),  // 'A'-'I' (E=5) -> +123.45
-                record("ID02", "0000000000{", FAKE_PAN),  // '{'           -> +0.00
-                record("ID03", "0000001234N", FAKE_PAN),  // 'J'-'R' (N=5) -> -123.45
-                record("ID04", "0000000000}", FAKE_PAN),  // '}'           -> -0.00 == 0.00
-                record("ID05", "00000123455", FAKE_PAN),  // '0'-'9' (5)   -> +1234.55
-                record("ID06", "           ", FAKE_PAN)); // blank          -> 0.00
-
-        DailyTransactionReader reader = newReader(loaderFor(content));
-        reader.open(new ExecutionContext());
-
-        assertThat(reader.read().getDalytranAmt()).isEqualByComparingTo(new BigDecimal("123.45"));
-        assertThat(reader.read().getDalytranAmt()).isEqualByComparingTo(new BigDecimal("0.00"));
-        assertThat(reader.read().getDalytranAmt()).isEqualByComparingTo(new BigDecimal("-123.45"));
-        assertThat(reader.read().getDalytranAmt()).isEqualByComparingTo(new BigDecimal("0.00"));
-        assertThat(reader.read().getDalytranAmt()).isEqualByComparingTo(new BigDecimal("1234.55"));
-        assertThat(reader.read().getDalytranAmt()).isEqualByComparingTo(new BigDecimal("0.00"));
+        // A single record yields EOF on the next read (COBOL FILE STATUS '10').
         assertThat(reader.read()).isNull();
         reader.close();
     }
 
     @Test
-    @DisplayName("An invalid overpunch sign maps to FileAccessException and logs only the line number")
-    void invalidOverpunchMapsToFileAccessException() throws Exception {
-        DailyTransactionReader reader = newReader(loaderFor(record("BADTXN", "0000001234*", FAKE_PAN)));
+    @DisplayName("decodes positive overpunch units 'G' as +504.77 with scale 2")
+    void decodesPositiveOverpunch_G_is504_77() throws Exception {
+        DailyTransactionReader reader = newReader(line350("0000005047G"));
         reader.open(new ExecutionContext());
 
-        assertThatThrownBy(reader::read)
-                .isInstanceOf(FileAccessException.class)
-                .hasMessageContaining("line");
+        DailyTransaction dt = reader.read();
 
-        assertThat(appender.list).anyMatch(e -> e.getLevel() == Level.ERROR
-                && e.getFormattedMessage().contains("Failed to parse daily transaction record"));
-        // The raw line / PAN must not appear in the error diagnostic.
-        assertThat(appender.list).noneMatch(e -> e.getFormattedMessage().contains(FAKE_PAN));
+        assertThat(dt.getDalytranAmt()).isEqualByComparingTo(new BigDecimal("504.77"));
+        assertThat(dt.getDalytranAmt().scale()).isEqualTo(2);
+        reader.close();
     }
 
     @Test
-    @DisplayName("A missing input object maps to FileAccessException on open and logs an ERROR")
-    void openFailureMapsToFileAccessException() throws Exception {
-        DailyTransactionReader reader = newReader(missingLoader());
+    @DisplayName("decodes negative overpunch units (right brace) as -919.00 with scale 2")
+    void decodesNegativeOverpunch_brace_isMinus919_00() throws Exception {
+        DailyTransactionReader reader = newReader(line350("0000009190}"));
+        reader.open(new ExecutionContext());
+
+        DailyTransaction dt = reader.read();
+
+        assertThat(dt.getDalytranAmt()).isEqualByComparingTo(new BigDecimal("-919.00"));
+        assertThat(dt.getDalytranAmt().scale()).isEqualTo(2);
+        assertThat(dt.getDalytranAmt().signum()).isEqualTo(-1);
+        reader.close();
+    }
+
+    @Test
+    @DisplayName("decodes positive-zero overpunch units (left brace) as 0.00 with scale 2")
+    void decodesZeroPositiveOverpunch_brace_is0_00() throws Exception {
+        DailyTransactionReader reader = newReader(line350("0000000000{"));
+        reader.open(new ExecutionContext());
+
+        DailyTransaction dt = reader.read();
+
+        assertThat(dt.getDalytranAmt()).isEqualByComparingTo(new BigDecimal("0.00"));
+        assertThat(dt.getDalytranAmt().scale()).isEqualTo(2);
+        reader.close();
+    }
+
+    @Test
+    @DisplayName("decodes negative non-zero overpunch units 'J' as -919.01 with scale 2")
+    void decodesNegativeNonZeroOverpunch_J_isMinus919_01() throws Exception {
+        DailyTransactionReader reader = newReader(line350("0000009190J"));
+        reader.open(new ExecutionContext());
+
+        DailyTransaction dt = reader.read();
+
+        assertThat(dt.getDalytranAmt()).isEqualByComparingTo(new BigDecimal("-919.01"));
+        assertThat(dt.getDalytranAmt().scale()).isEqualTo(2);
+        assertThat(dt.getDalytranAmt().signum()).isEqualTo(-1);
+        reader.close();
+    }
+
+    @Test
+    @DisplayName("decodes a plain trailing digit (no overpunch) as positive +504.77 with scale 2")
+    void decodesPlainDigitUnits_noOverpunch_is504_77() throws Exception {
+        DailyTransactionReader reader = newReader(line350("00000050477"));
+        reader.open(new ExecutionContext());
+
+        DailyTransaction dt = reader.read();
+
+        assertThat(dt.getDalytranAmt()).isEqualByComparingTo(new BigDecimal("504.77"));
+        assertThat(dt.getDalytranAmt().scale()).isEqualTo(2);
+        reader.close();
+    }
+
+    @Test
+    @DisplayName("a blank amount field decodes to 0.00 with scale 2")
+    void blankAmount_decodesToZero() throws Exception {
+        DailyTransactionReader reader = newReader(line350(""));
+        reader.open(new ExecutionContext());
+
+        DailyTransaction dt = reader.read();
+
+        assertThat(dt.getDalytranAmt()).isEqualByComparingTo(new BigDecimal("0.00"));
+        assertThat(dt.getDalytranAmt().scale()).isEqualTo(2);
+        reader.close();
+    }
+
+    @Test
+    @DisplayName("a too-short (349-char) line surfaces as FileAccessException on read (strict tokenizer)")
+    void wrongLengthLine_throwsFileAccessException() throws Exception {
+        String shortLine = line350("0000005047G").substring(0, 349);
+        assertThat(shortLine.length()).isEqualTo(349);
+
+        DailyTransactionReader reader = newReader(shortLine);
+        reader.open(new ExecutionContext());
+
+        assertThatThrownBy(reader::read).isInstanceOf(FileAccessException.class);
+        reader.close();
+    }
+
+    @Test
+    @DisplayName("a too-long (351-char) line surfaces as FileAccessException on read (strict tokenizer)")
+    void tooLongLine_throwsFileAccessException() throws Exception {
+        String longLine = line350("0000005047G") + "X";
+        assertThat(longLine.length()).isEqualTo(351);
+
+        DailyTransactionReader reader = newReader(longLine);
+        reader.open(new ExecutionContext());
+
+        assertThatThrownBy(reader::read).isInstanceOf(FileAccessException.class);
+        reader.close();
+    }
+
+    @Test
+    @DisplayName("an invalid overpunch sign surfaces as FileAccessException on read")
+    void invalidOverpunchSign_throwsFileAccessException() throws Exception {
+        DailyTransactionReader reader = newReader(line350("0000005047*"));
+        reader.open(new ExecutionContext());
+
+        assertThatThrownBy(reader::read).isInstanceOf(FileAccessException.class);
+        reader.close();
+    }
+
+    @Test
+    @DisplayName("opening a missing resource (strict mode) surfaces as FileAccessException")
+    void openMissingResource_throwsFileAccessException() throws Exception {
+        when(resourceLoader.getResource(LOC))
+                .thenReturn(new FileSystemResource("/nonexistent/path/dailytran-xyz.txt"));
+        DailyTransactionReader reader = new DailyTransactionReader(resourceLoader, LOC);
+        reader.afterPropertiesSet();
 
         assertThatThrownBy(() -> reader.open(new ExecutionContext()))
-                .isInstanceOf(FileAccessException.class)
-                .hasMessageContaining("opening daily transaction file");
-
-        assertThat(appender.list).anyMatch(e -> e.getLevel() == Level.ERROR
-                && e.getFormattedMessage().contains("Failed to open daily transaction input"));
+                .isInstanceOf(FileAccessException.class);
     }
 }

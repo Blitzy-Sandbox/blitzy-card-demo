@@ -10,19 +10,36 @@ import com.carddemo.exception.FileAccessException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.model.enums.FileStatus;
 import com.carddemo.service.shared.FileStatusMapper;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for {@link FileStatusMapper}, verifying the binding COBOL {@code FILE STATUS}
- * to exception / {@link FileStatus} mapping derived from {@code CBTRN02C} (source commit
- * {@code 27d6c6f}). Each test corresponds to a row of the canonical mapping table.
+ * Unit tests for {@link FileStatusMapper}.
+ *
+ * <p>Traceability (REFERENCE-ONLY, COBOL not copied; source commit {@code 27d6c6f}):
+ * the COBOL batch posting program {@code app/cbl/CBTRN02C.cbl} declares six FILE STATUS
+ * fields (L29-L61) and reacts to the two-character status codes with the repeated
+ * {@code IF status = '00' / '10' / else ABEND} pattern. {@code FileStatusMapper} consolidates
+ * that logic: {@code '00'} success, {@code '04'} read-length mismatch, {@code '10'} end-of-file,
+ * {@code '22'} duplicate key, {@code '23'} record-not-found, and every other (unmapped) code an
+ * unrecoverable {@link FileAccessException}. These tests prove the exhaustive, correct mapping
+ * to the {@link FileStatus} enum and the exception hierarchy (AAP sections 0.7/0.8).</p>
  */
+@DisplayName("FileStatusMapper - CBTRN02C FILE STATUS to enum + exception hierarchy")
 class FileStatusMapperTest {
 
-    private final FileStatusMapper mapper = new FileStatusMapper();
+    private FileStatusMapper mapper;
+
+    @BeforeEach
+    void setUp() {
+        mapper = new FileStatusMapper();
+    }
 
     @Test
-    void isSuccessOnlyForCode00() {
+    @DisplayName("isSuccess recognises only '00'")
+    void isSuccessRecognisesOnlyZeroZero() {
+        assertThat(mapper.isSuccess(FileStatus.SUCCESS.getCode())).isTrue();
         assertThat(mapper.isSuccess("00")).isTrue();
         assertThat(mapper.isSuccess("04")).isFalse();
         assertThat(mapper.isSuccess("10")).isFalse();
@@ -31,28 +48,38 @@ class FileStatusMapperTest {
     }
 
     @Test
-    void isEndOfFileOnlyForCode10() {
+    @DisplayName("isEndOfFile recognises only '10'")
+    void isEndOfFileRecognisesOnlyTen() {
+        assertThat(mapper.isEndOfFile(FileStatus.END_OF_FILE.getCode())).isTrue();
         assertThat(mapper.isEndOfFile("10")).isTrue();
         assertThat(mapper.isEndOfFile("00")).isFalse();
+        assertThat(mapper.isEndOfFile("23")).isFalse();
         assertThat(mapper.isEndOfFile(null)).isFalse();
     }
 
     @Test
-    void isRecordNotFoundOnlyForCode23() {
+    @DisplayName("isRecordNotFound recognises only '23'")
+    void isRecordNotFoundRecognisesOnlyTwentyThree() {
+        assertThat(mapper.isRecordNotFound(FileStatus.RECORD_NOT_FOUND.getCode())).isTrue();
         assertThat(mapper.isRecordNotFound("23")).isTrue();
         assertThat(mapper.isRecordNotFound("22")).isFalse();
+        assertThat(mapper.isRecordNotFound("00")).isFalse();
         assertThat(mapper.isRecordNotFound(null)).isFalse();
     }
 
     @Test
-    void isDuplicateOnlyForCode22() {
+    @DisplayName("isDuplicate recognises only '22'")
+    void isDuplicateRecognisesOnlyTwentyTwo() {
+        assertThat(mapper.isDuplicate(FileStatus.DUPLICATE_KEY.getCode())).isTrue();
         assertThat(mapper.isDuplicate("22")).isTrue();
         assertThat(mapper.isDuplicate("23")).isFalse();
+        assertThat(mapper.isDuplicate("00")).isFalse();
         assertThat(mapper.isDuplicate(null)).isFalse();
     }
 
     @Test
-    void isAcceptableForSuccessAndLengthMismatchButNotEndOfFile() {
+    @DisplayName("isAcceptable covers '00' and '04' but not '10'/'23'")
+    void isAcceptableCoversSuccessAndLengthMismatch() {
         assertThat(mapper.isAcceptable("00")).isTrue();
         assertThat(mapper.isAcceptable("04")).isTrue();
         assertThat(mapper.isAcceptable("10")).isFalse();
@@ -61,7 +88,8 @@ class FileStatusMapperTest {
     }
 
     @Test
-    void toFileStatusResolvesKnownCodesAndNullForUnmapped() {
+    @DisplayName("toFileStatus maps known codes and yields null for unmapped/null")
+    void toFileStatusMapsKnownCodes() {
         assertThat(mapper.toFileStatus("00")).isEqualTo(FileStatus.SUCCESS);
         assertThat(mapper.toFileStatus("04")).isEqualTo(FileStatus.READ_LENGTH_MISMATCH);
         assertThat(mapper.toFileStatus("10")).isEqualTo(FileStatus.END_OF_FILE);
@@ -72,69 +100,93 @@ class FileStatusMapperTest {
     }
 
     @Test
-    void toExceptionReturnsNullForNonErrorStatuses() {
+    @DisplayName("toException returns null for success / length-mismatch / end-of-file")
+    void toExceptionReturnsNullForNonErrorCodes() {
         assertThat(mapper.toException("00", "Account", 1L)).isNull();
         assertThat(mapper.toException("04", "Account", 1L)).isNull();
         assertThat(mapper.toException("10", "Account", 1L)).isNull();
     }
 
     @Test
-    void toExceptionMapsRecordNotFoundForCode23() {
+    @DisplayName("toException('23') yields RecordNotFoundException with forKey message + status")
+    void toExceptionMapsRecordNotFound() {
         CardDemoException ex = mapper.toException("23", "Account", 1L);
         assertThat(ex).isInstanceOf(RecordNotFoundException.class);
-        assertThat(ex).hasMessageContaining("Account");
+        assertThat(ex).hasMessage("Account not found for key: 1");
+        RecordNotFoundException rnfe = (RecordNotFoundException) ex;
+        assertThat(rnfe.getFileStatus()).isEqualTo(RecordNotFoundException.FILE_STATUS);
+        assertThat(rnfe.getFileStatus()).isEqualTo("23");
     }
 
     @Test
-    void toExceptionMapsDuplicateForCode22() {
-        CardDemoException ex = mapper.toException("22", "Transaction", 99L);
+    @DisplayName("toException('22') yields DuplicateRecordException with forKey message + status")
+    void toExceptionMapsDuplicate() {
+        CardDemoException ex = mapper.toException("22", "Transaction", 5L);
         assertThat(ex).isInstanceOf(DuplicateRecordException.class);
-        assertThat(ex).hasMessageContaining("Transaction");
+        assertThat(ex).hasMessage("Transaction already exists for key: 5");
+        DuplicateRecordException dre = (DuplicateRecordException) ex;
+        assertThat(dre.getFileStatus()).isEqualTo(DuplicateRecordException.FILE_STATUS);
+        assertThat(dre.getFileStatus()).isEqualTo("22");
     }
 
     @Test
-    void toExceptionMapsFileAccessForUnmappedCodePreservingRawStatus() {
-        CardDemoException ex = mapper.toException("9A", "X", null);
+    @DisplayName("toException(unmapped) yields FileAccessException carrying the raw code")
+    void toExceptionMapsUnmappedToFileAccess() {
+        CardDemoException ex = mapper.toException("9A", "Xref", 7L);
         assertThat(ex).isInstanceOf(FileAccessException.class);
-        assertThat(ex).hasMessageContaining("9A");
-        assertThat(((FileAccessException) ex).getFileStatus()).isEqualTo("9A");
+        assertThat(ex).hasMessage("Unrecoverable file access error for Xref (FILE STATUS=9A)");
+        FileAccessException fae = (FileAccessException) ex;
+        assertThat(fae.getFileStatus()).isEqualTo("9A");
     }
 
     @Test
-    void toExceptionMapsFileAccessForNullCode() {
-        CardDemoException ex = mapper.toException(null, "X", null);
+    @DisplayName("toException(null code) yields FileAccessException with null file status")
+    void toExceptionMapsNullCodeToFileAccess() {
+        CardDemoException ex = mapper.toException(null, "Xref", 7L);
         assertThat(ex).isInstanceOf(FileAccessException.class);
-        assertThat(((FileAccessException) ex).getFileStatus()).isNull();
+        assertThat(ex).hasMessage("Unrecoverable file access error for Xref (FILE STATUS=null)");
+        FileAccessException fae = (FileAccessException) ex;
+        assertThat(fae.getFileStatus()).isNull();
     }
 
     @Test
-    void throwOnErrorIsQuietForNonErrorStatuses() {
-        assertThatCode(() -> mapper.throwOnError("00", "X")).doesNotThrowAnyException();
-        assertThatCode(() -> mapper.throwOnError("04", "X", 1L)).doesNotThrowAnyException();
-        assertThatCode(() -> mapper.throwOnError("10", "X")).doesNotThrowAnyException();
+    @DisplayName("throwOnError stays silent for acceptable / non-error codes")
+    void throwOnErrorSilentForNonErrors() {
+        assertThatCode(() -> mapper.throwOnError("00", "Account", 1L)).doesNotThrowAnyException();
+        assertThatCode(() -> mapper.throwOnError("04", "Account", 1L)).doesNotThrowAnyException();
+        assertThatCode(() -> mapper.throwOnError("10", "Account", 1L)).doesNotThrowAnyException();
+        assertThatCode(() -> mapper.throwOnError("00", "Account")).doesNotThrowAnyException();
     }
 
     @Test
-    void throwOnErrorThrowsRecordNotFoundForCode23() {
+    @DisplayName("throwOnError('23') throws RecordNotFoundException")
+    void throwOnErrorThrowsRecordNotFound() {
         assertThatThrownBy(() -> mapper.throwOnError("23", "Account", 1L))
-                .isInstanceOf(RecordNotFoundException.class);
+                .isInstanceOf(RecordNotFoundException.class)
+                .hasMessage("Account not found for key: 1");
     }
 
     @Test
-    void throwOnErrorThrowsDuplicateForCode22() {
+    @DisplayName("throwOnError('22') throws DuplicateRecordException")
+    void throwOnErrorThrowsDuplicate() {
         assertThatThrownBy(() -> mapper.throwOnError("22", "Transaction", 5L))
-                .isInstanceOf(DuplicateRecordException.class);
+                .isInstanceOf(DuplicateRecordException.class)
+                .hasMessage("Transaction already exists for key: 5");
     }
 
     @Test
-    void throwOnErrorThrowsFileAccessForUnmappedCode() {
-        assertThatThrownBy(() -> mapper.throwOnError("ZZ", "X"))
-                .isInstanceOf(FileAccessException.class);
+    @DisplayName("throwOnError(unmapped) throws FileAccessException")
+    void throwOnErrorThrowsFileAccessForUnmapped() {
+        assertThatThrownBy(() -> mapper.throwOnError("9A", "Xref", 7L))
+                .isInstanceOf(FileAccessException.class)
+                .hasMessage("Unrecoverable file access error for Xref (FILE STATUS=9A)");
     }
 
     @Test
-    void throwOnErrorTwoArgDelegatesAndStillThrows() {
+    @DisplayName("two-arg throwOnError delegates with a null key")
+    void throwOnErrorTwoArgDelegatesWithNullKey() {
         assertThatThrownBy(() -> mapper.throwOnError("23", "Account"))
-                .isInstanceOf(RecordNotFoundException.class);
+                .isInstanceOf(RecordNotFoundException.class)
+                .hasMessage("Account not found for key: null");
     }
 }
