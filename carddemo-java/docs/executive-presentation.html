@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Executive briefing: migrating the AWS CardDemo COBOL mainframe application to Java 25 + Spring Boot on AWS. Business value, risk, and operational readiness." />
+  <meta name="author" content="Blitzy Platform" />
+  <title>CardDemo Modernization &mdash; Executive Presentation</title>
+  <!-- Inline SVG favicon (data URI) keeps the deck self-contained and avoids a 404 -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%235B39F3'/%3E%3Cpath%20d='M17%205L9%2018h6l-2%209%2010-14h-7z'%20fill='%2394FAD5'/%3E%3C/svg%3E" />
+
+  <!-- Google Fonts: Inter (body), Space Grotesk (headings), Fira Code (code) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Space+Grotesk:wght@500;600;700&amp;family=Fira+Code:wght@400;500&amp;display=swap" />
+
+  <!-- reveal.js 5.1.0 core + base theme (overridden by the inline Blitzy theme below) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/white.css" id="base-theme" />
+
+  <!--
+    ============================================================================
+    BLITZY DESIGN SYSTEM  (inline theme — self-contained, no external CSS file)
+    Canonical reference blitzy-deck/references/blitzy-reveal-theme.css is not part
+    of the source repository, so the theme is authored inline as part of this deck.
+    Palette and typography are mandated by the Executive Presentation rule.
+    ============================================================================
+  -->
+  <style>
+    :root {
+      /* Blitzy palette */
+      --blitzy-primary: #5B39F3;
+      --blitzy-dark:    #2D1C77;
+      --blitzy-teal:    #94FAD5;
+      --blitzy-navy:    #1A105F;
+      --grad-1:         #7A6DEC;
+      --grad-2:         #4101DB;
+
+      /* Derived surfaces & ink */
+      --ink:            #F2EFFE;
+      --ink-muted:      #C3BCEC;
+      --surface:        rgba(255, 255, 255, 0.05);
+      --surface-strong: rgba(255, 255, 255, 0.08);
+      --border-soft:    rgba(123, 109, 236, 0.35);
+      --border-strong:  rgba(148, 250, 213, 0.45);
+
+      /* Risk colours */
+      --risk-low-bg:  #94FAD5;
+      --risk-med-bg:  #FFC76B;
+      --risk-high-bg: #FF8585;
+      --risk-low-ink:  #06301F;
+      --risk-med-ink:  #3A2700;
+      --risk-high-ink: #3A0000;
+
+      /* Typography */
+      --font-head: "Space Grotesk", "Segoe UI", sans-serif;
+      --font-body: "Inter", "Segoe UI", sans-serif;
+      --font-code: "Fira Code", "SFMono-Regular", monospace;
+
+      --grad-brand: linear-gradient(135deg, var(--grad-2) 0%, var(--blitzy-primary) 48%, var(--grad-1) 100%);
+      --grad-panel: linear-gradient(160deg, rgba(91, 57, 243, 0.18) 0%, rgba(26, 16, 95, 0.10) 100%);
+    }
+
+    /* ---- Base canvas -------------------------------------------------------- */
+    html, body { background: var(--blitzy-navy); }
+
+    .reveal {
+      font-family: var(--font-body);
+      font-size: 34px;
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 800px at 18% 8%, rgba(91, 57, 243, 0.28) 0%, rgba(26, 16, 95, 0) 60%),
+        radial-gradient(1100px 760px at 88% 92%, rgba(65, 1, 219, 0.26) 0%, rgba(26, 16, 95, 0) 58%),
+        linear-gradient(150deg, var(--blitzy-navy) 0%, var(--blitzy-dark) 100%);
+    }
+
+    .reveal .slides { text-align: left; }
+
+    .reveal h1, .reveal h2, .reveal h3, .reveal h4 {
+      font-family: var(--font-head);
+      color: var(--ink);
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      line-height: 1.1;
+      margin: 0 0 0.4em 0;
+      text-transform: none;
+      text-shadow: none;
+    }
+    .reveal h1 { font-size: 2.35em; }
+    .reveal h2 { font-size: 1.55em; }
+    .reveal h3 { font-size: 1.12em; color: var(--blitzy-teal); }
+    .reveal p  { line-height: 1.4; color: var(--ink); }
+    .reveal a  { color: var(--blitzy-teal); }
+    .reveal code { font-family: var(--font-code); color: var(--blitzy-teal); font-size: 0.9em; }
+    .reveal strong { color: #FFFFFF; }
+    /* Let reveal.js (center: true) vertically center each slide's content based on
+       its measured height, so content slides are balanced in the 1080px frame and
+       headings stay left-aligned. No top override here — that would defeat reveal's
+       centering. .center-wrap handles horizontal centering for title/divider/closing. */
+
+    .gradient-text {
+      background: linear-gradient(100deg, var(--blitzy-teal) 0%, #BFA8FF 55%, var(--grad-1) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      color: transparent;
+    }
+
+    /* Section eyebrow / kicker label above headings */
+    .kicker {
+      font-family: var(--font-head);
+      text-transform: uppercase;
+      letter-spacing: 0.22em;
+      font-size: 0.5em;
+      font-weight: 600;
+      color: var(--blitzy-teal);
+      margin-bottom: 0.7em;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5em;
+    }
+
+    .lead { font-size: 0.92em; color: var(--ink-muted); max-width: 26em; }
+
+    /* ---- Lucide icon sizing ------------------------------------------------- */
+    .reveal svg.lucide { width: 1em; height: 1em; vertical-align: -0.14em; stroke-width: 2; }
+    .icon-lg svg.lucide { width: 1.6em; height: 1.6em; }
+    .icon-hero svg.lucide { width: 2.4em; height: 2.4em; stroke: var(--blitzy-teal); }
+
+    /* ---- Title / Divider / Closing slide types ----------------------------- */
+    .slide-title, .slide-divider, .slide-closing { text-align: center; }
+
+    .slide-title h1, .slide-closing h1 { font-size: 2.7em; }
+    .slide-title .lead, .slide-closing .lead {
+      margin: 0.2em auto 0; text-align: center; color: var(--ink);
+    }
+
+    /* Divider/title/closing backgrounds are painted by reveal's background layer
+       via data-background-gradient; the slide element itself stays transparent. */
+    .slide-divider .kicker { color: rgba(255,255,255,0.85); }
+    .slide-divider h2 { font-size: 2.6em; color: #FFFFFF; }
+    .slide-divider p  { color: rgba(255,255,255,0.92); }
+    .slide-divider .icon-hero svg.lucide { stroke: var(--blitzy-teal); }
+
+    /* ---- Brand lockup ------------------------------------------------------- */
+    .brand-lockup {
+      display: inline-flex; align-items: center; gap: 0.6em;
+      padding: 0.45em 0.8em;
+      border: 1px solid var(--border-soft);
+      border-radius: 999px;
+      background: var(--surface);
+    }
+    .brand-mark {
+      width: 1.5em; height: 1.5em; border-radius: 9px;
+      background: var(--grad-brand);
+      display: inline-flex; align-items: center; justify-content: center;
+      color: #FFFFFF;
+    }
+    .brand-mark svg.lucide { stroke: #FFFFFF; }
+    .brand-word {
+      font-family: var(--font-head); font-weight: 700; letter-spacing: 0.04em;
+      font-size: 0.78em; color: #FFFFFF;
+    }
+    .brand-rule { width: 1px; height: 1.2em; background: var(--border-soft); }
+    .brand-tag {
+      font-size: 0.56em; letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--ink-muted); font-weight: 600;
+    }
+    .stack-center { display: flex; flex-direction: column; align-items: center; gap: 0.55em; }
+
+    /* Source / commit footnote */
+    .source-ref {
+      margin-top: 1.3em; font-size: 0.5em; color: var(--ink-muted);
+      letter-spacing: 0.04em;
+    }
+    .source-ref code { color: var(--blitzy-teal); }
+
+    /* ---- KPI cards ---------------------------------------------------------- */
+    .kpi-grid {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.7em;
+      margin-top: 0.4em;
+    }
+    .kpi-grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
+    .kpi-card {
+      background: var(--grad-panel);
+      border: 1px solid var(--border-soft);
+      border-radius: 20px;
+      padding: 0.85em 0.8em 0.9em;
+      text-align: left;
+      box-shadow: 0 18px 50px rgba(26, 16, 95, 0.45);
+      position: relative;
+      overflow: hidden;
+    }
+    .kpi-card::before {
+      content: ""; position: absolute; inset: 0 0 auto 0; height: 4px;
+      background: var(--grad-brand);
+    }
+    .kpi-icon {
+      width: 1.7em; height: 1.7em; border-radius: 12px;
+      background: rgba(148, 250, 213, 0.12);
+      display: inline-flex; align-items: center; justify-content: center;
+      margin-bottom: 0.45em;
+    }
+    .kpi-icon svg.lucide { stroke: var(--blitzy-teal); width: 1em; height: 1em; }
+    .kpi-number {
+      font-family: var(--font-head); font-weight: 700; font-size: 1.85em; line-height: 1;
+      margin-bottom: 0.18em;
+    }
+    .kpi-label {
+      font-size: 0.56em; text-transform: uppercase; letter-spacing: 0.12em;
+      color: var(--ink-muted); font-weight: 600;
+    }
+    .kpi-sub { font-size: 0.5em; color: var(--ink-muted); margin-top: 0.35em; }
+
+    /* ---- Styled table ------------------------------------------------------- */
+    .styled-table {
+      width: 100%; border-collapse: separate; border-spacing: 0;
+      font-size: 0.66em; border-radius: 16px; overflow: hidden;
+      border: 1px solid var(--border-soft);
+      box-shadow: 0 18px 50px rgba(26, 16, 95, 0.45);
+    }
+    .styled-table thead th {
+      background: var(--grad-brand); color: #FFFFFF;
+      font-family: var(--font-head); font-weight: 600;
+      text-align: left; padding: 0.7em 0.9em; letter-spacing: 0.02em;
+    }
+    .styled-table tbody td {
+      padding: 0.6em 0.9em; border-top: 1px solid rgba(123,109,236,0.22);
+      vertical-align: middle; color: var(--ink);
+    }
+    .styled-table tbody tr:nth-child(odd) td { background: rgba(255,255,255,0.035); }
+    .styled-table tbody tr:nth-child(even) td { background: rgba(255,255,255,0.015); }
+    .styled-table .col-from { color: var(--ink-muted); }
+    .styled-table .col-to   { color: #FFFFFF; font-weight: 500; }
+    .styled-table td .row-icon { color: var(--blitzy-teal); margin-right: 0.4em; }
+    .styled-table td .row-icon svg.lucide { stroke: var(--blitzy-teal); }
+
+    /* ---- Checklist (validation gates) -------------------------------------- */
+    /* .reveal ul (display:inline-block in reveal's base CSS) is overridden here with
+       a higher-specificity selector so the gates render as a balanced 2-column grid. */
+    .reveal ul.checklist {
+      list-style: none; margin: 0.3em 0 0; padding: 0; text-align: left;
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.55em 0.9em;
+      width: 100%; max-width: 1200px;
+    }
+    .checklist li {
+      display: flex; align-items: center; gap: 0.6em;
+      background: var(--surface); border: 1px solid var(--border-soft);
+      border-radius: 14px; padding: 0.55em 0.7em; font-size: 0.62em;
+    }
+    .check-chip {
+      flex: 0 0 auto; width: 1.5em; height: 1.5em; border-radius: 50%;
+      background: var(--blitzy-teal);
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .check-chip svg.lucide { stroke: var(--blitzy-navy); width: 0.95em; height: 0.95em; stroke-width: 3; }
+    .checklist .gate-no {
+      font-family: var(--font-head); font-weight: 700; color: var(--blitzy-teal);
+      margin-right: 0.35em;
+    }
+
+    /* ---- Risk matrix -------------------------------------------------------- */
+    .risk-matrix { width: 100%; border-collapse: separate; border-spacing: 0;
+      font-size: 0.6em; border-radius: 16px; overflow: hidden;
+      border: 1px solid var(--border-soft);
+      box-shadow: 0 18px 50px rgba(26, 16, 95, 0.45);
+    }
+    .risk-matrix thead th {
+      background: var(--blitzy-dark); color: #FFFFFF; font-family: var(--font-head);
+      font-weight: 600; text-align: left; padding: 0.6em 0.85em;
+    }
+    .risk-matrix tbody td {
+      padding: 0.55em 0.85em; border-top: 1px solid rgba(123,109,236,0.22);
+      background: rgba(255,255,255,0.025); color: var(--ink); vertical-align: middle;
+    }
+    .badge {
+      display: inline-block; padding: 0.12em 0.7em; border-radius: 999px;
+      font-weight: 700; font-size: 0.88em; letter-spacing: 0.03em;
+    }
+    .risk-low  { background: var(--risk-low-bg);  color: var(--risk-low-ink); }
+    .risk-med  { background: var(--risk-med-bg);  color: var(--risk-med-ink); }
+    .risk-high { background: var(--risk-high-bg); color: var(--risk-high-ink); }
+
+    /* ---- Bullet lists (content slides) ------------------------------------- */
+    .reveal .tight-list { list-style: none; margin: 0.2em 0 0; padding: 0; }
+    .reveal .tight-list li {
+      display: flex; align-items: flex-start; gap: 0.55em;
+      margin: 0.35em 0; font-size: 0.74em; line-height: 1.35;
+    }
+    .reveal .tight-list li svg.lucide { stroke: var(--blitzy-teal); margin-top: 0.12em; flex: 0 0 auto; }
+
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2em; align-items: start; }
+    .panel {
+      background: var(--grad-panel); border: 1px solid var(--border-soft);
+      border-radius: 18px; padding: 0.8em 0.95em;
+    }
+    .panel h3 { margin-bottom: 0.35em; }
+
+    /* ---- Mermaid framing ---------------------------------------------------- */
+    .reveal pre.mermaid {
+      background: transparent; box-shadow: none; border: 0;
+      width: 100%; margin: 0.2em 0 0; padding: 0;
+      text-align: center; font-size: 16px; line-height: normal;
+    }
+    .reveal pre.mermaid svg { max-width: 100%; height: auto; }
+
+    .caption { font-size: 0.5em; color: var(--ink-muted); margin-top: 0.5em; text-align: center; }
+    .legend {
+      display: inline-flex; gap: 1.1em; flex-wrap: wrap; justify-content: center;
+      font-size: 0.46em; color: var(--ink-muted); margin-top: 0.4em;
+    }
+    .legend span { display: inline-flex; align-items: center; gap: 0.4em; }
+    .legend i { width: 0.85em; height: 0.85em; border-radius: 3px; display: inline-block; }
+
+    .slide-head { margin-bottom: 0.25em; }
+    .center-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.2em; }
+
+    /* Slide number */
+    .reveal .slide-number { background: transparent; color: var(--ink-muted); font-family: var(--font-code); }
+  </style>
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+<!-- ============ Slide 1 — Title ============ -->
+      <section class="slide-title"
+               data-background-gradient="linear-gradient(150deg, #1A105F 0%, #2D1C77 55%, #4101DB 130%)">
+        <div class="center-wrap">
+          <span class="icon-hero"><i data-lucide="credit-card"></i></span>
+          <div class="brand-lockup" style="margin-top:0.35em;">
+            <span class="brand-mark"><i data-lucide="zap"></i></span>
+            <span class="brand-word">Blitzy</span>
+            <span class="brand-rule"></span>
+            <span class="brand-tag">Platform</span>
+          </div>
+          <h1 class="gradient-text" style="margin-top:0.5em;">CardDemo Modernization</h1>
+          <p class="lead">From COBOL mainframe to <strong>Java&nbsp;25&nbsp;LTS + Spring&nbsp;Boot&nbsp;3.5.15</strong> on AWS &mdash; delivered with 100% behavioral parity.</p>
+          <p class="lead" style="margin-top:0.4em; display:inline-flex; gap:0.45em; align-items:center;"><i data-lucide="users"></i> Executive Briefing &mdash; Business Value, Risk &amp; Operational Readiness</p>
+          <p class="source-ref">Source baseline <code>CardDemo_v1.0-15-g27d6c6f-68</code> &middot; commit <code>27d6c6f</code> &middot; COBOL sources are not copied</p>
+        </div>
+      </section>
+
+      <!-- ============ Slide 2 — Headline KPIs ============ -->
+      <section data-background-color="#150c4f">
+        <div class="slide-head">
+          <span class="kicker"><i data-lucide="trending-up"></i> By the Numbers</span>
+          <h2>A precisely scoped migration</h2>
+        </div>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="code"></i></span>
+            <div class="kpi-number gradient-text">28</div>
+            <div class="kpi-label">COBOL Programs</div>
+            <div class="kpi-sub">17 online + 11 batch</div>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="file-text"></i></span>
+            <div class="kpi-number gradient-text">19,254</div>
+            <div class="kpi-label">Source Lines</div>
+            <div class="kpi-sub">14,693 online / 4,561 batch</div>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="list-checks"></i></span>
+            <div class="kpi-number gradient-text">22</div>
+            <div class="kpi-label">Business Features</div>
+            <div class="kpi-sub">F-001 through F-022</div>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="database"></i></span>
+            <div class="kpi-number gradient-text">11</div>
+            <div class="kpi-label">VSAM Datasets</div>
+            <div class="kpi-sub">re-platformed to PostgreSQL&nbsp;16</div>
+          </div>
+        </div>
+        <p class="caption">Also in scope: 28 copybooks, 17 BMS mapsets, 17 symbolic maps, and 29 JCL jobs &mdash; counts verified from the source tree.</p>
+      </section>
+
+      <!-- ============ Slide 3 — Before/After Architecture (Mermaid) ============ -->
+      <section data-background-color="#150c4f">
+        <div class="slide-head">
+          <span class="kicker"><i data-lucide="layers"></i> Architecture</span>
+          <h2>Before and after at a glance</h2>
+        </div>
+        <pre class="mermaid">
+flowchart LR
+  subgraph Z["Before &mdash; z/OS Mainframe"]
+    direction TB
+    T["3270 Terminals"] --> CICS["CICS Region + BMS"]
+    CICS --> VSAM[("VSAM Datasets")]
+    JES["JES Batch / JCL"] --> VSAM
+    CICS --> TDQ["Transient Data Queue"]
+    RACF["RACF Security"] --> CICS
+  end
+  subgraph J["After &mdash; Java / AWS"]
+    direction TB
+    REST["REST / JSON API"] --> SVC["Spring Boot Services"]
+    SEC["Spring Security + JWT"] --> SVC
+    SVC --> PG[("PostgreSQL 16")]
+    BAT["Spring Batch"] --> PG
+    SVC --> SQS["AWS SQS FIFO"]
+    SVC --> S3["AWS S3"]
+  end
+  Z ==>|"Re-platform"| J
+        </pre>
+        <div class="legend">
+          <span><i style="background:#7A6DEC;"></i> z/OS components</span>
+          <span><i style="background:#94FAD5;"></i> Java / AWS components</span>
+        </div>
+      </section>
+
+      <!-- ============ Slide 4 — Divider: Migration Approach ============ -->
+      <section class="slide-divider"
+               data-background-gradient="linear-gradient(135deg, #4101DB 0%, #5B39F3 50%, #7A6DEC 100%)">
+        <div class="center-wrap">
+          <span class="icon-hero"><i data-lucide="workflow"></i></span>
+          <span class="kicker">Part One</span>
+          <h2>Migration Approach</h2>
+          <p class="lead" style="margin:0.2em auto 0; text-align:center;">Every COBOL paradigm mapped to an idiomatic Spring construct &mdash; behavior preserved at the semantic level.</p>
+        </div>
+      </section>
+
+      <!-- ============ Slide 5 — COBOL to Java mapping (styled table) ============ -->
+      <section data-background-color="#150c4f">
+        <div class="slide-head">
+          <span class="kicker"><i data-lucide="arrow-right-left"></i> Translation Contract</span>
+          <h2>COBOL &amp; CICS &rarr; Java &amp; AWS</h2>
+        </div>
+        <table class="styled-table">
+          <thead>
+            <tr><th style="width:46%;">Mainframe (z/OS)</th><th>Target (Java / AWS)</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="col-from"><span class="row-icon"><i data-lucide="monitor"></i></span>CICS pseudo-conversational + BMS 3270</td><td class="col-to">Spring MVC REST controllers + JSON DTOs</td></tr>
+            <tr><td class="col-from"><span class="row-icon"><i data-lucide="database"></i></span>VSAM KSDS &mdash; 11 datasets</td><td class="col-to">PostgreSQL 16 tables via Spring Data JPA</td></tr>
+            <tr><td class="col-from"><span class="row-icon"><i data-lucide="workflow"></i></span>JCL job streams (EXEC PGM, COND)</td><td class="col-to">Spring Batch jobs, steps &amp; deciders</td></tr>
+            <tr><td class="col-from"><span class="row-icon"><i data-lucide="send"></i></span>CICS TDQ (WRITEQ TD)</td><td class="col-to">AWS SQS FIFO queue</td></tr>
+            <tr><td class="col-from"><span class="row-icon"><i data-lucide="boxes"></i></span>GDG generation datasets</td><td class="col-to">AWS S3 versioned objects</td></tr>
+            <tr><td class="col-from"><span class="row-icon"><i data-lucide="shield-check"></i></span>RACF / plaintext USRSEC password</td><td class="col-to">Spring Security + BCrypt hashing</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ============ Slide 6 — Data migration VSAM to PostgreSQL (Mermaid) ============ -->
+      <section data-background-color="#150c4f">
+        <div class="slide-head">
+          <span class="kicker"><i data-lucide="database"></i> Data Migration</span>
+          <h2>VSAM datasets &rarr; one relational schema</h2>
+        </div>
+        <pre class="mermaid">
+flowchart LR
+  subgraph V["11 VSAM Datasets"]
+    direction TB
+    A["ACCTDAT"]
+    C["CARDDAT"]
+    X["CARDXREF"]
+    U["CUSTDAT"]
+    TR["TRANSACT"]
+    M["USRSEC, DISCGRP, TCATBAL, TRANCATG, TRANTYPE, DALYTRAN"]
+  end
+  V --> F{{"Flyway V1 schema / V2 indexes / V3 seed"}}
+  F --> P[("PostgreSQL 16 - 11 tables, indexes, seeded reference data")]
+        </pre>
+        <p class="caption">Provisioned automatically on startup &mdash; 9 ASCII fixtures load as V3 seed data and serve as named validation artifacts.</p>
+      </section>
+
+      <!-- ============ Slide 7 — Divider: Batch Pipeline ============ -->
+      <section class="slide-divider"
+               data-background-gradient="linear-gradient(135deg, #4101DB 0%, #5B39F3 50%, #7A6DEC 100%)">
+        <div class="center-wrap">
+          <span class="icon-hero"><i data-lucide="git-branch"></i></span>
+          <span class="kicker">Part Two</span>
+          <h2>Batch Pipeline</h2>
+          <p class="lead" style="margin:0.2em auto 0; text-align:center;">The five-stage JCL job stream becomes a Spring Batch flow &mdash; sequencing and condition codes preserved.</p>
+        </div>
+      </section>
+
+      <!-- ============ Slide 8 — 5-stage pipeline before/after (Mermaid) ============ -->
+      <section data-background-color="#150c4f">
+        <div class="slide-head">
+          <span class="kicker"><i data-lucide="git-branch"></i> Processing Pipeline</span>
+          <h2>Five stages, faithfully preserved</h2>
+        </div>
+        <pre class="mermaid">
+flowchart TB
+  subgraph B["Before &mdash; JCL Job Stream"]
+    direction LR
+    P1["POSTTRAN"] --> P2["INTCALC"]
+    P2 --> P3["COMBTRAN: SORT + REPRO"]
+    P3 --> P4["CREASTMT"]
+    P3 --> P5["TRANREPT"]
+  end
+  subgraph A2["After &mdash; Spring Batch Flow"]
+    direction LR
+    S1["Daily Transaction Posting"] --> S2["Interest Calculation"]
+    S2 --> S3["Combine Transactions"]
+    S3 --> S4a["Statement Generation 4a"]
+    S3 --> S4b["Transaction Report 4b"]
+  end
+  B ==>|"Spring Batch split 4a / 4b"| A2
+        </pre>
+        <p class="caption">DFSORT + IDCAMS REPRO becomes a Java Comparator plus bulk JPA insert; stages 4a and 4b run in parallel via a flow split.</p>
+      </section>
+
+<!-- ============ Slide 9 — Divider: Cloud & Integration ============ -->
+      <section class="slide-divider"
+               data-background-gradient="linear-gradient(135deg, #4101DB 0%, #5B39F3 50%, #7A6DEC 100%)">
+        <div class="center-wrap">
+          <span class="icon-hero"><i data-lucide="cloud"></i></span>
+          <span class="kicker">Part Three</span>
+          <h2>Cloud &amp; Integration</h2>
+          <p class="lead" style="margin:0.2em auto 0; text-align:center;">Mainframe I/O substrates replaced by AWS services &mdash; exercised locally against LocalStack with no live cloud.</p>
+        </div>
+      </section>
+
+      <!-- ============ Slide 10 — AWS S3/SQS/SNS + LocalStack (Mermaid) ============ -->
+      <section data-background-color="#150c4f">
+        <div class="slide-head">
+          <span class="kicker"><i data-lucide="cloud"></i> AWS Integration</span>
+          <h2>S3, SQS &amp; SNS &mdash; verified on LocalStack</h2>
+        </div>
+        <pre class="mermaid">
+flowchart LR
+  APP["CardDemo Service + Spring Batch"]
+  subgraph LS["LocalStack :4566 &mdash; zero live AWS"]
+    direction TB
+    S3IN["S3 carddemo-batch-input"]
+    S3OUT["S3 carddemo-batch-output"]
+    S3ST["S3 carddemo-statements"]
+    Q["SQS FIFO carddemo-report-jobs.fifo"]
+    SNS["SNS carddemo-notifications"]
+  end
+  APP -->|"stage / read"| S3IN
+  APP -->|"write output"| S3OUT
+  APP -->|"statements"| S3ST
+  APP -->|"report trigger"| Q
+  APP -->|"notify"| SNS
+        </pre>
+        <p class="caption">GDG generations map to versioned S3 objects; the TDQ report bridge maps to an SQS FIFO queue. Tests self-provision and tear down.</p>
+      </section>
+
+      <!-- ============ Slide 11 — Observability KPIs (KPI cards) ============ -->
+      <section data-background-color="#150c4f">
+        <div class="slide-head">
+          <span class="kicker"><i data-lucide="activity"></i> Observability</span>
+          <h2>Observable from day one</h2>
+        </div>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="file-text"></i></span>
+            <div class="kpi-number gradient-text" style="font-size:1.05em;">Logging</div>
+            <div class="kpi-label">Structured JSON</div>
+            <div class="kpi-sub">Correlation IDs across web &amp; batch</div>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="git-commit-horizontal"></i></span>
+            <div class="kpi-number gradient-text" style="font-size:1.05em;">Tracing</div>
+            <div class="kpi-label">Micrometer + OTel</div>
+            <div class="kpi-sub">OTLP export to Jaeger</div>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="gauge"></i></span>
+            <div class="kpi-number gradient-text" style="font-size:1.05em;">Metrics</div>
+            <div class="kpi-label">Prometheus</div>
+            <div class="kpi-sub">Custom batch &amp; auth counters</div>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="heart-pulse"></i></span>
+            <div class="kpi-number gradient-text" style="font-size:1.05em;">Health</div>
+            <div class="kpi-label">Actuator</div>
+            <div class="kpi-sub">DB, S3 &amp; SQS readiness probes</div>
+          </div>
+        </div>
+        <p class="caption">A Grafana dashboard template ships with the deck &mdash; request/error rates, latency percentiles, batch throughput, and JVM metrics.</p>
+      </section>
+
+      <!-- ============ Slide 12 — Divider: Quality & Risk ============ -->
+      <section class="slide-divider"
+               data-background-gradient="linear-gradient(135deg, #4101DB 0%, #5B39F3 50%, #7A6DEC 100%)">
+        <div class="center-wrap">
+          <span class="icon-hero"><i data-lucide="shield-check"></i></span>
+          <span class="kicker">Part Four</span>
+          <h2>Quality &amp; Risk</h2>
+          <p class="lead" style="margin:0.2em auto 0; text-align:center;">Eight validation gates gate the migration; known risks are tracked with explicit mitigations.</p>
+        </div>
+      </section>
+
+      <!-- ============ Slide 13 — The 8 validation gates (styled checklist) ============ -->
+      <section data-background-color="#150c4f">
+        <div class="slide-head">
+          <span class="kicker"><i data-lucide="list-checks"></i> Assurance</span>
+          <h2>Eight validation gates</h2>
+        </div>
+        <ul class="checklist">
+          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G1</span>End-to-end boundary</span></li>
+          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G2</span>Zero-warning build</span></li>
+          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G3</span>Performance baseline</span></li>
+          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G4</span>Named real-world artifacts</span></li>
+          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G5</span>Contract verification</span></li>
+          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G6</span>Unsafe-code audit</span></li>
+          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G7</span>Scope matching (Extended)</span></li>
+          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G8</span>Integration sign-off</span></li>
+        </ul>
+        <p class="caption">Gate 8 consolidates coverage (&ge;80% line), an OWASP dependency-check with zero critical/high CVEs, and 100% paragraph traceability.</p>
+      </section>
+
+      <!-- ============ Slide 14 — Risk matrix (color-coded table) ============ -->
+      <section data-background-color="#150c4f">
+        <div class="slide-head">
+          <span class="kicker"><i data-lucide="triangle-alert"></i> Risk Register</span>
+          <h2>Known risks and mitigations</h2>
+        </div>
+        <table class="risk-matrix">
+          <thead>
+            <tr><th style="width:34%;">Risk</th><th>Likelihood</th><th>Impact</th><th style="width:38%;">Mitigation</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Spring Boot 3.5 OSS support ends 2026-06-30; 4.0 now GA</td>
+              <td><span class="badge risk-med">Medium</span></td>
+              <td><span class="badge risk-low">Low</span></td>
+              <td>Documented upgrade path; forward-looking, out of scope</td>
+            </tr>
+            <tr>
+              <td>LocalStack-only AWS (no live cloud)</td>
+              <td><span class="badge risk-low">Low</span></td>
+              <td><span class="badge risk-low">Low</span></td>
+              <td>Contract tests; promote to managed AWS later</td>
+            </tr>
+            <tr>
+              <td>BigDecimal precision overhead vs primitives</td>
+              <td><span class="badge risk-low">Low</span></td>
+              <td><span class="badge risk-low">Low</span></td>
+              <td>Bounded to financial fields; required for parity</td>
+            </tr>
+            <tr>
+              <td>Plaintext password upgrade to BCrypt</td>
+              <td><span class="badge risk-med">Medium</span></td>
+              <td><span class="badge risk-med">Medium</span></td>
+              <td>Transparent hash-on-first-login; login flow preserved</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ============ Slide 15 — Onboarding & recommended next steps ============ -->
+      <section data-background-color="#150c4f">
+        <div class="slide-head">
+          <span class="kicker"><i data-lucide="rocket"></i> Operational Readiness</span>
+          <h2>Onboarding &amp; next steps</h2>
+        </div>
+        <div class="two-col">
+          <div class="panel">
+            <h3><i data-lucide="book-open"></i> Clean machine to running</h3>
+            <pre class="mermaid">
+flowchart LR
+  G["Clone repo"] --> D["docker-compose up -d"]
+  D --> M["mvn clean verify"]
+  M --> R["GET /actuator/health"]
+            </pre>
+            <p class="caption" style="text-align:left;">Prerequisites: JDK 25, Maven 3.9+, Docker.</p>
+          </div>
+          <div class="panel">
+            <h3><i data-lucide="map"></i> Recommended next steps</h3>
+            <ul class="tight-list">
+              <li><i data-lucide="check"></i> OpenAPI / Swagger docs</li>
+              <li><i data-lucide="check"></i> Cursor-based pagination</li>
+              <li><i data-lucide="check"></i> Redis reference-data cache</li>
+              <li><i data-lucide="check"></i> Async batch via REST</li>
+            </ul>
+            <p class="caption" style="text-align:left;">Out of scope &mdash; surfaced during analysis.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ Slide 16 — Closing ============ -->
+      <section class="slide-closing"
+               data-background-gradient="linear-gradient(150deg, #1A105F 0%, #2D1C77 55%, #4101DB 130%)">
+        <div class="center-wrap">
+          <span class="icon-hero"><i data-lucide="circle-check"></i></span>
+          <h1 class="gradient-text">Parity. Cloud-native. Observable.</h1>
+          <p class="lead" style="margin:0.2em auto 0; text-align:center;">100% behavioral parity with the COBOL baseline, delivered as a modular, observable, AWS-ready Spring Boot application.</p>
+          <div class="brand-lockup" style="margin-top:0.7em;">
+            <span class="brand-mark"><i data-lucide="zap"></i></span>
+            <span class="brand-word">Blitzy</span>
+            <span class="brand-rule"></span>
+            <span class="brand-tag">Mainframe Modernization</span>
+          </div>
+          <p class="source-ref">Traceability via commit <code>27d6c6f</code> &middot; COBOL sources are not copied into the target</p>
+        </div>
+      </section>
+
+    </div>
+  </div>
+  <!-- reveal.js 5.1.0 core (UMD bundle exposes window.Reveal) -->
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+  <!-- Lucide 0.460.0 (UMD bundle exposes window.lucide; createIcons() works arg-free) -->
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+
+  <!--
+    Mermaid 11.4.0 is loaded as an ES module (the recommended modern build); the
+    default export provides mermaid.run()/initialize() directly. Module scripts are
+    deferred, so window.Reveal and window.lucide are already defined when this runs.
+  -->
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.esm.min.mjs';
+
+    // Configure Mermaid with the Blitzy palette; do NOT auto-render on load — we
+    // render on demand so diagrams on hidden (display:none) slides are sized only
+    // once their slide becomes present.
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'loose',
+      theme: 'base',
+      htmlLabels: false,
+      fontFamily: 'Inter, sans-serif',
+      themeVariables: {
+        primaryColor: '#2D1C77',
+        primaryTextColor: '#F2EFFE',
+        primaryBorderColor: '#7A6DEC',
+        lineColor: '#94FAD5',
+        secondaryColor: '#1A105F',
+        tertiaryColor: '#241a66',
+        clusterBkg: 'rgba(91, 57, 243, 0.12)',
+        clusterBorder: '#5B39F3',
+        edgeLabelBackground: '#1A105F',
+        nodeTextColor: '#F2EFFE',
+        textColor: '#F2EFFE',
+        fontSize: '15px'
+      },
+      // htmlLabels:false uses SVG <text> measured via getComputedTextLength so
+      // node boxes fit their labels exactly (htmlLabels' foreignObject rounding
+      // clipped the last character in Chrome).
+      flowchart: { htmlLabels: false, curve: 'basis', useMaxWidth: true, padding: 12 }
+    });
+
+    // Resolve once all web fonts are loaded. Mermaid measures label widths to
+    // size node boxes; measuring before Inter/Space Grotesk load yields boxes
+    // that are too narrow and clip the last character, so we gate rendering on
+    // document.fonts.ready.
+    let fontsReadyPromise = null;
+    function whenFontsReady() {
+      if (!fontsReadyPromise) {
+        fontsReadyPromise = (document.fonts && document.fonts.ready)
+          ? Promise.resolve(document.fonts.ready).catch(() => {})
+          : Promise.resolve();
+      }
+      return fontsReadyPromise;
+    }
+
+    // Render the Mermaid diagrams on the currently visible slide only. Already
+    // rendered diagrams carry data-processed, so they are skipped on later passes.
+    async function renderCurrentMermaid() {
+      const root = (window.Reveal && typeof Reveal.getCurrentSlide === 'function')
+        ? Reveal.getCurrentSlide() : document;
+      if (!root) return;
+      const nodes = root.querySelectorAll('pre.mermaid:not([data-processed])');
+      if (!nodes.length) return;
+      await whenFontsReady();
+      try {
+        await mermaid.run({ nodes });
+      } catch (err) {
+        console.error('Mermaid render error:', err);
+      }
+    }
+
+    // Replace all [data-lucide] placeholders with SVG icons. Idempotent: replaced
+    // elements lose the data-lucide attribute, so repeat calls are cheap.
+    function renderIcons() {
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
+      }
+    }
+
+    function renderVisuals() {
+      renderCurrentMermaid();
+      renderIcons();
+    }
+
+    // Initialize the deck first so reveal.js attaches its instance API (including
+    // .on) to the global. The returned promise resolves when the deck is ready,
+    // giving us the initial render.
+    Reveal.initialize({
+      hash: true,
+      transition: 'slide',
+      width: 1920,
+      height: 1080,
+      margin: 0.04,
+      controls: true,
+      progress: true,
+      center: true,
+      slideNumber: 'c/t'
+    }).then(renderVisuals);
+
+    // Wire rendering to the reveal.js lifecycle: after the 'ready' event and on
+    // every 'slidechanged' so later-slide diagrams render once their slide shows.
+    // Registered after initialize() per the canonical reveal.js pattern; 'ready'
+    // fires asynchronously and is still captured here.
+    Reveal.on('ready', renderVisuals);
+    Reveal.on('slidechanged', renderVisuals);
+  </script>
+
+</body>
+</html>

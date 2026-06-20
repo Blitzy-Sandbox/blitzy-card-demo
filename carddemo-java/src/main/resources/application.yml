@@ -1,0 +1,194 @@
+# =====================================================================================
+# CardDemo (Java) - Base Spring Boot Application Configuration
+# =====================================================================================
+# Profile-independent foundation for the AWS CardDemo COBOL->Java migration.
+# This base file is OVERLAID by profile-specific files at runtime:
+#   - application-local.yml  (developer / Docker Compose + LocalStack)
+#   - application-test.yml   (integration tests / Testcontainers + LocalStack)
+# Select a profile via the SPRING_PROFILES_ACTIVE env var or -Dspring.profiles.active.
+# NOTE: an active profile is intentionally NOT set here so that local/test selection
+# works cleanly at runtime.
+#
+# This configuration is the runtime substrate that replaces the mainframe's JCL dataset
+# allocation, CICS region definition, and Language Environment runtime options. Dataset
+# names are referenced only conceptually from the original z/OS JCL; no COBOL/JCL source
+# is copied. Traceability to the source workload is via commit SHA 27d6c6f.
+#
+# Pinned stack (versions are declared in pom.xml; the keys here match their namespaces):
+#   Java 25 LTS  -  Spring Boot 3.5.15  -  PostgreSQL 16  -  Spring Cloud AWS 3.3.0
+#
+# SECURITY: no credentials or secrets are hardcoded. Every sensitive value resolves from
+# an environment variable (${ENV_VAR:default}); the only literal defaults are the
+# well-known LocalStack dummy AWS credentials (test/test), which are non-secret
+# placeholders for local development only.
+# =====================================================================================
+
+spring:
+  # --- Phase 1: Application identity ------------------------------------------------
+  # Used as the tracing/metrics service name and as a structured-log field.
+  application:
+    name: carddemo
+
+  # --- Phase 2: Datasource (PostgreSQL) ---------------------------------------------
+  # Template only - concrete endpoints/credentials are supplied per profile and at
+  # runtime via environment variables. Replaces the VSAM KSDS datasets (ACCTDAT,
+  # CARDDAT, CUSTDAT, CARDXREF, TRANSACT, USRSEC, etc.) that the z/OS DEFINE CLUSTER
+  # JCL provisioned on the mainframe.
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    # No hardcoded password: the empty default is only a placeholder; the real value is
+    # injected at runtime via SPRING_DATASOURCE_PASSWORD (AAP 0.8.1 - no hardcoded
+    # credentials).
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
+    # Modest HikariCP pool defaults. Connection-pool tuning is an out-of-scope future
+    # task (AAP 0.7.6) - intentionally not over-engineered.
+    hikari:
+      pool-name: CardDemoHikariPool
+      maximum-pool-size: ${DB_POOL_MAX:10}
+      minimum-idle: ${DB_POOL_MIN_IDLE:2}
+      connection-timeout: ${DB_CONN_TIMEOUT_MS:30000}
+
+  # --- Phase 3: JPA / Hibernate -----------------------------------------------------
+  jpa:
+    hibernate:
+      # Flyway owns the schema. Hibernate must NEVER create or alter it - only validate
+      # that the JPA entities match the Flyway-provisioned tables (VSAM->PostgreSQL
+      # fidelity). Profile overlays may relax to 'none' but never to 'update'/'create'.
+      ddl-auto: validate
+    # Stateless REST application - disable open-session-in-view to avoid lazy loading in
+    # the view layer.
+    open-in-view: false
+    # SQL logging is handled by logback-spring.xml (structured JSON); no raw SQL spam.
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          # Persist/read timestamps in UTC for deterministic financial date handling.
+          time_zone: UTC
+
+  # --- Phase 4: Flyway (VSAM->PostgreSQL provisioning) ------------------------------
+  # Flyway runs on startup BEFORE the JPA EntityManagerFactory initializes, guaranteeing
+  # the schema exists before any online or batch flow executes. Migrations are applied
+  # in strict order: V1__create_schema.sql -> V2__create_indexes.sql -> V3__seed_data.sql.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    validate-on-migrate: true
+
+  # --- Phase 5: Spring Batch (JCL pipeline) -----------------------------------------
+  batch:
+    jdbc:
+      # Batch metadata tables are provisioned under Flyway control rather than being
+      # auto-created by Boot - keeps the schema authoritative and the build warning-free
+      # (Gate 2).
+      initialize-schema: never
+    job:
+      # Do NOT auto-run jobs at startup. The 5-stage pipeline (POSTTRAN -> INTCALC ->
+      # COMBTRAN -> CREASTMT/TRANREPT) is launched explicitly by BatchPipelineOrchestrator
+      # / the SQS trigger (AAP 0.5.1, 0.8.5), preventing unintended firing on boot.
+      enabled: false
+
+  # --- Phase 7: Spring Cloud AWS (S3 / SQS / SNS) -----------------------------------
+  # Base defaults target real AWS semantics (default endpoint, no path-style access). The
+  # 'local' and 'test' profiles override the endpoint to LocalStack (http://localhost:4566
+  # / http://localstack:4566) and enable S3 path-style access. Credentials default to the
+  # well-known LocalStack dummies (test/test); real credentials arrive via env vars.
+  cloud:
+    aws:
+      region:
+        static: ${AWS_REGION:us-east-1}
+      credentials:
+        access-key: ${AWS_ACCESS_KEY_ID:test}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+
+# --- Phase 1: HTTP server ------------------------------------------------------------
+server:
+  port: ${SERVER_PORT:8080}
+
+# --- Phase 8: Actuator, metrics, tracing (Observability rule, AAP 0.7.1) -------------
+management:
+  endpoints:
+    web:
+      exposure:
+        # Expose only what observability requires - never expose all endpoints (Gate-6
+        # security posture). /actuator/prometheus is scraped by Prometheus/Grafana.
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      # Conservative base default; profile overlays may use 'always' for local
+      # convenience.
+      show-details: when_authorized
+      # Enable Kubernetes-style liveness/readiness probe groups.
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      # Common tag applied to every meter so dashboards can filter by service name.
+      application: ${spring.application.name}
+    distribution:
+      # Publish percentile histograms for HTTP server requests so the Grafana latency
+      # panels resolve via http_server_requests_seconds_bucket. Bracket notation keeps
+      # the meter name 'http.server.requests' as a single map key.
+      percentiles-histogram:
+        "[http.server.requests]": true
+      # Client-side pre-computed p50/p95/p99 for the same meter.
+      percentiles:
+        "[http.server.requests]": [0.5, 0.95, 0.99]
+  prometheus:
+    metrics:
+      export:
+        # Expose the Prometheus registry at /actuator/prometheus.
+        enabled: true
+  tracing:
+    sampling:
+      # Full sampling by default (override per environment via TRACING_SAMPLE).
+      probability: ${TRACING_SAMPLE:1.0}
+  otlp:
+    tracing:
+      # Micrometer Tracing + OpenTelemetry bridge -> OTLP exporter -> Jaeger. Profiles
+      # point this at the in-compose Jaeger collector (http://jaeger:4317).
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4317}
+
+# --- Phase 9: Logging hand-off -------------------------------------------------------
+# Only log LEVELS live here. The structured JSON encoder and appenders are defined in
+# logback-spring.xml (sibling file, auto-detected by Spring Boot) - not duplicated here.
+logging:
+  level:
+    root: INFO
+    com.carddemo: ${LOG_LEVEL_APP:INFO}
+    # Quiet noisy frameworks; SQL is intentionally not echoed (handled structurally).
+    org.hibernate.SQL: WARN
+    org.springframework.security: INFO
+    org.flywaydb: INFO
+
+# =====================================================================================
+# Application-scoped (carddemo.*) properties - bound by @ConfigurationProperties in the
+# config/ layer (e.g. SecurityConfig, AwsConfig). These are NOT Spring framework keys.
+# =====================================================================================
+carddemo:
+  # --- Phase 6: Security / JWT (stateless; consumed by config/SecurityConfig.java) ---
+  # CardDemo issues its own HMAC-signed JWTs via AuthenticationService; SecurityConfig
+  # builds the encoder/decoder from these values. The signing secret MUST come from the
+  # JWT_SECRET env var - there is intentionally NO default secret value (AAP 0.8.1).
+  security:
+    jwt:
+      secret: ${JWT_SECRET:}
+      expiration-seconds: ${JWT_EXPIRATION:3600}
+
+  # --- Phase 7: AWS resource names (consumed by config/AwsConfig.java + services) ----
+  # These names MUST match localstack-init/init-aws.sh and docker-compose.yml verbatim.
+  # S3 replaces GDG/batch staging; SQS FIFO replaces the CICS TDQ (CORPT00C WRITEQ TD);
+  # SNS carries notifications.
+  aws:
+    s3:
+      bucket-input: ${S3_BUCKET_INPUT:carddemo-batch-input}
+      bucket-output: ${S3_BUCKET_OUTPUT:carddemo-batch-output}
+      bucket-statements: ${S3_BUCKET_STATEMENTS:carddemo-statements}
+    sqs:
+      report-queue: ${SQS_REPORT_QUEUE:carddemo-report-jobs.fifo}
+    sns:
+      notifications-topic: ${SNS_NOTIFICATIONS_TOPIC:carddemo-notifications}

@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  CardDemo - Structured Logging Configuration (logback-spring.xml)
+  ============================================================================
+  The application emits structured JSON logs to STDOUT carrying distributed-
+  tracing identifiers and a per-request correlation identifier so that
+  container/aggregator tooling (Docker, Kubernetes, Promtail/Loki) and the
+  Jaeger/Prometheus/Grafana observability stack can correlate events.
+
+  MDC field provenance (this file only RENDERS these keys; it never sets them):
+    - correlationId : set per request (and propagated through service/batch
+                      layers) by com.carddemo.observability.CorrelationIdFilter,
+                      which places it in the SLF4J MDC.
+    - traceId, spanId : supplied by Micrometer Tracing + the OpenTelemetry
+                        bridge when tracing is active; Spring Boot 3.x exposes
+                        them through the MDC.
+
+  The "-spring" suffix lets Spring Boot evaluate the <springProfile> and
+  <springProperty> elements below, so logging differs by active profile:
+    - local           -> human-readable console (the three IDs are still shown)
+                         to improve developer experience.
+    - test / default  -> pure JSON (machine-parseable) for CI and prod-like runs.
+
+  Design rationale is recorded in DECISION_LOG.md (Explainability rule); the
+  comments here are intentionally functional only.
+
+  NOTE: 'scan' is intentionally NOT enabled. Logback's reconfigure-on-change
+  task re-parses the file with a plain JoranConfigurator that does not
+  understand the Spring <springProfile>/<springProperty> extensions, which
+  would break hot reloads of a logback-spring.xml.
+
+  NOTE: Never place credentials, tokens, or other sensitive values in the MDC;
+  only the allow-listed observability keys below are rendered into the logs.
+  ============================================================================
+-->
+<configuration>
+
+    <!--
+      Spring Boot logging defaults: conversion rules (clr, wEx, correlationId,
+      applicationName, ...) and noise-reducing third-party logger levels. We
+      deliberately do NOT include console-appender.xml/file-appender.xml so that
+      the explicit, profile-specific appenders defined below are the only sinks.
+    -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!--
+      Application name resolved from Spring configuration. Embedded as the static
+      JSON field "application" (see the JSON appender below) and usable in
+      patterns. Context scope keeps it resolvable during appender construction.
+    -->
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="carddemo"/>
+
+    <!--
+      Application logger level. Appenders are inherited from the profile-specific
+      <root> via additivity, so no appender-ref is needed here. Runtime overrides
+      remain possible through the logging.level.* keys in application*.yml.
+    -->
+    <logger name="com.carddemo" level="INFO"/>
+
+    <!--
+      ======================================================================
+      Profile-aware wiring. Each profile defines AND references exactly one
+      appender, so no appender is ever left unreferenced. The 'local' and
+      '!local' selectors are complementary and exhaustive, so precisely one
+      branch is active per run.
+      ======================================================================
+    -->
+
+    <!--
+      'local' profile: human-readable console for developer experience. The
+      correlationId / traceId / spanId are still printed so a single request or
+      batch chunk can be followed end-to-end. Logs go to STDOUT.
+    -->
+    <springProfile name="local">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+                <charset>UTF-8</charset>
+                <pattern>%d{HH:mm:ss.SSS} %-5level [%X{correlationId}] [%X{traceId},%X{spanId}] %logger{36} - %msg%n</pattern>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <!--
+      Non-local profiles (test, default, prod-like): structured JSON to STDOUT
+      via logstash-logback-encoder 8.0. Writing to stdout is the container best
+      practice; the platform collects the stream.
+    -->
+    <springProfile name="!local">
+        <appender name="STDOUT_JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+                <providers>
+                    <!-- ISO-8601 timestamp in UTC -->
+                    <timestamp>
+                        <fieldName>timestamp</fieldName>
+                        <timeZone>UTC</timeZone>
+                        <pattern>yyyy-MM-dd'T'HH:mm:ss.SSSXXX</pattern>
+                    </timestamp>
+                    <!-- severity, e.g. INFO / WARN / ERROR -->
+                    <logLevel>
+                        <fieldName>level</fieldName>
+                    </logLevel>
+                    <!-- originating logger name -->
+                    <loggerName>
+                        <fieldName>logger</fieldName>
+                        <shortenedLoggerNameLength>40</shortenedLoggerNameLength>
+                    </loggerName>
+                    <!-- executing thread -->
+                    <threadName>
+                        <fieldName>thread</fieldName>
+                    </threadName>
+                    <!-- formatted log message -->
+                    <message>
+                        <fieldName>message</fieldName>
+                    </message>
+                    <!--
+                      MDC: emit ONLY the allow-listed observability keys.
+                      Restricting the set both guarantees the required keys
+                      appear in output AND prevents accidental leakage of
+                      sensitive data placed in the MDC. Add further NON-sensitive
+                      keys here if a use case requires them.
+                    -->
+                    <mdc>
+                        <includeMdcKeyName>traceId</includeMdcKeyName>
+                        <includeMdcKeyName>spanId</includeMdcKeyName>
+                        <includeMdcKeyName>correlationId</includeMdcKeyName>
+                    </mdc>
+                    <!-- exception stack traces: shortened and root-cause-first -->
+                    <stackTrace>
+                        <fieldName>stackTrace</fieldName>
+                        <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                            <maxDepthPerThrowable>30</maxDepthPerThrowable>
+                            <maxLength>4096</maxLength>
+                            <shortenedClassNameLength>40</shortenedClassNameLength>
+                            <rootCauseFirst>true</rootCauseFirst>
+                        </throwableConverter>
+                    </stackTrace>
+                    <!--
+                      Static field identifying the emitting application. Rendered
+                      via a JSON pattern so the value is resolved from ${appName}
+                      at configuration time without third-party bean introspection
+                      (which keeps the configuration free of Logback warnings).
+                    -->
+                    <pattern>
+                        <pattern>{"application":"${appName}"}</pattern>
+                    </pattern>
+                </providers>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="STDOUT_JSON"/>
+        </root>
+    </springProfile>
+
+</configuration>

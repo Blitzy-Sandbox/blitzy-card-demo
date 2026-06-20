@@ -1,0 +1,421 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  CardDemo Java - Maven Project Object Model
+  ============================================================================
+  Single build foundation for the Java 25 + Spring Boot 3.x migration of the
+  AWS CardDemo mainframe credit-card management application. Every module of
+  the carddemo-java project builds against the dependencies and plugins
+  declared here. This file is the Java analog of the legacy COBOL batch build
+  job samples/jcl/BATCMP.jcl (which compiled COBOL via EXEC BUILDBAT); build
+  orchestration moves from JCL/JES to the Maven lifecycle.
+
+  Source provenance: logic, record layouts, and contracts are migrated from the
+  COBOL/CICS/VSAM/JCL/BMS sources at repository commit SHA 27d6c6f
+  (CardDemo_v1.0-15-g27d6c6f-68). COBOL sources are NOT copied into this
+  project; traceability is preserved by referencing that commit (see
+  TRACEABILITY_MATRIX.md). Base package for all main and test code: com.carddemo.
+
+  Quality gates enforced by this build (AAP 0.7.2 / 0.8.7):
+    Gate 2 - Zero-warning build : maven-compiler-plugin with -Xlint:all -Werror.
+    Gate 8 - Coverage           : jacoco-maven-plugin check rule, >= 80% line.
+    Gate 8 - Dependency CVEs    : owasp dependency-check, fail on critical/high.
+
+  No credentials are hardcoded anywhere in this POM (AAP 0.8.1). Secrets (for
+  example the NVD API key consumed by dependency-check, or AWS/LocalStack
+  settings) are resolved at runtime from environment variables / command-line
+  properties, never embedded here.
+  ============================================================================
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      Spring Boot parent pins the Spring Boot BOM to 3.5.15 (latest stable 3.x
+      as of June 2026). It supplies dependency management, sensible plugin
+      defaults, and maps maven.compiler.release to ${java.version}. An empty
+      <relativePath/> forces resolution from the repository rather than a
+      filesystem-relative parent (this is a standalone, single-module project).
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.15</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.carddemo</groupId>
+    <artifactId>carddemo-java</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>CardDemo Java</name>
+    <description>Java 25 and Spring Boot 3.x migration of the AWS CardDemo mainframe credit-card management application. Migrated (logic, layouts, and contracts) from the COBOL/CICS/VSAM/JCL/BMS sources at repository commit SHA 27d6c6f (CardDemo_v1.0-15-g27d6c6f-68); COBOL sources are not copied, traceability is preserved by referencing that commit. Base package: com.carddemo.</description>
+
+    <properties>
+        <!-- Target runtime: Java 25 LTS. The Spring Boot parent maps
+             maven.compiler.release to this value, so the compiler targets
+             release 25 directly (it does not combine the source and target
+             options, which avoids any release/source/target conflict). -->
+        <java.version>25</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- Pinned non-BOM dependency versions (AAP 0.6.1). -->
+        <spring-cloud-aws.version>3.3.0</spring-cloud-aws.version>
+        <logstash-logback-encoder.version>8.0</logstash-logback-encoder.version>
+
+        <!-- Testcontainers 2.x. The Spring Boot BOM imports testcontainers-bom
+             through this exact property name (default 1.21.4); overriding it
+             here aligns the inherited import with the explicit import declared
+             in the dependencyManagement section below, so the whole
+             testcontainers graph resolves to 2.0.3. NOTE: Testcontainers 2.x
+             renames its modules with a "testcontainers-" prefix (for example
+             testcontainers-postgresql) and relocates container classes to the
+             org.testcontainers.[module] packages; the prefixed artifactIds are
+             therefore used in the test dependencies. -->
+        <testcontainers.version>2.0.3</testcontainers.version>
+
+        <!-- Pinned build-plugin versions (AAP 0.6.1, 0.8.7). The two Spring Boot
+             defaults for surefire/failsafe (3.5.6) are intentionally overridden
+             to the mandated 3.5.2 by reusing the parent's property names. -->
+        <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
+        <maven-failsafe-plugin.version>3.5.2</maven-failsafe-plugin.version>
+        <jacoco-maven-plugin.version>0.8.14</jacoco-maven-plugin.version>
+        <dependency-check-maven.version>12.1.0</dependency-check-maven.version>
+    </properties>
+
+    <!--
+      BOM imports. The Spring Boot parent already manages the versions of every
+      Spring Boot starter, Micrometer/OpenTelemetry, Flyway, the PostgreSQL
+      driver, Jackson, and the test stack. The two imports below add the version
+      management that the Spring Boot BOM does not provide.
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <!-- Spring Cloud AWS BOM: S3 / SQS / SNS starters and clients. -->
+            <dependency>
+                <groupId>io.awspring.cloud</groupId>
+                <artifactId>spring-cloud-aws-dependencies</artifactId>
+                <version>${spring-cloud-aws.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- Testcontainers BOM 2.x: coordinates all testcontainers-* module
+                 versions used by the integration test suite. -->
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- ================================================================
+             Runtime dependencies (AAP 0.6.1). Versions are BOM-managed unless
+             an explicit <version> is shown.
+             ================================================================ -->
+
+        <!-- REST controllers replacing the BMS 3270 screen flows. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- JPA persistence: the 11 VSAM datasets map to PostgreSQL tables. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <!-- Spring Batch: the JCL job streams map to jobs/steps/deciders. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+        <!-- Spring Security + BCrypt, replacing RACF / plaintext USRSEC. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <!-- JWT (OAuth2 resource server): stateless sessions replace the
+             conversational CARDDEMO-COMMAREA state. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
+        <!-- Bean Validation (@Valid) for request DTOs. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <!-- Actuator: health, readiness, and metrics endpoints (Observability). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- AWS S3: generation-data-group (GDG) and batch file staging. -->
+        <dependency>
+            <groupId>io.awspring.cloud</groupId>
+            <artifactId>spring-cloud-aws-starter-s3</artifactId>
+        </dependency>
+        <!-- AWS SQS: replaces the CICS transient-data-queue (WRITEQ TD). -->
+        <dependency>
+            <groupId>io.awspring.cloud</groupId>
+            <artifactId>spring-cloud-aws-starter-sqs</artifactId>
+        </dependency>
+        <!-- AWS SNS: notification / alert fan-out. -->
+        <dependency>
+            <groupId>io.awspring.cloud</groupId>
+            <artifactId>spring-cloud-aws-starter-sns</artifactId>
+        </dependency>
+
+        <!-- PostgreSQL JDBC driver (only required at runtime). -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- Flyway: provisions and seeds the schema (migrations V1, V2, V3). -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <!-- Flyway PostgreSQL dialect support. -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
+        <!-- Distributed tracing: Micrometer Tracing over the OpenTelemetry bridge. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+        <!-- OTLP exporter: ships traces to Jaeger in the local compose stack. -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+        <!-- Prometheus registry: exposes /actuator/prometheus metrics. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+        <!-- Structured JSON logging carrying traceId / spanId / correlationId. -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>${logstash-logback-encoder.version}</version>
+        </dependency>
+        <!-- JSON serialization (BOM-managed; listed explicitly per AAP 0.6.1). -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <!-- ================================================================
+             Test dependencies (scope=test, AAP 0.6.1).
+             ================================================================ -->
+
+        <!-- JUnit 5 + Mockito + AssertJ + Spring test support. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Spring Batch test harness (JobLauncherTestUtils, step scope, etc.). -->
+        <dependency>
+            <groupId>org.springframework.batch</groupId>
+            <artifactId>spring-batch-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Spring Security test support (@WithMockUser, JWT post-processors). -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Testcontainers 2.x modules (versions via testcontainers-bom 2.0.3).
+             The 2.x artifactIds carry the "testcontainers-" prefix; the bare
+             artifactIds (postgresql/localstack/junit-jupiter) exist only in the
+             1.x line and are NOT managed by the 2.0.3 BOM. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-localstack</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <!-- Deterministic artifact name so the Dockerfile can COPY a stable
+             target/carddemo-java.jar regardless of the project version. -->
+        <finalName>carddemo-java</finalName>
+        <plugins>
+            <!-- Repackages the application as an executable (fat) JAR and
+                 provides the spring-boot:run goal. Executable-JAR repackaging
+                 is configured by the Spring Boot parent's pluginManagement. -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!-- Java 25 compilation with a zero-warning policy (Gate 2):
+                 -Xlint:all surfaces every category of warning and -Werror
+                 promotes them to errors. <release> uses ${java.version} (25)
+                 as the single source of truth; <parameters> retains method
+                 parameter names for Spring. Only framework-generated code may
+                 carry targeted @SuppressWarnings (AAP 0.8.7). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <release>${java.version}</release>
+                    <parameters>true</parameters>
+                    <compilerArgs>
+                        <arg>-Xlint:all</arg>
+                        <arg>-Werror</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <!-- Unit tests: *Test.java / *Tests.java. Integration tests
+                 (*IT.java) are explicitly excluded here and are executed by
+                 failsafe under the 'integration' profile instead. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${maven-surefire-plugin.version}</version>
+                <configuration>
+                    <excludes>
+                        <exclude>**/*IT.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+
+            <!-- Code coverage. prepare-agent wires the JaCoCo agent into the
+                 surefire JVM, report renders HTML after the unit tests, and the
+                 check rule enforces >= 80% line coverage at verify (Gate 8). -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco-maven-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>jacoco-prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>jacoco-report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>jacoco-check</id>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.80</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- OWASP dependency CVE scan bound to the verify phase. The build
+                 fails when any direct or transitive dependency carries a CVE
+                 with CVSS >= 7.0 (High and Critical) -> zero critical/high
+                 (Gate 8). The NVD API key is NEVER stored here: supply it at
+                 runtime via -Dnvd.api.key=... or the NVD_API_KEY environment
+                 variable (CI), keeping the POM credential-free (AAP 0.8.1). -->
+            <plugin>
+                <groupId>org.owasp</groupId>
+                <artifactId>dependency-check-maven</artifactId>
+                <version>${dependency-check-maven.version}</version>
+                <configuration>
+                    <failBuildOnCVSS>7</failBuildOnCVSS>
+                    <formats>
+                        <format>HTML</format>
+                        <format>JSON</format>
+                    </formats>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>owasp-dependency-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!--
+          Integration tests. Activating this profile (mvn verify -Pintegration)
+          adds the failsafe plugin to the build, which then runs *IT.java during
+          integration-test and asserts results during verify. The actual goal
+          bindings (integration-test, verify) and configuration are inherited
+          from the Spring Boot parent's pluginManagement, so a bare plugin
+          declaration is sufficient. Integration tests spin up PostgreSQL and
+          LocalStack via Testcontainers, so they are kept out of the default
+          build to keep it fast and Docker-free.
+        -->
+        <profile>
+            <id>integration</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <version>${maven-failsafe-plugin.version}</version>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+          Local run convenience. mvn spring-boot:run -Plocal activates the
+          Spring 'local' profile (application-local.yml: PostgreSQL + LocalStack
+          on localhost). Profile selection is equally possible at runtime via
+          -Dspring.profiles.active=local without this Maven profile.
+        -->
+        <profile>
+            <id>local</id>
+            <properties>
+                <spring-boot.run.profiles>local</spring-boot.run.profiles>
+            </properties>
+        </profile>
+    </profiles>
+</project>
