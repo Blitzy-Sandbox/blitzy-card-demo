@@ -17,8 +17,14 @@ package com.carddemo.model.dto;
  * {@code expirationYear}, {@code EXPDAY} &rarr; {@code expirationDay},
  * {@code INFOMSG} &rarr; {@code infoMessage}, {@code ERRMSG} &rarr;
  * {@code errorMessage}. Screen chrome and PF-key legend fields from the map are
- * intentionally excluded. Every field is rendered as text to preserve the
- * fixed-width character semantics of the originating {@code PIC X} clauses.</p>
+ * intentionally excluded. Every display field is rendered as text to preserve
+ * the fixed-width character semantics of the originating {@code PIC X} clauses.</p>
+ *
+ * <p>The {@code version} component echoes the persisted JPA {@code @Version} of
+ * the {@code Card} entity so the client can supply it on the next
+ * {@link CardUpdateRequest}, enabling stateless optimistic-locking
+ * (AAP &sect;0.8.4); it is the only non-text component and has no BMS-map
+ * equivalent.</p>
  *
  * <p>Source lineage (reference only, COBOL not copied): AWS CardDemo commit
  * {@code 27d6c6f}.</p>
@@ -30,6 +36,9 @@ package com.carddemo.model.dto;
  * @param expirationMonth expiration month (BMS {@code EXPMON}, {@code PIC X(2)})
  * @param expirationYear  expiration year (BMS {@code EXPYEAR}, {@code PIC X(4)})
  * @param expirationDay   expiration day (BMS {@code EXPDAY}, {@code PIC X(2)})
+ * @param version         optimistic-locking token (JPA {@code @Version} of the
+ *                        {@code Card} entity) echoed for the next
+ *                        {@link CardUpdateRequest}; no BMS equivalent
  * @param infoMessage     informational message (BMS {@code INFOMSG}, {@code PIC X(40)})
  * @param errorMessage    error message (BMS {@code ERRMSG}, {@code PIC X(80)})
  */
@@ -41,6 +50,7 @@ public record CardUpdateResponse(
         String expirationMonth,
         String expirationYear,
         String expirationDay,
+        Long version,
         String infoMessage,
         String errorMessage) {
 }

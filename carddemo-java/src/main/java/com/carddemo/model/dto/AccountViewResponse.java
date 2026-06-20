@@ -48,6 +48,12 @@ import java.math.BigDecimal;
  * @param phoneNumber2               customer secondary phone number (COACTVW {@code ACSPHN2})
  * @param eftAccountId               customer EFT account identifier (COACTVW {@code ACSEFTC})
  * @param primaryCardHolderIndicator primary card-holder indicator (COACTVW {@code ACSPFLG})
+ * @param version                    optimistic-locking token (the JPA
+ *                                    {@code @Version} of the {@code Account}
+ *                                    entity) the client echoes on a subsequent
+ *                                    {@link AccountUpdateRequest} so the update
+ *                                    service can detect concurrent modification
+ *                                    (AAP &sect;0.8.4); has no BMS equivalent
  * @param infoMessage                informational message line (COACTVW {@code INFOMSG})
  * @param errorMessage               error message line (COACTVW {@code ERRMSG})
  */
@@ -81,6 +87,7 @@ public record AccountViewResponse(
         String phoneNumber2,
         String eftAccountId,
         String primaryCardHolderIndicator,
+        Long version,
         String infoMessage,
         String errorMessage) {
 }

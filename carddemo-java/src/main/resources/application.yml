@@ -115,8 +115,11 @@ management:
     web:
       exposure:
         # Expose only what observability requires - never expose all endpoints (Gate-6
-        # security posture). /actuator/prometheus is scraped by Prometheus/Grafana.
-        include: health,info,prometheus,metrics
+        # security posture). The CP1 surface is exactly health,info,prometheus:
+        # /actuator/prometheus is scraped by Prometheus/Grafana. /actuator/metrics is
+        # deliberately NOT exposed - it discloses broader operational meter/tag detail
+        # and is unnecessary for Prometheus scraping. A local-only profile may add it.
+        include: health,info,prometheus
   endpoint:
     health:
       # Conservative base default; profile overlays may use 'always' for local
@@ -125,6 +128,16 @@ management:
       # Enable Kubernetes-style liveness/readiness probe groups.
       probes:
         enabled: true
+      # Readiness must reflect the application's ability to serve traffic, so in
+      # addition to the built-in readinessState it includes the custom dependency
+      # indicators: 'db' is Spring Boot's auto-configured DataSource check;
+      # 'postgres', 's3', and 'sqs' are the HealthIndicator beans defined in
+      # observability/HealthIndicators.java. Liveness is intentionally left at its
+      # default (livenessState only) so a transient dependency outage triggers a
+      # readiness failure (traffic drained) rather than a pod restart.
+      group:
+        readiness:
+          include: readinessState,db,postgres,s3,sqs
   metrics:
     tags:
       # Common tag applied to every meter so dashboards can filter by service name.
@@ -178,6 +191,18 @@ carddemo:
     jwt:
       secret: ${JWT_SECRET:}
       expiration-seconds: ${JWT_EXPIRATION:3600}
+
+  # --- Web / CORS (consumed by config/WebConfig.java corsConfigurationSource) --------
+  # Comma-separated list of CORS origins permitted to call the REST API. Declared here so
+  # the key is discoverable in configuration; WebConfig binds
+  # carddemo.web.cors.allowed-origins as a single String, then splits/trims on commas.
+  # Override per environment via the CORS_ALLOWED_ORIGINS env var; the permissive '*'
+  # default suits local/dev and is expected to be tightened to explicit origins in
+  # deployed environments. Credentials are disabled (stateless JWT travels in the
+  # Authorization header, not cookies), so the '*' default does not expose cookies.
+  web:
+    cors:
+      allowed-origins: ${CORS_ALLOWED_ORIGINS:*}
 
   # --- Phase 7: AWS resource names (consumed by config/AwsConfig.java + services) ----
   # These names MUST match localstack-init/init-aws.sh and docker-compose.yml verbatim.

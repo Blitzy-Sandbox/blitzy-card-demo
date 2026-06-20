@@ -14,8 +14,12 @@ package com.carddemo.model.dto;
  * <p>This is a stateless, serializable transport object: it carries no
  * persistence concerns (no JPA), no bean-validation constraints (responses
  * are server-produced), and no behavior beyond the record's generated
- * accessors. All components are {@link String} since the card-detail screen
- * exposes no monetary fields.</p>
+ * accessors. Every display component is a {@link String} since the card-detail
+ * screen exposes no monetary fields; the only non-text component is the
+ * {@code version} optimistic-lock token (a {@link Long}), which echoes the
+ * persisted JPA {@code @Version} of the {@code Card} entity so the client can
+ * supply it on the next {@link CardUpdateRequest}, enabling stateless
+ * optimistic-locking (AAP &sect;0.8.4). It has no BMS-map equivalent.</p>
  *
  * <p>Traceability: lineage is preserved via reference to the original AWS
  * CardDemo source commit {@code 27d6c6f}; the COBOL source is never copied
@@ -27,6 +31,9 @@ package com.carddemo.model.dto;
  * @param cardStatus      single-character card status code ({@code CRDSTCD}, {@code PIC X(1)})
  * @param expirationMonth two-digit expiration month ({@code EXPMON}, {@code PIC X(2)})
  * @param expirationYear  four-digit expiration year ({@code EXPYEAR}, {@code PIC X(4)})
+ * @param version         optimistic-locking token (JPA {@code @Version} of the
+ *                        {@code Card} entity) echoed for the next
+ *                        {@link CardUpdateRequest}; no BMS equivalent
  * @param infoMessage     informational message line ({@code INFOMSG}, {@code PIC X(40)})
  * @param errorMessage    error message line ({@code ERRMSG}, {@code PIC X(80)})
  */
@@ -37,6 +44,7 @@ public record CardDetailResponse(
         String cardStatus,
         String expirationMonth,
         String expirationYear,
+        Long version,
         String infoMessage,
         String errorMessage) {
 }

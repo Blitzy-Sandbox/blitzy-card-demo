@@ -384,13 +384,23 @@
     <profiles>
         <!--
           Integration tests. Activating this profile (mvn verify -Pintegration)
-          adds the failsafe plugin to the build, which then runs *IT.java during
-          integration-test and asserts results during verify. The actual goal
-          bindings (integration-test, verify) and configuration are inherited
-          from the Spring Boot parent's pluginManagement, so a bare plugin
-          declaration is sufficient. Integration tests spin up PostgreSQL and
-          LocalStack via Testcontainers, so they are kept out of the default
-          build to keep it fast and Docker-free.
+          runs the *IT.java suite via the failsafe plugin: the 'integration-test'
+          goal executes the tests in the integration-test phase and 'verify'
+          asserts their results in the verify phase (Gate 8).
+
+          The failsafe goal bindings are made EXPLICIT here rather than left
+          implicit. The Spring Boot starter-parent's pluginManagement does supply
+          a managed failsafe execution with these same goals, but relying on that
+          alone is fragile (it is invisible at this call site and can change across
+          Boot major versions, e.g. the upcoming 4.x). Declaring the execution with
+          the same id ('default') as the managed one MERGES with it instead of
+          adding a second execution, so the integration suite binds exactly once
+          (no duplicate runs) while remaining self-documenting and robust if the
+          parent's managed binding ever changes. The include pattern mirrors the
+          surefire <excludes> above so the unit and integration suites never
+          overlap. Integration tests spin up PostgreSQL and LocalStack via
+          Testcontainers, so they are kept out of the default build to keep it
+          fast and Docker-free.
         -->
         <profile>
             <id>integration</id>
@@ -400,6 +410,24 @@
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-failsafe-plugin</artifactId>
                         <version>${maven-failsafe-plugin.version}</version>
+                        <configuration>
+                            <!-- Run only the integration-test class pattern (*IT.java);
+                                 matches the surefire <excludes> above. -->
+                            <includes>
+                                <include>**/*IT.java</include>
+                            </includes>
+                        </configuration>
+                        <executions>
+                            <!-- id 'default' merges with the Spring Boot parent's managed
+                                 failsafe execution so the goals bind exactly once. -->
+                            <execution>
+                                <id>default</id>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                            </execution>
+                        </executions>
                     </plugin>
                 </plugins>
             </build>

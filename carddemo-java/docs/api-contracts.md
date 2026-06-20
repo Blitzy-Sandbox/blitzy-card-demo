@@ -257,7 +257,7 @@ The account view (`COACTVWC`) reads and joins three datasets — account master 
 
 Path parameter `accountId` — `PIC 9(11)`, 11-digit string (leading zeros significant).
 
-**Response DTO — `AccountDetailResponse`** (HTTP `200`). The five monetary fields are `BigDecimal` scale 2 (`PIC S9(10)V99`).
+**Response DTO — `AccountViewResponse`** (HTTP `200`). The five monetary fields are `BigDecimal` scale 2 (`PIC S9(10)V99`).
 
 | COBOL field | COBOL pic | JSON field | Type | Len/scale |
 | :---------- | :-------- | :--------- | :--- | :-------- |
@@ -273,7 +273,7 @@ Path parameter `accountId` — `PIC 9(11)`, 11-digit string (leading zeros signi
 | `ACRCYDB` | `S9(10)V99` | `currentCycleDebit` | BigDecimal | scale 2 |
 | `AADDGRP` | `X(10)` | `accountGroupId` | string | 10 |
 | `ACSTNUM` | `X(9)` | `customerId` | string | 9 |
-| `ACSTSSN` | `X(12)` | `customerSsn` | string | 12 |
+| `ACSTSSN` | `X(12)` | `ssn` | string | 12 |
 | `ACSTDOB` | `X(10)` | `dateOfBirth` | string (date) | 10 |
 | `ACSTFCO` | `X(3)` | `ficoScore` | string | 3 |
 | `ACSFNAM` | `X(25)` | `firstName` | string | 25 |
@@ -287,23 +287,26 @@ Path parameter `accountId` — `PIC 9(11)`, 11-digit string (leading zeros signi
 | `ACSCTRY` | `X(3)` | `countryCode` | string | 3 |
 | `ACSPHN1` | `X(13)` | `phoneNumber1` | string | 13 |
 | `ACSPHN2` | `X(13)` | `phoneNumber2` | string | 13 |
-| `ACSGOVT` | `X(20)` | `governmentId` | string | 20 |
+| `ACSGOVT` | `X(20)` | `governmentIssuedId` | string | 20 |
 | `ACSEFTC` | `X(10)` | `eftAccountId` | string | 10 |
-| `ACSPFLG` | `X(1)` | `primaryCardHolderFlag` | string | 1 |
+| `ACSPFLG` | `X(1)` | `primaryCardHolderIndicator` | string | 1 |
+| (none) | — | `version` | integer | — |
+
+> `version` is the JPA `@Version` optimistic-lock token; it has no BMS-map field. Clients echo it on the subsequent `PUT /api/accounts/{accountId}` so the update service can detect a concurrent modification (`409 CONCURRENT_MODIFICATION`).
 
 **Errors:** `404 RECORD_NOT_FOUND` when the account, cross-reference, or customer record is absent (FILE STATUS `23`).
 
 #### `PUT /api/accounts/{accountId}`
 
-Updates the account and its associated customer record atomically. The update echoes the same business fields as the view; on the wire the COBOL update map (`COACTUP`) splits dates into year/month/day components (`OPNYEAR`/`OPNMON`/`OPNDAY`, `EXPYEAR`/`EXPMON`/`EXPDAY`, `RISYEAR`/`RISMON`/`RISDAY`, `DOBYEAR`/`DOBMON`/`DOBDAY`), the SSN into three parts (`ACTSSN1`/`ACTSSN2`/`ACTSSN3`), and each phone into three parts (`ACSPH1A/B/C`, `ACSPH2A/B/C`). The JSON contract accepts the assembled values (`openDate`, `expirationDate`, `reissueDate`, `dateOfBirth` as 10-char dates; `customerSsn` as one 9-digit string; `phoneNumber1`/`phoneNumber2` as one 13-char string each), preserving the underlying field widths.
+Updates the account and its associated customer record atomically. The COBOL update map (`COACTUP`) splits dates into year/month/day components (`OPNYEAR`/`OPNMON`/`OPNDAY`, `EXPYEAR`/`EXPMON`/`EXPDAY`, `RISYEAR`/`RISMON`/`RISDAY`, `DOBYEAR`/`DOBMON`/`DOBDAY`), the SSN into three parts (`ACTSSN1`/`ACTSSN2`/`ACTSSN3`), and each phone into three parts (`ACSPH1A/B/C`, `ACSPH2A/B/C`). That split-field shape is the binding external interface contract, so the `AccountUpdateRequest` JSON preserves it component-for-component rather than assembling the parts: it carries `openYear`/`openMonth`/`openDay`, `expirationYear`/`expirationMonth`/`expirationDay`, `reissueYear`/`reissueMonth`/`reissueDay`, `dobYear`/`dobMonth`/`dobDay`, `ssnPart1`/`ssnPart2`/`ssnPart3`, `phone1Area`/`phone1Prefix`/`phone1Line`, and `phone2Area`/`phone2Prefix`/`phone2Line`, each preserving the underlying field width.
 
-**Request DTO — `AccountUpdateRequest`**: the writable subset of the view fields above (`accountStatus`, the five `BigDecimal` balances, `creditLimit`/`cashCreditLimit`, the three dates, customer demographics, address, phones, `ficoScore`). Identifiers (`accountId`, `customerId`) are read-only and taken from the path / existing record.
+**Request DTO — `AccountUpdateRequest`**: the writable account/customer fields in the split-field shape described above (`accountStatus`; the split open/expiration/reissue/date-of-birth parts; the five `BigDecimal` balances including `creditLimit` and `cashCreditLimit`; the split SSN parts; customer name, address, and split phone parts; `ficoScore`; `governmentIssuedId`; `eftAccountId`; `primaryCardHolderIndicator`), together with `accountId`/`customerId` and the required `version` optimistic-lock token.
 
 | Concurrency control | JSON field | Type | Notes |
 | :------------------ | :--------- | :--- | :---- |
-| Optimistic lock token | `version` | integer | JPA `@Version`; must match the current row or `409 CONCURRENT_MODIFICATION` is returned. |
+| Optimistic lock token | `version` | integer | JPA `@Version`, **required** (`@NotNull`); the client echoes the value last read from the view/update response, and it must match the current row or `409 CONCURRENT_MODIFICATION` is returned. |
 
-**Response:** `200` with the refreshed `AccountDetailResponse`.
+**Response:** `200` with an `AccountUpdateResponse` — the refreshed split-field account/customer view, including the new `version`.
 
 **Errors:** `404 RECORD_NOT_FOUND` (account/customer missing); `409 CONCURRENT_MODIFICATION` (version mismatch); `409 UPDATE_ROLLED_BACK` / `500` when the dual-record transaction rolls back; `400 VALIDATION_FAILED` (field validation).
 
@@ -323,15 +326,16 @@ Paginated card browse — **7 rows per page** (the COCRDLI screen displays 7 car
 | `CARDSID` | `X(16)` | `cardNumber` | string(16) | optional card filter |
 | `PAGENO` | `X(3)` | `page` | integer | 0-based page index |
 
-**Response DTO — `CardListResponse`**: `pageNumber`, `pageSize` (fixed `7`), `hasNext`, `hasPrevious`, and `cards[]` where each element is a `CardSummary`:
+**Response DTO — `CardListResponse`**: `pageNumber`, `accountIdFilter`, `cardNumberFilter`, `infoMessage`, `errorMessage`, and `cards[]` where each element is a `CardListItem` (the COCRDLI screen displays **7 rows per page**):
 
 | COBOL field (row *n*) | COBOL pic | JSON field | Type | Len |
 | :-------------------- | :-------- | :--------- | :--- | :-- |
+| `CRDSELn` | `X(1)` | `selectionFlag` | string | 1 |
 | `ACCTNOn` | `X(11)` | `accountId` | string | 11 |
 | `CRDNUMn` | `X(16)` | `cardNumber` | string | 16 |
 | `CRDSTSn` | `X(1)` | `cardStatus` | string | 1 |
 
-> The per-row select field `CRDSELn X(1)` is a 3270 line-selection control; in REST the client selects a card by calling `GET /api/cards/{cardNumber}` directly, so it is not part of the response contract.
+> `selectionFlag` mirrors the 3270 line-selection control (`CRDSELn`); a REST client may leave it unset and select a card directly via `GET /api/cards/{cardNumber}`.
 
 #### `GET /api/cards/{cardNumber}`
 
@@ -343,10 +347,13 @@ Single keyed read (`COCRDSLC`). Path parameter `cardNumber` — `PIC X(16)`.
 | :---------- | :-------- | :--------- | :--- | :-- |
 | `ACCTSID` | `X(11)` | `accountId` | string | 11 |
 | `CARDSID` | `X(16)` | `cardNumber` | string | 16 |
-| `CRDNAME` | `X(50)` | `embossedName` | string | 50 |
+| `CRDNAME` | `X(50)` | `nameOnCard` | string | 50 |
 | `CRDSTCD` | `X(1)` | `cardStatus` | string | 1 |
-| `EXPMON` | `X(2)` | `expiryMonth` | string | 2 |
-| `EXPYEAR` | `X(4)` | `expiryYear` | string | 4 |
+| `EXPMON` | `X(2)` | `expirationMonth` | string | 2 |
+| `EXPYEAR` | `X(4)` | `expirationYear` | string | 4 |
+| (none) | — | `version` | integer | — |
+
+> `version` is the JPA `@Version` optimistic-lock token (no BMS field); clients echo it on the subsequent `PUT /api/cards/{cardNumber}`.
 
 **Errors:** `404 RECORD_NOT_FOUND`.
 
@@ -356,14 +363,16 @@ Optimistic update (`COCRDUPC`) of an existing card. **Request DTO — `CardUpdat
 
 | COBOL field | COBOL pic | JSON field | Type | Len/scale | Req |
 | :---------- | :-------- | :--------- | :--- | :-------- | :-- |
-| `CRDNAME` | `X(50)` | `embossedName` | string | 50 | yes |
+| `CRDNAME` | `X(50)` | `nameOnCard` | string | 50 | yes |
 | `CRDSTCD` | `X(1)` | `cardStatus` | string | 1 | yes |
-| `EXPMON` | `X(2)` | `expiryMonth` | string | 2 | yes |
-| `EXPDAY` | `X(2)` | `expiryDay` | string | 2 | yes |
-| `EXPYEAR` | `X(4)` | `expiryYear` | string | 4 | yes |
+| `EXPMON` | `X(2)` | `expirationMonth` | string | 2 | yes |
+| `EXPDAY` | `X(2)` | `expirationDay` | string | 2 | no |
+| `EXPYEAR` | `X(4)` | `expirationYear` | string | 4 | yes |
 | (lock) | — | `version` | integer | — | yes |
 
-**Response:** `200` with the refreshed `CardDetailResponse`.
+> Field-edit semantics mirror `COCRDUPC`: `nameOnCard` (required, letters/spaces only, `1230-EDIT-NAME`), `cardStatus` (required, `Y`/`N`, `1240-EDIT-CARDSTATUS`), `expirationMonth` (required, `1`–`12`, `1250-EDIT-EXPIRY-MON`), and `expirationYear` (required, `1950`–`2099`, `1260-EDIT-EXPIRY-YEAR`). `expirationDay` is length-bounded only because `COCRDUPC` has no day edit paragraph, so it is **not** required. `version` is the required JPA `@Version` optimistic-lock token.
+
+**Response:** `200` with a `CardUpdateResponse` — the refreshed card view including the new `version`.
 **Errors:** `404 RECORD_NOT_FOUND`; `409 CONCURRENT_MODIFICATION` (`@Version` mismatch); `400 VALIDATION_FAILED`.
 
 
@@ -382,12 +391,13 @@ Paginated transaction browse — **10 rows per page** (the COTRN00 screen displa
 | `TRNIDIN` | `X(16)` | `transactionId` | string(16) | optional start-at filter |
 | `PAGENUM` | `X(8)` | `page` | integer | 0-based page index |
 
-**Response DTO — `TransactionListResponse`**: `pageNumber`, `pageSize` (fixed `10`), `hasNext`, `hasPrevious`, and `transactions[]` where each element is a `TransactionSummary`:
+**Response DTO — `TransactionListResponse`**: `pageNumber`, `transactionIdFilter`, `errorMessage`, and `transactions[]` where each element is a `TransactionListItem` (the COTRN00 screen displays **10 rows per page**):
 
 | COBOL field (row *n*) | COBOL pic | JSON field | Type | Len/scale |
 | :-------------------- | :-------- | :--------- | :--- | :-------- |
+| `SELn` | `X(1)` | `selectionFlag` | string | 1 |
 | `TRNIDn` | `X(16)` | `transactionId` | string | 16 |
-| `TDATEn` | `X(8)` | `processedDate` | string (date) | 8 |
+| `TDATEn` | `X(8)` | `date` | string (date) | 8 |
 | `TDESCn` | `X(26)` | `description` | string | 26 |
 | `TAMTn` | `X(12)` (← `S9(09)V99`) | `amount` | BigDecimal | scale 2 |
 
@@ -407,7 +417,7 @@ Keyed detail read (`COTRN01C`). Path parameter `transactionId` — `PIC X(16)`.
 | `TDESC` | `X(60)` | `description` | string | 60 |
 | `TRNAMT` | `X(12)` (← `S9(09)V99`) | `amount` | BigDecimal | scale 2 |
 | `TORIGDT` | `X(10)` | `originDate` | string (date) | 10 |
-| `TPROCDT` | `X(10)` | `processedDate` | string (date) | 10 |
+| `TPROCDT` | `X(10)` | `processDate` | string (date) | 10 |
 | `MID` | `X(9)` | `merchantId` | string | 9 |
 | `MNAME` | `X(30)` | `merchantName` | string | 30 |
 | `MCITY` | `X(25)` | `merchantCity` | string | 25 |
@@ -428,17 +438,17 @@ Adds a transaction (`COTRN02C`). The transaction id is **auto-generated** server
 | `TTYPCD` | `X(2)` | `typeCode` | string | 2 | yes |
 | `TCATCD` | `X(4)` | `categoryCode` | string | 4 | yes |
 | `TRNSRC` | `X(10)` | `source` | string | 10 | yes |
-| `TDESC` | `X(60)` | `description` | string | 60 | no |
+| `TDESC` | `X(60)` | `description` | string | 60 | yes |
 | `TRNAMT` | `X(12)` (← `S9(09)V99`) | `amount` | BigDecimal | scale 2 | yes |
 | `TORIGDT` | `X(10)` | `originDate` | string (date) | 10 | yes |
-| `TPROCDT` | `X(10)` | `processedDate` | string (date) | 10 | yes |
+| `TPROCDT` | `X(10)` | `processDate` | string (date) | 10 | yes |
 | `MID` | `X(9)` | `merchantId` | string | 9 | yes |
 | `MNAME` | `X(30)` | `merchantName` | string | 30 | yes |
 | `MCITY` | `X(25)` | `merchantCity` | string | 25 | yes |
 | `MZIP` | `X(10)` | `merchantZip` | string | 10 | yes |
-| `CONFIRM` | `X(1)` | `confirm` | string | 1 | yes |
+| `CONFIRM` | `X(1)` | `confirm` | string | 1 | no |
 
-The `CONFIRM` field reproduces the COBOL two-step confirmation flow (the program requires `Y` before committing the add); a request with `confirm` ≠ `Y` is treated as a non-committing validation pass and returns the assembled record for review without persisting.
+Required/format edits mirror `COTRN02C VALIDATE-INPUT-DATA-FIELDS`: `typeCode`, `categoryCode`, and `merchantId` are required and numeric; `source`, `description`, `merchantName`, and `merchantCity` are required; `originDate`/`processDate` are required and formatted `YYYY-MM-DD`; `merchantZip` is required (no numeric edit in source). The `confirm` field reproduces the COBOL two-step confirmation flow and is **optional** — when present it must be `Y` or `N`; a request with `confirm` ≠ `Y` (including blank, the "not yet confirmed" state) is treated as a non-committing validation pass and returns the assembled record for review without persisting.
 
 **Response:** `201 Created` with `TransactionDetailResponse` (including the generated `transactionId`).
 **Errors:** `404 RECORD_NOT_FOUND` (account or card cross-reference missing); `400 VALIDATION_FAILED`.
@@ -464,9 +474,10 @@ Posts a full balance bill payment against an account (`COBIL00C`). The screen di
 | :---------- | :-------- | :--------- | :--- | :-------- |
 | `ACTIDIN` | `X(11)` | `accountId` | string | 11 |
 | `CURBAL` | `X(14)` (← `S9(10)V99`) | `currentBalance` | BigDecimal | scale 2 |
-| (generated) | — | `transactionId` | string(16) | id of the payment transaction posted |
+| `CONFIRM` | `X(1)` | `confirm` | string | 1 |
+| `ERRMSG` | `X(78)` | `errorMessage` | string | 78 |
 
-When `confirm` ≠ `Y`, the endpoint returns the current balance for review without posting (mirroring the COBOL confirmation gate).
+When `confirm` ≠ `Y`, the endpoint returns the current balance (and echoes `confirm`) for review without posting, mirroring the COBOL confirmation gate; the posted-payment transaction id is not part of the CP1 `BillPaymentResponse` contract.
 **Errors:** `404 RECORD_NOT_FOUND` (account missing); `400 VALIDATION_FAILED`.
 
 ### 5.6 ReportController — Report Submission

@@ -27,8 +27,10 @@ public class WebConfig {
      * {@code .cors(Customizer.withDefaults())} resolves a {@link CorsConfigurationSource} bean by
      * that conventional name; renaming it would silently disable CORS. Allowed origins are read from
      * the {@code carddemo.web.cors.allowed-origins} property (comma-separated, trimmed, default
-     * {@code *}). Credentials are not allowed because the stateless JWT is carried in the
-     * {@code Authorization} header rather than in cookies.
+     * {@code *}); that key is declared in {@code application.yml} under {@code carddemo.web.cors} and
+     * is overridable per environment via the {@code CORS_ALLOWED_ORIGINS} env var. Credentials are not
+     * allowed because the stateless JWT is carried in the {@code Authorization} header rather than in
+     * cookies.
      *
      * @param allowedOrigins comma-separated list of permitted origins (defaults to {@code *})
      * @return a URL-based CORS source applying the policy to every path

@@ -1,8 +1,11 @@
 package com.carddemo.observability;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.binder.MeterBinder;
+import java.math.BigDecimal;
+import java.util.concurrent.atomic.DoubleAdder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -15,30 +18,38 @@ import org.springframework.context.annotation.Configuration;
  * that meter names and tag keys never drift across the codebase.</p>
  *
  * <h2>Metrics</h2>
- * <p>All four meters are <strong>counters</strong> (monotonically increasing).
- * Micrometer renders the dotted names into the Prometheus exposition form by
- * replacing dots with underscores and appending {@code _total}:</p>
+ * <p>Three meters are <strong>counters</strong> (monotonically increasing) and
+ * one is a <strong>gauge</strong> (the signed running total). Micrometer renders
+ * the dotted names into the Prometheus exposition form by replacing dots with
+ * underscores; counters additionally carry the {@code _total} suffix:</p>
  * <ul>
  *   <li>{@value #BATCH_RECORDS_PROCESSED} &rarr;
- *       {@code carddemo_batch_records_processed_total} (untagged) &mdash; batch
- *       records successfully posted.</li>
+ *       {@code carddemo_batch_records_processed_total} (counter, untagged)
+ *       &mdash; batch records successfully posted.</li>
  *   <li>{@value #BATCH_RECORDS_REJECTED} &rarr;
- *       {@code carddemo_batch_records_rejected_total} (tagged
+ *       {@code carddemo_batch_records_rejected_total} (counter, tagged
  *       {@value #TAG_REASON}) &mdash; batch records rejected, by reject
  *       reason.</li>
  *   <li>{@value #AUTH_ATTEMPTS} &rarr;
- *       {@code carddemo_auth_attempts_total} (tagged {@value #TAG_OUTCOME})
- *       &mdash; authentication attempts, by outcome.</li>
+ *       {@code carddemo_auth_attempts_total} (counter, tagged
+ *       {@value #TAG_OUTCOME}) &mdash; authentication attempts, by outcome.</li>
  *   <li>{@value #TRANSACTION_AMOUNT_TOTAL} &rarr;
- *       {@code carddemo_transaction_amount_total} (untagged) &mdash; running
- *       total of posted transaction amounts.</li>
+ *       {@code carddemo_transaction_amount_total} (<strong>gauge</strong>,
+ *       untagged) &mdash; signed running total of posted transaction amounts.
+ *       It is a gauge rather than a counter because CardDemo transaction amounts
+ *       can be negative (credits and returns); a Micrometer counter rejects
+ *       negative increments, whereas a gauge backed by a
+ *       {@link java.util.concurrent.atomic.DoubleAdder} accumulates signed
+ *       amounts safely and never throws on valid business data.</li>
  * </ul>
  *
  * <h2>Consumer contract</h2>
- * <p>Sibling services obtain meters through the static helper methods, which
- * delegate to Micrometer's idempotent {@code registry.counter(...)} lookups
- * (the same time series is returned on repeated calls for a given name and tag
- * set):</p>
+ * <p>Sibling services record the three counters through the static helper
+ * methods, which delegate to Micrometer's idempotent {@code registry.counter(...)}
+ * lookups (the same time series is returned on repeated calls for a given name
+ * and tag set), and record the signed transaction-amount total through the
+ * {@code addTransactionAmount(BigDecimal)} instance method on the injected
+ * {@code MetricsConfig} bean:</p>
  * <ul>
  *   <li>Batch processing &mdash; per successfully posted record call
  *       {@code MetricsConfig.recordsProcessed(registry).increment()}; per
@@ -48,8 +59,12 @@ import org.springframework.context.annotation.Configuration;
  *   <li>Authentication &mdash; call
  *       {@code MetricsConfig.authAttempts(registry, outcome).increment()} with
  *       {@link #OUTCOME_SUCCESS} or {@link #OUTCOME_FAILURE}.</li>
- *   <li>Transaction add, bill payment, and posting &mdash; call
- *       {@code MetricsConfig.transactionAmountTotal(registry).increment(amount.doubleValue())}.</li>
+ *   <li>Transaction add, bill payment, and posting &mdash; inject the
+ *       {@code MetricsConfig} bean and call
+ *       {@code metricsConfig.addTransactionAmount(amount)} with the
+ *       {@link java.math.BigDecimal} amount (which may be negative for credits
+ *       or returns). Unlike a counter increment, this never throws on a
+ *       negative value.</li>
  * </ul>
  *
  * <h2>Precision note</h2>
@@ -58,8 +73,11 @@ import org.springframework.context.annotation.Configuration;
  * <strong>not</strong> affect the authoritative {@code BigDecimal} financial
  * computations or persistence. The zero-floating-point-substitution rule
  * governs business-logic and persisted money fields, not telemetry, so
- * converting an amount to {@code double} solely to increment a metric is
- * compliant.</p>
+ * converting an amount to {@code double} solely to record a metric is
+ * compliant. Because the transaction-amount gauge is backed by a
+ * {@link java.util.concurrent.atomic.DoubleAdder}, negative amounts (credits
+ * and returns) are accumulated correctly and recording an amount never
+ * throws.</p>
  *
  * <p>Registry creation, the Prometheus exporter, and the common
  * {@code application} tag are owned by Spring Boot Actuator auto-configuration
@@ -78,7 +96,7 @@ public final class MetricsConfig {
     /** Counter name: authentication attempts, tagged by {@link #TAG_OUTCOME}. */
     public static final String AUTH_ATTEMPTS = "carddemo.auth.attempts";
 
-    /** Counter name: running total of posted transaction amounts (untagged). */
+    /** Gauge name: signed running total of posted transaction amounts (untagged). */
     public static final String TRANSACTION_AMOUNT_TOTAL = "carddemo.transaction.amount.total";
 
     /** Tag key identifying the reject reason on {@link #BATCH_RECORDS_REJECTED}. */
@@ -94,26 +112,38 @@ public final class MetricsConfig {
     public static final String OUTCOME_FAILURE = "failure";
 
     /**
+     * Backing accumulator for the {@link #TRANSACTION_AMOUNT_TOTAL} gauge. A
+     * {@link DoubleAdder} accepts signed contributions (positive debits and
+     * negative credits/returns) under concurrent access and never throws, which
+     * is why the running total is modelled as a gauge over this accumulator
+     * rather than as a monotonic counter. One instance exists per Spring
+     * application context (this bean is a singleton), so the running total is
+     * shared application-wide yet isolated between independent test contexts.
+     */
+    private final DoubleAdder transactionAmountAccumulator = new DoubleAdder();
+
+    /**
      * Creates the configuration. Spring instantiates this bean during context
-     * startup; it holds no state of its own.
+     * startup; it holds only the transaction-amount accumulator that backs the
+     * {@link #TRANSACTION_AMOUNT_TOTAL} gauge.
      */
     public MetricsConfig() {
         // No initialization required; meters are registered by the bean below.
     }
 
     /**
-     * Pre-registers the two untagged counters at startup so their time series
-     * exist at value zero before the first increment, preventing
-     * dashboard panels from showing "No data" until the first event. Spring
-     * Boot automatically applies every {@link MeterBinder} bean to the
-     * {@link MeterRegistry}.
+     * Pre-registers the untagged batch-records-processed counter and the
+     * transaction-amount gauge at startup so their time series exist (at value
+     * zero) before the first event, preventing dashboard panels from showing
+     * "No data" until the first record. Spring Boot automatically applies every
+     * {@link MeterBinder} bean to the {@link MeterRegistry}.
      *
      * <p>The tagged counters ({@link #BATCH_RECORDS_REJECTED} and
      * {@link #AUTH_ATTEMPTS}) are intentionally not pre-registered: their tag
      * values are only known at use time, and inventing placeholder values would
      * pollute label cardinality.</p>
      *
-     * @return a binder that registers the untagged CardDemo core counters
+     * @return a binder that registers the untagged CardDemo core meters
      */
     @Bean
     public MeterBinder carddemoCoreMetrics() {
@@ -121,8 +151,9 @@ public final class MetricsConfig {
             Counter.builder(BATCH_RECORDS_PROCESSED)
                     .description("Total batch records successfully processed by CardDemo batch jobs")
                     .register(registry);
-            Counter.builder(TRANSACTION_AMOUNT_TOTAL)
-                    .description("Monotonic running total of posted transaction amounts")
+            Gauge.builder(TRANSACTION_AMOUNT_TOTAL, transactionAmountAccumulator, DoubleAdder::sum)
+                    .description("Signed running total of posted transaction amounts "
+                            + "(supports negative credits/returns)")
                     .register(registry);
         };
     }
@@ -161,12 +192,24 @@ public final class MetricsConfig {
     }
 
     /**
-     * Returns the untagged running-total counter for posted transaction amounts.
+     * Adds a posted transaction amount to the signed running total reported by
+     * the {@link #TRANSACTION_AMOUNT_TOTAL} gauge.
      *
-     * @param registry the meter registry to resolve the counter against
-     * @return the {@link #TRANSACTION_AMOUNT_TOTAL} counter
+     * <p>The amount may be positive (a debit/purchase) or negative (a credit or
+     * return); both are accumulated correctly. This is an instance method
+     * because the running total is held in the bean's {@link DoubleAdder}
+     * accumulator, so callers inject the {@code MetricsConfig} bean to record an
+     * amount. Unlike a Micrometer counter, it never rejects or throws on a
+     * negative value, so valid business data can never break telemetry
+     * recording. A {@code null} amount is ignored, because telemetry must never
+     * disrupt the business flow.</p>
+     *
+     * @param amount the transaction amount to add to the running total; may be
+     *               negative, and {@code null} is treated as a no-op
      */
-    public static Counter transactionAmountTotal(final MeterRegistry registry) {
-        return registry.counter(TRANSACTION_AMOUNT_TOTAL);
+    public void addTransactionAmount(final BigDecimal amount) {
+        if (amount != null) {
+            transactionAmountAccumulator.add(amount.doubleValue());
+        }
     }
 }

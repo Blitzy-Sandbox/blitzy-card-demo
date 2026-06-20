@@ -134,15 +134,16 @@ management:
 # config/ layer (SecurityConfig, AwsConfig). These are NOT Spring framework keys.
 # =====================================================================================
 carddemo:
-  # --- Phase 6: Security / JWT (TEST-ONLY signing key) -------------------------------
-  # Deterministic, clearly-labeled, non-production HMAC signing key for issuing/verifying
-  # JWTs in tests. It is env-overridable (${JWT_SECRET:...}) so CI can inject its own
-  # value, and it is obviously NOT a real credential (it announces itself as test-only).
-  # The base profile intentionally has NO default secret; supplying a fixed test key here
-  # keeps token signing deterministic across integration runs without weakening posture.
+  # --- Phase 6: Security / JWT (no committed signing key) ----------------------------
+  # No JWT signing key is committed (CWE-798); like the base profile this resolves the
+  # secret solely from the JWT_SECRET env var with an empty default. CI injects JWT_SECRET
+  # for the test run, and integration tests needing a deterministic key supply an
+  # ephemeral one at runtime via @DynamicPropertySource (generated per run, never
+  # committed). SecurityConfig fails fast when the resolved secret is shorter than the
+  # HS256 minimum (>=32 bytes), so a real value must be provided when the context loads.
   security:
     jwt:
-      secret: ${JWT_SECRET:test-only-jwt-secret-not-for-production}
+      secret: ${JWT_SECRET:}
 
   # --- Phase 3: AWS resource names (must match localstack-init/init-aws.sh verbatim) -
   # Self-provisioning tests create these in @BeforeAll and delete them in @AfterAll on
