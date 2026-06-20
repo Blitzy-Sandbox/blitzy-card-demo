@@ -27,13 +27,16 @@ import org.springframework.transaction.annotation.Transactional;
  *       detection, and rewrites the record only when something actually changed.</li>
  * </ul>
  *
- * <p>The persisted password is a BCrypt hash (column length 60), so the plaintext compare of the
- * original program ({@code PASSWDI NOT = SEC-USR-PWD}) is expressed with
- * {@link PasswordEncoder#matches(CharSequence, String)}; a newly supplied password is re-encoded with
- * {@link PasswordEncoder#encode(CharSequence)} only when it differs from the stored hash. A password
- * is never stored in plaintext and is never echoed back in any response (security constraint C-003).
- * The {@code REWRITE} of a single record is bracketed by {@link Transactional} for correct
- * commit/rollback semantics.</p>
+ * <p>The original program requires a non-blank password on every update: its {@code UPDATE-USER-INFO}
+ * edit rejects a blank {@code PASSWDI} with {@code "Password can NOT be empty..."}, evaluated after the
+ * last-name edit and before the user-type edit. That required-field contract is preserved here. Because
+ * the persisted password is a BCrypt hash (column length 60), the plaintext compare of the original
+ * program ({@code PASSWDI NOT = SEC-USR-PWD}) is expressed with
+ * {@link PasswordEncoder#matches(CharSequence, String)}; the supplied password is re-encoded with
+ * {@link PasswordEncoder#encode(CharSequence)} only when it differs from the stored hash, so re-typing
+ * the existing credential is correctly detected as "no change". A password is never stored in plaintext
+ * and is never echoed back in any response (security constraint C-003). The {@code REWRITE} of a single
+ * record is bracketed by {@link Transactional} for correct commit/rollback semantics.</p>
  */
 @Service
 public class UserUpdateService {
@@ -83,21 +86,21 @@ public class UserUpdateService {
      * {@code UPDATE-USER-INFO} / {@code UPDATE-USER-SEC-FILE} step.
      *
      * <p>Required-field validation is performed first, in the original program's order: user id,
-     * first name, last name, then user type. The password is intentionally <em>not</em> validated
-     * here: the {@link UserUpdateRequest#password()} component is optional, and a blank or absent
-     * value means "leave the existing password unchanged".</p>
+     * first name, last name, password, then user type. A blank password is rejected with the exact
+     * COBOL message {@code "Password can NOT be empty..."}, mirroring {@code UPDATE-USER-INFO}.</p>
      *
      * <p>After loading the record, each field is compared against the stored value and applied only
-     * when it differs. The password is treated as a change candidate only when supplied and only when
+     * when it differs. The password is treated as a change candidate when
      * {@link PasswordEncoder#matches(CharSequence, String)} reports that it does not already match the
-     * stored hash, in which case it is re-encoded. The record is rewritten only when at least one
-     * field changed; otherwise no write occurs and a "nothing to update" message is returned.</p>
+     * stored hash, in which case it is re-encoded; re-typing the existing credential is therefore
+     * detected as "no change". The record is rewritten only when at least one field changed; otherwise
+     * no write occurs and a "nothing to update" message is returned.</p>
      *
-     * @param request the update request (user id, first name, last name, optional password, user type)
+     * @param request the update request (user id, first name, last name, password, user type)
      * @return a {@link UserResponse} reflecting the resulting field values and the operation message;
      *         never includes a password
-     * @throws ValidationException     if user id, first name, or last name is blank, or user type is
-     *                                 {@code null}
+     * @throws ValidationException     if user id, first name, last name, or password is blank, or user
+     *                                 type is {@code null}
      * @throws RecordNotFoundException if no user exists for the requested id (FILE STATUS {@code 23})
      */
     @Transactional
@@ -110,6 +113,9 @@ public class UserUpdateService {
         }
         if (isBlank(request.lastName())) {
             throw new ValidationException("Last Name can NOT be empty...", "lastName");
+        }
+        if (isBlank(request.password())) {
+            throw new ValidationException("Password can NOT be empty...", "password");
         }
         if (request.userType() == null) {
             throw new ValidationException("User Type can NOT be empty...", "userType");
@@ -127,8 +133,7 @@ public class UserUpdateService {
             entity.setSecUsrLname(request.lastName());
             modified = true;
         }
-        if (!isBlank(request.password())
-                && !passwordEncoder.matches(request.password(), entity.getSecUsrPwd())) {
+        if (!passwordEncoder.matches(request.password(), entity.getSecUsrPwd())) {
             entity.setSecUsrPwd(passwordEncoder.encode(request.password()));
             modified = true;
         }

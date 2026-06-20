@@ -52,6 +52,12 @@ jobs:
   build:
     name: Build, Unit Tests, Coverage & OWASP (Gates 2 & 8)
     runs-on: ubuntu-latest
+    # Test-only HS256 signing secret for any security-context-loading test. The real value is
+    # injected from GitHub Actions Secrets when configured; the fallback is an explicit, clearly
+    # labelled non-production placeholder (>= 32 chars to satisfy the HS256 minimum) and is never
+    # used outside CI. No production secret is committed to the repository (CWE-798).
+    env:
+      JWT_SECRET: ${{ secrets.JWT_SECRET || 'ci-non-production-jwt-signing-secret-change-me' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -102,10 +108,14 @@ jobs:
     needs: build
     if: success()
     runs-on: ubuntu-latest
-    # The only secret is injected from GitHub Actions Secrets at run time -
-    # never a literal token (LocalStack / Testcontainers consume it).
+    # Secrets are injected from GitHub Actions Secrets at run time - never a literal token.
+    # LOCALSTACK_AUTH_TOKEN is consumed by LocalStack / Testcontainers; JWT_SECRET supplies the
+    # HS256 signing key required by the security-enabled Spring context the AWS ITs load. The
+    # JWT_SECRET fallback is an explicit non-production placeholder (>= 32 chars) and the integration
+    # bases also register a generated per-run secret via @DynamicPropertySource as a safety net.
     env:
       LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET || 'ci-non-production-jwt-signing-secret-change-me' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

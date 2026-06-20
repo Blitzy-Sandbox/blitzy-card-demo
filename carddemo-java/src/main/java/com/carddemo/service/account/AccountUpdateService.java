@@ -27,9 +27,9 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Account-maintenance service: the Java translation of the CICS online program
  * {@code COACTUPC} (source commit {@code 27d6c6f}), the largest program in
- * CardDemo. It validates submitted account and customer field changes, performs
- * an optimistic-concurrency check, and atomically rewrites BOTH the account
- * master and the customer master.
+ * CardDemo. It validates submitted account and customer field changes and
+ * atomically rewrites BOTH the account master and the customer master under the
+ * JPA {@code @Version} optimistic lock.
  *
  * <p>This service houses the system's <strong>sole</strong> CICS
  * {@code SYNCPOINT ROLLBACK} ({@code COACTUPC} 9600-WRITE-PROCESSING): when the
@@ -115,7 +115,7 @@ public class AccountUpdateService {
      * @throws RecordNotFoundException when the cross-reference, account, or
      *                                 customer record cannot be located
      * @throws ConcurrencyException    when the record was changed concurrently
-     *                                 (stale version token or optimistic-lock
+     *                                 (JPA {@code @Version} optimistic-lock
      *                                 failure on flush)
      */
     @Transactional
@@ -133,8 +133,6 @@ public class AccountUpdateService {
                 .orElseThrow(() -> RecordNotFoundException.forKey("Account", acctId));
         Customer customer = customerRepository.findById(custId)
                 .orElseThrow(() -> RecordNotFoundException.forKey("Customer", custId));
-
-        checkConcurrentModification(request.version(), account.getVersion());
 
         String openDate = assembleDate(request.openYear(), request.openMonth(), request.openDay());
         String expiryDate = assembleDate(request.expirationYear(), request.expirationMonth(),
@@ -164,17 +162,6 @@ public class AccountUpdateService {
         } catch (NumberFormatException | NullPointerException ex) {
             throw new ValidationException(
                     "Account Filter must be a non-zero 11 digit number", "accountId");
-        }
-    }
-
-    /**
-     * Reproduces {@code 9700-CHECK-CHANGE-IN-REC}: the client echoes the version
-     * it last read; if the persisted {@code @Version} of the account differs the
-     * record changed under it and the update is rejected.
-     */
-    private void checkConcurrentModification(Long submittedVersion, Long currentVersion) {
-        if (submittedVersion != null && !submittedVersion.equals(currentVersion)) {
-            throw new ConcurrencyException(CONCURRENCY_MESSAGE, ENTITY_ACCOUNT, null);
         }
     }
 
@@ -264,7 +251,7 @@ public class AccountUpdateService {
         validateDateField(dateOfBirth, "Date of Birth", "dateOfBirth");
         LocalDate dob = LocalDate.parse(dateOfBirth);
         if (!dob.isBefore(LocalDate.now())) {
-            throw new ValidationException("Date of Birth: cannot be in the future", "dateOfBirth");
+            throw new ValidationException("Date of Birth:cannot be in the future ", "dateOfBirth");
         }
     }
 
@@ -508,8 +495,10 @@ public class AccountUpdateService {
 
     /**
      * Builds the success response ({@code COACTUPC} redisplay path): the split
-     * fields are echoed, the money amounts and version are taken from the
-     * persisted account, and the informational message confirms the commit.
+     * fields are echoed and the money amounts are taken from the persisted
+     * account, and the informational message confirms the commit. No version
+     * token is surfaced; concurrency is enforced by the JPA {@code @Version}
+     * lock that fired during {@link #persist(Account, Customer)}.
      */
     private AccountUpdateResponse buildResponse(AccountUpdateRequest request, Account account) {
         return new AccountUpdateResponse(
@@ -536,7 +525,6 @@ public class AccountUpdateService {
                 request.phone2Area(), request.phone2Prefix(), request.phone2Line(),
                 request.eftAccountId(),
                 request.primaryCardHolderIndicator(),
-                account.getVersion(),
                 SUCCESS_MESSAGE,
                 null);
     }

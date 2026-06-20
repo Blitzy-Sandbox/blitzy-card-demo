@@ -2,7 +2,6 @@ package com.carddemo.model.dto;
 
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
@@ -47,15 +46,15 @@ import java.math.BigDecimal;
  * component; the constraints are evaluated by the controller via {@code @Valid}
  * before the service layer is invoked.
  *
- * <p><strong>Optimistic concurrency.</strong> Because the REST API is
- * stateless it cannot retain the CICS before/after record image that
- * {@code COACTUPC} held in the {@code COMMAREA}. Instead the client echoes the
- * {@code version} it last read (from {@link AccountViewResponse} or
- * {@link AccountUpdateResponse}); {@code AccountUpdateService} compares it
- * against the persisted JPA {@code @Version} of the {@code Account} entity and
- * rejects a stale update, reproducing the source's optimistic-locking guard
- * (AAP &sect;0.8.4). The token is therefore {@code @NotNull} — a client may
- * never omit it.
+ * <p><strong>Optimistic concurrency.</strong> The before/after record-image
+ * comparison of {@code COACTUPC} ({@code 9700-CHECK-CHANGE-IN-REC}) is
+ * reproduced entirely server-side by the JPA {@code @Version} optimistic lock on
+ * the {@code Account} entity, which fires when {@code AccountUpdateService}
+ * flushes the dual update (AAP &sect;0.8.4). The stateless REST contract
+ * therefore carries <em>no</em> version token: the client never reads, echoes,
+ * or submits a version, and this request exposes only the editable BMS map
+ * fields — consistent with the {@code COACTUP} symbolic map, which has no
+ * version field.
  *
  * <p>This is a plain, immutable data carrier (a {@code record}) with no
  * persistence concerns: it intentionally references no JPA or entity types and
@@ -147,12 +146,6 @@ import java.math.BigDecimal;
  *                                    {@code PIC X(10)})
  * @param primaryCardHolderIndicator primary card-holder flag ({@code ACSPFLG},
  *                                    {@code PIC X(1)})
- * @param version                    optimistic-locking token mirroring the JPA
- *                                    {@code @Version} of the {@code Account}
- *                                    entity; the client MUST echo the value it
- *                                    last read so the update service can detect
- *                                    a concurrent modification. Required
- *                                    ({@code @NotNull}); has no BMS equivalent.
  */
 public record AccountUpdateRequest(
 
@@ -231,8 +224,5 @@ public record AccountUpdateRequest(
 
         // --- EFT account and primary card-holder flag ---
         @Size(max = 10) String eftAccountId,
-        @Size(max = 1) String primaryCardHolderIndicator,
-
-        // --- Optimistic-lock token (mirrors Account JPA @Version; no BMS field) ---
-        @NotNull Long version) {
+        @Size(max = 1) String primaryCardHolderIndicator) {
 }

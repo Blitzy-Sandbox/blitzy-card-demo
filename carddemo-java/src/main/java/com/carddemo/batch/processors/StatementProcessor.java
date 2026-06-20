@@ -198,9 +198,11 @@ public class StatementProcessor implements ItemProcessor<Account, StatementProce
 
     /**
      * Collects the transactions belonging to the account's cards. The set of card numbers is taken
-     * from the account's cross-references (preserving their order); transactions are matched by card
-     * number and ordered by card number then transaction id to reproduce the original sequential
-     * {@code TRNXFILE} (card + transaction-id key) ordering.
+     * from the account's cross-references (preserving their order); the matching transactions are
+     * fetched with a single {@code IN}-clause query that pushes the card-set filter down to
+     * PostgreSQL — replacing the previous per-account {@code findAll()} full-table scan (an
+     * O(accounts x transactions) N+1 pattern) — and are then ordered by card number then transaction
+     * id to reproduce the original sequential {@code TRNXFILE} (card + transaction-id key) ordering.
      *
      * @param crossReferences the account's cross-reference rows (non-empty)
      * @return the matched transactions in deterministic card-then-id order
@@ -213,13 +215,11 @@ public class StatementProcessor implements ItemProcessor<Account, StatementProce
                 cardNumbers.add(cardNumber);
             }
         }
-        final List<Transaction> matched = new ArrayList<>();
-        for (final Transaction transaction : transactionRepository.findAll()) {
-            final String cardNumber = transaction.getTranCardNum();
-            if (cardNumber != null && cardNumbers.contains(cardNumber)) {
-                matched.add(transaction);
-            }
+        if (cardNumbers.isEmpty()) {
+            return List.of();
         }
+        final List<Transaction> matched =
+                new ArrayList<>(transactionRepository.findByTranCardNumIn(cardNumbers));
         matched.sort(Comparator.comparing(Transaction::getTranCardNum,
                         Comparator.nullsLast(Comparator.naturalOrder()))
                 .thenComparing(Transaction::getTranId,

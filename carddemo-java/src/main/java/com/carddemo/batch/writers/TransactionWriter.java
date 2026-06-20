@@ -276,7 +276,12 @@ public class TransactionWriter implements ItemStreamWriter<TransactionWriter.Pos
      */
     @Override
     public void close() {
+        // Faithful to the source program not creating an empty generation: when staging is disabled
+        // or nothing was buffered, write no S3 object. The per-run buffer is still released here on
+        // every path so it is never retained between step executions (lifecycle contract: the buffer
+        // is allocated in open() and released in close()).
         if (!stageToS3 || stageBuffer == null || stageBuffer.size() == 0) {
+            this.stageBuffer = null;
             return;
         }
         byte[] payload = stageBuffer.toByteArray();

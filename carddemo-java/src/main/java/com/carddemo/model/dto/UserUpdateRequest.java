@@ -26,13 +26,14 @@ import jakarta.validation.constraints.Size;
  * of the original map.</p>
  *
  * <p><strong>Password semantics.</strong> On update the {@code password}
- * component is <em>optional</em> and therefore deliberately not annotated with
- * {@link NotBlank}: a blank or absent value signals "leave the existing
- * password unchanged". When a value <em>is</em> supplied it is plaintext input
- * ({@code PASSWD PIC X(8)}) that {@code UserUpdateService} BCrypt-hashes before
- * persistence (security constraint C-003); it is never echoed back in any
- * response DTO, and instances of this record must never be logged because they
- * may convey a plaintext credential in transit.</p>
+ * component is <em>mandatory</em> ({@link NotBlank}), mirroring the original
+ * program's {@code UPDATE-USER-INFO} edit which rejects a blank {@code PASSWDI}
+ * with the message {@code "Password can NOT be empty..."}. The supplied value is
+ * plaintext input ({@code PASSWD PIC X(8)}) that {@code UserUpdateService}
+ * BCrypt-hashes before persistence (security constraint C-003), re-encoding the
+ * stored hash only when the supplied credential actually differs from it; it is
+ * never echoed back in any response DTO, and instances of this record must never
+ * be logged because they may convey a plaintext credential in transit.</p>
  *
  * <p><strong>User type.</strong> The {@code userType} component maps to the
  * sibling {@link UserType} enumeration ({@code ADMIN} = {@code "A"} /
@@ -58,10 +59,11 @@ import jakarta.validation.constraints.Size;
  *                  {@code COUSR02}); required and at most 20 characters
  * @param lastName  the customer last name ({@code LNAME PIC X(20)} of
  *                  {@code COUSR02}); required and at most 20 characters
- * @param password  the optional new plaintext password ({@code PASSWD PIC X(8)}
- *                  of {@code COUSR02}); at most 8 characters; blank or absent
- *                  keeps the existing password, and any supplied value is
- *                  BCrypt-hashed by the service before persistence
+ * @param password  the new plaintext password ({@code PASSWD PIC X(8)} of
+ *                  {@code COUSR02}); required and at most 8 characters; the
+ *                  supplied value is BCrypt-hashed by the service before
+ *                  persistence and re-encoded only when it differs from the
+ *                  stored hash
  * @param userType  the authorization type ({@code USRTYPE PIC X(1)} of
  *                  {@code COUSR02}) as the {@link UserType} enum
  *                  ({@code ADMIN} / {@code USER})
@@ -70,6 +72,6 @@ public record UserUpdateRequest(
         @NotBlank @Size(max = 8) String userId,
         @NotBlank @Size(max = 20) String firstName,
         @NotBlank @Size(max = 20) String lastName,
-        @Size(max = 8) String password,
+        @NotBlank @Size(max = 8) String password,
         UserType userType) {
 }

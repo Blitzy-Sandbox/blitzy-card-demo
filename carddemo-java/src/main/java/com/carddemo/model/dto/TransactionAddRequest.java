@@ -33,8 +33,15 @@ import java.math.BigDecimal;
  * "not yet confirmed" and drives the two-step confirm prompt, so it is deliberately not
  * {@code @NotBlank}.</p>
  *
- * @param accountId    target account identifier (COBOL {@code ACTIDIN}, X(11)); required, numeric 1-11 digits
- * @param cardNumber   card number (COBOL {@code CARDNIN}, X(16)); required, numeric 1-16 digits
+ * @param accountId    target account identifier (COBOL {@code ACTIDIN}, X(11)); width-bounded only.
+ *                     Per {@code COTRN02C VALIDATE-INPUT-KEY-FIELDS} the account id and card number form an
+ *                     <em>account-or-card</em> key: exactly one is supplied and the service derives the other
+ *                     from the card cross-reference. The numeric edit, the account-or-card presence rule, and
+ *                     the cross-reference lookup are applied by the service in COBOL order (first-error-wins),
+ *                     so this field carries no {@code @NotBlank}/{@code @Pattern} that would pre-empt those
+ *                     exact source messages.
+ * @param cardNumber   card number (COBOL {@code CARDNIN}, X(16)); width-bounded only. See {@code accountId}:
+ *                     the service validates and derives the account-or-card pair in COBOL order.
  * @param typeCode     transaction type code (COBOL {@code TTYPCD}, X(2)); required, numeric
  * @param categoryCode transaction category code (COBOL {@code TCATCD}, X(4)); required, numeric
  * @param source       transaction source (COBOL {@code TRNSRC}, X(10)); required
@@ -50,8 +57,8 @@ import java.math.BigDecimal;
  *                     optional, {@code Y} or {@code N} when present
  */
 public record TransactionAddRequest(
-        @NotBlank @Pattern(regexp = "\\d{1,11}") @Size(max = 11) String accountId,
-        @NotBlank @Pattern(regexp = "\\d{1,16}") @Size(max = 16) String cardNumber,
+        @Size(max = 11) String accountId,
+        @Size(max = 16) String cardNumber,
         @NotBlank @Pattern(regexp = "\\d{1,2}") @Size(max = 2) String typeCode,
         @NotBlank @Pattern(regexp = "\\d{1,4}") @Size(max = 4) String categoryCode,
         @NotBlank @Size(max = 10) String source,

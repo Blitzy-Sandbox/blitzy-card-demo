@@ -13,6 +13,7 @@ import com.carddemo.repository.TransactionRepository;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Optional;
 import org.slf4j.Logger;
@@ -135,7 +136,10 @@ public class BillPaymentService {
 
         // MOVE ACCT-CURR-BAL TO TRAN-AMT: pay in full.
         final BigDecimal paymentAmount = currentBalance;
-        final String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMAT);
+        // GET-CURRENT-TIMESTAMP performs MOVE ZEROS TO WS-TIMESTAMP-TM-MS6, zeroing the 6-digit
+        // microsecond portion; truncating to whole seconds reproduces that exactly (.000000).
+        final String timestamp =
+                LocalDateTime.now().truncatedTo(ChronoUnit.SECONDS).format(TIMESTAMP_FORMAT);
 
         // WRITE-TRANSACT-FILE.
         final Transaction payment = buildPaymentTransaction(tranId, cardNumber, paymentAmount, timestamp);

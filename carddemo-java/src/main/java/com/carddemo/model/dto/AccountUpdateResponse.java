@@ -31,11 +31,12 @@ import java.math.BigDecimal;
  *   <li>{@code infoMessage} and {@code errorMessage} carry the {@code INFOMSG}
  *       and {@code ERRMSG} feedback lines; exactly one is typically populated
  *       per response.</li>
- *   <li>{@code version} echoes the persisted JPA {@code @Version} of the
- *       {@code Account} entity so the client can submit it on the next
- *       {@link AccountUpdateRequest}, enabling stateless optimistic-locking
- *       (AAP &sect;0.8.4); it has no BMS-map equivalent.</li>
  * </ul>
+ *
+ * <p>The response carries <strong>no</strong> optimistic-lock version token:
+ * concurrency control is enforced entirely server-side by the JPA
+ * {@code @Version} lock on the {@code Account} entity (AAP &sect;0.8.4), and the
+ * {@code COACTUP} symbolic map has no version field, so none is surfaced here.
  *
  * <p>Screen chrome (titles, program/transaction name, current date/time) and
  * PF-key legend fields from the BMS map are deliberately excluded, as they are
@@ -69,7 +70,6 @@ public record AccountUpdateResponse(
         String phone2Area, String phone2Prefix, String phone2Line,
         String eftAccountId,
         String primaryCardHolderIndicator,
-        Long version,
         String infoMessage,
         String errorMessage) {
 }

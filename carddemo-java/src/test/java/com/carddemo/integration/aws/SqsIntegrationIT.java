@@ -23,6 +23,7 @@ import io.awspring.cloud.sqs.operations.SqsTemplate;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.CreateQueueRequest;
 import software.amazon.awssdk.services.sqs.model.DeleteQueueRequest;
+import software.amazon.awssdk.services.sqs.model.GetQueueUrlRequest;
 import software.amazon.awssdk.services.sqs.model.Message;
 import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
@@ -74,7 +75,7 @@ class SqsIntegrationIT extends AbstractAwsLocalStackIT {
     }
 
     @Test
-    void monthlyReportSubmissionPublishesToFifoQueue() {
+    void monthlyReportSubmissionPublishesToFifoQueue() throws Exception {
         Map<String, Object> fields = new HashMap<>();
         fields.put("monthly", "Y");
         fields.put("confirm", "Y");
@@ -86,6 +87,24 @@ class SqsIntegrationIT extends AbstractAwsLocalStackIT {
         assertThat(response.errorMessage()).isNull();
         assertThat(response.confirmationMessage()).isNotBlank();
         assertThat(response.confirmationMessage()).contains("Monthly");
+
+        // Gate 5 contract verification: consume from the ACTUAL configured report queue
+        // (carddemo-report-jobs.fifo) that the real service path published to, and assert the
+        // byte-stable {reportType,startDate,endDate} JSON message schema. This exercises the end
+        // -to-end service publish, not a direct send (the direct schema send is kept separately
+        // below as a supplementary contract test against an isolated queue).
+        String reportQueueUrl = await(sqsAsyncClient.getQueueUrl(
+                GetQueueUrlRequest.builder().queueName(REPORT_QUEUE).build())).queueUrl();
+        Message received = receiveOne(reportQueueUrl);
+        assertThat(received).isNotNull();
+
+        JsonNode payload = objectMapper.readTree(received.body());
+        assertThat(payload.has("reportType")).isTrue();
+        assertThat(payload.has("startDate")).isTrue();
+        assertThat(payload.has("endDate")).isTrue();
+        assertThat(payload.get("reportType").asText()).isEqualTo("Monthly");
+        assertThat(payload.get("startDate").asText()).isNotBlank();
+        assertThat(payload.get("endDate").asText()).isNotBlank();
     }
 
     @Test

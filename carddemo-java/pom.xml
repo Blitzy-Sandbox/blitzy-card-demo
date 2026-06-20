@@ -157,6 +157,12 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+        <!-- AOP: enables the AuthenticationMetricsAspect to record carddemo.auth.attempts
+             without expanding the AuthenticationService collaborator contract (Observability). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
 
         <!-- AWS S3: generation-data-group (GDG) and batch file staging. -->
         <dependency>

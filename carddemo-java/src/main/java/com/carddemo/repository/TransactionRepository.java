@@ -1,6 +1,7 @@
 package com.carddemo.repository;
 
 import com.carddemo.model.entity.Transaction;
+import java.util.Collection;
 import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -39,4 +40,16 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
             """)
     List<Transaction> findByProcessingDateRange(@Param("startDate") String startDate,
                                                 @Param("endDate") String endDate);
+
+    /**
+     * Returns the transactions belonging to any of the supplied card numbers. Used by statement
+     * generation ({@code CBSTM03A} per-card transaction gather) to push the card-set filter down to
+     * PostgreSQL as a single indexed {@code IN} query, replacing a per-account full-table scan. The
+     * caller imposes the deterministic card-number-then-transaction-id order that reproduces the
+     * original sequential {@code TRNXFILE} (card + transaction-id key) ordering.
+     *
+     * @param cardNumbers the card numbers to match (the account's cross-referenced cards)
+     * @return the matching transactions (the caller applies the card-then-id ordering)
+     */
+    List<Transaction> findByTranCardNumIn(Collection<String> cardNumbers);
 }

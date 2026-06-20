@@ -5,6 +5,8 @@ import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.List;
 
 import org.assertj.core.api.Assertions;
@@ -64,6 +66,22 @@ public abstract class AbstractBatchIntegrationTest {
 
     /** SNS topic used for notification fan-out. */
     protected static final String NOTIFICATIONS_TOPIC = "carddemo-notifications";
+
+    /**
+     * Deterministic-per-run, test-only HMAC-SHA256 signing secret. It is generated once per JVM from
+     * {@link SecureRandom} (32 random bytes, Base64-encoded to a string of &ge; 32 UTF-8 bytes, which
+     * satisfies the HS256 minimum enforced by {@code SecurityConfig}) and registered below as
+     * {@code carddemo.security.jwt.secret}, so the Spring Security filter chain loads even when the
+     * {@code JWT_SECRET} environment variable is absent. It is never committed and never reaches
+     * production — each test run uses a fresh random value.
+     */
+    private static final String TEST_JWT_SECRET = generateTestJwtSecret();
+
+    private static String generateTestJwtSecret() {
+        byte[] secretBytes = new byte[32];
+        new SecureRandom().nextBytes(secretBytes);
+        return Base64.getEncoder().encodeToString(secretBytes);
+    }
 
     /** Canonical S3 key for the daily transaction input fixture. */
     protected static final String DAILY_TRAN_KEY = "dailytran.txt";
@@ -161,6 +179,9 @@ public abstract class AbstractBatchIntegrationTest {
         registry.add("spring.cloud.aws.credentials.access-key", LOCALSTACK::getAccessKey);
         registry.add("spring.cloud.aws.credentials.secret-key", LOCALSTACK::getSecretKey);
         registry.add("spring.cloud.aws.s3.path-style-access-enabled", () -> "true");
+        // Provide a generated, test-only JWT signing secret so the Spring Security filter chain
+        // loads even when JWT_SECRET is not set in the environment (e.g. local developer runs).
+        registry.add("carddemo.security.jwt.secret", () -> TEST_JWT_SECRET);
 
         try {
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_INPUT);

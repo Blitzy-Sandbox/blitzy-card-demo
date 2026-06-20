@@ -4,7 +4,9 @@ import com.carddemo.exception.DuplicateRecordException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.model.dto.TransactionAddRequest;
 import com.carddemo.model.dto.TransactionAddResponse;
+import com.carddemo.model.entity.CardCrossReference;
 import com.carddemo.model.entity.Transaction;
+import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.shared.DateValidationService;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -28,9 +30,14 @@ import java.math.RoundingMode;
  * {@link DuplicateRecordException}. The whole operation executes within a single write
  * transaction, so any thrown runtime exception rolls the unit of work back.</p>
  *
- * <p>The card number (not the account identifier) is stored on the persisted record; the account
- * identifier is echoed back on the response only. Monetary amounts are handled as
- * {@link BigDecimal} normalized to scale two to preserve exact fixed-point precision.</p>
+ * <p>The submitted key is an <em>account-or-card</em> pair (COBOL {@code VALIDATE-INPUT-KEY-FIELDS}):
+ * the caller supplies the account id <strong>or</strong> the card number, and the service derives the
+ * missing half from the card cross-reference (the account-id branch reads the {@code CXACAIX} alternate
+ * index and takes the cross-referenced card; the card-number branch reads the cross-reference by card and
+ * takes its account id). The account-id branch takes precedence when both are present, exactly as the
+ * source {@code EVALUATE TRUE} orders the two cases. The card number (not the account identifier) is stored
+ * on the persisted record; the derived account identifier is echoed back on the response only. Monetary
+ * amounts are handled as {@link BigDecimal} normalized to scale two to preserve exact fixed-point precision.</p>
  */
 @Service
 public class TransactionAddService {
@@ -51,17 +58,23 @@ public class TransactionAddService {
     private static final int AMOUNT_SCALE = 2;
 
     private final TransactionRepository transactionRepository;
+    private final CardCrossReferenceRepository cardCrossReferenceRepository;
     private final DateValidationService dateValidationService;
 
     /**
      * Creates the service with its collaborating beans.
      *
-     * @param transactionRepository repository providing the maximum-identifier lookup and save
-     * @param dateValidationService strict date-validation collaborator for the origin/process dates
+     * @param transactionRepository        repository providing the maximum-identifier lookup and save
+     * @param cardCrossReferenceRepository  cross-reference repository for the account-or-card key
+     *                                      derivation ({@code CXACAIX} read by account id and the
+     *                                      keyed read by card number)
+     * @param dateValidationService        strict date-validation collaborator for the origin/process dates
      */
     public TransactionAddService(TransactionRepository transactionRepository,
+                                 CardCrossReferenceRepository cardCrossReferenceRepository,
                                  DateValidationService dateValidationService) {
         this.transactionRepository = transactionRepository;
+        this.cardCrossReferenceRepository = cardCrossReferenceRepository;
         this.dateValidationService = dateValidationService;
     }
 
@@ -71,13 +84,15 @@ public class TransactionAddService {
      * @param request the submitted transaction-add input
      * @return the persisted transaction echoed back with its generated identifier and a {@code null}
      *         error message on success
-     * @throws ValidationException      when any field edit fails, when confirmation has not been
-     *                                  given, or when the confirmation value is neither {@code Y} nor
-     *                                  {@code N}
+     * @throws ValidationException      when the account-or-card key is absent or non-numeric, when the
+     *                                  cross-reference lookup finds no matching account/card, when any
+     *                                  field edit fails, when confirmation has not been given, or when
+     *                                  the confirmation value is neither {@code Y} nor {@code N}
      * @throws DuplicateRecordException when the generated identifier collides with an existing record
      */
     @Transactional
     public TransactionAddResponse addTransaction(TransactionAddRequest request) {
+        DerivedKey key = validateKeyFieldsAndDerive(request);
         validateDataFields(request);
         enforceConfirmation(request.confirm());
 
@@ -94,7 +109,7 @@ public class TransactionAddService {
         tx.setTranSource(request.source());
         tx.setTranDesc(request.description());
         tx.setTranAmt(normalizedAmount);
-        tx.setTranCardNum(request.cardNumber());
+        tx.setTranCardNum(key.cardNumber());
         tx.setTranMerchantId(Long.parseLong(request.merchantId()));
         tx.setTranMerchantName(request.merchantName());
         tx.setTranMerchantCity(request.merchantCity());
@@ -111,7 +126,7 @@ public class TransactionAddService {
 
         return new TransactionAddResponse(
                 saved.getTranId(),
-                request.accountId(),
+                key.accountId(),
                 saved.getTranCardNum(),
                 saved.getTranTypeCd(),
                 String.format(CATEGORY_CODE_FORMAT, saved.getTranCatCd()),
@@ -126,6 +141,65 @@ public class TransactionAddService {
                 saved.getTranMerchantZip(),
                 request.confirm(),
                 null);
+    }
+
+    /**
+     * Runs the account-or-card key validation and derivation (COBOL {@code VALIDATE-INPUT-KEY-FIELDS},
+     * {@code READ-CXACAIX-FILE}, {@code READ-CCXREF-FILE}), reproducing the source {@code EVALUATE TRUE}
+     * branch order and first-error-wins messaging.
+     *
+     * <p>When the account id is present it is edited for numerics, then the {@code CXACAIX} alternate
+     * index is read by account id and the cross-referenced card number is taken (account-id branch,
+     * which takes precedence when both halves are supplied). Otherwise, when the card number is present
+     * it is edited for numerics, then the cross-reference is read by card number and its account id is
+     * taken. When neither is present the entry is rejected.</p>
+     *
+     * @param request the submitted transaction-add input
+     * @return the resolved account id (echoed on the response) and card number (persisted on the record)
+     * @throws ValidationException on a non-numeric key, an absent account-or-card key, or a
+     *                             cross-reference lookup that finds no matching record
+     */
+    private DerivedKey validateKeyFieldsAndDerive(TransactionAddRequest request) {
+        if (!isBlank(request.accountId())) {
+            // WHEN ACTIDINI NOT = SPACES AND LOW-VALUES.
+            String accountId = request.accountId().trim();
+            if (!isDigits(accountId)) {
+                throw new ValidationException("Account ID must be Numeric...");
+            }
+            // COMPUTE WS-ACCT-ID-N = NUMVAL(ACTIDINI); PERFORM READ-CXACAIX-FILE (keyed by account id).
+            long acctId = Long.parseLong(accountId);
+            CardCrossReference xref = cardCrossReferenceRepository.findByXrefAcctId(acctId)
+                    .stream()
+                    .findFirst()
+                    .orElseThrow(() -> new ValidationException("Account ID NOT found..."));
+            // MOVE XREF-CARD-NUM TO CARDNINI: derive the card from the cross-reference.
+            return new DerivedKey(Long.toString(acctId), xref.getXrefCardNum());
+        }
+        if (!isBlank(request.cardNumber())) {
+            // WHEN CARDNINI NOT = SPACES AND LOW-VALUES.
+            String cardNumber = request.cardNumber().trim();
+            if (!isDigits(cardNumber)) {
+                throw new ValidationException("Card Number must be Numeric...");
+            }
+            // PERFORM READ-CCXREF-FILE (keyed read by card number).
+            CardCrossReference xref = cardCrossReferenceRepository.findById(cardNumber)
+                    .orElseThrow(() -> new ValidationException("Card Number NOT found..."));
+            // MOVE XREF-ACCT-ID TO ACTIDINI: derive the account from the cross-reference.
+            return new DerivedKey(Long.toString(xref.getXrefAcctId()), cardNumber);
+        }
+        // WHEN OTHER: neither the account id nor the card number was entered.
+        throw new ValidationException("Account or Card Number must be entered...");
+    }
+
+    /**
+     * The account-or-card key resolved by {@link #validateKeyFieldsAndDerive(TransactionAddRequest)}.
+     * The {@code accountId} is echoed on the response; the {@code cardNumber} is persisted on the
+     * transaction record.
+     *
+     * @param accountId  the resolved account identifier (decimal string; leading zeros stripped by NUMVAL)
+     * @param cardNumber the resolved sixteen-digit card number
+     */
+    private record DerivedKey(String accountId, String cardNumber) {
     }
 
     /**
