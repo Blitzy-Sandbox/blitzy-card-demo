@@ -1,0 +1,159 @@
+# =====================================================================================
+# CardDemo (Java) - 'test' Spring Profile (integration test suite)
+# =====================================================================================
+# Activated by the `test` profile (SPRING_PROFILES_ACTIVE=test or @ActiveProfiles("test"))
+# and OVERLAYS application.yml. Spring Boot merges this file over the base at the PROPERTY
+# level, so only the keys that must differ for integration testing are declared here;
+# every other setting (Hibernate dialect, UTC timestamps, HikariCP pool, Flyway
+# baseline/validate, logging, actuator metrics/percentiles, OTLP endpoint, JWT expiry,
+# etc.) is inherited from application.yml.
+#
+# RUN CONTEXT (AAP 0.6.1, 0.7.7): `./mvnw verify -Pintegration`. Integration and e2e tests
+# under src/test/java/com/carddemo/integration/** and e2e/** stand up their own
+# infrastructure with Testcontainers - a PostgreSQL 16 container and a LocalStack
+# container - and wire the runtime endpoints into the Spring Environment via Spring Boot's
+# `@ServiceConnection` (datasource) and JUnit `@DynamicPropertySource` (LocalStack AWS
+# endpoint). The values below are therefore intentionally DYNAMIC/overridable defaults,
+# never fixed host:port literals.
+#
+# This is the "self-provisioning, zero live AWS" contract of the LocalStack Verification
+# rule:
+#   * the PostgreSQL JDBC URL/credentials come from the PostgreSQL Testcontainer;
+#   * the AWS endpoint comes from the LocalStack Testcontainer (a RANDOM mapped host port)
+#     at runtime; this file only declares an empty, env-overridable placeholder for it.
+#
+# SECURITY (AAP 0.8.1 - no hardcoded credentials): datasource credentials resolve from the
+# container (empty placeholders here); AWS credentials are the well-known non-secret
+# LocalStack dummies (test/test); the JWT signing key is an obviously test-only,
+# env-overridable value used solely for deterministic token signing in tests - it is NOT a
+# production secret and is overridden in CI via the JWT_SECRET environment variable.
+#
+# SCOPE: AWS-only (Environment 1 / LocalStack). The second attached emulator env is
+# out of scope and none of its keys appear here (AAP 0.3.2, 0.7.8). No COBOL equivalent -
+# cross-cutting infrastructure config; traceability to the source workload is via 27d6c6f.
+# =====================================================================================
+
+spring:
+  # --- Phase 1: Datasource (provided by the PostgreSQL Testcontainer) ----------------
+  # Do NOT hardcode a JDBC URL. The integration tests supply the real connection at
+  # runtime:
+  #   * @ServiceConnection on a @Container PostgreSQLContainer("postgres:16") registers a
+  #     JdbcConnectionDetails bean that takes precedence over these properties; OR
+  #   * @DynamicPropertySource calls registry.add("spring.datasource.url",
+  #     postgres::getJdbcUrl) and username/password, overriding the empty defaults.
+  # The empty defaults guarantee tests fail fast (rather than silently connecting to a
+  # stray localhost database) if no container wiring is present, and never conflict with
+  # the container-provided values (AAP 0.8.1 - no hardcoded credentials).
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:}
+    username: ${SPRING_DATASOURCE_USERNAME:}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
+
+  # --- Phase 2: JPA / Hibernate (test) -----------------------------------------------
+  # Flyway owns and provisions the schema inside the fresh test container, exactly as in
+  # production; Hibernate only VALIDATES that the JPA entities match the Flyway-created
+  # tables. Never create/update/none - validate preserves the VSAM->PostgreSQL fidelity.
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    # Keep integration-test logs clean: structured SQL logging stays off (handled by
+    # logback-spring.xml when enabled); no raw or formatted SQL echo during tests.
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+
+  # --- Phase 2: Flyway (VSAM->PostgreSQL provisioning, applied to the test container) -
+  # V1__create_schema.sql -> V2__create_indexes.sql -> V3__seed_data.sql run on startup
+  # against the fresh PostgreSQL Testcontainer. This is how the Gate 4 named fixtures (the
+  # 9 ASCII files) are loaded and how the Gate 1 end-to-end boundary test executes against
+  # REAL PostgreSQL rather than mocked I/O.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  # --- Phase 4: Spring Batch (test) --------------------------------------------------
+  batch:
+    jdbc:
+      # Batch metadata tables are provisioned by Flyway (consistent with the base
+      # profile), not Boot-auto-created - keeps the schema authoritative & warning-free.
+      initialize-schema: never
+    job:
+      # Never auto-run jobs on context start. Batch integration/e2e tests launch each job
+      # explicitly and deterministically via JobLauncherTestUtils.launchJob(...).
+      enabled: false
+
+  # --- Phase 3: Spring Cloud AWS -> LocalStack Testcontainer -------------------------
+  # Region and credentials are the LocalStack dummies (non-secret). The ENDPOINT is
+  # resolved DYNAMICALLY from the LocalStack Testcontainer at runtime - the integration
+  # test sets registry.add("spring.cloud.aws.endpoint", () -> localstack.getEndpoint()...)
+  # in a @DynamicPropertySource. The container maps a RANDOM host port, so no port is
+  # hardcoded here. The empty ${AWS_ENDPOINT:} default binds to a null URI (per Spring
+  # Boot Binder behavior), which means "use the standard regional endpoint" - harmless at
+  # context load and always overridden by the dynamic value during a real test run.
+  # AwsConfig.java reads the GLOBAL spring.cloud.aws.endpoint for all three clients; the
+  # per-service s3/sqs/sns endpoint keys are provided for Spring Cloud AWS autoconfig
+  # parity and so a test may target a single service if desired.
+  cloud:
+    aws:
+      region:
+        static: ${AWS_REGION:us-east-1}
+      credentials:
+        access-key: ${AWS_ACCESS_KEY_ID:test}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+      endpoint: ${AWS_ENDPOINT:}
+      s3:
+        endpoint: ${AWS_ENDPOINT:}
+        # Mandatory for LocalStack: path-style addressing avoids virtual-host bucket DNS
+        # (the "bucket-name.<s3-host>" form) that does not resolve against the emulator.
+        path-style-access-enabled: true
+      sqs:
+        endpoint: ${AWS_ENDPOINT:}
+      sns:
+        endpoint: ${AWS_ENDPOINT:}
+
+# --- Phase 5: Observability (test - minimize noise, require no external collector) ----
+# Disable trace sampling by default so tests never need a running Jaeger/OTLP collector:
+# with probability 0.0 no spans are recorded or exported, so the OTLP endpoint is
+# never contacted. CI can still force sampling via TRACING_SAMPLE if a tracing assertion
+# needs it. Actuator exposes health/info/prometheus so observability contract tests
+# (Gate 5) can assert on /actuator/health and /actuator/prometheus without a wide-open
+# endpoint surface.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLE:0.0}
+
+# =====================================================================================
+# Application-scoped (carddemo.*) properties - bound by @ConfigurationProperties in the
+# config/ layer (SecurityConfig, AwsConfig). These are NOT Spring framework keys.
+# =====================================================================================
+carddemo:
+  # --- Phase 6: Security / JWT (TEST-ONLY signing key) -------------------------------
+  # Deterministic, clearly-labeled, non-production HMAC signing key for issuing/verifying
+  # JWTs in tests. It is env-overridable (${JWT_SECRET:...}) so CI can inject its own
+  # value, and it is obviously NOT a real credential (it announces itself as test-only).
+  # The base profile intentionally has NO default secret; supplying a fixed test key here
+  # keeps token signing deterministic across integration runs without weakening posture.
+  security:
+    jwt:
+      secret: ${JWT_SECRET:test-only-jwt-secret-not-for-production}
+
+  # --- Phase 3: AWS resource names (must match localstack-init/init-aws.sh verbatim) -
+  # Self-provisioning tests create these in @BeforeAll and delete them in @AfterAll on
+  # the LocalStack container (LocalStack Verification rule). Names mirror init-aws.sh and
+  # docker-compose.yml exactly: 3 S3 buckets, 1 SQS FIFO queue, 1 SNS topic.
+  aws:
+    s3:
+      bucket-input: ${S3_BUCKET_INPUT:carddemo-batch-input}
+      bucket-output: ${S3_BUCKET_OUTPUT:carddemo-batch-output}
+      bucket-statements: ${S3_BUCKET_STATEMENTS:carddemo-statements}
+    sqs:
+      report-queue: ${SQS_REPORT_QUEUE:carddemo-report-jobs.fifo}
+    sns:
+      notifications-topic: ${SNS_NOTIFICATIONS_TOPIC:carddemo-notifications}
