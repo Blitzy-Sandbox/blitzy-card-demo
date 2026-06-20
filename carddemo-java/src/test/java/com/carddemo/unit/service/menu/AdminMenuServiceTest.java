@@ -47,10 +47,10 @@ class AdminMenuServiceTest {
         @DisplayName("returns the 4 options in exact COADM02Y order, label and target program (no user-type field)")
         void returnsAllOptionsInExactOrder() {
             assertThat(service.getMenuOptions()).containsExactly(
-                    new MenuOption(1, "User List (Security)", "COUSR00C", null),
-                    new MenuOption(2, "User Add (Security)", "COUSR01C", null),
-                    new MenuOption(3, "User Update (Security)", "COUSR02C", null),
-                    new MenuOption(4, "User Delete (Security)", "COUSR03C", null));
+                    new MenuOption(1, "User List (Security)", "GET /api/admin/users", "COUSR00C", null),
+                    new MenuOption(2, "User Add (Security)", "POST /api/admin/users", "COUSR01C", null),
+                    new MenuOption(3, "User Update (Security)", "PUT /api/admin/users/{id}", "COUSR02C", null),
+                    new MenuOption(4, "User Delete (Security)", "DELETE /api/admin/users/{id}", "COUSR03C", null));
         }
 
         @Test
@@ -76,7 +76,7 @@ class AdminMenuServiceTest {
         void adminResolvesEachValidOption(int optionNumber, String expectedName, String expectedProgram) {
             MenuOption resolved = service.resolveOption(String.valueOf(optionNumber), UserType.ADMIN);
             assertThat(resolved.optionNumber()).isEqualTo(optionNumber);
-            assertThat(resolved.optionName()).isEqualTo(expectedName);
+            assertThat(resolved.label()).isEqualTo(expectedName);
             assertThat(resolved.programName()).isEqualTo(expectedProgram);
         }
 

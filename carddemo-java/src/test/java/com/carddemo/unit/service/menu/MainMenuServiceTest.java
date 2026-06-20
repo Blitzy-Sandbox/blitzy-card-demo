@@ -46,16 +46,16 @@ class MainMenuServiceTest {
         @DisplayName("returns the 10 options in exact COMEN02Y order, label, target program and user-type")
         void returnsAllOptionsInExactOrder() {
             assertThat(service.getMenuOptions()).containsExactly(
-                    new MenuOption(1, "Account View", "COACTVWC", UserType.USER),
-                    new MenuOption(2, "Account Update", "COACTUPC", UserType.USER),
-                    new MenuOption(3, "Credit Card List", "COCRDLIC", UserType.USER),
-                    new MenuOption(4, "Credit Card View", "COCRDSLC", UserType.USER),
-                    new MenuOption(5, "Credit Card Update", "COCRDUPC", UserType.USER),
-                    new MenuOption(6, "Transaction List", "COTRN00C", UserType.USER),
-                    new MenuOption(7, "Transaction View", "COTRN01C", UserType.USER),
-                    new MenuOption(8, "Transaction Add", "COTRN02C", UserType.USER),
-                    new MenuOption(9, "Transaction Reports", "CORPT00C", UserType.USER),
-                    new MenuOption(10, "Bill Payment", "COBIL00C", UserType.USER));
+                    new MenuOption(1, "Account View", "GET /api/accounts/{id}", "COACTVWC", UserType.USER),
+                    new MenuOption(2, "Account Update", "PUT /api/accounts/{id}", "COACTUPC", UserType.USER),
+                    new MenuOption(3, "Credit Card List", "GET /api/cards", "COCRDLIC", UserType.USER),
+                    new MenuOption(4, "Credit Card View", "GET /api/cards/{cardNum}", "COCRDSLC", UserType.USER),
+                    new MenuOption(5, "Credit Card Update", "PUT /api/cards/{cardNum}", "COCRDUPC", UserType.USER),
+                    new MenuOption(6, "Transaction List", "GET /api/transactions", "COTRN00C", UserType.USER),
+                    new MenuOption(7, "Transaction View", "GET /api/transactions/{id}", "COTRN01C", UserType.USER),
+                    new MenuOption(8, "Transaction Add", "POST /api/transactions", "COTRN02C", UserType.USER),
+                    new MenuOption(9, "Transaction Reports", "POST /api/reports/submit", "CORPT00C", UserType.USER),
+                    new MenuOption(10, "Bill Payment", "POST /api/billing/pay", "COBIL00C", UserType.USER));
         }
 
         @Test
@@ -87,7 +87,7 @@ class MainMenuServiceTest {
         void routesEachValidOptionToExpectedProgram(int optionNumber, String expectedName, String expectedProgram) {
             MenuOption resolved = service.resolveOption(String.valueOf(optionNumber), UserType.USER);
             assertThat(resolved.optionNumber()).isEqualTo(optionNumber);
-            assertThat(resolved.optionName()).isEqualTo(expectedName);
+            assertThat(resolved.label()).isEqualTo(expectedName);
             assertThat(resolved.programName()).isEqualTo(expectedProgram);
             assertThat(resolved.userType()).isEqualTo(UserType.USER);
         }

@@ -45,11 +45,13 @@
 # -------------------------------------------------------------------------------------
 # LOCALSTACK IMAGE (DECISION_LOG D-016)
 # -------------------------------------------------------------------------------------
-# The default image is the plan's reference, localstack/localstack-pro:latest (AAP 0.7.7),
-# which honours LOCALSTACK_AUTH_TOKEN. Where a PRO token is unavailable, the Community
-# image fully covers S3/SQS/SNS and is the documented fallback - select it without editing
-# this file by exporting:
-#       export LOCALSTACK_IMAGE=localstack/localstack:3.8
+# The default image is the LocalStack Community image localstack/localstack:3.8, which fully
+# covers the S3/SQS/SNS services this stack uses and starts with NO auth token - so a clean
+# checkout runs with zero live-AWS dependency even when no PRO license is available. To use the
+# PRO image (the plan's AAP 0.7.7 reference) when a valid token IS available, override without
+# editing this file by exporting both:
+#       export LOCALSTACK_IMAGE=localstack/localstack-pro:latest
+#       export LOCALSTACK_AUTH_TOKEN=<your-token>
 # The auth token is passed through only when set and is ignored by the Community image.
 #
 # SCOPE: AWS-only (Environment 1 / LocalStack). The second attached emulator environment
@@ -98,7 +100,7 @@ services:
   # The Docker socket is intentionally NOT mounted: S3/SQS/SNS need no container spawning
   # (only LocalStack features such as Lambda/ECS do), which keeps the attack surface small.
   localstack:
-    image: ${LOCALSTACK_IMAGE:-localstack/localstack-pro:latest}
+    image: ${LOCALSTACK_IMAGE:-localstack/localstack:3.8}
     container_name: carddemo-localstack
     environment:
       SERVICES: s3,sqs,sns

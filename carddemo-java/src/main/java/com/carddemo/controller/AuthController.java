@@ -10,6 +10,8 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
+import org.springframework.security.oauth2.jwt.JwsHeader;
 import org.springframework.security.oauth2.jwt.JwtClaimsSet;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
@@ -30,14 +32,14 @@ public class AuthController {
 
     private final AuthenticationService authenticationService;
     private final JwtEncoder jwtEncoder;
-    private final long jwtTtlSeconds;
+    private final long jwtExpirationSeconds;
 
     public AuthController(AuthenticationService authenticationService,
                           JwtEncoder jwtEncoder,
-                          @Value("${carddemo.security.jwt.ttl-seconds:3600}") long jwtTtlSeconds) {
+                          @Value("${carddemo.security.jwt.expiration-seconds:3600}") long jwtExpirationSeconds) {
         this.authenticationService = authenticationService;
         this.jwtEncoder = jwtEncoder;
-        this.jwtTtlSeconds = jwtTtlSeconds;
+        this.jwtExpirationSeconds = jwtExpirationSeconds;
     }
 
     @PostMapping("/signin")
@@ -45,7 +47,7 @@ public class AuthController {
         UserSecurity user = authenticationService.authenticate(request.userId(), request.password());
         UserType userType = user.getSecUsrType();
         Instant issuedAt = Instant.now();
-        Instant expiresAt = issuedAt.plus(jwtTtlSeconds, ChronoUnit.SECONDS);
+        Instant expiresAt = issuedAt.plus(jwtExpirationSeconds, ChronoUnit.SECONDS);
         JwtClaimsSet claims = JwtClaimsSet.builder()
                 .issuer("carddemo")
                 .issuedAt(issuedAt)
@@ -54,7 +56,12 @@ public class AuthController {
                 .claim("userType", userType.name())
                 .claim("roles", List.of("ROLE_" + userType.name()))
                 .build();
-        String token = jwtEncoder.encode(JwtEncoderParameters.from(claims)).getTokenValue();
-        return new SignOnResponse(token, user.getSecUsrId(), userType, null);
+        // The signing key is a symmetric HMAC secret (see SecurityConfig: ImmutableSecret +
+        // HS256 decoder), so the encoder must declare HS256 explicitly. Without an explicit
+        // JwsHeader, NimbusJwtEncoder defaults to RS256 and fails to select a signing key.
+        JwsHeader jwsHeader = JwsHeader.with(MacAlgorithm.HS256).build();
+        String token = jwtEncoder.encode(JwtEncoderParameters.from(jwsHeader, claims)).getTokenValue();
+        return new SignOnResponse(
+                token, user.getSecUsrId(), userType.getCode(), userType.name(), expiresAt.toString());
     }
 }

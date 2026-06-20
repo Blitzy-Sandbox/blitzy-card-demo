@@ -193,8 +193,9 @@ public class TransactionPostingResultWriter
 
     /**
      * Translates a posted {@link PostingResult} into the transaction writer's input. The owning
-     * account id is taken from the result's recomputed account (COBOL {@code XREF-ACCT-ID}); the
-     * transaction writer re-reads and persists the account, balance, and transaction itself.
+     * account id is taken from the result's validated account (COBOL {@code XREF-ACCT-ID}); the
+     * transaction writer re-reads and applies the account, balance, and transaction itself (the
+     * sole apply path, so each accepted transaction is applied exactly once).
      *
      * @param result a posted result ({@code rejected == false})
      * @return the {@link PostedTransaction} for {@link TransactionWriter}
@@ -202,7 +203,7 @@ public class TransactionPostingResultWriter
     private static PostedTransaction toPostedTransaction(PostingResult result) {
         return new PostedTransaction(
                 result.postedTransaction(),
-                result.updatedAccount().getAcctId());
+                result.account().getAcctId());
     }
 
     /**

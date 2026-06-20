@@ -28,11 +28,11 @@ public class MenuController {
 
     @GetMapping("/main")
     public MenuResponse mainMenu() {
-        return new MenuResponse(mainMenuService.getMenuOptions(), null, null);
+        return new MenuResponse("MAIN", mainMenuService.getMenuOptions());
     }
 
     @GetMapping("/admin")
     public MenuResponse adminMenu() {
-        return new MenuResponse(adminMenuService.getMenuOptions(), null, null);
+        return new MenuResponse("ADMIN", adminMenuService.getMenuOptions());
     }
 }

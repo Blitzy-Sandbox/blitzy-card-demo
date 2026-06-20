@@ -8,9 +8,16 @@ import java.util.List;
  * <p>Serialized to JSON and returned by {@code controller.MenuController} for
  * {@code GET /api/menu/*}; produced by {@code service.menu.MainMenuService}
  * (main menu) and {@code service.menu.AdminMenuService} (admin menu). A single
- * response type serves both menus: the producing service supplies the
- * appropriate {@link #options() options} list (up to ten entries for the main
- * menu, four for the admin menu).</p>
+ * response type serves both menus: {@link #menuType()} distinguishes them
+ * ({@code "MAIN"} or {@code "ADMIN"}) and the producing service supplies the
+ * appropriate {@link #options() options} list (ten entries for the main menu,
+ * four for the admin menu).</p>
+ *
+ * <p>Contract: see {@code docs/api-contracts.md} §5.8. In REST the menu is a
+ * read-only catalog of navigable options; routing is performed by the client
+ * calling the corresponding endpoint, so there is no server-side {@code OPTION}
+ * dispatch echoed back and no error field on this success contract (validation
+ * failures surface via the shared {@code GlobalExceptionHandler} envelope).</p>
  *
  * <p>The {@link #options() options} list is a structured replacement for the
  * twelve formatted option-display lines ({@code OPTN001I..OPTN012I},
@@ -27,20 +34,14 @@ import java.util.List;
  * JPA, persistence, or bean-validation concerns and is decoupled from the JPA
  * entity layer.</p>
  *
- * @param options        the available menu options for the rendered menu, in
- *                       display order (main menu: up to ten; admin menu: four);
- *                       a structured replacement for the {@code OPTN001I..OPTN012I}
- *                       ({@code PIC X(40)}) display lines, sourced from
- *                       {@code COMEN02Y}/{@code COADM02Y}
- * @param selectedOption the option selection echoed back to the client
- *                       (mirrors {@code OPTION}, {@code PIC X(2)}); {@code null}
- *                       when no selection applies
- * @param errorMessage   a human-readable error/status message for the screen
- *                       (mirrors {@code ERRMSG}, {@code PIC X(78)}); {@code null}
- *                       or blank when the menu rendered without error
+ * @param menuType the menu discriminator: {@code "MAIN"} for the main menu or
+ *                 {@code "ADMIN"} for the admin menu
+ * @param options  the available menu options for the rendered menu, in display
+ *                 order (main menu: ten; admin menu: four); a structured
+ *                 replacement for the {@code OPTN001I..OPTN012I} ({@code PIC X(40)})
+ *                 display lines, sourced from {@code COMEN02Y}/{@code COADM02Y}
  */
 public record MenuResponse(
-        List<MenuOption> options,
-        String selectedOption,
-        String errorMessage) {
+        String menuType,
+        List<MenuOption> options) {
 }

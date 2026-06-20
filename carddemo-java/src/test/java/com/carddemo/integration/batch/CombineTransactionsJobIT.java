@@ -7,7 +7,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.stream.IntStream;
 
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
@@ -58,12 +57,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CombineTransactionsJobIT extends AbstractBatchIntegrationTest {
 
     /**
-     * Preferred lookup key for the combined output object. The production job's default combined
-     * key is {@code TRANSACT.COMBINED}; this exact-key probe is therefore expected to miss and the
-     * byte-sort check falls back to scanning the output bucket for a {@code COMBIN} key (see
-     * {@link #sortFidelityIsPreserved()}). Kept as a named constant so the intent is explicit.
+     * Exact S3 key of the combined output object. This matches the production job's default
+     * combined key ({@code carddemo.batch.combine.combined-key}, default {@code TRANSACT.COMBINED}),
+     * which the {@code test} profile does not override, so {@link #sortFidelityIsPreserved()}
+     * asserts the object exists at this exact key rather than scanning the bucket for it.
      */
-    private static final String COMBINED_KEY = "COMBINED";
+    private static final String COMBINED_KEY = "TRANSACT.COMBINED";
 
     /** Number of bytes of a transaction id ({@code TRAN-ID PIC X(16)}). */
     private static final int TRAN_ID_LENGTH = 16;
@@ -266,17 +265,11 @@ class CombineTransactionsJobIT extends AbstractBatchIntegrationTest {
         final List<String> sortedIds = seedScrambledInputs();
         launchCombine();
 
-        byte[] combined = getS3ObjectOrNull(BUCKET_OUTPUT, COMBINED_KEY);
-        if (combined == null) {
-            for (final String key : listObjectKeys(BUCKET_OUTPUT)) {
-                if (key.contains("COMBIN") && !"TRANSACT.BKUP".equals(key) && !"SYSTRAN".equals(key)) {
-                    combined = getS3ObjectOrNull(BUCKET_OUTPUT, key);
-                    break;
-                }
-            }
-        }
-        Assumptions.assumeTrue(combined != null && combined.length > 0,
-                "Combined S3 object not located by known key — skipping byte-sort assertion");
+        final byte[] combined = getS3ObjectOrNull(BUCKET_OUTPUT, COMBINED_KEY);
+        assertThat(combined)
+                .as("combine job must write the combined output at the exact configured key %s", COMBINED_KEY)
+                .isNotNull();
+        assertThat(combined).isNotEmpty();
 
         final List<String> records = splitCombinedRecords(combined);
         assertThat(records).isNotEmpty();

@@ -55,7 +55,7 @@ public abstract class AbstractBatchIntegrationTest {
     /** S3 bucket holding the daily transaction input file (matches {@code application-test.yml}). */
     protected static final String BUCKET_INPUT = "carddemo-batch-input";
 
-    /** S3 bucket holding batch output objects: posting staging ({@code SYSTRAN}) and rejects ({@code DALYREJS}). */
+    /** S3 bucket holding batch output objects: posting staging ({@code TRANSACT.BKUP}) and rejects ({@code DALYREJS}). */
     protected static final String BUCKET_OUTPUT = "carddemo-batch-output";
 
     /** S3 bucket holding generated statement objects. */
@@ -187,9 +187,10 @@ public abstract class AbstractBatchIntegrationTest {
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_INPUT);
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_OUTPUT);
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_STATEMENTS);
+            // ContentBasedDeduplication disabled (D-020): producers supply explicit UUID dedup ids.
             LOCALSTACK.execInContainer("awslocal", "sqs", "create-queue",
                     "--queue-name", REPORT_QUEUE,
-                    "--attributes", "FifoQueue=true,ContentBasedDeduplication=true");
+                    "--attributes", "FifoQueue=true,ContentBasedDeduplication=false");
             LOCALSTACK.execInContainer("awslocal", "sns", "create-topic", "--name", NOTIFICATIONS_TOPIC);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to provision LocalStack AWS resources", e);

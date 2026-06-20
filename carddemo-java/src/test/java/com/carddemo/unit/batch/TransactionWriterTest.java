@@ -375,8 +375,11 @@ class TransactionWriterTest {
         ArgumentCaptor<RequestBody> bodyCaptor = ArgumentCaptor.forClass(RequestBody.class);
         verify(s3Client).putObject(reqCaptor.capture(), bodyCaptor.capture());
 
-        // S3 destination contract: GDG base key SYSTRAN in the configured output bucket.
-        assertThat(reqCaptor.getValue().key()).isEqualTo("SYSTRAN");
+        // S3 destination contract: the daily-posting master-transaction backup GDG base key
+        // TRANSACT.BKUP in the configured output bucket. POSTTRAN accepted rows stage to
+        // TRANSACT.BKUP (the master-transaction backup that COMBTRAN reads first), NOT to SYSTRAN,
+        // which is the interest-calculation (INTCALC) output COMBTRAN merges second.
+        assertThat(reqCaptor.getValue().key()).isEqualTo("TRANSACT.BKUP");
         assertThat(reqCaptor.getValue().bucket()).isEqualTo(BUCKET);
 
         byte[] bytes = capturedBytes(bodyCaptor);

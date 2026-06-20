@@ -113,9 +113,13 @@ done
 if aws_cmd sqs get-queue-url --queue-name "${SQS_FIFO_QUEUE}" >/dev/null 2>&1; then
   echo "    [SQS] FIFO queue already exists: ${SQS_FIFO_QUEUE}"
 else
+  # ContentBasedDeduplication is DISABLED (DECISION_LOG D-020): the report producer
+  # (ReportSubmissionService) supplies a per-message random UUID deduplication id, so
+  # legitimately repeated report submissions are each enqueued (preserving the CICS
+  # WRITEQ TD repeat-submission semantics) instead of being collapsed by a body hash.
   aws_cmd sqs create-queue \
     --queue-name "${SQS_FIFO_QUEUE}" \
-    --attributes FifoQueue=true,ContentBasedDeduplication=true >/dev/null
+    --attributes FifoQueue=true,ContentBasedDeduplication=false >/dev/null
   echo "    [SQS] created FIFO queue: ${SQS_FIFO_QUEUE}"
 fi
 

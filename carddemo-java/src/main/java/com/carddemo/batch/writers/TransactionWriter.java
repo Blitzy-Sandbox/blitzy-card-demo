@@ -65,8 +65,10 @@ import com.carddemo.repository.TransactionRepository;
  * {@link ConcurrencyException}.</p>
  *
  * <h2>Optional S3 staging (GDG &rarr; S3)</h2>
- * <p>The mainframe wrote posted transactions to a generation data group ({@code DEFGDGB.jcl} GDG base
- * {@code SYSTRAN}). When {@code carddemo.batch.posting.stage-to-s3} is enabled (the default), each
+ * <p>The mainframe wrote posted transactions to the master-transaction backup generation data group
+ * ({@code DEFGDGB.jcl} GDG base {@code TRANSACT.BKUP}); this is the very input the combine stage
+ * ({@code COMBTRAN.jcl}) reads first, ahead of the separate interest-calculation output ({@code SYSTRAN}).
+ * When {@code carddemo.batch.posting.stage-to-s3} is enabled (the default), each
  * posted transaction is appended &mdash; as a byte-exact 350-byte {@code TRAN-RECORD} with no
  * delimiters &mdash; to a per-run buffer that {@link #close()} flushes to the output bucket under the
  * key {@value #STAGE_OBJECT_KEY}. Because the bucket is versioned, every run produces a new object
@@ -83,8 +85,8 @@ import com.carddemo.repository.TransactionRepository;
 @Component
 public class TransactionWriter implements ItemStreamWriter<TransactionWriter.PostedTransaction> {
 
-    /** S3 object key for the staged posted-transaction file (GDG base {@code SYSTRAN}). */
-    private static final String STAGE_OBJECT_KEY = "SYSTRAN";
+    /** S3 object key for the staged posted-transaction file (GDG base {@code TRANSACT.BKUP}). */
+    private static final String STAGE_OBJECT_KEY = "TRANSACT.BKUP";
 
     /** Fixed length of a {@code TRAN-RECORD} ({@code app/cpy/CVTRA05Y.cpy}, RECLN 350). */
     private static final int TRAN_RECORD_LENGTH = 350;

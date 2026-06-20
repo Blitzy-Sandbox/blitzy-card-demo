@@ -64,7 +64,10 @@ spring:
     show-sql: false
     properties:
       hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
+        # hibernate.dialect is intentionally NOT set: Hibernate 6 auto-detects the PostgreSQL
+        # dialect from the JDBC connection metadata. Specifying it explicitly emits the
+        # HHH90000025 deprecation warning, so it is omitted to keep startup warning-free
+        # (Gate 2) with identical runtime behavior.
         jdbc:
           # Persist/read timestamps in UTC for deterministic financial date handling.
           time_zone: UTC

@@ -103,6 +103,7 @@ public class SecurityConfig {
                 .requestMatchers("/api/auth/signin").permitAll()
                 .requestMatchers("/actuator/health/**", "/actuator/info", "/actuator/prometheus").permitAll()
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                .requestMatchers("/api/menu/admin").hasRole("ADMIN")
                 .requestMatchers("/api/**").authenticated()
                 .anyRequest().authenticated())
             .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())));

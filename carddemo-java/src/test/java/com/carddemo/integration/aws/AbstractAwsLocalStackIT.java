@@ -108,9 +108,10 @@ abstract class AbstractAwsLocalStackIT {
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_INPUT);
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_OUTPUT);
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_STATEMENTS);
+            // ContentBasedDeduplication disabled (D-020): producers supply explicit UUID dedup ids.
             LOCALSTACK.execInContainer("awslocal", "sqs", "create-queue",
                     "--queue-name", REPORT_QUEUE,
-                    "--attributes", "FifoQueue=true,ContentBasedDeduplication=true");
+                    "--attributes", "FifoQueue=true,ContentBasedDeduplication=false");
             LOCALSTACK.execInContainer("awslocal", "sns", "create-topic", "--name", NOTIFICATIONS_TOPIC);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to provision LocalStack AWS resources", e);

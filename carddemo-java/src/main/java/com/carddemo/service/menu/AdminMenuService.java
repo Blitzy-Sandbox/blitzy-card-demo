@@ -26,10 +26,10 @@ public class AdminMenuService {
     private static final String ADMIN_ONLY_MESSAGE = "No access - Admin Only option...";
 
     private static final List<MenuOption> ADMIN_OPTIONS = List.of(
-            new MenuOption(1, "User List (Security)", "COUSR00C", null),
-            new MenuOption(2, "User Add (Security)", "COUSR01C", null),
-            new MenuOption(3, "User Update (Security)", "COUSR02C", null),
-            new MenuOption(4, "User Delete (Security)", "COUSR03C", null));
+            new MenuOption(1, "User List (Security)", "GET /api/admin/users", "COUSR00C", null),
+            new MenuOption(2, "User Add (Security)", "POST /api/admin/users", "COUSR01C", null),
+            new MenuOption(3, "User Update (Security)", "PUT /api/admin/users/{id}", "COUSR02C", null),
+            new MenuOption(4, "User Delete (Security)", "DELETE /api/admin/users/{id}", "COUSR03C", null));
 
     /**
      * Returns the four admin-menu options.

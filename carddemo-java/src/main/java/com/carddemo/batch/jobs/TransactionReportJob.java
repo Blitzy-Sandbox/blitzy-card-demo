@@ -711,11 +711,13 @@ public final class TransactionReportJob {
         /**
          * Flushes the closing totals and uploads the assembled report to S3.
          *
-         * <p>When at least one detail line was written, the final card's account total is emitted
-         * (faithful correctness; {@code CBTRN03C} omits this last account total), followed by the
-         * page total (which rolls into the grand total) and the grand total. When no in-window
-         * records existed, a well-formed empty report (header block + zero page/grand totals) is
-         * emitted. A closing {@code CCDA-THANK-YOU} banner line is always appended.</p>
+         * <p>When at least one detail line was written, the closing page total (which rolls into the
+         * grand total) and the grand total are emitted. The final card's account total is
+         * intentionally <em>not</em> emitted, matching {@code CBTRN03C}, which omits the last
+         * account total at end-of-file; the per-card account totals for every preceding card are
+         * emitted by the control break during processing. When no in-window records existed, a
+         * well-formed empty report (header block + zero page/grand totals) is emitted. A closing
+         * {@code CCDA-THANK-YOU} banner line is always appended.</p>
          *
          * @throws IllegalStateException if the S3 upload fails
          */
@@ -729,7 +731,6 @@ public final class TransactionReportJob {
                 writePageTotals();
                 writeGrandTotals();
             } else {
-                writeAccountTotals();
                 writePageTotals();
                 writeGrandTotals();
             }

@@ -613,7 +613,7 @@ This contract replaces the CICS transient-data-queue (TDQ) `WRITEQ TD` online-to
 | Producer | `ReportSubmissionService` (← `CORPT00C` `WRITEQ TD QUEUE('JOBS')`) |
 | Consumer | `TransactionReportJob` trigger (Spring Batch) |
 | Message group id | `report-jobs` (single group preserves global ordering, mirroring the single TDQ) |
-| Content-based dedup | enabled (dedup id = SHA-256 of the message body) |
+| Content-based dedup | disabled (each message carries a per-message random UUID deduplication id; see DECISION_LOG D-020) |
 | Local endpoint | `http://localhost:4566` (LocalStack); no live AWS dependency |
 
 ### 6.2 Message schema (`ReportJobMessage`)
@@ -643,7 +643,7 @@ The message body is UTF-8 JSON:
 ### 6.3 Ordering, delivery, and parity notes
 
 - **Ordering parity:** messages in the single `report-jobs` group are delivered in submission order, matching the FIFO read order of the TDQ `JOBS`.
-- **Exactly-once intent:** content-based deduplication collapses accidental duplicate submissions within the 5-minute SQS dedup window.
+- **Repeat-submission parity (D-020):** content-based deduplication is *disabled* and each submission carries a per-message random UUID deduplication id, so legitimately repeated report requests are each enqueued and processed — preserving the CICS `WRITEQ TD` behavior where every submission enqueued a distinct job. FIFO *ordering* (not deduplication) is the property retained.
 - **Throughput:** FIFO queues cap at 300 messages/second without batching — far above the interactive report-submission rate, so the cap is not a constraint (D-004).
 - **Failure behavior:** a publish failure returns `502 MESSAGING_ERROR` to the caller (see §5.6), analogous to the COBOL *"Unable to Write TDQ (JOBS)"* error path; no message is enqueued.
 

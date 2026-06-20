@@ -185,7 +185,7 @@ public final class DailyTransactionPostingJob {
             final Chunk<TransactionWriter.PostedTransaction> mapped = new Chunk<>();
             for (final PostingResult result : chunk) {
                 mapped.add(new TransactionWriter.PostedTransaction(
-                        result.postedTransaction(), result.updatedAccount().getAcctId()));
+                        result.postedTransaction(), result.account().getAcctId()));
             }
             this.transactionWriter.write(mapped);
         };

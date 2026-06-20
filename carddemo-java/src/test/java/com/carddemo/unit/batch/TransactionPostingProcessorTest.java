@@ -2,7 +2,6 @@ package com.carddemo.unit.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -14,13 +13,9 @@ import com.carddemo.model.entity.Account;
 import com.carddemo.model.entity.CardCrossReference;
 import com.carddemo.model.entity.DailyTransaction;
 import com.carddemo.model.entity.Transaction;
-import com.carddemo.model.entity.TransactionCategoryBalance;
 import com.carddemo.model.enums.RejectCode;
-import com.carddemo.model.key.TransactionCategoryBalanceId;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
-import com.carddemo.repository.TransactionCategoryBalanceRepository;
-import com.carddemo.service.shared.FileStatusMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -39,8 +34,18 @@ import org.mockito.junit.jupiter.MockitoExtension;
  * posting program {@code app/cbl/CBTRN02C.cbl} (logic only; traceability via source commit
  * {@code 27d6c6f}). This is the most behaviorally critical unit test in the batch tier: it proves
  * byte-exact parity with the COBOL four-stage validation cascade ({@code 1500-VALIDATE-TRAN} and its
- * {@code 1500-A}/{@code 1500-B} sub-paragraphs) and the success posting path
- * ({@code 2000-POST-TRANSACTION}, {@code 2700-UPDATE-TCATBAL}, {@code 2800-UPDATE-ACCOUNT-REC}).
+ * {@code 1500-A}/{@code 1500-B} sub-paragraphs) and the success projection path
+ * ({@code 2000-POST-TRANSACTION}).
+ *
+ * <p>Per decision D-029/D-031, the processor is a <strong>read-only validation-and-projection</strong>
+ * component: it reads the cross-reference and account, validates, and on success projects a posted
+ * {@link Transaction} together with the validated owning {@link Account} (carried downstream for its
+ * id only). It deliberately does <em>not</em> mutate the account balance/cycle totals or upsert the
+ * transaction-category balance &mdash; those updates ({@code 2700-UPDATE-TCATBAL},
+ * {@code 2800-UPDATE-ACCOUNT-REC}) are applied <strong>exactly once</strong> by
+ * {@link com.carddemo.batch.writers.TransactionWriter} within the single chunk transaction. Applying
+ * them in both the processor and the writer would double-count every accepted transaction (the
+ * defect D-029 warned about); keeping the processor read-only removes that path entirely.</p>
  *
  * <p>The binding parity guarantees verified here are:</p>
  * <ul>
@@ -48,26 +53,26 @@ import org.mockito.junit.jupiter.MockitoExtension;
  *       descriptions sourced from the {@link RejectCode} enum (the source of truth), never hardcoded
  *       literals.</li>
  *   <li><strong>Stage short-circuit</strong> &mdash; an absent cross-reference (stage A) stops before
- *       the account lookup; an absent account (stage B) stops before the category-balance lookup.</li>
+ *       the account lookup.</li>
  *   <li><strong>Non-short-circuiting C&rarr;D with 103 precedence</strong> &mdash; the overlimit (C)
  *       and expiration (D) checks run as two consecutive {@code IF} blocks with no {@code GO TO}
  *       between them; when both fail the expiration result (103) overwrites the overlimit result
  *       (102). This is the headline parity assertion.</li>
  *   <li><strong>{@code BigDecimal.compareTo} (never {@code equals})</strong> &mdash; the inclusive
- *       {@code ACCT-CREDIT-LIMIT >= WS-TEMP-BAL} boundary and the credit/debit sign split are proven
- *       with scale-2 decimals.</li>
+ *       {@code ACCT-CREDIT-LIMIT >= WS-TEMP-BAL} boundary is proven with scale-2 decimals.</li>
  *   <li><strong>Deterministic {@code tranProcTs}</strong> &mdash; produced from an injected fixed
  *       {@link Clock} in DB2 format {@code yyyy-MM-dd-HH.mm.ss.SSSSSS}.</li>
  *   <li><strong>80-character reject trailer</strong> &mdash; a 4-digit zero-padded reason code
  *       followed by the 76-character space-padded description.</li>
  *   <li><strong>Read-only processor</strong> &mdash; the processor reads and computes only; it never
- *       calls a repository {@code save}/{@code saveAndFlush}. Persistence is the writer's job.</li>
+ *       calls a repository {@code save}/{@code saveAndFlush}, and never mutates the managed account.
+ *       Persistence and balance/category mutation are the writer's job.</li>
  * </ul>
  *
- * <p>Pure-JVM test: Mockito repositories plus {@link FileStatusMapper}, a real
- * {@link SimpleMeterRegistry}, and a fixed {@link Clock}; no Spring context, Testcontainers, or AWS
- * dependency. The {@link Clock} is supplied through the processor's explicit six-argument constructor
- * to keep the processing timestamp deterministic.</p>
+ * <p>Pure-JVM test: Mockito repositories, a real {@link SimpleMeterRegistry}, and a fixed
+ * {@link Clock}; no Spring context, Testcontainers, or AWS dependency. The {@link Clock} is supplied
+ * through the processor's explicit four-argument constructor to keep the processing timestamp
+ * deterministic.</p>
  */
 @ExtendWith(MockitoExtension.class)
 class TransactionPostingProcessorTest {
@@ -109,13 +114,7 @@ class TransactionPostingProcessorTest {
     @Mock
     private AccountRepository accountRepository;
 
-    @Mock
-    private TransactionCategoryBalanceRepository tcatbalRepository;
-
-    @Mock
-    private FileStatusMapper fileStatusMapper;
-
-    /** Real Micrometer registry so the processed/rejected counters can be asserted directly. */
+    /** Real Micrometer registry so the rejected counter can be asserted directly. */
     private SimpleMeterRegistry registry;
 
     private TransactionPostingProcessor processor;
@@ -124,7 +123,7 @@ class TransactionPostingProcessorTest {
     void setUp() {
         registry = new SimpleMeterRegistry();
         processor = new TransactionPostingProcessor(
-                xrefRepository, accountRepository, tcatbalRepository, fileStatusMapper, registry, FIXED_CLOCK);
+                xrefRepository, accountRepository, registry, FIXED_CLOCK);
     }
 
     /**
@@ -175,7 +174,7 @@ class TransactionPostingProcessorTest {
 
     /**
      * Builds an account (COBOL {@code ACCOUNT-RECORD}, copybook {@code CVACT01Y}) with the balance,
-     * limit, cycle, and expiration fields the validation and posting computations read.
+     * limit, cycle, and expiration fields the validation computations read.
      *
      * @param id          the account id ({@code ACCT-ID})
      * @param currBal     the current balance ({@code ACCT-CURR-BAL})
@@ -205,7 +204,8 @@ class TransactionPostingProcessorTest {
 
     /**
      * Stage A ({@code 1500-A-LOOKUP-XREF}): an absent cross-reference rejects with code 100 and stops
-     * the cascade before the account or category-balance repositories are touched.
+     * the cascade before the account repository is touched. The reject result carries no posted
+     * transaction and no account.
      */
     @Test
     void stageA_missingXref_rejects100_andStops() {
@@ -217,15 +217,14 @@ class TransactionPostingProcessorTest {
         assertThat(r.rejectCode()).isEqualTo(100);
         assertThat(r.rejectReasonDescription().strip()).isEqualTo(RejectCode.INVALID_CARD_NUMBER.getDescription());
         assertThat(r.postedTransaction()).isNull();
-        assertThat(r.updatedAccount()).isNull();
-        assertThat(r.updatedCategoryBalance()).isNull();
+        assertThat(r.account()).isNull();
         assertThat(r.originalDailyTransaction()).isNotNull();
-        verifyNoInteractions(accountRepository, tcatbalRepository);
+        verifyNoInteractions(accountRepository);
     }
 
     /**
      * Stage B ({@code 1500-B-LOOKUP-ACCT}): a present cross-reference but an absent account rejects
-     * with code 101 and stops before the category-balance repository is touched.
+     * with code 101. The reject result carries no posted transaction and no account.
      */
     @Test
     void stageB_missingAccount_rejects101_andStops() {
@@ -238,7 +237,7 @@ class TransactionPostingProcessorTest {
         assertThat(r.rejectCode()).isEqualTo(101);
         assertThat(r.rejectReasonDescription().strip()).isEqualTo(RejectCode.ACCOUNT_NOT_FOUND.getDescription());
         assertThat(r.postedTransaction()).isNull();
-        verifyNoInteractions(tcatbalRepository);
+        assertThat(r.account()).isNull();
     }
 
     // ----------------------------------------------------------------------------------------------
@@ -260,7 +259,6 @@ class TransactionPostingProcessorTest {
         assertThat(r.rejected()).isTrue();
         assertThat(r.rejectCode()).isEqualTo(102);
         assertThat(r.rejectReasonDescription().strip()).isEqualTo(RejectCode.OVERLIMIT_TRANSACTION.getDescription());
-        verifyNoInteractions(tcatbalRepository);
     }
 
     /**
@@ -280,7 +278,6 @@ class TransactionPostingProcessorTest {
         assertThat(r.rejectCode()).isEqualTo(103);
         assertThat(r.rejectReasonDescription().strip())
                 .isEqualTo(RejectCode.TRANSACTION_AFTER_EXPIRATION.getDescription());
-        verifyNoInteractions(tcatbalRepository);
     }
 
     /**
@@ -293,9 +290,6 @@ class TransactionPostingProcessorTest {
         when(xrefRepository.findById(CARD)).thenReturn(Optional.of(xref(CARD, ACCT_ID)));
         when(accountRepository.findById(ACCT_ID))
                 .thenReturn(Optional.of(acct(ACCT_ID, "0.00", "1000.00", "0.00", "0.00", "2099-12-31")));
-        when(tcatbalRepository.findById(new TransactionCategoryBalanceId(ACCT_ID, TYPE_CD, CAT_CD)))
-                .thenReturn(Optional.empty());
-        when(fileStatusMapper.isRecordNotFound(anyString())).thenReturn(true);
 
         final PostingResult r = processor.process(daily(CARD, TYPE_CD, CAT_CD, "1000.00", ORIG_TS));
 
@@ -330,7 +324,6 @@ class TransactionPostingProcessorTest {
                 .isEqualTo(103);
         assertThat(r.rejectReasonDescription().strip())
                 .isEqualTo(RejectCode.TRANSACTION_AFTER_EXPIRATION.getDescription());
-        verifyNoInteractions(tcatbalRepository);
     }
 
     // ----------------------------------------------------------------------------------------------
@@ -358,30 +351,27 @@ class TransactionPostingProcessorTest {
     }
 
     // ----------------------------------------------------------------------------------------------
-    // Success path: 1:1 mapping, deterministic timestamp, TCATBAL find-or-create, account sign split.
+    // Success projection: 1:1 field mapping, deterministic timestamp, validated account carried.
     // ----------------------------------------------------------------------------------------------
 
     /**
-     * All stages pass and the category balance is absent ({@code 2700-A-CREATE-TCATBAL-REC}): the
-     * processor builds a posted transaction by 1:1 field copy and initializes the new category
-     * balance to the transaction amount. Also proves the composite key is built from
-     * {@code (acctId, typeCd, catCd)}.
+     * All stages pass ({@code 2000-POST-TRANSACTION}): the processor projects a posted transaction by
+     * 1:1 field copy and carries the validated owning account (used downstream for its id only). The
+     * balance/category mutations are intentionally <em>not</em> performed here &mdash; they are the
+     * writer's responsibility, applied exactly once within the chunk transaction.
      */
     @Test
-    void allStagesPass_tcatbalAbsent_createsBalanceEqualToAmount() {
+    void allStagesPass_projectsPostedTransaction_andCarriesAccount() {
         when(xrefRepository.findById(CARD)).thenReturn(Optional.of(xref(CARD, ACCT_ID)));
         when(accountRepository.findById(ACCT_ID))
                 .thenReturn(Optional.of(acct(ACCT_ID, "0.00", "1000.00", "0.00", "0.00", "2099-12-31")));
-        when(tcatbalRepository.findById(new TransactionCategoryBalanceId(ACCT_ID, TYPE_CD, CAT_CD)))
-                .thenReturn(Optional.empty());
-        when(fileStatusMapper.isRecordNotFound(anyString())).thenReturn(true);
 
         final PostingResult r = processor.process(daily(CARD, TYPE_CD, CAT_CD, "150.00", ORIG_TS));
 
         assertThat(r.rejected()).isFalse();
         assertThat(r.postedTransaction()).isNotNull();
-        assertThat(r.updatedAccount()).isNotNull();
-        assertThat(r.updatedCategoryBalance()).isNotNull();
+        assertThat(r.account()).isNotNull();
+        assertThat(r.account().getAcctId()).isEqualTo(ACCT_ID);
 
         final Transaction t = r.postedTransaction();
         assertThat(t.getTranId()).isEqualTo("DT00000000000001");
@@ -392,32 +382,25 @@ class TransactionPostingProcessorTest {
         assertThat(t.getTranOrigTs()).isEqualTo(ORIG_TS);
         assertThat(t.getTranMerchantId()).isEqualTo(123456789L);
         assertThat(t.getTranAmt()).isEqualByComparingTo(new BigDecimal("150.00"));
-
-        assertThat(r.updatedCategoryBalance().getTranCatBal()).isEqualByComparingTo(new BigDecimal("150.00"));
-
-        verify(tcatbalRepository).findById(new TransactionCategoryBalanceId(ACCT_ID, TYPE_CD, CAT_CD));
     }
 
     /**
-     * All stages pass and the category balance is present ({@code 2700-B-UPDATE-TCATBAL-REC}): the
-     * transaction amount is added to the existing balance ({@code 40.00 + 150.00 = 190.00}).
+     * The success projection carries the validated account <strong>unmutated</strong>: the processor
+     * must not apply the balance or cycle-total updates (those are the writer's job, applied exactly
+     * once). The account read in stage B retains its original current balance and zeroed cycle totals.
      */
     @Test
-    void allStagesPass_tcatbalPresent_addsAmountToExistingBalance() {
+    void allStagesPass_accountIsNotMutatedByProcessor() {
         when(xrefRepository.findById(CARD)).thenReturn(Optional.of(xref(CARD, ACCT_ID)));
         when(accountRepository.findById(ACCT_ID))
-                .thenReturn(Optional.of(acct(ACCT_ID, "0.00", "1000.00", "0.00", "0.00", "2099-12-31")));
-        final TransactionCategoryBalance existing = new TransactionCategoryBalance();
-        existing.setId(new TransactionCategoryBalanceId(ACCT_ID, TYPE_CD, CAT_CD));
-        existing.setTranCatBal(new BigDecimal("40.00"));
-        when(tcatbalRepository.findById(new TransactionCategoryBalanceId(ACCT_ID, TYPE_CD, CAT_CD)))
-                .thenReturn(Optional.of(existing));
-        when(fileStatusMapper.isRecordNotFound(anyString())).thenReturn(false);
+                .thenReturn(Optional.of(acct(ACCT_ID, "100.00", "1000.00", "0.00", "0.00", "2099-12-31")));
 
         final PostingResult r = processor.process(daily(CARD, TYPE_CD, CAT_CD, "150.00", ORIG_TS));
 
         assertThat(r.rejected()).isFalse();
-        assertThat(r.updatedCategoryBalance().getTranCatBal()).isEqualByComparingTo(new BigDecimal("190.00"));
+        assertThat(r.account().getAcctCurrBal()).isEqualByComparingTo("100.00");
+        assertThat(r.account().getAcctCurrCycCredit()).isEqualByComparingTo("0.00");
+        assertThat(r.account().getAcctCurrCycDebit()).isEqualByComparingTo("0.00");
     }
 
     /**
@@ -429,55 +412,10 @@ class TransactionPostingProcessorTest {
         when(xrefRepository.findById(CARD)).thenReturn(Optional.of(xref(CARD, ACCT_ID)));
         when(accountRepository.findById(ACCT_ID))
                 .thenReturn(Optional.of(acct(ACCT_ID, "0.00", "1000.00", "0.00", "0.00", "2099-12-31")));
-        when(tcatbalRepository.findById(new TransactionCategoryBalanceId(ACCT_ID, TYPE_CD, CAT_CD)))
-                .thenReturn(Optional.empty());
-        when(fileStatusMapper.isRecordNotFound(anyString())).thenReturn(true);
 
         final PostingResult r = processor.process(daily(CARD, TYPE_CD, CAT_CD, "150.00", ORIG_TS));
 
         assertThat(r.postedTransaction().getTranProcTs()).isEqualTo(EXPECTED_PROC_TS);
-    }
-
-    /**
-     * Account update for a non-negative amount ({@code 2800-UPDATE-ACCOUNT-REC}): the amount is added
-     * to both the current balance and the current-cycle credit, leaving the debit unchanged.
-     */
-    @Test
-    void accountUpdate_positiveAmount_addsToCurrBalAndCycCredit() {
-        when(xrefRepository.findById(CARD)).thenReturn(Optional.of(xref(CARD, ACCT_ID)));
-        when(accountRepository.findById(ACCT_ID))
-                .thenReturn(Optional.of(acct(ACCT_ID, "100.00", "1000.00", "0.00", "0.00", "2099-12-31")));
-        when(tcatbalRepository.findById(new TransactionCategoryBalanceId(ACCT_ID, TYPE_CD, CAT_CD)))
-                .thenReturn(Optional.empty());
-        when(fileStatusMapper.isRecordNotFound(anyString())).thenReturn(true);
-
-        final PostingResult r = processor.process(daily(CARD, TYPE_CD, CAT_CD, "150.00", ORIG_TS));
-
-        assertThat(r.updatedAccount().getAcctCurrBal()).isEqualByComparingTo("250.00");
-        assertThat(r.updatedAccount().getAcctCurrCycCredit()).isEqualByComparingTo("150.00");
-        assertThat(r.updatedAccount().getAcctCurrCycDebit()).isEqualByComparingTo("0.00");
-    }
-
-    /**
-     * Account update for a negative amount ({@code 2800-UPDATE-ACCOUNT-REC}): the amount is added to
-     * the current balance and to the current-cycle debit (leaving the credit unchanged), proving the
-     * {@code compareTo(BigDecimal.ZERO) >= 0} credit/debit sign split. The projected balance stays
-     * within the limit so stage C passes.
-     */
-    @Test
-    void accountUpdate_negativeAmount_addsToCurrBalAndCycDebit() {
-        when(xrefRepository.findById(CARD)).thenReturn(Optional.of(xref(CARD, ACCT_ID)));
-        when(accountRepository.findById(ACCT_ID))
-                .thenReturn(Optional.of(acct(ACCT_ID, "100.00", "1000.00", "0.00", "0.00", "2099-12-31")));
-        when(tcatbalRepository.findById(new TransactionCategoryBalanceId(ACCT_ID, TYPE_CD, CAT_CD)))
-                .thenReturn(Optional.empty());
-        when(fileStatusMapper.isRecordNotFound(anyString())).thenReturn(true);
-
-        final PostingResult r = processor.process(daily(CARD, TYPE_CD, CAT_CD, "-30.00", ORIG_TS));
-
-        assertThat(r.updatedAccount().getAcctCurrBal()).isEqualByComparingTo("70.00");
-        assertThat(r.updatedAccount().getAcctCurrCycDebit()).isEqualByComparingTo("-30.00");
-        assertThat(r.updatedAccount().getAcctCurrCycCredit()).isEqualByComparingTo("0.00");
     }
 
     // ----------------------------------------------------------------------------------------------
@@ -487,41 +425,38 @@ class TransactionPostingProcessorTest {
     /**
      * The processor reads and computes only; it never persists. Persistence of the posted
      * transaction, account, and category balance is the writer's responsibility within the chunk
-     * transaction.
+     * transaction. This is the core guarantee that prevents the double-apply defect (D-029): with the
+     * processor never saving and never mutating the managed account, the writer is the sole apply
+     * path.
      */
     @Test
     void processor_neverPersists() {
         when(xrefRepository.findById(CARD)).thenReturn(Optional.of(xref(CARD, ACCT_ID)));
         when(accountRepository.findById(ACCT_ID))
                 .thenReturn(Optional.of(acct(ACCT_ID, "0.00", "1000.00", "0.00", "0.00", "2099-12-31")));
-        when(tcatbalRepository.findById(new TransactionCategoryBalanceId(ACCT_ID, TYPE_CD, CAT_CD)))
-                .thenReturn(Optional.empty());
-        when(fileStatusMapper.isRecordNotFound(anyString())).thenReturn(true);
 
         final PostingResult r = processor.process(daily(CARD, TYPE_CD, CAT_CD, "150.00", ORIG_TS));
 
         assertThat(r.rejected()).isFalse();
         verify(accountRepository, never()).save(any());
         verify(accountRepository, never()).saveAndFlush(any());
-        verify(tcatbalRepository, never()).save(any());
         verify(xrefRepository, never()).save(any());
     }
 
     /**
-     * A posted record increments the tag-free {@code carddemo.batch.records.processed} counter once.
+     * A posted record does <strong>not</strong> increment the {@code carddemo.batch.records.processed}
+     * counter: that counter is owned exclusively by the transaction writer (the single apply path),
+     * so the processor registers no processed meter at all.
      */
     @Test
-    void incrementsProcessed_onPostedResult() {
+    void processor_doesNotIncrementProcessedCounter() {
         when(xrefRepository.findById(CARD)).thenReturn(Optional.of(xref(CARD, ACCT_ID)));
         when(accountRepository.findById(ACCT_ID))
                 .thenReturn(Optional.of(acct(ACCT_ID, "0.00", "1000.00", "0.00", "0.00", "2099-12-31")));
-        when(tcatbalRepository.findById(new TransactionCategoryBalanceId(ACCT_ID, TYPE_CD, CAT_CD)))
-                .thenReturn(Optional.empty());
-        when(fileStatusMapper.isRecordNotFound(anyString())).thenReturn(true);
 
         processor.process(daily(CARD, TYPE_CD, CAT_CD, "150.00", ORIG_TS));
 
-        assertThat(registry.get("carddemo.batch.records.processed").counter().count()).isEqualTo(1.0);
+        assertThat(registry.find("carddemo.batch.records.processed").counter()).isNull();
     }
 
     /**

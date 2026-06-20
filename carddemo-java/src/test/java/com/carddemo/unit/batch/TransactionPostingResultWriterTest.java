@@ -26,12 +26,12 @@ import com.carddemo.model.entity.Account;
 import com.carddemo.model.entity.CardCrossReference;
 import com.carddemo.model.entity.DailyTransaction;
 import com.carddemo.model.entity.Transaction;
+import com.carddemo.model.entity.TransactionCategoryBalance;
 import com.carddemo.observability.MetricsConfig;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.repository.TransactionRepository;
-import com.carddemo.service.shared.FileStatusMapper;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
@@ -62,16 +62,17 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
  * matching writer, the bridge that lets a single posting step drive both outputs.</p>
  *
  * <p>The test runs entirely on the JVM with no Spring context: repositories and the {@code S3Client}
- * are Mockito mocks; the {@link FileStatusMapper}, {@link MetricsConfig}, and
- * {@link SimpleMeterRegistry} are real. Each daily transaction is driven through
- * {@code processor.process(...)} to obtain a real {@code PostingResult}, then through the adapter's
- * {@code open -> write -> close} {@code ItemStreamWriter} lifecycle; the emitted S3 objects are
- * captured and asserted byte-for-byte.</p>
+ * are Mockito mocks; the {@link MetricsConfig} and {@link SimpleMeterRegistry} are real. Each daily
+ * transaction is driven through {@code processor.process(...)} to obtain a real {@code PostingResult},
+ * then through the adapter's {@code open -> write -> close} {@code ItemStreamWriter} lifecycle; the
+ * emitted S3 objects are captured and asserted byte-for-byte.</p>
  *
  * <p>Verified behaviours:</p>
  * <ul>
- *   <li>a posted result is routed to {@link TransactionWriter} (transaction persisted, account
- *       updated, posted record staged to S3 under key {@code SYSTRAN});</li>
+ *   <li>a posted result is routed to {@link TransactionWriter} (transaction persisted, account and
+ *       category balance updated <strong>exactly once</strong> &mdash; the writer is the sole apply
+ *       path, the processor projects only &mdash; and the posted record staged to S3 under the
+ *       master-transaction backup key {@code TRANSACT.BKUP});</li>
  *   <li>a rejected result is routed to {@link RejectWriter} (430-byte record under key
  *       {@code DALYREJS}) with the 350-byte daily-transaction image reconstructed from the entity
  *       fields, including the trailing-sign zoned-decimal overpunch amount;</li>
@@ -118,7 +119,6 @@ class TransactionPostingResultWriterTest {
     private SimpleMeterRegistry registry;
 
     /** Real shared services (no Spring context required). */
-    private FileStatusMapper fileStatusMapper;
     private MetricsConfig metricsConfig;
 
     /** System under test plus its two real delegates, reassembled before each test. */
@@ -130,15 +130,17 @@ class TransactionPostingResultWriterTest {
     @BeforeEach
     void setUp() {
         registry = new SimpleMeterRegistry();
-        fileStatusMapper = new FileStatusMapper();
         metricsConfig = new MetricsConfig();
 
         // Fixed clock so the posted transaction's processing timestamp is deterministic.
         Clock clock = Clock.fixed(Instant.parse("2024-01-16T02:00:00Z"), ZoneOffset.UTC);
 
+        // The processor is read-only validation+projection (4-arg ctor): it does NOT receive the
+        // category-balance repository or file-status mapper, because it never mutates the account or
+        // upserts the category balance. Those updates are applied exactly once by the TransactionWriter
+        // (the sole apply path), which is why this slice test can assert exactly-once below.
         processor = new TransactionPostingProcessor(
-                cardCrossReferenceRepository, accountRepository, categoryBalanceRepository,
-                fileStatusMapper, registry, clock);
+                cardCrossReferenceRepository, accountRepository, registry, clock);
         transactionWriter = new TransactionWriter(
                 transactionRepository, categoryBalanceRepository, accountRepository,
                 s3Client, registry, metricsConfig, BUCKET, true);
@@ -211,7 +213,7 @@ class TransactionPostingResultWriterTest {
     }
 
     @Test
-    @DisplayName("posted result routes to TransactionWriter: transaction persisted, account updated, staged to SYSTRAN")
+    @DisplayName("posted result routes to TransactionWriter: persisted, account+category applied exactly once, staged to TRANSACT.BKUP")
     void postedResultRoutesToTransactionWriter() throws IOException {
         Account account = postableAccount();
         when(cardCrossReferenceRepository.findById(CARD)).thenReturn(Optional.of(xref()));
@@ -227,14 +229,37 @@ class TransactionPostingResultWriterTest {
 
         // Routed to the DB + S3 writer: the posted transaction is persisted and the account updated.
         verify(transactionRepository).save(argThat(t -> "TXN0000000000001".equals(t.getTranId())));
-        verify(accountRepository).saveAndFlush(any(Account.class));
 
-        // Posted record staged to S3 under SYSTRAN; no reject object written.
+        // ----------------------------------------------------------------------------------------
+        // HEADLINE PARITY (resolves D-029 double-apply): the accepted transaction's account balance
+        // and category balance must change EXACTLY ONCE across the whole processor->writer chunk.
+        // The processor is read-only projection (it carries the account untouched); the writer is the
+        // sole apply path. If the processor also mutated the managed account/category (the prior
+        // defect), the +100.00 amount would be applied twice (currBal 700.00, cycCredit 200.00,
+        // category 200.00). Asserting the single-apply values proves the fix.
+        // ----------------------------------------------------------------------------------------
+        ArgumentCaptor<Account> acctCaptor = ArgumentCaptor.forClass(Account.class);
+        verify(accountRepository).saveAndFlush(acctCaptor.capture());
+        Account saved = acctCaptor.getValue();
+        // 500.00 + 100.00 applied once = 600.00 (NOT 700.00).
+        assertThat(saved.getAcctCurrBal()).isEqualByComparingTo("600.00");
+        // Positive amount adds to the cycle credit once = 100.00 (NOT 200.00); debit untouched.
+        assertThat(saved.getAcctCurrCycCredit()).isEqualByComparingTo("100.00");
+        assertThat(saved.getAcctCurrCycDebit()).isEqualByComparingTo("0.00");
+
+        ArgumentCaptor<TransactionCategoryBalance> balCaptor =
+                ArgumentCaptor.forClass(TransactionCategoryBalance.class);
+        verify(categoryBalanceRepository).save(balCaptor.capture());
+        // New category balance initialized to the amount applied once = 100.00 (NOT 200.00).
+        assertThat(balCaptor.getValue().getTranCatBal()).isEqualByComparingTo("100.00");
+
+        // Posted record staged to S3 under the master-transaction backup key TRANSACT.BKUP (the
+        // input COMBTRAN reads first), NOT SYSTRAN (the INTCALC interest output); no reject object.
         ArgumentCaptor<PutObjectRequest> reqCaptor = ArgumentCaptor.forClass(PutObjectRequest.class);
         ArgumentCaptor<RequestBody> bodyCaptor = ArgumentCaptor.forClass(RequestBody.class);
         verify(s3Client).putObject(reqCaptor.capture(), bodyCaptor.capture());
-        assertThat(reqCaptor.getValue().key()).isEqualTo("SYSTRAN");
-        byte[] staged = bodyForKey(reqCaptor.getAllValues(), bodyCaptor.getAllValues(), "SYSTRAN");
+        assertThat(reqCaptor.getValue().key()).isEqualTo("TRANSACT.BKUP");
+        byte[] staged = bodyForKey(reqCaptor.getAllValues(), bodyCaptor.getAllValues(), "TRANSACT.BKUP");
         // One posted TRAN-RECORD (CVTRA05Y, 350 bytes), no delimiter.
         assertThat(staged).hasSize(350);
     }
@@ -306,7 +331,7 @@ class TransactionPostingResultWriterTest {
     }
 
     @Test
-    @DisplayName("mixed chunk fans posted->SYSTRAN and rejected->DALYREJS in a single write")
+    @DisplayName("mixed chunk fans posted->TRANSACT.BKUP and rejected->DALYREJS in a single write")
     void mixedChunkRoutesEachResultToItsDelegate() throws IOException {
         Account account = postableAccount();
         // Posted card resolves; the reject card (a different number) does not.
@@ -330,14 +355,14 @@ class TransactionPostingResultWriterTest {
         adapter.write(Chunk.of(posted, rejected));
         adapter.close();
 
-        // Posted persisted; both S3 objects (SYSTRAN posted, DALYREJS reject) written.
+        // Posted persisted; both S3 objects (TRANSACT.BKUP posted, DALYREJS reject) written.
         verify(transactionRepository).save(argThat(t -> "TXN0000000000001".equals(t.getTranId())));
 
         ArgumentCaptor<PutObjectRequest> reqCaptor = ArgumentCaptor.forClass(PutObjectRequest.class);
         ArgumentCaptor<RequestBody> bodyCaptor = ArgumentCaptor.forClass(RequestBody.class);
         verify(s3Client, org.mockito.Mockito.times(2)).putObject(reqCaptor.capture(), bodyCaptor.capture());
 
-        byte[] staged = bodyForKey(reqCaptor.getAllValues(), bodyCaptor.getAllValues(), "SYSTRAN");
+        byte[] staged = bodyForKey(reqCaptor.getAllValues(), bodyCaptor.getAllValues(), "TRANSACT.BKUP");
         byte[] rejects = bodyForKey(reqCaptor.getAllValues(), bodyCaptor.getAllValues(), "DALYREJS");
         assertThat(staged).hasSize(350);
         assertThat(rejects).hasSize(REJECT_RECORD_LENGTH);
