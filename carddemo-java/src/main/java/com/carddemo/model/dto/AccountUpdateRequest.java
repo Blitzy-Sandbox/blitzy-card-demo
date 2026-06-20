@@ -2,6 +2,7 @@ package com.carddemo.model.dto;
 
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
@@ -48,13 +49,17 @@ import java.math.BigDecimal;
  *
  * <p><strong>Optimistic concurrency.</strong> The before/after record-image
  * comparison of {@code COACTUPC} ({@code 9700-CHECK-CHANGE-IN-REC}) is
- * reproduced entirely server-side by the JPA {@code @Version} optimistic lock on
- * the {@code Account} entity, which fires when {@code AccountUpdateService}
- * flushes the dual update (AAP &sect;0.8.4). The stateless REST contract
- * therefore carries <em>no</em> version token: the client never reads, echoes,
- * or submits a version, and this request exposes only the editable BMS map
- * fields — consistent with the {@code COACTUP} symbolic map, which has no
- * version field.
+ * reproduced by the JPA {@code @Version} optimistic lock on the {@code Account}
+ * entity (AAP &sect;0.8.4). Because the stateless REST contract cannot hold the
+ * CICS before-image that {@code COACTUPC} kept in the {@code COMMAREA} across the
+ * pseudo-conversation, the client echoes the {@code version} it last read (from
+ * {@link AccountViewResponse}); {@code AccountUpdateService} compares it against
+ * the persisted {@code @Version} of the {@code Account} and rejects a stale
+ * update — exactly as the source compared its before-image before rewriting. A
+ * keyed read of the account always returns the current persisted version, so
+ * this echoed token (not the post-flush lock alone) is what detects a
+ * cross-request lost update. The token has no {@code COACTUP} BMS-map equivalent
+ * and is {@code @NotNull}: a client may never omit it.
  *
  * <p>This is a plain, immutable data carrier (a {@code record}) with no
  * persistence concerns: it intentionally references no JPA or entity types and
@@ -146,6 +151,14 @@ import java.math.BigDecimal;
  *                                    {@code PIC X(10)})
  * @param primaryCardHolderIndicator primary card-holder flag ({@code ACSPFLG},
  *                                    {@code PIC X(1)})
+ * @param version                    optimistic-locking token mirroring the JPA
+ *                                    {@code @Version} of the {@code Account}
+ *                                    entity; the client MUST echo the value it
+ *                                    last read (from {@link AccountViewResponse})
+ *                                    so {@code AccountUpdateService} can detect a
+ *                                    concurrent modification (AAP &sect;0.8.4).
+ *                                    Required ({@code @NotNull}); has no BMS
+ *                                    equivalent
  */
 public record AccountUpdateRequest(
 
@@ -224,5 +237,8 @@ public record AccountUpdateRequest(
 
         // --- EFT account and primary card-holder flag ---
         @Size(max = 10) String eftAccountId,
-        @Size(max = 1) String primaryCardHolderIndicator) {
+        @Size(max = 1) String primaryCardHolderIndicator,
+
+        // --- Optimistic-lock token (mirrors Account JPA @Version; no BMS field) ---
+        @NotNull Long version) {
 }

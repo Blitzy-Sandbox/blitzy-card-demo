@@ -46,8 +46,14 @@ class CardUpdateServiceTest {
         return new CardUpdateService(cardRepository, dateValidationService);
     }
 
+    /**
+     * Builds a well-formed update request whose echoed {@code version} (2L) matches the persisted
+     * {@code @Version} of {@link #existing(String, String, String)} (also 2L), so the optimistic-lock
+     * before/after compare passes and the test exercises the edit/commit path. Tests that need a
+     * stale-version conflict construct the request inline with a non-matching version.
+     */
     private static CardUpdateRequest req(String name, String status, String month, String year) {
-        return new CardUpdateRequest(ACCT, CARD, name, status, month, year, "", 0L);
+        return new CardUpdateRequest(ACCT, CARD, name, status, month, year, "", 2L);
     }
 
     private static Card existing(String name, String status, String expiry) {
@@ -191,5 +197,24 @@ class CardUpdateServiceTest {
         assertThatThrownBy(() -> service().updateCard(req("NEW NAME", "N", "8", "2030")))
                 .isInstanceOf(ConcurrencyException.class)
                 .hasMessage("Record changed by some one else. Please review");
+    }
+
+    @Test
+    void staleVersionThrowsConcurrencyExceptionWithoutSaving() {
+        // F-2 parity (COCRDUPC 9300-CHECK-CHANGE-IN-REC): the persisted card is at version 2, but the
+        // client echoes a stale version 0 (the value it had read before another actor's update). The
+        // before/after image compare must reject the stale write (-> ConcurrencyException -> HTTP 409)
+        // and the record must NEVER be written, preventing the lost update the QA report observed.
+        Card entity = existing("OLD NAME", "Y", "2020-05-10");
+        when(cardRepository.findById(CARD)).thenReturn(Optional.of(entity));
+        when(dateValidationService.validateDate(anyString(), anyString())).thenReturn(acceptable());
+
+        CardUpdateRequest staleRequest =
+                new CardUpdateRequest(ACCT, CARD, "NEW NAME", "N", "8", "2030", "", 0L);
+
+        assertThatThrownBy(() -> service().updateCard(staleRequest))
+                .isInstanceOf(ConcurrencyException.class)
+                .hasMessage("Record changed by some one else. Please review");
+        verify(cardRepository, never()).saveAndFlush(any());
     }
 }

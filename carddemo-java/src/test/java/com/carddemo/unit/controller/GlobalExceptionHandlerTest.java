@@ -13,14 +13,18 @@ import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.TransactionPostingException;
 import com.carddemo.exception.ValidationException;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.BindingResult;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.slf4j.MDC;
@@ -175,5 +179,62 @@ class GlobalExceptionHandlerTest {
         assertThat(body.getStatus()).isEqualTo(400);
         assertThat(body.getTitle()).isEqualTo("Invalid Request Parameter");
         assertThat(body.getDetail()).contains("acctId");
+    }
+
+    @Test
+    @DisplayName("HttpMessageNotReadableException -> 400 RFC7807 sanitized; parser internals not leaked")
+    void notReadableIsSanitized() {
+        // A message embedding Jackson parser internals (type, JSON-path, source offset) that must
+        // never reach the client per CWE-209.
+        HttpMessageNotReadableException ex = mock(HttpMessageNotReadableException.class);
+        when(ex.getMessage()).thenReturn(
+                "JSON parse error: Unexpected character; nested exception is "
+                        + "com.fasterxml.jackson.core.JsonParseException at [Source: (String)\"{bad\"; "
+                        + "line: 1, column: 5]");
+
+        ResponseEntity<ProblemDetail> resp = handler.handleNotReadable(ex);
+        ProblemDetail body = resp.getBody();
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(body.getStatus()).isEqualTo(400);
+        assertThat(body.getTitle()).isEqualTo("Malformed Request");
+        assertThat(body.getDetail()).isEqualTo("Request body is missing or malformed");
+        // The parser internals must not be echoed back to the client.
+        assertThat(body.getDetail()).doesNotContain("jackson");
+        assertThat(body.getDetail()).doesNotContain("JsonParseException");
+        assertThat(body.getDetail()).doesNotContain("Source");
+        assertThat(body.getDetail()).doesNotContain("column");
+    }
+
+    @Test
+    @DisplayName("HttpRequestMethodNotSupportedException -> 405 RFC7807 with the Allow header set")
+    void methodNotSupportedSetsAllowHeader() {
+        HttpRequestMethodNotSupportedException ex = mock(HttpRequestMethodNotSupportedException.class);
+        when(ex.getMethod()).thenReturn("POST");
+        when(ex.getSupportedHttpMethods())
+                .thenReturn(Set.of(HttpMethod.GET, HttpMethod.PUT, HttpMethod.DELETE));
+
+        ResponseEntity<ProblemDetail> resp = handler.handleMethodNotSupported(ex);
+        ProblemDetail body = resp.getBody();
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
+        assertThat(body.getStatus()).isEqualTo(405);
+        assertThat(body.getTitle()).isEqualTo("Method Not Allowed");
+        assertThat(body.getDetail()).contains("POST");
+        // The mandatory Allow header advertises the permitted methods (RFC 7231 6.5.5).
+        assertThat(resp.getHeaders().getAllow())
+                .containsExactlyInAnyOrder(HttpMethod.GET, HttpMethod.PUT, HttpMethod.DELETE);
+    }
+
+    @Test
+    @DisplayName("HttpRequestMethodNotSupportedException with no supported methods -> 405, no Allow header")
+    void methodNotSupportedWithoutSupportedMethods() {
+        HttpRequestMethodNotSupportedException ex = mock(HttpRequestMethodNotSupportedException.class);
+        when(ex.getMethod()).thenReturn("PATCH");
+        when(ex.getSupportedHttpMethods()).thenReturn(null);
+
+        ResponseEntity<ProblemDetail> resp = handler.handleMethodNotSupported(ex);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
+        assertThat(resp.getBody().getDetail()).contains("PATCH");
+        // No supported methods are known, so the Allow header is left unset (empty).
+        assertThat(resp.getHeaders().getAllow()).isEmpty();
     }
 }

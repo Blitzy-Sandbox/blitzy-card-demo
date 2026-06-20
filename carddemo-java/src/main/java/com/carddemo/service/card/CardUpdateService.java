@@ -110,11 +110,25 @@ public class CardUpdateService {
             throw new ValidationException(MSG_EXPIRY_DATE);
         }
 
+        // Optimistic-lock guard reproducing COCRDUPC 9300-CHECK-CHANGE-IN-REC (the before/after
+        // record-image comparison, AAP 0.8.4). The stateless REST client cannot hold the CICS
+        // before-image in the COMMAREA, so it echoes the @Version it last read (from
+        // CardDetailResponse/CardUpdateResponse); if the persisted version has advanced since that
+        // read, another actor changed the card between read and write, so the stale update is
+        // rejected rather than silently overwriting the record (lost-update prevention). A keyed
+        // findById always returns the current persisted version, so this explicit compare — not the
+        // post-flush OptimisticLockException alone — is what detects a cross-request stale write.
+        if (!entity.getVersion().equals(request.version())) {
+            throw new ConcurrencyException(MSG_CONCURRENCY);
+        }
+
         entity.setCardEmbossedName(newName);
         entity.setCardActiveStatus(newStatus);
         entity.setCardExpiraionDate(newExpiry);
 
         try {
+            // saveAndFlush still forces the JPA @Version check at flush time, catching a concurrent
+            // modification that commits inside this transaction's read-to-write window.
             cardRepository.saveAndFlush(entity);
         } catch (OptimisticLockException | ObjectOptimisticLockingFailureException ex) {
             throw new ConcurrencyException(MSG_CONCURRENCY, ENTITY_NAME, ex);

@@ -102,6 +102,12 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/api/auth/signin").permitAll()
                 .requestMatchers("/actuator/health/**", "/actuator/info", "/actuator/prometheus").permitAll()
+                // Permit the Spring MVC error dispatcher so a framework error re-dispatch (e.g. a body
+                // that fails to parse before any handler runs) renders its ProblemDetail body instead of
+                // being intercepted by the resource-server filter and returned as an empty 401. The
+                // GlobalExceptionHandler resolves such exceptions directly; this matcher guards the
+                // residual re-dispatch path so the error contract stays consistent on public endpoints.
+                .requestMatchers("/error").permitAll()
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .requestMatchers("/api/menu/admin").hasRole("ADMIN")
                 .requestMatchers("/api/**").authenticated()

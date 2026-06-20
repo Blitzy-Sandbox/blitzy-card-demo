@@ -33,10 +33,12 @@ import java.math.BigDecimal;
  *       per response.</li>
  * </ul>
  *
- * <p>The response carries <strong>no</strong> optimistic-lock version token:
- * concurrency control is enforced entirely server-side by the JPA
- * {@code @Version} lock on the {@code Account} entity (AAP &sect;0.8.4), and the
- * {@code COACTUP} symbolic map has no version field, so none is surfaced here.
+ * <p>The response carries the optimistic-lock {@code version} token: the
+ * persisted JPA {@code @Version} of the updated {@code Account}, surfaced so the
+ * client can immediately submit a follow-up {@link AccountUpdateRequest} without
+ * re-reading the record (AAP &sect;0.8.4). It mirrors the {@code version}
+ * surfaced by {@link AccountViewResponse} and {@link CardUpdateResponse}; the
+ * {@code COACTUP} symbolic map has no equivalent field.
  *
  * <p>Screen chrome (titles, program/transaction name, current date/time) and
  * PF-key legend fields from the BMS map are deliberately excluded, as they are
@@ -70,6 +72,7 @@ public record AccountUpdateResponse(
         String phone2Area, String phone2Prefix, String phone2Line,
         String eftAccountId,
         String primaryCardHolderIndicator,
+        Long version,
         String infoMessage,
         String errorMessage) {
 }

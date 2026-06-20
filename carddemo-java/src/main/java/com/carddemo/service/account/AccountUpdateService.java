@@ -143,6 +143,16 @@ public class AccountUpdateService {
 
         validateInputs(request, openDate, expiryDate, reissueDate, dateOfBirth);
 
+        // Optimistic-lock guard reproducing COACTUPC 9700-CHECK-CHANGE-IN-REC (the before/after
+        // record-image comparison, AAP 0.8.4). The stateless REST client echoes the @Version it last
+        // read from the account view; a keyed read always returns the current persisted version, so
+        // if it has advanced since that read the record was changed concurrently and this dual
+        // update is rejected rather than silently overwriting it (lost-update prevention). The
+        // edit cascade runs first so a field error still surfaces as a 400 ahead of this 409.
+        if (!account.getVersion().equals(request.version())) {
+            throw new ConcurrencyException(CONCURRENCY_MESSAGE);
+        }
+
         applyAccountChanges(account, request, openDate, expiryDate, reissueDate);
         applyCustomerChanges(customer, request, dateOfBirth);
 
@@ -495,10 +505,13 @@ public class AccountUpdateService {
 
     /**
      * Builds the success response ({@code COACTUPC} redisplay path): the split
-     * fields are echoed and the money amounts are taken from the persisted
-     * account, and the informational message confirms the commit. No version
-     * token is surfaced; concurrency is enforced by the JPA {@code @Version}
-     * lock that fired during {@link #persist(Account, Customer)}.
+     * fields are echoed, the money amounts are taken from the persisted account,
+     * the informational message confirms the commit, and the post-commit JPA
+     * {@code @Version} is surfaced so the client can submit a follow-up update
+     * without re-reading. Concurrency is enforced both by the explicit
+     * before/after version compare in {@link #updateAccount(AccountUpdateRequest)}
+     * and by the JPA {@code @Version} lock that fires during
+     * {@link #persist(Account, Customer)}.
      */
     private AccountUpdateResponse buildResponse(AccountUpdateRequest request, Account account) {
         return new AccountUpdateResponse(
@@ -525,6 +538,7 @@ public class AccountUpdateService {
                 request.phone2Area(), request.phone2Prefix(), request.phone2Line(),
                 request.eftAccountId(),
                 request.primaryCardHolderIndicator(),
+                account.getVersion(),
                 SUCCESS_MESSAGE,
                 null);
     }
