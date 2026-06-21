@@ -16,7 +16,6 @@ import com.carddemo.model.entity.Transaction;
 import com.carddemo.model.enums.RejectCode;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -69,10 +68,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
  *       Persistence and balance/category mutation are the writer's job.</li>
  * </ul>
  *
- * <p>Pure-JVM test: Mockito repositories, a real {@link SimpleMeterRegistry}, and a fixed
- * {@link Clock}; no Spring context, Testcontainers, or AWS dependency. The {@link Clock} is supplied
- * through the processor's explicit four-argument constructor to keep the processing timestamp
- * deterministic.</p>
+ * <p>Pure-JVM test: Mockito repositories and a fixed {@link Clock}; no Spring context,
+ * Testcontainers, or AWS dependency. The processor records no metrics itself (the batch counters are
+ * owned by the writers), so no meter registry is needed here. The {@link Clock} is supplied through
+ * the processor's explicit constructor to keep the processing timestamp deterministic.</p>
  */
 @ExtendWith(MockitoExtension.class)
 class TransactionPostingProcessorTest {
@@ -114,16 +113,12 @@ class TransactionPostingProcessorTest {
     @Mock
     private AccountRepository accountRepository;
 
-    /** Real Micrometer registry so the rejected counter can be asserted directly. */
-    private SimpleMeterRegistry registry;
-
     private TransactionPostingProcessor processor;
 
     @BeforeEach
     void setUp() {
-        registry = new SimpleMeterRegistry();
         processor = new TransactionPostingProcessor(
-                xrefRepository, accountRepository, registry, FIXED_CLOCK);
+                xrefRepository, accountRepository, FIXED_CLOCK);
     }
 
     /**
@@ -441,37 +436,5 @@ class TransactionPostingProcessorTest {
         verify(accountRepository, never()).save(any());
         verify(accountRepository, never()).saveAndFlush(any());
         verify(xrefRepository, never()).save(any());
-    }
-
-    /**
-     * A posted record does <strong>not</strong> increment the {@code carddemo.batch.records.processed}
-     * counter: that counter is owned exclusively by the transaction writer (the single apply path),
-     * so the processor registers no processed meter at all.
-     */
-    @Test
-    void processor_doesNotIncrementProcessedCounter() {
-        when(xrefRepository.findById(CARD)).thenReturn(Optional.of(xref(CARD, ACCT_ID)));
-        when(accountRepository.findById(ACCT_ID))
-                .thenReturn(Optional.of(acct(ACCT_ID, "0.00", "1000.00", "0.00", "0.00", "2099-12-31")));
-
-        processor.process(daily(CARD, TYPE_CD, CAT_CD, "150.00", ORIG_TS));
-
-        assertThat(registry.find("carddemo.batch.records.processed").counter()).isNull();
-    }
-
-    /**
-     * A reject increments the {@code carddemo.batch.records.rejected} counter once, tagged by the
-     * {@link RejectCode} enum name (the production tag value is {@code code.name()}, not the numeric
-     * code). Driven through the stage-A (100) reject.
-     */
-    @Test
-    void incrementsRejected_onStageAReject_taggedByRejectCodeName() {
-        when(xrefRepository.findById(MISSING_CARD)).thenReturn(Optional.empty());
-
-        processor.process(daily(MISSING_CARD, TYPE_CD, CAT_CD, "10.00", ORIG_TS));
-
-        assertThat(registry.get("carddemo.batch.records.rejected")
-                .tag("reason", RejectCode.INVALID_CARD_NUMBER.name())
-                .counter().count()).isEqualTo(1.0);
     }
 }

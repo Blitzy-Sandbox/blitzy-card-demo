@@ -34,22 +34,30 @@ import org.springframework.context.annotation.Configuration;
  *       {@code carddemo_auth_attempts_total} (counter, tagged
  *       {@value #TAG_OUTCOME}) &mdash; authentication attempts, by outcome.</li>
  *   <li>{@value #TRANSACTION_AMOUNT_TOTAL} &rarr;
- *       {@code carddemo_transaction_amount_total} (<strong>gauge</strong>,
- *       untagged) &mdash; signed running total of posted transaction amounts.
- *       It is a gauge rather than a counter because CardDemo transaction amounts
- *       can be negative (credits and returns); a Micrometer counter rejects
- *       negative increments, whereas a gauge backed by a
+ *       {@code carddemo_transaction_amount} (<strong>gauge</strong>, untagged)
+ *       &mdash; signed running total of posted transaction amounts. Note the
+ *       exposed Prometheus series has <strong>no</strong> {@code _total} suffix:
+ *       although the meter id ends in {@code .total} (the canonical
+ *       Observability metric name mandated by the AAP), Micrometer reserves the
+ *       {@code _total} suffix for counters and strips it from gauges, so this
+ *       gauge is exposed as {@code carddemo_transaction_amount}. It is a gauge
+ *       rather than a counter because CardDemo transaction amounts can be
+ *       negative (credits and returns); a Micrometer counter rejects negative
+ *       increments, whereas a gauge backed by a
  *       {@link java.util.concurrent.atomic.DoubleAdder} accumulates signed
- *       amounts safely and never throws on valid business data.</li>
+ *       amounts safely and never throws on valid business data. Dashboards and
+ *       Prometheus queries must therefore reference
+ *       {@code carddemo_transaction_amount} (without {@code _total}).</li>
  * </ul>
  *
  * <h2>Consumer contract</h2>
  * <p>Sibling services record the three counters through the static helper
- * methods, which delegate to Micrometer's idempotent {@code registry.counter(...)}
- * lookups (the same time series is returned on repeated calls for a given name
- * and tag set), and record the signed transaction-amount total through the
- * {@code addTransactionAmount(BigDecimal)} instance method on the injected
- * {@code MetricsConfig} bean:</p>
+ * methods, which delegate to Micrometer's idempotent meter registration (the
+ * same time series is returned on repeated calls for a given name and tag set;
+ * the rejected-records counter is registered through a {@code Counter.builder}
+ * so it always carries a HELP description), and record the signed
+ * transaction-amount total through the {@code addTransactionAmount(BigDecimal)}
+ * instance method on the injected {@code MetricsConfig} bean:</p>
  * <ul>
  *   <li>Batch processing &mdash; per successfully posted record call
  *       {@code MetricsConfig.recordsProcessed(registry).increment()}; per
@@ -171,12 +179,22 @@ public final class MetricsConfig {
     /**
      * Returns the batch-records-rejected counter tagged with the given reason.
      *
+     * <p>The counter is registered through a {@link Counter#builder} so that it
+     * always carries a HELP description in the Prometheus exposition, regardless
+     * of which batch job (posting or reporting) first touches the metric in a
+     * given JVM. Registration is idempotent: repeated calls for the same name
+     * and {@value #TAG_REASON} tag value return the same time series.</p>
+     *
      * @param registry the meter registry to resolve the counter against
-     * @param reason   low-cardinality reject reason (for example a reject code)
+     * @param reason   low-cardinality reject reason (for example a numeric
+     *                 reject code such as {@code "102"})
      * @return the {@link #BATCH_RECORDS_REJECTED} counter for {@code reason}
      */
     public static Counter recordsRejected(final MeterRegistry registry, final String reason) {
-        return registry.counter(BATCH_RECORDS_REJECTED, TAG_REASON, reason);
+        return Counter.builder(BATCH_RECORDS_REJECTED)
+                .tag(TAG_REASON, reason)
+                .description("Total batch records rejected, tagged by reject reason")
+                .register(registry);
     }
 
     /**

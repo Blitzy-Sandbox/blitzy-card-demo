@@ -129,9 +129,10 @@ services:
 
   # --- Jaeger - distributed tracing backend (OTLP ingest) -----------------------------
   # COLLECTOR_OTLP_ENABLED exposes the OTLP receivers on 4317 (gRPC) and 4318 (HTTP); the
-  # application's Micrometer Tracing + OpenTelemetry bridge exports spans there (the app
-  # uses OTLP_ENDPOINT=http://jaeger:4317 in-network, or http://localhost:4317 on the
-  # host). Trace UI on 16686. (Observability rule / AAP 0.7.1, DECISION_LOG D-015.)
+  # application's Micrometer Tracing + OpenTelemetry bridge exports spans over OTLP/HTTP, so it
+  # targets the 4318 receiver at the /v1/traces path (the app uses
+  # OTLP_ENDPOINT=http://jaeger:4318/v1/traces in-network, or http://localhost:4318/v1/traces on
+  # the host). Trace UI on 16686. (Observability rule / AAP 0.7.1, DECISION_LOG D-015.)
   jaeger:
     image: jaegertracing/all-in-one:1.62.0
     container_name: carddemo-jaeger
@@ -216,8 +217,10 @@ services:
       AWS_REGION: ${AWS_REGION:-us-east-1}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
-      # Distributed tracing -> the in-network Jaeger OTLP gRPC receiver.
-      OTLP_ENDPOINT: http://jaeger:4317
+      # Distributed tracing -> the in-network Jaeger OTLP/HTTP receiver (port 4318, /v1/traces path).
+      # Spring Boot's OTLP tracing exporter speaks OTLP over HTTP, so it must target 4318 (HTTP),
+      # not 4317 (gRPC); the path is required by the OTLP/HTTP spec.
+      OTLP_ENDPOINT: http://jaeger:4318/v1/traces
       # JWT signing key. SecurityConfig fails fast below the HS256 minimum (32 bytes), so a
       # >=32-byte, obviously-fake local-dev-only default is provided; override via JWT_SECRET.
       JWT_SECRET: ${JWT_SECRET:-local-dev-only-change-me-jwt-hs256-signing-secret-0123456789}

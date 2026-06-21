@@ -178,9 +178,11 @@ management:
       probability: ${TRACING_SAMPLE:1.0}
   otlp:
     tracing:
-      # Micrometer Tracing + OpenTelemetry bridge -> OTLP exporter -> Jaeger. Profiles
-      # point this at the in-compose Jaeger collector (http://jaeger:4317).
-      endpoint: ${OTLP_ENDPOINT:http://localhost:4317}
+      # Micrometer Tracing + OpenTelemetry bridge -> OTLP/HTTP exporter -> Jaeger. Spring Boot's
+      # OTLP tracing exporter speaks OTLP over HTTP (protobuf), so it must target Jaeger's OTLP/HTTP
+      # receiver on port 4318 at the /v1/traces path (NOT the 4317 gRPC port). Profiles point this at
+      # the in-compose Jaeger collector (http://jaeger:4318/v1/traces).
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
 
 # --- Phase 9: Logging hand-off -------------------------------------------------------
 # Only log LEVELS live here. The structured JSON encoder and appenders are defined in

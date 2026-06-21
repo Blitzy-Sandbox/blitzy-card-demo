@@ -20,14 +20,14 @@
 #       docker compose up -d
 #       ./mvnw spring-boot:run -Dspring.profiles.active=local
 # The app then reaches the published compose ports on localhost
-# (PostgreSQL 5432 | LocalStack 4566 | Jaeger OTLP 4317), and the AWS endpoint resolves to
+# (PostgreSQL 5432 | LocalStack 4566 | Jaeger OTLP/HTTP 4318), and the AWS endpoint resolves to
 # http://localhost:4566 exactly as the onboarding/validation docs describe. The S3 bucket /
 # SQS FIFO / SNS topic names still match ../../../localstack-init/init-aws.sh verbatim.
 #
 # IN-NETWORK (compose) RUN: when the app itself runs as the `app` service inside the compose
 # network, ../../../docker-compose.yml injects the service-name overrides for every endpoint
 # (SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/carddemo, AWS_ENDPOINT=
-# http://localstack:4566, OTLP_ENDPOINT=http://jaeger:4317), so the in-network run needs no
+# http://localstack:4566, OTLP_ENDPOINT=http://jaeger:4318/v1/traces), so the in-network run needs no
 # change to this file either:
 #       docker compose --profile app up -d --build
 # Every endpoint here is `${ENV_VAR:localhost-default}`, so the compose env-var injection (or
@@ -113,10 +113,10 @@ spring:
 # The base profile guards health details (when_authorized); for local development show
 # full component details so an unauthenticated `curl /actuator/health` returns the
 # composite db / postgres / s3 / sqs indicators. Trace sampling is full (1.0) locally. The
-# OTLP exporter's host-run default targets the Jaeger collector on localhost:4317 (the
-# published compose port); the docker-compose `app` service injects
-# OTLP_ENDPOINT=http://jaeger:4317 for the in-network run (see header). Actuator endpoint exposure
-# (health,info,prometheus) and metric percentiles are inherited from application.yml.
+# OTLP/HTTP exporter's host-run default targets the Jaeger OTLP/HTTP receiver on
+# localhost:4318 at the /v1/traces path (the published compose port); the docker-compose `app`
+# service injects OTLP_ENDPOINT=http://jaeger:4318/v1/traces for the in-network run (see header).
+# Actuator endpoint exposure (health,info,prometheus) and metric percentiles are inherited from application.yml.
 management:
   endpoint:
     health:
@@ -126,7 +126,7 @@ management:
       probability: ${TRACING_SAMPLE:1.0}
   otlp:
     tracing:
-      endpoint: ${OTLP_ENDPOINT:http://localhost:4317}
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
 
 # --- Logging (local) -----------------------------------------------------------------
 # Richer application-package output during local development; the root logger stays at INFO

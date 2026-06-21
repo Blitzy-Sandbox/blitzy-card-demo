@@ -5,6 +5,7 @@ import com.carddemo.model.entity.Transaction;
 import com.carddemo.model.entity.TransactionCategory;
 import com.carddemo.model.entity.TransactionType;
 import com.carddemo.model.key.TransactionCategoryId;
+import com.carddemo.observability.MetricsConfig;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionTypeRepository;
@@ -61,15 +62,6 @@ import org.springframework.stereotype.Component;
 @StepScope
 public class TransactionReportProcessor
         implements ItemProcessor<Transaction, TransactionReportProcessor.ReportLine> {
-
-    /** Counter (untagged) incremented once per enriched report line emitted. */
-    private static final String METRIC_RECORDS_PROCESSED = "carddemo.batch.records.processed";
-
-    /** Counter incremented once per record this stage drops, tagged by {@link #TAG_REASON}. */
-    private static final String METRIC_RECORDS_REJECTED = "carddemo.batch.records.rejected";
-
-    /** Tag key carrying the low-cardinality reason a record was dropped. */
-    private static final String TAG_REASON = "reason";
 
     /** Reason tag value: the processing date is outside the inclusive report window. */
     private static final String REASON_OUT_OF_WINDOW = "out_of_window";
@@ -163,13 +155,11 @@ public class TransactionReportProcessor
 
         final String processingDate = extractProcessingDate(tx.getTranProcTs());
         if (processingDate == null) {
-            meterRegistry.counter(METRIC_RECORDS_REJECTED, TAG_REASON, REASON_MALFORMED_DATE)
-                    .increment();
+            MetricsConfig.recordsRejected(meterRegistry, REASON_MALFORMED_DATE).increment();
             return null;
         }
         if (!isWithinWindow(processingDate)) {
-            meterRegistry.counter(METRIC_RECORDS_REJECTED, TAG_REASON, REASON_OUT_OF_WINDOW)
-                    .increment();
+            MetricsConfig.recordsRejected(meterRegistry, REASON_OUT_OF_WINDOW).increment();
             return null;
         }
 
@@ -202,7 +192,7 @@ public class TransactionReportProcessor
                 tx.getTranSource(),
                 tx.getTranAmt());
 
-        meterRegistry.counter(METRIC_RECORDS_PROCESSED).increment();
+        MetricsConfig.recordsProcessed(meterRegistry).increment();
         return reportLine;
     }
 

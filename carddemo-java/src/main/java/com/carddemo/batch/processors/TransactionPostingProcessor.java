@@ -8,7 +8,6 @@ import com.carddemo.model.entity.Transaction;
 import com.carddemo.model.enums.RejectCode;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
-import io.micrometer.core.instrument.MeterRegistry;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -67,22 +66,19 @@ import org.springframework.stereotype.Component;
  * writer's account-update step, not here, because the account was already read in stage B.</p>
  *
  * <h2>Observability</h2>
- * <p>The {@code carddemo.batch.records.rejected} counter, tagged by {@code reason}, is incremented
- * once per reject by this processor. The {@code carddemo.batch.records.processed} counter is owned
- * by the transaction writer (the terminal persist step) so that each posted record is counted
- * exactly once.</p>
+ * <p>This processor records no metrics itself. Both batch counters are owned by the writers (the
+ * terminal persist/emit step), so each record is counted exactly once under one consistent
+ * convention: the reject writer increments {@code carddemo.batch.records.rejected} once per emitted
+ * reject record, tagged by {@code reason} with the numeric reject code, and the transaction writer
+ * increments {@code carddemo.batch.records.processed} once per posted record. Incrementing in the
+ * writer (rather than here) avoids double-counting a reject that is both classified here and emitted
+ * downstream.</p>
  */
 @Component
 public class TransactionPostingProcessor
         implements ItemProcessor<DailyTransaction, TransactionPostingProcessor.PostingResult> {
 
     private static final Logger LOG = LoggerFactory.getLogger(TransactionPostingProcessor.class);
-
-    /** Counter incremented once per rejected daily-transaction record (tagged by reason). */
-    private static final String METRIC_RECORDS_REJECTED = "carddemo.batch.records.rejected";
-
-    /** Tag key carrying the reject reason on the {@code carddemo.batch.records.rejected} counter. */
-    private static final String TAG_REASON = "reason";
 
     /** Number of leading characters of the origination timestamp that hold the {@code yyyy-MM-dd} date. */
     private static final int ORIG_DATE_LENGTH = 10;
@@ -96,7 +92,6 @@ public class TransactionPostingProcessor
 
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
     private final AccountRepository accountRepository;
-    private final MeterRegistry meterRegistry;
     private final Clock clock;
 
     /**
@@ -105,14 +100,12 @@ public class TransactionPostingProcessor
      *
      * @param cardCrossReferenceRepository repository for the card cross-reference lookup (stage A)
      * @param accountRepository            repository for the account lookup (stage B)
-     * @param meterRegistry                Micrometer registry for the reason-tagged rejected counter
      */
     @Autowired
     public TransactionPostingProcessor(
             final CardCrossReferenceRepository cardCrossReferenceRepository,
-            final AccountRepository accountRepository,
-            final MeterRegistry meterRegistry) {
-        this(cardCrossReferenceRepository, accountRepository, meterRegistry, Clock.systemDefaultZone());
+            final AccountRepository accountRepository) {
+        this(cardCrossReferenceRepository, accountRepository, Clock.systemDefaultZone());
     }
 
     /**
@@ -121,20 +114,16 @@ public class TransactionPostingProcessor
      *
      * @param cardCrossReferenceRepository repository for the card cross-reference lookup (stage A)
      * @param accountRepository            repository for the account lookup (stage B)
-     * @param meterRegistry                Micrometer registry for the reason-tagged rejected counter
      * @param clock                        clock used to stamp the processing timestamp
      */
     public TransactionPostingProcessor(
             final CardCrossReferenceRepository cardCrossReferenceRepository,
             final AccountRepository accountRepository,
-            final MeterRegistry meterRegistry,
             final Clock clock) {
         this.cardCrossReferenceRepository =
                 Objects.requireNonNull(cardCrossReferenceRepository, "cardCrossReferenceRepository must not be null");
         this.accountRepository =
                 Objects.requireNonNull(accountRepository, "accountRepository must not be null");
-        this.meterRegistry =
-                Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
@@ -258,15 +247,17 @@ public class TransactionPostingProcessor
     }
 
     /**
-     * Records a reject outcome: increments the reason-tagged rejected counter and returns the reject
-     * {@link PostingResult}. No transaction is built.
+     * Builds a reject outcome and logs it at debug level, returning the reject
+     * {@link PostingResult}. No transaction is built and no metric is incremented here: the
+     * {@code carddemo.batch.records.rejected} counter is owned by the reject writer (the terminal
+     * emit step), which increments it once per emitted reject record under a single numeric
+     * reject-code convention, so each reject is counted exactly once.
      *
      * @param code     the reject reason
      * @param dalytran the daily-transaction record being rejected
      * @return a reject {@link PostingResult}
      */
     private PostingResult reject(final RejectCode code, final DailyTransaction dalytran) {
-        meterRegistry.counter(METRIC_RECORDS_REJECTED, TAG_REASON, code.name()).increment();
         if (LOG.isDebugEnabled()) {
             LOG.debug("Rejecting daily transaction {} with reject code {} ({})",
                     dalytran.getDalytranId(), code.getCode(), code.name());

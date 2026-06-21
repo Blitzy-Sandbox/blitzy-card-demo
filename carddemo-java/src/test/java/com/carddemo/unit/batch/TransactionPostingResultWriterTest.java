@@ -135,12 +135,13 @@ class TransactionPostingResultWriterTest {
         // Fixed clock so the posted transaction's processing timestamp is deterministic.
         Clock clock = Clock.fixed(Instant.parse("2024-01-16T02:00:00Z"), ZoneOffset.UTC);
 
-        // The processor is read-only validation+projection (4-arg ctor): it does NOT receive the
-        // category-balance repository or file-status mapper, because it never mutates the account or
-        // upserts the category balance. Those updates are applied exactly once by the TransactionWriter
-        // (the sole apply path), which is why this slice test can assert exactly-once below.
+        // The processor is read-only validation+projection (3-arg ctor): it does NOT receive a meter
+        // registry, the category-balance repository, or the file-status mapper, because it records no
+        // metrics and never mutates the account or upserts the category balance. Those updates are
+        // applied exactly once by the TransactionWriter (the sole apply path), which is why this slice
+        // test can assert exactly-once below.
         processor = new TransactionPostingProcessor(
-                cardCrossReferenceRepository, accountRepository, registry, clock);
+                cardCrossReferenceRepository, accountRepository, clock);
         transactionWriter = new TransactionWriter(
                 transactionRepository, categoryBalanceRepository, accountRepository,
                 s3Client, registry, metricsConfig, BUCKET, true);

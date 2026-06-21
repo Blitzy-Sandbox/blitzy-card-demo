@@ -1056,7 +1056,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(carddemo_transaction_amount_total{job=~\"$job\"})",
+          "expr": "sum(carddemo_transaction_amount{job=~\"$job\"})",
           "legendFormat": "amount total",
           "range": true,
           "instant": false,
