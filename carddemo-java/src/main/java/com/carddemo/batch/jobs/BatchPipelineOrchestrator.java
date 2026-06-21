@@ -68,9 +68,13 @@ import org.springframework.core.task.TaskExecutor;
  * {@link JobParameters} set &mdash; including a unique run id &mdash; and calls the auto-configured
  * {@link JobLauncher}. There is intentionally no {@code @Scheduled} method and no
  * {@code CommandLineRunner}. The {@link JobRepository} and {@link JobLauncher} are the beans
- * auto-configured by Spring Boot (no {@code @EnableBatchProcessing}); correlation ids propagate to the
- * launched executions through the MDC of the launching thread (Observability rule, AAP &sect;0.7.1) and
- * this class adds no batch metrics (the child jobs and writers own those).</p>
+ * auto-configured by Spring Boot (no {@code @EnableBatchProcessing}); the launching thread's MDC
+ * (notably the {@code correlationId}) and Micrometer observation/tracing context propagate to the
+ * launched executions and &mdash; because the bounded {@code batchTaskExecutor} is fitted with a
+ * {@code BatchContextPropagatingTaskDecorator} &mdash; onto the {@code carddemo-batch-*} worker
+ * threads of the parallel stage-4 split as well, so both terminal branches keep unbroken log
+ * correlation and child spans (Observability rule, AAP &sect;0.7.1). This class adds no batch metrics
+ * (the child jobs and writers own those).</p>
  */
 @Configuration(value = "batchPipelineOrchestratorConfig", proxyBeanMethods = false)
 public class BatchPipelineOrchestrator {

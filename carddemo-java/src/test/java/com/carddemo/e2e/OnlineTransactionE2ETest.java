@@ -193,9 +193,14 @@ public class OnlineTransactionE2ETest {
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_INPUT);
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_OUTPUT);
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_STATEMENTS);
+            // ContentBasedDeduplication=false per DECISION_LOG D-020 / D-032(j): the report producer
+            // supplies an explicit per-message UUID deduplication id under the constant group id
+            // "carddemo-reports", preserving the CICS WRITEQ TD repeat-submission semantics. This
+            // matches localstack-init/init-aws.sh and the shared batch/AWS IT setup; content-based
+            // deduplication is intentionally disabled so identical payloads are not silently dropped.
             LOCALSTACK.execInContainer("awslocal", "sqs", "create-queue",
                     "--queue-name", REPORT_QUEUE,
-                    "--attributes", "FifoQueue=true,ContentBasedDeduplication=true");
+                    "--attributes", "FifoQueue=true,ContentBasedDeduplication=false");
             LOCALSTACK.execInContainer("awslocal", "sns", "create-topic", "--name", NOTIFICATIONS_TOPIC);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to provision LocalStack AWS resources", e);
@@ -314,6 +319,23 @@ public class OnlineTransactionE2ETest {
 
         ResponseEntity<String> adminOnAdmin = getStatus("/api/admin/users", adminToken);
         assertThat(adminOnAdmin.getStatusCode().is2xxSuccessful()).isTrue();
+
+        // Invalid-token rejection (CP5 security checklist): a protected endpoint must reject a
+        // structurally-malformed Bearer token with 401 (the OAuth2 resource server cannot decode it).
+        ResponseEntity<String> malformedToken = getStatus("/api/menu/main", "not-a-valid-jwt");
+        assertThat(malformedToken.getStatusCode().value())
+                .as("a malformed Bearer token is rejected with 401 on a protected endpoint")
+                .isEqualTo(HttpStatus.UNAUTHORIZED.value());
+
+        // A tampered copy of a validly issued JWT (the HS256 signature no longer verifies) must also
+        // be rejected with 401. Flipping the final signature character breaks the signature while
+        // keeping the token structurally a three-segment JWT.
+        String tamperedToken = adminToken.substring(0, adminToken.length() - 1)
+                + (adminToken.endsWith("A") ? 'B' : 'A');
+        ResponseEntity<String> tampered = getStatus("/api/admin/users", tamperedToken);
+        assertThat(tampered.getStatusCode().value())
+                .as("a tampered JWT with a broken HS256 signature is rejected with 401")
+                .isEqualTo(HttpStatus.UNAUTHORIZED.value());
     }
 
     /**

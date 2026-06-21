@@ -1,5 +1,6 @@
 package com.carddemo.config;
 
+import com.carddemo.observability.BatchContextPropagatingTaskDecorator;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.task.TaskExecutor;
@@ -74,6 +75,12 @@ public final class BatchConfig {
      * here because CardDemo uses neither {@code @Async} nor asynchronous MVC;
      * this executor is dedicated to the batch pipeline split.</p>
      *
+     * <p>The pool is fitted with a {@link BatchContextPropagatingTaskDecorator} so each branch the
+     * split submits inherits the launching thread's SLF4J {@code MDC} (notably the
+     * {@code correlationId}) and its Micrometer observation/tracing context. Without the decorator
+     * the {@code carddemo-batch-*} worker threads would log without a correlation id and begin
+     * unrelated traces, breaking the Observability rule (AAP &sect;0.7.1) for the parallel stage.</p>
+     *
      * @return the bounded, multi-threaded executor for the stage-4 flow split
      */
     @Bean("batchTaskExecutor")
@@ -85,6 +92,11 @@ public final class BatchConfig {
         executor.setThreadNamePrefix("carddemo-batch-");
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(30);
+        // Propagate the launching thread's MDC (correlationId) and observation/tracing context onto
+        // the carddemo-batch-* worker threads so the parallel stage-4 split keeps unbroken log
+        // correlation and child spans (Observability rule, AAP §0.7.1). Without this decorator the
+        // split branches would log without a correlationId and start unrelated traces.
+        executor.setTaskDecorator(new BatchContextPropagatingTaskDecorator());
         return executor;
     }
 }

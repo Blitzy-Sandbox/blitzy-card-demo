@@ -4,17 +4,24 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
-import org.junit.jupiter.api.Assumptions;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
@@ -23,6 +30,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 
 import com.carddemo.batch.jobs.BatchPipelineOrchestrator;
+import com.carddemo.batch.jobs.StatementGenerationJob;
+import com.carddemo.batch.jobs.TransactionReportJob;
 import com.carddemo.repository.TransactionRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -102,10 +111,11 @@ class BatchPipelineOrchestratorIT extends AbstractBatchIntegrationTest {
     private TransactionRepository transactionRepository;
 
     /**
-     * The orchestrator bean, injected optionally so the programmatic-entry test can be skipped (rather
-     * than fail) in any context where the bean is not injectable.
+     * The orchestrator bean, injected as a required dependency. The programmatic-entry test asserts
+     * the bean is present (a missing orchestrator is a wiring regression, not an environmental
+     * precondition), so the injection is mandatory rather than optional.
      */
-    @Autowired(required = false)
+    @Autowired
     private BatchPipelineOrchestrator orchestrator;
 
     /**
@@ -263,8 +273,13 @@ class BatchPipelineOrchestratorIT extends AbstractBatchIntegrationTest {
         LocalDateTime interest = firstNonNull(startOf, "interest", "intcalc");
         LocalDateTime combine = firstNonNull(startOf, "combine", "combtran");
 
-        Assumptions.assumeTrue(posting != null && interest != null && combine != null,
-                "Stage step names not recognizable by token - relying on stage-count ordering proof");
+        // Hard assertion (not an assumption): the orchestrator's stage step names are compile-time
+        // constants (pipelinePostingJobStep / pipelineInterestJobStep / pipelineCombineJobStep), so the
+        // "post" / "interest" / "combine" tokens always resolve a start time after a COMPLETED run. A
+        // soft skip here could mask a step-naming or stage-wiring regression.
+        assertThat(posting).as("POSTTRAN stage step start time must be resolvable").isNotNull();
+        assertThat(interest).as("INTCALC stage step start time must be resolvable").isNotNull();
+        assertThat(combine).as("COMBTRAN stage step start time must be resolvable").isNotNull();
 
         assertThat(posting).as("POSTTRAN starts no later than INTCALC").isBeforeOrEqualTo(interest);
         assertThat(interest).as("INTCALC starts no later than COMBTRAN").isBeforeOrEqualTo(combine);
@@ -350,19 +365,23 @@ class BatchPipelineOrchestratorIT extends AbstractBatchIntegrationTest {
     }
 
     /**
-     * Test 5 (optional) &mdash; the programmatic entry point {@code runPipeline(...)} executes the same
-     * master pipeline. It is skipped (not failed) when the orchestrator bean is not injectable. The
-     * programmatic entry builds its own {@code JobParameters} (including a unique run id) and relies on
-     * the {@code POSTTRAN} reader's default {@code inputLocation}
-     * ({@code s3://carddemo-batch-input/dailytran.txt}), which {@link #stagePipelineInputs()} satisfies.
+     * Test 5 &mdash; the programmatic entry point {@code runPipeline(...)} executes the same master
+     * pipeline. The orchestrator bean is a required injection and its presence is asserted (a missing
+     * bean is a wiring regression, not a skip condition). The programmatic entry builds its own
+     * {@code JobParameters} (including a unique run id) and relies on the {@code POSTTRAN} reader's
+     * default {@code inputLocation} ({@code s3://carddemo-batch-input/dailytran.txt}), which
+     * {@link #stagePipelineInputs()} satisfies.
      *
      * @throws Exception if the fixture cannot be read or the launch fails
      */
     @Test
     @Order(5)
     void programmaticRunPipelineEntryExecutesSamePipeline() throws Exception {
-        Assumptions.assumeTrue(orchestrator != null,
-                "BatchPipelineOrchestrator bean not injectable - skipping programmatic-entry test");
+        // Hard assertion (not an assumption): the orchestrator is a required bean; a missing injection
+        // is a wiring regression that must FAIL rather than skip the programmatic-entry verification.
+        assertThat(orchestrator)
+                .as("BatchPipelineOrchestrator bean must be injectable for the programmatic-entry test")
+                .isNotNull();
 
         stagePipelineInputs();
         long preCount = transactionRepository.count();
@@ -375,5 +394,78 @@ class BatchPipelineOrchestratorIT extends AbstractBatchIntegrationTest {
         assertThat(transactionRepository.count())
                 .as("the master transaction table is consistent (idempotent re-run) after the programmatic launch")
                 .isGreaterThanOrEqualTo(preCount);
+    }
+
+    /**
+     * Test 6 &mdash; observability context propagation across the parallel stage-4 split. The pipeline
+     * is launched with a known {@code correlationId} in the launching thread's MDC; the stage-4 split
+     * runs stage&nbsp;4a (CREASTMT statement generation) and stage&nbsp;4b (TRANREPT transaction
+     * reporting) on the {@code batchTaskExecutor}'s {@code carddemo-batch-*} worker threads. A Logback
+     * {@link ListAppender} proves the context survives the thread boundary: <strong>every</strong> log
+     * event emitted on a {@code carddemo-batch-*} thread carries the launching thread's
+     * {@code correlationId}, and <strong>both</strong> terminal branch jobs
+     * ({@code statementGenerationJob} and {@code transactionReportJob}) logged from those worker
+     * threads &mdash; i.e. both branches retained the correlation id.
+     *
+     * <p>This is the regression guard for the {@code BatchContextPropagatingTaskDecorator} wired onto
+     * the split executor by {@code com.carddemo.config.BatchConfig} (Observability rule, AAP
+     * &sect;0.7.1). Before that decorator, branch steps logged without a correlation id and began
+     * unrelated traces.</p>
+     *
+     * @throws Exception if the fixture cannot be read or the launch fails
+     */
+    @Test
+    @Order(6)
+    void parallelSplitWorkerThreadsRetainCorrelationId() throws Exception {
+        final String correlationId = "PIPELINE-IT-CORRID-" + System.nanoTime();
+
+        // Capture org.springframework.batch INFO events (job/step lifecycle) that the split branches
+        // emit on the carddemo-batch-* worker threads; each event snapshots the thread's MDC at log time.
+        Logger batchLogger = (Logger) LoggerFactory.getLogger("org.springframework.batch");
+        Level priorLevel = batchLogger.getLevel();
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        batchLogger.addAppender(appender);
+        batchLogger.setLevel(Level.INFO);
+
+        JobExecution execution;
+        try {
+            stagePipelineInputs();
+            MDC.put("correlationId", correlationId); // established on the launching thread
+            execution = launchPipeline();
+        } finally {
+            MDC.remove("correlationId");
+            batchLogger.detachAppender(appender);
+            batchLogger.setLevel(priorLevel);
+            appender.stop();
+        }
+
+        assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+
+        // Snapshot the captured events after the run (the synchronous master launcher has already
+        // joined the split, so no further worker-thread appends occur).
+        List<ILoggingEvent> workerEvents = new ArrayList<>(appender.list).stream()
+                .filter(event -> event.getThreadName() != null
+                        && event.getThreadName().startsWith("carddemo-batch-"))
+                .toList();
+
+        assertThat(workerEvents)
+                .as("the stage-4 split executed its branches on carddemo-batch-* worker threads")
+                .isNotEmpty();
+
+        assertThat(workerEvents)
+                .as("every stage-4 worker-thread log event retains the launching thread's correlationId")
+                .allSatisfy(event -> assertThat(event.getMDCPropertyMap().get("correlationId"))
+                        .isEqualTo(correlationId));
+
+        String workerMessages = workerEvents.stream()
+                .map(ILoggingEvent::getFormattedMessage)
+                .collect(Collectors.joining(System.lineSeparator()));
+        assertThat(workerMessages)
+                .as("stage 4a (statement) branch ran on a worker thread that retained the context")
+                .contains(StatementGenerationJob.JOB_NAME);
+        assertThat(workerMessages)
+                .as("stage 4b (report) branch ran on a worker thread that retained the context")
+                .contains(TransactionReportJob.JOB_NAME);
     }
 }

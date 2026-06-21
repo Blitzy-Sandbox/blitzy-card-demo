@@ -7,8 +7,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.UUID;
 import org.awaitility.Awaitility;
-import org.awaitility.core.ConditionTimeoutException;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
@@ -211,7 +209,15 @@ class TransactionReportJobIT extends AbstractBatchIntegrationTest {
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
 
         byte[] report = locateReportObject();
-        Assumptions.assumeTrue(report != null && report.length > 0, "Report object not located — skipping");
+        // Hard gate evidence: a synchronous direct launch over the populated window MUST write a
+        // non-empty report object. A soft skip here could mask a CP5 report-generation regression,
+        // so this is a hard assertion rather than an assumption.
+        assertThat(report)
+                .as("Report object must be produced after a successful direct report-job launch")
+                .isNotNull();
+        assertThat(report.length)
+                .as("Report object must be non-empty")
+                .isGreaterThan(0);
 
         String content = decodeAndAssert133(report);
 
@@ -247,7 +253,12 @@ class TransactionReportJobIT extends AbstractBatchIntegrationTest {
         // fixed report key.
         launchReport(WINDOW_START, WINDOW_END);
         byte[] populated = locateReportObject();
-        Assumptions.assumeTrue(populated != null, "No report produced for populated window — skipping");
+        // Hard gate evidence: the synchronous populated-window launch MUST write a report object; a
+        // soft skip here could mask a regression, so this is a hard assertion rather than an
+        // assumption.
+        assertThat(populated)
+                .as("Report object must be produced for the populated window after a successful launch")
+                .isNotNull();
 
         // Empty window (1999): the same report key is overwritten with a titles/headers-only report.
         launchReport(EMPTY_START, EMPTY_END);
@@ -270,9 +281,10 @@ class TransactionReportJobIT extends AbstractBatchIntegrationTest {
 
     /**
      * Publishes a {@code ReportJobMessage} JSON to the report FIFO queue and verifies the production
-     * {@code @SqsListener} launches the report job, producing a report in S3. The wait is
-     * soft-bounded: a timeout is treated as an environment/timing condition (async listener polling
-     * LocalStack), not a parity defect, so the test is skipped rather than failed.
+     * {@code @SqsListener} launches the report job, producing a report in S3. The wait is bounded by
+     * Awaitility; if the SQS-triggered report does not materialize within the timeout, the resulting
+     * {@code ConditionTimeoutException} propagates and FAILS the test (hard gate evidence for the
+     * TDQ&rarr;SQS bridge), rather than being soft-skipped.
      *
      * @throws Exception if resolving the queue URL or publishing the message fails
      */
@@ -289,26 +301,25 @@ class TransactionReportJobIT extends AbstractBatchIntegrationTest {
                 .messageGroupId("report")
                 .messageDeduplicationId(UUID.randomUUID().toString())).get();
 
-        try {
-            Awaitility.await()
-                    .atMost(Duration.ofSeconds(30))
-                    .pollInterval(Duration.ofSeconds(2))
-                    .ignoreExceptions()
-                    .untilAsserted(() -> {
-                        byte[] report = locateReportObject();
-                        assertThat(report).isNotNull();
-                        assertThat(report.length).isGreaterThan(0);
-                    });
+        // Hard gate evidence (TDQ->SQS bridge, D-004): the report must materialize SOLELY because of
+        // the SQS trigger (there is no direct jobLauncher call in this test). An Awaitility timeout
+        // now propagates as a ConditionTimeoutException and FAILS the test rather than soft-skipping,
+        // so a broken bridge cannot silently pass CP5 gate evidence.
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(30))
+                .pollInterval(Duration.ofSeconds(2))
+                .ignoreExceptions()
+                .untilAsserted(() -> {
+                    byte[] report = locateReportObject();
+                    assertThat(report).isNotNull();
+                    assertThat(report.length).isGreaterThan(0);
+                });
 
-            // Reached only when the listener-produced report appeared within the timeout: assert it is
-            // a real 133-byte report carrying the title banner, proving the bridge launched the job
-            // end-to-end.
-            byte[] report = locateReportObject();
-            String content = decodeAndAssert133(report);
-            assertThat(content).containsAnyOf("AWS Mainframe Modernization", "CardDemo", "Thank you");
-        } catch (ConditionTimeoutException timeout) {
-            Assumptions.assumeTrue(false,
-                    "SQS-triggered report not observed within timeout — soft skip (async listener / LocalStack timing)");
-        }
+        // Reached only when the listener-produced report appeared within the timeout: assert it is
+        // a real 133-byte report carrying the title banner, proving the bridge launched the job
+        // end-to-end.
+        byte[] report = locateReportObject();
+        String content = decodeAndAssert133(report);
+        assertThat(content).containsAnyOf("AWS Mainframe Modernization", "CardDemo", "Thank you");
     }
 }

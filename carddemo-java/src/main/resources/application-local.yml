@@ -12,27 +12,26 @@
 # traceability to the source workload is via commit SHA 27d6c6f.
 #
 # -------------------------------------------------------------------------------------
-# ENDPOINT DEFAULTS = IN-NETWORK SERVICE HOSTNAMES (postgres / localstack / jaeger)
+# ENDPOINT DEFAULTS = HOST-RUN LOCALHOST (published Docker Compose ports)
 # -------------------------------------------------------------------------------------
-# The defaults below use the Docker Compose service hostnames so they line up verbatim
-# with ../../../docker-compose.yml (the `app` service injects the SAME service-name URLs:
-# SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/carddemo, AWS_ENDPOINT=
-# http://localstack:4566, OTLP_ENDPOINT=http://jaeger:4317) and with
-# ../../../localstack-init/init-aws.sh (S3 bucket / SQS FIFO / SNS topic names). Running
-# the app INSIDE the compose network therefore needs no extra configuration:
-#       docker compose --profile app up -d --build
-#
-# HOST-RUN ALTERNATIVE (infra in Docker, app on the host JVM): the compose service
-# hostnames are NOT resolvable from the host, so reach the published ports on localhost by
-# exporting the localhost equivalents before starting the app:
+# The defaults below target localhost so the documented host-run flow works out of the box
+# with NO extra environment configuration, matching README / docs/onboarding-guide.md /
+# docs/validation-gates.md (which run the app on the host JVM against infra in Docker):
 #       docker compose up -d
-#       export SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/carddemo
-#       export AWS_ENDPOINT=http://localhost:4566
-#       export OTLP_ENDPOINT=http://localhost:4317
-#       ./mvnw spring-boot:run -Plocal
-# (Published compose port contract: PostgreSQL 5432 | LocalStack 4566 | Jaeger OTLP 4317.)
-# Every endpoint here is `${ENV_VAR:in-network-default}`, so a single env-var export per
-# service switches a value without editing this file.
+#       ./mvnw spring-boot:run -Dspring.profiles.active=local
+# The app then reaches the published compose ports on localhost
+# (PostgreSQL 5432 | LocalStack 4566 | Jaeger OTLP 4317), and the AWS endpoint resolves to
+# http://localhost:4566 exactly as the onboarding/validation docs describe. The S3 bucket /
+# SQS FIFO / SNS topic names still match ../../../localstack-init/init-aws.sh verbatim.
+#
+# IN-NETWORK (compose) RUN: when the app itself runs as the `app` service inside the compose
+# network, ../../../docker-compose.yml injects the service-name overrides for every endpoint
+# (SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/carddemo, AWS_ENDPOINT=
+# http://localstack:4566, OTLP_ENDPOINT=http://jaeger:4317), so the in-network run needs no
+# change to this file either:
+#       docker compose --profile app up -d --build
+# Every endpoint here is `${ENV_VAR:localhost-default}`, so the compose env-var injection (or
+# a single manual export) switches a value without editing this file.
 #
 # -------------------------------------------------------------------------------------
 # SECURITY (AAP 0.8.1 - no hardcoded credentials)
@@ -53,13 +52,13 @@
 
 spring:
   # --- Datasource: PostgreSQL 16 published by docker-compose.yml ----------------------
-  # In-network default targets the `postgres` service (matches the docker-compose `app`
-  # service's SPRING_DATASOURCE_URL). HOST-RUN: export
-  # SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/carddemo (see header). Replaces
-  # the VSAM KSDS datasets (ACCTDAT, CARDDAT, CUSTDAT, CARDXREF, TRANSACT, USRSEC, ...) the
-  # z/OS DEFINE CLUSTER JCL provisioned.
+  # Host-run default targets localhost:5432 (the published compose port), so the documented
+  # `./mvnw spring-boot:run -Dspring.profiles.active=local` flow connects out of the box. The
+  # docker-compose `app` service injects SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/
+  # carddemo for the in-network run (see header). Replaces the VSAM KSDS datasets (ACCTDAT,
+  # CARDDAT, CUSTDAT, CARDXREF, TRANSACT, USRSEC, ...) the z/OS DEFINE CLUSTER JCL provisioned.
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres:5432/carddemo}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/carddemo}
     username: ${SPRING_DATASOURCE_USERNAME:carddemo}
     # Local-only, non-secret default. Prefers SPRING_DATASOURCE_PASSWORD, then the
     # POSTGRES_PASSWORD the postgres service reads, then the `carddemo` docker-compose
@@ -85,12 +84,13 @@ spring:
     locations: classpath:db/migration
 
   # --- Spring Cloud AWS -> LocalStack (S3 / SQS / SNS) --------------------------------
-  # Point every AWS client at the LocalStack container. In-network default
-  # http://localstack:4566 (matches the docker-compose `app` service AWS_ENDPOINT);
-  # HOST-RUN: export AWS_ENDPOINT=http://localhost:4566 (see header). AwsConfig.java reads
-  # the GLOBAL spring.cloud.aws.endpoint for all three clients; the per-service keys are
-  # declared for Spring Cloud AWS 3.x autoconfig parity. Region and the non-secret
-  # LocalStack dummy credentials (test/test) are restated here for local explicitness.
+  # Point every AWS client at the LocalStack container. Host-run default
+  # http://localhost:4566 (the published compose port, exactly as the onboarding/validation
+  # docs describe); the docker-compose `app` service injects AWS_ENDPOINT=http://localstack:4566
+  # for the in-network run (see header). AwsConfig.java reads the GLOBAL
+  # spring.cloud.aws.endpoint for all three clients; the per-service keys are declared for
+  # Spring Cloud AWS 3.x autoconfig parity. Region and the non-secret LocalStack dummy
+  # credentials (test/test) are restated here for local explicitness.
   cloud:
     aws:
       region:
@@ -98,23 +98,24 @@ spring:
       credentials:
         access-key: ${AWS_ACCESS_KEY_ID:test}
         secret-key: ${AWS_SECRET_ACCESS_KEY:test}
-      endpoint: ${AWS_ENDPOINT:http://localstack:4566}
+      endpoint: ${AWS_ENDPOINT:http://localhost:4566}
       s3:
-        endpoint: ${AWS_ENDPOINT:http://localstack:4566}
+        endpoint: ${AWS_ENDPOINT:http://localhost:4566}
         # Mandatory for LocalStack: path-style addressing avoids the virtual-host
         # "bucket-name.<s3-host>" DNS form, which does not resolve against the emulator.
         path-style-access-enabled: true
       sqs:
-        endpoint: ${AWS_ENDPOINT:http://localstack:4566}
+        endpoint: ${AWS_ENDPOINT:http://localhost:4566}
       sns:
-        endpoint: ${AWS_ENDPOINT:http://localstack:4566}
+        endpoint: ${AWS_ENDPOINT:http://localhost:4566}
 
 # --- Actuator & observability (local convenience) ------------------------------------
 # The base profile guards health details (when_authorized); for local development show
 # full component details so an unauthenticated `curl /actuator/health` returns the
 # composite db / postgres / s3 / sqs indicators. Trace sampling is full (1.0) locally. The
-# OTLP exporter targets the in-network Jaeger collector (http://jaeger:4317); HOST-RUN:
-# export OTLP_ENDPOINT=http://localhost:4317 (see header). Actuator endpoint exposure
+# OTLP exporter's host-run default targets the Jaeger collector on localhost:4317 (the
+# published compose port); the docker-compose `app` service injects
+# OTLP_ENDPOINT=http://jaeger:4317 for the in-network run (see header). Actuator endpoint exposure
 # (health,info,prometheus) and metric percentiles are inherited from application.yml.
 management:
   endpoint:
@@ -125,7 +126,7 @@ management:
       probability: ${TRACING_SAMPLE:1.0}
   otlp:
     tracing:
-      endpoint: ${OTLP_ENDPOINT:http://jaeger:4317}
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4317}
 
 # --- Logging (local) -----------------------------------------------------------------
 # Richer application-package output during local development; the root logger stays at INFO

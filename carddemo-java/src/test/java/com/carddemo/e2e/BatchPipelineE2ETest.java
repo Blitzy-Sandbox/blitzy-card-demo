@@ -217,9 +217,14 @@ public class BatchPipelineE2ETest {
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_INPUT);
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_OUTPUT);
             LOCALSTACK.execInContainer("awslocal", "s3", "mb", "s3://" + BUCKET_STATEMENTS);
+            // ContentBasedDeduplication=false per DECISION_LOG D-020 / D-032(j): the report producer
+            // supplies an explicit per-message UUID deduplication id under the constant group id
+            // "carddemo-reports", preserving the CICS WRITEQ TD repeat-submission semantics. This
+            // matches localstack-init/init-aws.sh and the shared batch/AWS IT setup; content-based
+            // deduplication is intentionally disabled so identical payloads are not silently dropped.
             LOCALSTACK.execInContainer("awslocal", "sqs", "create-queue",
                     "--queue-name", REPORT_QUEUE,
-                    "--attributes", "FifoQueue=true,ContentBasedDeduplication=true");
+                    "--attributes", "FifoQueue=true,ContentBasedDeduplication=false");
             LOCALSTACK.execInContainer("awslocal", "sns", "create-topic", "--name", NOTIFICATIONS_TOPIC);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to provision LocalStack AWS resources", e);

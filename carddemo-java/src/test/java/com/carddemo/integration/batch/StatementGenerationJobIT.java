@@ -157,8 +157,15 @@ class StatementGenerationJobIT extends AbstractBatchIntegrationTest {
         launchStatements();
 
         final byte[] text = getS3ObjectOrNull(BUCKET_STATEMENTS, TEXT_KEY);
-        Assumptions.assumeTrue(text != null && text.length > 0,
-                "No STATEMNT.PS produced — skipping");
+        // Hard gate evidence: after a successful statement job over the 50 Flyway-V3-seeded accounts,
+        // the text statement object MUST exist and be non-empty (a soft skip here could hide a CP5
+        // batch/gate regression).
+        assertThat(text)
+                .as("STATEMNT.PS text statement object must be produced after a successful job")
+                .isNotNull();
+        assertThat(text.length)
+                .as("STATEMNT.PS text statement object must be non-empty")
+                .isGreaterThan(0);
 
         final String content = new String(text, LATIN1);
         if (content.indexOf('\n') >= 0) {
@@ -189,8 +196,14 @@ class StatementGenerationJobIT extends AbstractBatchIntegrationTest {
         launchStatements();
 
         final byte[] html = getS3ObjectOrNull(BUCKET_STATEMENTS, HTML_KEY);
-        Assumptions.assumeTrue(html != null && html.length > 0,
-                "No STATEMNT.HTML produced — skipping");
+        // Hard gate evidence: the HTML statement variant MUST be produced and non-empty after a
+        // successful job over the seeded accounts.
+        assertThat(html)
+                .as("STATEMNT.HTML statement object must be produced after a successful job")
+                .isNotNull();
+        assertThat(html.length)
+                .as("STATEMNT.HTML statement object must be non-empty")
+                .isGreaterThan(0);
 
         final String htmlContent = new String(html, LATIN1).toLowerCase(Locale.ROOT);
         assertThat(htmlContent).containsAnyOf("<html", "<!doctype", "<body", "<table", "<div");

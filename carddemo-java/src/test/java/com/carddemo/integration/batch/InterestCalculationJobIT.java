@@ -171,8 +171,16 @@ class InterestCalculationJobIT extends AbstractBatchIntegrationTest {
 
         // The base @BeforeEach empties the output bucket, so this object is produced by THIS launch.
         final byte[] systran = getS3ObjectOrNull(BUCKET_OUTPUT, SYSTRAN_OBJECT_KEY);
-        Assumptions.assumeTrue(systran != null && systran.length > 0,
-                "No SYSTRAN interest records staged - skipping layout assertion");
+        // Hard gate evidence (Gate-4/Gate-5): after a COMPLETED interest job over the seeded category
+        // balances, the SYSTRAN object MUST be staged and non-empty. A soft skip here could mask a
+        // regression in the INTCALC output contract, so this is a hard assertion rather than an
+        // assumption.
+        assertThat(systran)
+                .as("SYSTRAN interest records must be staged after a successful interest job")
+                .isNotNull();
+        assertThat(systran.length)
+                .as("SYSTRAN interest records object must be non-empty")
+                .isGreaterThan(0);
 
         // Gate-5: the staged object is an exact multiple of the 350-byte CVTRA05Y record length.
         assertThat(systran.length % DAILY_TRAN_RECORD_LENGTH).isZero();
