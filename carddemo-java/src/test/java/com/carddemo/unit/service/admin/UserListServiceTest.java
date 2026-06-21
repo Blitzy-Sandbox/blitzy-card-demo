@@ -2,6 +2,7 @@ package com.carddemo.unit.service.admin;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.model.dto.UserListResponse;
@@ -12,6 +13,7 @@ import com.carddemo.service.admin.UserListService;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
@@ -84,5 +86,25 @@ class UserListServiceTest {
         assertThat(response.users()).isEmpty();
         assertThat(response.errorMessage()).isEqualTo("You have reached the bottom of the page...");
         assertThat(response.pageNumber()).isEqualTo("3");
+    }
+
+    @Test
+    void hugePageClampedToMaxSafeOffset() {
+        // Users paginate 1-based; before the fix (page-1)=299999999 * size 10 = ~3e9 >
+        // Integer.MAX_VALUE, so Spring Data raised InvalidDataAccessApiUsageException which surfaced
+        // as an unhandled HTTP 500.
+        Pageable pageable = PageRequest.of(0, 10);
+        when(userSecurityRepository.findAll(any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(), pageable, 0));
+
+        UserListResponse response = service().listUsers(300_000_000, null);
+
+        ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
+        verify(userSecurityRepository).findAll(captor.capture());
+        int clampedPage = captor.getValue().getPageNumber();
+        assertThat(clampedPage).isEqualTo(Integer.MAX_VALUE / 10);
+        assertThat((long) clampedPage * 10).isLessThanOrEqualTo(Integer.MAX_VALUE);
+        // The service returns a graceful empty page rather than throwing.
+        assertThat(response.users()).isEmpty();
     }
 }

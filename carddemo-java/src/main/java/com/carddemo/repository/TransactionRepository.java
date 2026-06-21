@@ -1,6 +1,7 @@
 package com.carddemo.repository;
 
 import com.carddemo.model.entity.Transaction;
+import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -28,18 +29,63 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
     String findMaxTranId();
 
     /**
-     * Returns the transactions whose processing-timestamp date portion (the
-     * first ten characters of {@code tranProcTs}) falls inclusively between the
-     * supplied start and end dates (format {@code YYYY-MM-DD}), ordered by id.
+     * Returns the transactions whose processing-timestamp date portion (the first ten characters
+     * of {@code tranProcTs}) falls inclusively between the supplied start and end dates (format
+     * {@code YYYY-MM-DD}), ordered ascending by id.
+     *
+     * <p>The inclusive {@code [startDate, endDate]} contract is unchanged, but the predicate is now
+     * expressed as a <strong>sargable raw-column range</strong> so the query can use the
+     * {@code idx_tran_proc_ts} B-tree index (created in {@code V2__create_indexes.sql}) instead of
+     * scanning the whole table. {@code tran_proc_ts} is an ISO-8601 timestamp whose first ten
+     * characters are the calendar date, so the column is lexicographically ordered by date; a
+     * string range over the raw column is therefore exactly equivalent to a range over the date
+     * portion. The earlier {@code SUBSTRING(tran_proc_ts, 1, 10)} form wrapped the indexed column
+     * in a function and was non-sargable, forcing a (parallel) sequential scan whose cost grew
+     * linearly with the table.</p>
+     *
+     * <p>The inclusive upper bound is translated to a half-open exclusive bound
+     * ({@code endDate + 1 day}): every timestamp on {@code endDate} sorts strictly before
+     * {@code endDate + 1 day}, so {@code tran_proc_ts < endExclusive} selects exactly the rows
+     * whose date is {@code <= endDate}; likewise {@code tran_proc_ts >= startDate} selects exactly
+     * the rows whose date is {@code >= startDate} (any timestamp on {@code startDate} sorts at or
+     * after the bare {@code startDate} prefix). The two bounds together reproduce the original
+     * inclusive window with identical results. Delegates to
+     * {@link #findByProcessingTimestampRange(String, String)}.</p>
+     *
+     * @param startDate inclusive lower bound, calendar date in {@code YYYY-MM-DD} form
+     * @param endDate   inclusive upper bound, calendar date in {@code YYYY-MM-DD} form
+     * @return the in-window transactions ordered ascending by transaction id
+     */
+    default List<Transaction> findByProcessingDateRange(String startDate, String endDate) {
+        // Convert the inclusive end date to an exclusive next-day bound so the backing query is a
+        // plain ">= start AND < endExclusive" range over the raw, indexed column (sargable). endDate
+        // is the documented YYYY-MM-DD calendar date; LocalDate renders the next day in the same
+        // ISO-8601 format, which is exactly what the lexicographic string comparison requires.
+        String endExclusive = LocalDate.parse(endDate).plusDays(1).toString();
+        return findByProcessingTimestampRange(startDate, endExclusive);
+    }
+
+    /**
+     * Returns the transactions whose processing timestamp falls in the half-open range
+     * {@code [startInclusive, endExclusive)}, ordered ascending by transaction id. This is the
+     * sargable, index-using ({@code idx_tran_proc_ts}) backing query for
+     * {@link #findByProcessingDateRange(String, String)}; callers should normally use that
+     * inclusive-date wrapper rather than this method directly. Both bounds are compared against the
+     * raw {@code tran_proc_ts} string column, which is lexicographically ordered by date because it
+     * is an ISO-8601 timestamp, so a string range equals a date range.
+     *
+     * @param startInclusive inclusive lower bound compared against {@code tran_proc_ts}
+     * @param endExclusive   exclusive upper bound compared against {@code tran_proc_ts}
+     * @return the matching transactions ordered ascending by transaction id
      */
     @Query("""
             SELECT t FROM Transaction t
-            WHERE SUBSTRING(t.tranProcTs, 1, 10) >= :startDate
-              AND SUBSTRING(t.tranProcTs, 1, 10) <= :endDate
+            WHERE t.tranProcTs >= :startInclusive
+              AND t.tranProcTs < :endExclusive
             ORDER BY t.tranId
             """)
-    List<Transaction> findByProcessingDateRange(@Param("startDate") String startDate,
-                                                @Param("endDate") String endDate);
+    List<Transaction> findByProcessingTimestampRange(@Param("startInclusive") String startInclusive,
+                                                      @Param("endExclusive") String endExclusive);
 
     /**
      * Returns the transactions belonging to any of the supplied card numbers. Used by statement

@@ -5,6 +5,7 @@ import com.carddemo.model.dto.CardListResponse;
 import com.carddemo.model.dto.CardListResponse.CardListItem;
 import com.carddemo.model.entity.Card;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.service.shared.PaginationSupport;
 import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
@@ -80,7 +81,11 @@ public class CardListService {
             cardFilterValid = true;
         }
 
-        int page = Math.max(0, pageNumber);
+        // Clamp the zero-based page so the resulting SQL offset (page * ROWS_PER_PAGE) cannot
+        // exceed Integer.MAX_VALUE. clampPageToMaxOffset also floors negatives at 0, so an absurd
+        // page number now yields a graceful empty page (HTTP 200) instead of an offset-overflow
+        // InvalidDataAccessApiUsageException surfacing as HTTP 500.
+        int page = PaginationSupport.clampPageToMaxOffset(pageNumber, ROWS_PER_PAGE);
         Pageable pageable = PageRequest.of(page, ROWS_PER_PAGE,
                 Sort.by(CARD_NUMBER_PROPERTY).ascending());
 

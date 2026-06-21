@@ -229,6 +229,26 @@ class CardListServiceTest {
   }
 
   @Test
+  @DisplayName("offset-overflow page clamped so SQL offset stays within Integer.MAX_VALUE (graceful empty page, not HTTP 500)")
+  void hugePageClampedToMaxSafeOffset() {
+    // Before the fix, page=400000000 * size 7 = 2_800_000_000 > Integer.MAX_VALUE, so Spring Data
+    // raised InvalidDataAccessApiUsageException which surfaced as an unhandled HTTP 500.
+    Page<Card> page = new PageImpl<>(Collections.<Card>emptyList(), PageRequest.of(0, PAGE_SIZE), 10);
+    when(cardRepository.findAll(any(Pageable.class))).thenReturn(page);
+
+    CardListResponse response = cardListService.getCardList(null, null, 400_000_000);
+
+    ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
+    verify(cardRepository).findAll(captor.capture());
+    int clampedPage = captor.getValue().getPageNumber();
+    assertThat(clampedPage).isEqualTo(Integer.MAX_VALUE / PAGE_SIZE);
+    assertThat((long) clampedPage * PAGE_SIZE).isLessThanOrEqualTo(Integer.MAX_VALUE);
+    // The service returns a graceful empty page rather than throwing.
+    assertThat(response.cards()).isEmpty();
+    assertThat(response.errorMessage()).isEqualTo(NO_MORE);
+  }
+
+  @Test
   @DisplayName("page size is always 7 and sorted by cardNum ascending (COCRDLIC parity)")
   void pageSizeIsSevenSortedByCardNum() {
     Page<Card> page = new PageImpl<>(cards(PAGE_SIZE), PageRequest.of(0, PAGE_SIZE), 7);

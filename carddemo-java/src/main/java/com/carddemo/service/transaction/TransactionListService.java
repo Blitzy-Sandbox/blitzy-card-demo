@@ -4,6 +4,7 @@ import com.carddemo.exception.ValidationException;
 import com.carddemo.model.dto.TransactionListResponse;
 import com.carddemo.model.entity.Transaction;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.service.shared.PaginationSupport;
 import java.util.List;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -58,7 +59,11 @@ public class TransactionListService {
             throw new ValidationException("Tran ID must be Numeric ...");
         }
 
-        int safePage = Math.max(page, 0);
+        // Clamp the zero-based page so the resulting SQL offset (safePage * PAGE_SIZE) cannot
+        // exceed Integer.MAX_VALUE. clampPageToMaxOffset also floors negatives at 0, so an absurd
+        // page number now yields a graceful empty page (HTTP 200) instead of an offset-overflow
+        // InvalidDataAccessApiUsageException surfacing as HTTP 500.
+        int safePage = PaginationSupport.clampPageToMaxOffset(page, PAGE_SIZE);
 
         Page<Transaction> result = transactionRepository.findAll(
                 PageRequest.of(safePage, PAGE_SIZE, Sort.by(Sort.Direction.ASC, "tranId")));

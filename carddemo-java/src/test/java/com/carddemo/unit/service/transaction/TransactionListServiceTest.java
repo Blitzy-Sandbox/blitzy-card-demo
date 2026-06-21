@@ -3,6 +3,7 @@ package com.carddemo.unit.service.transaction;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.exception.ValidationException;
@@ -14,6 +15,7 @@ import java.math.BigDecimal;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
@@ -82,6 +84,25 @@ class TransactionListServiceTest {
 
         assertThat(response.pageNumber()).isEqualTo("1");
         assertThat(response.transactionIdFilter()).isEqualTo("123");
+        assertThat(response.transactions()).isEmpty();
+    }
+
+    @Test
+    void hugePageClampedToMaxSafeOffset() {
+        // Before the fix, page=300000000 * size 10 = 3_000_000_000 > Integer.MAX_VALUE, so Spring
+        // Data raised InvalidDataAccessApiUsageException which surfaced as an unhandled HTTP 500.
+        Pageable pageable = PageRequest.of(0, 10);
+        when(transactionRepository.findAll(any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(), pageable, 0));
+
+        TransactionListResponse response = service().listTransactions(300_000_000, null);
+
+        ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
+        verify(transactionRepository).findAll(captor.capture());
+        int clampedPage = captor.getValue().getPageNumber();
+        assertThat(clampedPage).isEqualTo(Integer.MAX_VALUE / 10);
+        assertThat((long) clampedPage * 10).isLessThanOrEqualTo(Integer.MAX_VALUE);
+        // The service returns a graceful empty page rather than throwing.
         assertThat(response.transactions()).isEmpty();
     }
 

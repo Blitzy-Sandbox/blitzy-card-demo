@@ -3,6 +3,7 @@ package com.carddemo.service.admin;
 import com.carddemo.model.dto.UserListResponse;
 import com.carddemo.model.entity.UserSecurity;
 import com.carddemo.repository.UserSecurityRepository;
+import com.carddemo.service.shared.PaginationSupport;
 import java.util.List;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -93,7 +94,12 @@ public class UserListService {
      *         {@code null}
      */
     public UserListResponse listUsers(int pageNumber, String userIdFilter) {
-        int pageIndex = Math.max(0, pageNumber - 1);
+        // Users paginate 1-based (page 1 == first page), so translate to the zero-based index, then
+        // clamp so the resulting SQL offset (pageIndex * PAGE_SIZE) cannot exceed Integer.MAX_VALUE.
+        // clampPageToMaxOffset also floors negatives at 0, so an absurd page number now yields a
+        // graceful empty page (HTTP 200) instead of an offset-overflow InvalidDataAccessApiUsageException
+        // surfacing as HTTP 500.
+        int pageIndex = PaginationSupport.clampPageToMaxOffset(pageNumber - 1, PAGE_SIZE);
         Pageable pageable = PageRequest.of(pageIndex, PAGE_SIZE, Sort.by(SORT_PROPERTY).ascending());
         Page<UserSecurity> page = userSecurityRepository.findAll(pageable);
 
