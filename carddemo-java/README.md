@@ -150,8 +150,8 @@ git clone <repository-url> && cd carddemo-java
 
 # 3. Start the local infrastructure:
 #    PostgreSQL + LocalStack + Jaeger + Prometheus + Grafana
-#    LocalStack requires an auth token supplied via environment variable (never hardcoded):
-export LOCALSTACK_AUTH_TOKEN=<your-localstack-auth-token>
+#    The default LocalStack Community image (localstack/localstack:3.8) needs NO auth token.
+#    Set a token only when overriding to a LocalStack Pro image (see "Local AWS" below).
 docker compose up -d
 
 # 4. Run the application with the local profile
@@ -295,10 +295,14 @@ following resources on startup:
 | SQS FIFO queue | `carddemo-report-jobs.fifo` | Report-submission queue (CICS TDQ replacement) |
 
 The LocalStack endpoint is **`http://localhost:4566`**, configured by the `local` and `test` profiles.
-LocalStack is authenticated with the `LOCALSTACK_AUTH_TOKEN` environment variable — supply it from
-your shell or secret store; it is **never** hardcoded:
+The default Compose stack uses the LocalStack **Community** image (`localstack/localstack:3.8`), which
+requires **no** auth token — `docker-compose.yml` passes an empty default and the Community image
+ignores it. A token is needed **only** when you override to a LocalStack **Pro** image; supply it from
+your shell or secret store — it is **never** hardcoded:
 
 ```bash
+# Optional — only when overriding to the LocalStack Pro image:
+export LOCALSTACK_IMAGE=localstack/localstack-pro:latest
 export LOCALSTACK_AUTH_TOKEN=<your-localstack-auth-token>
 ```
 

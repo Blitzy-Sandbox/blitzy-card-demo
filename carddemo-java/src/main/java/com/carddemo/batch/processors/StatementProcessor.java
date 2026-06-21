@@ -21,6 +21,7 @@ import java.util.Objects;
 import java.util.Set;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.stereotype.Component;
+import org.springframework.web.util.HtmlUtils;
 
 /**
  * Spring Batch {@link ItemProcessor} that renders a customer account statement in both the
@@ -283,6 +284,25 @@ public class StatementProcessor implements ItemProcessor<Account, StatementProce
      */
     private static String safe(final String value) {
         return (value == null) ? "" : value;
+    }
+
+    /**
+     * Null-safe HTML escaper for dynamic text interpolated into the HTML statement variant. The
+     * value is first normalized to the empty string (via {@link #safe(String)}) and then escaped
+     * with {@link HtmlUtils#htmlEscape(String)} so that any HTML metacharacters in customer-,
+     * account- or transaction-derived data (for example {@code <}, {@code >}, {@code &}, quotes)
+     * are rendered as entity references rather than active markup, preventing stored cross-site
+     * scripting in the {@code STATEMNT.HTML} object written to S3.
+     *
+     * <p>This helper is used exclusively by {@link HtmlStatementRenderer}; the plain-text variant
+     * keeps its verbatim {@link #safe(String)}/{@link #fixedField(String, int)} handling so the
+     * fixed-width {@code STATEMNT.PS} output remains byte-equivalent to the COBOL baseline.</p>
+     *
+     * @param value the dynamic value to escape; {@code null} yields the empty string
+     * @return the HTML-escaped representation safe for interpolation into element content
+     */
+    private static String htmlEscape(final String value) {
+        return HtmlUtils.htmlEscape(safe(value));
     }
 
     /**
@@ -671,7 +691,8 @@ public class StatementProcessor implements ItemProcessor<Account, StatementProce
             appendLine(builder, "<table align=\"center\" frame=\"box\" style=\"width:70%; font:12px Segoe UI,sans-serif;\">");
             appendLine(builder, "<tr>");
             appendLine(builder, TD_HEADING);
-            appendLine(builder, "<h3>Statement for Account Number: " + Objects.toString(data.accountId(), "") + "</h3>");
+            appendLine(builder, "<h3>Statement for Account Number: "
+                    + htmlEscape(Objects.toString(data.accountId(), "")) + "</h3>");
             appendLine(builder, "</td>");
             appendLine(builder, "</tr>");
             appendLine(builder, "<tr>");
@@ -687,14 +708,14 @@ public class StatementProcessor implements ItemProcessor<Account, StatementProce
         protected void appendName(final StringBuilder builder, final StatementData data) {
             appendLine(builder, "<tr>");
             appendLine(builder, TD_CONTENT);
-            appendLine(builder, "<p style=\"font-size:16px\">" + data.customerName() + "</p>");
+            appendLine(builder, "<p style=\"font-size:16px\">" + htmlEscape(data.customerName()) + "</p>");
         }
 
         @Override
         protected void appendAddress(final StringBuilder builder, final StatementData data) {
-            appendLine(builder, "<p>" + data.addressLine1() + "</p>");
-            appendLine(builder, "<p>" + data.addressLine2() + "</p>");
-            appendLine(builder, "<p>" + data.addressLine3() + "</p>");
+            appendLine(builder, "<p>" + htmlEscape(data.addressLine1()) + "</p>");
+            appendLine(builder, "<p>" + htmlEscape(data.addressLine2()) + "</p>");
+            appendLine(builder, "<p>" + htmlEscape(data.addressLine3()) + "</p>");
             appendLine(builder, "</td>");
             appendLine(builder, "</tr>");
             appendLine(builder, "<tr>");
@@ -709,7 +730,7 @@ public class StatementProcessor implements ItemProcessor<Account, StatementProce
             appendLine(builder, "<tr>");
             appendLine(builder, TD_CONTENT);
             appendLine(builder, "<p>" + fixedField("Account ID", 19) + ": "
-                    + Objects.toString(data.accountId(), "") + "</p>");
+                    + htmlEscape(Objects.toString(data.accountId(), "")) + "</p>");
             appendLine(builder, "<p>" + fixedField("Current Balance", 19) + ": "
                     + formatPic9(data.currentBalance()) + "</p>");
             appendLine(builder, "<p>" + fixedField("FICO Score", 19) + ": "
@@ -742,10 +763,10 @@ public class StatementProcessor implements ItemProcessor<Account, StatementProce
         protected void appendTransactionLine(final StringBuilder builder, final TransactionSummaryLine line) {
             appendLine(builder, "<tr>");
             appendLine(builder, TD_DATA_ID);
-            appendLine(builder, "<p>" + safe(line.tranId()) + "</p>");
+            appendLine(builder, "<p>" + htmlEscape(line.tranId()) + "</p>");
             appendLine(builder, "</td>");
             appendLine(builder, TD_DATA_DESC);
-            appendLine(builder, "<p>" + safe(line.tranDesc()) + "</p>");
+            appendLine(builder, "<p>" + htmlEscape(line.tranDesc()) + "</p>");
             appendLine(builder, "</td>");
             appendLine(builder, TD_DATA_AMT);
             appendLine(builder, "<p>" + formatPicZ(line.tranAmt()) + "</p>");

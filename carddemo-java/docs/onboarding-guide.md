@@ -297,13 +297,18 @@ Batch jobs run inside the same Spring Boot application context. With the infrast
   ./mvnw verify -Pintegration
   ```
 
-- **On application startup** — when a batch profile is active, Spring Batch's job launcher runs the
-  configured job(s) at boot. Start the app with the appropriate profile and job parameters:
+- **On application startup** — boot-time job execution is **disabled by default**
+  (`spring.batch.job.enabled: false` in `application.yml`), so the 5-stage pipeline is normally
+  launched explicitly by `BatchPipelineOrchestrator` or the SQS report trigger rather than firing on
+  boot. To run a single job at startup you must **both** re-enable the runner and name the job:
 
   ```bash
   ./mvnw spring-boot:run -Dspring.profiles.active=local \
-      -Dspring-boot.run.arguments="--spring.batch.job.name=dailyTransactionPostingJob"
+      -Dspring-boot.run.arguments="--spring.batch.job.enabled=true --spring.batch.job.name=dailyTransactionPostingJob"
   ```
+
+  The `--spring.batch.job.enabled=true` override is required; without it Spring Boot's
+  `JobLauncherApplicationRunner` stays off and `--spring.batch.job.name` alone launches nothing.
 
 - **Inspect inputs/outputs in LocalStack** — batch input is staged in the `carddemo-batch-input` S3
   bucket, rejections and reports land in `carddemo-batch-output`, and statements in
@@ -355,8 +360,13 @@ LocalStack.
 - **Point the endpoint at** `http://localhost:4566` for both S3 and SQS in local and test runs.
 - **Use the exact bucket and queue names** provisioned by `localstack-init/init-aws.sh`: buckets
   `carddemo-batch-input`, `carddemo-batch-output`, `carddemo-statements`, and the FIFO queue
-  `carddemo-report-jobs.fifo`. LocalStack requires the `LOCALSTACK_AUTH_TOKEN` environment variable —
-  export it from your shell or secret store; never hardcode it.
+  `carddemo-report-jobs.fifo`.
+- **No auth token is required for the default stack.** `docker-compose.yml` defaults to the LocalStack
+  **Community** image (`localstack/localstack:3.8`), which needs **no** `LOCALSTACK_AUTH_TOKEN` — the
+  Compose file passes an empty default and the Community image ignores it. Only set the token if you
+  override to a LocalStack **Pro** image (`export LOCALSTACK_IMAGE=localstack/localstack-pro:latest`
+  and `export LOCALSTACK_AUTH_TOKEN=<token>`); when you do, supply it via your shell or secret store
+  and never hardcode it.
 
 ### 3. Testcontainers Docker-socket permissions
 

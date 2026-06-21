@@ -4,6 +4,7 @@ import com.carddemo.model.dto.ReportRequest;
 import com.carddemo.model.dto.ReportResponse;
 import com.carddemo.service.report.ReportSubmissionService;
 import jakarta.validation.Valid;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -26,7 +27,12 @@ public class ReportController {
     }
 
     @PostMapping("/submit")
-    public ReportResponse submit(@Valid @RequestBody ReportRequest request) {
-        return reportSubmissionService.submitReport(request);
+    public ResponseEntity<ReportResponse> submit(@Valid @RequestBody ReportRequest request) {
+        // The COBOL WRITEQ TD bridge is asynchronous: the service publishes a job message to
+        // the SQS FIFO queue and returns immediately, the report is produced out-of-band by the
+        // listener. The published contract (api-contracts.md) returns 202 Accepted to reflect
+        // that the work has been accepted for asynchronous processing rather than completed.
+        ReportResponse response = reportSubmissionService.submitReport(request);
+        return ResponseEntity.accepted().body(response);
     }
 }

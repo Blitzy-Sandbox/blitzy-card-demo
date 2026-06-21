@@ -7,7 +7,6 @@ import java.util.HashMap;
 import java.util.Map;
 
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -96,9 +95,12 @@ class SnsIntegrationIT extends AbstractAwsLocalStackIT {
                 .build());
 
         Message received = pollForMessage(subscriberQueueUrl, Duration.ofSeconds(30));
-        if (received == null) {
-            Assumptions.abort("SNS->SQS fan-out not observed within timeout on LocalStack");
-        }
+        // The SNS->SQS fan-out is a required, concrete verification: a missing message must FAIL
+        // this test, never soft-skip it. (Previously this aborted via Assumptions, which reported
+        // the required AWS interaction as skipped.)
+        assertThat(received)
+                .as("SNS->SQS fan-out must deliver the published notification to the subscribed queue within 30s")
+                .isNotNull();
         assertThat(received.body()).isEqualTo(payload);
     }
 

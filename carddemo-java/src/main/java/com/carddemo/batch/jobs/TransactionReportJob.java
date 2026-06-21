@@ -62,7 +62,7 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
  *   <li>{@code app/cpy/COTTL01Y.cpy} &mdash; the application title lines emitted as a banner.</li>
  * </ul>
  *
- * <h2>Online-to-batch bridge (Decision D-004)</h2>
+ * <h2>Online-to-batch bridge</h2>
  * <p>The CICS transient-data-queue write performed by {@code CORPT00C} ({@code WRITEQ TD}) is
  * replaced by an SQS FIFO queue. {@link com.carddemo.service.report.ReportSubmissionService}
  * publishes a {@link ReportJobMessage} to {@code carddemo-report-jobs.fifo}; the
@@ -72,7 +72,7 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
  * configuration ({@code carddemo.aws.sqs.report-queue}); the LocalStack endpoint is never
  * hardcoded (it is supplied by {@code application-local.yml}/{@code application-test.yml}).</p>
  *
- * <h2>Inline reader and writer (rationale &rarr; {@code DECISION_LOG.md})</h2>
+ * <h2>Inline reader and writer</h2>
  * <p>No sibling report {@code ItemReader}/{@code ItemWriter} exists in the codebase, so both are
  * defined inline here: a {@code @StepScope} {@link ListItemReader} over
  * {@link TransactionRepository#findByProcessingDateRange(String, String)} (re-sorted card-major so
@@ -203,7 +203,7 @@ public final class TransactionReportJob {
     }
 
     /**
-     * SQS FIFO consumer that bridges report submission to batch execution (Decision D-004). Receives
+     * SQS FIFO consumer that bridges report submission to batch execution. Receives
      * a {@link ReportJobMessage} (deserialized from JSON by the framework) published by
      * {@link com.carddemo.service.report.ReportSubmissionService} and launches the report job with
      * the message's date window, report type and a unique run id.

@@ -1,5 +1,6 @@
 package com.carddemo.controller;
 
+import com.carddemo.exception.ValidationException;
 import com.carddemo.model.dto.CardDetailResponse;
 import com.carddemo.model.dto.CardListResponse;
 import com.carddemo.model.dto.CardUpdateRequest;
@@ -52,7 +53,16 @@ public class CardController {
     }
 
     @PutMapping("/{cardNumber}")
-    public CardUpdateResponse updateCard(@Valid @RequestBody CardUpdateRequest request) {
+    public CardUpdateResponse updateCard(@PathVariable String cardNumber,
+                                         @Valid @RequestBody CardUpdateRequest request) {
+        // The {cardNumber} in the URL is the target identifier; the body cardNumber (BMS
+        // CARDSID parity) must match it exactly so an update cannot be retargeted to a
+        // different card than the URL addresses.
+        if (!cardNumber.equals(request.cardNumber())) {
+            throw new ValidationException(
+                    "Path card number " + cardNumber + " does not match request body card number "
+                            + request.cardNumber(), "cardNumber");
+        }
         return cardUpdateService.updateCard(request);
     }
 }

@@ -560,7 +560,7 @@ Updates a user (`COUSR02C`). Path parameter `userId` — `PIC X(8)`. **Request D
 | :---------- | :-------- | :--------- | :--- | :-- | :-- |
 | `FNAMEI` | `X(20)` | `firstName` | string | 20 | yes |
 | `LNAMEI` | `X(20)` | `lastName` | string | 20 | yes |
-| `PASSWDI` | `X(8)` | `password` | string | 8 | no (write-only; re-hashed if present) |
+| `PASSWDI` | `X(8)` | `password` | string | 8 | yes (write-only; BCrypt-hashed, re-encoded only when changed) |
 | `USRTYPEI` | `X(1)` | `userType` | string | 1 | yes |
 
 **Response:** `200` with `UserResponse`.
@@ -665,16 +665,18 @@ All three buckets have versioning enabled and are created locally by the LocalSt
 
 ### 7.2 Object key layout
 
-Keys are date- and run-partitioned so that successive batch runs accumulate as object versions / dated prefixes, preserving GDG generation semantics:
+Object keys are **fixed GDG base names** — the DD / GDG-base names carried over from `app/jcl/DEFGDGB.jcl` and the batch job streams — **not** date- or run-partitioned prefixes. Successive batch runs write the **same** key, and the GDG "keep N generations" behavior is preserved entirely by **S3 object versioning** (see §7.1): each run produces a new object version under the same key rather than a new dated path. The keys are externalized as Spring properties whose defaults are the fixed names below:
 
-| Purpose | Bucket | Key pattern | Format |
-| :------ | :----- | :---------- | :----- |
-| Daily transaction input | `carddemo-batch-input` | `daily-transactions/{yyyy}/{MM}/{dd}/dailytran.txt` | fixed-width, 350-byte records |
-| Combined transactions | `carddemo-batch-output` | `combined-transactions/{yyyy}/{MM}/{dd}/systran.dat` | fixed-width, 350-byte records |
-| Transaction report | `carddemo-batch-output` | `reports/transaction/{yyyy}/{MM}/{dd}/tranreport.txt` | text report |
-| Rejection file | `carddemo-batch-output` | `rejects/{yyyy}/{MM}/{dd}/dalyrejs.dat` | fixed-width, 430-byte records |
-| Statement (text) | `carddemo-statements` | `statements/{accountId}/{yyyy}/{MM}/statement.txt` | text |
-| Statement (HTML) | `carddemo-statements` | `statements/{accountId}/{yyyy}/{MM}/statement.html` | HTML |
+| Purpose | Bucket | Object key (default) | Config property | Format |
+| :------ | :----- | :------------------- | :-------------- | :----- |
+| Daily transaction input | `carddemo-batch-input` | `dailytran.txt` | `carddemo.batch.daily-transaction.input-location` | fixed-width, 350-byte records |
+| Posted-transaction staging (backup) | `carddemo-batch-output` | `TRANSACT.BKUP` | `carddemo.batch.combine.bkup-key` | fixed-width, 350-byte records |
+| Interest staging | `carddemo-batch-output` | `SYSTRAN` | `carddemo.batch.interest.systran-key` / `carddemo.batch.combine.systran-key` | fixed-width, 350-byte records |
+| Combined transactions | `carddemo-batch-output` | `TRANSACT.COMBINED` | `carddemo.batch.combine.combined-key` | fixed-width, 350-byte records |
+| Transaction report | `carddemo-batch-output` | `TRANREPT` | `carddemo.batch.report.report-key` | text report, 133-column |
+| Rejection file | `carddemo-batch-output` | `DALYREJS` | _(fixed)_ | fixed-width, 430-byte records |
+| Statement (text) | `carddemo-statements` | `STATEMNT.PS` | _(fixed)_ | text |
+| Statement (HTML) | `carddemo-statements` | `STATEMNT.HTML` | _(fixed)_ | HTML |
 
 ### 7.3 Fixed-width record layouts (preserved byte-for-byte)
 

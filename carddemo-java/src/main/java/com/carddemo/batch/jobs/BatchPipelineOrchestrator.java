@@ -50,7 +50,7 @@ import org.springframework.core.task.TaskExecutor;
  *   <li>Stage&nbsp;4b {@code TRANREPT} &rarr; {@link TransactionReportJob} (transaction report).</li>
  * </ul>
  *
- * <h2>Mapping summary (rationale &rarr; {@code DECISION_LOG.md}, not code comments)</h2>
+ * <h2>Pipeline composition</h2>
  * <p>Each child job is wrapped in a Spring Batch {@code JobStep} so it executes inside the master
  * flow; a {@link JobParametersExtractor} forwards the master {@link JobParameters} (notably
  * {@code parmDate} for INTCALC and {@code startDate}/{@code endDate} for TRANREPT) down to every

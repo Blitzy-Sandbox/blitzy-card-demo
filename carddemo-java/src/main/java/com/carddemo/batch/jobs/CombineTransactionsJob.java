@@ -51,13 +51,13 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
  *       sorted stream into the transaction master KSDS.</li>
  * </ol>
  *
- * <h2>Decision D-005 &mdash; DFSORT + IDCAMS REPRO &rarr; Comparator + bulk JPA insert</h2>
+ * <h2>DFSORT + IDCAMS REPRO &rarr; Comparator + bulk JPA insert</h2>
  * <p>The {@code DFSORT} step is replaced by an in-memory Java sort using the canonical comparator
  * {@link CombineTransactionsProcessor#BY_TRAN_ID} (ascending {@code tranId}, identical to
  * {@code SORT FIELDS=(1,16,CH,A)}); the {@code IDCAMS REPRO} step is replaced by a bulk JPA
  * upsert into the {@code transaction} table via {@link TransactionRepository#saveAll}.</p>
  *
- * <h2>Decision D-003 &mdash; GDG generations &rarr; S3 versioned objects</h2>
+ * <h2>GDG generations &rarr; S3 versioned objects</h2>
  * <p>Each GDG {@code (0)}/{@code (+1)} generation maps to an S3 object read and written through
  * the {@link S3Client} bean supplied by {@code com.carddemo.config.AwsConfig}. The endpoint and
  * credentials are resolved from {@code spring.cloud.aws.*} (LocalStack for the {@code local} and
@@ -72,8 +72,7 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
  * performs a JPA merge for every entity whose {@code @Id} is set: existing rows are overwritten
  * and absent rows are inserted. Re-running the load therefore never throws a duplicate-key error,
  * and the post-condition mirrors the mainframe (the table equals daily posts plus interest, keyed
- * by {@code tranId}). The rationale for this idempotency choice is recorded in
- * {@code DECISION_LOG.md}.</p>
+ * by {@code tranId}).</p>
  *
  * <h2>Wiring</h2>
  * <p>This is a {@code @Configuration} only; the job is <strong>not</strong> auto-run

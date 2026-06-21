@@ -38,7 +38,7 @@
 
       /* Derived surfaces & ink */
       --ink:            #F2EFFE;
-      --ink-muted:      #C3BCEC;
+      --ink-muted:      #C3BCEC; /* WCAG 2.1 AA verified on dark backgrounds: 9.79:1 on #150c4f, 9.14:1 on navy #1A105F, 7.59:1 on #2D1C77 (all exceed the 4.5:1 normal-text threshold). */
       --surface:        rgba(255, 255, 255, 0.05);
       --surface-strong: rgba(255, 255, 255, 0.08);
       --border-soft:    rgba(123, 109, 236, 0.35);
@@ -259,6 +259,22 @@
       margin-right: 0.35em;
     }
 
+    /* ---- Validation-gate grid (non-list visual; replaces an 8-item bullet list) ---- */
+    .gate-grid {
+      margin: 0.3em 0 0; display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.55em 0.9em;
+      width: 100%; max-width: 1200px; text-align: left;
+    }
+    .gate-card {
+      display: flex; align-items: center; gap: 0.6em;
+      background: var(--surface); border: 1px solid var(--border-soft);
+      border-radius: 14px; padding: 0.55em 0.7em; font-size: 0.62em;
+    }
+    .gate-card .gate-no {
+      font-family: var(--font-head); font-weight: 700; color: var(--blitzy-teal);
+      margin-right: 0.35em;
+    }
+
     /* ---- Risk matrix -------------------------------------------------------- */
     .risk-matrix { width: 100%; border-collapse: separate; border-spacing: 0;
       font-size: 0.6em; border-radius: 16px; overflow: hidden;
@@ -326,16 +342,16 @@
       <section class="slide-title"
                data-background-gradient="linear-gradient(150deg, #1A105F 0%, #2D1C77 55%, #4101DB 130%)">
         <div class="center-wrap">
-          <span class="icon-hero"><i data-lucide="credit-card"></i></span>
+          <span class="icon-hero"><i data-lucide="credit-card" aria-hidden="true"></i></span>
           <div class="brand-lockup" style="margin-top:0.35em;">
-            <span class="brand-mark"><i data-lucide="zap"></i></span>
+            <span class="brand-mark"><i data-lucide="zap" aria-hidden="true"></i></span>
             <span class="brand-word">Blitzy</span>
             <span class="brand-rule"></span>
             <span class="brand-tag">Platform</span>
           </div>
           <h1 class="gradient-text" style="margin-top:0.5em;">CardDemo Modernization</h1>
           <p class="lead">From COBOL mainframe to <strong>Java&nbsp;25&nbsp;LTS + Spring&nbsp;Boot&nbsp;3.5.15</strong> on AWS &mdash; delivered with 100% behavioral parity.</p>
-          <p class="lead" style="margin-top:0.4em; display:inline-flex; gap:0.45em; align-items:center;"><i data-lucide="users"></i> Executive Briefing &mdash; Business Value, Risk &amp; Operational Readiness</p>
+          <p class="lead" style="margin-top:0.4em; display:inline-flex; gap:0.45em; align-items:center;"><i data-lucide="users" aria-hidden="true"></i> Executive Briefing &mdash; Business Value, Risk &amp; Operational Readiness</p>
           <p class="source-ref">Source baseline <code>CardDemo_v1.0-15-g27d6c6f-68</code> &middot; commit <code>27d6c6f</code> &middot; COBOL sources are not copied</p>
         </div>
       </section>
@@ -343,30 +359,30 @@
       <!-- ============ Slide 2 — Headline KPIs ============ -->
       <section data-background-color="#150c4f">
         <div class="slide-head">
-          <span class="kicker"><i data-lucide="trending-up"></i> By the Numbers</span>
+          <span class="kicker"><i data-lucide="trending-up" aria-hidden="true"></i> By the Numbers</span>
           <h2>A precisely scoped migration</h2>
         </div>
         <div class="kpi-grid">
           <div class="kpi-card">
-            <span class="kpi-icon"><i data-lucide="code"></i></span>
+            <span class="kpi-icon"><i data-lucide="code" aria-hidden="true"></i></span>
             <div class="kpi-number gradient-text">28</div>
             <div class="kpi-label">COBOL Programs</div>
             <div class="kpi-sub">17 online + 11 batch</div>
           </div>
           <div class="kpi-card">
-            <span class="kpi-icon"><i data-lucide="file-text"></i></span>
+            <span class="kpi-icon"><i data-lucide="file-text" aria-hidden="true"></i></span>
             <div class="kpi-number gradient-text">19,254</div>
             <div class="kpi-label">Source Lines</div>
             <div class="kpi-sub">14,693 online / 4,561 batch</div>
           </div>
           <div class="kpi-card">
-            <span class="kpi-icon"><i data-lucide="list-checks"></i></span>
+            <span class="kpi-icon"><i data-lucide="list-checks" aria-hidden="true"></i></span>
             <div class="kpi-number gradient-text">22</div>
             <div class="kpi-label">Business Features</div>
             <div class="kpi-sub">F-001 through F-022</div>
           </div>
           <div class="kpi-card">
-            <span class="kpi-icon"><i data-lucide="database"></i></span>
+            <span class="kpi-icon"><i data-lucide="database" aria-hidden="true"></i></span>
             <div class="kpi-number gradient-text">11</div>
             <div class="kpi-label">VSAM Datasets</div>
             <div class="kpi-sub">re-platformed to PostgreSQL&nbsp;16</div>
@@ -378,7 +394,7 @@
       <!-- ============ Slide 3 — Before/After Architecture (Mermaid) ============ -->
       <section data-background-color="#150c4f">
         <div class="slide-head">
-          <span class="kicker"><i data-lucide="layers"></i> Architecture</span>
+          <span class="kicker"><i data-lucide="layers" aria-hidden="true"></i> Architecture</span>
           <h2>Before and after at a glance</h2>
         </div>
         <pre class="mermaid">
@@ -412,7 +428,7 @@ flowchart LR
       <section class="slide-divider"
                data-background-gradient="linear-gradient(135deg, #4101DB 0%, #5B39F3 50%, #7A6DEC 100%)">
         <div class="center-wrap">
-          <span class="icon-hero"><i data-lucide="workflow"></i></span>
+          <span class="icon-hero"><i data-lucide="workflow" aria-hidden="true"></i></span>
           <span class="kicker">Part One</span>
           <h2>Migration Approach</h2>
           <p class="lead" style="margin:0.2em auto 0; text-align:center;">Every COBOL paradigm mapped to an idiomatic Spring construct &mdash; behavior preserved at the semantic level.</p>
@@ -422,7 +438,7 @@ flowchart LR
       <!-- ============ Slide 5 — COBOL to Java mapping (styled table) ============ -->
       <section data-background-color="#150c4f">
         <div class="slide-head">
-          <span class="kicker"><i data-lucide="arrow-right-left"></i> Translation Contract</span>
+          <span class="kicker"><i data-lucide="arrow-right-left" aria-hidden="true"></i> Translation Contract</span>
           <h2>COBOL &amp; CICS &rarr; Java &amp; AWS</h2>
         </div>
         <table class="styled-table">
@@ -430,12 +446,12 @@ flowchart LR
             <tr><th style="width:46%;">Mainframe (z/OS)</th><th>Target (Java / AWS)</th></tr>
           </thead>
           <tbody>
-            <tr><td class="col-from"><span class="row-icon"><i data-lucide="monitor"></i></span>CICS pseudo-conversational + BMS 3270</td><td class="col-to">Spring MVC REST controllers + JSON DTOs</td></tr>
-            <tr><td class="col-from"><span class="row-icon"><i data-lucide="database"></i></span>VSAM KSDS &mdash; 11 datasets</td><td class="col-to">PostgreSQL 16 tables via Spring Data JPA</td></tr>
-            <tr><td class="col-from"><span class="row-icon"><i data-lucide="workflow"></i></span>JCL job streams (EXEC PGM, COND)</td><td class="col-to">Spring Batch jobs, steps &amp; deciders</td></tr>
-            <tr><td class="col-from"><span class="row-icon"><i data-lucide="send"></i></span>CICS TDQ (WRITEQ TD)</td><td class="col-to">AWS SQS FIFO queue</td></tr>
-            <tr><td class="col-from"><span class="row-icon"><i data-lucide="boxes"></i></span>GDG generation datasets</td><td class="col-to">AWS S3 versioned objects</td></tr>
-            <tr><td class="col-from"><span class="row-icon"><i data-lucide="shield-check"></i></span>RACF / plaintext USRSEC password</td><td class="col-to">Spring Security + BCrypt hashing</td></tr>
+            <tr><td class="col-from"><span class="row-icon"><i data-lucide="monitor" aria-hidden="true"></i></span>CICS pseudo-conversational + BMS 3270</td><td class="col-to">Spring MVC REST controllers + JSON DTOs</td></tr>
+            <tr><td class="col-from"><span class="row-icon"><i data-lucide="database" aria-hidden="true"></i></span>VSAM KSDS &mdash; 11 datasets</td><td class="col-to">PostgreSQL 16 tables via Spring Data JPA</td></tr>
+            <tr><td class="col-from"><span class="row-icon"><i data-lucide="workflow" aria-hidden="true"></i></span>JCL job streams (EXEC PGM, COND)</td><td class="col-to">Spring Batch jobs, steps &amp; deciders</td></tr>
+            <tr><td class="col-from"><span class="row-icon"><i data-lucide="send" aria-hidden="true"></i></span>CICS TDQ (WRITEQ TD)</td><td class="col-to">AWS SQS FIFO queue</td></tr>
+            <tr><td class="col-from"><span class="row-icon"><i data-lucide="boxes" aria-hidden="true"></i></span>GDG generation datasets</td><td class="col-to">AWS S3 versioned objects</td></tr>
+            <tr><td class="col-from"><span class="row-icon"><i data-lucide="shield-check" aria-hidden="true"></i></span>RACF / plaintext USRSEC password</td><td class="col-to">Spring Security + BCrypt hashing</td></tr>
           </tbody>
         </table>
       </section>
@@ -443,7 +459,7 @@ flowchart LR
       <!-- ============ Slide 6 — Data migration VSAM to PostgreSQL (Mermaid) ============ -->
       <section data-background-color="#150c4f">
         <div class="slide-head">
-          <span class="kicker"><i data-lucide="database"></i> Data Migration</span>
+          <span class="kicker"><i data-lucide="database" aria-hidden="true"></i> Data Migration</span>
           <h2>VSAM datasets &rarr; one relational schema</h2>
         </div>
         <pre class="mermaid">
@@ -467,7 +483,7 @@ flowchart LR
       <section class="slide-divider"
                data-background-gradient="linear-gradient(135deg, #4101DB 0%, #5B39F3 50%, #7A6DEC 100%)">
         <div class="center-wrap">
-          <span class="icon-hero"><i data-lucide="git-branch"></i></span>
+          <span class="icon-hero"><i data-lucide="git-branch" aria-hidden="true"></i></span>
           <span class="kicker">Part Two</span>
           <h2>Batch Pipeline</h2>
           <p class="lead" style="margin:0.2em auto 0; text-align:center;">The five-stage JCL job stream becomes a Spring Batch flow &mdash; sequencing and condition codes preserved.</p>
@@ -477,7 +493,7 @@ flowchart LR
       <!-- ============ Slide 8 — 5-stage pipeline before/after (Mermaid) ============ -->
       <section data-background-color="#150c4f">
         <div class="slide-head">
-          <span class="kicker"><i data-lucide="git-branch"></i> Processing Pipeline</span>
+          <span class="kicker"><i data-lucide="git-branch" aria-hidden="true"></i> Processing Pipeline</span>
           <h2>Five stages, faithfully preserved</h2>
         </div>
         <pre class="mermaid">
@@ -505,7 +521,7 @@ flowchart TB
       <section class="slide-divider"
                data-background-gradient="linear-gradient(135deg, #4101DB 0%, #5B39F3 50%, #7A6DEC 100%)">
         <div class="center-wrap">
-          <span class="icon-hero"><i data-lucide="cloud"></i></span>
+          <span class="icon-hero"><i data-lucide="cloud" aria-hidden="true"></i></span>
           <span class="kicker">Part Three</span>
           <h2>Cloud &amp; Integration</h2>
           <p class="lead" style="margin:0.2em auto 0; text-align:center;">Mainframe I/O substrates replaced by AWS services &mdash; exercised locally against LocalStack with no live cloud.</p>
@@ -515,7 +531,7 @@ flowchart TB
       <!-- ============ Slide 10 — AWS S3/SQS/SNS + LocalStack (Mermaid) ============ -->
       <section data-background-color="#150c4f">
         <div class="slide-head">
-          <span class="kicker"><i data-lucide="cloud"></i> AWS Integration</span>
+          <span class="kicker"><i data-lucide="cloud" aria-hidden="true"></i> AWS Integration</span>
           <h2>S3, SQS &amp; SNS &mdash; verified on LocalStack</h2>
         </div>
         <pre class="mermaid">
@@ -541,30 +557,30 @@ flowchart LR
       <!-- ============ Slide 11 — Observability KPIs (KPI cards) ============ -->
       <section data-background-color="#150c4f">
         <div class="slide-head">
-          <span class="kicker"><i data-lucide="activity"></i> Observability</span>
+          <span class="kicker"><i data-lucide="activity" aria-hidden="true"></i> Observability</span>
           <h2>Observable from day one</h2>
         </div>
         <div class="kpi-grid">
           <div class="kpi-card">
-            <span class="kpi-icon"><i data-lucide="file-text"></i></span>
+            <span class="kpi-icon"><i data-lucide="file-text" aria-hidden="true"></i></span>
             <div class="kpi-number gradient-text" style="font-size:1.05em;">Logging</div>
             <div class="kpi-label">Structured JSON</div>
             <div class="kpi-sub">Correlation IDs across web &amp; batch</div>
           </div>
           <div class="kpi-card">
-            <span class="kpi-icon"><i data-lucide="git-commit-horizontal"></i></span>
+            <span class="kpi-icon"><i data-lucide="git-commit-horizontal" aria-hidden="true"></i></span>
             <div class="kpi-number gradient-text" style="font-size:1.05em;">Tracing</div>
             <div class="kpi-label">Micrometer + OTel</div>
             <div class="kpi-sub">OTLP export to Jaeger</div>
           </div>
           <div class="kpi-card">
-            <span class="kpi-icon"><i data-lucide="gauge"></i></span>
+            <span class="kpi-icon"><i data-lucide="gauge" aria-hidden="true"></i></span>
             <div class="kpi-number gradient-text" style="font-size:1.05em;">Metrics</div>
             <div class="kpi-label">Prometheus</div>
             <div class="kpi-sub">Custom batch &amp; auth counters</div>
           </div>
           <div class="kpi-card">
-            <span class="kpi-icon"><i data-lucide="heart-pulse"></i></span>
+            <span class="kpi-icon"><i data-lucide="heart-pulse" aria-hidden="true"></i></span>
             <div class="kpi-number gradient-text" style="font-size:1.05em;">Health</div>
             <div class="kpi-label">Actuator</div>
             <div class="kpi-sub">DB, S3 &amp; SQS readiness probes</div>
@@ -577,7 +593,7 @@ flowchart LR
       <section class="slide-divider"
                data-background-gradient="linear-gradient(135deg, #4101DB 0%, #5B39F3 50%, #7A6DEC 100%)">
         <div class="center-wrap">
-          <span class="icon-hero"><i data-lucide="shield-check"></i></span>
+          <span class="icon-hero"><i data-lucide="shield-check" aria-hidden="true"></i></span>
           <span class="kicker">Part Four</span>
           <h2>Quality &amp; Risk</h2>
           <p class="lead" style="margin:0.2em auto 0; text-align:center;">Eight validation gates gate the migration; known risks are tracked with explicit mitigations.</p>
@@ -587,26 +603,26 @@ flowchart LR
       <!-- ============ Slide 13 — The 8 validation gates (styled checklist) ============ -->
       <section data-background-color="#150c4f">
         <div class="slide-head">
-          <span class="kicker"><i data-lucide="list-checks"></i> Assurance</span>
+          <span class="kicker"><i data-lucide="list-checks" aria-hidden="true"></i> Assurance</span>
           <h2>Eight validation gates</h2>
         </div>
-        <ul class="checklist">
-          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G1</span>End-to-end boundary</span></li>
-          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G2</span>Zero-warning build</span></li>
-          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G3</span>Performance baseline</span></li>
-          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G4</span>Named real-world artifacts</span></li>
-          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G5</span>Contract verification</span></li>
-          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G6</span>Unsafe-code audit</span></li>
-          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G7</span>Scope matching (Extended)</span></li>
-          <li><span class="check-chip"><i data-lucide="check"></i></span><span><span class="gate-no">G8</span>Integration sign-off</span></li>
-        </ul>
+        <div class="gate-grid">
+          <div class="gate-card"><span class="check-chip"><i data-lucide="check" aria-hidden="true"></i></span><span><span class="gate-no">G1</span>End-to-end boundary</span></div>
+          <div class="gate-card"><span class="check-chip"><i data-lucide="check" aria-hidden="true"></i></span><span><span class="gate-no">G2</span>Zero-warning build</span></div>
+          <div class="gate-card"><span class="check-chip"><i data-lucide="check" aria-hidden="true"></i></span><span><span class="gate-no">G3</span>Performance baseline</span></div>
+          <div class="gate-card"><span class="check-chip"><i data-lucide="check" aria-hidden="true"></i></span><span><span class="gate-no">G4</span>Named real-world artifacts</span></div>
+          <div class="gate-card"><span class="check-chip"><i data-lucide="check" aria-hidden="true"></i></span><span><span class="gate-no">G5</span>Contract verification</span></div>
+          <div class="gate-card"><span class="check-chip"><i data-lucide="check" aria-hidden="true"></i></span><span><span class="gate-no">G6</span>Unsafe-code audit</span></div>
+          <div class="gate-card"><span class="check-chip"><i data-lucide="check" aria-hidden="true"></i></span><span><span class="gate-no">G7</span>Scope matching (Extended)</span></div>
+          <div class="gate-card"><span class="check-chip"><i data-lucide="check" aria-hidden="true"></i></span><span><span class="gate-no">G8</span>Integration sign-off</span></div>
+        </div>
         <p class="caption">Gate 8 consolidates coverage (&ge;80% line), an OWASP dependency-check with zero critical/high CVEs, and 100% paragraph traceability.</p>
       </section>
 
       <!-- ============ Slide 14 — Risk matrix (color-coded table) ============ -->
       <section data-background-color="#150c4f">
         <div class="slide-head">
-          <span class="kicker"><i data-lucide="triangle-alert"></i> Risk Register</span>
+          <span class="kicker"><i data-lucide="triangle-alert" aria-hidden="true"></i> Risk Register</span>
           <h2>Known risks and mitigations</h2>
         </div>
         <table class="risk-matrix">
@@ -645,29 +661,29 @@ flowchart LR
       <!-- ============ Slide 15 — Onboarding & recommended next steps ============ -->
       <section data-background-color="#150c4f">
         <div class="slide-head">
-          <span class="kicker"><i data-lucide="rocket"></i> Operational Readiness</span>
+          <span class="kicker"><i data-lucide="rocket" aria-hidden="true"></i> Operational Readiness</span>
           <h2>Onboarding &amp; next steps</h2>
         </div>
         <div class="two-col">
           <div class="panel">
-            <h3><i data-lucide="book-open"></i> Clean machine to running</h3>
+            <h3><i data-lucide="book-open" aria-hidden="true"></i> Clean machine to running</h3>
             <pre class="mermaid">
 flowchart LR
-  G["Clone repo"] --> D["docker-compose up -d"]
-  D --> M["mvn clean verify"]
-  M --> R["GET /actuator/health"]
+  G["Clone"] --> D["Compose up"]
+  D --> M["mvn verify"]
+  M --> R["/health"]
             </pre>
-            <p class="caption" style="text-align:left;">Prerequisites: JDK 25, Maven 3.9+, Docker.</p>
+            <p class="caption" style="text-align:left;">JDK 25, Maven 3.9+, Docker.</p>
           </div>
           <div class="panel">
-            <h3><i data-lucide="map"></i> Recommended next steps</h3>
+            <h3><i data-lucide="map" aria-hidden="true"></i> Next steps</h3>
             <ul class="tight-list">
-              <li><i data-lucide="check"></i> OpenAPI / Swagger docs</li>
-              <li><i data-lucide="check"></i> Cursor-based pagination</li>
-              <li><i data-lucide="check"></i> Redis reference-data cache</li>
-              <li><i data-lucide="check"></i> Async batch via REST</li>
+              <li><i data-lucide="check" aria-hidden="true"></i> OpenAPI docs</li>
+              <li><i data-lucide="check" aria-hidden="true"></i> Cursor pagination</li>
+              <li><i data-lucide="check" aria-hidden="true"></i> Redis cache</li>
+              <li><i data-lucide="check" aria-hidden="true"></i> Async batch</li>
             </ul>
-            <p class="caption" style="text-align:left;">Out of scope &mdash; surfaced during analysis.</p>
+            <p class="caption" style="text-align:left;">Out of scope.</p>
           </div>
         </div>
       </section>
@@ -676,11 +692,11 @@ flowchart LR
       <section class="slide-closing"
                data-background-gradient="linear-gradient(150deg, #1A105F 0%, #2D1C77 55%, #4101DB 130%)">
         <div class="center-wrap">
-          <span class="icon-hero"><i data-lucide="circle-check"></i></span>
+          <span class="icon-hero"><i data-lucide="circle-check" aria-hidden="true"></i></span>
           <h1 class="gradient-text">Parity. Cloud-native. Observable.</h1>
           <p class="lead" style="margin:0.2em auto 0; text-align:center;">100% behavioral parity with the COBOL baseline, delivered as a modular, observable, AWS-ready Spring Boot application.</p>
           <div class="brand-lockup" style="margin-top:0.7em;">
-            <span class="brand-mark"><i data-lucide="zap"></i></span>
+            <span class="brand-mark"><i data-lucide="zap" aria-hidden="true"></i></span>
             <span class="brand-word">Blitzy</span>
             <span class="brand-rule"></span>
             <span class="brand-tag">Mainframe Modernization</span>

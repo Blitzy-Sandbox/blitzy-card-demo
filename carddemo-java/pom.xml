@@ -85,6 +85,48 @@
         <maven-failsafe-plugin.version>3.5.2</maven-failsafe-plugin.version>
         <jacoco-maven-plugin.version>0.8.14</jacoco-maven-plugin.version>
         <dependency-check-maven.version>12.1.0</dependency-check-maven.version>
+
+        <!-- OWASP dependency-check NVD cache controls (Gate 8). The data
+             directory is pinned to a stable, build-local path that survives
+             `mvn clean` (it is OUTSIDE target/) so the multi-hundred-MB NVD
+             database is downloaded once and reused, making the final gate
+             deterministic instead of re-fetching on every run. The directory is
+             git-ignored. nvdValidForHours keeps a freshly populated cache valid
+             for a week so verify runs reuse it without re-querying the NVD API.
+             The NVD API key is NEVER stored in the POM; it is read at runtime
+             from the NVD_API_KEY environment variable or -Dnvd.api.key (AAP
+             0.8.1). -->
+        <dependency-check.data.directory>${project.basedir}/.dependency-check-data</dependency-check.data.directory>
+        <dependency-check.nvd.valid.hours>168</dependency-check.nvd.valid.hours>
+        <!-- The NVD public API WITHOUT a key is rate-limited to ~5 requests per
+             rolling 30-second window (one request roughly every 6 seconds);
+             exceeding it makes the service reset HTTP/2 streams, which stalls the
+             initial database sync indefinitely. A 10-second inter-call delay stays
+             safely under that ceiling so the one-time sync completes deterministically
+             without a key. When an NVD_API_KEY is supplied the limit is far higher and
+             this delay can be reduced, but the gate must be deterministic without one. -->
+        <dependency-check.nvd.api.delay>10000</dependency-check.nvd.api.delay>
+        <!-- Bounded HTTP timeouts for the NVD feed. In networks where a fraction of
+             outbound TLS connects stall, an unbounded/long connect timeout makes each
+             stalled attempt cost a minute before the built-in retry fires, which can
+             drag the one-time database sync out for hours. An 8-second connect timeout
+             fast-fails a stalled connect (healthy connects complete in well under a
+             second) so the retry happens promptly, while a 60-second read timeout still
+             accommodates the multi-megabyte 2,000-record result pages over a slow link. -->
+        <dependency-check.connection.timeout>8000</dependency-check.connection.timeout>
+        <dependency-check.read.timeout>60000</dependency-check.read.timeout>
+        <!-- On a network where a fraction of TLS connects/streams reset mid-transfer,
+             a single NVD result page can need several attempts. A generous retry count
+             ensures transient HTTP/2 stream resets never exhaust retries and fail the
+             one-time database sync; each retry is gated by the inter-call delay above. -->
+        <dependency-check.nvd.max.retry.count>30</dependency-check.nvd.max.retry.count>
+        <!-- NVD API page size. The default 2,000-record page is a multi-megabyte JSON
+             response that, on a network where HTTP/2 streams reset mid-transfer, can fail
+             repeatedly on a single page and stall the one-time sync. A 1,000-record page
+             halves the per-request transfer so pages complete before a reset fires,
+             trading a higher request count (gated by the inter-call delay above) for far
+             fewer retries and no per-page stall. -->
+        <dependency-check.nvd.results.per.page>1000</dependency-check.nvd.results.per.page>
     </properties>
 
     <!--
@@ -356,7 +398,14 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${maven-surefire-plugin.version}</version>
                 <configuration>
-                    <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+                    <!-- The sun-misc-unsafe-memory-access JVM option (set to "allow")
+                         keeps the Java 25 JVM from printing the terminal-deprecation
+                         warning that the transitive OpenTelemetry/JCTools stack triggers
+                         when it calls sun.misc.Unsafe memory-access methods during test
+                         startup. The flag targets only that third-party runtime path; it
+                         does not relax the compiler's zero-warning policy (Xlint:all plus
+                         Werror) on our own code (Gate 2 zero-warning build). -->
+                    <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off --sun-misc-unsafe-memory-access=allow</argLine>
                     <excludes>
                         <exclude>**/*IT.java</exclude>
                     </excludes>
@@ -423,6 +472,42 @@
                         <format>HTML</format>
                         <format>JSON</format>
                     </formats>
+                    <!-- Pin the NVD database to a stable, clean-surviving directory
+                         so the cache is downloaded once and reused, and keep it valid
+                         for a week to make the gate deterministic. -->
+                    <dataDirectory>${dependency-check.data.directory}</dataDirectory>
+                    <nvdValidForHours>${dependency-check.nvd.valid.hours}</nvdValidForHours>
+                    <!-- Throttle NVD API calls to stay under the no-key rate limit
+                         (5 requests / rolling 30s) so the initial sync does not trigger
+                         HTTP/2 stream-reset stalls; keeps Gate 8 deterministic. -->
+                    <nvdApiDelay>${dependency-check.nvd.api.delay}</nvdApiDelay>
+                    <!-- Fast-fail a stalled NVD connect so the built-in retry fires
+                         promptly instead of blocking on a long connect timeout; the
+                         read timeout still accommodates large NVD result pages. -->
+                    <connectionTimeout>${dependency-check.connection.timeout}</connectionTimeout>
+                    <readTimeout>${dependency-check.read.timeout}</readTimeout>
+                    <!-- Retry transient NVD HTTP/2 stream resets enough times that the
+                         one-time sync completes on a flaky network without an API key. -->
+                    <nvdMaxRetryCount>${dependency-check.nvd.max.retry.count}</nvdMaxRetryCount>
+                    <!-- Smaller NVD page size = smaller transfers that complete before an
+                         HTTP/2 stream reset; sharply reduces retries/stalls on a flaky
+                         link without an API key. -->
+                    <nvdApiResultsPerPage>${dependency-check.nvd.results.per.page}</nvdApiResultsPerPage>
+                    <!-- The Sonatype OSS Index analyzer is an UNAUTHENTICATED remote
+                         call that is rate-limited and non-deterministic in CI/local
+                         final-gate runs; CVE coverage is provided authoritatively by
+                         the NVD feed above, so it is disabled to keep the gate stable. -->
+                    <ossindexAnalyzerEnabled>false</ossindexAnalyzerEnabled>
+                    <!-- Documented suppressions for VERIFIED false positives only:
+                         CPE/product over-matches where the vulnerable code path is in a
+                         different product, language runtime, or sibling module that is NOT
+                         on this project's resolved classpath. Each entry is scoped to a
+                         single packageUrl + specific CVE id(s) and carries a written
+                         justification, so any genuine future CVE on the same artifact is
+                         still reported and continues to fail the build at CVSS >= 7. -->
+                    <suppressionFiles>
+                        <suppressionFile>${project.basedir}/dependency-check-suppressions.xml</suppressionFile>
+                    </suppressionFiles>
                 </configuration>
                 <executions>
                     <execution>
@@ -472,7 +557,7 @@
                                  agent so integration tests are also free of the Java 25
                                  dynamic-agent warning, and disable CDS (-Xshare:off) to
                                  suppress the benign bootstrap-classpath "Sharing" notice. -->
-                            <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+                            <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar} -Xshare:off --sun-misc-unsafe-memory-access=allow</argLine>
                             <!-- Run only the integration-test class pattern (*IT.java);
                                  matches the surefire <excludes> above. -->
                             <includes>

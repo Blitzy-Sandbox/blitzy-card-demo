@@ -1021,9 +1021,9 @@ For each significant Java component, the originating COBOL paragraph(s) are cite
 | `exception/RecordNotFoundException` | FILE STATUS `23` (record not found) | Keyed read miss |
 | `exception/DuplicateRecordException` | FILE STATUS `22` (duplicate key) | Insert conflict |
 | `exception/FileAccessException` | FILE STATUS `30`/`9x` (I/O / hardware) | General access failure |
-| `exception/OptimisticLockConflictException` | Before/after image mismatch (`COACTUPC`/`COCRDUPC`) | Maps `OptimisticLockException` |
-| `exception/ValidationException` | Reject reasons 100-109 (`CBTRN02C.1500-VALIDATE-TRAN`) | Posting validation failure |
-| `exception/BatchProcessingException` | Batch abend paths (`ABEND-ROUTINE`) | Step/Job FAILED ExitStatus |
+| `exception/ConcurrencyException` | Before/after image mismatch — `COACTUPC`/`COCRDUPC` `9700-CHECK-CHANGE-IN-REC` (+ the sole `SYNCPOINT ROLLBACK`) | Wraps JPA `OptimisticLockException`/`OptimisticLockingFailureException`; HTTP `409` |
+| `exception/ValidationException` | Field-level input edits — `COACTUPC`/`COCRDUPC`/`COTRN02C`/`COSGN00C` field edits and the `CBTRN02C` `1500-*` pre-persistence edits | Data-edit rejection before persistence; HTTP `400` |
+| `exception/TransactionPostingException` | Daily-posting reject codes `100`/`101`/`102`/`103`/`109` — `CBTRN02C` `1500-VALIDATE-TRAN` cascade → `2500-WRITE-REJECT-REC` | Posting-time rejection (reason-tagged `carddemo.batch.records.rejected`); HTTP `422` |
 
 ### 6.8 Cross-Cutting Components — No COBOL Paragraph Origin
 

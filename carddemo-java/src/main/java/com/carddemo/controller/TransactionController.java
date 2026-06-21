@@ -8,6 +8,8 @@ import com.carddemo.service.transaction.TransactionAddService;
 import com.carddemo.service.transaction.TransactionDetailService;
 import com.carddemo.service.transaction.TransactionListService;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -51,7 +53,11 @@ public class TransactionController {
     }
 
     @PostMapping
-    public TransactionAddResponse addTransaction(@Valid @RequestBody TransactionAddRequest request) {
-        return transactionAddService.addTransaction(request);
+    public ResponseEntity<TransactionAddResponse> addTransaction(@Valid @RequestBody TransactionAddRequest request) {
+        // The service enforces the two-step confirmation gate and persists the transaction
+        // before returning; a successful response therefore always represents a committed
+        // creation, so the published contract (api-contracts.md) returns 201 Created.
+        TransactionAddResponse response = transactionAddService.addTransaction(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 }

@@ -3,8 +3,10 @@ package com.carddemo.config;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.carddemo.config.AwsConfig.CardDemoAwsProperties;
+import java.time.Duration;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.sns.SnsClient;
 
@@ -56,6 +58,33 @@ class AwsConfigTest {
             assertThat(sns).isNotNull();
         }
         try (SnsClient sns = config.snsClient(REGION, KEY, KEY, "")) {
+            assertThat(sns).isNotNull();
+        }
+    }
+
+    @Test
+    @DisplayName("clientOverrideConfiguration pins bounded timeouts and an explicit standard retry strategy")
+    void clientOverrideConfigurationResilience() {
+        ClientOverrideConfiguration override = config.clientOverrideConfiguration();
+
+        // Bounded overall and per-attempt timeouts so no outbound AWS call relies on unbounded
+        // SDK defaults; an explicit standard retry strategy with a fixed attempt cap is present.
+        assertThat(override.apiCallTimeout()).contains(Duration.ofSeconds(30));
+        assertThat(override.apiCallAttemptTimeout()).contains(Duration.ofSeconds(10));
+        assertThat(override.retryStrategy()).isPresent();
+        assertThat(override.retryStrategy().get().maxAttempts()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("the resilience override configuration is applied to every AWS client builder")
+    void overrideConfigurationAppliedToAllClients() {
+        // Each client builds successfully with the shared override in place (offline-safe: the SDK
+        // opens no connection until a request is made). This pins that the override-configured
+        // builder chain compiles and constructs for S3 and SNS; SQS async construction is covered
+        // by the LocalStack integration tests (Netty async client emits Java 25 Unsafe noise here).
+        try (S3Client s3 = config.s3Client(REGION, KEY, KEY, LOCALSTACK, true);
+             SnsClient sns = config.snsClient(REGION, KEY, KEY, LOCALSTACK)) {
+            assertThat(s3).isNotNull();
             assertThat(sns).isNotNull();
         }
     }

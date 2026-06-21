@@ -54,6 +54,11 @@ class StatementProcessorTest {
     private static final String CARD_ONE = "4111111111111111";
     private static final String CARD_TWO = "4222222222222222";
 
+    /** Stored-XSS probes: each carries HTML metacharacters that must be escaped in HTML output. */
+    private static final String TXN_PAYLOAD = "<script>alert(1)</script>";
+    private static final String NAME_PAYLOAD = "<b>EVIL</b>";
+    private static final String ADDR_PAYLOAD = "<img src='x'>&\"";
+
     @Mock
     private CardCrossReferenceRepository cardCrossReferenceRepository;
 
@@ -151,6 +156,64 @@ class StatementProcessorTest {
         verify(customerRepository, never()).findById(org.mockito.ArgumentMatchers.anyLong());
     }
 
+    @Test
+    @DisplayName("HTML statement escapes malicious customer/account/transaction text (stored-XSS guard)")
+    void htmlStatementEscapesMaliciousText() {
+        final Account account = account(new BigDecimal("0.00"));
+        when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
+                .thenReturn(List.of(xref(CARD_ONE)));
+        when(customerRepository.findById(CUSTOMER_ID)).thenReturn(Optional.of(maliciousCustomer()));
+        when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
+        when(transactionRepository.findByTranCardNumIn(anyCollection())).thenReturn(List.of(
+                transaction(CARD_ONE, "0000000000000001", new BigDecimal("10.00"), TXN_PAYLOAD)));
+
+        final StatementResult result = processor.process(account);
+
+        assertThat(result).isNotNull();
+        final String html = result.htmlStatement();
+
+        // Every HTML metacharacter from injected data is rendered as an entity reference, never as
+        // active markup: the script payload, the name payload and all five characters of the
+        // address payload (< > & ' ") are escaped.
+        assertThat(html).contains("&lt;script&gt;alert(1)&lt;/script&gt;");
+        assertThat(html).contains("&lt;b&gt;EVIL&lt;/b&gt;");
+        assertThat(html).contains("&lt;img");
+        assertThat(html).contains("&amp;");
+        assertThat(html).contains("&#39;");
+        assertThat(html).contains("&quot;");
+
+        // No raw attacker-controlled markup survives into the HTML object written to S3: with the
+        // angle brackets escaped, none of the injected tags can be parsed as active elements.
+        assertThat(html).doesNotContain("<script>");
+        assertThat(html).doesNotContain("<b>EVIL</b>");
+        assertThat(html).doesNotContain("<img");
+    }
+
+    @Test
+    @DisplayName("plain-text statement keeps raw bytes for the same input (HTML escaping must not leak into text — Gate 1)")
+    void textStatementPreservesRawMarkup() {
+        final Account account = account(new BigDecimal("0.00"));
+        when(cardCrossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
+                .thenReturn(List.of(xref(CARD_ONE)));
+        when(customerRepository.findById(CUSTOMER_ID)).thenReturn(Optional.of(maliciousCustomer()));
+        when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
+        when(transactionRepository.findByTranCardNumIn(anyCollection())).thenReturn(List.of(
+                transaction(CARD_ONE, "0000000000000001", new BigDecimal("10.00"), TXN_PAYLOAD)));
+
+        final StatementResult result = processor.process(account);
+
+        assertThat(result).isNotNull();
+        final String text = result.textStatement();
+
+        // The fixed-width text variant is byte-equivalent to the COBOL baseline: it emits the raw
+        // characters verbatim and performs NO HTML escaping (no entity references appear).
+        assertThat(text).contains(TXN_PAYLOAD);
+        assertThat(text).contains("<b>EVIL</b>");
+        assertThat(text).doesNotContain("&lt;");
+        assertThat(text).doesNotContain("&amp;");
+        assertThat(text).doesNotContain("&#39;");
+    }
+
     private static Account account(final BigDecimal currentBalance) {
         final Account account = new Account();
         account.setAcctId(ACCOUNT_ID);
@@ -172,6 +235,26 @@ class StatementProcessorTest {
         customer.setCustFirstName("JANE");
         customer.setCustLastName("DOE");
         customer.setCustAddrLine1("1 MAIN ST");
+        customer.setCustAddrLine2("APT 2");
+        customer.setCustAddrStateCd("NY");
+        customer.setCustAddrCountryCd("USA");
+        customer.setCustAddrZip("10001");
+        customer.setCustFicoCreditScore(720);
+        return customer;
+    }
+
+    /**
+     * A customer whose name and first address line carry stored-XSS probe markup. The first name is
+     * space-free so it survives the COBOL {@code STRING ... DELIMITED BY ' '} token reproduction in
+     * {@code composeCustomerName}; the address line one is moved verbatim ({@code safe}), exercising
+     * all five HTML metacharacters ({@code < > & ' "}).
+     */
+    private static Customer maliciousCustomer() {
+        final Customer customer = new Customer();
+        customer.setCustId(CUSTOMER_ID);
+        customer.setCustFirstName(NAME_PAYLOAD);
+        customer.setCustLastName("DOE");
+        customer.setCustAddrLine1(ADDR_PAYLOAD);
         customer.setCustAddrLine2("APT 2");
         customer.setCustAddrStateCd("NY");
         customer.setCustAddrCountryCd("USA");

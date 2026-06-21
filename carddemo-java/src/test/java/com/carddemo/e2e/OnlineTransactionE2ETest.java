@@ -448,11 +448,11 @@ public class OnlineTransactionE2ETest {
         assertThat(addResponse.getStatusCode().is5xxServerError()).isFalse();
 
         String addBranch;
-        if (addStatus == HttpStatus.OK.value()) {
+        if (addStatus == HttpStatus.CREATED.value()) {
             JsonNode addBody = addResponse.getBody();
             assertThat(addBody).isNotNull();
             assertThat(addBody.path("transactionId").asText("")).isNotBlank();
-            addBranch = "200-auto-id";
+            addBranch = "201-auto-id";
         } else {
             addBranch = "validation-" + addStatus;
         }
@@ -499,7 +499,7 @@ public class OnlineTransactionE2ETest {
 
     /**
      * Report-submission SQS FIFO bridge (← {@code CORPT00C} {@code WRITEQ TD}). The hard guarantee is
-     * the synchronous publish (200 + confirmationMessage); the asynchronous
+     * the asynchronous accept (202 Accepted + confirmationMessage); the asynchronous
      * SQS → {@code @SqsListener} → report job → S3 leg is verified tolerantly and soft-skips on timeout.
      */
     @Test
@@ -520,7 +520,7 @@ public class OnlineTransactionE2ETest {
                 Map.entry("endYear", "2022"),
                 Map.entry("confirm", "Y"));
         ResponseEntity<JsonNode> submit = postJson("/api/reports/submit", reportBody, adminToken);
-        assertThat(submit.getStatusCode().value()).isEqualTo(HttpStatus.OK.value());
+        assertThat(submit.getStatusCode().value()).isEqualTo(HttpStatus.ACCEPTED.value());
         assertThat(submit.getBody()).isNotNull();
         String confirmation = submit.getBody().path("confirmationMessage").asText("");
         assertThat(confirmation).isNotBlank();

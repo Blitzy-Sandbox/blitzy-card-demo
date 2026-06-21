@@ -39,7 +39,7 @@ import com.carddemo.model.entity.Account;
  * original program emits &mdash; a plain-text statement ({@code STMTFILE}, {@code FD-STMTFILE-REC
  * PIC X(80)}, LRECL=80) and an HTML statement ({@code HTMLFILE}, {@code FD-HTMLFILE-REC PIC X(100)},
  * LRECL=100) &mdash; and persists them to the {@code carddemo-statements} S3 bucket as the objects
- * {@code STATEMNT.PS} and {@code STATEMNT.HTML} (Decision D-003: GDG generations &rarr; S3 versioned
+ * {@code STATEMNT.PS} and {@code STATEMNT.HTML} (GDG generations &rarr; S3 versioned
  * objects).</p>
  *
  * <h2>JCL job stream &rarr; Spring Batch mapping</h2>
@@ -98,9 +98,6 @@ import com.carddemo.model.entity.Account;
  *   <li>All monetary values flow through {@link java.math.BigDecimal} end-to-end (rendered by
  *       {@link StatementProcessor}); no {@code float}/{@code double} is used for any amount.</li>
  * </ul>
- *
- * <p>The decision rationale for this design (file-service-as-bean, Template Method, GDG&rarr;S3) is
- * recorded in {@code DECISION_LOG.md}, not in code comments.</p>
  */
 @Configuration(value = "statementGenerationJobConfig", proxyBeanMethods = false)
 public final class StatementGenerationJob {

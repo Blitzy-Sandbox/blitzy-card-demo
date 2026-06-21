@@ -1,6 +1,7 @@
 package com.carddemo.config;
 
 import java.net.URI;
+import java.time.Duration;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -11,7 +12,10 @@ import org.springframework.util.StringUtils;
 
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.retries.DefaultRetryStrategy;
+import software.amazon.awssdk.retries.api.RetryStrategy;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.services.s3.S3Configuration;
@@ -31,6 +35,54 @@ import software.amazon.awssdk.services.sqs.SqsAsyncClientBuilder;
 @Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(AwsConfig.CardDemoAwsProperties.class)
 public class AwsConfig {
+
+    /**
+     * Overall wall-clock budget for a single API call, spanning all retry attempts. Bounds the
+     * total time the application will block on an outbound AWS operation before failing fast.
+     * Defaults to 30 seconds; tunable via {@code carddemo.aws.client.api-call-timeout-millis}.
+     */
+    @Value("${carddemo.aws.client.api-call-timeout-millis:30000}")
+    private long apiCallTimeoutMillis = 30_000L;
+
+    /**
+     * Per-attempt timeout applied to each individual HTTP attempt within an API call. A hung or
+     * slow attempt is abandoned at this bound so the retry strategy can engage. Defaults to 10
+     * seconds; tunable via {@code carddemo.aws.client.api-call-attempt-timeout-millis}.
+     */
+    @Value("${carddemo.aws.client.api-call-attempt-timeout-millis:10000}")
+    private long apiCallAttemptTimeoutMillis = 10_000L;
+
+    /**
+     * Maximum number of attempts (the initial call plus retries) made by the standard retry
+     * strategy for transient/throttling failures. Defaults to 3; tunable via
+     * {@code carddemo.aws.client.max-retry-attempts}.
+     */
+    @Value("${carddemo.aws.client.max-retry-attempts:3}")
+    private int maxRetryAttempts = 3;
+
+    /**
+     * Builds the central {@link ClientOverrideConfiguration} shared by every AWS SDK client bean
+     * (S3, SQS, SNS). It pins three resilience controls so no outbound AWS call relies on
+     * unbounded SDK defaults: a bounded overall {@code apiCallTimeout}, a bounded per-attempt
+     * {@code apiCallAttemptTimeout}, and an explicit standard {@link RetryStrategy} with a fixed
+     * maximum attempt count (exponential backoff with a circuit breaker for transient and
+     * throttling errors). A hung dependency therefore fails fast and predictably rather than
+     * blocking a batch step or request thread indefinitely.
+     *
+     * <p>Package-private so the configuration is unit-testable without a Spring context.</p>
+     *
+     * @return the shared client override configuration applied to all AWS clients
+     */
+    ClientOverrideConfiguration clientOverrideConfiguration() {
+        RetryStrategy retryStrategy = DefaultRetryStrategy.standardStrategyBuilder()
+                .maxAttempts(maxRetryAttempts)
+                .build();
+        return ClientOverrideConfiguration.builder()
+                .apiCallTimeout(Duration.ofMillis(apiCallTimeoutMillis))
+                .apiCallAttemptTimeout(Duration.ofMillis(apiCallAttemptTimeoutMillis))
+                .retryStrategy(retryStrategy)
+                .build();
+    }
 
     /**
      * Returns {@code true} when an explicit AWS endpoint override is configured (LocalStack for
@@ -64,6 +116,7 @@ public class AwsConfig {
         S3ClientBuilder builder = S3Client.builder()
                 .region(Region.of(region))
                 .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
+                .overrideConfiguration(clientOverrideConfiguration())
                 .serviceConfiguration(S3Configuration.builder().pathStyleAccessEnabled(pathStyleAccess).build());
         if (hasEndpoint(endpoint)) {
             builder.endpointOverride(URI.create(endpoint));
@@ -90,7 +143,8 @@ public class AwsConfig {
                                   @Value("${spring.cloud.aws.endpoint:}") String endpoint) {
         SqsAsyncClientBuilder builder = SqsAsyncClient.builder()
                 .region(Region.of(region))
-                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)));
+                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
+                .overrideConfiguration(clientOverrideConfiguration());
         if (hasEndpoint(endpoint)) {
             builder.endpointOverride(URI.create(endpoint));
         }
@@ -113,7 +167,8 @@ public class AwsConfig {
                         @Value("${spring.cloud.aws.endpoint:}") String endpoint) {
         SnsClientBuilder builder = SnsClient.builder()
                 .region(Region.of(region))
-                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)));
+                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKey, secretKey)))
+                .overrideConfiguration(clientOverrideConfiguration());
         if (hasEndpoint(endpoint)) {
             builder.endpointOverride(URI.create(endpoint));
         }

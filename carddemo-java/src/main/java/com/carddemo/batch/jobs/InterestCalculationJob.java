@@ -64,7 +64,7 @@ import com.carddemo.repository.TransactionCategoryBalanceRepository;
  *       {@link Transaction} is emitted by {@link InterestCalculationProcessor} and staged by this
  *       job's writer to the {@code SYSTRAN} S3 object (COBOL {@code TRANSACT} DD &rarr;
  *       {@code AWS.M2.CARDDEMO.SYSTRAN(+1)} GDG, {@code RECFM=F LRECL=350}; GDG generation &rarr; S3
- *       versioned object per decision D-003).</li>
+ *       versioned object).</li>
  *   <li><strong>Account control-break rollup</strong> ({@code 1050-UPDATE-ACCOUNT}): the per-account
  *       total interest is accumulated across all of an account's category rows and, on account
  *       change and at end of input, added to {@code ACCT-CURR-BAL}; the current-cycle credit and
@@ -79,8 +79,7 @@ import com.carddemo.repository.TransactionCategoryBalanceRepository;
  * <p>The interest writer is implemented <em>job-local</em> (the {@link InterestTransactionWriter}
  * nested type) rather than reusing the shared {@code TransactionWriter}, because that writer always
  * upserts the category balance and adds to the cycle credit/debit totals &mdash; which would regress
- * the read-only-TCATBAL and zero-the-cycle-fields semantics of this program (full rationale in
- * {@code DECISION_LOG.md}).</p>
+ * the read-only-TCATBAL and zero-the-cycle-fields semantics of this program.</p>
  *
  * <p>All monetary values are handled with {@link BigDecimal} (scale&nbsp;2,
  * {@link RoundingMode#HALF_EVEN} where rounding applies); {@code float}/{@code double} are never used
@@ -277,7 +276,7 @@ public final class InterestCalculationJob {
      * ({@code RECFM=F LRECL=350}, ISO-8859-1, no delimiter) and appended to a per-run buffer that
      * {@link #close()} uploads once to the SYSTRAN S3 object. Because the bucket is versioned, each run
      * produces a new object version &mdash; the cloud equivalent of a new {@code SYSTRAN(+1)} GDG
-     * generation (decision D-003). When no interest transaction is produced, nothing is written
+     * generation. When no interest transaction is produced, nothing is written
      * (faithful to the source not creating an empty generation).</p>
      *
      * <h2>Effect 2 &mdash; account control-break rollup ({@code 1050-UPDATE-ACCOUNT})</h2>

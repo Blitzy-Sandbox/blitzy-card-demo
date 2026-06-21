@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OWASP Dependency-Check suppression file (Gate 8 — zero critical/high CVEs).
+
+  Every entry below documents a verified FALSE POSITIVE produced by Dependency-Check's
+  CPE heuristic matching. In each case the artifact on this project's classpath does NOT
+  contain the vulnerable code path: either the CVE targets a different product entirely
+  (different language/runtime) or it targets a sibling module/jar that is ABSENT from the
+  119-jar resolved classpath (verified against target/dependency-check-report.json).
+
+  These are transport/CPE mismatches, not real exposures. The pinned dependency versions
+  are the current, patched releases managed by the Spring Boot 3.5.15 / Spring Cloud AWS
+  3.3.0 BOMs; there is no newer version that "fixes" a match to a product that is not on
+  the classpath. Per the OWASP Dependency-Check guidance, documented suppressions are the
+  correct remedy for confirmed false positives. Each suppression is scoped narrowly to a
+  single packageUrl + specific CVE id(s) so that any genuine future CVE on the same
+  artifact is still reported and fails the build.
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+  <!-- ============================================================================
+       micrometer-registry-prometheus 1.15.12  (CVSS 7.5 — build blocker)
+       FALSE POSITIVE: CVE-2026-42154 affects the Prometheus SERVER (Go, prometheus.io)
+       remote-read endpoint /api/v1/read in server versions <3.5.3 and 3.6.0-3.11.3.
+       This artifact is Micrometer's Java metrics-publishing registry; it implements no
+       Prometheus server and no /api/v1/read endpoint. The CPE cpe:prometheus:prometheus
+       is the Go server product, mis-matched to Micrometer's unrelated 1.15.x versioning.
+       ============================================================================ -->
+  <suppress>
+    <notes><![CDATA[FALSE POSITIVE: CVE-2026-42154 is a Prometheus (Go) server remote-read /api/v1/read flaw. micrometer-registry-prometheus is a Java client metrics registry with no server endpoint; CPE prometheus:prometheus is an unrelated product over-match.]]></notes>
+    <packageUrl regex="true">^pkg:maven/io\.micrometer/micrometer-registry-prometheus@.*$</packageUrl>
+    <cve>CVE-2026-42154</cve>
+  </suppress>
+
+  <!-- ============================================================================
+       netty-transport 4.1.135.Final  (CVSS 7.5 — build blocker)
+       FALSE POSITIVE: CVE-2026-42582's vulnerable code is
+       io.netty.handler.codec.http3.QpackDecoder#decodeHuffmanEncodedLiteral, which ships
+       in artifact netty-codec-http3. That artifact is ABSENT from this classpath (verified:
+       only netty-common, netty-nio-client and netty-transport are present; no HTTP/3 codec).
+       netty-transport contains no QPACK/HTTP3 decoder, so the vulnerable path cannot execute.
+       ============================================================================ -->
+  <suppress>
+    <notes><![CDATA[FALSE POSITIVE: CVE-2026-42582 affects io.netty.handler.codec.http3.QpackDecoder in netty-codec-http3, which is NOT on this classpath. The netty CPE is applied to every netty-* jar (netty-common, netty-transport, netty-transport-classes-epoll, netty-nio-client), none of which contain the HTTP/3 QPACK decoder. The negative lookahead deliberately EXCLUDES netty-codec-http3 so a genuine future CVE there would still fail the build.]]></notes>
+    <packageUrl regex="true">^pkg:maven/io\.netty/netty-(?!codec-http3).*$</packageUrl>
+    <cve>CVE-2026-42582</cve>
+  </suppress>
+
+  <!-- ============================================================================
+       opentelemetry-semconv 1.32.0  (CVSS up to 7.3 — build blocker)
+       FALSE POSITIVE: CVE-2026-24051/39883/39882/41178 all target OpenTelemetry-Go (the
+       Go implementation; CPE target_sw=go) — Darwin/BSD PATH hijacking in host resource
+       detection and Go OTLP exporter memory handling. This artifact is the Java
+       semantic-conventions library: a constants-only jar (String/AttributeKey definitions)
+       with no resource-detection code, no exporters, and no Go runtime. Not exposed.
+       ============================================================================ -->
+  <suppress>
+    <notes><![CDATA[FALSE POSITIVE: These CVEs target OpenTelemetry-Go (CPE target_sw=go): Darwin/BSD ioreg/kenv PATH hijacking and Go OTLP exporter memory issues. opentelemetry-semconv (Java) is a constants-only conventions jar with no resource-detection/exporter code and no Go runtime.]]></notes>
+    <packageUrl regex="true">^pkg:maven/io\.opentelemetry\.semconv/opentelemetry-semconv@.*$</packageUrl>
+    <cve>CVE-2026-24051</cve>
+    <cve>CVE-2026-39883</cve>
+    <cve>CVE-2026-39882</cve>
+    <cve>CVE-2026-41178</cve>
+  </suppress>
+
+  <!-- ============================================================================
+       angus-activation 2.0.3  (CVSS 7.5 — build blocker)
+       FALSE POSITIVE: CVE-2025-7962 is an SMTP injection in Jakarta Mail / angus-mail.
+       angus-activation is the Jakarta Activation (JAF) implementation (MIME type / data
+       handlers) — it contains no mail/SMTP transport. The mail implementation jars
+       (angus-mail, jakarta.mail) are ABSENT from this classpath. LOW-confidence CPE match
+       of angus_mail onto angus-activation (shared "angus" umbrella name).
+       ============================================================================ -->
+  <suppress>
+    <notes><![CDATA[FALSE POSITIVE: CVE-2025-7962 is SMTP injection in Jakarta Mail / angus-mail. angus-activation is the Jakarta Activation (JAF) impl with no SMTP code; angus-mail/jakarta.mail are absent from the classpath. LOW-confidence CPE over-match.]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.eclipse\.angus/angus-activation@.*$</packageUrl>
+    <cve>CVE-2025-7962</cve>
+  </suppress>
+
+  <!-- ============================================================================
+       log4j-api 2.24.3  (CVSS up to 7.5 — build blockers)
+       FALSE POSITIVE: Every listed CVE targets Apache Log4j CORE implementation classes —
+       Rfc5424Layout, XmlLayout, JsonTemplateLayout, Log4j1XmlLayout bridge, and the Socket
+       Appender. None of these live in log4j-api (the logging facade/interfaces). log4j-core
+       is ABSENT from this classpath: only log4j-api + log4j-to-slf4j (routing Log4j calls to
+       SLF4J/Logback) are present, and Logback is the active logging backend. The vulnerable
+       layouts/appenders physically cannot be loaded.
+       ============================================================================ -->
+  <suppress>
+    <notes><![CDATA[FALSE POSITIVE: these CVEs affect Log4j CORE classes (Rfc5424Layout, XmlLayout, JsonTemplateLayout, Log4j1XmlLayout, SocketAppender). log4j-core is NOT on the classpath (only log4j-api facade + log4j-to-slf4j bridge to Logback). The apache:log4j CPE is applied to every log4j-* jar; the negative lookahead deliberately EXCLUDES log4j-core so a genuine future CVE there would still fail the build.]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.apache\.logging\.log4j/log4j-(?!core).*$</packageUrl>
+    <cve>CVE-2026-34477</cve>
+    <cve>CVE-2026-34478</cve>
+    <cve>CVE-2026-34479</cve>
+    <cve>CVE-2026-34480</cve>
+    <cve>CVE-2026-34481</cve>
+    <cve>CVE-2025-68161</cve>
+  </suppress>
+
+  <!-- ============================================================================
+       hibernate-validator 8.0.3.Final  (CVSS 5.3 — below gate, suppressed for clean report)
+       FALSE POSITIVE: CVE-2025-15104 is an SSRF in "Nu Html Checker" (validator.nu), an
+       unrelated HTML-validation web service. Matched only via the generic cpe:validator:validator.
+       Hibernate Validator is the Jakarta Bean Validation reference implementation; unrelated.
+       ============================================================================ -->
+  <suppress>
+    <notes><![CDATA[FALSE POSITIVE: CVE-2025-15104 is an SSRF in Nu Html Checker (validator.nu), matched via generic cpe:validator:validator. Hibernate Validator (Jakarta Bean Validation RI) is an unrelated product.]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.hibernate\.validator/hibernate-validator@.*$</packageUrl>
+    <cve>CVE-2025-15104</cve>
+  </suppress>
+
+  <!-- ============================================================================
+       kotlin-stdlib 1.9.25  (CVSS 5.3 — below gate, suppressed for clean report)
+       FALSE POSITIVE: CVE-2020-29582 affects JetBrains Kotlin BEFORE 1.4.21 (insecure temp
+       file/dir permissions). This classpath has 1.9.25, far past the fix; the NVD version
+       range is over-broad. Not vulnerable.
+       ============================================================================ -->
+  <suppress>
+    <notes><![CDATA[FALSE POSITIVE: CVE-2020-29582 affects Kotlin before 1.4.21 (insecure temp file permissions); this classpath uses kotlin-stdlib (and its kotlin-stdlib-jdk7/jdk8/common companions) at 1.9.25, well past the fix. NVD range is over-broad. Regex covers every kotlin-stdlib* variant.]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.jetbrains\.kotlin/kotlin-stdlib.*$</packageUrl>
+    <cve>CVE-2020-29582</cve>
+  </suppress>
+
+</suppressions>

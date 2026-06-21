@@ -1,5 +1,6 @@
 package com.carddemo.controller;
 
+import com.carddemo.exception.ValidationException;
 import com.carddemo.model.dto.AccountUpdateRequest;
 import com.carddemo.model.dto.AccountUpdateResponse;
 import com.carddemo.model.dto.AccountViewResponse;
@@ -38,7 +39,19 @@ public class AccountController {
     }
 
     @PutMapping("/{accountId}")
-    public AccountUpdateResponse updateAccount(@Valid @RequestBody AccountUpdateRequest request) {
+    public AccountUpdateResponse updateAccount(@PathVariable Long accountId,
+                                               @Valid @RequestBody AccountUpdateRequest request) {
+        // The {accountId} in the URL is the sole target identifier. The request body also
+        // carries an accountId (BMS ACCTSID parity); it must agree with the path so a caller
+        // cannot address one account in the URL and mutate another via the body. @Valid has
+        // already enforced the 1-11 digit numeric format, so the body value parses cleanly for
+        // the numeric (zero-padding-tolerant) comparison.
+        Long bodyAccountId = Long.valueOf(request.accountId());
+        if (!accountId.equals(bodyAccountId)) {
+            throw new ValidationException(
+                    "Path account id " + accountId + " does not match request body account id "
+                            + request.accountId(), "accountId");
+        }
         return accountUpdateService.updateAccount(request);
     }
 }
