@@ -124,6 +124,18 @@ public class BatchPipelineE2ETest {
     /** Record count of the {@code app/data/ASCII/dailytran.txt} fixture. */
     private static final int EXPECTED_DAILY_RECORDS = 300;
 
+    /**
+     * Expected number of POSTED (valid) transactions for the canonical {@code dailytran.txt} fixture.
+     * Equals the faithful {@code CBTRN02C} per-record over-limit split (chunk size 1): same-account
+     * records see the cycle balance accumulated by every prior accepted post, so over-limit (code 102)
+     * is detected exactly as on the mainframe. A larger chunk would admit over-limit transactions the
+     * COBOL rejects (e.g. chunk 100 yields 265/35). See DECISION_LOG D-034.
+     */
+    private static final int EXPECTED_VALID_POSTS = 262;
+
+    /** Expected over-limit (code 102) reject count for {@code dailytran.txt} (300 &minus; 262). */
+    private static final int EXPECTED_OVERLIMIT_REJECTS = 38;
+
     /** Monetary scale of the {@code DALYTRAN-AMT}/{@code TRAN-AMT} {@code S9(09)V99} field. */
     private static final int AMOUNT_SCALE = 2;
 
@@ -401,6 +413,19 @@ public class BatchPipelineE2ETest {
         // Gate-1 conservation: every one of the 300 input records is either posted or rejected.
         assertThat(validCount + rejectCount).isEqualTo((long) EXPECTED_DAILY_RECORDS);
 
+        // Gate-1 byte-equivalence (behavioral parity, AAP §0.8.1): the valid/reject split must match
+        // CBTRN02C's faithful per-record over-limit accumulation, not merely conserve the total. With
+        // chunk size 1 each accepted record's account REWRITE commits before the next same-account
+        // record's stage-C read, so over-limit (code 102) is detected exactly as on the mainframe:
+        // 262 posted / 38 rejected for dailytran.txt. (A larger chunk regresses to 265/35 by reading
+        // stale, pre-accumulation cycle balances for clustered same-account records.) See D-034.
+        assertThat(validCount)
+                .as("valid posted transactions must equal the COBOL per-record split for dailytran.txt")
+                .isEqualTo((long) EXPECTED_VALID_POSTS);
+        assertThat(rejectCount)
+                .as("over-limit rejects must equal the COBOL per-record split for dailytran.txt")
+                .isEqualTo((long) EXPECTED_OVERLIMIT_REJECTS);
+
         // RC=4 warning: when rejects exist, the step listener composes the COMPLETED_WITH_REJECTS exit
         // code while leaving the batch status COMPLETED. Use contains(...) because Spring may compose codes.
         if (rejectCount > 0L) {
@@ -521,6 +546,7 @@ public class BatchPipelineE2ETest {
                 Valid posted (PostgreSQL transaction rows): %d
                 Rejected (S3 carddemo-batch-output/DALYREJS, 430-byte records): %d
                 Conservation: valid + rejected = %d (expected %d)
+                Per-record over-limit split (CBTRN02C parity, chunk size 1): valid=%d / reject=%d (expected %d / %d; match: %s)
                 Reject object byte length: %d (multiple of 430: %s)
                 Job exit status: %s
                 Decimal fidelity: overpunch decode verified (504.77, -919.00) and matched against persisted tranAmt via compareTo
@@ -528,6 +554,8 @@ public class BatchPipelineE2ETest {
                 """.formatted(EXPECTED_DAILY_RECORDS, DAILY_TRAN_RECORD_LENGTH,
                 EXPECTED_DAILY_RECORDS, validCount, rejectCount,
                 validCount + rejectCount, EXPECTED_DAILY_RECORDS,
+                validCount, rejectCount, EXPECTED_VALID_POSTS, EXPECTED_OVERLIMIT_REJECTS,
+                validCount == EXPECTED_VALID_POSTS && rejectCount == EXPECTED_OVERLIMIT_REJECTS,
                 rejectBytes, rejectBytes % REJECT_RECORD_LENGTH == 0, exitCode);
         Files.writeString(reportDir.resolve("gate1-byte-equivalence-report.txt"), report);
     }

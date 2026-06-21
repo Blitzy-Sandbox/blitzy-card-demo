@@ -42,9 +42,16 @@ import org.springframework.transaction.PlatformTransactionManager;
  * {@link ClassifierCompositeItemWriter} routes each result to one of two sibling writers &mdash;
  * the {@link TransactionWriter} (persist the transaction, upsert the category balance, update the
  * account) for a posted result, or the {@link RejectWriter} (emit the 430-byte {@code DALYREJS}
- * record) for a reject. The chunk-oriented step's transaction manager provides the single logical
- * unit of work that replaces the COBOL commit boundary, so a failure anywhere in the chunk rolls
- * back the whole chunk.</p>
+ * record) for a reject. The step uses a chunk commit interval of {@value #CHUNK_SIZE} so that each
+ * daily-transaction record is its own commit boundary &mdash; one chunk equals one iteration of the
+ * COBOL main loop (validate, then either post/{@code REWRITE} or reject). This is required for
+ * behavioral parity: {@code CBTRN02C}'s {@code 2800-UPDATE-ACCOUNT-REC} {@code REWRITE}s the account
+ * before the next record is read, so the stage-C over-limit check of a later same-account record
+ * sees the cycle-balance accumulated by every prior accepted post for that account. Committing each
+ * record before the next is read reproduces that per-record accumulation visibility (a larger chunk
+ * would validate clustered same-account records against pre-accumulation balances and admit
+ * over-limit transactions the COBOL rejects). A failure rolls back only the offending record's unit
+ * of work.</p>
  *
  * <p>Both sibling writers are {@code ItemStreamWriter}s and are registered as step streams
  * ({@code .stream(...)}) because a {@link ClassifierCompositeItemWriter} does not propagate the
@@ -85,8 +92,15 @@ public final class DailyTransactionPostingJob {
      */
     public static final String COMPLETED_WITH_REJECTS = "COMPLETED_WITH_REJECTS";
 
-    /** Number of daily-transaction records processed per chunk (the chunk commit interval). */
-    private static final int CHUNK_SIZE = 100;
+    /**
+     * Chunk commit interval for the posting step. MUST be {@code 1}: each accepted record's account
+     * {@code REWRITE} (the {@link TransactionWriter}'s {@code saveAndFlush}) has to commit before the
+     * next record's stage-C over-limit read so that same-account accumulation is visible, exactly as
+     * {@code CBTRN02C}'s per-record {@code READ}/{@code 2800-UPDATE-ACCOUNT-REC} {@code REWRITE} loop
+     * behaves. A larger interval validates same-account records clustered within one chunk against
+     * the pre-accumulation cycle balance and admits over-limit transactions the COBOL rejects.
+     */
+    private static final int CHUNK_SIZE = 1;
 
     /** Fixed record length of the {@code CVTRA06Y} daily-transaction layout (RECLN = 350). */
     private static final int RECORD_LENGTH = 350;

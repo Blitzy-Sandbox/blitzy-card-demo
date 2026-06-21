@@ -140,6 +140,17 @@ public class GateVerificationTest {
     /** Number of records in the {@code dailytran.txt} fixture (Gate 1 conservation total / Gate 4). */
     private static final int EXPECTED_DAILY_RECORDS = 300;
 
+    /**
+     * Expected valid/reject split of {@code dailytran.txt} under faithful {@code CBTRN02C} per-record
+     * over-limit accumulation (posting step chunk size 1). Same-account records see the cycle balance
+     * accrued by prior accepted posts, so over-limit (code 102) is detected exactly as on the mainframe:
+     * 262 posted / 38 rejected. A larger chunk regresses to 265/35 by reading stale balances. See D-034.
+     */
+    private static final long EXPECTED_VALID_POSTS = 262L;
+
+    /** Expected over-limit (code 102) reject count for {@code dailytran.txt} (300 &minus; 262). */
+    private static final long EXPECTED_OVERLIMIT_REJECTS = 38L;
+
     /** The 9 named ASCII fixtures loaded by Flyway {@code V3} (Gate 4 named real-world artifacts). */
     private static final List<String> ASCII_FIXTURES = List.of(
             "acctdata.txt", "carddata.txt", "custdata.txt", "cardxref.txt", "dailytran.txt",
@@ -637,11 +648,25 @@ public class GateVerificationTest {
         // Binding Gate-1 boundary proof: every input record is either posted or rejected.
         assertThat(validCount + rejectCount).isEqualTo((long) EXPECTED_DAILY_RECORDS);
 
+        // Gate-1 byte-equivalence (behavioral parity, AAP §0.8.1): the split must MATCH the COBOL
+        // per-record over-limit accumulation, not merely conserve the total. Posting step chunk size 1
+        // commits each accepted record's account REWRITE before the next same-account record's stage-C
+        // read, so over-limit (102) is detected exactly as on the mainframe: 262 posted / 38 rejected.
+        // (A larger chunk regresses to 265/35 by reading stale, pre-accumulation cycle balances.) D-034.
+        assertThat(validCount)
+                .as("Gate-1: valid posts must equal CBTRN02C per-record split for dailytran.txt")
+                .isEqualTo(EXPECTED_VALID_POSTS);
+        assertThat(rejectCount)
+                .as("Gate-1: over-limit rejects must equal CBTRN02C per-record split for dailytran.txt")
+                .isEqualTo(EXPECTED_OVERLIMIT_REJECTS);
+
         if (rejectCount > 0L) {
             assertThat(exec.getExitStatus().getExitCode()).contains("COMPLETED_WITH_REJECTS");
         }
         finding("Gate1: valid=" + validCount + " reject=" + rejectCount
-                + " total=" + (validCount + rejectCount));
+                + " total=" + (validCount + rejectCount)
+                + " (expected per-record COBOL split " + EXPECTED_VALID_POSTS + "/"
+                + EXPECTED_OVERLIMIT_REJECTS + ")");
     }
 
     // ---------------------------------------------------------------------------------------------
